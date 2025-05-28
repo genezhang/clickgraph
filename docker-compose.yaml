@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  clickhouse-service:
+    image: clickhouse/clickhouse-server:25.5.1
+    container_name: clickhouse
+    environment:
+      CLICKHOUSE_DB: "brahmand"
+      CLICKHOUSE_USER: "test_user"
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      CLICKHOUSE_PASSWORD: "test_pass"
+    ports:
+      - "9000:9000"
+      - "8123:8123"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+  brahmand:
+    image: darshandevrai/brahmand:latest
+    container_name: brahmand
+    depends_on:
+      clickhouse-service:
+        condition: service_healthy
+    environment:
+      CLICKHOUSE_URL: "http://clickhouse-service:8123"
+      CLICKHOUSE_USER: "test_user"
+      CLICKHOUSE_PASSWORD: "test_pass"
+      CLICKHOUSE_DATABASE: "brahmand"
+    ports:
+      - "8080:8080"
+
+volumes:
+  clickhouse_data:

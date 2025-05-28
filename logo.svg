@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+
+     width="80" height="120">
+  <!-- Columns -->
+  <line x1="10" y1="0" x2="10" y2="120" fill="none" stroke="#b2c6fe" stroke-width="12"/>
+
+  <line x1="42" y1="0" x2="42" y2="120" fill="none" stroke="#b2c6fe" stroke-width="12"/>
+
+  <line x1="74" y1="0" x2="74" y2="120" fill="none" stroke="#b2c6fe" stroke-width="12"/>
+
+
+   <!-- edges c7d6ff -->
+  <line x1="10" y1="10" x2="42" y2="15" stroke="#c7d6ff" stroke-width="2"/>
+  <line x1="42" y1="15" x2="74" y2="30" stroke="#c7d6ff" stroke-width="2"/>
+  <line x1="74" y1="30" x2="42" y2="60" stroke="#c7d6ff" stroke-width="2"/>
+  <line x1="42" y1="60" x2="74" y2="90" stroke="#c7d6ff" stroke-width="2"/>
+  <line x1="74" y1="90" x2="42" y2="105" stroke="#c7d6ff" stroke-width="2"/>
+  <line x1="42" y1="105" x2="10" y2="110" stroke="#c7d6ff" stroke-width="2"/>
+  <line x1="10" y1="110" x2="10" y2="10" stroke="#182775" stroke-width="2"/>
+  <line x1="42" y1="60" x2="10" y2="60" stroke="#c7d6ff" stroke-width="2"/>
+
+    <!-- nodes -->
+  <circle cx="10" cy="10"  r="5" fill="#182775"/>
+  <circle cx="10" cy="110" r="5" fill="#182775"/>
+  <circle cx="10" cy="60" r="5" fill="#182775"/>
+
+  <circle cx="42" cy="15" r="5" fill="#182775"/>
+  <circle cx="42" cy="105" r="5" fill="#182775"/>
+  <circle cx="42" cy="60" r="5" fill="#182775"/>
+
+  <circle cx="74" cy="30" r="5" fill="#182775"/>
+  <circle cx="74" cy="90" r="5" fill="#182775"/>
+
+
+
+
+
+
+</svg>

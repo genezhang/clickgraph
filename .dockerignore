@@ -1,0 +1,30 @@
+# Rust/Cargo build artifacts
+target/
+**/target/
+
+# Cargo-Chef recipe (caching layers)
+recipe.json
+
+# Docker build files
+Dockerfile
+.dockerignore
+
+# Git metadata
+.git
+.gitignore
+
+# CI/CD configs
+.github/
+
+# Environment files (secrets, creds)
+.env
+
+# IDE/editor settings
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+
+test_data/
