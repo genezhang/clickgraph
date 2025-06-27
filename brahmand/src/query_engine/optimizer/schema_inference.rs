@@ -91,12 +91,12 @@ pub fn get_table_names(graph_schema: &GraphSchema, start_node_table_data: &Table
         let rel_schema = graph_schema.relationships.get(rel_table_name).ok_or(OptimizerError::NoRelationSchemaFound)?;
 
         let end_table_name = end_node_table_data.table_name.ok_or(OptimizerError::MissingNodeLabel)?;
-        let start_table_name;
-        if end_table_name == rel_schema.from_node {
-            start_table_name = rel_schema.to_node.clone();
+        
+        let start_table_name = if end_table_name == rel_schema.from_node {
+            rel_schema.to_node.clone()
         } else {
-            start_table_name = rel_schema.from_node.clone();
-        }
+            rel_schema.from_node.clone()
+        };
         return Ok((start_table_name, rel_table_name.to_string(), end_table_name.to_string() ))
     }
 
@@ -107,12 +107,12 @@ pub fn get_table_names(graph_schema: &GraphSchema, start_node_table_data: &Table
         let rel_schema = graph_schema.relationships.get(rel_table_name).ok_or(OptimizerError::NoRelationSchemaFound)?;
 
         let start_table_name = start_node_table_data.table_name.ok_or(OptimizerError::MissingNodeLabel)?;
-        let end_table_name;
-        if start_table_name == rel_schema.from_node {
-            end_table_name = rel_schema.to_node.clone();
+
+        let end_table_name = if start_table_name == rel_schema.from_node {
+            rel_schema.to_node.clone()
         } else {
-            end_table_name = rel_schema.from_node.clone();
-        }
+            rel_schema.from_node.clone()
+        };
         return Ok((start_table_name.to_string(), rel_table_name.to_string(), end_table_name ))
     }
 
@@ -139,21 +139,21 @@ pub fn get_table_names(graph_schema: &GraphSchema, start_node_table_data: &Table
         // Check the location of extracted nodes in the rel schema because the start and end of a graph changes with direction
         if extracted_start_node_table_result.is_some() {
             let start_table_name = extracted_start_node_table_result.unwrap();
-            let end_table_name;
-            if relation_schema.from_node == start_table_name {
-                end_table_name = &graph_schema.nodes.get(&relation_schema.to_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name;
+            
+            let end_table_name = if relation_schema.from_node == start_table_name {
+                &graph_schema.nodes.get(&relation_schema.to_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name
             } else {
-                end_table_name = &graph_schema.nodes.get(&relation_schema.from_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name;
-            }
+                &graph_schema.nodes.get(&relation_schema.from_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name
+            };
             return Ok((start_table_name, rel_table_name.to_string(), end_table_name.to_string()))
         }else if extracted_end_node_table_result.is_some() {
             let end_table_name = extracted_end_node_table_result.unwrap();
-            let start_table_name;
-            if relation_schema.from_node == end_table_name {
-                start_table_name = &graph_schema.nodes.get(&relation_schema.to_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name;
+            
+            let start_table_name = if relation_schema.from_node == end_table_name {
+                &graph_schema.nodes.get(&relation_schema.to_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name
             } else {
-                start_table_name = &graph_schema.nodes.get(&relation_schema.from_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name;
-            }
+                &graph_schema.nodes.get(&relation_schema.from_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name
+            };
             return Ok((start_table_name.to_string(), rel_table_name.to_string(), end_table_name))
         } else {
             // assign default start and end from rel schema. 
@@ -203,12 +203,12 @@ pub fn get_table_names(graph_schema: &GraphSchema, start_node_table_data: &Table
 
         }else {
             let relation_schema = relations_found.get(0).ok_or(OptimizerError::MissingRelationLabel)?;
-            let end_table_name;
-            if relation_schema.from_node == start_table_name {
-                end_table_name = &graph_schema.nodes.get(&relation_schema.to_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name;
+            
+            let end_table_name = if relation_schema.from_node == start_table_name {
+                &graph_schema.nodes.get(&relation_schema.to_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name
             }else {
-                end_table_name = &graph_schema.nodes.get(&relation_schema.from_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name;
-            }
+                &graph_schema.nodes.get(&relation_schema.from_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name
+            };
             let rel_table_name = &relation_schema.table_name;
             return Ok((start_table_name.to_string(), rel_table_name.to_string(), end_table_name.to_string()))
         }
@@ -250,12 +250,12 @@ pub fn get_table_names(graph_schema: &GraphSchema, start_node_table_data: &Table
 
         }else {
             let relation_schema = relations_found.get(0).ok_or(OptimizerError::MissingRelationLabel)?;
-            let start_table_name;
-            if relation_schema.from_node == end_table_name {
-                start_table_name = &graph_schema.nodes.get(&relation_schema.to_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name;
+        
+            let start_table_name = if relation_schema.from_node == end_table_name {
+                &graph_schema.nodes.get(&relation_schema.to_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name
             }else {
-                start_table_name = &graph_schema.nodes.get(&relation_schema.from_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name;
-            }
+                &graph_schema.nodes.get(&relation_schema.from_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name
+            };
             let rel_table_name = &relation_schema.table_name;
             return Ok((start_table_name.to_string(), rel_table_name.to_string(), end_table_name.to_string()));
         }
