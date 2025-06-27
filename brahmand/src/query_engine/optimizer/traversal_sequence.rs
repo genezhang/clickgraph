@@ -5,12 +5,11 @@ use uuid::Uuid;
 use crate::{
     open_cypher_parser::ast::Direction,
     query_engine::types::{
-        ConnectedTraversal, GraphSchema, JoinCondition, PhysicalConnectedTraversal,
-        PhysicalPlanTableData, TableData,
+        ConnectedTraversal, GraphSchema, JoinCondition, PhysicalConnectedTraversal, PhysicalPlanTableData, TableData
     },
 };
 
-use super::errors::OptimizerError;
+use super::{errors::OptimizerError, schema_inference};
 
 // We will get the correct table name for relation based start_node, end_node and relation schema stored in graph schema
 // Post --CREATED_BY---> User
@@ -62,26 +61,18 @@ pub fn get_seq_from_connected_traversal<'a>(
     let start_node_logical_table_data = logical_table_data_by_uid
         .get(&connected_traversal.start_node)
         .ok_or(OptimizerError::NoLogicalTableDataForUid)?;
-    let start_table_name = start_node_logical_table_data
-        .table_name
-        .ok_or(OptimizerError::MissingLabel)?
-        .to_string();
 
     let relation_logical_table_data = logical_table_data_by_uid
         .get(&connected_traversal.relationship)
         .ok_or(OptimizerError::NoLogicalTableDataForUid)?;
-    let relation_label = relation_logical_table_data
-        .table_name
-        .ok_or(OptimizerError::MissingLabel)?
-        .to_string();
 
     let end_node_logical_table_data = logical_table_data_by_uid
         .get(&connected_traversal.end_node)
         .ok_or(OptimizerError::NoLogicalTableDataForUid)?;
-    let end_table_name = end_node_logical_table_data
-        .table_name
-        .ok_or(OptimizerError::MissingLabel)?
-        .to_string();
+
+
+    let (start_table_name, relation_label, end_table_name) = schema_inference::get_table_names(graph_schema, start_node_logical_table_data, relation_logical_table_data, end_node_logical_table_data)?;
+
 
     if let Some(start_node_phy_table_data) =
         physical_table_data_by_uid.get(&connected_traversal.start_node)
@@ -574,9 +565,10 @@ mod tests {
     }
 
     #[test]
-    fn test_get_seq_err_missing_label() {
+    fn test_get_seq_err_not_enough_label() {
         let mut logical = std::collections::HashMap::new();
         let id = Uuid::new_v4();
+        let rel_id = Uuid::new_v4();
         // table_name = None triggers MissingLabel
         logical.insert(
             id,
@@ -588,15 +580,27 @@ mod tests {
                 order_by_items: vec![],
             },
         );
+
+        logical.insert(
+            rel_id,
+            TableData {
+                entity_name: None,
+                table_name: None,
+                return_items: vec![],
+                where_conditions: vec![],
+                order_by_items: vec![],
+            },
+        );
+
         let conn = ConnectedTraversal {
             id: Uuid::new_v4(),
             start_node: id,
-            relationship: id,
+            relationship: rel_id,
             direction: Direction::Incoming,
             end_node: id,
         };
 
-        let err = get_seq_from_connected_traversal(
+        let err: OptimizerError = get_seq_from_connected_traversal(
             &logical,
             &conn,
             std::collections::HashMap::new(),
@@ -605,8 +609,7 @@ mod tests {
             &make_schema(),
         )
         .unwrap_err();
-
-        assert!(matches!(err, OptimizerError::MissingLabel));
+        assert!(matches!(err, OptimizerError::NotEnoughLabels));
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod anchor_node;
 pub mod errors;
 mod physical_plan;
 mod traversal_sequence;
+mod schema_inference;
 
 pub fn generate_physical_plan<'a>(
     logical_plan: LogicalPlan<'a>,
