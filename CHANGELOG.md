@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.2] - 2025-06-27
+
+### 🚀 Features
+
+- :sparkles: Added basic schema inferenc
+
+### ⚙️ Miscellaneous Tasks
+
+- Update CHANGELOG.md [skip ci]
+
 ## [0.0.1] - 2025-05-28
 
 ### ⚙️ Miscellaneous Tasks
