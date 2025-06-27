@@ -7,6 +7,7 @@ use super::types::{GraphSchema, LogicalPlan};
 mod anchor_node;
 pub mod errors;
 mod physical_plan;
+mod schema_inference;
 mod traversal_sequence;
 
 pub fn generate_physical_plan<'a>(

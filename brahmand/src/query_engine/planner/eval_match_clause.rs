@@ -48,18 +48,6 @@ fn traverse_connected_pattern<'a>(
     for connected_pattern in connected_patterns {
         // node name or label should be present
 
-        if (connected_pattern.start_node.borrow().label.is_none()
-            && connected_pattern.start_node.borrow().name.is_none())
-            || (connected_pattern.end_node.borrow().label.is_none()
-                && connected_pattern.end_node.borrow().name.is_none())
-            || (connected_pattern.relationship.label.is_none()
-                && connected_pattern.relationship.name.is_none())
-        {
-            // return error.
-            // For now we are not supporting empty node.
-            return Err(PlannerError::EmptyNode);
-        }
-
         // if name is present then map it to the uid
 
         let mut start_node_uid = Uuid::new_v4();
@@ -388,55 +376,6 @@ mod tests {
             properties: props,
             direction: dir,
         }
-    }
-
-    #[test]
-    fn error_if_start_node_empty() {
-        let lp = LogicalPlan::default();
-        // start node has no name and no label
-        let start = make_node(None, None, None);
-        let end = make_node(Some("end"), None, None);
-        let rel = make_rel(Some("r"), None, None, Direction::Outgoing);
-
-        let cp = ConnectedPattern {
-            start_node: start,
-            relationship: rel,
-            end_node: end,
-        };
-        let err = traverse_connected_pattern(lp, vec![cp]).unwrap_err();
-        assert_eq!(err, PlannerError::EmptyNode);
-    }
-
-    #[test]
-    fn error_if_end_node_empty() {
-        let lp = LogicalPlan::default();
-        let start = make_node(Some("s"), None, None);
-        let end = make_node(None, None, None);
-        let rel = make_rel(Some("r"), None, None, Direction::Outgoing);
-
-        let cp = ConnectedPattern {
-            start_node: start,
-            relationship: rel,
-            end_node: end,
-        };
-        let err = traverse_connected_pattern(lp, vec![cp]).unwrap_err();
-        assert_eq!(err, PlannerError::EmptyNode);
-    }
-
-    #[test]
-    fn error_if_relation_empty() {
-        let lp = LogicalPlan::default();
-        let start = make_node(Some("s"), None, None);
-        let end = make_node(Some("e"), None, None);
-        let rel = make_rel(None, None, None, Direction::Outgoing);
-
-        let cp = ConnectedPattern {
-            start_node: start,
-            relationship: rel,
-            end_node: end,
-        };
-        let err = traverse_connected_pattern(lp, vec![cp]).unwrap_err();
-        assert_eq!(err, PlannerError::EmptyNode);
     }
 
     #[test]

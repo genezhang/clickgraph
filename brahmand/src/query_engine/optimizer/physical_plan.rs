@@ -46,7 +46,7 @@ pub fn generate_physical_plan<'a>(
             .ok_or(OptimizerError::NoLogicalTableDataForUid)?;
         let standalone_node_table_name = standalone_node_logical_table_data
             .table_name
-            .ok_or(OptimizerError::MissingLabel)?
+            .ok_or(OptimizerError::MissingNodeLabel)?
             .to_string();
 
         let standalone_node_table_alias = standalone_node_logical_table_data
