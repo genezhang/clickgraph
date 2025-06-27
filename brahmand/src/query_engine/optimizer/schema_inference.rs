@@ -6,7 +6,7 @@ fn get_column_name_from_expression(exp: &Expression) -> Option<String> {
     match exp {
         Expression::OperatorApplicationExp(op_ex) =>{
             for operand in &op_ex.operands {
-                if let Some(column_name) =  get_column_name_from_expression(&operand){
+                if let Some(column_name) =  get_column_name_from_expression(operand){
                     return Some(column_name)
                 }
             }
@@ -18,7 +18,7 @@ fn get_column_name_from_expression(exp: &Expression) -> Option<String> {
         Expression::List(_) => None,
         Expression::FunctionCallExp(function_call) => {
             for arg in &function_call.args {
-                if let Some(column_name) =  get_column_name_from_expression(&arg){
+                if let Some(column_name) =  get_column_name_from_expression(arg){
                     return Some(column_name)
                 }
             }
@@ -43,7 +43,7 @@ fn get_column_name_from_return_items(return_items: &Vec<ReturnItem>) -> Option<S
 fn get_column_name_from_where_conditions(where_conditions: &Vec<OperatorApplication>)-> Option<String>{
     for where_condition in where_conditions.iter() {
         for operand in &where_condition.operands {
-            if let Some(column_name) =  get_column_name_from_expression(&operand){
+            if let Some(column_name) =  get_column_name_from_expression(operand){
                 return Some(column_name)
             }
         }
@@ -59,7 +59,7 @@ fn get_table_name_from_where_and_return(graph_schema: &GraphSchema, node_table_d
     }else{
         "".to_string()
     };
-    if column_name.len() > 0 {
+    if !column_name.is_empty() {
         for (_, node_schema) in graph_schema.nodes.iter() {
             if node_schema.column_names.contains(&column_name) {
                 return Some(node_schema.table_name.clone());
@@ -202,7 +202,7 @@ pub fn get_table_names(graph_schema: &GraphSchema, start_node_table_data: &Table
             }
 
         }else {
-            let relation_schema = relations_found.get(0).ok_or(OptimizerError::MissingRelationLabel)?;
+            let relation_schema = relations_found.first().ok_or(OptimizerError::MissingRelationLabel)?;
             
             let end_table_name = if relation_schema.from_node == start_table_name {
                 &graph_schema.nodes.get(&relation_schema.to_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name
@@ -249,7 +249,7 @@ pub fn get_table_names(graph_schema: &GraphSchema, start_node_table_data: &Table
             }
 
         }else {
-            let relation_schema = relations_found.get(0).ok_or(OptimizerError::MissingRelationLabel)?;
+            let relation_schema = relations_found.first().ok_or(OptimizerError::MissingRelationLabel)?;
         
             let start_table_name = if relation_schema.from_node == end_table_name {
                 &graph_schema.nodes.get(&relation_schema.to_node).ok_or(OptimizerError::NoNodeSchemaFound)?.table_name
