@@ -29,5 +29,5 @@ pub enum OptimizerError {
     #[error("No node schema found.")]
     NoNodeSchemaFound,
     #[error("Not enough information. Labels are required to identify nodes and relationships")]
-    NotEnoughLabels
+    NotEnoughLabels,
 }

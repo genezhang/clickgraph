@@ -48,7 +48,6 @@ fn traverse_connected_pattern<'a>(
     for connected_pattern in connected_patterns {
         // node name or label should be present
 
-
         // if name is present then map it to the uid
 
         let mut start_node_uid = Uuid::new_v4();
@@ -378,8 +377,6 @@ mod tests {
             direction: dir,
         }
     }
-
-
 
     #[test]
     fn single_pattern_populates_plan() {

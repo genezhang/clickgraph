@@ -5,7 +5,8 @@ use uuid::Uuid;
 use crate::{
     open_cypher_parser::ast::Direction,
     query_engine::types::{
-        ConnectedTraversal, GraphSchema, JoinCondition, PhysicalConnectedTraversal, PhysicalPlanTableData, TableData
+        ConnectedTraversal, GraphSchema, JoinCondition, PhysicalConnectedTraversal,
+        PhysicalPlanTableData, TableData,
     },
 };
 
@@ -70,9 +71,12 @@ pub fn get_seq_from_connected_traversal<'a>(
         .get(&connected_traversal.end_node)
         .ok_or(OptimizerError::NoLogicalTableDataForUid)?;
 
-
-    let (start_table_name, relation_label, end_table_name) = schema_inference::get_table_names(graph_schema, start_node_logical_table_data, relation_logical_table_data, end_node_logical_table_data)?;
-
+    let (start_table_name, relation_label, end_table_name) = schema_inference::get_table_names(
+        graph_schema,
+        start_node_logical_table_data,
+        relation_logical_table_data,
+        end_node_logical_table_data,
+    )?;
 
     if let Some(start_node_phy_table_data) =
         physical_table_data_by_uid.get(&connected_traversal.start_node)
