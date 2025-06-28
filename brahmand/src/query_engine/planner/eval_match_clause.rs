@@ -3,16 +3,17 @@ use uuid::Uuid;
 use crate::{
     open_cypher_parser::ast::{
         ConnectedPattern, Expression, MatchClause, NodePattern, Operator, OperatorApplication,
-        PathPattern, Property,
+        PathPattern, Property, PropertyAccess,
     },
     query_engine::types::{ConnectedTraversal, LogicalPlan, TableData},
 };
 
 use super::errors::PlannerError;
 
-fn evaluate_node_relation_properties_as_equal_operator_application(
-    properties: Option<Vec<Property>>,
-) -> Vec<OperatorApplication> {
+fn evaluate_node_relation_properties_as_equal_operator_application<'a>(
+    properties: Option<Vec<Property<'a>>>,
+    node_name_opt: Option<&'a str>,
+) -> Vec<OperatorApplication<'a>> {
     match properties {
         Some(props) => {
             let mut prop_conditions: Vec<OperatorApplication> = vec![];
@@ -22,15 +23,40 @@ fn evaluate_node_relation_properties_as_equal_operator_application(
                     // lets focus on literal values first. Keeping params for later.
 
                     if let Expression::Literal(literal) = property_kv.value {
-                        let operator_application = OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                Expression::Variable(property_kv.key),
-                                Expression::Literal(literal),
-                            ],
-                        };
+                        // if name node exist then we tag the condition to that node. This way if the node is selected at last the it will have property access instead of variable.
+                        // the variable and literal will work in case early filtering within CTES.
+                        // But for final where conditions, we will need the node name to get the proper column from that node
+                        // e.g ->  MATCH (a:User {username: 'Sam'})-[:FOLLOWS]->(x:User)<-[:FOLLOWS]-(b:User) WHERE b.username <> 'Sam'
+                        //         RETURN a.username AS userA, b.username AS userB, count(x) AS common;
+                        // SQL final select part -
+                        // SELECT a.username AS userA, b.username AS userB, count(x.userId) AS common
+                        // FROM User AS a
+                        // JOIN ... WHERE username = 'Sam' GROUP BY userA, userB
+                        // This final `username = 'Sam'` is ambiguous. If we use propAccess then it will be JOIN ... WHERE a.username = 'Sam' GROUP BY userA, userB
+                        if let Some(node_name) = node_name_opt {
+                            let operator_application = OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    Expression::PropertyAccessExp(PropertyAccess {
+                                        base: node_name,
+                                        key: property_kv.key,
+                                    }),
+                                    Expression::Literal(literal),
+                                ],
+                            };
 
-                        prop_conditions.push(operator_application);
+                            prop_conditions.push(operator_application);
+                        } else {
+                            let operator_application = OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    Expression::Variable(property_kv.key),
+                                    Expression::Literal(literal),
+                                ],
+                            };
+
+                            prop_conditions.push(operator_application);
+                        }
                     }
                 }
             }
@@ -52,7 +78,8 @@ fn traverse_connected_pattern<'a>(
 
         let mut start_node_uid = Uuid::new_v4();
 
-        if let Some(node_name) = connected_pattern.start_node.borrow().name {
+        let start_node_name_opt = connected_pattern.start_node.borrow().name;
+        if let Some(node_name) = start_node_name_opt {
             if let Some(node_uid) = logical_plan.entity_name_uid_map.get(node_name) {
                 start_node_uid = *node_uid;
             } else {
@@ -64,7 +91,10 @@ fn traverse_connected_pattern<'a>(
 
         let start_node_props = connected_pattern.start_node.borrow_mut().properties.take();
         let mut start_node_where_conditions =
-            evaluate_node_relation_properties_as_equal_operator_application(start_node_props);
+            evaluate_node_relation_properties_as_equal_operator_application(
+                start_node_props,
+                start_node_name_opt,
+            );
 
         // check if the start node is already present in the table data lookups
         // if it is already present then check for the conditions. If the new one has conditions and old is None then assign the new condtions on the old one
@@ -110,7 +140,8 @@ fn traverse_connected_pattern<'a>(
 
         let mut rel_uid = Uuid::new_v4();
 
-        if let Some(rel_name) = connected_pattern.relationship.name {
+        let rel_name_opt = connected_pattern.relationship.name;
+        if let Some(rel_name) = rel_name_opt {
             if let Some(added_rel_uid) = logical_plan.entity_name_uid_map.get(rel_name) {
                 rel_uid = *added_rel_uid;
             } else {
@@ -123,6 +154,7 @@ fn traverse_connected_pattern<'a>(
         let mut rel_where_conditions =
             evaluate_node_relation_properties_as_equal_operator_application(
                 connected_pattern.relationship.properties,
+                rel_name_opt,
             );
 
         if let Some(existing_rel_table_data) = logical_plan.table_data_by_uid.get_mut(&rel_uid) {
@@ -154,7 +186,8 @@ fn traverse_connected_pattern<'a>(
         // do the same for end node
         let mut end_node_uid = Uuid::new_v4();
 
-        if let Some(node_name) = connected_pattern.end_node.borrow().name {
+        let end_node_name_opt = connected_pattern.end_node.borrow().name;
+        if let Some(node_name) = end_node_name_opt {
             if let Some(added_node_uid) = logical_plan.entity_name_uid_map.get(node_name) {
                 end_node_uid = *added_node_uid;
             } else {
@@ -166,7 +199,10 @@ fn traverse_connected_pattern<'a>(
 
         let end_node_props = connected_pattern.end_node.borrow_mut().properties.take();
         let mut end_node_where_conditions =
-            evaluate_node_relation_properties_as_equal_operator_application(end_node_props);
+            evaluate_node_relation_properties_as_equal_operator_application(
+                end_node_props,
+                end_node_name_opt,
+            );
 
         // check if the end node is already present in the table data lookups
         // if it is already present then check for the conditions. If the new one has conditions and old is None then assign the new condtions on the old one
@@ -231,8 +267,10 @@ fn traverse_node_pattern<'a>(
     // For now we are not supporting empty node. standalone node with name is supported.
     let node_name = node_pattern.name.ok_or(PlannerError::EmptyNode)?;
 
-    let mut node_where_conditions =
-        evaluate_node_relation_properties_as_equal_operator_application(node_pattern.properties);
+    let mut node_where_conditions = evaluate_node_relation_properties_as_equal_operator_application(
+        node_pattern.properties,
+        Some(node_name),
+    );
 
     if let Some(added_node_uid) = logical_plan.entity_name_uid_map.get(node_name) {
         // If this node is present already then just add its conditions and do not add it in the logical plan
@@ -312,8 +350,31 @@ mod tests {
             value: Expression::Variable("bar"),
         };
         let props = vec![Property::PropertyKV(kv)];
-        let result = evaluate_node_relation_properties_as_equal_operator_application(Some(props));
+        let result =
+            evaluate_node_relation_properties_as_equal_operator_application(Some(props), None);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn property_kv_with_node_name() {
+        let kv = PropertyKVPair {
+            key: "name",
+            value: Expression::Literal(Literal::String("Alice")),
+        };
+        let props = vec![Property::PropertyKV(kv)];
+        let result =
+            evaluate_node_relation_properties_as_equal_operator_application(Some(props), Some("a"));
+        let expected = vec![OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![
+                Expression::PropertyAccessExp(PropertyAccess {
+                    base: "a",
+                    key: "name",
+                }),
+                Expression::Literal(Literal::String("Alice")),
+            ],
+        }];
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -330,7 +391,8 @@ mod tests {
             Property::PropertyKV(kv1.clone()),
             Property::PropertyKV(kv2.clone()),
         ];
-        let result = evaluate_node_relation_properties_as_equal_operator_application(Some(props));
+        let result =
+            evaluate_node_relation_properties_as_equal_operator_application(Some(props), None);
         let expected = vec![
             OperatorApplication {
                 operator: Operator::Equal,
@@ -439,10 +501,11 @@ mod tests {
         assert_eq!(td.where_conditions.len(), 1);
         let op = &td.where_conditions[0];
         assert_eq!(op.operator, Operator::Equal);
-        if let Expression::Variable(k) = &op.operands[0] {
-            assert_eq!(k, &"x");
+        if let Expression::PropertyAccessExp(prop_acc) = &op.operands[0] {
+            assert_eq!(prop_acc.base, "A");
+            assert_eq!(prop_acc.key, "x");
         } else {
-            panic!("Expected variable operand");
+            panic!("Expected PropertyAccessExp operand");
         }
         if let Expression::Literal(Literal::Integer(v)) = &op.operands[1] {
             assert_eq!(*v, 1);
