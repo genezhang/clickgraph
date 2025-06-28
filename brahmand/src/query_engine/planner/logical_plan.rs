@@ -133,7 +133,10 @@ mod tests {
             OperatorApplication {
                 operator: Operator::Equal,
                 operands: vec![
-                    Expression::Variable("age"),
+                    Expression::PropertyAccessExp(PropertyAccess {
+                        base: "n",
+                        key: "age"
+                    }),
                     Expression::Literal(Literal::Integer(30)),
                 ],
             }
