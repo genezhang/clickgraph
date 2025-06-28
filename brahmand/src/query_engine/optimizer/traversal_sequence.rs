@@ -22,12 +22,21 @@ pub fn get_relationship_table_name(
     start_node_label: String,
     end_node_label: String,
     rel_label: String,
+    direction: Direction,
     graph_schema: &GraphSchema,
 ) -> Result<String, OptimizerError> {
     let rel_table_schema = graph_schema
         .relationships
         .get(&rel_label)
         .ok_or(OptimizerError::NoRelationSchemaFound)?;
+
+    if start_node_label == end_node_label {
+        if direction == Direction::Incoming {
+            return Ok(format!("{}_incoming", rel_label));
+        } else {
+            return Ok(format!("{}_outgoing", rel_label));
+        }
+    }
 
     if rel_table_schema.from_node == start_node_label {
         return Ok(format!("{}_outgoing", rel_label));
@@ -123,6 +132,7 @@ pub fn get_seq_from_connected_traversal<'a>(
         start_table_name,
         end_table_name.clone(),
         relation_label,
+        connected_traversal.direction.clone(),
         graph_schema,
     )?;
 
@@ -314,6 +324,7 @@ mod tests {
             "Post".to_string(),
             "User".to_string(),
             "CREATED_BY".to_string(),
+            Direction::Either,
             &schema,
         )
         .expect("should find outgoing relation");
@@ -327,6 +338,7 @@ mod tests {
             "User".to_string(),
             "Post".to_string(),
             "CREATED_BY".to_string(),
+            Direction::Either,
             &schema,
         )
         .expect("should find incoming relation");
@@ -340,6 +352,7 @@ mod tests {
             "Post".to_string(),
             "User".to_string(),
             "UNKNOWN_REL".to_string(),
+            Direction::Either,
             &schema,
         )
         .unwrap_err();
@@ -354,6 +367,7 @@ mod tests {
             "Comment".to_string(),
             "Like".to_string(),
             "CREATED_BY".to_string(),
+            Direction::Either,
             &schema,
         )
         .unwrap_err();
