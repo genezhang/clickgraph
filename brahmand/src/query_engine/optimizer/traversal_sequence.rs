@@ -37,7 +37,7 @@ pub fn get_relationship_table_name(
             return Ok(format!("{}_outgoing", rel_label));
         }
     }
-    
+
     if rel_table_schema.from_node == start_node_label {
         return Ok(format!("{}_outgoing", rel_label));
     }
