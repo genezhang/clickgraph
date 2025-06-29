@@ -30,11 +30,8 @@ fn process_return_expression_string(
                 let distinct_op_str: String = Operator::Distinct.into();
 
                 let is_not_distinct =
-                    if operator_string.to_lowercase() == distinct_op_str.to_lowercase() {
-                        false
-                    } else {
-                        true
-                    };
+                    operator_string.to_lowercase() != distinct_op_str.to_lowercase();
+
                 let operand_string = process_return_expression_string(
                     &operand.clone(),
                     entity_name_node_id_map,
@@ -123,17 +120,15 @@ fn process_return_expression_string(
             // variables are usually column names but if it is just a node name then we need to add node id
             // e.g. COUNT(p). Here var will become 'p' in that case we will add 'p.node_id'
             for (entity_name, node_id) in entity_name_node_id_map.iter() {
-                if entity_name == var {
-                    if fn_arg_or_unary_op {
-                        return Ok(format!("{}.{}", entity_name, node_id));
-                    }
+                if entity_name == var && fn_arg_or_unary_op {
+                    return Ok(format!("{}.{}", entity_name, node_id));
                 }
             }
             if is_final_node {
                 return Ok(format!("{}.*", var));
             }
             // Ok(var.to_string())
-            Ok(format!("*"))
+            Ok("*".to_string())
         }
         _ => Err(ChQueryGeneratorError::UnsupportedItemInReturnClause), // Expression::Parameter(_) => todo!(),
                                                                         // Expression::PathPattern(path_pattern) => todo!(),
