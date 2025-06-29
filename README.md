@@ -48,7 +48,7 @@ Check [Docs](https://www.brahmanddb.com/introduction/intro) here.
 Preliminary informal tests on a MacBook Pro (M3 Pro, 18 GB RAM) running Brahmand in Docker against a ~12 million-node Stack Overflow dataset show multihop traversals running approximately 10× faster than Neo4j v2025.03. These early, unoptimized results are for reference only; a full benchmark report is coming soon.
 
 ## License
-Brahmand is licensed under the Apache License, Version 2.0—see the LICENSE file for details.
+Brahmand is licensed under the Apache License, Version 2.0. See the LICENSE file for details.
 
 ## Issues & Contributing
 Feel free to submit issues and enhancement requests. All contributions are welcomed.
