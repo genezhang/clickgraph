@@ -29,11 +29,11 @@ pub fn evaluate_return_clause<'a>(
                 };
                 logical_plan.overall_return_items.push(return_item_data);
             }
-            Expression::Variable(table_name) => {
+            Expression::Variable(var) => {
                 // tag it to particular table. If it is not table_name name throw error
                 let uid = logical_plan
                     .entity_name_uid_map
-                    .get(*table_name)
+                    .get(*var)
                     .ok_or(PlannerError::InvalidVariableInReturnClause)?;
                 if let Some(table_data) = logical_plan.table_data_by_uid.get_mut(uid) {
                     table_data.return_items.push(current_return_item.clone());
@@ -41,7 +41,7 @@ pub fn evaluate_return_clause<'a>(
                     if add_in_overall {
                         let return_item_data = ReturnItemData {
                             return_item: current_return_item,
-                            belongs_to_table: table_name,
+                            belongs_to_table: var,
                         };
                         logical_plan.overall_return_items.push(return_item_data);
                     }
