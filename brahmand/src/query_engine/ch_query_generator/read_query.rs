@@ -2,7 +2,10 @@ use std::collections::HashSet;
 
 use uuid::Uuid;
 
-use crate::query_engine::types::{QueryIR, TraversalMode};
+use crate::{
+    open_cypher_parser::ast::Expression,
+    query_engine::types::{QueryIR, TraversalMode},
+};
 
 use super::{
     errors::ChQueryGeneratorError, graph_traversal, order_by_statement, select_statement,
@@ -130,10 +133,26 @@ pub fn generate_query(
             query_ir.logical_plan.overall_return_items,
             &query_ir.physical_plan.entity_name_node_id_map,
         )?;
-    let where_statement = where_statement::generate_where_statements(
+    let mut where_statement = where_statement::generate_where_statements(
         final_logical_table_data.where_conditions.clone(),
         true,
     )?;
+
+    if let Some(Expression::OperatorApplicationExp(overall_condition)) =
+        query_ir.logical_plan.overall_condition
+    {
+        let where_statement_from_overall_conditions =
+            where_statement::generate_where_statements(vec![overall_condition], true)?;
+        if !where_statement_from_overall_conditions.is_empty() && !where_statement.is_empty() {
+            where_statement = format!(
+                "{} AND {}",
+                where_statement, where_statement_from_overall_conditions
+            );
+        } else if !where_statement_from_overall_conditions.is_empty() && where_statement.is_empty()
+        {
+            where_statement = where_statement_from_overall_conditions;
+        }
+    }
 
     let mut reverse_visited: HashSet<Uuid> = HashSet::new();
 

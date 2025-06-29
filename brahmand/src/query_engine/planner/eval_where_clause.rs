@@ -1,6 +1,9 @@
+use std::collections::HashSet;
+
 use crate::{
     open_cypher_parser::ast::{
-        Expression, FunctionCall, Operator, OperatorApplication, WhereClause,
+        Expression, FunctionCall, Operator, OperatorApplication, PropertyAccess, ReturnItem,
+        WhereClause,
     },
     query_engine::types::LogicalPlan,
 };
@@ -8,6 +11,7 @@ use crate::{
 fn process_expr<'a>(
     expr: Expression<'a>,
     extracted: &mut Vec<OperatorApplication<'a>>,
+    multi_node_conditions: &mut Vec<PropertyAccess<'a>>,
     in_or: bool,
 ) -> Option<Expression<'a>> {
     match expr {
@@ -21,7 +25,9 @@ fn process_expr<'a>(
             // Process each operand recursively, passing the flag.
             let mut new_operands = Vec::new();
             for operand in op_app.operands {
-                if let Some(new_operand) = process_expr(operand, extracted, new_in_or) {
+                if let Some(new_operand) =
+                    process_expr(operand, extracted, multi_node_conditions, new_in_or)
+                {
                     new_operands.push(new_operand);
                 }
             }
@@ -39,25 +45,40 @@ fn process_expr<'a>(
             // }
 
             // TODO ALl aggregated functions will be evaluated in final where clause. We have to check what kind of fns we can put here.
-            // becayse if we put aggregated fns like count() then it will mess up the final result because we want the count of all joined entries in the set,
+            // because if we put aggregated fns like count() then it will mess up the final result because we want the count of all joined entries in the set,
             // in case of anchor node this could lead incorrect answers.
             if !new_in_or {
+                let mut should_extract: bool = false;
+                let mut temp_prop_acc: Vec<PropertyAccess<'a>> = vec![];
+                let mut condition_belongs_to: HashSet<&str> = HashSet::new();
+
                 for operand in &op_app.operands {
                     // if any of the fn argument belongs to one table then extract it.
                     if let Expression::FunctionCallExp(fc) = operand {
                         // TODO add other aggregating fns here
                         if !fc.name.to_lowercase().contains("count") {
                             for arg in &fc.args {
-                                if matches!(arg, Expression::PropertyAccessExp(_)) {
-                                    extracted.push(op_app);
-                                    return None;
+                                if let Expression::PropertyAccessExp(prop_acc) = arg {
+                                    condition_belongs_to.insert(prop_acc.base);
+                                    temp_prop_acc.push(prop_acc.clone());
+                                    should_extract = true;
                                 }
                             }
                         }
-                    } else if matches!(operand, Expression::PropertyAccessExp(_)) {
-                        extracted.push(op_app);
-                        return None;
+                    } else if let Expression::PropertyAccessExp(prop_acc) = operand {
+                        condition_belongs_to.insert(prop_acc.base);
+                        temp_prop_acc.push(prop_acc.clone());
+                        should_extract = true;
                     }
+                }
+
+                // if it is a multinode condition then we are not extracting. It will be kept at overall conditions
+                // and applied at the end in the final query.
+                if should_extract && condition_belongs_to.len() == 1 {
+                    extracted.push(op_app);
+                    return None;
+                } else if condition_belongs_to.len() > 1 {
+                    multi_node_conditions.append(&mut temp_prop_acc);
                 }
             }
 
@@ -79,7 +100,7 @@ fn process_expr<'a>(
         Expression::FunctionCallExp(fc) => {
             let mut new_args = Vec::new();
             for arg in fc.args {
-                if let Some(new_arg) = process_expr(arg, extracted, in_or) {
+                if let Some(new_arg) = process_expr(arg, extracted, multi_node_conditions, in_or) {
                     new_args.push(new_arg);
                 }
             }
@@ -93,7 +114,9 @@ fn process_expr<'a>(
         Expression::List(exprs) => {
             let mut new_exprs = Vec::new();
             for sub_expr in exprs {
-                if let Some(new_expr) = process_expr(sub_expr, extracted, in_or) {
+                if let Some(new_expr) =
+                    process_expr(sub_expr, extracted, multi_node_conditions, in_or)
+                {
                     new_exprs.push(new_expr);
                 }
             }
@@ -111,7 +134,13 @@ pub fn evaluate_where_clause<'a>(
 ) -> LogicalPlan<'a> {
     // check_if_operator_application_is_single_table(where_clause.constraints, logical_plan.table_data_by_name);
     let mut extracted: Vec<OperatorApplication<'a>> = vec![];
-    let remaining = process_expr(where_clause.conditions, &mut extracted, false);
+    let mut multi_node_conditions: Vec<PropertyAccess<'a>> = vec![];
+    let remaining = process_expr(
+        where_clause.conditions,
+        &mut extracted,
+        &mut multi_node_conditions,
+        false,
+    );
 
     logical_plan.overall_condition = remaining;
 
@@ -136,6 +165,19 @@ pub fn evaluate_where_clause<'a>(
         if let Some(uid) = logical_plan.entity_name_uid_map.get(table_name) {
             if let Some(table_data) = logical_plan.table_data_by_uid.get_mut(uid) {
                 table_data.where_conditions.push(extracted_condition);
+            }
+        }
+    }
+
+    // add multi node conditions to their respective nodes.
+    for prop_acc in multi_node_conditions {
+        if let Some(uid) = logical_plan.entity_name_uid_map.get(prop_acc.base) {
+            if let Some(table_data) = logical_plan.table_data_by_uid.get_mut(uid) {
+                let return_item = ReturnItem {
+                    expression: Expression::PropertyAccessExp(prop_acc),
+                    alias: None,
+                };
+                table_data.return_items.push(return_item);
             }
         }
     }
@@ -167,21 +209,43 @@ mod tests {
     #[test]
     fn base_cases_literal_variable_property() {
         let mut extracted = vec![];
+        let mut multi_node_conditions: Vec<PropertyAccess> = vec![];
 
         // Literal
         let lit = Expression::Literal(Literal::Integer(42));
-        assert_eq!(process_expr(lit.clone(), &mut extracted, false), Some(lit));
+        assert_eq!(
+            process_expr(
+                lit.clone(),
+                &mut extracted,
+                &mut multi_node_conditions,
+                false
+            ),
+            Some(lit)
+        );
         assert!(extracted.is_empty());
 
         // Variable
         let var = Expression::Variable("foo");
-        assert_eq!(process_expr(var.clone(), &mut extracted, false), Some(var));
+        assert_eq!(
+            process_expr(
+                var.clone(),
+                &mut extracted,
+                &mut multi_node_conditions,
+                false
+            ),
+            Some(var)
+        );
         assert!(extracted.is_empty());
 
         // PropertyAccessExp
         let prop = make_prop("x", "bar");
         assert_eq!(
-            process_expr(prop.clone(), &mut extracted, false),
+            process_expr(
+                prop.clone(),
+                &mut extracted,
+                &mut multi_node_conditions,
+                false
+            ),
             Some(prop)
         );
         assert!(extracted.is_empty());
@@ -190,6 +254,7 @@ mod tests {
     #[test]
     fn simple_operator_extraction() {
         let mut extracted = vec![];
+        let mut multi_node_conditions: Vec<PropertyAccess> = vec![];
 
         // x.prop = 7
         let op_app = OperatorApplication {
@@ -202,7 +267,7 @@ mod tests {
         let expr = Expression::OperatorApplicationExp(op_app.clone());
 
         // Since it's not inside an OR, encountering a PropertyAccessExp should pull it out.
-        let out = process_expr(expr, &mut extracted, false);
+        let out = process_expr(expr, &mut extracted, &mut multi_node_conditions, false);
         assert!(out.is_none(), "should be removed from parent");
         assert_eq!(extracted.len(), 1);
         assert_eq!(extracted[0], op_app);
@@ -211,6 +276,7 @@ mod tests {
     #[test]
     fn collapse_single_operand() {
         let mut extracted = vec![];
+        let mut multi_node_conditions: Vec<PropertyAccess> = vec![];
 
         // A unary Distinct over a literal; should collapse to inner literal
         let op_app = OperatorApplication {
@@ -219,7 +285,7 @@ mod tests {
         };
         let expr = Expression::OperatorApplicationExp(op_app.clone());
 
-        let out = process_expr(expr, &mut extracted, false);
+        let out = process_expr(expr, &mut extracted, &mut multi_node_conditions, false);
         // Not an extraction scenario, and one operand => collapse
         assert_eq!(out, Some(Expression::Literal(Literal::Boolean(true))));
         assert!(extracted.is_empty());
@@ -228,7 +294,7 @@ mod tests {
     #[test]
     fn function_call_extraction_non_count() {
         let mut extracted = vec![];
-
+        let mut multi_node_conditions: Vec<PropertyAccess> = vec![];
         // foo(x.prop)
         let fc = FunctionCall {
             name: "SUM".to_string(),
@@ -243,7 +309,7 @@ mod tests {
         };
         let wrapped = Expression::OperatorApplicationExp(op_app.clone());
 
-        let out = process_expr(wrapped, &mut extracted, false);
+        let out = process_expr(wrapped, &mut extracted, &mut multi_node_conditions, false);
         // the operator-application itself contains a function-call with prop => extracted
         assert!(out.is_none());
         assert_eq!(extracted.len(), 1);
@@ -253,6 +319,7 @@ mod tests {
     #[test]
     fn function_call_count_is_skipped() {
         let mut extracted = vec![];
+        let mut multi_node_conditions: Vec<PropertyAccess> = vec![];
 
         // count(x.prop)
         let fc = FunctionCall {
@@ -267,7 +334,12 @@ mod tests {
         };
         let wrapped = Expression::OperatorApplicationExp(op_app.clone());
 
-        let out = process_expr(wrapped.clone(), &mut extracted, false);
+        let out = process_expr(
+            wrapped.clone(),
+            &mut extracted,
+            &mut multi_node_conditions,
+            false,
+        );
         // Since it's a count*, it should not extract, and no collapse => preserved
         assert_eq!(out, Some(Expression::OperatorApplicationExp(op_app)));
         assert!(extracted.is_empty());
@@ -477,5 +549,81 @@ mod tests {
         // And table's where_conditions contains our op_app
         let td = result.table_data_by_uid.get(&uid).unwrap();
         assert_eq!(td.where_conditions, vec![op_app]);
+    }
+
+    #[test]
+    fn multi_node_conditions_check() {
+        let mut plan = LogicalPlan::default();
+        let a_uid = Uuid::new_v4();
+        plan.entity_name_uid_map.insert("a".to_string(), a_uid);
+        plan.table_data_by_uid.insert(
+            a_uid,
+            TableData {
+                entity_name: Some("a"),
+                table_name: Some("User"),
+                return_items: vec![],
+                where_conditions: vec![],
+                order_by_items: vec![],
+            },
+        );
+
+        let b_uid = Uuid::new_v4();
+        plan.entity_name_uid_map.insert("b".to_string(), b_uid);
+        plan.table_data_by_uid.insert(
+            b_uid,
+            TableData {
+                entity_name: Some("b"),
+                table_name: Some("User"),
+                return_items: vec![],
+                where_conditions: vec![],
+                order_by_items: vec![],
+            },
+        );
+
+        let op_app = OperatorApplication {
+            operator: Operator::NotEqual,
+            operands: vec![
+                Expression::PropertyAccessExp(PropertyAccess {
+                    base: "a",
+                    key: "username",
+                }),
+                Expression::PropertyAccessExp(PropertyAccess {
+                    base: "b",
+                    key: "username",
+                }),
+            ],
+        };
+
+        let where_clause = WhereClause {
+            conditions: Expression::OperatorApplicationExp(op_app.clone()),
+        };
+
+        let result = evaluate_where_clause(plan.clone(), where_clause);
+        // as it is a multi node condition, it should not extract and the condition should be in the result.overall_conditions
+        assert_eq!(
+            result.overall_condition,
+            Some(Expression::OperatorApplicationExp(op_app))
+        );
+
+        // table data must be updated for each node
+        let a_return_item = ReturnItem {
+            expression: Expression::PropertyAccessExp(PropertyAccess {
+                base: "a",
+                key: "username",
+            }),
+            alias: None,
+        };
+        let a_td = result.table_data_by_uid.get(&a_uid).unwrap();
+        assert_eq!(a_td.return_items, vec![a_return_item]);
+
+        let b_return_item = ReturnItem {
+            expression: Expression::PropertyAccessExp(PropertyAccess {
+                base: "b",
+                key: "username",
+            }),
+            alias: None,
+        };
+        let b_td = result.table_data_by_uid.get(&b_uid).unwrap();
+        assert_eq!(b_td.return_items, vec![b_return_item]);
     }
 }
