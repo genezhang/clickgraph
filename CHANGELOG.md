@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [unreleased]
+
+### 🚀 Features
+
+- Support for multi node conditions
+
+## [0.0.3] - 2025-06-29
+
+### 🚀 Features
+
+- :sparkles: support for multi node conditions
+
+### 🐛 Bug Fixes
+
+- :bug: relation direction when same node types
+- :bug: Property tagging to node name
+- :bug: node name in return clause related issues
+
+### 💼 Other
+
+- Node name in return clause related issues
+
+### ⚙️ Miscellaneous Tasks
+
+- Update CHANGELOG.md [skip ci]
+
 ## [0.0.2] - 2025-06-27
 
 ### 🚀 Features
