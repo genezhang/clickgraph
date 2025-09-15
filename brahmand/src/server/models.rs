@@ -1,13 +1,10 @@
 use clickhouse::Row;
 use serde::{Deserialize, Serialize};
 
-use crate::query_engine::types::TraversalMode;
-
 #[derive(Debug, Deserialize)]
 pub struct QueryRequest {
     pub query: String,
     pub format: Option<OutputFormat>,
-    pub mode: Option<TraversalMode>,
 }
 
 // #[derive(Debug, Serialize)]
@@ -42,7 +39,7 @@ impl From<OutputFormat> for String {
 }
 
 #[derive(Debug, Row, Serialize, Deserialize)]
-pub struct GraphMeta {
+pub struct GraphCatalog {
     pub id: u64,
     pub schema_json: String,
 }
