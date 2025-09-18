@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::query_planner::{
-    logical_plan::logical_plan::LogicalPlan,
+    logical_plan::LogicalPlan,
     optimizer::{
         anchor_node_selection::AnchorNodeSelection,
         filter_push_down::FilterPushDown,
@@ -10,7 +10,7 @@ use crate::query_planner::{
     },
 };
 
-use super::plan_ctx::plan_ctx::PlanCtx;
+use super::plan_ctx::PlanCtx;
 
 mod anchor_node_selection;
 pub mod errors;

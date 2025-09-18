@@ -12,11 +12,11 @@ use crate::{
             plan_sanitization::PlanSanitization, projection_tagging::ProjectionTagging,
             query_validation::QueryValidation, schema_inference::SchemaInference,
         },
-        logical_plan::logical_plan::LogicalPlan,
+        logical_plan::LogicalPlan,
     },
 };
 
-use super::plan_ctx::plan_ctx::PlanCtx;
+use super::plan_ctx::PlanCtx;
 
 mod analyzer_pass;
 mod duplicate_scans_removing;
@@ -101,7 +101,7 @@ pub fn intermediate_analyzing(
     )?;
     let plan = transformed_plan.get_plan();
 
-    let transformed_plan = schema_inference.push_inferred_table_names_to_scan(plan, plan_ctx)?;
+    let transformed_plan = SchemaInference::push_inferred_table_names_to_scan(plan, plan_ctx)?;
     let plan = transformed_plan.get_plan();
 
     let duplicate_scans_removing = DuplicateScansRemoving::new();

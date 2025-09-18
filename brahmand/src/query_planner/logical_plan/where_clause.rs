@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::{
     open_cypher_parser::ast::WhereClause,
     query_planner::{
-        logical_expr::logical_expr::LogicalExpr,
-        logical_plan::logical_plan::{Filter, LogicalPlan},
+        logical_expr::LogicalExpr,
+        logical_plan::{Filter, LogicalPlan},
     },
 };
 

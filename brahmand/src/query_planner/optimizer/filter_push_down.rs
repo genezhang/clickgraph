@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use crate::query_planner::{
-    logical_expr::logical_expr::{LogicalExpr, Operator, OperatorApplication},
-    logical_plan::logical_plan::{Filter, LogicalPlan},
+    logical_expr::{LogicalExpr, Operator, OperatorApplication},
+    logical_plan::{Filter, LogicalPlan},
     optimizer::{
         errors::{OptimizerError, Pass},
         optimizer_pass::{OptimizerPass, OptimizerResult},
     },
-    plan_ctx::plan_ctx::PlanCtx,
+    plan_ctx::PlanCtx,
     transformed::Transformed,
 };
 
@@ -107,15 +107,13 @@ impl FilterPushDown {
         let mut iter = filter_items.into_iter();
         let first = iter.next();
 
-        let combined = first.map(|first_expr| {
+        first.map(|first_expr| {
             iter.fold(first_expr, |acc, expr| {
                 LogicalExpr::OperatorApplicationExp(OperatorApplication {
                     operator: Operator::And,
                     operands: vec![acc, expr],
                 })
             })
-        });
-
-        combined
+        })
     }
 }

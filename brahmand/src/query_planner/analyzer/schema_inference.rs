@@ -7,9 +7,9 @@ use crate::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::{AnalyzerError, Pass},
         },
-        logical_expr::logical_expr::LogicalExpr,
-        logical_plan::logical_plan::{LogicalPlan, ProjectionItem, Scan},
-        plan_ctx::plan_ctx::{PlanCtx, TableCtx},
+        logical_expr::LogicalExpr,
+        logical_plan::{LogicalPlan, ProjectionItem, Scan},
+        plan_ctx::{PlanCtx, TableCtx},
         transformed::Transformed,
     },
 };
@@ -25,7 +25,7 @@ impl AnalyzerPass for SchemaInference {
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         self.infer_schema(logical_plan.clone(), plan_ctx, graph_schema)?;
 
-        self.push_inferred_table_names_to_scan(logical_plan, plan_ctx)
+        Self::push_inferred_table_names_to_scan(logical_plan, plan_ctx)
     }
 }
 
@@ -35,33 +35,32 @@ impl SchemaInference {
     }
 
     pub fn push_inferred_table_names_to_scan(
-        &self,
         logical_plan: Arc<LogicalPlan>,
         plan_ctx: &mut PlanCtx,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Projection(projection) => {
                 let child_tf =
-                    self.push_inferred_table_names_to_scan(projection.input.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(projection.input.clone(), plan_ctx)?;
                 projection.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphNode(graph_node) => {
                 let child_tf =
-                    self.push_inferred_table_names_to_scan(graph_node.input.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(graph_node.input.clone(), plan_ctx)?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphRel(graph_rel) => {
                 let left_tf =
-                    self.push_inferred_table_names_to_scan(graph_rel.left.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(graph_rel.left.clone(), plan_ctx)?;
                 let center_tf =
-                    self.push_inferred_table_names_to_scan(graph_rel.center.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(graph_rel.center.clone(), plan_ctx)?;
                 let right_tf =
-                    self.push_inferred_table_names_to_scan(graph_rel.right.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(graph_rel.right.clone(), plan_ctx)?;
                 graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
             }
             LogicalPlan::Cte(cte) => {
                 let child_tf =
-                    self.push_inferred_table_names_to_scan(cte.input.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(cte.input.clone(), plan_ctx)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Scan(scan) => {
@@ -79,39 +78,39 @@ impl SchemaInference {
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
                 let child_tf =
-                    self.push_inferred_table_names_to_scan(graph_joins.input.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(graph_joins.input.clone(), plan_ctx)?;
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Filter(filter) => {
                 let child_tf =
-                    self.push_inferred_table_names_to_scan(filter.input.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(filter.input.clone(), plan_ctx)?;
                 filter.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GroupBy(group_by) => {
                 let child_tf =
-                    self.push_inferred_table_names_to_scan(group_by.input.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(group_by.input.clone(), plan_ctx)?;
                 group_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::OrderBy(order_by) => {
                 let child_tf =
-                    self.push_inferred_table_names_to_scan(order_by.input.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(order_by.input.clone(), plan_ctx)?;
                 order_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Skip(skip) => {
                 let child_tf =
-                    self.push_inferred_table_names_to_scan(skip.input.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(skip.input.clone(), plan_ctx)?;
                 skip.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Limit(limit) => {
                 let child_tf =
-                    self.push_inferred_table_names_to_scan(limit.input.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(limit.input.clone(), plan_ctx)?;
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Union(union) => {
                 let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
                 for input_plan in union.inputs.iter() {
                     let child_tf =
-                        self.push_inferred_table_names_to_scan(input_plan.clone(), plan_ctx)?;
+                        Self::push_inferred_table_names_to_scan(input_plan.clone(), plan_ctx)?;
                     inputs_tf.push(child_tf);
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
@@ -141,7 +140,7 @@ impl SchemaInference {
                 let left_alias = &graph_rel.left_connection;
                 let right_alias = &graph_rel.right_connection;
 
-                let left_table_ctx = plan_ctx.get_node_table_ctx(&left_alias).map_err(|e| {
+                let left_table_ctx = plan_ctx.get_node_table_ctx(left_alias).map_err(|e| {
                     AnalyzerError::PlanCtx {
                         pass: Pass::SchemaInference,
                         source: e,
@@ -153,7 +152,7 @@ impl SchemaInference {
                         source: e,
                     }
                 })?;
-                let right_table_ctx = plan_ctx.get_node_table_ctx(&right_alias).map_err(|e| {
+                let right_table_ctx = plan_ctx.get_node_table_ctx(right_alias).map_err(|e| {
                     AnalyzerError::PlanCtx {
                         pass: Pass::SchemaInference,
                         source: e,
@@ -167,14 +166,14 @@ impl SchemaInference {
                     right_table_ctx,
                 )?;
 
-                for (alias, label) in vec![
+                for (alias, label) in [
                     (left_alias, left_label),
                     (&graph_rel.alias, rel_label),
                     (right_alias, right_label),
                 ] {
                     let table_ctx =
                         plan_ctx
-                            .get_mut_table_ctx(&alias)
+                            .get_mut_table_ctx(alias)
                             .map_err(|e| AnalyzerError::PlanCtx {
                                 pass: Pass::SchemaInference,
                                 source: e,
@@ -231,7 +230,7 @@ impl SchemaInference {
             }
             LogicalPlan::Union(union) => {
                 for input_plan in union.inputs.iter() {
-                    self.push_inferred_table_names_to_scan(input_plan.clone(), plan_ctx)?;
+                    Self::push_inferred_table_names_to_scan(input_plan.clone(), plan_ctx)?;
                 }
                 Ok(())
             }
@@ -416,6 +415,7 @@ impl SchemaInference {
                 self.get_table_name_from_filters_and_projections(graph_schema, right_table_ctx);
             // Check the location of extracted nodes in the rel schema because the left and right of a graph changes with direction
             if extracted_left_node_table_result.is_some() {
+                #[allow(clippy::unnecessary_unwrap)]
                 let left_table_name = extracted_left_node_table_result.unwrap();
 
                 let right_table_name = if relation_schema.from_node == left_table_name {
@@ -523,6 +523,7 @@ impl SchemaInference {
                 self.get_table_name_from_filters_and_projections(graph_schema, right_table_ctx);
 
             if relations_found.len() > 1 && extracted_right_node_table_result.is_some() {
+                #[allow(clippy::unnecessary_unwrap)]
                 let extracted_right_node_table_name = extracted_right_node_table_result.unwrap();
                 for relation_schema in relations_found {
                     let rel_table_name = &relation_schema.table_name;
@@ -589,6 +590,7 @@ impl SchemaInference {
                 self.get_table_name_from_filters_and_projections(graph_schema, left_table_ctx);
 
             if relations_found.len() > 1 && extracted_left_node_table_result.is_some() {
+                #[allow(clippy::unnecessary_unwrap)]
                 let extracted_left_node_table_name = extracted_left_node_table_result.unwrap();
                 for relation_schema in relations_found {
                     let rel_table_name = &relation_schema.table_name;
@@ -643,7 +645,9 @@ impl SchemaInference {
             if extracted_left_node_table_result.is_some()
                 && extracted_right_node_table_result.is_some()
             {
+                #[allow(clippy::unnecessary_unwrap)]
                 let left_table_name = extracted_left_node_table_result.unwrap();
+                #[allow(clippy::unnecessary_unwrap)]
                 let right_table_name = extracted_right_node_table_result.unwrap();
 
                 for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
@@ -702,6 +706,7 @@ impl SchemaInference {
             else if extracted_left_node_table_result.is_none()
                 && extracted_right_node_table_result.is_some()
             {
+                #[allow(clippy::unnecessary_unwrap)]
                 let right_table_name = extracted_right_node_table_result.unwrap();
                 for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
                     if relation_schema.from_node == right_table_name {
@@ -748,11 +753,11 @@ impl SchemaInference {
         node_table_ctx: &TableCtx,
     ) -> Option<String> {
         let column_name = if let Some(extracted_column) =
-            self.get_column_name_from_filter_predicates(&node_table_ctx.get_filters())
+            self.get_column_name_from_filter_predicates(node_table_ctx.get_filters())
         {
             extracted_column
         } else if let Some(extracted_column) =
-            self.get_column_name_from_projection_items(&node_table_ctx.get_projections())
+            self.get_column_name_from_projection_items(node_table_ctx.get_projections())
         {
             extracted_column
         } else {
@@ -770,12 +775,12 @@ impl SchemaInference {
 
     fn get_column_name_from_filter_predicates(
         &self,
-        filter_predicates: &Vec<LogicalExpr>,
+        filter_predicates: &[LogicalExpr],
     ) -> Option<String> {
         for filter_predicate in filter_predicates.iter() {
             if let LogicalExpr::OperatorApplicationExp(op_app) = filter_predicate {
                 for operand in &op_app.operands {
-                    if let Some(column_name) = self.get_column_name_from_plan_expr(operand) {
+                    if let Some(column_name) = Self::get_column_name_from_plan_expr(operand) {
                         return Some(column_name);
                     }
                 }
@@ -786,11 +791,11 @@ impl SchemaInference {
 
     fn get_column_name_from_projection_items(
         &self,
-        projection_items: &Vec<ProjectionItem>,
+        projection_items: &[ProjectionItem],
     ) -> Option<String> {
         for projection_item in projection_items.iter() {
             if let Some(column_name) =
-                self.get_column_name_from_plan_expr(&projection_item.expression)
+                Self::get_column_name_from_plan_expr(&projection_item.expression)
             {
                 return Some(column_name);
             }
@@ -798,11 +803,11 @@ impl SchemaInference {
         None
     }
 
-    fn get_column_name_from_plan_expr(&self, exp: &LogicalExpr) -> Option<String> {
+    fn get_column_name_from_plan_expr(exp: &LogicalExpr) -> Option<String> {
         match exp {
             LogicalExpr::OperatorApplicationExp(op_ex) => {
                 for operand in &op_ex.operands {
-                    if let Some(column_name) = self.get_column_name_from_plan_expr(operand) {
+                    if let Some(column_name) = Self::get_column_name_from_plan_expr(operand) {
                         return Some(column_name);
                     }
                 }
@@ -810,7 +815,7 @@ impl SchemaInference {
             }
             LogicalExpr::ScalarFnCall(function_call) => {
                 for arg in &function_call.args {
-                    if let Some(column_name) = self.get_column_name_from_plan_expr(arg) {
+                    if let Some(column_name) = Self::get_column_name_from_plan_expr(arg) {
                         return Some(column_name);
                     }
                 }
@@ -818,7 +823,7 @@ impl SchemaInference {
             }
             LogicalExpr::AggregateFnCall(function_call) => {
                 for arg in &function_call.args {
-                    if let Some(column_name) = self.get_column_name_from_plan_expr(arg) {
+                    if let Some(column_name) = Self::get_column_name_from_plan_expr(arg) {
                         return Some(column_name);
                     }
                 }

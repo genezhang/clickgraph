@@ -7,11 +7,9 @@ use crate::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::{AnalyzerError, Pass},
         },
-        logical_expr::logical_expr::{
-            AggregateFnCall, Column, LogicalExpr, PropertyAccess, TableAlias,
-        },
-        logical_plan::logical_plan::{LogicalPlan, Projection, ProjectionItem},
-        plan_ctx::plan_ctx::PlanCtx,
+        logical_expr::{AggregateFnCall, Column, LogicalExpr, PropertyAccess, TableAlias},
+        logical_plan::{LogicalPlan, Projection, ProjectionItem},
+        plan_ctx::PlanCtx,
         transformed::Transformed,
     },
 };
@@ -61,7 +59,7 @@ impl AnalyzerPass for ProjectionTagging {
                     };
 
                 for item in &mut proj_items_to_mutate {
-                    self.tag_projection(item, plan_ctx, graph_schema)?;
+                    Self::tag_projection(item, plan_ctx, graph_schema)?;
                 }
 
                 Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
@@ -152,7 +150,7 @@ impl ProjectionTagging {
         ProjectionTagging
     }
 
-    fn select_all_present(&self, projection_items: &Vec<ProjectionItem>) -> bool {
+    fn select_all_present(&self, projection_items: &[ProjectionItem]) -> bool {
         projection_items
             .iter()
             .any(|item| item.expression == LogicalExpr::Star)
@@ -173,7 +171,6 @@ impl ProjectionTagging {
     }
 
     fn tag_projection(
-        &self,
         item: &mut ProjectionItem,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
@@ -224,7 +221,7 @@ impl ProjectionTagging {
                         expression: operand.clone(),
                         col_alias: None,
                     };
-                    self.tag_projection(&mut operand_return_item, plan_ctx, graph_schema)?;
+                    Self::tag_projection(&mut operand_return_item, plan_ctx, graph_schema)?;
                 }
                 Ok(())
             }
@@ -234,7 +231,7 @@ impl ProjectionTagging {
                         expression: arg.clone(),
                         col_alias: None,
                     };
-                    self.tag_projection(&mut arg_return_item, plan_ctx, graph_schema)?;
+                    Self::tag_projection(&mut arg_return_item, plan_ctx, graph_schema)?;
                 }
                 Ok(())
             }
