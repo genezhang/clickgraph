@@ -1,15 +1,18 @@
-use errors::ClickhouseQueryGeneratorError;
-
 use crate::{
     graph_catalog::graph_schema::{GraphSchema, GraphSchemaElement},
     open_cypher_parser::ast::OpenCypherQueryAst,
-    render_plan::{RenderPlan, ToSql},
+    render_plan::{RenderPlan, ToSql as RenderPlanToSql},
 };
 
 mod common;
 mod ddl_query;
-pub mod errors;
+mod errors;
+mod to_sql;
 mod to_sql_query;
+mod view_query;
+
+pub use errors::ClickhouseQueryGeneratorError;
+
 
 // pub fn generate_sql(plan: RenderPlan) -> String{
 //     let mut sql = String::new();

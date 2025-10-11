@@ -10,4 +10,8 @@ pub enum LogicalPlanError {
     FoundParamInProperties,
     #[error("Disconnected pattern found.")]
     DisconnectedPatternFound,
+    #[error("Node with label {0} not found")]
+    NodeNotFound(String),
+    #[error("Relationship with type {0} not found")]
+    RelationshipNotFound(String),
 }

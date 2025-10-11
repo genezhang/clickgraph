@@ -43,6 +43,7 @@ impl AnalyzerPass for GraphTRaversalPlanning {
                 )?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphRel(graph_rel) => {
                 // If no graphRel at the right means we have reached at the bottom of the tree i.e. right is anchor.
                 if !matches!(graph_rel.right.as_ref(), LogicalPlan::GraphRel(_)) {
@@ -207,6 +208,7 @@ impl GraphTRaversalPlanning {
             graph_rel,
             plan_ctx,
             graph_schema,
+            None, // No view in use
             Pass::GraphTraversalPlanning,
         )?;
 
@@ -223,7 +225,7 @@ impl GraphTRaversalPlanning {
             .get_projections()
             .iter()
             .any(|item| match &item.expression {
-                LogicalExpr::Column(Column(col)) => col == &graph_context.left.id_column,
+                LogicalExpr::Column(Column(col)) => col.as_str() == graph_context.left.id_column.as_str(),
                 LogicalExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
                     column.0 == graph_context.left.id_column
                 }
@@ -249,7 +251,7 @@ impl GraphTRaversalPlanning {
             .get_projections()
             .iter()
             .any(|item| match &item.expression {
-                LogicalExpr::Column(Column(col)) => col == &graph_context.right.id_column,
+                LogicalExpr::Column(Column(col)) => col.as_str() == graph_context.right.id_column.as_str(),
                 LogicalExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
                     column.0 == graph_context.right.id_column
                 }

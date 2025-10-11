@@ -1,12 +1,14 @@
-use crate::render_plan::render_expr::OperatorApplication;
-use crate::render_plan::{
-    ToSql,
-    render_expr::{
-        Column, ColumnAlias, InSubquery, Literal, Operator, PropertyAccess, RenderExpr, TableAlias,
-    },
-    {
-        Cte, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join, JoinItems, JoinType,
-        OrderByItems, OrderByOrder, RenderPlan, SelectItems, UnionItems, UnionType,
+use crate::{
+
+    render_plan::{
+        render_expr::{
+            Column, ColumnAlias, InSubquery, Literal, Operator, OperatorApplication, PropertyAccess,
+            RenderExpr, TableAlias,
+        },
+        {
+            Cte, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join, JoinItems, JoinType,
+            OrderByItems, OrderByOrder, RenderPlan, SelectItems, ToSql, UnionItems, UnionType,
+        },
     },
 };
 
@@ -63,17 +65,12 @@ impl ToSql for SelectItems {
 
 impl ToSql for FromTableItem {
     fn to_sql(&self) -> String {
-        if let Some(from_table) = &self.0 {
-            let mut sql: String = String::new();
+        if let Some(view_ref) = &self.0 {
+            let mut sql = String::new();
             sql.push_str("FROM ");
 
-            sql.push_str(&from_table.table_name);
-            if let Some(alias) = &from_table.table_alias {
-                if !alias.is_empty() {
-                    sql.push_str(" AS ");
-                    sql.push_str(alias);
-                }
-            }
+            // For all references, use the name directly
+            sql.push_str(&view_ref.name);
             sql.push('\n');
             sql
         } else {

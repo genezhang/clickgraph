@@ -2,6 +2,10 @@ use std::sync::Arc;
 
 use analyzer_pass::AnalyzerResult;
 
+pub mod view_resolver;
+#[cfg(test)]
+mod view_resolver_tests;
+
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
     query_planner::{

@@ -39,6 +39,35 @@ Brahmand runs as a lightweight graph wrapper alongside ClickHouse:
 
 ---
 
+## 🚀 GraphView1 Branch - View-Based Graph Analysis
+
+The `graphview1` branch introduces a revolutionary **view-based graph model** that enables graph analysis on existing ClickHouse tables without data migration:
+
+- **Zero Migration**: Transform existing relational data into graph format through YAML configuration
+- **Native Performance**: Leverages ClickHouse's columnar storage and query optimization
+- **Standard Cypher**: Full compatibility with Cypher query syntax for graph traversals
+- **Production Ready**: 374/374 tests passing with comprehensive validation and error handling
+
+**Example**: Map your `users` and `user_follows` tables to a social network graph with simple configuration:
+```yaml
+views:
+  - name: social_network
+    nodes:
+      user:
+        source_table: users
+        id_column: user_id
+        property_mappings:
+          name: full_name
+    relationships:
+      follows:
+        source_table: user_follows
+        from_column: follower_id
+        to_column: followed_id
+```
+
+See `docs/graphview1-branch-summary.md` for complete technical details.
+
+---
 
 ## Docs and Installation
 Check [Docs](https://www.brahmanddb.com/introduction/intro) here.

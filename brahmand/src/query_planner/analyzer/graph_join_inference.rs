@@ -118,7 +118,8 @@ impl GraphJoinInference {
                     inputs_tf.push(child_tf);
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
-            }
+            },
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone())
         };
         Ok(transformed_plan)
     }
@@ -146,6 +147,7 @@ impl GraphJoinInference {
                 collected_graph_joins,
                 joined_entities,
             ),
+            LogicalPlan::ViewScan(_) => Ok(()), // Nothing to collect for ViewScans
             LogicalPlan::GraphRel(graph_rel) => {
                 // infer joins for each graph_rel
 
@@ -245,6 +247,7 @@ impl GraphJoinInference {
             graph_rel,
             plan_ctx,
             graph_schema,
+            None, // No view definition needed for join inference
             Pass::GraphJoinInference,
         )?;
 

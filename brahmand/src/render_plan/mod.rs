@@ -1,5 +1,11 @@
-use crate::render_plan::errors::RenderBuildError;
-use crate::render_plan::render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
+mod view_table_ref;
+mod from_table;
+
+use errors::RenderBuildError;
+use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
+
+pub use view_table_ref::ViewTableRef;
+pub use from_table::FromTable;
 
 use crate::query_planner::logical_plan::{
     Join as LogicalJoin, JoinType as LogicalJoinType, OrderByItem as LogicalOrderByItem,
@@ -7,16 +13,20 @@ use crate::query_planner::logical_plan::{
 };
 
 use std::fmt;
+use serde::{Deserialize, Serialize};
 
 pub mod errors;
 pub mod plan_builder;
 pub mod render_expr;
+pub mod view_plan;
+
+
 
 pub trait ToSql {
     fn to_sql(&self) -> String;
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct RenderPlan {
     pub ctes: CteItems,
     pub select: SelectItems,
@@ -30,34 +40,28 @@ pub struct RenderPlan {
     pub union: UnionItems,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct SelectItems(pub Vec<SelectItem>);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct SelectItem {
     pub expression: RenderExpr,
     pub col_alias: Option<ColumnAlias>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub struct FromTable {
-    pub table_name: String,
-    pub table_alias: Option<String>,
-}
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct FromTableItem(pub Option<ViewTableRef>);
 
-#[derive(Debug, PartialEq, Clone)]
-pub struct FromTableItem(pub Option<FromTable>);
-
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct FilterItems(pub Option<RenderExpr>);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct GroupByExpressions(pub Vec<RenderExpr>);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct JoinItems(pub Vec<Join>);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Join {
     pub table_name: String,
     pub table_alias: String,
@@ -65,7 +69,7 @@ pub struct Join {
     pub join_type: JoinType,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum JoinType {
     Join,
     Inner,
@@ -106,10 +110,10 @@ impl TryFrom<LogicalJoin> for Join {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct CteItems(pub Vec<Cte>);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Cte {
     pub cte_name: String,
     pub cte_plan: RenderPlan, // pub select: SelectItems,
@@ -117,16 +121,16 @@ pub struct Cte {
                               // pub filters: FilterItems
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct UnionItems(pub Option<Union>);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Union {
     pub input: Vec<RenderPlan>,
     pub union_type: UnionType,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum UnionType {
     Distinct,
     All,
@@ -144,16 +148,16 @@ pub struct SubquerySubPlan {
     pub from: FromTable,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct LimitItem(pub Option<i64>);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct SkipItem(pub Option<i64>);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct OrderByItems(pub Vec<OrderByItem>);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct OrderByItem {
     pub expression: RenderExpr,
     pub order: OrderByOrder,
@@ -171,7 +175,7 @@ impl TryFrom<LogicalOrderByItem> for OrderByItem {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum OrderByOrder {
     Asc,
     Desc,

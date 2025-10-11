@@ -179,6 +179,7 @@ impl AnalyzerPass for QueryValidation {
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
             }
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
         };
         Ok(transformed_plan)
     }

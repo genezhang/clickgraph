@@ -47,6 +47,7 @@ impl AnalyzerPass for GroupByBuilding {
                 let child_tf = self.analyze(group_by.input.clone(), _plan_ctx)?;
                 group_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphNode(graph_node) => {
                 let child_tf = self.analyze(graph_node.input.clone(), _plan_ctx)?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())

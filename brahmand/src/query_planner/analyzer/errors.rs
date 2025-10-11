@@ -47,6 +47,22 @@ pub enum AnalyzerError {
     )]
     NotEnoughLabels { pass: Pass },
 
+    #[error("Node label '{0}' not found in view definition")]
+    NodeLabelNotFound(String),
+
+    #[error("Relationship type '{0}' not found in view definition")]
+    RelationshipTypeNotFound(String),
+
+    #[error("Schema not found for '{0}'")]
+    SchemaNotFound(String),
+
+    #[error("Property '{property}' not found on {entity_type} '{entity_name}'")]
+    PropertyNotFound {
+        entity_type: String,
+        entity_name: String,
+        property: String,
+    },
+
     #[error(
         " {pass}: Alias `{alias}` not found in Match Clause. Alias should be from Match Clause."
     )]
@@ -68,4 +84,7 @@ pub enum AnalyzerError {
 
     #[error("Invalid relation query - {rel}")]
     InvalidRelationInQuery { rel: String },
+
+    #[error("Table '{0}' not found in schema")]
+    TableNotFound(String),
 }

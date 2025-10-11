@@ -32,6 +32,7 @@ impl PlanSanitization {
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::Scan(scan) => {
                 if last_node_traversed {
                     let sanitized_scan = self.sanitize_scan(scan);

@@ -8,6 +8,8 @@ pub enum ClickhouseQueryGeneratorError {
     DistinctNodeConnectedPattern,
     #[error("No physical plan.")]
     NoPhysicalPlan,
+    #[error("Column '{0}' not found")]
+    ColumnNotFound(String),
     #[error("No logical table data found for a given uid.")]
     NoLogicalTableDataForUid,
     #[error("No operand found in where clause.")]

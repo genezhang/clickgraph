@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use crate::query_planner::logical_plan::LogicalPlan;
 
 use super::errors::RenderBuildError;
@@ -7,7 +8,7 @@ use super::render_expr::{
 use super::{
     Cte, CteItems, FilterItems, FromTable, FromTableItem, GroupByExpressions, Join, JoinItems,
     LimitItem, OrderByItem, OrderByItems, RenderPlan, SelectItem, SelectItems, SkipItem, Union,
-    UnionItems,
+    UnionItems, ViewTableRef, view_table_ref::{view_ref_to_from_table, from_table_to_view_ref},
 };
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
@@ -45,6 +46,7 @@ impl RenderPlanBuilder for LogicalPlan {
         let last_node_cte = match &self {
             LogicalPlan::Empty => None,
             LogicalPlan::Scan(_) => None,
+            LogicalPlan::ViewScan(_) => None,
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_last_node_cte()?,
             LogicalPlan::GraphRel(graph_rel) => {
                 // Last node is at the top of the tree.
@@ -94,6 +96,7 @@ impl RenderPlanBuilder for LogicalPlan {
         match &self {
             LogicalPlan::Empty => Ok(vec![]),
             LogicalPlan::Scan(_) => Ok(vec![]),
+            LogicalPlan::ViewScan(_) => Ok(vec![]),
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_ctes(last_node_alias),
             LogicalPlan::GraphRel(graph_rel) => {
                 // first extract the bottom one
@@ -154,6 +157,7 @@ impl RenderPlanBuilder for LogicalPlan {
         let select_items = match &self {
             LogicalPlan::Empty => vec![],
             LogicalPlan::Scan(_) => vec![],
+            LogicalPlan::ViewScan(_) => vec![],
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_select_items()?,
             LogicalPlan::GraphRel(_) => vec![],
             LogicalPlan::Filter(filter) => filter.input.extract_select_items()?,
@@ -186,34 +190,36 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn extract_from(&self) -> RenderPlanBuilderResult<Option<FromTable>> {
-        let from_table = match &self {
+        let from_ref = match &self {
             LogicalPlan::Empty => None,
-            LogicalPlan::Scan(scan) => Some(FromTable {
-                table_name: scan
-                    .table_name
-                    .clone()
-                    .ok_or(RenderBuildError::MissingFromTable)?,
-                table_alias: scan.table_alias.clone(),
-            }),
-            LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_from()?,
+            LogicalPlan::Scan(scan) => Some(ViewTableRef::new_view(
+                Arc::new(LogicalPlan::Scan(scan.clone())),
+                scan.table_name.clone().ok_or(RenderBuildError::MissingFromTable)?,
+            )),
+            LogicalPlan::ViewScan(scan) => Some(ViewTableRef::new_table(
+                scan.as_ref().clone(),
+                scan.source_table.clone(),
+            )),
+            LogicalPlan::GraphNode(graph_node) => from_table_to_view_ref(graph_node.input.extract_from()?),
             LogicalPlan::GraphRel(_) => None,
-            LogicalPlan::Filter(filter) => filter.input.extract_from()?,
-            LogicalPlan::Projection(projection) => projection.input.extract_from()?,
-            LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_from()?,
-            LogicalPlan::GroupBy(group_by) => group_by.input.extract_from()?,
-            LogicalPlan::OrderBy(order_by) => order_by.input.extract_from()?,
-            LogicalPlan::Skip(skip) => skip.input.extract_from()?,
-            LogicalPlan::Limit(limit) => limit.input.extract_from()?,
-            LogicalPlan::Cte(cte) => cte.input.extract_from()?,
+            LogicalPlan::Filter(filter) => from_table_to_view_ref(filter.input.extract_from()?),
+            LogicalPlan::Projection(projection) => from_table_to_view_ref(projection.input.extract_from()?),
+            LogicalPlan::GraphJoins(graph_joins) => from_table_to_view_ref(graph_joins.input.extract_from()?),
+            LogicalPlan::GroupBy(group_by) => from_table_to_view_ref(group_by.input.extract_from()?),
+            LogicalPlan::OrderBy(order_by) => from_table_to_view_ref(order_by.input.extract_from()?),
+            LogicalPlan::Skip(skip) => from_table_to_view_ref(skip.input.extract_from()?),
+            LogicalPlan::Limit(limit) => from_table_to_view_ref(limit.input.extract_from()?),
+            LogicalPlan::Cte(cte) => from_table_to_view_ref(cte.input.extract_from()?),
             LogicalPlan::Union(_) => None,
         };
-        Ok(from_table)
+        Ok(view_ref_to_from_table(from_ref))
     }
 
     fn extract_filters(&self) -> RenderPlanBuilderResult<Option<RenderExpr>> {
         let filters = match &self {
             LogicalPlan::Empty => None,
             LogicalPlan::Scan(_) => None,
+            LogicalPlan::ViewScan(_) => None,
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_filters()?,
             LogicalPlan::GraphRel(_) => None,
             LogicalPlan::Filter(filter) => Some(filter.predicate.clone().try_into()?),
@@ -334,7 +340,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 .ok_or(RenderBuildError::MalformedCTEName)?;
 
             extracted_ctes = self.extract_ctes(last_node_alias)?;
-            final_from = last_node_cte.cte_plan.from.0;
+            final_from = view_ref_to_from_table(last_node_cte.cte_plan.from.0);
 
             let last_node_filters_opt = clean_last_node_filters(last_node_cte.cte_plan.filters.0);
 
@@ -378,7 +384,7 @@ impl RenderPlanBuilder for LogicalPlan {
         Ok(RenderPlan {
             ctes: CteItems(extracted_ctes),
             select: SelectItems(final_select_items),
-            from: FromTableItem(final_from),
+            from: FromTableItem(from_table_to_view_ref(final_from)),
             joins: JoinItems(extracted_joins),
             filters: FilterItems(final_filters),
             group_by: GroupByExpressions(extracted_group_by_exprs),

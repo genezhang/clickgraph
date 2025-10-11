@@ -1,4 +1,11 @@
 use std::{fmt, sync::Arc};
+use serde::{Deserialize, Serialize};
+
+// Import serde_arc modules for serialization
+#[path = "../../utils/serde_arc.rs"]
+mod serde_arc;
+#[path = "../../utils/serde_arc_vec.rs"] 
+mod serde_arc_vec;
 
 use crate::open_cypher_parser::ast::{
     Expression as CypherExpression, OrderByItem as CypherOrderByItem,
@@ -26,6 +33,12 @@ pub mod plan_builder;
 mod return_clause;
 mod skip_n_limit_clause;
 mod where_clause;
+mod view_scan;
+mod view_planning;
+mod filter_view;
+mod projection_view;
+
+pub use view_scan::ViewScan;
 
 pub fn evaluate_query(
     query_ast: OpenCypherQueryAst<'_>,
@@ -42,11 +55,15 @@ pub fn generate_id() -> String {
     )
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(bound = "")]
 pub enum LogicalPlan {
     Empty,
 
     Scan(Scan),
+
+    #[serde(with = "serde_arc")]
+    ViewScan(Arc<ViewScan>),
 
     GraphNode(GraphNode),
 
@@ -71,22 +88,26 @@ pub enum LogicalPlan {
     Union(Union),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Scan {
     pub table_alias: Option<String>,
     pub table_name: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct GraphNode {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub alias: String,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct GraphRel {
+    #[serde(with = "serde_arc")]
     pub left: Arc<LogicalPlan>,
+    #[serde(with = "serde_arc")]
     pub center: Arc<LogicalPlan>,
+    #[serde(with = "serde_arc")]
     pub right: Arc<LogicalPlan>,
     pub alias: String,
     pub direction: Direction,
@@ -95,31 +116,34 @@ pub struct GraphRel {
     pub is_rel_anchor: bool,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Cte {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub name: String,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Union {
+    #[serde(with = "serde_arc_vec")]
     pub inputs: Vec<Arc<LogicalPlan>>,
     pub union_type: UnionType,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum UnionType {
     Distinct,
     All,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct GraphJoins {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub joins: Vec<Join>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Join {
     pub table_name: String,
     pub table_alias: String,
@@ -127,7 +151,7 @@ pub struct Join {
     pub join_type: JoinType,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum JoinType {
     Join,
     Inner,
@@ -135,55 +159,61 @@ pub enum JoinType {
     Right,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Filter {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub predicate: LogicalExpr,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Projection {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub items: Vec<ProjectionItem>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct GroupBy {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub expressions: Vec<LogicalExpr>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ProjectionItem {
     pub expression: LogicalExpr,
     pub col_alias: Option<ColumnAlias>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct OrderBy {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub items: Vec<OrderByItem>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Skip {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub count: i64,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Limit {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub count: i64,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct OrderByItem {
     pub expression: LogicalExpr,
     pub order: OrderByOrder,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum OrderByOrder {
     Asc,
     Desc,
@@ -541,7 +571,15 @@ impl LogicalPlan {
                     children.push(input);
                 }
             }
-            _ => {}
+            LogicalPlan::ViewScan(_) => {
+                // ViewScan is a leaf node - no children to traverse
+            }
+            LogicalPlan::Empty => {
+                // Empty is a leaf node - no children to traverse
+            }
+            LogicalPlan::Scan(_) => {
+                // Scan is a leaf node - no children to traverse
+            }
         }
 
         let n = children.len();
@@ -569,6 +607,7 @@ impl LogicalPlan {
             LogicalPlan::Cte(cte) => format!("Cte({})", cte.name),
             LogicalPlan::GraphJoins(_) => "GraphJoins".to_string(),
             LogicalPlan::Union(_) => "Union".to_string(),
+            LogicalPlan::ViewScan(scan) => format!("ViewScan({:?})", scan.source_table),
         }
     }
 }

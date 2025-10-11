@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use super::plan_builder::RenderPlanBuilder;
 use crate::render_plan::RenderPlan;
 
@@ -13,7 +15,7 @@ use crate::query_planner::logical_expr::{
 
 use super::errors::RenderBuildError;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum RenderExpr {
     Literal(Literal),
 
@@ -40,13 +42,13 @@ pub enum RenderExpr {
     InSubquery(InSubquery),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct InSubquery {
     pub expr: Box<RenderExpr>,
     pub subplan: Box<RenderPlan>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Literal {
     Integer(i64),
     Float(f64),
@@ -55,16 +57,16 @@ pub enum Literal {
     Null,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct TableAlias(pub String);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ColumnAlias(pub String);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Column(pub String);
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Operator {
     Addition,
     Subtraction,
@@ -88,25 +90,25 @@ pub enum Operator {
     IsNotNull,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct OperatorApplication {
     pub operator: Operator,
     pub operands: Vec<RenderExpr>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PropertyAccess {
     pub table_alias: TableAlias,
     pub column: Column,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ScalarFnCall {
     pub name: String,
     pub args: Vec<RenderExpr>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct AggregateFnCall {
     pub name: String,
     pub args: Vec<RenderExpr>,
