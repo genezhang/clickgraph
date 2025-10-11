@@ -8,7 +8,11 @@ pub mod schema_validator;
 pub mod testing;
 
 // Re-export commonly used types
+// Note: These are public re-exports for library users
+#[allow(unused_imports)]
 pub use column_info::ColumnInfo;
+#[allow(unused_imports)]
 pub use config::GraphViewConfig;
 pub use graph_schema::{GraphViewDefinition, NodeViewMapping, RelationshipViewMapping};
+#[allow(unused_imports)]
 pub use schema_validator::SchemaValidator;

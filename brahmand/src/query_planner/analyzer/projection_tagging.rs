@@ -140,7 +140,7 @@ impl AnalyzerPass for ProjectionTagging {
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
             }
-            LogicalPlan::ViewScan(view_scan) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::ViewScan(_view_scan) => Transformed::No(logical_plan.clone()),
         };
         Ok(transformed_plan)
     }

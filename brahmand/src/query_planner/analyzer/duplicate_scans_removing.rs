@@ -30,7 +30,7 @@ impl DuplicateScansRemoving {
         traversed: &mut HashSet<String>,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
-            LogicalPlan::ViewScan(scan) => {
+            LogicalPlan::ViewScan(_scan) => {
                 // ViewScans are leaf nodes, no transformation needed
                 Transformed::No(logical_plan.clone())
             },

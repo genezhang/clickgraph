@@ -239,19 +239,19 @@ impl GraphSchema {
     }
 
     // Helper methods for validation
-    fn validate_table_exists(&self, table: &str) -> Result<(), GraphSchemaError> {
+    fn validate_table_exists(&self, _table: &str) -> Result<(), GraphSchemaError> {
         // TODO: Implement actual ClickHouse table existence check
         // For now, assume table exists
         Ok(())
     }
 
-    fn validate_column_exists(&self, table: &str, column: &str) -> Result<(), GraphSchemaError> {
+    fn validate_column_exists(&self, _table: &str, _column: &str) -> Result<(), GraphSchemaError> {
         // TODO: Implement actual ClickHouse column existence check
         // For now, assume column exists
         Ok(())
     }
 
-    fn get_column_type(&self, table: &str, column: &str) -> Result<String, GraphSchemaError> {
+    fn get_column_type(&self, _table: &str, _column: &str) -> Result<String, GraphSchemaError> {
         // TODO: Implement actual ClickHouse column type lookup
         // For now, return a default type
         Ok("UInt64".to_string())

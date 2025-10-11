@@ -116,7 +116,7 @@ impl SchemaValidator {
             .query(&query)
             .fetch_all::<(String, String)>()
             .await
-            .map_err(|e| GraphSchemaError::InvalidSourceTable {
+            .map_err(|_e| GraphSchemaError::InvalidSourceTable {
                 table: table.to_string(),
             })?;
 

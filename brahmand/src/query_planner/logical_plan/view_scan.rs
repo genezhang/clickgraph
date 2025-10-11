@@ -73,4 +73,60 @@ impl ViewScan {
     pub fn get_mapped_column(&self, property: &str) -> Option<&str> {
         self.property_mapping.get(property).map(|s| s.as_str())
     }
+
+    /// Add a filter to this ViewScan, combining with existing filters
+    pub fn with_additional_filter(&self, additional_filter: LogicalExpr) -> Self {
+        use crate::query_planner::logical_expr::{Operator, OperatorApplication};
+        
+        let combined_filter = if let Some(existing_filter) = &self.view_filter {
+            // Combine existing filter with additional filter using AND
+            Some(LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::And,
+                operands: vec![existing_filter.clone(), additional_filter],
+            }))
+        } else {
+            // Use the additional filter as the only filter
+            Some(additional_filter)
+        };
+
+        ViewScan {
+            source_table: self.source_table.clone(),
+            view_filter: combined_filter,
+            property_mapping: self.property_mapping.clone(),
+            id_column: self.id_column.clone(),
+            output_schema: self.output_schema.clone(),
+            projections: self.projections.clone(),
+            input: self.input.clone(),
+        }
+    }
+
+    /// Optimize property access by ensuring efficient column mapping
+    pub fn optimize_property_access(&self) -> Self {
+        // For now, return self unchanged
+        // In the future, we can implement property access optimizations like:
+        // - Reordering property mappings for better query performance
+        // - Eliminating unused property mappings
+        // - Optimizing complex property expressions
+        self.clone()
+    }
+
+    /// Check if a filter condition can be pushed into this view scan
+    pub fn can_push_filter(&self, filter: &LogicalExpr) -> bool {
+        // For now, we'll conservatively allow most filters to be pushed
+        // In the future, we can implement more sophisticated logic to check:
+        // - Whether the filter references properties that exist in the view
+        // - Whether the filter is compatible with existing view filters
+        // - Whether pushing the filter would improve performance
+        match filter {
+            LogicalExpr::PropertyAccessExp(_) => true,
+            LogicalExpr::Literal(_) => true,
+            LogicalExpr::OperatorApplicationExp(op) => {
+                op.operands.iter().all(|operand| self.can_push_filter(operand))
+            },
+            LogicalExpr::ScalarFnCall(_) => true,
+            LogicalExpr::TableAlias(_) => true,
+            LogicalExpr::Column(_) => true,
+            _ => false,
+        }
+    }
 }

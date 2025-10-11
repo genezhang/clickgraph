@@ -7,6 +7,7 @@ use crate::query_planner::{
         filter_push_down::FilterPushDown,
         optimizer_pass::{OptimizerPass, OptimizerResult},
         projection_push_down::ProjectionPushDown,
+        view_optimizer::ViewOptimizer,
     },
 };
 
@@ -17,6 +18,7 @@ pub mod errors;
 mod filter_push_down;
 mod optimizer_pass;
 mod projection_push_down;
+mod view_optimizer;
 
 pub fn initial_optimization(
     plan: Arc<LogicalPlan>,
@@ -39,6 +41,11 @@ pub fn final_optimization(
 
     let filter_push_down = FilterPushDown::new();
     let transformed_plan = filter_push_down.optimize(plan.clone(), plan_ctx)?;
+    let plan = transformed_plan.get_plan();
+
+    // Apply view-specific optimizations
+    let view_optimizer = ViewOptimizer::new();
+    let transformed_plan = view_optimizer.optimize(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
 
     // println!("\n plan_ctx After {} \n\n", plan_ctx);

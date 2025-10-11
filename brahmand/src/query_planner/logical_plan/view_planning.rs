@@ -13,11 +13,12 @@ use crate::query_planner::{
 use super::LogicalPlanResult;
 
 /// Plan a view-based node scan
+#[allow(dead_code)]
 pub fn plan_view_node_scan(
     view: &GraphViewDefinition,
     label: &str,
     properties: &[String],
-    plan_ctx: &mut PlanCtx,
+    _plan_ctx: &mut PlanCtx,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
     // Get node mapping from view
     let node_mapping = view.nodes.get(label)
@@ -56,12 +57,13 @@ pub fn plan_view_node_scan(
 }
 
 /// Plan a view-based relationship scan
+#[allow(dead_code)]
 pub fn plan_view_relationship_scan(
     view: &GraphViewDefinition,
     type_name: &str,
     properties: &[String],
     from_plan: Arc<LogicalPlan>,
-    plan_ctx: &mut PlanCtx,
+    _plan_ctx: &mut PlanCtx,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
     // Get relationship mapping from view
     let rel_mapping = view.relationships.get(type_name)

@@ -4,6 +4,7 @@ use crate::query_planner::logical_expr::{LogicalExpr, Literal};
 use crate::query_planner::logical_plan::LogicalPlan;
 
 /// Convert a plan node to SQL
+#[allow(dead_code)]
 pub trait ToSql {
     /// Convert this node to a SQL string
     fn to_sql(&self) -> Result<String, ClickhouseQueryGeneratorError>;
