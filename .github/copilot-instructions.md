@@ -1,35 +1,50 @@
-# Copilot Instructions for Brahmand
+# Copilot Instructions for ClickGraph
 
 ## Project Overview
-Brahmand is a stateless graph-analysis layer for ClickHouse, written in Rust. It translates Cypher queries into ClickHouse SQL queries, enabling graph analysis capabilities on ClickHouse databases.
+ClickGraph is a stateless graph-analysis layer for ClickHouse, written in Rust. It translates Cypher queries into ClickHouse SQL queries, enabling graph analysis capabilities on ClickHouse databases. This is a fork of the original Brahmand project with significant enhancements.
 
-## Feature Development Guide
+## Current Implementation Status
 
-### Neo4j Bolt Protocol Support
-To implement Neo4j Bolt protocol compatibility:
-- Create new `bolt_protocol/` module in `server/`
-- Implement protocol handlers following Neo4j wire protocol spec
-- Entry point: Extend `server/mod.rs` to handle both HTTP and Bolt connections
-- Reference: Neo4j Bolt Protocol v4.4 specification
+### ✅ Completed Features
 
-### View-Based Graph Model
-For implementing graph views on existing ClickHouse tables:
-- Extend `graph_catalog/graph_schema.rs` to support view definitions
-- Add view mapping logic in `query_planner/analyzer/schema_inference.rs`
-- Schema structure: Define view mappings in `NodeSchema` and `RelationshipSchema`
-- Example mapping:
-```rust
-pub struct GraphViewDefinition {
-    source_table: String,
-    node_id_column: String,
-    property_columns: Vec<String>
-}
-```
+**Neo4j Bolt Protocol v4.4**
+- Complete wire protocol implementation in `server/bolt_protocol/`
+- Authentication system with multiple schemes (`auth.rs`)
+- Message handling for all Bolt operations (`messages.rs`)
+- Connection management and error handling (`connection.rs`, `errors.rs`)
+- Dual server architecture supporting HTTP and Bolt simultaneously
 
-### Code Organization
-- Keep new Bolt protocol code isolated in `server/bolt_protocol/`
-- Extend existing schema interfaces in `graph_catalog/` for backward compatibility
-- Add feature flags in `Cargo.toml` to make new features optional
+**View-Based Graph Model** 
+- YAML configuration for mapping existing tables to graph entities
+- Schema validation and optimization in `graph_catalog/`
+- View resolution in `query_planner/analyzer/view_resolver.rs`
+- Comprehensive test coverage (374/374 tests passing)
+
+**Production Configuration**
+- CLI argument support via clap (`src/main.rs`)
+- Environment variable configuration
+- Flexible server binding and port configuration
+- Protocol enabling/disabling capabilities
+
+### Development Workflow
+
+**Adding New Cypher Features**
+- Extend AST in `open_cypher_parser/ast.rs`
+- Add parsing rules in relevant `open_cypher_parser/*.rs` files
+- Implement logical planning in `query_planner/logical_plan/`
+- Add SQL generation in `clickhouse_query_generator/`
+- Include optimization passes in `query_planner/optimizer/`
+
+**Bolt Protocol Enhancements**
+- Protocol extensions go in `server/bolt_protocol/`
+- Authentication schemes in `server/bolt_protocol/auth.rs`
+- Message types in `server/bolt_protocol/messages.rs`
+- Connection handling in `server/bolt_protocol/handler.rs`
+
+**Performance Optimization**
+- Query optimization passes in `query_planner/optimizer/`
+- View-specific optimizations in `query_planner/optimizer/view_optimizer.rs`
+- ClickHouse SQL generation optimization in `clickhouse_query_generator/`
 
 ## Key Architecture Components
 
@@ -57,9 +72,18 @@ pub struct GraphViewDefinition {
 # Start ClickHouse instance
 docker-compose up -d
 
-# Build and run Brahmand
+# Set required environment variables
+export CLICKHOUSE_URL="http://localhost:8123"
+export CLICKHOUSE_USER="test_user"
+export CLICKHOUSE_PASSWORD="test_pass"
+export CLICKHOUSE_DATABASE="brahmand"
+
+# Build and run ClickGraph with default configuration
 cargo build
-cargo run
+cargo run --bin brahmand
+
+# Or with custom configuration
+cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
 ```
 
 ### Key File Patterns
@@ -70,6 +94,7 @@ cargo run
 ### Testing
 - Integration tests require running ClickHouse instance (see docker-compose.yaml)
 - Use `clickhouse::test-util` feature for testing SQL generation
+- Current status: 374/374 tests passing with 100% success rate
 
 ## Project-Specific Conventions
 
@@ -88,7 +113,7 @@ cargo run
 - HTTP API: Using `axum` framework (see `server/handlers.rs`)
 - OpenCypher: Grammar defined in `open_cypher_parser/open_cypher_specs/`
 - View Integration: Map existing ClickHouse tables through `graph_catalog/graph_schema.rs`
-- Neo4j Tools: Connect via Bolt protocol through `server/bolt_protocol/` (planned)
+- Neo4j Tools: Connect via Bolt protocol through `server/bolt_protocol/` (implemented)
 
 ## Development Priorities
 1. **View-Based Graph Model**

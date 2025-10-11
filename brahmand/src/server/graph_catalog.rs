@@ -8,9 +8,23 @@ use crate::graph_catalog::graph_schema::{GraphSchema, GraphSchemaElement};
 use super::{GLOBAL_GRAPH_SCHEMA, models::GraphCatalog};
 
 pub async fn initialize_global_schema(clickhouse_client: Client) {
-    let schema = get_graph_catalog(clickhouse_client).await.unwrap();
-    // Set the global schema wrapped in an RwLock.
-    GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema)).ok();
+    match get_graph_catalog(clickhouse_client).await {
+        Ok(schema) => {
+            // Set the global schema wrapped in an RwLock.
+            GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema)).ok();
+        }
+        Err(e) => {
+            eprintln!("Warning: Failed to connect to ClickHouse, using empty schema: {}", e);
+            // Initialize with empty schema for testing
+            let empty_schema = GraphSchema::build(
+                1,
+                std::collections::HashMap::new(),
+                std::collections::HashMap::new(),
+                std::collections::HashMap::new(),
+            );
+            GLOBAL_GRAPH_SCHEMA.set(RwLock::new(empty_schema)).ok();
+        }
+    }
 }
 
 pub async fn refresh_global_schema(clickhouse_client: Client) -> Result<(), String> {
