@@ -2,18 +2,27 @@ use std::env;
 
 use clickhouse::Client;
 
-fn read_env_var(key: &str) -> String {
-    env::var(key).unwrap_or_else(|_| panic!("{key} env variable should be set"))
+fn read_env_var(key: &str) -> Option<String> {
+    env::var(key).ok()
+}
+
+pub fn try_get_client() -> Option<Client> {
+    let url = read_env_var("CLICKHOUSE_URL")?;
+    let user = read_env_var("CLICKHOUSE_USER")?;
+    let password = read_env_var("CLICKHOUSE_PASSWORD")?;
+    let database = read_env_var("CLICKHOUSE_DATABASE")?;
+    
+    println!("\n CLICKHOUSE_URL {}\n", url);
+    Some(Client::default()
+        .with_url(url)
+        .with_user(user)
+        .with_password(password)
+        .with_database(database)
+        .with_option("allow_experimental_json_type", "1")
+        .with_option("input_format_binary_read_json_as_string", "1")
+        .with_option("output_format_binary_write_json_as_string", "1"))
 }
 
 pub fn get_client() -> Client {
-    println!("\n CLICKHOUSE_URL {}\n", read_env_var("CLICKHOUSE_URL"));
-    Client::default()
-        .with_url(read_env_var("CLICKHOUSE_URL"))
-        .with_user(read_env_var("CLICKHOUSE_USER"))
-        .with_password(read_env_var("CLICKHOUSE_PASSWORD"))
-        .with_database(read_env_var("CLICKHOUSE_DATABASE"))
-        .with_option("allow_experimental_json_type", "1")
-        .with_option("input_format_binary_read_json_as_string", "1")
-        .with_option("output_format_binary_write_json_as_string", "1")
+    try_get_client().expect("ClickHouse environment variables should be set")
 }

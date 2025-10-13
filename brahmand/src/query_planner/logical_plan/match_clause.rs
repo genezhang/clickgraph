@@ -13,15 +13,27 @@ use crate::{
     },
 };
 
-use super::generate_id;
+use super::{generate_id, ViewScan};
 
 fn generate_scan(alias: String, label: Option<String>) -> Arc<LogicalPlan> {
+    // For now, always use regular scan until we fix the async integration
+    // TODO: Implement view-based scanning integration properly
     let table_alias = if alias.is_empty() { None } else { Some(alias) };
     Arc::new(LogicalPlan::Scan(Scan {
         table_alias,
         table_name: label,
     }))
 }
+
+// TODO: Implement view-based scanning properly
+// This function was causing async/sync issues and needs to be refactored
+// to integrate with the query planning pipeline correctly
+/*
+fn try_generate_view_scan(alias: String, label: &str) -> Option<Arc<LogicalPlan>> {
+    // Implementation temporarily removed - needs async integration fix
+    None
+}
+*/
 
 fn convert_properties(props: Vec<Property>) -> LogicalPlanResult<Vec<LogicalExpr>> {
     let mut extracted_props: Vec<LogicalExpr> = vec![];

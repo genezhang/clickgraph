@@ -167,15 +167,15 @@ views:
 - **Error Reporting**: Comprehensive error messages with context
 
 ### Configuration Management
-- **Environment Variables**: Production-ready configuration via env vars
+- **Environment Variables**: Robust configuration via env vars
 - **Command-Line Options**: Flexible startup configuration
 - **YAML Configuration**: Human-readable schema definitions
 - **Validation**: Comprehensive configuration validation
 
-## Production Features
+## Robust Features
 
 ### Deployment Options
-- **Docker Support**: Production-ready Docker containers
+- **Docker Support**: Robust Docker containers
 - **Kubernetes**: Scalable deployment on Kubernetes clusters
 - **Systemd Integration**: Native Linux service integration
 - **Cloud Deployment**: Support for major cloud platforms

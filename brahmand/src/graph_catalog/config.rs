@@ -67,7 +67,7 @@ use super::graph_schema::{GraphViewDefinition, NodeViewMapping, RelationshipView
 /// See `tests::config_tests` for examples.
 
 /// Configuration for graph views loaded from YAML/JSON
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphViewConfig {
     /// Name of the graph view configuration
     pub name: String,

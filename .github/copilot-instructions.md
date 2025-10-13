@@ -20,7 +20,13 @@ ClickGraph is a stateless graph-analysis layer for ClickHouse, written in Rust. 
 - View resolution in `query_planner/analyzer/view_resolver.rs`
 - Comprehensive test coverage (374/374 tests passing)
 
-**Production Configuration**
+**Relationship Traversal Support**
+- Full relationship pattern support: `MATCH (a)-[r:TYPE]->(b)`
+- Multi-hop graph traversals with complex JOIN generation
+- All 4 YAML relationship types working (AUTHORED, FOLLOWS, LIKED, PURCHASED)
+- Relationship property filtering support
+
+**Robust Configuration System**
 - CLI argument support via clap (`src/main.rs`)
 - Environment variable configuration
 - Flexible server binding and port configuration
@@ -107,6 +113,13 @@ cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
 - Use builder pattern for plan construction (`logical_plan/plan_builder.rs`)
 - Optimization passes are composable via `optimizer/optimizer_pass.rs`
 - Graph traversals are planned in `analyzer/graph_traversal_planning.rs`
+
+### Development Assessment Guidelines
+- **Use "robust" instead of "production-ready"** when describing well-tested features
+- Always provide realistic assessments of current capabilities and limitations
+- Acknowledge when features are experimental, incomplete, or have known edge cases
+- Use terms like "development-ready", "demo-ready", "robust", or "working for tested scenarios"
+- Be transparent about the scope and robustness of implemented features
 
 ## Integration Points
 - ClickHouse: Via `clickhouse` crate (see `server/clickhouse_client.rs`)

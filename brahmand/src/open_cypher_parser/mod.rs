@@ -35,11 +35,10 @@ mod with_clause;
 pub fn parse_statement(
     input: &'_ str,
 ) -> IResult<&'_ str, OpenCypherQueryAst<'_>, OpenCypherParsingError<'_>> {
-    context(
-        "missing semicolon",
-        cut(terminated(parse_query_with_nom, ws(tag(";")))),
-    )
-    .parse(input)
+    // Make semicolon optional - parse query with optional trailing semicolon
+    let (input, query) = parse_query_with_nom.parse(input)?;
+    let (input, _) = opt(ws(tag(";"))).parse(input)?;
+    Ok((input, query))
 }
 
 pub fn parse_query_with_nom(

@@ -8,12 +8,15 @@ use dotenv::dotenv;
 use tokio::sync::{OnceCell, RwLock};
 use tokio::net::TcpListener;
 
-use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::graph_catalog::{
+    graph_schema::GraphSchema,
+    config::GraphViewConfig,
+};
 use bolt_protocol::{BoltServer, BoltConfig};
 
 pub mod bolt_protocol;
 mod clickhouse_client;
-mod graph_catalog;
+pub mod graph_catalog;
 mod handlers;
 mod models;
 
@@ -74,6 +77,7 @@ struct AppState {
 }
 
 pub static GLOBAL_GRAPH_SCHEMA: OnceCell<RwLock<GraphSchema>> = OnceCell::const_new();
+pub static GLOBAL_VIEW_CONFIG: OnceCell<RwLock<GraphViewConfig>> = OnceCell::const_new();
 
 pub async fn run() {
     dotenv().ok();
@@ -87,24 +91,43 @@ pub async fn run() {
 pub async fn run_with_config(config: ServerConfig) {
     dotenv().ok();
     
-    // Create and configure the ClickHouse client.
-    let client = clickhouse_client::get_client();
-
-    let app_state = AppState {
-        clickhouse_client: client.clone(),
+    // Try to create ClickHouse client (optional for YAML-only mode)
+    let client_opt = clickhouse_client::try_get_client();
+    
+    let app_state = if let Some(client) = client_opt.as_ref() {
+        AppState {
+            clickhouse_client: client.clone(),
+        }
+    } else {
+        // For YAML-only mode, we need a placeholder client
+        // This is a limitation we should fix in the future
+        eprintln!("⚠ No ClickHouse configuration found. Running in YAML-only mode.");
+        eprintln!("  Note: Some query functionality may be limited without ClickHouse connection.");
+        
+        // Create a dummy client for now - this is not ideal but allows server to start
+        let dummy_client = clickhouse::Client::default().with_url("http://localhost:8123");
+        AppState {
+            clickhouse_client: dummy_client,
+        }
     };
 
-    graph_catalog::initialize_global_schema(client.clone()).await;
+    // Initialize schema with proper error handling
+    if let Err(e) = graph_catalog::initialize_global_schema(client_opt).await {
+        eprintln!("✗ Failed to initialize ClickGraph: {}", e);
+        eprintln!("  Server cannot start without proper schema initialization.");
+        std::process::exit(1);
+    }
 
-    println!("GLOBAL_GRAPH_SCHEMA {:?}", GLOBAL_GRAPH_SCHEMA.get());
+    println!("GLOBAL_GRAPH_SCHEMA initialized: {:?}", GLOBAL_GRAPH_SCHEMA.get().is_some());
 
-    // Spawn the background task to monitor schema updates.
-    let schema_client = client.clone();
-    tokio::spawn(async move {
-        if let Err(e) = graph_catalog::monitor_schema_updates(schema_client).await {
-            eprintln!("Error in schema monitor: {}", e);
-        }
-    });
+    // Disabled background schema monitoring for now to allow server to run stably
+    // TODO: Fix schema monitoring to not cause server exit
+    // let schema_client = client.clone();
+    // tokio::spawn(async move {
+    //     if let Err(e) = graph_catalog::monitor_schema_updates(schema_client).await {
+    //         eprintln!("Error in schema monitor: {}", e);
+    //     }
+    // });
 
     // Start HTTP server
     let http_bind_address = format!("{}:{}", config.http_host, config.http_port);

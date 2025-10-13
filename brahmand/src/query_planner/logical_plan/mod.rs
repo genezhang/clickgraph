@@ -46,6 +46,8 @@ pub fn evaluate_query(
     plan_builder::build_logical_plan(&query_ast)
 }
 
+
+
 pub fn generate_id() -> String {
     format!(
         "a{}",

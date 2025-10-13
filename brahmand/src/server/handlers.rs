@@ -20,7 +20,7 @@ use crate::{
 
 use super::{
     AppState, graph_catalog,
-    models::{OutputFormat, QueryRequest},
+    models::{OutputFormat, QueryRequest, SqlOnlyResponse},
 };
 
 pub async fn query_handler(
@@ -29,38 +29,90 @@ pub async fn query_handler(
 ) -> Result<impl IntoResponse, impl IntoResponse> {
     let instant = Instant::now();
     let output_format = payload.format.unwrap_or(OutputFormat::JSONEachRow);
+    let sql_only = payload.sql_only.unwrap_or(false);
 
     let (ch_sql_queries, maybe_schema_elem, is_read) = {
         let graph_schema = graph_catalog::get_graph_schema().await;
 
-        let cypher_ast = open_cypher_parser::parse_query(&payload.query).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Brahmand Error: {}", e),
-            )
-        })?;
+        // Parse query with better error handling for SQL-only mode
+        let cypher_ast = match open_cypher_parser::parse_query(&payload.query) {
+            Ok(ast) => ast,
+            Err(e) => {
+                if sql_only {
+                    let error_response = SqlOnlyResponse {
+                        cypher_query: payload.query.clone(),
+                        generated_sql: format!("PARSE_ERROR: {}", e),
+                        execution_mode: "sql_only_with_parse_error".to_string(),
+                    };
+                    return Ok(Json(error_response).into_response());
+                } else {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Brahmand Error: {}", e),
+                    ));
+                }
+            }
+        };
 
         let query_type = query_planner::get_query_type(&cypher_ast);
 
         let is_read = query_type == QueryType::Read;
 
         if is_read {
-            let logical_plan = query_planner::evaluate_read_query(cypher_ast, &graph_schema)
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Brahmand Error: {}", e),
-                    )
-                })?;
+            // Step 1: Query planning with error handling
+            let logical_plan = match query_planner::evaluate_read_query(cypher_ast, &graph_schema) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    if sql_only {
+                        let error_response = SqlOnlyResponse {
+                            cypher_query: payload.query.clone(),
+                            generated_sql: format!("PLANNING_ERROR: {}", e),
+                            execution_mode: "sql_only_with_planning_error".to_string(),
+                        };
+                        return Ok(Json(error_response).into_response());
+                    } else {
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Brahmand Error: {}", e),
+                        ));
+                    }
+                }
+            };
 
-            let render_plan = logical_plan.to_render_plan().map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Brahmand Error: {}", e),
-                )
-            })?;
+            // Step 2: Render plan generation with error handling
+            let render_plan = match logical_plan.to_render_plan() {
+                Ok(plan) => plan,
+                Err(e) => {
+                    if sql_only {
+                        let error_response = SqlOnlyResponse {
+                            cypher_query: payload.query.clone(),
+                            generated_sql: format!("RENDER_ERROR: {}", e),
+                            execution_mode: "sql_only_with_render_error".to_string(),
+                        };
+                        return Ok(Json(error_response).into_response());
+                    } else {
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Brahmand Error: {}", e),
+                        ));
+                    }
+                }
+            };
+
+            // Step 3: SQL generation
             let ch_query = clickhouse_query_generator::generate_sql(render_plan);
             println!("\n ch_query \n {} \n", ch_query);
+            
+            // If SQL-only mode, return the SQL without executing
+            if sql_only {
+                let sql_response = SqlOnlyResponse {
+                    cypher_query: payload.query.clone(),
+                    generated_sql: ch_query.clone(),
+                    execution_mode: "sql_only".to_string(),
+                };
+                return Ok(Json(sql_response).into_response());
+            }
+            
             (vec![ch_query], None, true)
         } else {
             let (queries, schema_elem) =
