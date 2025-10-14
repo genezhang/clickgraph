@@ -147,6 +147,7 @@ fn traverse_connected_pattern<'a>(
                 left_connection: end_node_alias,
                 right_connection: start_node_alias,
                 is_rel_anchor: false,
+                variable_length: None, // Single-hop relationship by default
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -194,6 +195,7 @@ fn traverse_connected_pattern<'a>(
                 left_connection: start_node_alias,
                 right_connection: end_node_alias,
                 is_rel_anchor: false,
+                variable_length: rel.variable_length.clone().map(|v| v.into()),
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -256,6 +258,7 @@ fn traverse_connected_pattern<'a>(
                 left_connection: end_node_alias,
                 right_connection: start_node_alias,
                 is_rel_anchor: false,
+                variable_length: rel.variable_length.clone().map(|v| v.into()),
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -524,8 +527,7 @@ mod tests {
         let node_pattern = ast::NodePattern {
             name: None, // Empty node
             label: Some("Person"),
-            properties: None,
-        };
+            properties: None,        };
 
         let result = traverse_node_pattern(&node_pattern, initial_plan, &mut plan_ctx);
         assert!(result.is_err());
@@ -543,20 +545,19 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("user"),
             label: Some("Person"),
-            properties: None,
-        };
+            properties: None,        };
 
         let end_node = ast::NodePattern {
             name: Some("company"),
             label: Some("Organization"),
-            properties: None,
-        };
+            properties: None,        };
 
         let relationship = ast::RelationshipPattern {
             name: Some("works_at"),
             direction: ast::Direction::Outgoing,
             label: Some("WORKS_AT"),
             properties: None,
+            variable_length: None,
         };
 
         let connected_pattern = ast::ConnectedPattern {
@@ -628,20 +629,19 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("user"),      // This exists in plan_ctx
             label: Some("Employee"), // Different label
-            properties: None,
-        };
+            properties: None,        };
 
         let end_node = ast::NodePattern {
             name: Some("project"),
             label: Some("Project"),
-            properties: None,
-        };
+            properties: None,        };
 
         let relationship = ast::RelationshipPattern {
             name: Some("assigned_to"),
             direction: ast::Direction::Incoming,
             label: Some("ASSIGNED_TO"),
             properties: None,
+            variable_length: None,
         };
 
         let connected_pattern = ast::ConnectedPattern {
@@ -688,20 +688,19 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("user1"),
             label: Some("Person"),
-            properties: None,
-        };
+            properties: None,        };
 
         let end_node = ast::NodePattern {
             name: Some("user2"),
             label: Some("Person"),
-            properties: None,
-        };
+            properties: None,        };
 
         let relationship = ast::RelationshipPattern {
             name: Some("knows"),
             direction: ast::Direction::Either,
             label: Some("KNOWS"),
             properties: None,
+            variable_length: None,
         };
 
         let connected_pattern = ast::ConnectedPattern {
@@ -741,20 +740,19 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("admin"), // Same as above - should connect
             label: None,
-            properties: None,
-        };
+            properties: None,        };
 
         let end_node = ast::NodePattern {
             name: Some("system"),
             label: Some("System"),
-            properties: None,
-        };
+            properties: None,        };
 
         let relationship = ast::RelationshipPattern {
             name: Some("manages"),
             direction: ast::Direction::Outgoing,
             label: Some("MANAGES"),
             properties: None,
+            variable_length: None,
         };
 
         let connected_pattern = ast::ConnectedPattern {

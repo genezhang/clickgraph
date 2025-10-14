@@ -9,9 +9,11 @@ mod ddl_query;
 mod errors;
 mod to_sql;
 mod to_sql_query;
+pub mod variable_length_cte;
 mod view_query;
 
 pub use errors::ClickhouseQueryGeneratorError;
+pub use variable_length_cte::VariableLengthCteGenerator;
 
 
 // pub fn generate_sql(plan: RenderPlan) -> String{

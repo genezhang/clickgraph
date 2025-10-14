@@ -562,6 +562,7 @@ mod tests {
                 key: "since",
                 value: ast::Expression::Literal(ast::Literal::Integer(2020)),
             })]),
+            variable_length: None,
         };
         let logical_relationship_pattern = RelationshipPattern::from(ast_relationship_pattern);
 
@@ -593,18 +594,17 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("user"),
             label: Some("User"),
-            properties: None,
-        };
+            properties: None,        };
         let end_node = ast::NodePattern {
             name: Some("company"),
             label: Some("Company"),
-            properties: None,
-        };
+            properties: None,        };
         let relationship = ast::RelationshipPattern {
             name: Some("works_at"),
             direction: ast::Direction::Outgoing,
             label: Some("WORKS_AT"),
             properties: None,
+            variable_length: None,
         };
 
         let ast_connected_pattern = ast::ConnectedPattern {
@@ -649,8 +649,7 @@ mod tests {
         let ast_node = ast::NodePattern {
             name: Some("customer"),
             label: Some("Customer"),
-            properties: None,
-        };
+            properties: None,        };
         let ast_path_pattern = ast::PathPattern::Node(ast_node);
         let logical_path_pattern = PathPattern::from(ast_path_pattern);
 

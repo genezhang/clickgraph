@@ -243,6 +243,11 @@ impl GraphJoinInference {
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
+        // Skip join inference for variable-length paths
+        if graph_rel.variable_length.is_some() {
+            return Ok(());
+        }
+
         let graph_context = graph_context::get_graph_context(
             graph_rel,
             plan_ctx,
@@ -1121,6 +1126,7 @@ mod tests {
             left_connection: left_connection.to_string(),
             right_connection: right_connection.to_string(),
             is_rel_anchor: false,
+            variable_length: None,
         }))
     }
 

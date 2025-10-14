@@ -325,30 +325,27 @@ mod tests {
                         direction: Direction::Either,
                         label: None,
                         properties: None,
+                        variable_length: None,
                     },
                     end_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("otherPerson"),
                         label: None,
-                        properties: None,
-                    })),
+                        properties: None,                    })),
                 },
                 ConnectedPattern {
                     start_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("otherPerson"),
                         label: None,
-                        properties: None,
-                    })),
+                        properties: None,                    })),
                     relationship: RelationshipPattern {
                         name: None,
-                        direction: Direction::Outgoing,
+                        direction: Direction::Outgoing,                        variable_length: None,
                         label: None,
-                        properties: None,
-                    },
+                        properties: None,                    },
                     end_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("b"),
                         label: None,
-                        properties: None,
-                    })),
+                        properties: None,                    })),
                 },
             ])],
         };
@@ -492,34 +489,29 @@ mod tests {
                     })),
                     relationship: RelationshipPattern {
                         name: Some("r"),
-                        direction: Direction::Outgoing,
+                        direction: Direction::Outgoing,                        variable_length: None,
                         label: Some("ACTED_IN"),
-                        properties: None,
-                    },
+                        properties: None,                    },
                     end_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("movie"),
                         label: Some("Movie"),
-                        properties: None,
-                    })),
+                        properties: None,                    })),
                 },
                 // (movie:Movie)<-[:DIRECTED]-(director:Person)
                 ConnectedPattern {
                     start_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("movie"),
                         label: Some("Movie"),
-                        properties: None,
-                    })),
+                        properties: None,                    })),
                     relationship: RelationshipPattern {
                         name: None,
-                        direction: Direction::Incoming,
+                        direction: Direction::Incoming,                        variable_length: None,
                         label: Some("DIRECTED"),
-                        properties: None,
-                    },
+                        properties: None,                    },
                     end_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("director"),
                         label: Some("Person"),
-                        properties: None,
-                    })),
+                        properties: None,                    })),
                 },
             ])],
         };
@@ -576,19 +568,16 @@ mod tests {
                             start_node: Rc::new(RefCell::new(NodePattern {
                                 name: Some("a"),
                                 label: None,
-                                properties: None,
-                            })),
+                                properties: None,                            })),
                             relationship: RelationshipPattern {
                                 name: None,
-                                direction: Direction::Outgoing,
+                                direction: Direction::Outgoing,                        variable_length: None,
                                 label: None,
-                                properties: None,
-                            },
+                                properties: None,                            },
                             end_node: Rc::new(RefCell::new(NodePattern {
                                 name: Some("c"),
                                 label: None,
-                                properties: None,
-                            })),
+                                properties: None,                            })),
                         },
                     ])),
                     alias: None,
@@ -649,13 +638,11 @@ mod tests {
                 PathPattern::Node(NodePattern {
                     name: Some("a"),
                     label: Some("Person"),
-                    properties: None,
-                }),
+                    properties: None,                }),
                 PathPattern::Node(NodePattern {
                     name: Some("b"),
                     label: Some("Person"),
-                    properties: None,
-                }),
+                    properties: None,                }),
             ],
         };
         assert_eq!(match_clause, expected_match_clause);
@@ -698,11 +685,10 @@ mod tests {
                 start_node: Rc::new(RefCell::new(NodePattern {
                     name: Some("a"),
                     label: None,
-                    properties: None,
-                })),
+                    properties: None,                })),
                 relationship: RelationshipPattern {
                     name: Some("r"),
-                    direction: Direction::Outgoing,
+                    direction: Direction::Outgoing,                        variable_length: None,
                     label: Some("RELTYPE"),
                     properties: Some(vec![Property::PropertyKV(PropertyKVPair {
                         key: "name",
@@ -715,8 +701,7 @@ mod tests {
                 end_node: Rc::new(RefCell::new(NodePattern {
                     name: Some("b"),
                     label: None,
-                    properties: None,
-                })),
+                    properties: None,                })),
             }])],
         };
         assert_eq!(create_clause, expected_create_clause);
@@ -1020,8 +1005,7 @@ mod tests {
             path_patterns: vec![PathPattern::Node(NodePattern {
                 name: Some("p"),
                 label: Some("Person"),
-                properties: None,
-            })],
+                properties: None,            })],
         };
         assert_eq!(match_clause, expected_match_clause);
 
@@ -1141,8 +1125,7 @@ mod tests {
             path_patterns: vec![PathPattern::Node(NodePattern {
                 name: Some("p"),
                 label: Some("Person"),
-                properties: None,
-            })],
+                properties: None,            })],
         };
         assert_eq!(match_clause, expected_match_clause);
 

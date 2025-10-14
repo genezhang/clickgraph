@@ -45,6 +45,11 @@ impl AnalyzerPass for GraphTRaversalPlanning {
             }
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphRel(graph_rel) => {
+                // Skip traversal planning for variable-length paths - they'll be handled by SQL generator
+                if graph_rel.variable_length.is_some() {
+                    return Ok(Transformed::No(logical_plan));
+                }
+
                 // If no graphRel at the right means we have reached at the bottom of the tree i.e. right is anchor.
                 if !matches!(graph_rel.right.as_ref(), LogicalPlan::GraphRel(_)) {
                     let (new_graph_rel, ctxs_to_update) =

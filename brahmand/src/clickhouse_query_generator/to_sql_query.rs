@@ -6,7 +6,7 @@ use crate::{
             RenderExpr, TableAlias,
         },
         {
-            Cte, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join, JoinItems, JoinType,
+            Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join, JoinItems, JoinType,
             OrderByItems, OrderByOrder, RenderPlan, SelectItems, ToSql, UnionItems, UnionType,
         },
     },
@@ -184,7 +184,16 @@ impl ToSql for Cte {
     fn to_sql(&self) -> String {
         let mut cte_body = String::new();
         cte_body.push_str("\n    ");
-        cte_body.push_str(&self.cte_plan.to_sql());
+        
+        // Handle both structured and raw SQL content
+        match &self.content {
+            CteContent::Structured(plan) => {
+                cte_body.push_str(&plan.to_sql());
+            }
+            CteContent::RawSql(sql) => {
+                cte_body.push_str(sql);
+            }
+        }
         // // SELECT
         // cte_body.push_str("\n    ");
         // cte_body.push_str(&self.select.to_sql());

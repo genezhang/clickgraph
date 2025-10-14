@@ -176,6 +176,66 @@ pub struct RelationshipPattern<'a> {
     pub direction: Direction,
     pub label: Option<&'a str>,
     pub properties: Option<Vec<Property<'a>>>,
+    pub variable_length: Option<VariableLengthSpec>,
+}
+
+/// Represents variable-length path specifications like *1..3, *..5, *2, *
+#[derive(Debug, PartialEq, Clone)]
+pub struct VariableLengthSpec {
+    pub min_hops: Option<u32>,
+    pub max_hops: Option<u32>,
+}
+
+impl VariableLengthSpec {
+    /// Create a fixed-length spec: *2 becomes min=2, max=2
+    pub fn fixed(hops: u32) -> Self {
+        Self {
+            min_hops: Some(hops),
+            max_hops: Some(hops),
+        }
+    }
+
+    /// Create a range spec: *1..3 becomes min=1, max=3
+    pub fn range(min: u32, max: u32) -> Self {
+        Self {
+            min_hops: Some(min),
+            max_hops: Some(max),
+        }
+    }
+
+    /// Create an upper-bounded spec: *..5 becomes min=1, max=5
+    pub fn max_only(max: u32) -> Self {
+        Self {
+            min_hops: Some(1),
+            max_hops: Some(max),
+        }
+    }
+
+    /// Create an unbounded spec: * becomes min=1, max=None (unlimited)
+    pub fn unbounded() -> Self {
+        Self {
+            min_hops: Some(1),
+            max_hops: None,
+        }
+    }
+
+    /// Check if this is a fixed-length relationship (single hop)
+    pub fn is_single_hop(&self) -> bool {
+        matches!(
+            (self.min_hops, self.max_hops),
+            (Some(1), Some(1)) | (None, None)
+        )
+    }
+
+    /// Get effective minimum hops (defaults to 1)
+    pub fn effective_min_hops(&self) -> u32 {
+        self.min_hops.unwrap_or(1)
+    }
+
+    /// Check if there's an upper bound
+    pub fn has_max_bound(&self) -> bool {
+        self.max_hops.is_some()
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]

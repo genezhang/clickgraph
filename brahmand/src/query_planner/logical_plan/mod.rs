@@ -116,6 +116,85 @@ pub struct GraphRel {
     pub left_connection: String,
     pub right_connection: String,
     pub is_rel_anchor: bool,
+    pub variable_length: Option<VariableLengthSpec>,
+}
+
+/// Specification for variable-length path relationships
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct VariableLengthSpec {
+    pub min_hops: Option<u32>,
+    pub max_hops: Option<u32>,
+}
+
+impl Default for VariableLengthSpec {
+    /// Default is a single hop (normal relationship)
+    fn default() -> Self {
+        Self {
+            min_hops: Some(1),
+            max_hops: Some(1),
+        }
+    }
+}
+
+impl VariableLengthSpec {
+    /// Create a fixed-length spec: *2 becomes min=2, max=2
+    pub fn fixed(hops: u32) -> Self {
+        Self {
+            min_hops: Some(hops),
+            max_hops: Some(hops),
+        }
+    }
+
+    /// Create a range spec: *1..3 becomes min=1, max=3
+    pub fn range(min: u32, max: u32) -> Self {
+        Self {
+            min_hops: Some(min),
+            max_hops: Some(max),
+        }
+    }
+
+    /// Create an upper-bounded spec: *..5 becomes min=1, max=5
+    pub fn max_only(max: u32) -> Self {
+        Self {
+            min_hops: Some(1),
+            max_hops: Some(max),
+        }
+    }
+
+    /// Create an unbounded spec: * becomes min=1, max=None (unlimited)
+    pub fn unbounded() -> Self {
+        Self {
+            min_hops: Some(1),
+            max_hops: None,
+        }
+    }
+
+    /// Check if this is a single-hop relationship (normal relationship)
+    pub fn is_single_hop(&self) -> bool {
+        matches!(
+            (self.min_hops, self.max_hops),
+            (Some(1), Some(1)) | (None, None)
+        )
+    }
+
+    /// Get effective minimum hops (defaults to 1)
+    pub fn effective_min_hops(&self) -> u32 {
+        self.min_hops.unwrap_or(1)
+    }
+
+    /// Check if there's an upper bound
+    pub fn has_max_bound(&self) -> bool {
+        self.max_hops.is_some()
+    }
+}
+
+impl From<crate::open_cypher_parser::ast::VariableLengthSpec> for VariableLengthSpec {
+    fn from(ast_spec: crate::open_cypher_parser::ast::VariableLengthSpec) -> Self {
+        Self {
+            min_hops: ast_spec.min_hops,
+            max_hops: ast_spec.max_hops,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -379,6 +458,7 @@ impl GraphRel {
                 direction: self.direction.clone(),
                 // is_anchor_graph_rel: self.is_anchor_graph_rel,
                 is_rel_anchor: self.is_rel_anchor,
+                variable_length: self.variable_length.clone(),
             });
             Transformed::Yes(Arc::new(new_graph_rel))
         } else {
@@ -612,6 +692,39 @@ impl LogicalPlan {
             LogicalPlan::ViewScan(scan) => format!("ViewScan({:?})", scan.source_table),
         }
     }
+
+    /// Check if the logical plan tree contains any variable-length paths
+    pub fn contains_variable_length_path(&self) -> bool {
+        match self {
+            LogicalPlan::GraphRel(graph_rel) => {
+                // Check if this GraphRel has variable_length
+                if graph_rel.variable_length.is_some() {
+                    return true;
+                }
+                // Recursively check children
+                graph_rel.left.contains_variable_length_path()
+                    || graph_rel.center.contains_variable_length_path()
+                    || graph_rel.right.contains_variable_length_path()
+            }
+            LogicalPlan::GraphNode(graph_node) => {
+                graph_node.input.contains_variable_length_path()
+            }
+            LogicalPlan::Filter(filter) => filter.input.contains_variable_length_path(),
+            LogicalPlan::Projection(proj) => proj.input.contains_variable_length_path(),
+            LogicalPlan::GraphJoins(joins) => joins.input.contains_variable_length_path(),
+            LogicalPlan::OrderBy(order_by) => order_by.input.contains_variable_length_path(),
+            LogicalPlan::Skip(skip) => skip.input.contains_variable_length_path(),
+            LogicalPlan::Limit(limit) => limit.input.contains_variable_length_path(),
+            LogicalPlan::GroupBy(group_by) => group_by.input.contains_variable_length_path(),
+            LogicalPlan::Cte(cte) => cte.input.contains_variable_length_path(),
+            LogicalPlan::Union(union) => union
+                .inputs
+                .iter()
+                .any(|input| input.contains_variable_length_path()),
+            // Leaf nodes
+            LogicalPlan::Scan(_) | LogicalPlan::ViewScan(_) | LogicalPlan::Empty => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -763,6 +876,7 @@ mod tests {
             left_connection: "employee_id".to_string(),
             right_connection: "company_id".to_string(),
             is_rel_anchor: false,
+            variable_length: None,
         };
 
         let old_plan = Arc::new(LogicalPlan::GraphRel(graph_rel.clone()));

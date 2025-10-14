@@ -18,11 +18,12 @@ use nom::{
 
 use super::ast::{
     ConnectedPattern, Direction, Expression, NodePattern, PathPattern, Property, PropertyKVPair,
-    RelationshipPattern,
+    RelationshipPattern, VariableLengthSpec,
 };
 use super::common::ws;
 use super::expression::parse_parameter;
 use super::{common, expression};
+use nom::character::complete::digit1;
 
 pub fn parse_path_pattern(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>> {
     let (input, start_node_pattern) = parse_node_pattern.parse(input)?;
@@ -246,10 +247,97 @@ fn parse_relationship_internals(
     delimited(ws(char('[')), parse_name_label, ws(char(']'))).parse(input)
 }
 
+// Parse relationship internals including variable-length spec
+// Returns: ((name, properties), (label, properties), variable_length_spec)
+fn parse_relationship_internals_with_var_len(
+    input: &'_ str,
+) -> IResult<&'_ str, (
+    (NameOrLabelWithProperties<'_>, NameOrLabelWithProperties<'_>),
+    Option<VariableLengthSpec>,
+)> {
+    let (input, _) = ws(char('[')).parse(input)?;
+    let (input, name_label) = parse_name_label(input)?;
+    let (input, var_len) = parse_variable_length_spec(input)?;
+    let (input, _) = ws(char(']')).parse(input)?;
+    Ok((input, (name_label, var_len)))
+}
+
+// Parse variable-length specification: *, *2, *1..3, *..5
+// Returns Some(VariableLengthSpec) if parsed, None if not present
+fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<VariableLengthSpec>> {
+    let (input, _) = multispace0(input)?;
+    
+    // Check if there's a * character
+    let (input, asterisk_opt) = opt(char('*')).parse(input)?;
+    if asterisk_opt.is_none() {
+        // No *, so no variable-length spec
+        return Ok((input, None));
+    }
+    
+    let (input, _) = multispace0(input)?;
+    
+    // Try to parse range specifications
+    // *N..M (range with both bounds)
+    let range_parser = map(
+        separated_pair(
+            map(digit1, |s: &str| s.parse::<u32>().ok()),
+            tag(".."),
+            map(digit1, |s: &str| s.parse::<u32>().ok()),
+        ),
+        |(min, max)| VariableLengthSpec {
+            min_hops: min,
+            max_hops: max,
+        },
+    );
+    
+    // *..M (upper bound only, min defaults to 1)
+    let upper_bound_parser = map(
+        nom::sequence::preceded(
+            tag(".."),
+            map(digit1, |s: &str| s.parse::<u32>().ok()),
+        ),
+        |max| VariableLengthSpec {
+            min_hops: Some(1),
+            max_hops: max,
+        },
+    );
+    
+    // *N (fixed length)
+    let fixed_length_parser = map(
+        map(digit1, |s: &str| s.parse::<u32>().ok()),
+        |n| VariableLengthSpec {
+            min_hops: n,
+            max_hops: n,
+        },
+    );
+    
+    // * (unbounded, equivalent to *1..)
+    let unbounded_parser = map(
+        nom::combinator::peek(nom::branch::alt((
+            nom::character::complete::char(']'),
+            nom::character::complete::char('-'),
+        ))),
+        |_| VariableLengthSpec {
+            min_hops: Some(1),
+            max_hops: None,
+        },
+    );
+    
+    alt((
+        range_parser,
+        upper_bound_parser,
+        fixed_length_parser,
+        unbounded_parser,
+    ))
+    .map(|spec| Some(spec))
+    .parse(input)
+}
+
 // Parse relationships - e.g -
 //  '<-[ name:KIND ]-' , '-[ name:KIND ]->' '-[ name:KIND ]-',
 // '<-[name]-', '-[name]->', '-[name]-'
 // '<-[]', '-[]->', '-[]-'
+//  '<-[*1..3]-', '-[*2]->', '-[r:KNOWS*]- '
 fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<RelationshipPattern<'_>>> {
     let empty_incoming_relationship_parser =
         map(delimited(ws(tag("<-")), space0, ws(tag("-"))), |_| {
@@ -258,20 +346,23 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
                 name: None,
                 label: None,
                 properties: None,
+                variable_length: None,
             }
         });
 
     let incoming_relationship_with_props_parser = map(
-        delimited(tag("<-"), parse_relationship_internals, tag("-")),
+        delimited(tag("<-"), parse_relationship_internals_with_var_len, tag("-")),
         |(
-            (relationship_name, properties_with_relationship_name),
-            (relationship_label, properties_with_relationship_label),
+            ((relationship_name, properties_with_relationship_name),
+            (relationship_label, properties_with_relationship_label)),
+            variable_length,
         )| RelationshipPattern {
             direction: Direction::Incoming,
             name: relationship_name,
             label: relationship_label,
             properties: properties_with_relationship_name
                 .map_or(properties_with_relationship_label, Some),
+            variable_length,
         },
     );
 
@@ -282,20 +373,23 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
                 name: None,
                 label: None,
                 properties: None,
+                variable_length: None,
             }
         });
 
     let outgoing_relationship_with_props_parser = map(
-        delimited(tag("-"), parse_relationship_internals, tag("->")),
+        delimited(tag("-"), parse_relationship_internals_with_var_len, tag("->")),
         |(
-            (relationship_name, properties_with_relationship_name),
-            (relationship_label, properties_with_relationship_label),
+            ((relationship_name, properties_with_relationship_name),
+            (relationship_label, properties_with_relationship_label)),
+            variable_length,
         )| RelationshipPattern {
             direction: Direction::Outgoing,
             name: relationship_name,
             label: relationship_label,
             properties: properties_with_relationship_name
                 .map_or(properties_with_relationship_label, Some),
+            variable_length,
         },
     );
 
@@ -306,20 +400,23 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
                 name: None,
                 label: None,
                 properties: None,
+                variable_length: None,
             }
         });
 
     let either_relationship_with_props_parser = map(
-        delimited(tag("-"), parse_relationship_internals, tag("-")),
+        delimited(tag("-"), parse_relationship_internals_with_var_len, tag("-")),
         |(
-            (relationship_name, properties_with_relationship_name),
-            (relationship_label, properties_with_relationship_label),
+            ((relationship_name, properties_with_relationship_name),
+            (relationship_label, properties_with_relationship_label)),
+            variable_length,
         )| RelationshipPattern {
             direction: Direction::Either,
             name: relationship_name,
             label: relationship_label,
             properties: properties_with_relationship_name
                 .map_or(properties_with_relationship_label, Some),
+            variable_length,
         },
     );
 
@@ -389,6 +486,7 @@ mod tests {
                     name: None,
                     label: None,
                     properties: None,
+                    variable_length: None,
                 };
                 // Compare start node.
                 assert_eq!(
@@ -446,6 +544,7 @@ mod tests {
                             name: None,
                             label: None,
                             properties: None,
+                            variable_length: None,
                         };
                         // Compare start node.
                         assert_eq!(
@@ -487,6 +586,7 @@ mod tests {
                     name: None,
                     label: None,
                     properties: None,
+                    variable_length: None,
                 };
                 // First connected pattern: from node1 to node2.
                 let connected_pattern_1: &ConnectedPattern<'_> = &connected_patterns[0];
@@ -507,6 +607,7 @@ mod tests {
                     name: None,
                     label: None,
                     properties: None,
+                    variable_length: None,
                 };
                 assert_eq!(&connected_pattern_2.relationship, &expected_relationship_2);
                 assert_eq!(
@@ -560,6 +661,7 @@ mod tests {
                     name: None,
                     label: Some("Pointing"),
                     properties: None,
+                    variable_length: None,
                 };
 
                 let expected_relationship_2 = RelationshipPattern {
@@ -570,6 +672,7 @@ mod tests {
                         key: "what",
                         value: Expression::Parameter("dontKnow"),
                     })]),
+                    variable_length: None,
                 };
                 // First connected pattern: from a to b.
                 let connected_pattern_1: &ConnectedPattern<'_> = &connected_patterns[0];

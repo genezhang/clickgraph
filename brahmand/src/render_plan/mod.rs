@@ -114,11 +114,16 @@ impl TryFrom<LogicalJoin> for Join {
 pub struct CteItems(pub Vec<Cte>);
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub enum CteContent {
+    Structured(RenderPlan),
+    RawSql(String),
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Cte {
     pub cte_name: String,
-    pub cte_plan: RenderPlan, // pub select: SelectItems,
-                              // pub from: FromTable,
-                              // pub filters: FilterItems
+    pub content: CteContent,
+    pub is_recursive: bool,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

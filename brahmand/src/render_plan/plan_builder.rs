@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
 
 use super::errors::RenderBuildError;
 use super::render_expr::{
@@ -73,7 +74,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 // let from_table = logical_cte.input.extract_from()?;
                 let render_cte = Cte {
                     cte_name: logical_cte.name.clone(),
-                    cte_plan: logical_cte.input.to_render_plan()?,
+                    content: super::CteContent::Structured(logical_cte.input.to_render_plan()?),
+                    is_recursive: false,
                     // select: SelectItems(select_items),
                     // from: from_table,
                     // filters: FilterItems(filters)
@@ -99,6 +101,25 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::ViewScan(_) => Ok(vec![]),
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_ctes(last_node_alias),
             LogicalPlan::GraphRel(graph_rel) => {
+                // Handle variable-length paths differently
+                if let Some(spec) = &graph_rel.variable_length {
+                    // Generate recursive CTE using VariableLengthCteGenerator
+                    let generator = VariableLengthCteGenerator::new(
+                        spec.clone(),
+                        &graph_rel.left_connection,  // start node
+                        &graph_rel.alias,            // relationship
+                        &graph_rel.right_connection, // end node
+                    );
+                    
+                    let var_len_cte = generator.generate_cte();
+                    
+                    // Also extract CTEs from child plans
+                    let mut child_ctes = graph_rel.right.extract_ctes(last_node_alias)?;
+                    child_ctes.push(var_len_cte);
+                    
+                    return Ok(child_ctes);
+                }
+
                 // first extract the bottom one
                 let mut right_cte = graph_rel.right.extract_ctes(last_node_alias)?;
                 // then process the center
@@ -137,7 +158,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 // let filters = logical_cte.input.extract_filters()?;
                 Ok(vec![Cte {
                     cte_name: logical_cte.name.clone(),
-                    cte_plan: logical_cte.input.to_render_plan()?,
+                    content: super::CteContent::Structured(logical_cte.input.to_render_plan()?),
+                    is_recursive: false,
                     // select: SelectItems(select_items),
                     // from: from_table,
                     // filters: FilterItems(filters)
@@ -328,6 +350,17 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn to_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
+        // Check if plan contains variable-length paths
+        if self.contains_variable_length_path() {
+            return Err(RenderBuildError::UnsupportedFeature(
+                "Variable-length path traversal is partially implemented. \
+                 Parser and query planning work, but SQL generation is not yet complete. \
+                 The system can parse queries like MATCH (a)-[*1..3]->(b) but cannot yet \
+                 generate the required WITH RECURSIVE CTEs. This feature is under active development."
+                    .to_string(),
+            ));
+        }
+
         let mut extracted_ctes: Vec<Cte> = vec![];
         let final_from: Option<FromTable>;
         let final_filters: Option<RenderExpr>;
@@ -340,9 +373,16 @@ impl RenderPlanBuilder for LogicalPlan {
                 .ok_or(RenderBuildError::MalformedCTEName)?;
 
             extracted_ctes = self.extract_ctes(last_node_alias)?;
-            final_from = view_ref_to_from_table(last_node_cte.cte_plan.from.0);
+            
+            // Extract from the CTE content
+            let (cte_from, cte_filters) = match &last_node_cte.content {
+                super::CteContent::Structured(plan) => (plan.from.0.clone(), plan.filters.0.clone()),
+                super::CteContent::RawSql(_) => (None, None), // Raw SQL CTEs don't have structured access
+            };
+            
+            final_from = view_ref_to_from_table(cte_from);
 
-            let last_node_filters_opt = clean_last_node_filters(last_node_cte.cte_plan.filters.0);
+            let last_node_filters_opt = clean_last_node_filters(cte_filters);
 
             let final_filters_opt = self.extract_final_filters()?;
 
