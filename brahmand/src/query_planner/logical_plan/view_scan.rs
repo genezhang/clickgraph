@@ -22,6 +22,10 @@ pub struct ViewScan {
     pub output_schema: Vec<String>,
     /// View-specific projections
     pub projections: Vec<LogicalExpr>,
+    /// For relationship scans: the column containing source node ID
+    pub from_column: Option<String>,
+    /// For relationship scans: the column containing target node ID
+    pub to_column: Option<String>,
     /// Child plan (if any)
     #[serde(skip)]
     pub input: Option<Arc<LogicalPlan>>,
@@ -44,6 +48,8 @@ impl ViewScan {
             id_column,
             output_schema,
             projections,
+            from_column: None,
+            to_column: None,
             input: None,
         }
     }
@@ -65,6 +71,57 @@ impl ViewScan {
             id_column,
             output_schema,
             projections,
+            from_column: None,
+            to_column: None,
+            input: Some(input),
+        }
+    }
+
+    /// Create a new relationship view scan with source and target columns
+    pub fn new_relationship(
+        source_table: String,
+        view_filter: Option<LogicalExpr>,
+        property_mapping: HashMap<String, String>,
+        id_column: String,
+        output_schema: Vec<String>,
+        projections: Vec<LogicalExpr>,
+        from_column: String,
+        to_column: String,
+    ) -> Self {
+        ViewScan {
+            source_table,
+            view_filter,
+            property_mapping,
+            id_column,
+            output_schema,
+            projections,
+            from_column: Some(from_column),
+            to_column: Some(to_column),
+            input: None,
+        }
+    }
+
+    /// Create a new relationship view scan with an input plan
+    pub fn relationship_with_input(
+        source_table: String,
+        view_filter: Option<LogicalExpr>,
+        property_mapping: HashMap<String, String>,
+        id_column: String,
+        output_schema: Vec<String>,
+        projections: Vec<LogicalExpr>,
+        from_column: String,
+        to_column: String,
+        input: Arc<LogicalPlan>,
+    ) -> Self {
+        ViewScan {
+            source_table,
+            view_filter,
+            property_mapping,
+            id_column,
+            output_schema,
+            projections,
+            from_column: Some(from_column),
+            to_column: Some(to_column),
             input: Some(input),
         }
     }
@@ -96,6 +153,8 @@ impl ViewScan {
             id_column: self.id_column.clone(),
             output_schema: self.output_schema.clone(),
             projections: self.projections.clone(),
+            from_column: self.from_column.clone(),
+            to_column: self.to_column.clone(),
             input: self.input.clone(),
         }
     }

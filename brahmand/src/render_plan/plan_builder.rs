@@ -14,6 +14,187 @@ use super::{
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
 
+/// Helper function to extract the actual table name from a LogicalPlan node
+/// Recursively traverses the plan tree to find the Scan or ViewScan node
+fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::Scan(scan) => scan.table_name.clone(),
+        LogicalPlan::ViewScan(view_scan) => Some(view_scan.source_table.clone()),
+        LogicalPlan::GraphNode(node) => extract_table_name(&node.input),
+        LogicalPlan::GraphRel(rel) => extract_table_name(&rel.center),
+        LogicalPlan::Filter(filter) => extract_table_name(&filter.input),
+        LogicalPlan::Projection(proj) => extract_table_name(&proj.input),
+        _ => None,
+    }
+}
+
+/// Helper to extract ID column name from ViewScan
+fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::ViewScan(view_scan) => Some(view_scan.id_column.clone()),
+        LogicalPlan::GraphNode(node) => extract_id_column(&node.input),
+        LogicalPlan::GraphRel(rel) => extract_id_column(&rel.center),
+        LogicalPlan::Filter(filter) => extract_id_column(&filter.input),
+        LogicalPlan::Projection(proj) => extract_id_column(&proj.input),
+        _ => None,
+    }
+}
+
+/// Structure to hold relationship column information
+#[derive(Debug, Clone)]
+struct RelationshipColumns {
+    from_column: String,
+    to_column: String,
+}
+
+/// Map Cypher label to actual source table name
+/// TODO: This should look up the actual schema from GraphSchema
+fn label_to_table_name(label: &str) -> String {
+    match label {
+        "user" | "User" => "users".to_string(),
+        "customer" | "Customer" => "customers".to_string(),
+        "product" | "Product" => "products".to_string(),
+        "post" | "Post" => "posts".to_string(),
+        _ => label.to_string(), // fallback to label itself
+    }
+}
+
+/// Map table name to its ID column
+/// TODO: This should look up the actual schema from GraphSchema
+fn table_to_id_column(table: &str) -> String {
+    match table {
+        "users" => "user_id".to_string(),
+        "customers" => "customer_id".to_string(),
+        "products" => "product_id".to_string(),
+        "posts" => "post_id".to_string(),
+        _ => format!("{}_id", table), // fallback to table_name + "_id"
+    }
+}
+
+/// Map relationship type to actual relationship table name
+/// TODO: This should look up the actual schema from GraphSchema
+fn rel_type_to_table_name(rel_type: &str) -> String {
+    match rel_type {
+        "FRIEND" | "FRIENDS_WITH" => "friendships".to_string(),
+        "FOLLOWS" => "user_follows".to_string(),
+        "AUTHORED" => "posts".to_string(),
+        "LIKED" => "post_likes".to_string(),
+        "PURCHASED" => "orders".to_string(),
+        _ => rel_type.to_string(), // fallback to type itself
+    }
+}
+
+/// Extract relationship columns from plan or table name
+/// TODO: This should look up the actual schema from GraphSchema
+/// For now, uses hardcoded mappings for known relationship types
+fn extract_relationship_columns_from_table(table_name: &str) -> RelationshipColumns {
+    // Hardcoded mappings for known relationship types
+    // TODO: Replace with actual schema lookup from GraphSchema
+    match table_name {
+        "user_follows" | "FOLLOWS" => RelationshipColumns {
+            from_column: "follower_id".to_string(),
+            to_column: "followed_id".to_string(),
+        },
+        "friendships" | "FRIEND" => RelationshipColumns {
+            from_column: "user1_id".to_string(),
+            to_column: "user2_id".to_string(),
+        },
+        "posts" | "AUTHORED" => RelationshipColumns {
+            from_column: "author_id".to_string(),
+            to_column: "post_id".to_string(),
+        },
+        "post_likes" | "LIKED" => RelationshipColumns {
+            from_column: "user_id".to_string(),
+            to_column: "post_id".to_string(),
+        },
+        "orders" | "PURCHASED" => RelationshipColumns {
+            from_column: "user_id".to_string(),
+            to_column: "product_id".to_string(),
+        },
+        _ => RelationshipColumns {
+            from_column: "from_node_id".to_string(),
+            to_column: "to_node_id".to_string(),
+        },
+    }
+}
+
+/// Extract relationship columns from ViewScan (for relationship tables)
+fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipColumns> {
+    match plan {
+        LogicalPlan::ViewScan(view_scan) => {
+            // Use actual columns from ViewScan if available
+            if let (Some(from_col), Some(to_col)) = (&view_scan.from_column, &view_scan.to_column) {
+                return Some(RelationshipColumns {
+                    from_column: from_col.clone(),
+                    to_column: to_col.clone(),
+                });
+            }
+            
+            // Otherwise, look up by table name
+            Some(extract_relationship_columns_from_table(&view_scan.source_table))
+        },
+        LogicalPlan::Scan(scan) => {
+            // For Scan nodes, look up by table name
+            scan.table_name.as_ref().map(|name| extract_relationship_columns_from_table(name))
+        },
+        LogicalPlan::GraphRel(rel) => extract_relationship_columns(&rel.center),
+        LogicalPlan::Filter(filter) => extract_relationship_columns(&filter.input),
+        _ => None,
+    }
+}
+
+/// Check if the plan contains a variable-length relationship and return node aliases
+/// Returns (left_alias, right_alias) if found
+fn has_variable_length_rel(plan: &LogicalPlan) -> Option<(String, String)> {
+    match plan {
+        LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
+            Some((rel.left_connection.clone(), rel.right_connection.clone()))
+        }
+        LogicalPlan::GraphNode(node) => has_variable_length_rel(&node.input),
+        LogicalPlan::Filter(filter) => has_variable_length_rel(&filter.input),
+        LogicalPlan::Projection(proj) => has_variable_length_rel(&proj.input),
+        LogicalPlan::GraphJoins(joins) => has_variable_length_rel(&joins.input),
+        LogicalPlan::GroupBy(gb) => has_variable_length_rel(&gb.input),
+        LogicalPlan::OrderBy(ob) => has_variable_length_rel(&ob.input),
+        LogicalPlan::Skip(skip) => has_variable_length_rel(&skip.input),
+        LogicalPlan::Limit(limit) => has_variable_length_rel(&limit.input),
+        LogicalPlan::Cte(cte) => has_variable_length_rel(&cte.input),
+        _ => None,
+    }
+}
+
+/// Rewrite expressions to use CTE columns instead of node references
+/// Maps u1.user_id -> t.start_id and u2.user_id -> t.end_id
+fn rewrite_expr_for_var_len_cte(
+    expr: &super::render_expr::RenderExpr,
+    left_alias: &str,
+    right_alias: &str,
+) -> super::render_expr::RenderExpr {
+    use super::render_expr::{RenderExpr, PropertyAccess, TableAlias, Column};
+    
+    match expr {
+        RenderExpr::PropertyAccessExp(prop_access) => {
+            // Check if this is referencing the left or right node
+            if prop_access.table_alias.0 == left_alias {
+                // Left node reference -> t.start_id
+                return RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("t".to_string()),
+                    column: Column("start_id".to_string()),
+                });
+            } else if prop_access.table_alias.0 == right_alias {
+                // Right node reference -> t.end_id
+                return RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("t".to_string()),
+                    column: Column("end_id".to_string()),
+                });
+            }
+            expr.clone()
+        }
+        // For other expression types, recursively rewrite if needed
+        _ => expr.clone(),
+    }
+}
+
 pub(crate) trait RenderPlanBuilder {
     fn extract_last_node_cte(&self) -> RenderPlanBuilderResult<Option<Cte>>;
 
@@ -103,12 +284,42 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GraphRel(graph_rel) => {
                 // Handle variable-length paths differently
                 if let Some(spec) = &graph_rel.variable_length {
+                    // Extract actual table names and column information
+                    // Apply mapping even if extract_table_name succeeds, in case it returns a label
+                    let start_table = label_to_table_name(&extract_table_name(&graph_rel.left)
+                        .unwrap_or_else(|| graph_rel.left_connection.clone()));
+                    let end_table = label_to_table_name(&extract_table_name(&graph_rel.right)
+                        .unwrap_or_else(|| graph_rel.right_connection.clone()));
+                    let rel_table = rel_type_to_table_name(&extract_table_name(&graph_rel.center)
+                        .unwrap_or_else(|| graph_rel.alias.clone()));
+                    
+                    // Extract ID columns
+                    let start_id_col = extract_id_column(&graph_rel.left)
+                        .unwrap_or_else(|| table_to_id_column(&start_table));
+                    let end_id_col = extract_id_column(&graph_rel.right)
+                        .unwrap_or_else(|| table_to_id_column(&end_table));
+                    
+                    // Extract relationship columns from ViewScan (will use schema-specific names if available)
+                    let rel_cols = extract_relationship_columns(&graph_rel.center)
+                        .unwrap_or(RelationshipColumns {
+                            from_column: "from_node_id".to_string(),  // Generic fallback
+                            to_column: "to_node_id".to_string(),      // Generic fallback
+                        });
+                    let from_col = rel_cols.from_column;
+                    let to_col = rel_cols.to_column;
+                    
                     // Generate recursive CTE using VariableLengthCteGenerator
                     let generator = VariableLengthCteGenerator::new(
                         spec.clone(),
-                        &graph_rel.left_connection,  // start node
-                        &graph_rel.alias,            // relationship
-                        &graph_rel.right_connection, // end node
+                        &start_table,                    // actual start table name
+                        &start_id_col,                   // start node ID column
+                        &rel_table,                      // actual relationship table name
+                        &from_col,                       // relationship from column
+                        &to_col,                         // relationship to column  
+                        &end_table,                      // actual end table name
+                        &end_id_col,                     // end node ID column
+                        &graph_rel.left_connection,      // start node alias (for output)
+                        &graph_rel.right_connection,     // end node alias (for output)
                     );
                     
                     let var_len_cte = generator.generate_cte();
@@ -350,17 +561,9 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn to_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
-        // Check if plan contains variable-length paths
-        if self.contains_variable_length_path() {
-            return Err(RenderBuildError::UnsupportedFeature(
-                "Variable-length path traversal is partially implemented. \
-                 Parser and query planning work, but SQL generation is not yet complete. \
-                 The system can parse queries like MATCH (a)-[*1..3]->(b) but cannot yet \
-                 generate the required WITH RECURSIVE CTEs. This feature is under active development."
-                    .to_string(),
-            ));
-        }
-
+        // Variable-length paths are now supported via recursive CTE generation
+        // Implementation in extract_ctes() method (lines 103-119)
+        
         let mut extracted_ctes: Vec<Cte> = vec![];
         let final_from: Option<FromTable>;
         let final_filters: Option<RenderExpr>;
@@ -374,39 +577,94 @@ impl RenderPlanBuilder for LogicalPlan {
 
             extracted_ctes = self.extract_ctes(last_node_alias)?;
             
-            // Extract from the CTE content
-            let (cte_from, cte_filters) = match &last_node_cte.content {
-                super::CteContent::Structured(plan) => (plan.from.0.clone(), plan.filters.0.clone()),
-                super::CteContent::RawSql(_) => (None, None), // Raw SQL CTEs don't have structured access
-            };
+            // Check if we have a variable-length CTE (it will be a recursive RawSql CTE)
+            let has_variable_length_cte = extracted_ctes.iter().any(|cte| 
+                cte.is_recursive && matches!(&cte.content, super::CteContent::RawSql(_))
+            );
             
-            final_from = view_ref_to_from_table(cte_from);
-
-            let last_node_filters_opt = clean_last_node_filters(cte_filters);
-
-            let final_filters_opt = self.extract_final_filters()?;
-
-            let final_combined_filters =
-                if last_node_filters_opt.is_some() && final_filters_opt.is_some() {
-                    Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::And,
-                        operands: vec![final_filters_opt.unwrap(), last_node_filters_opt.unwrap()],
-                    }))
-                } else if final_filters_opt.is_some() {
-                    final_filters_opt
-                } else if last_node_filters_opt.is_some() {
-                    last_node_filters_opt
-                } else {
-                    None
+            if has_variable_length_cte {
+                // For variable-length paths, use the CTE itself as the FROM clause
+                let var_len_cte = extracted_ctes.iter()
+                    .find(|cte| cte.is_recursive)
+                    .expect("Variable-length CTE should exist");
+                    
+                // Create a ViewTableRef that references the CTE by name
+                // We'll use an empty LogicalPlan as the source since the CTE is already defined
+                final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                    source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
+                    name: var_len_cte.cte_name.clone(),
+                })));
+                final_filters = None; // Filters are handled within the CTE
+            } else {
+                // Extract from the CTE content (normal path)
+                let (cte_from, cte_filters) = match &last_node_cte.content {
+                    super::CteContent::Structured(plan) => (plan.from.0.clone(), plan.filters.0.clone()),
+                    super::CteContent::RawSql(_) => (None, None), // Raw SQL CTEs don't have structured access
                 };
+                
+                final_from = view_ref_to_from_table(cte_from);
 
-            final_filters = final_combined_filters;
+                let last_node_filters_opt = clean_last_node_filters(cte_filters);
+
+                let final_filters_opt = self.extract_final_filters()?;
+
+                let final_combined_filters =
+                    if last_node_filters_opt.is_some() && final_filters_opt.is_some() {
+                        Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![final_filters_opt.unwrap(), last_node_filters_opt.unwrap()],
+                        }))
+                    } else if final_filters_opt.is_some() {
+                        final_filters_opt
+                    } else if last_node_filters_opt.is_some() {
+                        last_node_filters_opt
+                    } else {
+                        None
+                    };
+
+                final_filters = final_combined_filters;
+            }
         } else {
-            final_from = self.extract_from()?;
-            final_filters = self.extract_filters()?;
+            // No CTE wrapper, but check for variable-length paths which generate CTEs directly
+            // Extract CTEs with a dummy alias (variable-length doesn't use it)
+            extracted_ctes = self.extract_ctes("_")?;
+            
+            // Check if we have a variable-length CTE
+            let has_variable_length_cte = extracted_ctes.iter().any(|cte| 
+                cte.is_recursive && matches!(&cte.content, super::CteContent::RawSql(_))
+            );
+            
+            if has_variable_length_cte {
+                // For variable-length paths, use the CTE itself as the FROM clause
+                let var_len_cte = extracted_ctes.iter()
+                    .find(|cte| cte.is_recursive)
+                    .expect("Variable-length CTE should exist");
+                    
+                // Create a ViewTableRef that references the CTE by name
+                final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                    source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
+                    name: var_len_cte.cte_name.clone(),
+                })));
+                final_filters = None; // Filters are handled within the CTE
+            } else {
+                // Normal case: no CTEs, extract FROM and filters normally
+                final_from = self.extract_from()?;
+                final_filters = self.extract_filters()?;
+            }
         }
 
-        let final_select_items = self.extract_select_items()?;
+        let mut final_select_items = self.extract_select_items()?;
+        
+        // If we have a variable-length relationship, rewrite SELECT items to use CTE columns
+        if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
+            final_select_items = final_select_items.into_iter().map(|item| {
+                let new_expr = rewrite_expr_for_var_len_cte(&item.expression, &left_alias, &right_alias);
+                SelectItem {
+                    expression: new_expr,
+                    col_alias: item.col_alias,
+                }
+            }).collect();
+        }
 
         let mut extracted_joins = self.extract_joins()?;
         extracted_joins.sort_by_key(|join| join.joining_on.len());

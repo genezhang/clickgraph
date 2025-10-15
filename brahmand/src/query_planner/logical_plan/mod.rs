@@ -117,7 +117,7 @@ pub struct GraphRel {
     pub right_connection: String,
     pub is_rel_anchor: bool,
     pub variable_length: Option<VariableLengthSpec>,
-}
+    }
 
 /// Specification for variable-length path relationships
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

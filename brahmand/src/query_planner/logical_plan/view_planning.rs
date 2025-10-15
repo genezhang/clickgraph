@@ -93,14 +93,16 @@ pub fn plan_view_relationship_scan(
     output_schema.push("from_id".to_string());
     output_schema.push("to_id".to_string());
 
-    // Create view scan with input plan
-    let scan = ViewScan::with_input(
+    // Create view scan with input plan - use relationship constructor to include column info
+    let scan = ViewScan::relationship_with_input(
         rel_mapping.source_table.clone(),
         rel_mapping.filter_condition.as_ref().map(|f| LogicalExpr::Raw(f.clone())),
         property_mapping,
         rel_mapping.from_column.clone(), // Use from_column as primary ID
         output_schema,
         projections,
+        rel_mapping.from_column.clone(), // Source node column
+        rel_mapping.to_column.clone(),   // Target node column
         from_plan,
     );
 

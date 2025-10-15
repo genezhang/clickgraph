@@ -182,33 +182,22 @@ impl ToSql for CteItems {
 
 impl ToSql for Cte {
     fn to_sql(&self) -> String {
-        let mut cte_body = String::new();
-        cte_body.push_str("\n    ");
-        
         // Handle both structured and raw SQL content
         match &self.content {
             CteContent::Structured(plan) => {
+                // For structured content, we need to wrap it with the CTE name
+                let mut cte_body = String::new();
+                cte_body.push_str("\n    ");
                 cte_body.push_str(&plan.to_sql());
+                
+                format!("{} AS ({})", self.cte_name, cte_body)
             }
             CteContent::RawSql(sql) => {
-                cte_body.push_str(sql);
+                // For raw SQL, it already includes the CTE name and AS clause
+                // from VariableLengthCteGenerator.generate_recursive_sql()
+                sql.clone()
             }
         }
-        // // SELECT
-        // cte_body.push_str("\n    ");
-        // cte_body.push_str(&self.select.to_sql());
-        // // FROM
-        // cte_body.push_str("    ");
-        // cte_body.push_str(&self.from.to_sql());
-
-        // // WHERE
-        // let where_str = &self.filters.to_sql();
-        // if !where_str.is_empty() {
-        //     cte_body.push_str(&format!("    {}", where_str));
-        // }
-
-        let sql = format!("{} AS ({})", self.cte_name, cte_body);
-        sql
     }
 }
 

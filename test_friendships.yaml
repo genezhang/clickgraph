@@ -1,0 +1,24 @@
+name: test_friendships
+version: "1.0"
+description: "Test friendships schema for variable-length path testing"
+
+views:
+  - name: friendships_graph
+    nodes:
+      User:
+        label: user
+        source_table: users
+        id_column: user_id  
+        property_mappings:
+          name: full_name
+          
+    relationships:
+      FRIEND:
+        type_name: FRIEND
+        source_table: friendships
+        from_column: user1_id
+        to_column: user2_id
+        from_node_type: User
+        to_node_type: User
+        property_mappings:
+          since: since_date
