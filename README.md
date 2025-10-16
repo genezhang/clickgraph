@@ -18,6 +18,7 @@
 - **ClickHouse-native**: Extends ClickHouse with native graph modeling, merging OLAP speed with graph-analysis power
 - **Stateless Architecture**: Offloads all storage and query execution to ClickHouse—no extra datastore required
 - **Cypher Query Language**: Industry-standard Cypher syntax for intuitive, expressive property-graph querying
+- **Variable-Length Paths**: Recursive traversals with `*1..3` syntax using ClickHouse WITH RECURSIVE CTEs
 - **Analytical-scale Performance**: Optimized for very large datasets and complex multi-hop traversals
 
 ### Neo4j Ecosystem Compatibility
@@ -59,13 +60,30 @@ Both protocols share the same underlying query engine and ClickHouse backend.
 
 **New to ClickGraph?** See the **[Getting Started Guide](docs/getting-started.md)** for a complete walkthrough.
 
-### 5-Minute Setup
+> **⚠️ Windows Users**: The HTTP server has a known issue on Windows. Use Docker or WSL for development. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 
-1. **Clone and start ClickHouse**:
+### 5-Minute Setup (Docker - Recommended)
+
+1. **Clone and start services**:
    ```bash
    git clone https://github.com/genezhang/clickgraph
    cd clickgraph
    docker-compose up -d
+   ```
+   This starts both ClickHouse and ClickGraph with test data pre-loaded.
+
+2. **Test the setup**:
+   ```bash
+   curl -X POST http://localhost:8080/query \
+     -H "Content-Type: application/json" \
+     -d '{"query": "MATCH (u:User) RETURN u.full_name LIMIT 5"}'
+   ```
+
+### Native Build (Linux/macOS/WSL)
+
+1. **Start ClickHouse**:
+   ```bash
+   docker-compose up -d clickhouse
    ```
 
 2. **Configure and run**:

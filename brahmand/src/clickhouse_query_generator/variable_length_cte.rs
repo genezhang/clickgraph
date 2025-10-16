@@ -1,6 +1,14 @@
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::Cte;
 
+/// Property to include in the CTE (column name and which node it belongs to)
+#[derive(Debug, Clone)]
+pub struct NodeProperty {
+    pub cypher_alias: String,  // "u1" or "u2" - which node this property is for
+    pub column_name: String,    // Actual column name in the table (e.g., "full_name")
+    pub alias: String,          // Output alias (e.g., "name" or "u1_name")
+}
+
 /// Generates recursive CTE SQL for variable-length path traversal
 pub struct VariableLengthCteGenerator {
     pub spec: VariableLengthSpec,
@@ -17,6 +25,7 @@ pub struct VariableLengthCteGenerator {
     pub end_node_alias: String,
     pub start_cypher_alias: String,      // Original Cypher query alias (e.g., "u1")
     pub end_cypher_alias: String,        // Original Cypher query alias (e.g., "u2")
+    pub properties: Vec<NodeProperty>,   // Properties to include in the CTE
     pub database: Option<String>,        // Optional database prefix
 }
 
@@ -32,6 +41,7 @@ impl VariableLengthCteGenerator {
         end_id_col: &str,          // ID column name (e.g., "user_id")
         start_alias: &str,         // Cypher alias (e.g., "u1")
         end_alias: &str,           // Cypher alias (e.g., "u2")
+        properties: Vec<NodeProperty>, // Properties to include in CTE
     ) -> Self {
         // Try to get database from environment
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
@@ -51,6 +61,7 @@ impl VariableLengthCteGenerator {
             end_node_alias: "end_node".to_string(),
             start_cypher_alias: start_alias.to_string(),
             end_cypher_alias: end_alias.to_string(),
+            properties,
             database,
         }
     }
@@ -112,10 +123,32 @@ impl VariableLengthCteGenerator {
     /// Generate base case for a specific hop count
     fn generate_base_case(&self, hop_count: u32) -> String {
         if hop_count == 1 {
-            // Direct single-hop connection using actual column names
-            // TODO: Make property selection dynamic based on query needs
+            // Build property selections
+            let mut select_items = vec![
+                format!("{}.{} as start_id", self.start_node_alias, self.start_node_id_column),
+                format!("{}.{} as end_id", self.end_node_alias, self.end_node_id_column),
+                "1 as hop_count".to_string(),
+                format!("[{}.{}] as path_nodes", self.start_node_alias, self.start_node_id_column),
+            ];
+            
+            // Add properties for start and end nodes
+            for prop in &self.properties {
+                if prop.cypher_alias == self.start_cypher_alias {
+                    // Property belongs to start node
+                    select_items.push(format!("{}.{} as start_{}", 
+                        self.start_node_alias, prop.column_name, prop.alias));
+                } else if prop.cypher_alias == self.end_cypher_alias {
+                    // Property belongs to end node
+                    select_items.push(format!("{}.{} as end_{}", 
+                        self.end_node_alias, prop.column_name, prop.alias));
+                }
+            }
+            
+            let select_clause = select_items.join(",\n        ");
+            
             format!(
-                "    SELECT \n        {start}.{start_id_col} as start_id,\n        {end}.{end_id_col} as end_id,\n        1 as hop_count,\n        [{start}.{start_id_col}] as path_nodes\n    FROM {start_table} {start}\n    JOIN {rel_table} {rel} ON {start}.{start_id_col} = {rel}.{from_col}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}",
+                "    SELECT \n        {select}\n    FROM {start_table} {start}\n    JOIN {rel_table} {rel} ON {start}.{start_id_col} = {rel}.{from_col}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}",
+                select = select_clause,
                 start = self.start_node_alias,
                 start_id_col = self.start_node_id_column,
                 end = self.end_node_alias,
@@ -145,15 +178,36 @@ impl VariableLengthCteGenerator {
 
     /// Generate recursive case that extends existing paths
     fn generate_recursive_case(&self, max_hops: u32) -> String {
-        // TODO: Make property selection dynamic based on query needs
+        // Build property selections for recursive case
+        let mut select_items = vec![
+            "vp.start_id".to_string(),
+            format!("{}.{} as end_id", self.end_node_alias, self.end_node_id_column),
+            "vp.hop_count + 1 as hop_count".to_string(),
+            format!("arrayConcat(vp.path_nodes, [current_node.{}]) as path_nodes", self.end_node_id_column),
+        ];
+        
+        // Add properties: start properties come from CTE, end properties from new joined node
+        for prop in &self.properties {
+            if prop.cypher_alias == self.start_cypher_alias {
+                // Start node properties pass through from CTE
+                select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
+            } else if prop.cypher_alias == self.end_cypher_alias {
+                // End node properties come from the newly joined node
+                select_items.push(format!("{}.{} as end_{}", 
+                    self.end_node_alias, prop.column_name, prop.alias));
+            }
+        }
+        
+        let select_clause = select_items.join(",\n        ");
+        
         format!(
-            "    SELECT\n        vp.start_id,\n        {end}.{end_id_col} as end_id,\n        vp.hop_count + 1 as hop_count,\n        arrayConcat(vp.path_nodes, [{current}.{current_id_col}]) as path_nodes\n    FROM {cte_name} vp\n    JOIN {current_table} {current} ON vp.end_id = {current}.{current_id_col}\n    JOIN {rel_table} {rel} ON {current}.{current_id_col} = {rel}.{from_col}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}\n    WHERE vp.hop_count < {max_hops}\n      AND NOT has(vp.path_nodes, {current}.{current_id_col})  -- Cycle detection",
+            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON vp.end_id = current_node.{current_id_col}\n    JOIN {rel_table} {rel} ON current_node.{current_id_col} = {rel}.{from_col}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}\n    WHERE vp.hop_count < {max_hops}\n      AND NOT has(vp.path_nodes, current_node.{current_id_col})  -- Cycle detection",
+            select = select_clause,
             end = self.end_node_alias,
             end_id_col = self.end_node_id_column,
-            current = "current_node",
-            current_id_col = self.end_node_id_column, // Use end node's column since we're extending from last node
+            current_id_col = self.end_node_id_column,
             cte_name = self.cte_name,
-            current_table = self.format_table_name(&self.end_node_table), // For recursive, join with same type of table
+            current_table = self.format_table_name(&self.end_node_table),
             rel_table = self.format_table_name(&self.relationship_table),
             from_col = self.relationship_from_column,
             to_col = self.relationship_to_column,
@@ -181,7 +235,8 @@ mod tests {
             "posts",       // end table
             "post_id",     // end id column
             "u",           // start alias
-            "p"            // end alias
+            "p",           // end alias
+            vec![]         // no properties for test
         );
 
         let cte = generator.generate_cte();
@@ -205,7 +260,8 @@ mod tests {
             "users",        // end table
             "user_id",      // end id column
             "u1",           // start alias
-            "u2"            // end alias
+            "u2",           // end alias
+            vec![]          // no properties for test
         );
 
         let sql = generator.generate_recursive_sql();

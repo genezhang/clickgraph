@@ -273,6 +273,8 @@ fn generate_create_rel_table_query(
         column_names,
         from_node: from_node.to_string(),
         to_node: to_node.to_string(),
+        from_column: format!("from_{}", from_node),
+        to_column: format!("to_{}", to_node),
         from_node_id_dtype: from_table_schema.node_id.dtype.clone(),
         to_node_id_dtype: to_table_schema.node_id.dtype.clone(),
     };

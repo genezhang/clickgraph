@@ -33,6 +33,14 @@ impl ToSql for RenderPlan {
             let limit_str = format!("LIMIT {skip_str} {m}");
             sql.push_str(&limit_str)
         }
+        
+        // Add ClickHouse SETTINGS for recursive CTEs (variable-length paths)
+        // Check if any CTE is recursive
+        let has_recursive_cte = self.ctes.0.iter().any(|cte| cte.is_recursive);
+        if has_recursive_cte {
+            sql.push_str("\nSETTINGS max_recursive_cte_evaluation_depth = 1000");
+        }
+        
         sql
     }
 }
@@ -167,7 +175,14 @@ impl ToSql for CteItems {
             return sql;
         }
 
-        sql.push_str("WITH ");
+        // Check if any CTE is recursive
+        let has_recursive_cte = self.0.iter().any(|cte| cte.is_recursive);
+        
+        if has_recursive_cte {
+            sql.push_str("WITH RECURSIVE ");
+        } else {
+            sql.push_str("WITH ");
+        }
 
         for (i, cte) in self.0.iter().enumerate() {
             sql.push_str(&cte.to_sql());

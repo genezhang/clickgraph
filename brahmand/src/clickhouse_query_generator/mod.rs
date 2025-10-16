@@ -13,7 +13,7 @@ pub mod variable_length_cte;
 mod view_query;
 
 pub use errors::ClickhouseQueryGeneratorError;
-pub use variable_length_cte::VariableLengthCteGenerator;
+pub use variable_length_cte::{VariableLengthCteGenerator, NodeProperty};
 
 
 // pub fn generate_sql(plan: RenderPlan) -> String{

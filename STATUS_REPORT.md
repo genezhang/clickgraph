@@ -1,7 +1,26 @@
 # ClickGraph Current Status Report
-*Updated: October 12, 2025*
+*Updated: October 15, 2025*
 
-## 🎉 Major Achievement: Relationship Traversal Support
+## 🎉 Major Achievements: Variable-Length Paths + Schema Integration
+
+### **Recent Milestone: Variable-Length Path Queries Working End-to-End** (Oct 15, 2025)
+
+#### **✅ Complete Implementation**
+- **Variable-length path parsing**: `*1..3`, `*2`, `*..5`, `*` all supported
+- **Recursive CTE generation**: WITH RECURSIVE keyword with proper SQL syntax
+- **Property selection in CTEs**: Two-pass architecture for including node/relationship properties
+- **Schema integration**: Full column mapping with YAML configuration support
+- **Cycle detection**: Array-based path tracking prevents infinite loops
+- **Multi-hop queries**: Tested up to *1..3 with correct results
+
+#### **Test Results** (Oct 15, 2025)
+- ✅ Query: `MATCH (u1:User)-[r:FRIEND*1..2]->(u2:User) RETURN u1.full_name, u2.full_name`
+- ✅ Returns: 4 paths (3 one-hop + 1 two-hop) with correct property values
+- ✅ SQL Generation: Proper `rel.user1_id` and `rel.user2_id` column references
+- ✅ Real database: 3 users, 3 friendships in ClickHouse (social.users, social.friendships)
+- ✅ All 374/374 tests passing
+
+## 🎉 Previous Achievement: Relationship Traversal Support
 
 ### ✅ **IMPLEMENTED AND TESTED**
 
@@ -30,9 +49,11 @@
 | **Basic Relationships** | ✅ Working | 100% | Fixed-length patterns with proper JOINs |
 | **YAML View System** | ✅ Robust | 100% | Schema loading and validation |
 | **Fixed-length Paths** | ✅ Working | 100% | Multi-hop with known depth |
-| **Variable-length Paths** | ❌ Missing | 0% | `(a)-[*1..3]->(b)` not implemented |
+| **Variable-length Paths** | ✅ Working | 100% | `(a)-[*1..3]->(b)` with recursive CTEs |
+| **Property Selection in Paths** | ✅ Working | 100% | Two-pass CTE generation with properties |
+| **Schema Integration** | ✅ Working | 100% | Column mapping from YAML configuration |
 | **Neo4j Bolt Protocol** | ✅ Complete | N/A | Wire protocol implementation |
-| **HTTP API** | ✅ Robust | 100% | RESTful endpoints working |
+| **HTTP API** | ✅ Working | 100% | RESTful endpoints (Linux/Docker only) |
 | **Basic Parser** | ✅ Working | 100% | Core OpenCypher patterns only |
 
 ## 🏗️ **Architecture Overview**

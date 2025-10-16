@@ -45,6 +45,12 @@ pub struct RelationshipViewMapping {
     pub type_name: String,
     /// Optional WHERE clause filter
     pub filter_condition: Option<String>,
+    /// Source node type (optional - can be derived from schema)
+    #[serde(default)]
+    pub from_node_type: Option<String>,
+    /// Target node type (optional - can be derived from schema)
+    #[serde(default)]
+    pub to_node_type: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -59,8 +65,10 @@ pub struct NodeSchema {
 pub struct RelationshipSchema {
     pub table_name: String,
     pub column_names: Vec<String>,
-    pub from_node: String,
-    pub to_node: String,
+    pub from_node: String,  // Node type (e.g., "User")
+    pub to_node: String,    // Node type (e.g., "User")
+    pub from_column: String,  // Column name for source node ID (e.g., "user1_id")
+    pub to_column: String,    // Column name for target node ID (e.g., "user2_id")
     pub from_node_id_dtype: String,
     pub to_node_id_dtype: String,
 }
@@ -191,8 +199,11 @@ impl ViewSchemaResolver for GraphSchema {
         Ok(RelationshipSchema {
             table_name: mapping.source_table.clone(),
             column_names,
-            from_node: mapping.from_column.clone(),
-            to_node: mapping.to_column.clone(),
+            // Use from_node_type if provided, otherwise use type_name as fallback
+            from_node: mapping.from_node_type.clone().unwrap_or_else(|| mapping.type_name.clone()),
+            to_node: mapping.to_node_type.clone().unwrap_or_else(|| mapping.type_name.clone()),
+            from_column: mapping.from_column.clone(),   // Column name for source
+            to_column: mapping.to_column.clone(),       // Column name for target
             from_node_id_dtype: from_type,
             to_node_id_dtype: to_type,
         })

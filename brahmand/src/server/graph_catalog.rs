@@ -408,6 +408,8 @@ async fn load_schema_and_config_from_yaml(config_path: &str) -> Result<(GraphSch
                 column_names,
                 from_node: from_node.to_string(),
                 to_node: to_node.to_string(),
+                from_column: rel_mapping.from_column.clone(),
+                to_column: rel_mapping.to_column.clone(),
                 from_node_id_dtype: "UInt32".to_string(),
                 to_node_id_dtype: "UInt32".to_string(),
             };

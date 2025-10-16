@@ -22,7 +22,9 @@ services:
       - ./clickhouse_data:/var/lib/clickhouse
 
   brahmand:
-    image: darshandevrai/brahmand:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: brahmand
     depends_on:
       clickhouse-service:
@@ -31,9 +33,12 @@ services:
       CLICKHOUSE_URL: "http://clickhouse-service:8123"
       CLICKHOUSE_USER: "test_user"
       CLICKHOUSE_PASSWORD: "test_pass"
-      CLICKHOUSE_DATABASE: "brahmand"
+      CLICKHOUSE_DATABASE: "social"
+      GRAPH_CONFIG_PATH: "/app/test_friendships.yaml"
     ports:
       - "8080:8080"
+    volumes:
+      - ./test_friendships.yaml:/app/test_friendships.yaml:ro
 
 volumes:
   clickhouse_data:
