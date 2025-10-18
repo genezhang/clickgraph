@@ -23,6 +23,15 @@ use super::{
     models::{OutputFormat, QueryRequest, SqlOnlyResponse},
 };
 
+/// Simple health check endpoint
+pub async fn health_check() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({
+        "status": "healthy",
+        "service": "clickgraph",
+        "version": env!("CARGO_PKG_VERSION")
+    })))
+}
+
 pub async fn query_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<QueryRequest>,

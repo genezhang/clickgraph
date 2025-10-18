@@ -1,8 +1,8 @@
 use std::{env, sync::Arc};
 
-use axum::{Router, routing::post};
+use axum::{Router, routing::{get, post}};
 use clickhouse::Client;
-use handlers::query_handler;
+use handlers::{query_handler, health_check};
 
 use dotenv::dotenv;
 use tokio::sync::{OnceCell, RwLock};
@@ -17,7 +17,7 @@ use bolt_protocol::{BoltServer, BoltConfig};
 pub mod bolt_protocol;
 mod clickhouse_client;
 pub mod graph_catalog;
-mod handlers;
+pub mod handlers;
 mod models;
 
 // Server configuration
@@ -144,6 +144,7 @@ pub async fn run_with_config(config: ServerConfig) {
     println!("Starting HTTP server on {}", http_bind_address);
     
     let app = Router::new()
+        .route("/health", get(health_check))
         .route("/query", post(query_handler))
         .with_state(Arc::new(app_state));
 
