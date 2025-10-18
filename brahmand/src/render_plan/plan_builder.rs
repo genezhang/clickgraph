@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use crate::query_planner::logical_plan::LogicalPlan;
-use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
+use crate::clickhouse_query_generator::variable_length_cte::{VariableLengthCteGenerator, ChainedJoinGenerator};
 
 use super::errors::RenderBuildError;
 use super::render_expr::{
@@ -577,22 +577,40 @@ impl RenderPlanBuilder for LogicalPlan {
                     // For now, using empty properties - will be populated in a later step
                     let properties = vec![];
                     
-                    // Generate recursive CTE using VariableLengthCteGenerator
-                    let generator = VariableLengthCteGenerator::new(
-                        spec.clone(),
-                        &start_table,                    // actual start table name
-                        &start_id_col,                   // start node ID column
-                        &rel_table,                      // actual relationship table name
-                        &from_col,                       // relationship from column
-                        &to_col,                         // relationship to column  
-                        &end_table,                      // actual end table name
-                        &end_id_col,                     // end node ID column
-                        &graph_rel.left_connection,      // start node alias (for output)
-                        &graph_rel.right_connection,     // end node alias (for output)
-                        properties,                      // properties to include in CTE
-                    );
-                    
-                    let var_len_cte = generator.generate_cte();
+                    // Choose between chained JOINs (for exact hop counts) or recursive CTE (for ranges)
+                    let var_len_cte = if let Some(exact_hops) = spec.exact_hop_count() {
+                        // Exact hop count: use optimized chained JOINs
+                        let generator = ChainedJoinGenerator::new(
+                            exact_hops,
+                            &start_table,
+                            &start_id_col,
+                            &rel_table,
+                            &from_col,
+                            &to_col,
+                            &end_table,
+                            &end_id_col,
+                            &graph_rel.left_connection,
+                            &graph_rel.right_connection,
+                            properties,
+                        );
+                        generator.generate_cte()
+                    } else {
+                        // Range or unbounded: use recursive CTE
+                        let generator = VariableLengthCteGenerator::new(
+                            spec.clone(),
+                            &start_table,                    // actual start table name
+                            &start_id_col,                   // start node ID column
+                            &rel_table,                      // actual relationship table name
+                            &from_col,                       // relationship from column
+                            &to_col,                         // relationship to column  
+                            &end_table,                      // actual end table name
+                            &end_id_col,                     // end node ID column
+                            &graph_rel.left_connection,      // start node alias (for output)
+                            &graph_rel.right_connection,     // end node alias (for output)
+                            properties,                      // properties to include in CTE
+                        );
+                        generator.generate_cte()
+                    };
                     
                     // Also extract CTEs from child plans
                     let mut child_ctes = graph_rel.right.extract_ctes(last_node_alias)?;
@@ -691,22 +709,40 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Get properties from context - this is the KEY difference!
                     let properties = context.get_properties(&graph_rel.left_connection, &graph_rel.right_connection);
                     
-                    // Generate recursive CTE with properties from context
-                    let generator = VariableLengthCteGenerator::new(
-                        spec.clone(),
-                        &start_table,
-                        &start_id_col,
-                        &rel_table,
-                        &from_col,
-                        &to_col,
-                        &end_table,
-                        &end_id_col,
-                        &graph_rel.left_connection,
-                        &graph_rel.right_connection,
-                        properties,  // Properties from context!
-                    );
-                    
-                    let var_len_cte = generator.generate_cte();
+                    // Choose between chained JOINs (for exact hop counts) or recursive CTE (for ranges)
+                    let var_len_cte = if let Some(exact_hops) = spec.exact_hop_count() {
+                        // Exact hop count: use optimized chained JOINs
+                        let generator = ChainedJoinGenerator::new(
+                            exact_hops,
+                            &start_table,
+                            &start_id_col,
+                            &rel_table,
+                            &from_col,
+                            &to_col,
+                            &end_table,
+                            &end_id_col,
+                            &graph_rel.left_connection,
+                            &graph_rel.right_connection,
+                            properties,  // Properties from context!
+                        );
+                        generator.generate_cte()
+                    } else {
+                        // Range or unbounded: use recursive CTE
+                        let generator = VariableLengthCteGenerator::new(
+                            spec.clone(),
+                            &start_table,
+                            &start_id_col,
+                            &rel_table,
+                            &from_col,
+                            &to_col,
+                            &end_table,
+                            &end_id_col,
+                            &graph_rel.left_connection,
+                            &graph_rel.right_connection,
+                            properties,  // Properties from context!
+                        );
+                        generator.generate_cte()
+                    };
                     
                     // Also extract CTEs from child plans
                     let mut child_ctes = graph_rel.right.extract_ctes_with_context(last_node_alias, context)?;

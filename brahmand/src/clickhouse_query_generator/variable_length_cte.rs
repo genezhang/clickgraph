@@ -280,3 +280,298 @@ mod tests {
         assert!(!spec.is_single_hop());
     }
 }
+
+/// Generates optimized chained JOIN SQL for exact hop count queries
+/// This is much more efficient than recursive CTEs for fixed-length paths
+pub struct ChainedJoinGenerator {
+    pub hop_count: u32,
+    pub start_node_table: String,
+    pub start_node_id_column: String,
+    pub relationship_table: String,
+    pub relationship_from_column: String,
+    pub relationship_to_column: String,
+    pub end_node_table: String,
+    pub end_node_id_column: String,
+    pub start_cypher_alias: String,
+    pub end_cypher_alias: String,
+    pub properties: Vec<NodeProperty>,
+    pub database: Option<String>,
+}
+
+impl ChainedJoinGenerator {
+    pub fn new(
+        hop_count: u32,
+        start_table: &str,
+        start_id_col: &str,
+        relationship_table: &str,
+        rel_from_col: &str,
+        rel_to_col: &str,
+        end_table: &str,
+        end_id_col: &str,
+        start_alias: &str,
+        end_alias: &str,
+        properties: Vec<NodeProperty>,
+    ) -> Self {
+        let database = std::env::var("CLICKHOUSE_DATABASE").ok();
+        
+        Self {
+            hop_count,
+            start_node_table: start_table.to_string(),
+            start_node_id_column: start_id_col.to_string(),
+            relationship_table: relationship_table.to_string(),
+            relationship_from_column: rel_from_col.to_string(),
+            relationship_to_column: rel_to_col.to_string(),
+            end_node_table: end_table.to_string(),
+            end_node_id_column: end_id_col.to_string(),
+            start_cypher_alias: start_alias.to_string(),
+            end_cypher_alias: end_alias.to_string(),
+            properties,
+            database,
+        }
+    }
+
+    /// Generate a CTE containing the chained JOIN query
+    /// Even though it's not recursive, we wrap it in a CTE for consistency
+    pub fn generate_cte(&self) -> Cte {
+        let cte_name = format!("chained_path_{}", uuid::Uuid::new_v4().simple());
+        let cte_sql = self.generate_query();
+        
+        Cte {
+            cte_name,
+            content: crate::render_plan::CteContent::RawSql(cte_sql),
+            is_recursive: false, // Chained JOINs don't need recursion
+        }
+    }
+
+    fn format_table_name(&self, table: &str) -> String {
+        if let Some(db) = &self.database {
+            format!("{}.{}", db, table)
+        } else {
+            table.to_string()
+        }
+    }
+
+    /// Generate a SELECT query with chained JOINs for exact hop count
+    pub fn generate_query(&self) -> String {
+        if self.hop_count == 0 {
+            // Special case: 0 hops means start node == end node
+            return self.generate_zero_hop_query();
+        }
+
+        let mut sql = String::new();
+        
+        // Build SELECT clause with properties
+        let mut select_items = vec![
+            format!("s.{} as start_id", self.start_node_id_column),
+            format!("e.{} as end_id", self.end_node_id_column),
+        ];
+
+        // Add start node properties
+        for prop in &self.properties {
+            if prop.cypher_alias == self.start_cypher_alias {
+                select_items.push(format!("s.{} as start_{}", prop.column_name, prop.alias));
+            }
+        }
+
+        // Add end node properties
+        for prop in &self.properties {
+            if prop.cypher_alias == self.end_cypher_alias {
+                select_items.push(format!("e.{} as end_{}", prop.column_name, prop.alias));
+            }
+        }
+
+        sql.push_str("SELECT \n    ");
+        sql.push_str(&select_items.join(",\n    "));
+        sql.push_str("\nFROM ");
+        sql.push_str(&self.format_table_name(&self.start_node_table));
+        sql.push_str(" s\n");
+
+        // Generate chain of JOINs
+        for hop in 1..=self.hop_count {
+            let rel_alias = format!("r{}", hop);
+            let node_alias = if hop == self.hop_count {
+                "e".to_string()
+            } else {
+                format!("m{}", hop)
+            };
+            
+            let prev_node = if hop == 1 {
+                "s".to_string()
+            } else {
+                format!("m{}", hop - 1)
+            };
+
+            // Add relationship JOIN
+            sql.push_str(&format!(
+                "JOIN {} {} ON {}.{} = {}.{}\n",
+                self.format_table_name(&self.relationship_table),
+                rel_alias,
+                prev_node,
+                self.start_node_id_column,
+                rel_alias,
+                self.relationship_from_column
+            ));
+
+            // Add node JOIN
+            let node_table = if hop == self.hop_count {
+                &self.end_node_table
+            } else {
+                &self.start_node_table // Intermediate nodes are same type as start
+            };
+
+            sql.push_str(&format!(
+                "JOIN {} {} ON {}.{} = {}.{}\n",
+                self.format_table_name(node_table),
+                node_alias,
+                rel_alias,
+                self.relationship_to_column,
+                node_alias,
+                if hop == self.hop_count { &self.end_node_id_column } else { &self.start_node_id_column }
+            ));
+        }
+
+        // Add WHERE clause for cycle prevention
+        if self.hop_count > 1 {
+            sql.push_str("WHERE ");
+            let mut conditions = vec![];
+            
+            // Prevent start == end
+            conditions.push(format!("s.{} != e.{}", self.start_node_id_column, self.end_node_id_column));
+            
+            // Prevent intermediate nodes from being start or end
+            for hop in 1..self.hop_count {
+                let mid_alias = format!("m{}", hop);
+                conditions.push(format!("s.{} != {}.{}", self.start_node_id_column, mid_alias, self.start_node_id_column));
+                conditions.push(format!("e.{} != {}.{}", self.end_node_id_column, mid_alias, self.start_node_id_column));
+            }
+            
+            // Prevent intermediate nodes from repeating
+            if self.hop_count > 2 {
+                for i in 1..self.hop_count {
+                    for j in (i+1)..self.hop_count {
+                        conditions.push(format!("m{}.{} != m{}.{}", 
+                            i, self.start_node_id_column, 
+                            j, self.start_node_id_column));
+                    }
+                }
+            }
+            
+            sql.push_str(&conditions.join("\n  AND "));
+        }
+
+        sql
+    }
+
+    fn generate_zero_hop_query(&self) -> String {
+        let mut select_items = vec![
+            format!("s.{} as start_id", self.start_node_id_column),
+            format!("s.{} as end_id", self.start_node_id_column),
+        ];
+
+        // Add properties (both start and end reference same node)
+        for prop in &self.properties {
+            if prop.cypher_alias == self.start_cypher_alias {
+                select_items.push(format!("s.{} as start_{}", prop.column_name, prop.alias));
+            }
+            if prop.cypher_alias == self.end_cypher_alias {
+                select_items.push(format!("s.{} as end_{}", prop.column_name, prop.alias));
+            }
+        }
+
+        format!(
+            "SELECT \n    {}\nFROM {} s",
+            select_items.join(",\n    "),
+            self.format_table_name(&self.start_node_table)
+        )
+    }
+}
+
+#[cfg(test)]
+mod chained_join_tests {
+    use super::*;
+
+    #[test]
+    fn test_chained_join_2_hops() {
+        let generator = ChainedJoinGenerator::new(
+            2,
+            "users",
+            "user_id",
+            "friendships",
+            "user1_id",
+            "user2_id",
+            "users",
+            "user_id",
+            "u1",
+            "u2",
+            vec![],
+        );
+
+        let sql = generator.generate_query();
+        println!("2-hop chained JOIN:\n{}", sql);
+        
+        assert!(sql.contains("FROM") && sql.contains("users"));
+        assert!(sql.contains("JOIN") && sql.contains("friendships"));
+        assert!(sql.contains("r1") && sql.contains("r2")); // 2 relationship aliases
+        assert!(sql.contains("m1")); // 1 intermediate node
+        assert!(sql.contains("WHERE")); // Cycle prevention
+    }
+
+    #[test]
+    fn test_chained_join_3_hops() {
+        let generator = ChainedJoinGenerator::new(
+            3,
+            "users",
+            "user_id",
+            "friendships",
+            "user1_id",
+            "user2_id",
+            "users",
+            "user_id",
+            "u1",
+            "u2",
+            vec![],
+        );
+
+        let sql = generator.generate_query();
+        println!("3-hop chained JOIN:\n{}", sql);
+        
+        assert!(sql.contains("r1") && sql.contains("r2") && sql.contains("r3"));
+        assert!(sql.contains("m1") && sql.contains("m2")); // 2 intermediate nodes
+    }
+
+    #[test]
+    fn test_chained_join_with_properties() {
+        let properties = vec![
+            NodeProperty {
+                cypher_alias: "u1".to_string(),
+                column_name: "full_name".to_string(),
+                alias: "name".to_string(),
+            },
+            NodeProperty {
+                cypher_alias: "u2".to_string(),
+                column_name: "email_address".to_string(),
+                alias: "email".to_string(),
+            },
+        ];
+
+        let generator = ChainedJoinGenerator::new(
+            2,
+            "users",
+            "user_id",
+            "friendships",
+            "user1_id",
+            "user2_id",
+            "users",
+            "user_id",
+            "u1",
+            "u2",
+            properties,
+        );
+
+        let sql = generator.generate_query();
+        println!("2-hop with properties:\n{}", sql);
+        
+        assert!(sql.contains("s.full_name as start_name"));
+        assert!(sql.contains("e.email_address as end_email"));
+    }
+}

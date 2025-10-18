@@ -186,6 +186,20 @@ impl VariableLengthSpec {
     pub fn has_max_bound(&self) -> bool {
         self.max_hops.is_some()
     }
+
+    /// Check if this is an exact hop count (e.g., *2, *3, *5)
+    /// Returns Some(n) if min == max == n, None otherwise
+    pub fn exact_hop_count(&self) -> Option<u32> {
+        match (self.min_hops, self.max_hops) {
+            (Some(min), Some(max)) if min == max => Some(min),
+            _ => None,
+        }
+    }
+
+    /// Check if this requires a range (not exact hop count)
+    pub fn is_range(&self) -> bool {
+        self.exact_hop_count().is_none()
+    }
 }
 
 impl From<crate::open_cypher_parser::ast::VariableLengthSpec> for VariableLengthSpec {
