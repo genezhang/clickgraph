@@ -5,6 +5,7 @@ use std::{cell::RefCell, fmt, rc::Rc};
 #[derive(Debug, PartialEq, Clone)]
 pub struct OpenCypherQueryAst<'a> {
     pub match_clause: Option<MatchClause<'a>>,
+    pub optional_match_clauses: Vec<OptionalMatchClause<'a>>,
     pub with_clause: Option<WithClause<'a>>,
     pub where_clause: Option<WhereClause<'a>>,
     pub create_clause: Option<CreateClause<'a>>,
@@ -22,6 +23,12 @@ pub struct OpenCypherQueryAst<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchClause<'a> {
     pub path_patterns: Vec<PathPattern<'a>>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct OptionalMatchClause<'a> {
+    pub path_patterns: Vec<PathPattern<'a>>,
+    pub where_clause: Option<WhereClause<'a>>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -431,6 +438,11 @@ impl fmt::Display for OpenCypherQueryAst<'_> {
         writeln!(f, "OpenCypherQueryAst")?;
         if let Some(ref m) = self.match_clause {
             writeln!(f, "├── MatchClause: {:#?}", m)?;
+        }
+        if !self.optional_match_clauses.is_empty() {
+            for (i, opt_match) in self.optional_match_clauses.iter().enumerate() {
+                writeln!(f, "├── OptionalMatchClause[{}]: {:#?}", i, opt_match)?;
+            }
         }
         if let Some(ref w) = self.with_clause {
             writeln!(f, "├── WithClause: {:#?}", w)?;

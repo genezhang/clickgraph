@@ -1,7 +1,7 @@
 use ast::{
     CreateClause, CreateNodeTableClause, CreateRelTableClause, DeleteClause, LimitClause,
-    MatchClause, OpenCypherQueryAst, OrderByClause, RemoveClause, ReturnClause, SetClause,
-    SkipClause, WhereClause, WithClause,
+    MatchClause, OpenCypherQueryAst, OptionalMatchClause, OrderByClause, RemoveClause, 
+    ReturnClause, SetClause, SkipClause, WhereClause, WithClause,
 };
 use common::ws;
 use errors::OpenCypherParsingError;
