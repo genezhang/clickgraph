@@ -1,11 +1,22 @@
 # Copilot Instructions for ClickGraph
 
 ## Project Overview
-ClickGraph is a stateless graph-analysis layer for ClickHouse, written in Rust. It translates Cypher queries into ClickHouse SQL queries, enabling graph analysis capabilities on ClickHouse databases. This is a fork of the original Brahmand project with significant enhancements.
+ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, written in Rust. It translates Cypher queries into ClickHouse SQL queries, enabling graph analysis capabilities on ClickHouse databases. This is a fork of the original Brahmand project with significant enhancements.
+
+**Project Scope**: Read-only analytical queries only. Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are explicitly out of scope.
 
 ## Current Implementation Status
 
 ### ✅ Completed Features
+
+**Variable-Length Path Queries (Production-Ready)**
+- Complete syntax support: `*`, `*2`, `*1..3`, `*..5`, `*2..` patterns
+- Recursive CTE generation with `WITH RECURSIVE` keyword
+- Configurable recursion depth (10-1000 via CLI/env)
+- Property selection in CTEs (two-pass architecture)
+- Performance optimization with chained JOINs for exact hops
+- Comprehensive testing: 250/251 tests passing (99.6%)
+- Full documentation suite (user guide, examples, test scripts)
 
 **Neo4j Bolt Protocol v4.4**
 - Complete wire protocol implementation in `server/bolt_protocol/`
@@ -18,7 +29,7 @@ ClickGraph is a stateless graph-analysis layer for ClickHouse, written in Rust. 
 - YAML configuration for mapping existing tables to graph entities
 - Schema validation and optimization in `graph_catalog/`
 - View resolution in `query_planner/analyzer/view_resolver.rs`
-- Comprehensive test coverage (374/374 tests passing)
+- Comprehensive test coverage (250/251 tests passing)
 
 **Relationship Traversal Support**
 - Full relationship pattern support: `MATCH (a)-[r:TYPE]->(b)`
@@ -100,7 +111,7 @@ cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
 ### Testing
 - Integration tests require running ClickHouse instance (see docker-compose.yaml)
 - Use `clickhouse::test-util` feature for testing SQL generation
-- Current status: 374/374 tests passing with 100% success rate
+- Current status: 250/251 tests passing (99.6%)
 
 ## Project-Specific Conventions
 
@@ -129,17 +140,30 @@ cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
 - Neo4j Tools: Connect via Bolt protocol through `server/bolt_protocol/` (implemented)
 
 ## Development Priorities
-1. **View-Based Graph Model**
-   - Extend schema definitions to support views
-   - Implement view resolution in query planner
-   - Add view-specific optimizations
 
-2. **Bolt Protocol Support**
-   - Implement core protocol handlers
-   - Add connection management
-   - Support Neo4j driver authentication
+**Core Read Query Features** (Priority Order):
+1. **OPTIONAL MATCH Support**
+   - Implement left-join semantics for optional patterns
+   - Handle null values in pattern matching
+   - Extend query planner for optional relationships
 
-3. **Compatibility Layer**
-   - Maintain existing HTTP API
-   - Support both direct tables and views
-   - Feature flags for opt-in functionality
+2. **Shortest Path Algorithms**
+   - Implement `shortestPath()` and `allShortestPaths()`
+   - Leverage existing recursive CTE infrastructure
+   - Add path weight/cost calculations
+
+3. **Pattern Extensions**
+   - Alternate relationship types: `[:TYPE1|TYPE2]`
+   - Path variables: `p = (a)-[r]->(b)`
+   - Pattern comprehensions: `[(a)-[]->(b) | b.name]`
+
+4. **Graph Algorithms**
+   - PageRank, centrality measures
+   - Community detection
+   - Path finding utilities
+
+**Out of Scope** (Read-Only Engine):
+- ❌ Write operations: `CREATE`, `SET`, `DELETE`, `MERGE`
+- ❌ Schema modifications: `CREATE INDEX`, `CREATE CONSTRAINT`
+- ❌ Transaction management
+- ❌ Data mutations of any kind

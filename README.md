@@ -6,18 +6,19 @@
 
 #### ClickGraph - A Fork of Brahmand
 
-**A high-performance, stateless graph-analysis layer for ClickHouse with Neo4j ecosystem compatibility.**
+**A high-performance, stateless, read-only graph query engine for ClickHouse with Neo4j ecosystem compatibility.**
 
-> **Note: ClickGraph is a fork of Brahmand with additional features including Neo4j Bolt protocol support and view-based graph analysis.**
+> **Note: ClickGraph is a fork of Brahmand with additional features including Neo4j Bolt protocol support and view-based graph analysis. This is a read-only analytical query engine - write operations are not supported.**
 
 ---
 
 ## Features
 
 ### Core Capabilities
+- **Read-Only Graph Analytics**: Translates Cypher graph queries into optimized ClickHouse SQL for analytical workloads
 - **ClickHouse-native**: Extends ClickHouse with native graph modeling, merging OLAP speed with graph-analysis power
 - **Stateless Architecture**: Offloads all storage and query execution to ClickHouse—no extra datastore required
-- **Cypher Query Language**: Industry-standard Cypher syntax for intuitive, expressive property-graph querying
+- **Cypher Query Language**: Industry-standard Cypher read syntax for intuitive, expressive property-graph querying
 - **Variable-Length Paths**: Recursive traversals with `*1..3` syntax using ClickHouse WITH RECURSIVE CTEs
 - **Analytical-scale Performance**: Optimized for very large datasets and complex multi-hop traversals
 

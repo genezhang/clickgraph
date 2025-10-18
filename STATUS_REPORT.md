@@ -103,16 +103,16 @@ See [CONFIGURABLE_CTE_DEPTH.md](CONFIGURABLE_CTE_DEPTH.md) for full documentatio
 
 | Component | Status | Tests | Description |
 |-----------|--------|-------|-------------|
-| **Single-table Queries** | ✅ Robust | 100% | WHERE, ORDER BY, GROUP BY, SKIP, LIMIT |
-| **Basic Relationships** | ✅ Working | 100% | Fixed-length patterns with proper JOINs |
-| **YAML View System** | ✅ Robust | 100% | Schema loading and validation |
-| **Fixed-length Paths** | ✅ Working | 100% | Multi-hop with known depth |
-| **Variable-length Paths** | ✅ Working | 100% | `(a)-[*1..3]->(b)` with recursive CTEs |
-| **Property Selection in Paths** | ✅ Working | 100% | Two-pass CTE generation with properties |
-| **Schema Integration** | ✅ Working | 100% | Column mapping from YAML configuration |
-| **Neo4j Bolt Protocol** | ✅ Complete | N/A | Wire protocol implementation |
-| **HTTP API** | ✅ Working | 100% | RESTful endpoints (Linux/Docker only) |
-| **Basic Parser** | ✅ Working | 100% | Core OpenCypher patterns only |
+| **Single-table Queries** | ✅ Production-Ready | 100% | WHERE, ORDER BY, GROUP BY, SKIP, LIMIT |
+| **Basic Relationships** | ✅ Production-Ready | 100% | Fixed-length patterns with proper JOINs |
+| **YAML View System** | ✅ Production-Ready | 100% | Schema loading and validation |
+| **Fixed-length Paths** | ✅ Production-Ready | 100% | Multi-hop with known depth |
+| **Variable-length Paths** | ✅ Production-Ready | 99.6% | `(a)-[*1..3]->(b)` with recursive CTEs, configurable depth |
+| **Property Selection in Paths** | ✅ Production-Ready | 100% | Two-pass CTE generation with properties |
+| **Schema Integration** | ✅ Production-Ready | 100% | Column mapping from YAML configuration |
+| **Neo4j Bolt Protocol** | ✅ Complete | N/A | Wire protocol v4.4 implementation |
+| **HTTP API** | ✅ Production-Ready | 100% | RESTful endpoints (all platforms) |
+| **Cypher Parser** | ✅ Working | 100% | Core OpenCypher read patterns |
 
 ## 🏗️ **Architecture Overview**
 
@@ -205,45 +205,56 @@ RETURN u.name AS user, follower.name AS follower, p.title AS liked_post LIMIT 5
 ### **Transformation Achievement**
 **"Without relationships, graph queries are almost useless"** → **"ClickGraph now supports basic relationship traversal - a critical foundation for graph analytics!"**
 
-## 🚧 **Current Limitations & Missing Features**
+## 🎯 **Project Scope: Read-Only Graph Query Engine**
 
-### **Path Pattern Limitations**
-- **Variable-length paths**: `(a)-[*1..3]->(b)` not implemented
+**ClickGraph is a read-only analytical query engine** - we translate Cypher graph queries into ClickHouse SQL for high-performance graph analytics over existing data. Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are explicitly out of scope.
+
+## 🚧 **Current Limitations & Missing Read Features**
+
+### **Path Pattern Extensions**
 - **Optional paths**: `OPTIONAL MATCH` not supported  
-- **Complex path patterns**: `(a)-[:REL1|REL2]->(b)` alternate relationships
-- **Path variables**: `p = (a)-[r]->(b)` path capture not implemented
-- **Shortest path**: `shortestPath()` algorithms missing
+- **Alternate relationships**: `(a)-[:REL1|REL2]->(b)` multiple relationship types
+- **Path variables**: `p = (a)-[r]->(b)` path capture and manipulation
+- **Shortest path**: `shortestPath()` and `allShortestPaths()` algorithms missing
 
-### **Advanced Cypher Features Missing**
-- **Subqueries**: `CALL { ... }` expressions
-- **List operations**: `UNWIND`, list comprehensions
-- **Conditional logic**: `CASE WHEN` expressions  
-- **Graph algorithms**: Built-in path finding, centrality measures
-- **Write operations**: `CREATE`, `SET`, `DELETE`, `MERGE`
-- **Constraints**: Uniqueness, existence constraints
-- **Indexes**: Performance optimization indexes
+### **Advanced Cypher Read Features**
+- **Subqueries**: `CALL { ... }` expressions for nested queries
+- **List operations**: `UNWIND`, list comprehensions, list functions
+- **Conditional logic**: `CASE WHEN` expressions in projections
+- **Graph algorithms**: Centrality measures, community detection, PageRank
+- **Pattern comprehension**: `[(a)-[r]->(b) | b.name]` syntax
+- **Exists subqueries**: `WHERE exists((a)-[]->(b))` pattern
 
-### **What We Actually Have vs. Full Cypher**
+### **What We Have vs. Full OpenCypher (Read Operations)**
 - ✅ **Basic relationship traversal**: `(a)-[r:TYPE]->(b)`
 - ✅ **Multi-hop fixed paths**: `(a)-[r1]->(b)-[r2]->(c)`
+- ✅ **Variable-length paths**: `(a)-[*1..3]->(b)` with recursive CTEs
 - ✅ **Property filtering**: `[r:TYPE {prop: value}]`
-- ❌ **Variable-length paths**: Major gap for real graph analytics
-- ❌ **Complex pattern matching**: Limited to simple fixed patterns
-- ❌ **Graph algorithms**: No built-in analytical functions
+- ✅ **Aggregations**: `COUNT`, `SUM`, `AVG` with `GROUP BY`
+- ✅ **Property selection**: Node and relationship properties in paths
+- ❌ **Optional patterns**: `OPTIONAL MATCH` for null-safe queries
+- ❌ **Complex patterns**: Alternate relationships, pattern comprehensions
+- ❌ **Graph algorithms**: No built-in analytical functions yet
 
 ## 📋 **Next Development Priorities**
 
-### **Immediate Enhancements**
-1. **Performance optimization**: Advanced JOIN optimization strategies
-2. **Extended Cypher support**: Additional OpenCypher features
-3. **Relationship constraints**: Schema validation enhancements
-4. **Monitoring**: Performance metrics and query analytics
+### **High Priority - Pattern Matching**
+1. **OPTIONAL MATCH**: Left-join semantics for optional patterns
+2. **Alternate relationships**: `[:TYPE1|TYPE2]` multiple relationship types
+3. **Path variables**: Capture and return entire paths as objects
+4. **Shortest path algorithms**: `shortestPath()` and `allShortestPaths()`
 
-### **Advanced Features**
-1. **Graph algorithms**: Built-in graph analysis functions
-2. **Streaming queries**: Real-time graph updates
-3. **Partitioning support**: Large-scale graph handling
-4. **Advanced indexing**: Optimized relationship lookups
+### **Medium Priority - Query Capabilities**
+1. **CASE expressions**: Conditional logic in RETURN/WHERE clauses
+2. **UNWIND**: List expansion for array processing
+3. **Subqueries**: Nested `CALL { ... }` expressions
+4. **EXISTS patterns**: Pattern existence checking
+
+### **Advanced Features - Graph Analytics**
+1. **Graph algorithms**: PageRank, centrality measures, community detection
+2. **Pattern comprehension**: List generation from patterns
+3. **Performance optimization**: Advanced JOIN strategies, query caching
+4. **Partitioning support**: Large-scale graph handling with ClickHouse partitions
 
 ## 📊 **Documentation Updates Applied**
 
@@ -257,4 +268,4 @@ RETURN u.name AS user, follower.name AS follower, p.title AS liked_post LIMIT 5
 
 ---
 
-**Summary**: ClickGraph has evolved from a basic node query system into a working graph query interface with **essential relationship traversal capabilities**. While not yet a fully-featured graph database (missing variable-length paths, advanced algorithms, and many Cypher features), it provides the **critical foundation** for basic graph analytics. The implementation demonstrates solid SQL generation for supported patterns and robust YAML-based configuration.
+**Summary**: ClickGraph has evolved into a **production-ready read-only graph query engine** with comprehensive relationship traversal and variable-length path support. As a stateless analytical layer over ClickHouse, it translates OpenCypher graph queries into optimized SQL for high-performance graph analytics. With 250/251 tests passing and complete documentation, the core read query capabilities are robust and ready for analytical workloads. Future development focuses on extending read query patterns (OPTIONAL MATCH, shortest paths, graph algorithms) rather than write operations.
