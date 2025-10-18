@@ -75,14 +75,14 @@ curl -X POST http://localhost:8080/query \
 
 ---
 
-## 🐛 GROUP BY Aggregation with Variable-Length Paths
+## ✅ FIXED: GROUP BY Aggregation with Variable-Length Paths
 
-**Status**: Open  
+**Status**: Fixed (October 17, 2025)  
 **Severity**: Low  
-**Discovered**: October 15, 2025
+**Fixed in**: commit [pending]
 
 ### Description
-When using aggregation functions (COUNT, SUM, etc.) with GROUP BY in variable-length path queries, the SQL generator references the original node aliases (e.g., `u1.full_name`) instead of the CTE column aliases (e.g., `t.start_full_name`).
+When using aggregation functions (COUNT, SUM, etc.) with GROUP BY in variable-length path queries, the SQL generator was referencing the original node aliases (e.g., `u1.full_name`) instead of the CTE column aliases (e.g., `t.start_full_name`).
 
 ### Example
 ```cypher
@@ -90,13 +90,16 @@ MATCH (u1:User)-[r:FRIEND*1..3]->(u2:User)
 RETURN u1.full_name, u2.full_name, COUNT(*) as path_count
 ```
 
-**Error**: `Unknown expression identifier 'u1.full_name' in scope`
+**Previous Error**: `Unknown expression identifier 'u1.full_name' in scope`  
+**Now**: Works correctly! Expressions are rewritten to use CTE column names.
 
-### Workaround
-Omit GROUP BY aggregations in variable-length path queries, or manually count paths in application code.
+### Fix Details
+Extended the expression rewriting logic to handle GROUP BY and ORDER BY clauses in addition to SELECT items. When a variable-length CTE is present, all property references are automatically rewritten:
+- `u1.property` → `t.start_property`
+- `u2.property` → `t.end_property`
 
-### Impact
-Low - Simple property returns work fine. Only affects queries with aggregations.
+### Files Modified
+- `brahmand/src/render_plan/plan_builder.rs`: Added rewriting for GROUP BY and ORDER BY expressions
 
 ---
 

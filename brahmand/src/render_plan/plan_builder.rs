@@ -1075,9 +1075,26 @@ impl RenderPlanBuilder for LogicalPlan {
         let mut extracted_joins = self.extract_joins()?;
         extracted_joins.sort_by_key(|join| join.joining_on.len());
 
-        let extracted_group_by_exprs = self.extract_group_by()?;
+        let mut extracted_group_by_exprs = self.extract_group_by()?;
+        
+        // Rewrite GROUP BY expressions for variable-length paths
+        if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
+            extracted_group_by_exprs = extracted_group_by_exprs.into_iter().map(|expr| {
+                rewrite_expr_for_var_len_cte(&expr, &left_alias, &right_alias)
+            }).collect();
+        }
 
-        let extracted_order_by = self.extract_order_by()?;
+        let mut extracted_order_by = self.extract_order_by()?;
+        
+        // Rewrite ORDER BY expressions for variable-length paths
+        if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
+            extracted_order_by = extracted_order_by.into_iter().map(|item| {
+                OrderByItem {
+                    expression: rewrite_expr_for_var_len_cte(&item.expression, &left_alias, &right_alias),
+                    order: item.order,
+                }
+            }).collect();
+        }
 
         let extracted_limit_item = self.extract_limit();
 
