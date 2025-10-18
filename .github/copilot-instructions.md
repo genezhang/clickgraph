@@ -214,3 +214,84 @@ cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
 - ❌ Schema modifications: `CREATE INDEX`, `CREATE CONSTRAINT`
 - ❌ Transaction management
 - ❌ Data mutations of any kind
+
+## Documentation Standards
+
+**Simplified 3-Document Approach** (as of Oct 18, 2025):
+
+### Core Documents (Always Maintain)
+
+1. **STATUS.md** - Single source of truth for current project state
+   - What works now (with examples)
+   - What's in progress
+   - Known issues
+   - Test statistics
+   - Next priorities
+   - **Update after each feature completion**
+
+2. **CHANGELOG.md** - Release history and feature tracking
+   - Follow Keep-a-Changelog format
+   - Use emoji prefixes: 🚀 Features, 🐛 Bug Fixes, 📚 Documentation, 🧪 Testing, ⚙️ Infrastructure
+   - Update when merging to main or releasing
+   - Include test statistics and dates
+
+3. **Feature Notes** (in `notes/` directory)
+   - One note per major feature (e.g., `notes/viewscan.md`)
+   - Document: Summary, How It Works, Key Files, Design Decisions, Gotchas, Limitations, Future Work
+   - Create when feature is complete
+   - Keep concise (1-2 pages max)
+
+### Additional Core Documents
+- **README.md** - Project overview for users
+- **KNOWN_ISSUES.md** - Living document for tracking issues
+- **DEV_ENVIRONMENT_CHECKLIST.md** - Development setup procedures
+- **NEXT_STEPS.md** - Immediate roadmap and next actions
+
+### Documentation Workflow
+
+**After completing a feature**:
+1. Update `STATUS.md` (2 min):
+   - Move feature from "In Progress" to "What Works"
+   - Update test count
+   - Update "Next Priorities"
+2. Create feature note in `notes/<feature>.md` (5 min):
+   - Document key decisions and gotchas
+   - Note limitations and future work
+3. Commit: `git commit -m "docs: Update STATUS with <feature>"`
+
+**When releasing** (merging to main):
+1. Update `CHANGELOG.md`:
+   - Move [Unreleased] items to new version
+   - Add release date
+2. Tag: `git tag v0.X.Y`
+
+### Archive Policy
+- Historical session summaries → `archive/`
+- Investigation reports (after implemented) → `archive/`
+- Duplicate/outdated docs → `archive/`
+- Keep root directory clean (6-8 core docs only)
+
+### What NOT to Do
+- ❌ Don't create multiple status documents (SESSION_COMPLETE.md, FEATURE_STATUS.md, etc.)
+- ❌ Don't duplicate information across multiple docs
+- ❌ Don't create "PROJECT_SUMMARY.md" - use STATUS.md instead
+- ❌ Don't create dated session files unless they capture unique debugging stories
+
+### Documentation Structure
+```
+clickgraph/
+├── STATUS.md              # Current state (THE source of truth)
+├── CHANGELOG.md           # Release history
+├── KNOWN_ISSUES.md        # Active issues
+├── README.md              # Project overview
+├── DEV_ENVIRONMENT_CHECKLIST.md
+├── NEXT_STEPS.md
+├── notes/
+│   ├── viewscan.md       # Feature implementation details
+│   ├── optional-match.md
+│   └── variable-paths.md
+└── archive/
+    └── (historical docs)
+```
+
+**Key Principle**: Keep it simple. One source of truth (STATUS.md), one note per feature, archive everything else.
