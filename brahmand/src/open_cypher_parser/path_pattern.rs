@@ -323,14 +323,26 @@ fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<Variabl
         },
     );
     
-    alt((
+    let (input, spec_opt) = alt((
         range_parser,
         upper_bound_parser,
         fixed_length_parser,
         unbounded_parser,
     ))
     .map(|spec| Some(spec))
-    .parse(input)
+    .parse(input)?;
+    
+    // Validate the parsed specification
+    if let Some(ref spec) = spec_opt {
+        if let Err(validation_error) = spec.validate() {
+            // Convert validation error to nom error
+            // Note: We use Failure (not Error) to indicate this is a semantic error, not a parsing error
+            eprintln!("Variable-length path validation error: {}", validation_error);
+            return Err(nom::Err::Failure(Error::new(input, ErrorKind::Verify)));
+        }
+    }
+    
+    Ok((input, spec_opt))
 }
 
 // Parse relationships - e.g -
@@ -719,5 +731,112 @@ mod tests {
                 panic!("Expected failure error for incomplete relationship pattern");
             }
         }
+    }
+
+    // ===== Validation Tests for Variable-Length Paths =====
+
+    #[test]
+    fn test_invalid_range_min_greater_than_max() {
+        // *5..2 should fail validation (min > max)
+        let input = "()-[*5..2]->()";
+        let result = parse_path_pattern(input);
+        match result {
+            Err(Err::Failure(Error { code, .. })) => {
+                assert_eq!(code, ErrorKind::Verify); // Validation error
+            }
+            Ok(_) => {
+                panic!("Expected validation error for *5..2 (min > max)");
+            }
+            Err(e) => {
+                panic!("Expected Failure with Verify, got: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_range_with_zero_min() {
+        // *0..5 should fail validation (zero hops invalid)
+        let input = "()-[*0..5]->()";
+        let result = parse_path_pattern(input);
+        match result {
+            Err(Err::Failure(Error { code, .. })) => {
+                assert_eq!(code, ErrorKind::Verify); // Validation error
+            }
+            Ok(_) => {
+                panic!("Expected validation error for *0..5 (zero hops)");
+            }
+            Err(e) => {
+                panic!("Expected Failure with Verify, got: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_range_with_zero_max() {
+        // *0 should fail validation (zero hops invalid)
+        let input = "()-[*0]->()";
+        let result = parse_path_pattern(input);
+        match result {
+            Err(Err::Failure(Error { code, .. })) => {
+                assert_eq!(code, ErrorKind::Verify); // Validation error
+            }
+            Ok(_) => {
+                panic!("Expected validation error for *0 (zero hops)");
+            }
+            Err(e) => {
+                panic!("Expected Failure with Verify, got: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_valid_variable_length_patterns() {
+        // Test various valid patterns
+        let valid_inputs = vec![
+            "()-[*1..3]->()",   // Normal range
+            "()-[*2]->()",      // Fixed length
+            "()-[*..5]->()",    // Upper bound only
+            "()-[*]->()",       // Unbounded
+            "()-[*1..100]->()," // Large but valid range
+        ];
+
+        for input in valid_inputs {
+            let result = parse_path_pattern(input);
+            assert!(
+                result.is_ok(),
+                "Expected {} to parse successfully, but got: {:?}",
+                input,
+                result
+            );
+        }
+    }
+
+    #[test]
+    fn test_variable_length_spec_validation_direct() {
+        // Test the validation method directly
+        
+        // Valid cases
+        assert!(VariableLengthSpec::range(1, 3).validate().is_ok());
+        assert!(VariableLengthSpec::fixed(5).validate().is_ok());
+        assert!(VariableLengthSpec::unbounded().validate().is_ok());
+        assert!(VariableLengthSpec::max_only(10).validate().is_ok());
+        
+        // Invalid case: min > max
+        let invalid_spec = VariableLengthSpec {
+            min_hops: Some(5),
+            max_hops: Some(2),
+        };
+        assert!(invalid_spec.validate().is_err());
+        let err_msg = invalid_spec.validate().unwrap_err();
+        assert!(err_msg.contains("minimum hops (5) cannot be greater than maximum hops (2)"));
+        
+        // Invalid case: zero hops
+        let zero_spec = VariableLengthSpec {
+            min_hops: Some(0),
+            max_hops: Some(5),
+        };
+        assert!(zero_spec.validate().is_err());
+        let err_msg = zero_spec.validate().unwrap_err();
+        assert!(err_msg.contains("hop count cannot be 0"));
     }
 }

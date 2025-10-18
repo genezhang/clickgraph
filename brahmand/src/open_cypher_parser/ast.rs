@@ -236,6 +236,54 @@ impl VariableLengthSpec {
     pub fn has_max_bound(&self) -> bool {
         self.max_hops.is_some()
     }
+    
+    /// Validate the variable-length specification
+    /// Returns Ok(()) if valid, Err with descriptive message if invalid
+    pub fn validate(&self) -> Result<(), String> {
+        // Check for invalid range where min > max
+        if let (Some(min), Some(max)) = (self.min_hops, self.max_hops) {
+            if min > max {
+                return Err(format!(
+                    "Invalid variable-length range: minimum hops ({}) cannot be greater than maximum hops ({}). \
+                     Use *{}..{} instead of *{}..{}.",
+                    min, max, max, min, min, max
+                ));
+            }
+            
+            // Check for zero in range (special case - 0 hops means same node)
+            if min == 0 || max == 0 {
+                return Err(
+                    "Invalid variable-length range: hop count cannot be 0. \
+                     Variable-length paths must have at least 1 hop. \
+                     If you want to match the same node, use a simple node pattern like (n) instead of a relationship pattern."
+                        .to_string()
+                );
+            }
+            
+            // Warn about very large ranges (potential performance issue)
+            if max > 100 {
+                // Note: This is just a warning, not an error - we still allow it
+                eprintln!(
+                    "Warning: Variable-length path with maximum {} hops may have performance implications. \
+                     Consider using a smaller maximum or adding additional WHERE clause filters.",
+                    max
+                );
+            }
+        }
+        
+        // Check for zero in unbounded spec
+        if let Some(min) = self.min_hops {
+            if min == 0 {
+                return Err(
+                    "Invalid variable-length range: hop count cannot be 0. \
+                     Variable-length paths must have at least 1 hop."
+                        .to_string()
+                );
+            }
+        }
+        
+        Ok(())
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
