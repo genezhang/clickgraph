@@ -31,6 +31,10 @@ struct Cli {
     /// Bolt server port
     #[arg(long, default_value_t = 7687)]
     bolt_port: u16,
+
+    /// Maximum recursive CTE evaluation depth for variable-length paths
+    #[arg(long, default_value_t = 100)]
+    max_cte_depth: u32,
 }
 
 impl From<Cli> for server::ServerConfig {
@@ -41,6 +45,7 @@ impl From<Cli> for server::ServerConfig {
             bolt_host: cli.bolt_host,
             bolt_port: cli.bolt_port,
             bolt_enabled: !cli.disable_bolt,  // Invert the flag
+            max_cte_depth: cli.max_cte_depth,
         })
     }
 }

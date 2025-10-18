@@ -31,8 +31,8 @@ pub use variable_length_cte::{VariableLengthCteGenerator, NodeProperty};
 //     return sql
 // }
 
-pub fn generate_sql(plan: RenderPlan) -> String {
-    plan.to_sql()
+pub fn generate_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
+    to_sql_query::render_plan_to_sql(plan, max_cte_depth)
 }
 
 pub fn generate_ddl_query(

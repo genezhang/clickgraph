@@ -179,6 +179,10 @@ cargo run --bin brahmand -- --disable-bolt
 
 # Custom host binding
 cargo run --bin brahmand -- --http-host 127.0.0.1 --bolt-host 127.0.0.1
+
+# Configure CTE depth limit for variable-length paths (default: 100)
+cargo run --bin brahmand -- --max-cte-depth 150
+export BRAHMAND_MAX_CTE_DEPTH=150  # Or via environment variable
 ```
 
 See `docs/configuration.md` for complete configuration documentation.

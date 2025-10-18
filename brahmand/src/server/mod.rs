@@ -28,6 +28,7 @@ pub struct ServerConfig {
     pub bolt_host: String,
     pub bolt_port: u16,
     pub bolt_enabled: bool,
+    pub max_cte_depth: u32,
 }
 
 impl ServerConfig {
@@ -47,6 +48,10 @@ impl ServerConfig {
                 .unwrap_or("true".to_string())
                 .parse()
                 .unwrap_or(true),
+            max_cte_depth: env::var("BRAHMAND_MAX_CTE_DEPTH")
+                .unwrap_or("100".to_string())
+                .parse()
+                .unwrap_or(100),
         }
     }
     
@@ -58,6 +63,7 @@ impl ServerConfig {
             bolt_host: cli_config.bolt_host,
             bolt_port: cli_config.bolt_port,
             bolt_enabled: cli_config.bolt_enabled,
+            max_cte_depth: cli_config.max_cte_depth,
         }
     }
 }
@@ -69,11 +75,13 @@ pub struct CliConfig {
     pub bolt_host: String,
     pub bolt_port: u16,
     pub bolt_enabled: bool,
+    pub max_cte_depth: u32,
 }
 
 // #[derive(Clone)]
 struct AppState {
     clickhouse_client: Client,
+    config: ServerConfig,
 }
 
 pub static GLOBAL_GRAPH_SCHEMA: OnceCell<RwLock<GraphSchema>> = OnceCell::const_new();
@@ -97,6 +105,7 @@ pub async fn run_with_config(config: ServerConfig) {
     let app_state = if let Some(client) = client_opt.as_ref() {
         AppState {
             clickhouse_client: client.clone(),
+            config: config.clone(),
         }
     } else {
         // For YAML-only mode, we need a placeholder client
@@ -108,6 +117,7 @@ pub async fn run_with_config(config: ServerConfig) {
         let dummy_client = clickhouse::Client::default().with_url("http://localhost:8123");
         AppState {
             clickhouse_client: dummy_client,
+            config: config.clone(),
         }
     };
 

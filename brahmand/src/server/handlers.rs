@@ -99,8 +99,8 @@ pub async fn query_handler(
                 }
             };
 
-            // Step 3: SQL generation
-            let ch_query = clickhouse_query_generator::generate_sql(render_plan);
+            // Step 3: SQL generation with configurable CTE depth
+            let ch_query = clickhouse_query_generator::generate_sql(render_plan, app_state.config.max_cte_depth);
             println!("\n ch_query \n {} \n", ch_query);
             
             // If SQL-only mode, return the SQL without executing

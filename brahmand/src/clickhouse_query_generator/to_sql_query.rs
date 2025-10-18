@@ -12,36 +12,42 @@ use crate::{
     },
 };
 
+/// Generate SQL from RenderPlan with configurable CTE depth limit
+pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
+    let mut sql = String::new();
+    sql.push_str(&plan.ctes.to_sql());
+    sql.push_str(&plan.select.to_sql());
+    sql.push_str(&plan.from.to_sql());
+    sql.push_str(&plan.joins.to_sql());
+    sql.push_str(&plan.filters.to_sql());
+    sql.push_str(&plan.group_by.to_sql());
+    sql.push_str(&plan.order_by.to_sql());
+    sql.push_str(&plan.union.to_sql());
+
+    if let Some(m) = plan.limit.0 {
+        let skip_str = if let Some(n) = plan.skip.0 {
+            format!("{n},")
+        } else {
+            "".to_string()
+        };
+        let limit_str = format!("LIMIT {skip_str} {m}");
+        sql.push_str(&limit_str)
+    }
+    
+    // Add ClickHouse SETTINGS for recursive CTEs (variable-length paths)
+    // Check if any CTE is recursive
+    let has_recursive_cte = plan.ctes.0.iter().any(|cte| cte.is_recursive);
+    if has_recursive_cte {
+        sql.push_str(&format!("\nSETTINGS max_recursive_cte_evaluation_depth = {}", max_cte_depth));
+    }
+    
+    sql
+}
+
 impl ToSql for RenderPlan {
     fn to_sql(&self) -> String {
-        let mut sql = String::new();
-        sql.push_str(&self.ctes.to_sql());
-        sql.push_str(&self.select.to_sql());
-        sql.push_str(&self.from.to_sql());
-        sql.push_str(&self.joins.to_sql());
-        sql.push_str(&self.filters.to_sql());
-        sql.push_str(&self.group_by.to_sql());
-        sql.push_str(&self.order_by.to_sql());
-        sql.push_str(&self.union.to_sql());
-
-        if let Some(m) = self.limit.0 {
-            let skip_str = if let Some(n) = self.skip.0 {
-                format!("{n},")
-            } else {
-                "".to_string()
-            };
-            let limit_str = format!("LIMIT {skip_str} {m}");
-            sql.push_str(&limit_str)
-        }
-        
-        // Add ClickHouse SETTINGS for recursive CTEs (variable-length paths)
-        // Check if any CTE is recursive
-        let has_recursive_cte = self.ctes.0.iter().any(|cte| cte.is_recursive);
-        if has_recursive_cte {
-            sql.push_str("\nSETTINGS max_recursive_cte_evaluation_depth = 1000");
-        }
-        
-        sql
+        // Use default depth of 100 when called via trait
+        render_plan_to_sql(self.clone(), 100)
     }
 }
 
