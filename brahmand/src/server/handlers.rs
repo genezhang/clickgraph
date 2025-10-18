@@ -36,6 +36,8 @@ pub async fn query_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
+    log::debug!("Query handler called with query: {}", payload.query);
+    
     let instant = Instant::now();
     let output_format = payload.format.unwrap_or(OutputFormat::JSONEachRow);
     let sql_only = payload.sql_only.unwrap_or(false);
@@ -43,10 +45,11 @@ pub async fn query_handler(
     let (ch_sql_queries, maybe_schema_elem, is_read) = {
         let graph_schema = graph_catalog::get_graph_schema().await;
 
-        // Parse query with better error handling for SQL-only mode
+        // Parse query
         let cypher_ast = match open_cypher_parser::parse_query(&payload.query) {
             Ok(ast) => ast,
             Err(e) => {
+                log::error!("Query parse failed: {:?}", e);
                 if sql_only {
                     let error_response = SqlOnlyResponse {
                         cypher_query: payload.query.clone(),
