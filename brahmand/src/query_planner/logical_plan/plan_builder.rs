@@ -4,8 +4,8 @@ use crate::{
     open_cypher_parser::ast::OpenCypherQueryAst,
     query_planner::{
         logical_plan::{
-            LogicalPlan, errors::LogicalPlanError, match_clause, order_by_clause, return_clause,
-            skip_n_limit_clause, where_clause,
+            LogicalPlan, errors::LogicalPlanError, match_clause, optional_match_clause,
+            order_by_clause, return_clause, skip_n_limit_clause, where_clause,
         },
         plan_ctx::PlanCtx,
     },
@@ -22,6 +22,15 @@ pub fn build_logical_plan(
     if let Some(match_clause) = &query_ast.match_clause {
         logical_plan =
             match_clause::evaluate_match_clause(match_clause, logical_plan, &mut plan_ctx)?;
+    }
+
+    // Process OPTIONAL MATCH clauses after regular MATCH
+    for optional_match in &query_ast.optional_match_clauses {
+        logical_plan = optional_match_clause::evaluate_optional_match_clause(
+            optional_match,
+            logical_plan,
+            &mut plan_ctx,
+        )?;
     }
 
     if let Some(where_clause) = &query_ast.where_clause {

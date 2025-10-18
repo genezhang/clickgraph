@@ -28,6 +28,7 @@ use super::plan_ctx::PlanCtx;
 pub mod errors;
 // pub mod logical_plan;
 mod match_clause;
+mod optional_match_clause;
 mod order_by_clause;
 pub mod plan_builder;
 mod return_clause;
