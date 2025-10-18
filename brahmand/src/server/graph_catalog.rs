@@ -366,7 +366,7 @@ async fn load_schema_and_config_from_yaml(config_path: &str) -> Result<(GraphSch
 
     // Convert view config to graph schema
     for view in &config.views {
-        for (label, node_mapping) in &view.nodes {
+        for (_key, node_mapping) in &view.nodes {
             let mut column_names = Vec::new();
             column_names.push(node_mapping.id_column.clone());
             for column in node_mapping.property_mappings.values() {
@@ -382,10 +382,10 @@ async fn load_schema_and_config_from_yaml(config_path: &str) -> Result<(GraphSch
                     dtype: "UInt32".to_string(), // Default type, could be made configurable
                 },
             };
-            nodes.insert(label.clone(), node_schema);
+            nodes.insert(node_mapping.label.clone(), node_schema);
         }
         
-        for (rel_key, rel_mapping) in &view.relationships {
+        for (_rel_key, rel_mapping) in &view.relationships {
             let mut column_names = Vec::new();
             column_names.push(rel_mapping.from_column.clone());
             column_names.push(rel_mapping.to_column.clone());
@@ -393,15 +393,13 @@ async fn load_schema_and_config_from_yaml(config_path: &str) -> Result<(GraphSch
                 column_names.push(column.clone());
             }
             
-            // For now, derive node types from the relationship key pattern or use generic types
-            // TODO: This should be enhanced to properly look up the actual from/to node types from the YAML
-            let (from_node, to_node) = match rel_key.as_str() {
-                "follows" => ("user", "user"), // User follows User
-                "authored" => ("user", "post"), // User authored Post  
-                "likes" => ("user", "post"), // User likes Post
-                "purchased" => ("customer", "product"), // Customer purchased Product
-                _ => ("node", "node"), // Generic fallback
-            };
+            // Use from_node_type and to_node_type from the mapping if provided, otherwise use generic fallback
+            let from_node = rel_mapping.from_node_type.as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("Node");
+            let to_node = rel_mapping.to_node_type.as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("Node");
             
             let rel_schema = RelationshipSchema {
                 table_name: rel_mapping.source_table.clone(),

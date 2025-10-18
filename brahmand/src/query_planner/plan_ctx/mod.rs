@@ -1,6 +1,6 @@
 pub mod errors;
 
-use std::{collections::HashMap, fmt};
+use std::{collections::{HashMap, HashSet}, fmt};
 
 use crate::query_planner::{
     logical_expr::{LogicalExpr, Property},
@@ -125,11 +125,28 @@ impl TableCtx {
 #[derive(Debug, PartialEq, Clone)]
 pub struct PlanCtx {
     alias_table_ctx_map: HashMap<String, TableCtx>,
+    /// Track which table aliases came from OPTIONAL MATCH for LEFT JOIN generation
+    optional_aliases: HashSet<String>,
 }
 
 impl PlanCtx {
     pub fn insert_table_ctx(&mut self, alias: String, table_ctx: TableCtx) {
         self.alias_table_ctx_map.insert(alias, table_ctx);
+    }
+
+    /// Mark a table alias as coming from an OPTIONAL MATCH clause
+    pub fn mark_as_optional(&mut self, alias: String) {
+        self.optional_aliases.insert(alias);
+    }
+
+    /// Check if a table alias came from an OPTIONAL MATCH clause
+    pub fn is_optional(&self, alias: &str) -> bool {
+        self.optional_aliases.contains(alias)
+    }
+
+    /// Get a reference to the set of optional aliases
+    pub fn get_optional_aliases(&self) -> &HashSet<String> {
+        &self.optional_aliases
     }
 
     pub fn get_alias_table_ctx_map(&self) -> &HashMap<String, TableCtx> {
@@ -219,6 +236,7 @@ impl PlanCtx {
     pub fn default() -> Self {
         PlanCtx {
             alias_table_ctx_map: HashMap::new(),
+            optional_aliases: HashSet::new(),
         }
     }
 }

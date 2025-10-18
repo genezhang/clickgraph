@@ -49,6 +49,17 @@ impl GraphJoinInference {
         GraphJoinInference
     }
 
+    /// Determines the appropriate join type based on whether the table alias
+    /// is part of an OPTIONAL MATCH pattern. Returns LEFT for optional aliases,
+    /// INNER for regular aliases.
+    fn determine_join_type(is_optional: bool) -> JoinType {
+        if is_optional {
+            JoinType::Left
+        } else {
+            JoinType::Inner
+        }
+    }
+
     fn build_graph_joins(
         logical_plan: Arc<LogicalPlan>,
         collected_graph_joins: &mut Vec<Join>,
@@ -248,6 +259,10 @@ impl GraphJoinInference {
             return Ok(());
         }
 
+        // Clone the optional_aliases set before calling get_graph_context
+        // to avoid borrow checker issues
+        let optional_aliases = plan_ctx.get_optional_aliases().clone();
+
         let graph_context = graph_context::get_graph_context(
             graph_rel,
             plan_ctx,
@@ -255,6 +270,16 @@ impl GraphJoinInference {
             None, // No view definition needed for join inference
             Pass::GraphJoinInference,
         )?;
+
+        // Extract alias strings 
+        let left_alias_str = graph_context.left.alias.to_string();
+        let rel_alias_str = graph_context.rel.alias.to_string();
+        let right_alias_str = graph_context.right.alias.to_string();
+
+        // Check which aliases are optional 
+        let left_is_optional = optional_aliases.contains(&left_alias_str);
+        let rel_is_optional = optional_aliases.contains(&rel_alias_str);
+        let right_is_optional = optional_aliases.contains(&right_alias_str);
 
         // Check for standalone relationship join.
         // e.g. MATCH (a)-[f1:Follows]->(b)-[f2:Follows]->(c), (a)-[f3:Follows]->(c)
@@ -264,7 +289,7 @@ impl GraphJoinInference {
         let is_standalone_rel: bool = matches!(graph_rel.left.as_ref(), LogicalPlan::Empty);
 
         let left_node_id_column = graph_context.left.schema.node_id.column.clone(); //  left_schema.node_id.column.clone();
-        let right_node_id_column = graph_context.right.schema.node_id.column.clone(); //right_schema.node_id.column.clone();   
+        let right_node_id_column = graph_context.right.schema.node_id.column.clone(); //right_schema.node_id.column.clone();
 
         if graph_context.rel.table_ctx.should_use_edge_list() {
             self.handle_edge_list_traversal(
@@ -273,6 +298,9 @@ impl GraphJoinInference {
                 left_node_id_column,
                 right_node_id_column,
                 is_standalone_rel,
+                left_is_optional,
+                rel_is_optional,
+                right_is_optional,
                 collected_graph_joins,
                 joined_entities,
             )
@@ -282,6 +310,9 @@ impl GraphJoinInference {
                 left_node_id_column,
                 right_node_id_column,
                 is_standalone_rel,
+                left_is_optional,
+                rel_is_optional,
+                right_is_optional,
                 collected_graph_joins,
                 joined_entities,
             )
@@ -296,6 +327,9 @@ impl GraphJoinInference {
         left_node_id_column: String,
         right_node_id_column: String,
         is_standalone_rel: bool,
+        left_is_optional: bool,
+        rel_is_optional: bool,
+        right_is_optional: bool,
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
@@ -333,7 +367,7 @@ impl GraphJoinInference {
                             }),
                         ],
                     }],
-                    join_type: JoinType::Inner,
+                    join_type: Self::determine_join_type(rel_is_optional),
                 };
 
                 let left_graph_join = Join {
@@ -352,7 +386,7 @@ impl GraphJoinInference {
                             }),
                         ],
                     }],
-                    join_type: JoinType::Inner,
+                    join_type: Self::determine_join_type(left_is_optional),
                 };
 
                 if is_standalone_rel {
@@ -413,7 +447,7 @@ impl GraphJoinInference {
                             }),
                         ],
                     }],
-                    join_type: JoinType::Inner,
+                    join_type: Self::determine_join_type(rel_is_optional),
                 };
 
                 let right_graph_join = Join {
@@ -432,7 +466,7 @@ impl GraphJoinInference {
                             }),
                         ],
                     }],
-                    join_type: JoinType::Inner,
+                    join_type: Self::determine_join_type(right_is_optional),
                 };
 
                 if is_standalone_rel {
@@ -489,7 +523,7 @@ impl GraphJoinInference {
                             }),
                         ],
                     }],
-                    join_type: JoinType::Inner,
+                    join_type: Self::determine_join_type(rel_is_optional),
                 };
 
                 let left_graph_join = Join {
@@ -508,7 +542,7 @@ impl GraphJoinInference {
                             }),
                         ],
                     }],
-                    join_type: JoinType::Inner,
+                    join_type: Self::determine_join_type(left_is_optional),
                 };
 
                 if is_standalone_rel {
@@ -561,7 +595,7 @@ impl GraphJoinInference {
                             }),
                         ],
                     }],
-                    join_type: JoinType::Inner,
+                    join_type: Self::determine_join_type(rel_is_optional),
                 };
 
                 let right_graph_join = Join {
@@ -580,7 +614,7 @@ impl GraphJoinInference {
                             }),
                         ],
                     }],
-                    join_type: JoinType::Inner,
+                    join_type: Self::determine_join_type(right_is_optional),
                 };
 
                 if is_standalone_rel {
@@ -635,7 +669,7 @@ impl GraphJoinInference {
                             }),
                         ],
                     }],
-                    join_type: JoinType::Inner,
+                    join_type: Self::determine_join_type(rel_is_optional),
                 };
 
                 let left_graph_join = Join {
@@ -654,7 +688,7 @@ impl GraphJoinInference {
                             }),
                         ],
                     }],
-                    join_type: JoinType::Inner,
+                    join_type: Self::determine_join_type(left_is_optional),
                 };
 
                 if is_standalone_rel {
@@ -707,7 +741,7 @@ impl GraphJoinInference {
                             }),
                         ],
                     }],
-                    join_type: JoinType::Inner,
+                    join_type: Self::determine_join_type(rel_is_optional),
                 };
 
                 let right_graph_join = Join {
@@ -726,7 +760,7 @@ impl GraphJoinInference {
                             }),
                         ],
                     }],
-                    join_type: JoinType::Inner,
+                    join_type: Self::determine_join_type(right_is_optional),
                 };
 
                 if is_standalone_rel {
@@ -768,6 +802,9 @@ impl GraphJoinInference {
         left_node_id_column: String,
         right_node_id_column: String,
         is_standalone_rel: bool,
+        left_is_optional: bool,
+        rel_is_optional: bool,
+        right_is_optional: bool,
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
@@ -799,7 +836,7 @@ impl GraphJoinInference {
                         }),
                     ],
                 }],
-                join_type: JoinType::Inner,
+                join_type: Self::determine_join_type(rel_is_optional),
             };
 
             let left_graph_join = Join {
@@ -818,7 +855,7 @@ impl GraphJoinInference {
                         }),
                     ],
                 }],
-                join_type: JoinType::Inner,
+                join_type: Self::determine_join_type(left_is_optional),
             };
 
             if is_standalone_rel {
@@ -871,7 +908,7 @@ impl GraphJoinInference {
                         }),
                     ],
                 }],
-                join_type: JoinType::Inner,
+                join_type: Self::determine_join_type(rel_is_optional),
             };
 
             let right_graph_join = Join {
@@ -890,7 +927,7 @@ impl GraphJoinInference {
                         }),
                     ],
                 }],
-                join_type: JoinType::Inner,
+                join_type: Self::determine_join_type(right_is_optional),
             };
 
             if is_standalone_rel {

@@ -5,6 +5,48 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 
 **Project Scope**: Read-only analytical queries only. Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are explicitly out of scope.
 
+## Windows Environment Constraints
+
+**⚠️ IMPORTANT: Known Windows-Specific Issues**
+
+### 1. ClickHouse Docker Volume Write Permission Problem
+- **Issue**: ClickHouse container on Windows cannot write to mounted volumes due to permission restrictions
+- **Solution**: **Always create tables using `ENGINE = Memory` instead of persistent engines**
+- **Example**:
+  ```sql
+  -- ❌ DO NOT USE (will fail on Windows)
+  CREATE TABLE users (...) ENGINE = MergeTree() ORDER BY id;
+  
+  -- ✅ USE THIS INSTEAD
+  CREATE TABLE users (...) ENGINE = Memory;
+  ```
+- **Impact**: Data is not persisted between container restarts, but this is acceptable for development/testing
+- **When to Remember**: Any SQL script creating tables (`setup_demo_data.sql`, test data creation, etc.)
+
+### 2. curl Command Not Available in PowerShell
+- **Issue**: `curl` is not available or behaves differently in Windows PowerShell environment
+- **Solution**: **Use `Invoke-RestMethod` or `Invoke-WebRequest` PowerShell cmdlets instead**
+- **Examples**:
+  ```powershell
+  # ❌ DO NOT USE (curl doesn't work)
+  curl -X POST http://localhost:8080/query -d '{"query":"MATCH (n) RETURN n"}'
+  
+  # ✅ USE THIS INSTEAD
+  Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query" `
+    -ContentType "application/json" `
+    -Body '{"query":"MATCH (n) RETURN n"}'
+  
+  # ✅ OR USE Python requests library
+  python -c "import requests; print(requests.post('http://localhost:8080/query', json={'query':'MATCH (n) RETURN n'}).json())"
+  ```
+- **When to Remember**: Testing HTTP endpoints, manual query testing, CI/CD scripts
+- **Alternative**: Use Python scripts with `requests` library for cross-platform testing
+
+**Development Reminder**: These constraints have been encountered multiple times. Always check for these patterns when:
+- Writing SQL setup scripts → Use `ENGINE = Memory`
+- Testing HTTP APIs → Use `Invoke-RestMethod` or Python
+- Creating documentation examples → Show both PowerShell and cross-platform alternatives
+
 ## Current Implementation Status
 
 ### ✅ Completed Features
@@ -18,6 +60,14 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 - Comprehensive testing: 250/251 tests passing (99.6%)
 - Full documentation suite (user guide, examples, test scripts)
 
+**OPTIONAL MATCH Support (Production-Ready)**
+- Complete LEFT JOIN semantics for optional graph patterns
+- Two-word keyword parsing (`OPTIONAL MATCH`) with 9 passing tests
+- Optional alias tracking in `query_planner/plan_ctx/mod.rs`
+- Automatic LEFT JOIN generation in `clickhouse_query_generator/`
+- 11/11 OPTIONAL MATCH tests passing (100%)
+- Full documentation: `docs/optional-match-guide.md`
+
 **Neo4j Bolt Protocol v4.4**
 - Complete wire protocol implementation in `server/bolt_protocol/`
 - Authentication system with multiple schemes (`auth.rs`)
@@ -30,6 +80,7 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 - Schema validation and optimization in `graph_catalog/`
 - View resolution in `query_planner/analyzer/view_resolver.rs`
 - Comprehensive test coverage (250/251 tests passing)
+- Fixed label/type_name field usage in `server/graph_catalog.rs`
 
 **Relationship Traversal Support**
 - Full relationship pattern support: `MATCH (a)-[r:TYPE]->(b)`
@@ -142,22 +193,18 @@ cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
 ## Development Priorities
 
 **Core Read Query Features** (Priority Order):
-1. **OPTIONAL MATCH Support**
-   - Implement left-join semantics for optional patterns
-   - Handle null values in pattern matching
-   - Extend query planner for optional relationships
 
-2. **Shortest Path Algorithms**
+1. **Shortest Path Algorithms** (Next Priority)
    - Implement `shortestPath()` and `allShortestPaths()`
    - Leverage existing recursive CTE infrastructure
    - Add path weight/cost calculations
 
-3. **Pattern Extensions**
+2. **Pattern Extensions**
    - Alternate relationship types: `[:TYPE1|TYPE2]`
    - Path variables: `p = (a)-[r]->(b)`
    - Pattern comprehensions: `[(a)-[]->(b) | b.name]`
 
-4. **Graph Algorithms**
+3. **Graph Algorithms**
    - PageRank, centrality measures
    - Community detection
    - Path finding utilities

@@ -5,19 +5,21 @@ description: "Simple social network for ClickGraph demo"
 views:
   - name: social_graph
     nodes:
-      User:
+      user:
         source_table: users
-        id_column: user_id  
+        id_column: user_id
+        label: User
         property_mappings:
           name: name
           age: age
           city: city
           
     relationships:
-      FRIENDS_WITH:
+      friends_with:
         source_table: friendships
         from_column: user1_id
         to_column: user2_id
+        type_name: FRIENDS_WITH
         from_node_type: User
         to_node_type: User
         property_mappings:

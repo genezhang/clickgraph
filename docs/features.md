@@ -55,6 +55,21 @@ ORDER BY friend_count DESC
 LIMIT 10
 ```
 
+#### Optional Pattern Matching
+```cypher
+-- Find all users and their posts (if any)
+MATCH (u:User)
+OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post)
+RETURN u.name, p.title
+
+-- Mixed required and optional patterns
+MATCH (u:User)-[:AUTHORED]->(p:Post)
+OPTIONAL MATCH (p)-[:LIKED_BY]->(liker:User)
+RETURN u.name, p.title, COUNT(liker) as likes
+GROUP BY u.name, p.title
+```
+→ See [OPTIONAL MATCH Guide](optional-match-guide.md) for complete documentation
+
 #### Conditional Logic
 ```cypher
 MATCH (u:User)

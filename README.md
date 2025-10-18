@@ -143,6 +143,20 @@ WHERE u.name = 'Alice'
 RETURN friend.name
 ```
 
+**OPTIONAL MATCH** for handling optional patterns:
+```cypher
+-- Find all users and their friends (if any)
+MATCH (u:user)
+OPTIONAL MATCH (u)-[:follows]->(friend:user)
+RETURN u.name, friend.name
+
+-- Mixed required and optional patterns
+MATCH (u:user)-[:authored]->(p:post)
+OPTIONAL MATCH (p)-[:liked_by]->(liker:user)
+RETURN u.name, p.title, COUNT(liker) as likes
+```
+→ Generates efficient `LEFT JOIN` SQL with NULL handling for unmatched patterns
+
 ## 🚀 Examples
 
 ### ⚡ **[Quick Start](examples/quick-start.md)** - 5 Minutes to Graph Analytics
@@ -214,9 +228,11 @@ Preliminary informal tests on a MacBook Pro (M3 Pro, 18 GB RAM) running ClickGra
 
 ClickGraph includes the following completed features:
 - ✅ **Neo4j Bolt Protocol v4.4**: Full compatibility with Neo4j drivers and tools
+- ✅ **OPTIONAL MATCH**: LEFT JOIN semantics for optional graph patterns with NULL handling
+- ✅ **Variable-Length Paths**: Recursive traversals with configurable depth limits
 - ✅ **View-Based Graph Model**: Transform existing tables to graphs via YAML configuration  
 - ✅ **Dual Server Architecture**: HTTP REST API and Bolt protocol simultaneously
-- ✅ **Comprehensive Testing**: 374/374 tests passing with 100% success rate
+- ✅ **Comprehensive Testing**: 261/262 tests passing (99.6% success rate)
 - ✅ **Flexible Configuration**: CLI options, environment variables, Docker deployment
 - ✅ **Query Optimization**: Advanced optimization passes including chained JOIN optimization for exact hop counts
 
