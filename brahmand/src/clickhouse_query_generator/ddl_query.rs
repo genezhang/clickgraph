@@ -893,6 +893,7 @@ mod tests {
         // AST with no DDL clauses
         let ast = OpenCypherQueryAst {
             match_clause: None,
+            optional_match_clauses: vec![],
             with_clause: None,
             where_clause: None,
             create_clause: None,

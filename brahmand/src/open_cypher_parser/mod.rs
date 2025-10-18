@@ -9,6 +9,7 @@ use nom::bytes::complete::tag;
 use nom::character::complete::multispace0;
 use nom::combinator::{cut, opt};
 use nom::error::context;
+use nom::multi::many0;
 use nom::sequence::terminated;
 use nom::{IResult, Parser};
 
@@ -23,6 +24,7 @@ pub(crate) mod errors;
 mod expression;
 mod limit_clause;
 mod match_clause;
+mod optional_match_clause;
 mod order_by_clause;
 mod path_pattern;
 mod remove_clause;
@@ -48,6 +50,11 @@ pub fn parse_query_with_nom(
 
     let (input, match_clause): (&str, Option<MatchClause>) =
         opt(match_clause::parse_match_clause).parse(input)?;
+    
+    // Parse zero or more OPTIONAL MATCH clauses
+    let (input, optional_match_clauses): (&str, Vec<OptionalMatchClause>) =
+        many0(optional_match_clause::parse_optional_match_clause).parse(input)?;
+    
     let (input, with_clause): (&str, Option<WithClause>) =
         opt(with_clause::parse_with_clause).parse(input)?;
     let (input, where_clause): (&str, Option<WhereClause>) =
@@ -75,6 +82,7 @@ pub fn parse_query_with_nom(
 
     let cypher_query = OpenCypherQueryAst {
         match_clause,
+        optional_match_clauses,
         with_clause,
         where_clause,
         create_clause,
