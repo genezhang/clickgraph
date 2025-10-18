@@ -833,7 +833,15 @@ impl RenderPlanBuilder for LogicalPlan {
                 scan.as_ref().clone(),
                 scan.source_table.clone(),
             )),
-            LogicalPlan::GraphNode(graph_node) => from_table_to_view_ref(graph_node.input.extract_from()?),
+            LogicalPlan::GraphNode(graph_node) => {
+                // Extract FROM from the input, but attach the GraphNode's alias
+                let mut from_ref = from_table_to_view_ref(graph_node.input.extract_from()?);
+                // Attach the Cypher variable name as the alias
+                if let Some(ref mut view_ref) = from_ref {
+                    view_ref.alias = Some(graph_node.alias.clone());
+                }
+                from_ref
+            },
             LogicalPlan::GraphRel(_) => None,
             LogicalPlan::Filter(filter) => from_table_to_view_ref(filter.input.extract_from()?),
             LogicalPlan::Projection(projection) => from_table_to_view_ref(projection.input.extract_from()?),
@@ -999,6 +1007,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
                     source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
                     name: var_len_cte.cte_name.clone(),
+                    alias: Some("t".to_string()), // CTE uses 't' as alias
                 })));
                 final_filters = None; // Filters are handled within the CTE
             } else {
@@ -1050,6 +1059,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
                     source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
                     name: var_len_cte.cte_name.clone(),
+                    alias: Some("t".to_string()), // CTE uses 't' as alias
                 })));
                 final_filters = None; // Filters are handled within the CTE
             } else {

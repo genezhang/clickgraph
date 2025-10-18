@@ -12,6 +12,8 @@ pub struct ViewTableRef {
     #[serde(with = "serde_arc")]
     pub source: Arc<LogicalPlan>,
     pub name: String,
+    /// The alias to use in SQL (e.g., the Cypher variable name like "u" or "n")
+    pub alias: Option<String>,
 }
 
 impl ViewTableRef {
@@ -20,12 +22,35 @@ impl ViewTableRef {
         Self {
             source: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),
             name,
+            alias: None,
+        }
+    }
+    
+    /// Create a new table reference with an explicit alias
+    pub fn new_table_with_alias(scan: ViewScan, name: String, alias: String) -> Self {
+        Self {
+            source: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),
+            name,
+            alias: Some(alias),
         }
     }
 
     /// Create a new view reference
     pub fn new_view(source: Arc<LogicalPlan>, name: String) -> Self {
-        Self { source, name }
+        Self { 
+            source, 
+            name,
+            alias: None,
+        }
+    }
+    
+    /// Create a new view reference with an explicit alias
+    pub fn new_view_with_alias(source: Arc<LogicalPlan>, name: String, alias: String) -> Self {
+        Self { 
+            source, 
+            name,
+            alias: Some(alias),
+        }
     }
 }
 

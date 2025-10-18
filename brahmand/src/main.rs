@@ -52,6 +52,10 @@ impl From<Cli> for server::ServerConfig {
 
 #[tokio::main]
 async fn main() {
+    // Initialize logger - defaults to INFO level, can be overridden with RUST_LOG env var
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+        .init();
+    
     let cli = Cli::parse();
     
     println!("\nClickGraph v{} (fork of Brahmand)\n", env!("CARGO_PKG_VERSION"));

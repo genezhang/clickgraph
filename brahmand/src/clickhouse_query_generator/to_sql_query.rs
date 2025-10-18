@@ -86,18 +86,22 @@ impl ToSql for FromTableItem {
             // For all references, use the name directly
             sql.push_str(&view_ref.name);
             
-            // Extract the original Cypher variable name from the logical plan
-            let alias = match view_ref.source.as_ref() {
-                LogicalPlan::Scan(scan) => {
-                    // Use the table_alias from the Scan (original Cypher variable name)
-                    scan.table_alias.clone().unwrap_or_else(|| "t".to_string())
+            // Extract the alias - prefer the explicit alias from ViewTableRef, 
+            // otherwise try to get it from the source logical plan
+            let alias = if let Some(explicit_alias) = &view_ref.alias {
+                explicit_alias.clone()
+            } else {
+                match view_ref.source.as_ref() {
+                    LogicalPlan::Scan(scan) => {
+                        // Use the table_alias from the Scan (original Cypher variable name)
+                        scan.table_alias.clone().unwrap_or_else(|| "t".to_string())
+                    }
+                    LogicalPlan::ViewScan(_) => {
+                        // ViewScan fallback - should not reach here if alias is properly set
+                        "t".to_string()
+                    }
+                    _ => "t".to_string(), // Default fallback
                 }
-                LogicalPlan::ViewScan(_) => {
-                    // For ViewScan, we don't have table_alias stored, so fall back to generic
-                    // TODO: ViewScan should also store the original Cypher variable name
-                    "t".to_string()
-                }
-                _ => "t".to_string(), // Default fallback
             };
             
             sql.push_str(" AS ");

@@ -99,6 +99,11 @@ pub async fn run() {
 pub async fn run_with_config(config: ServerConfig) {
     dotenv().ok();
     
+    // Test that logging is working
+    log::debug!("=== SERVER STARTING (debug log test) ===");
+    log::info!("Server configuration: http={}:{}, bolt={}:{}", 
+        config.http_host, config.http_port, config.bolt_host, config.bolt_port);
+    
     // Try to create ClickHouse client (optional for YAML-only mode)
     let client_opt = clickhouse_client::try_get_client();
     
@@ -148,7 +153,20 @@ pub async fn run_with_config(config: ServerConfig) {
         .route("/query", post(query_handler))
         .with_state(Arc::new(app_state));
 
-    let http_listener = TcpListener::bind(&http_bind_address).await.unwrap();
+    let http_listener = match TcpListener::bind(&http_bind_address).await {
+        Ok(listener) => {
+            log::info!("Successfully bound HTTP listener to {}", http_bind_address);
+            println!("✓ Successfully bound HTTP listener to {}", http_bind_address);
+            listener
+        }
+        Err(e) => {
+            log::error!("Failed to bind HTTP listener to {}: {}", http_bind_address, e);
+            eprintln!("✗ FATAL: Failed to bind HTTP listener to {}: {}", http_bind_address, e);
+            eprintln!("  Is another process using port {}?", config.http_port);
+            std::process::exit(1);
+        }
+    };
+    
     let http_server = axum::serve(http_listener, app);
     
     // Start Bolt server if enabled
