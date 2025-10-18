@@ -20,6 +20,9 @@ pub mod plan_builder;
 pub mod render_expr;
 pub mod view_plan;
 
+#[cfg(test)]
+mod tests;
+
 
 
 pub trait ToSql {
