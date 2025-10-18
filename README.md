@@ -30,7 +30,7 @@
 ### View-Based Graph Model
 - **Zero Migration**: Transform existing relational data into graph format through YAML configuration
 - **Native Performance**: Leverages ClickHouse's columnar storage and query optimization
-- **Production Ready**: Comprehensive validation, error handling, and optimization passes
+- **Robust Implementation**: Comprehensive validation, error handling, and optimization passes
 
 ---
 
@@ -152,16 +152,16 @@ Perfect for first-time users! Simple social network demo with:
 - **HTTP & Neo4j drivers** - both integration methods
 - **5-minute setup** - zero to working graph analytics
 
-### 📊 **[E-commerce Analytics](examples/ecommerce-analytics.md)** - Production Example
+### 📊 **[E-commerce Analytics](examples/ecommerce-analytics.md)** - Comprehensive Demo
 
 Complete end-to-end demonstration with:
 - **Complete data setup** with realistic e-commerce schema (customers, products, orders, reviews)
 - **Advanced graph queries** for customer segmentation, product recommendations, and market basket analysis  
-- **Production workflows** with both HTTP REST API and Neo4j driver examples
+- **Real-world workflows** with both HTTP REST API and Neo4j driver examples
 - **Performance optimization** techniques and expected benchmarks
 - **Business insights** from customer journeys, seasonal patterns, and cross-selling opportunities
 
-**Start with Quick Start, then explore E-commerce Analytics for production use!** 🎯
+**Start with Quick Start, then explore E-commerce Analytics for advanced usage!** 🎯
 
 ## �🔧 Configuration
 
@@ -212,12 +212,12 @@ ClickGraph includes the following completed features:
 - ✅ **View-Based Graph Model**: Transform existing tables to graphs via YAML configuration  
 - ✅ **Dual Server Architecture**: HTTP REST API and Bolt protocol simultaneously
 - ✅ **Comprehensive Testing**: 374/374 tests passing with 100% success rate
-- ✅ **Production Configuration**: CLI options, environment variables, flexible deployment
-- ✅ **Query Optimization**: Advanced optimization passes for view-based queries
+- ✅ **Flexible Configuration**: CLI options, environment variables, Docker deployment
+- ✅ **Query Optimization**: Advanced optimization passes including chained JOIN optimization for exact hop counts
 
 ### Known Considerations
 - ⚠️ **Schema warnings**: Cosmetic warnings about internal catalog system (functionality unaffected)
-- 🔧 **Memory vs MergeTree**: Use Memory engine for development, MergeTree for production
+- 🔧 **Memory vs MergeTree**: Use Memory engine for development, MergeTree for persistent storage
 - 🐳 **Docker permissions**: May require volume permission fixes on some systems
 
 ## 🤝 Contributing
@@ -233,4 +233,4 @@ ClickGraph welcomes contributions! Key areas for development:
 
 ClickGraph is licensed under the Apache License, Version 2.0. See the LICENSE file for details.
 
-This project is a fork of [Brahmand](https://github.com/suryatmodulus/brahmand) with significant enhancements for Neo4j ecosystem compatibility and production deployment.
+This project is a fork of [Brahmand](https://github.com/suryatmodulus/brahmand) with significant enhancements for Neo4j ecosystem compatibility and enterprise deployment capabilities.
