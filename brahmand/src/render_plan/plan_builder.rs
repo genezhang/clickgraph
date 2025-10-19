@@ -208,16 +208,82 @@ fn has_variable_length_rel(plan: &LogicalPlan) -> Option<(String, String)> {
     }
 }
 
+/// Extract path variable name from variable-length relationship
+/// Returns the path variable name (e.g., "p") if found
+fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
+            rel.path_variable.clone()
+        }
+        LogicalPlan::GraphNode(node) => get_path_variable(&node.input),
+        LogicalPlan::Filter(filter) => get_path_variable(&filter.input),
+        LogicalPlan::Projection(proj) => get_path_variable(&proj.input),
+        LogicalPlan::GraphJoins(joins) => get_path_variable(&joins.input),
+        LogicalPlan::GroupBy(gb) => get_path_variable(&gb.input),
+        LogicalPlan::OrderBy(ob) => get_path_variable(&ob.input),
+        LogicalPlan::Skip(skip) => get_path_variable(&skip.input),
+        LogicalPlan::Limit(limit) => get_path_variable(&limit.input),
+        LogicalPlan::Cte(cte) => get_path_variable(&cte.input),
+        _ => None,
+    }
+}
+
 /// Rewrite expressions to use CTE columns instead of node references
 /// Maps u1.user_id -> t.start_id, u2.user_id -> t.end_id, u1.name -> t.start_name, etc.
 fn rewrite_expr_for_var_len_cte(
     expr: &super::render_expr::RenderExpr,
     left_alias: &str,
     right_alias: &str,
+    path_variable: Option<&str>,
 ) -> super::render_expr::RenderExpr {
     use super::render_expr::{RenderExpr, PropertyAccess, TableAlias, Column};
     
     match expr {
+        RenderExpr::TableAlias(alias) => {
+            // Check if this is a path variable reference
+            if let Some(path_var) = path_variable {
+                if alias.0 == path_var {
+                    // This is a path variable - construct a path object from CTE columns
+                    // Use ClickHouse map() function to create a structure with path data
+                    use super::render_expr::{ScalarFnCall, Literal};
+                    
+                    return RenderExpr::ScalarFnCall(ScalarFnCall {
+                        name: "map".to_string(),
+                        args: vec![
+                            // 'nodes' key
+                            RenderExpr::Literal(Literal::String("nodes".to_string())),
+                            // path_nodes value
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias("t".to_string()),
+                                column: Column("path_nodes".to_string()),
+                            }),
+                            // 'length' key
+                            RenderExpr::Literal(Literal::String("length".to_string())),
+                            // hop_count value
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias("t".to_string()),
+                                column: Column("hop_count".to_string()),
+                            }),
+                            // 'start' key
+                            RenderExpr::Literal(Literal::String("start".to_string())),
+                            // start_id value
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias("t".to_string()),
+                                column: Column("start_id".to_string()),
+                            }),
+                            // 'end' key
+                            RenderExpr::Literal(Literal::String("end".to_string())),
+                            // end_id value
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias("t".to_string()),
+                                column: Column("end_id".to_string()),
+                            }),
+                        ],
+                    });
+                }
+            }
+            expr.clone()
+        }
         RenderExpr::PropertyAccessExp(prop_access) => {
             let node_alias = &prop_access.table_alias.0;
             let property = &prop_access.column.0;
@@ -1313,8 +1379,14 @@ impl RenderPlanBuilder for LogicalPlan {
         
         // If we have a variable-length relationship, rewrite SELECT items to use CTE columns
         if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
+            let path_var = get_path_variable(self);
             final_select_items = final_select_items.into_iter().map(|item| {
-                let new_expr = rewrite_expr_for_var_len_cte(&item.expression, &left_alias, &right_alias);
+                let new_expr = rewrite_expr_for_var_len_cte(
+                    &item.expression, 
+                    &left_alias, 
+                    &right_alias,
+                    path_var.as_deref()
+                );
                 SelectItem {
                     expression: new_expr,
                     col_alias: item.col_alias,
@@ -1329,8 +1401,9 @@ impl RenderPlanBuilder for LogicalPlan {
         
         // Rewrite GROUP BY expressions for variable-length paths
         if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
+            let path_var = get_path_variable(self);
             extracted_group_by_exprs = extracted_group_by_exprs.into_iter().map(|expr| {
-                rewrite_expr_for_var_len_cte(&expr, &left_alias, &right_alias)
+                rewrite_expr_for_var_len_cte(&expr, &left_alias, &right_alias, path_var.as_deref())
             }).collect();
         }
 
@@ -1338,9 +1411,10 @@ impl RenderPlanBuilder for LogicalPlan {
         
         // Rewrite ORDER BY expressions for variable-length paths
         if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
+            let path_var = get_path_variable(self);
             extracted_order_by = extracted_order_by.into_iter().map(|item| {
                 OrderByItem {
-                    expression: rewrite_expr_for_var_len_cte(&item.expression, &left_alias, &right_alias),
+                    expression: rewrite_expr_for_var_len_cte(&item.expression, &left_alias, &right_alias, path_var.as_deref()),
                     order: item.order,
                 }
             }).collect();
