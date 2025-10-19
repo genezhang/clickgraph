@@ -210,10 +210,23 @@ impl ToSql for Cte {
         // Handle both structured and raw SQL content
         match &self.content {
             CteContent::Structured(plan) => {
-                // For structured content, we need to wrap it with the CTE name
+                // For structured content, render only the query body (not nested CTEs)
+                // CTEs should already be hoisted to the top level
                 let mut cte_body = String::new();
-                cte_body.push_str("\n    ");
-                cte_body.push_str(&plan.to_sql());
+                
+                // If there are no explicit SELECT items, default to SELECT *
+                if plan.select.0.is_empty() {
+                    cte_body.push_str("SELECT *\n");
+                } else {
+                    cte_body.push_str(&plan.select.to_sql());
+                }
+                
+                cte_body.push_str(&plan.from.to_sql());
+                cte_body.push_str(&plan.joins.to_sql());
+                cte_body.push_str(&plan.filters.to_sql());
+                cte_body.push_str(&plan.group_by.to_sql());
+                cte_body.push_str(&plan.order_by.to_sql());
+                cte_body.push_str(&plan.union.to_sql());
                 
                 format!("{} AS ({})", self.cte_name, cte_body)
             }
