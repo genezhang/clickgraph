@@ -1169,6 +1169,7 @@ mod tests {
             is_rel_anchor: false,
             variable_length: None,
             shortest_path_mode: None,
+            path_variable: None,
         }))
     }
 

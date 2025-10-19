@@ -119,6 +119,7 @@ pub struct GraphRel {
     pub is_rel_anchor: bool,
     pub variable_length: Option<VariableLengthSpec>,
     pub shortest_path_mode: Option<ShortestPathMode>,
+    pub path_variable: Option<String>,  // For: MATCH p = pattern, stores "p"
 }
 
 /// Mode for shortest path queries
@@ -485,6 +486,7 @@ impl GraphRel {
                 is_rel_anchor: self.is_rel_anchor,
                 variable_length: self.variable_length.clone(),
                 shortest_path_mode: self.shortest_path_mode.clone(),
+                path_variable: self.path_variable.clone(),
             });
             Transformed::Yes(Arc::new(new_graph_rel))
         } else {
@@ -904,6 +906,7 @@ mod tests {
             is_rel_anchor: false,
             variable_length: None,
             shortest_path_mode: None,
+            path_variable: None,
         };
 
         let old_plan = Arc::new(LogicalPlan::GraphRel(graph_rel.clone()));
