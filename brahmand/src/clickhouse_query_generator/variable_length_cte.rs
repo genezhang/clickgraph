@@ -114,50 +114,48 @@ impl VariableLengthCteGenerator {
         let min_hops = self.spec.effective_min_hops();
         let max_hops = self.spec.max_hops;
 
-        let mut sql = String::new();
-
-        // CTE Header
-        sql.push_str(&format!("{} AS (\n", self.cte_name));
+        // Generate the core recursive query body (without CTE name wrapper)
+        let mut query_body = String::new();
 
         // Base case: Generate for each required hop level from 1 to min_hops
         for hop in 1..=min_hops {
             if hop > 1 {
-                sql.push_str("\n    UNION ALL\n");
+                query_body.push_str("\n    UNION ALL\n");
             }
-            sql.push_str(&self.generate_base_case(hop));
+            query_body.push_str(&self.generate_base_case(hop));
         }
 
         // Recursive case: If max_hops > min_hops, add recursive traversal
         if let Some(max) = max_hops {
             if max > min_hops {
-                sql.push_str("\n    UNION ALL\n");
-                sql.push_str(&self.generate_recursive_case(max));
+                query_body.push_str("\n    UNION ALL\n");
+                query_body.push_str(&self.generate_recursive_case(max));
             }
         } else {
             // Unbounded case: add recursive traversal with reasonable default limit
-            sql.push_str("\n    UNION ALL\n");
-            sql.push_str(&self.generate_recursive_case(10)); // Default max depth
+            query_body.push_str("\n    UNION ALL\n");
+            query_body.push_str(&self.generate_recursive_case(10)); // Default max depth
         }
 
-        sql.push_str("\n)");
-        
         // Add shortest path filtering if mode is set
         // Wrap the CTE in a filtered SELECT to return only shortest paths
-        match &self.shortest_path_mode {
+        let sql = match &self.shortest_path_mode {
             Some(ShortestPathMode::Shortest) => {
                 // Return only one shortest path - select the one with minimum hop_count
-                sql = format!("{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner ORDER BY hop_count ASC LIMIT 1\n)",
-                    self.cte_name, sql, self.cte_name, self.cte_name);
+                // Create nested CTE structure: inner CTE generates all paths, outer CTE filters to shortest
+                format!("{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner ORDER BY hop_count ASC LIMIT 1\n)",
+                    self.cte_name, query_body, self.cte_name, self.cte_name)
             }
             Some(ShortestPathMode::AllShortest) => {
                 // Return all paths with minimum hop_count
-                sql = format!("{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count = (SELECT MIN(hop_count) FROM {}_inner)\n)",
-                    self.cte_name, sql, self.cte_name, self.cte_name, self.cte_name);
+                format!("{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count = (SELECT MIN(hop_count) FROM {}_inner)\n)",
+                    self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name)
             }
             None => {
-                // No shortest path mode - return paths as-is
+                // No shortest path mode - return paths as-is with normal CTE wrapper
+                format!("{} AS (\n{}\n)", self.cte_name, query_body)
             }
-        }
+        };
         
         sql
     }
