@@ -318,6 +318,7 @@ mod tests {
         let match_clause = query_ast.match_clause.unwrap();
 
         let expected_match_clause = MatchClause {
+            path_variable: None,
             path_patterns: vec![PathPattern::ConnectedPattern(vec![
                 ConnectedPattern {
                     start_node: Rc::new(RefCell::new(NodePattern {
@@ -484,6 +485,7 @@ mod tests {
         assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
         let match_clause = query_ast.match_clause.unwrap();
         let expected_match_clause = MatchClause {
+            path_variable: None,
             path_patterns: vec![PathPattern::ConnectedPattern(vec![
                 // (p:Person {name: 'Tom Hardy'})-[r:ACTED_IN]->(movie:Movie)
                 ConnectedPattern {
@@ -642,6 +644,7 @@ mod tests {
         assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
         let match_clause = query_ast.match_clause.unwrap();
         let expected_match_clause = MatchClause {
+            path_variable: None,
             path_patterns: vec![
                 PathPattern::Node(NodePattern {
                     name: Some("a"),
@@ -767,7 +770,7 @@ mod tests {
         assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
         let match_clause = query_ast.match_clause.unwrap();
         let expected_match_clause = MatchClause {
-            path_patterns: vec![PathPattern::Node(NodePattern {
+            path_variable: None,            path_patterns: vec![PathPattern::Node(NodePattern {
                 name: Some("n"),
                 label: None,
                 properties: Some(vec![Property::PropertyKV(PropertyKVPair {
@@ -856,7 +859,7 @@ mod tests {
         assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
         let match_clause = query_ast.match_clause.unwrap();
         let expected_match_clause = MatchClause {
-            path_patterns: vec![PathPattern::Node(NodePattern {
+            path_variable: None,            path_patterns: vec![PathPattern::Node(NodePattern {
                 name: Some("n"),
                 label: None,
                 properties: Some(vec![Property::PropertyKV(PropertyKVPair {
@@ -926,7 +929,7 @@ mod tests {
         assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
         let match_clause = query_ast.match_clause.unwrap();
         let expected_match_clause = MatchClause {
-            path_patterns: vec![PathPattern::Node(NodePattern {
+            path_variable: None,            path_patterns: vec![PathPattern::Node(NodePattern {
                 name: Some("andres"),
                 label: None,
                 properties: Some(vec![Property::PropertyKV(PropertyKVPair {
@@ -1010,7 +1013,7 @@ mod tests {
         assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
         let match_clause = query_ast.match_clause.unwrap();
         let expected_match_clause = MatchClause {
-            path_patterns: vec![PathPattern::Node(NodePattern {
+            path_variable: None,            path_patterns: vec![PathPattern::Node(NodePattern {
                 name: Some("p"),
                 label: Some("Person"),
                 properties: None,            })],
@@ -1130,7 +1133,7 @@ mod tests {
         assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
         let match_clause = query_ast.match_clause.unwrap();
         let expected_match_clause = MatchClause {
-            path_patterns: vec![PathPattern::Node(NodePattern {
+            path_variable: None,            path_patterns: vec![PathPattern::Node(NodePattern {
                 name: Some("p"),
                 label: Some("Person"),
                 properties: None,            })],
@@ -1322,3 +1325,4 @@ mod tests {
         assert_eq!(create_rel_table_clause, expected_create_rel_table_clause);
     }
 }
+

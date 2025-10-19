@@ -8,12 +8,25 @@ use nom::{
 
 use super::ast::{MatchClause, PathPattern};
 use super::errors::OpenCypherParsingError;
+use super::expression::parse_identifier;
 use super::path_pattern;
 
 pub fn parse_match_clause(
     input: &'_ str,
 ) -> IResult<&'_ str, MatchClause<'_>, OpenCypherParsingError<'_>> {
     let (input, _) = tag_no_case("MATCH").parse(input)?;
+    let (mut input, _) = multispace0(input)?;
+
+    // Try to parse optional path variable: "p = "
+    let mut path_variable = None;
+    if let Ok((rest, name)) = parse_identifier(input) {
+        let (rest, _) = multispace0(rest)?;
+        if let Ok((rest, _)) = char::<_, nom::error::Error<_>>('=')(rest) {
+            let (rest, _) = multispace0(rest)?;
+            path_variable = Some(name);
+            input = rest;
+        }
+    }
 
     let (input, pattern_parts) = context(
         "Error in match clause",
@@ -26,6 +39,7 @@ pub fn parse_match_clause(
 
     let match_clause = MatchClause {
         path_patterns: pattern_parts,
+        path_variable,
     };
 
     Ok((input, match_clause))
@@ -140,6 +154,56 @@ mod tests {
             Err(e) => {
                 panic!("Unexpected error: {:?}", e);
             }
+        }
+    }
+
+    #[test]
+    fn test_parse_match_clause_with_path_variable() {
+        let input = "MATCH p = (a:Person)";
+        let result = parse_match_clause(input);
+        match result {
+            Ok((remaining, clause)) => {
+                assert_eq!(remaining.trim(), "");
+                assert_eq!(clause.path_variable, Some("p"));
+                assert_eq!(clause.path_patterns.len(), 1);
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_match_clause_with_path_variable_shortestpath() {
+        let input = "MATCH p = shortestPath((a)-[*]-(b))";
+        let result = parse_match_clause(input);
+        match result {
+            Ok((remaining, clause)) => {
+                assert_eq!(remaining.trim(), "");
+                assert_eq!(clause.path_variable, Some("p"));
+                assert_eq!(clause.path_patterns.len(), 1);
+                match &clause.path_patterns[0] {
+                    PathPattern::ShortestPath(_) => {
+                        // Expected
+                    }
+                    other => {
+                        panic!("Expected PathPattern::ShortestPath, got {:?}", other);
+                    }
+                }
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_match_clause_without_path_variable() {
+        let input = "MATCH (a:Person)";
+        let result = parse_match_clause(input);
+        match result {
+            Ok((remaining, clause)) => {
+                assert_eq!(remaining.trim(), "");
+                assert_eq!(clause.path_variable, None);
+                assert_eq!(clause.path_patterns.len(), 1);
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
         }
     }
 }

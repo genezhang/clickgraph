@@ -893,6 +893,7 @@ mod tests {
         };
 
         let match_clause = ast::MatchClause {
+            path_variable: None,
             path_patterns: vec![
                 ast::PathPattern::Node(node_pattern),
                 ast::PathPattern::ConnectedPattern(vec![connected_pattern]),

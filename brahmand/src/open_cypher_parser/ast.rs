@@ -23,6 +23,7 @@ pub struct OpenCypherQueryAst<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchClause<'a> {
     pub path_patterns: Vec<PathPattern<'a>>,
+    pub path_variable: Option<&'a str>,  // For: MATCH p = (pattern)
 }
 
 #[derive(Debug, PartialEq, Clone)]
