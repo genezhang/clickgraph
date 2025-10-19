@@ -103,9 +103,10 @@ mod tests {
         assert_eq!(remaining, "");
         assert_eq!(optional_match_clause.path_patterns.len(), 1);
         
-        // Just verify we got a path pattern (Node or ConnectedPattern)
+        // Just verify we got a path pattern (Node, ConnectedPattern, or shortest path variants)
         match &optional_match_clause.path_patterns[0] {
-            PathPattern::Node(_) | PathPattern::ConnectedPattern(_) => {
+            PathPattern::Node(_) | PathPattern::ConnectedPattern(_) 
+            | PathPattern::ShortestPath(_) | PathPattern::AllShortestPaths(_) => {
                 // Success - valid pattern parsed
             }
         }

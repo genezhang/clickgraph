@@ -609,6 +609,9 @@ mod tests {
                             format!("{:?}", Rc::new(expected_node))
                         );
                     }
+                    PathPattern::ShortestPath(_) | PathPattern::AllShortestPaths(_) => {
+                        panic!("Unexpected shortest path pattern in this test");
+                    }
                 }
             }
             Err(e) => {
