@@ -213,6 +213,9 @@ async fn execute_cte_queries(
     instant: Instant,
 ) -> Result<Response, (StatusCode, String)> {
     let ch_query_string = ch_sql_queries.join(" ");
+    
+    // Log full SQL for debugging (especially helpful when ClickHouse truncates errors)
+    log::debug!("Executing SQL:\n{}", ch_query_string);
 
     if output_format == OutputFormat::Pretty
         || output_format == OutputFormat::PrettyCompact
@@ -225,6 +228,8 @@ async fn execute_cte_queries(
             .query(&ch_query_string)
             .fetch_bytes(output_format)
             .map_err(|e| {
+                // Log full SQL on error for debugging
+                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", ch_query_string, e);
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Clickhouse Error: {}", e),
@@ -262,6 +267,8 @@ async fn execute_cte_queries(
             .query(&ch_query_string)
             .fetch_bytes("JSONEachRow")
             .map_err(|e| {
+                // Log full SQL on error for debugging
+                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", ch_query_string, e);
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Clickhouse Error: {}", e),
@@ -271,6 +278,8 @@ async fn execute_cte_queries(
 
         let mut rows: Vec<Value> = vec![];
         while let Some(line) = lines.next_line().await.map_err(|e| {
+                // Log full SQL on error for debugging
+                log::error!("ClickHouse response parsing failed. SQL was:\n{}\nError: {}", ch_query_string, e);
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Clickhouse Error: {}", e),
