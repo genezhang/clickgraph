@@ -306,31 +306,51 @@ fn rewrite_expr_for_var_len_cte(
                         args: vec![
                             // 'nodes' key
                             RenderExpr::Literal(Literal::String("nodes".to_string())),
-                            // path_nodes value
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias("t".to_string()),
-                                column: Column("path_nodes".to_string()),
+                            // path_nodes value - convert to string
+                            RenderExpr::ScalarFnCall(ScalarFnCall {
+                                name: "toString".to_string(),
+                                args: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias("t".to_string()),
+                                        column: Column("path_nodes".to_string()),
+                                    }),
+                                ],
                             }),
                             // 'length' key
                             RenderExpr::Literal(Literal::String("length".to_string())),
-                            // hop_count value
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias("t".to_string()),
-                                column: Column("hop_count".to_string()),
+                            // hop_count value - convert to string
+                            RenderExpr::ScalarFnCall(ScalarFnCall {
+                                name: "toString".to_string(),
+                                args: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias("t".to_string()),
+                                        column: Column("hop_count".to_string()),
+                                    }),
+                                ],
                             }),
                             // 'start' key
                             RenderExpr::Literal(Literal::String("start".to_string())),
-                            // start_id value
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias("t".to_string()),
-                                column: Column("start_id".to_string()),
+                            // start_id value - convert to string
+                            RenderExpr::ScalarFnCall(ScalarFnCall {
+                                name: "toString".to_string(),
+                                args: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias("t".to_string()),
+                                        column: Column("start_id".to_string()),
+                                    }),
+                                ],
                             }),
                             // 'end' key
                             RenderExpr::Literal(Literal::String("end".to_string())),
-                            // end_id value
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias("t".to_string()),
-                                column: Column("end_id".to_string()),
+                            // end_id value - convert to string
+                            RenderExpr::ScalarFnCall(ScalarFnCall {
+                                name: "toString".to_string(),
+                                args: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias("t".to_string()),
+                                        column: Column("end_id".to_string()),
+                                    }),
+                                ],
                             }),
                         ],
                     });
@@ -510,9 +530,9 @@ fn extract_var_len_properties(
                         
                         // Map property name to actual column name using schema
                         let column_name = map_property_to_column_with_schema(property_name, node_label);
-                        let alias = item.col_alias.as_ref()
-                            .map(|a| a.0.clone())
-                            .unwrap_or_else(|| property_name.to_string());
+                        // Use property_name for CTE column alias, not Cypher SELECT alias
+                        // E.g., for "a.name AS start", use "name" not "start" for CTE column
+                        let alias = property_name.to_string();
                         
                         properties.push(NodeProperty {
                             cypher_alias: node_alias.to_string(),

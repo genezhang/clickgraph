@@ -186,25 +186,38 @@ impl ProjectionTagging {
                         source: e,
                     }
                 })?;
-                let tagged_proj = ProjectionItem {
-                    expression: LogicalExpr::Star,
-                    col_alias: None,
-                    // belongs_to_table: Some(table_alias.clone()),
-                };
-                // table_ctx.projection_items = vec![tagged_proj];
-                table_ctx.set_projections(vec![tagged_proj]);
+                
+                // Check if this is a path variable (has no label - path variables are registered without labels)
+                // Path variables should be kept as-is, not expanded to .*
+                let is_path_variable = table_ctx.get_label_opt().is_none() && !table_ctx.is_relation();
+                
+                if is_path_variable {
+                    // This is a path variable - don't expand to .*, keep it as TableAlias
+                    // The render layer will handle converting it to the appropriate map() construction
+                    // No changes to item.expression needed
+                    Ok(())
+                } else {
+                    // Regular table alias - expand to .*
+                    let tagged_proj = ProjectionItem {
+                        expression: LogicalExpr::Star,
+                        col_alias: None,
+                        // belongs_to_table: Some(table_alias.clone()),
+                    };
+                    // table_ctx.projection_items = vec![tagged_proj];
+                    table_ctx.set_projections(vec![tagged_proj]);
 
-                // if table_ctx is of relation then mark use_edge_list = true
-                if table_ctx.is_relation() {
-                    table_ctx.set_use_edge_list(true);
+                    // if table_ctx is of relation then mark use_edge_list = true
+                    if table_ctx.is_relation() {
+                        table_ctx.set_use_edge_list(true);
+                    }
+
+                    // update the overall projection
+                    item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: table_alias.clone(),
+                        column: Column("*".to_string()),
+                    });
+                    Ok(())
                 }
-
-                // update the overall projection
-                item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: table_alias.clone(),
-                    column: Column("*".to_string()),
-                });
-                Ok(())
             }
             LogicalExpr::PropertyAccessExp(property_access) => {
                 let table_ctx = plan_ctx

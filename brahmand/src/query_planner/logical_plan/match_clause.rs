@@ -228,6 +228,20 @@ fn traverse_connected_pattern_with_mode<'a>(
                 ),
             );
 
+            // Register path variable in PlanCtx if present
+            if let Some(path_var) = path_variable {
+                plan_ctx.insert_table_ctx(
+                    path_var.to_string(),
+                    TableCtx::build(
+                        path_var.to_string(),
+                        None,  // Path variables don't have labels
+                        vec![], // Path variables don't have properties
+                        false,  // Not a relationship
+                        true,   // Explicitly named by user
+                    ),
+                );
+            }
+
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
         }
         // if end alias already present in ctx map, it means the current nested connected pattern's end node will be connecting at right side plan and start node will be at the left
@@ -277,6 +291,20 @@ fn traverse_connected_pattern_with_mode<'a>(
                     rel.name.is_some(),
                 ),
             );
+
+            // Register path variable in PlanCtx if present
+            if let Some(path_var) = path_variable {
+                plan_ctx.insert_table_ctx(
+                    path_var.to_string(),
+                    TableCtx::build(
+                        path_var.to_string(),
+                        None,  // Path variables don't have labels
+                        vec![], // Path variables don't have properties
+                        false,  // Not a relationship
+                        true,   // Explicitly named by user
+                    ),
+                );
+            }
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
         }
@@ -342,6 +370,20 @@ fn traverse_connected_pattern_with_mode<'a>(
                     rel.name.is_some(),
                 ),
             );
+
+            // Register path variable in PlanCtx if present
+            if let Some(path_var) = path_variable {
+                plan_ctx.insert_table_ctx(
+                    path_var.to_string(),
+                    TableCtx::build(
+                        path_var.to_string(),
+                        None,  // Path variables don't have labels
+                        vec![], // Path variables don't have properties
+                        false,  // Not a relationship
+                        true,   // Explicitly named by user
+                    ),
+                );
+            }
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
         }

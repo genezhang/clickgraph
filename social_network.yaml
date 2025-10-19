@@ -10,17 +10,16 @@ views:
         id_column: user_id
         label: User
         property_mappings:
-          name: name
-          age: age
-          city: city
+          name: full_name
+          email: email_address
           
     relationships:
-      friends_with:
-        source_table: friendships
-        from_column: user1_id
-        to_column: user2_id
-        type_name: FRIENDS_WITH
+      follows:
+        source_table: user_follows
+        from_column: follower_id
+        to_column: followed_id
+        type_name: FOLLOWS
         from_node_type: User
         to_node_type: User
         property_mappings:
-          since: since_date
+          since: follow_date
