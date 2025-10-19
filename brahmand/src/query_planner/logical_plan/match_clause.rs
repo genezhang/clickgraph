@@ -7,7 +7,7 @@ use crate::{
         logical_plan::{
             errors::LogicalPlanError,
             plan_builder::LogicalPlanResult,
-            {GraphNode, GraphRel, LogicalPlan, Scan},
+            {GraphNode, GraphRel, LogicalPlan, Scan, ShortestPathMode},
         },
         plan_ctx::{PlanCtx, TableCtx},
     },
@@ -122,11 +122,22 @@ fn convert_properties_to_operator_application(plan_ctx: &mut PlanCtx) -> Logical
     Ok(())
 }
 
+// Wrapper for backwards compatibility
 fn traverse_connected_pattern<'a>(
+    connected_patterns: &Vec<ast::ConnectedPattern<'a>>,
+    plan: Arc<LogicalPlan>,
+    plan_ctx: &mut PlanCtx,
+    path_pattern_idx: usize,
+) -> LogicalPlanResult<Arc<LogicalPlan>> {
+    traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, path_pattern_idx, None)
+}
+
+fn traverse_connected_pattern_with_mode<'a>(
     connected_patterns: &Vec<ast::ConnectedPattern<'a>>,
     mut plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
     path_pattern_idx: usize,
+    shortest_path_mode: Option<ShortestPathMode>,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
     for connected_pattern in connected_patterns {
         let start_node_ref = connected_pattern.start_node.borrow();
@@ -202,7 +213,7 @@ fn traverse_connected_pattern<'a>(
                 right_connection: start_node_alias,
                 is_rel_anchor: false,
                 variable_length: None, // Single-hop relationship by default
-                shortest_path_mode: None, // Not a shortest path query
+                shortest_path_mode: shortest_path_mode.clone(),
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -251,7 +262,7 @@ fn traverse_connected_pattern<'a>(
                 right_connection: end_node_alias,
                 is_rel_anchor: false,
                 variable_length: rel.variable_length.clone().map(|v| v.into()),
-                shortest_path_mode: None, // Not a shortest path query
+                shortest_path_mode: shortest_path_mode.clone(),
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -315,7 +326,7 @@ fn traverse_connected_pattern<'a>(
                 right_connection: start_node_alias,
                 is_rel_anchor: false,
                 variable_length: rel.variable_length.clone().map(|v| v.into()),
-                shortest_path_mode: None, // Not a shortest path query
+                shortest_path_mode: shortest_path_mode.clone(),
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -393,19 +404,27 @@ pub fn evaluate_match_clause<'a>(
                 plan = traverse_node_pattern(node_pattern, plan, plan_ctx)?;
             }
             ast::PathPattern::ConnectedPattern(connected_patterns) => {
-                plan = traverse_connected_pattern(connected_patterns, plan, plan_ctx, idx)?;
+                plan = traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, idx, None)?;
             }
             ast::PathPattern::ShortestPath(inner_pattern) => {
-                // TODO: Implement shortest path traversal with depth tracking
-                // For now, recursively process the inner pattern
-                // The shortest path logic will be added in SQL generation phase
-                plan = evaluate_single_path_pattern(inner_pattern.as_ref(), plan, plan_ctx, idx)?;
+                // Process inner pattern with shortest path mode enabled
+                plan = evaluate_single_path_pattern_with_mode(
+                    inner_pattern.as_ref(), 
+                    plan, 
+                    plan_ctx, 
+                    idx,
+                    Some(ShortestPathMode::Shortest)
+                )?;
             }
             ast::PathPattern::AllShortestPaths(inner_pattern) => {
-                // TODO: Implement all shortest paths traversal with depth filtering
-                // For now, recursively process the inner pattern
-                // The all shortest paths logic will be added in SQL generation phase
-                plan = evaluate_single_path_pattern(inner_pattern.as_ref(), plan, plan_ctx, idx)?;
+                // Process inner pattern with all shortest paths mode enabled
+                plan = evaluate_single_path_pattern_with_mode(
+                    inner_pattern.as_ref(), 
+                    plan, 
+                    plan_ctx, 
+                    idx,
+                    Some(ShortestPathMode::AllShortest)
+                )?;
             }
         }
     }
@@ -414,27 +433,40 @@ pub fn evaluate_match_clause<'a>(
     Ok(plan)
 }
 
-// Helper function to evaluate a single path pattern
-fn evaluate_single_path_pattern<'a>(
+// Helper function to evaluate a single path pattern with shortest path mode
+fn evaluate_single_path_pattern_with_mode<'a>(
     path_pattern: &ast::PathPattern<'a>,
     plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
     idx: usize,
+    shortest_path_mode: Option<ShortestPathMode>,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
     match path_pattern {
         ast::PathPattern::Node(node_pattern) => {
             traverse_node_pattern(node_pattern, plan, plan_ctx)
         }
         ast::PathPattern::ConnectedPattern(connected_patterns) => {
-            traverse_connected_pattern(connected_patterns, plan, plan_ctx, idx)
+            traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, idx, shortest_path_mode)
         }
         ast::PathPattern::ShortestPath(inner) => {
-            // Recursively unwrap
-            evaluate_single_path_pattern(inner.as_ref(), plan, plan_ctx, idx)
+            // Recursively unwrap with shortest path mode
+            evaluate_single_path_pattern_with_mode(
+                inner.as_ref(), 
+                plan, 
+                plan_ctx, 
+                idx,
+                Some(ShortestPathMode::Shortest)
+            )
         }
         ast::PathPattern::AllShortestPaths(inner) => {
-            // Recursively unwrap
-            evaluate_single_path_pattern(inner.as_ref(), plan, plan_ctx, idx)
+            // Recursively unwrap with all shortest paths mode
+            evaluate_single_path_pattern_with_mode(
+                inner.as_ref(), 
+                plan, 
+                plan_ctx, 
+                idx,
+                Some(ShortestPathMode::AllShortest)
+            )
         }
     }
 }
