@@ -4,6 +4,18 @@
 
 ### 🚀 Features
 
+- **Shortest Path Queries** (Oct 18): Core implementation for `shortestPath()` and `allShortestPaths()`
+  - Parser: Case-insensitive matching for `shortestPath((a)-[:TYPE*]-(b))`
+  - Query planner: ShortestPath/AllShortestPaths pattern handling
+  - SQL generation: Nested CTE structure with hop count tracking
+  - `shortestPath()`: `ORDER BY hop_count ASC LIMIT 1` (single shortest)
+  - `allShortestPaths()`: `WHERE hop_count = MIN(hop_count)` (all shortest)
+  - Cycle detection with `NOT has(path_nodes, node.id)`
+  - Integration: Queries execute successfully against ClickHouse
+  - **Known limitation**: WHERE clause filtering not yet applied (returns shortest in entire graph)
+  - 267/268 tests passing (99.6% coverage)
+  - See `notes/shortest-path.md` for implementation details and debugging story
+
 - **ViewScan Implementation**: View-based SQL translation for Cypher node queries
   - Label-to-table resolution via YAML schema (GLOBAL_GRAPH_SCHEMA)
   - Table alias propagation through ViewTableRef
@@ -39,6 +51,9 @@
 
 ### 📚 Documentation
 
+- Added `notes/shortest-path.md` - Implementation details, debugging story, known limitations (Oct 18)
+- Updated `STATUS.md` - Added shortest path to working features with limitations note (Oct 18)
+- Updated `CHANGELOG.md` - Documented shortest path implementation (Oct 18)
 - Added `STATUS.md` - Single source of truth for current project state
 - Added `notes/viewscan.md` - ViewScan implementation details
 - Simplified documentation structure (3 core docs + feature notes)
@@ -50,6 +65,16 @@
 
 ### 🐛 Bug Fixes
 
+- **Shortest Path Nested CTE Bug (Oct 18)**: Fixed malformed SQL generation
+  - Issue: CTE name wrapper applied twice, creating `cte_inner AS (cte AS (...))`
+  - Fix: Generate query body without wrapper, apply appropriate wrapper based on mode
+  - Result: Clean nested CTE structure that ClickHouse accepts
+  - Commit: 53b4852
+- **Shortest Path Parser Whitespace Bug (Oct 18)**: Fixed integration parsing failure
+  - Issue: Parser expected no leading space, but `MATCH` consumed left space after keyword
+  - Fix: Added `multispace0` at start of parser tuples to consume leading whitespace
+  - Unit tests passed but integration failed - lesson in testing full pipeline
+  - Commit: d7ebe6d
 - **Windows Server Crash (Oct 17)**: Fixed critical crash on HTTP requests
   - Server now runs reliably on native Windows
   - Verified with 20+ consecutive request stress tests

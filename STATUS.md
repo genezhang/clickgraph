@@ -12,6 +12,7 @@
 - **Basic relationships**: `MATCH (u)-[r:FRIENDS_WITH]->(f) RETURN u, f` ✅
 - **Multi-hop traversals**: `(u)-[r1]->(a)-[r2]->(b)` ✅
 - **Variable-length paths**: `(u)-[*1..3]->(f)` with recursive CTEs ✅
+- **Shortest path queries**: `shortestPath((a)-[:TYPE*]-(b))` and `allShortestPaths()` ✅ *(see limitations)*
 - **OPTIONAL MATCH**: `OPTIONAL MATCH (u)-[]->(f)` with LEFT JOIN ✅
 - **ViewScan**: Cypher labels → ClickHouse table names via YAML ✅
 - **Aggregations**: `COUNT`, `SUM`, `AVG`, `GROUP BY` ✅
@@ -33,18 +34,21 @@
 
 ## 🚧 In Progress
 
-- **ViewScan for relationships**: Currently only works for node queries
-  - Node queries: `MATCH (u:User)` ✅
-  - Relationship queries: `MATCH (u)-[r:FRIENDS_WITH]->()` ⏳
+- **Shortest path WHERE clause support**: Core implementation complete (nested CTEs, hop tracking, cycle detection), but WHERE clause filtering not yet applied to recursive CTEs
+  - Parser: ✅ `shortestPath((a)-[:TYPE*]-(b))`
+  - SQL Generation: ✅ Nested CTE with `ORDER BY hop_count LIMIT 1`
+  - Integration: ✅ Queries execute successfully
+  - WHERE filtering: ⏳ Not yet applied (returns shortest path in entire graph)
+  - See: `notes/shortest-path.md` for details
 
 ---
 
 ## 🎯 Next Priorities
 
-1. **ViewScan relationships** - Extend ViewScan to relationship traversal patterns
-2. **Shortest path algorithms** - `shortestPath()` and `allShortestPaths()`
-3. **Alternate relationships** - `[:TYPE1|TYPE2]` multiple types in patterns
-4. **Path variables** - `p = (a)-[r]->(b)` path capture
+1. **WHERE clause for shortest path** - Apply filters in base case of recursive CTEs
+2. **ViewScan relationships** - Extend ViewScan to relationship traversal patterns
+3. **Path variable assignment** - `p = shortestPath(...)` capture and return
+4. **Alternate relationships** - `[:TYPE1|TYPE2]` multiple types in patterns
 5. **Performance optimization** - Benchmarking and query caching
 
 ---
@@ -58,11 +62,20 @@
 
 ---
 
-## ❌ Known Issues
+## ❌ Known Issues & Limitations
 
+### Test Failures
 - **test_version_string_formatting** fails (Bolt protocol cosmetic issue)
-- **ViewScan limitations**: Only node queries, relationships need separate work
+
+### Feature Limitations
+- **Shortest path WHERE clause**: Filters not applied to recursive CTEs, queries return shortest path in entire graph
+- **Path variable assignment**: `p = shortestPath(...)` not yet supported
+- **ViewScan for relationships**: Only works for node queries, not relationship patterns
 - **OPTIONAL MATCH with relationships**: Not yet tested with ViewScan
+
+### Windows Development
+- **ClickHouse tables**: Must use `ENGINE = Memory` (persistent engines fail with volume permission issues)
+- **curl not available**: Use `Invoke-RestMethod` or Python `requests` for HTTP testing
 
 ---
 
@@ -70,11 +83,10 @@
 
 Detailed implementation notes for major features:
 
+- **[notes/shortest-path.md](notes/shortest-path.md)** - Shortest path implementation and debugging story
 - **[notes/viewscan.md](notes/viewscan.md)** - View-based SQL translation
 - **[notes/optional-match.md](notes/optional-match.md)** - LEFT JOIN semantics
 - **[notes/variable-length-paths.md](notes/variable-length-paths.md)** - Recursive CTEs
-
-*(Create these files as we consolidate documentation)*
 
 ---
 
@@ -108,9 +120,9 @@ Cypher Query → Parser → Query Planner → SQL Generator → ClickHouse → J
 ## 🚧 Missing Read Features
 
 ### High Priority
-- ❌ Path variables: `p = (a)-[r]->(b)`
-- ❌ Shortest path: `shortestPath()`, `allShortestPaths()`
-- ❌ Alternate relationships: `[:TYPE1|TYPE2]`
+- ⚠️ **Shortest path WHERE clause**: Core implementation complete, filtering support needed
+- ❌ Path variables: `p = (a)-[r]->(b)` capture and return
+- ❌ Alternate relationships: `[:TYPE1|TYPE2]` multiple types
 - ❌ Pattern comprehensions: `[(a)-[]->(b) | b.name]`
 
 ### Medium Priority
