@@ -392,11 +392,48 @@ pub fn evaluate_match_clause<'a>(
             ast::PathPattern::ConnectedPattern(connected_patterns) => {
                 plan = traverse_connected_pattern(connected_patterns, plan, plan_ctx, idx)?;
             }
+            ast::PathPattern::ShortestPath(inner_pattern) => {
+                // TODO: Implement shortest path traversal with depth tracking
+                // For now, recursively process the inner pattern
+                // The shortest path logic will be added in SQL generation phase
+                plan = evaluate_single_path_pattern(inner_pattern.as_ref(), plan, plan_ctx, idx)?;
+            }
+            ast::PathPattern::AllShortestPaths(inner_pattern) => {
+                // TODO: Implement all shortest paths traversal with depth filtering
+                // For now, recursively process the inner pattern
+                // The all shortest paths logic will be added in SQL generation phase
+                plan = evaluate_single_path_pattern(inner_pattern.as_ref(), plan, plan_ctx, idx)?;
+            }
         }
     }
 
     convert_properties_to_operator_application(plan_ctx)?;
     Ok(plan)
+}
+
+// Helper function to evaluate a single path pattern
+fn evaluate_single_path_pattern<'a>(
+    path_pattern: &ast::PathPattern<'a>,
+    plan: Arc<LogicalPlan>,
+    plan_ctx: &mut PlanCtx,
+    idx: usize,
+) -> LogicalPlanResult<Arc<LogicalPlan>> {
+    match path_pattern {
+        ast::PathPattern::Node(node_pattern) => {
+            traverse_node_pattern(node_pattern, plan, plan_ctx)
+        }
+        ast::PathPattern::ConnectedPattern(connected_patterns) => {
+            traverse_connected_pattern(connected_patterns, plan, plan_ctx, idx)
+        }
+        ast::PathPattern::ShortestPath(inner) => {
+            // Recursively unwrap
+            evaluate_single_path_pattern(inner.as_ref(), plan, plan_ctx, idx)
+        }
+        ast::PathPattern::AllShortestPaths(inner) => {
+            // Recursively unwrap
+            evaluate_single_path_pattern(inner.as_ref(), plan, plan_ctx, idx)
+        }
+    }
 }
 
 #[cfg(test)]

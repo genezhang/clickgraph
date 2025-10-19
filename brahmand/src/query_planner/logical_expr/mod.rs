@@ -159,6 +159,8 @@ pub struct AggregateFnCall {
 pub enum PathPattern {
     Node(NodePattern),
     ConnectedPattern(Vec<ConnectedPattern>),
+    ShortestPath(Box<PathPattern>),
+    AllShortestPaths(Box<PathPattern>),
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -292,6 +294,14 @@ impl<'a> From<open_cypher_parser::ast::PathPattern<'a>> for PathPattern {
                 PathPattern::ConnectedPattern(
                     vec_conn.into_iter().map(ConnectedPattern::from).collect(),
                 )
+            }
+            open_cypher_parser::ast::PathPattern::ShortestPath(inner) => {
+                // Recursively convert the inner pattern and wrap it
+                PathPattern::ShortestPath(Box::new(PathPattern::from(*inner)))
+            }
+            open_cypher_parser::ast::PathPattern::AllShortestPaths(inner) => {
+                // Recursively convert the inner pattern and wrap it
+                PathPattern::AllShortestPaths(Box::new(PathPattern::from(*inner)))
             }
         }
     }

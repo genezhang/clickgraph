@@ -24,8 +24,46 @@ use super::common::ws;
 use super::expression::parse_parameter;
 use super::{common, expression};
 use nom::character::complete::digit1;
+/// Try to parse shortestPath() or allShortestPaths() wrapper
+fn parse_shortest_path_function(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>> {
+    use nom::sequence::{delimited, preceded};
+    use nom::combinator::map;
+    
+    // Try shortestPath()
+    if let Ok((input, inner_pattern)) = preceded(
+        tag::<_, _, Error<&str>>("shortestPath"),
+        delimited(
+            ws(char('(')),
+            parse_path_pattern_inner,
+            ws(char(')'))
+        )
+    ).parse(input) {
+        return Ok((input, PathPattern::ShortestPath(Box::new(inner_pattern))));
+    }
+    
+    // Try allShortestPaths()
+    if let Ok((input, inner_pattern)) = preceded(
+        tag::<_, _, Error<&str>>("allShortestPaths"),
+        delimited(
+            ws(char('(')),
+            parse_path_pattern_inner,
+            ws(char(')'))
+        )
+    ).parse(input) {
+        return Ok((input, PathPattern::AllShortestPaths(Box::new(inner_pattern))));
+    }
+    
+    // Not a shortest path function, parse as regular pattern
+    parse_path_pattern_inner(input)
+}
 
+/// Main entry point for parsing path patterns
 pub fn parse_path_pattern(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>> {
+    parse_shortest_path_function(input)
+}
+
+/// Internal parser for path patterns (without shortest path wrapper)
+fn parse_path_pattern_inner(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>> {
     let (input, start_node_pattern) = parse_node_pattern.parse(input)?;
 
     let (_, is_start_of_relation) = is_start_of_a_relationship.parse(input)?;

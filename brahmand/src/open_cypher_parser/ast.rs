@@ -142,6 +142,8 @@ pub struct LimitClause {
 pub enum PathPattern<'a> {
     Node(NodePattern<'a>),                       //  Standalone nodes `(a)`
     ConnectedPattern(Vec<ConnectedPattern<'a>>), // Nodes with relationships `(a)-[:REL]->(b)`
+    ShortestPath(Box<PathPattern<'a>>),          // shortestPath((a)-[*]-(b))
+    AllShortestPaths(Box<PathPattern<'a>>),      // allShortestPaths((a)-[*]-(b))
 }
 
 #[derive(Debug, PartialEq, Clone)]
