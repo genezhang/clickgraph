@@ -799,6 +799,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()), // convert logical plan mode to SQL mode
                             None,                            // no start filters (old path, not used anymore)
                             None,                            // no end filters (old path, not used anymore)
+                            graph_rel.path_variable.clone(), // path variable name
                         );
                         generator.generate_cte()
                     };
@@ -955,6 +956,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()), // convert logical plan mode to SQL mode
                             start_filter_sql,  // Start node filters for base case
                             end_filter_sql,    // End node filters for outer CTE
+                            graph_rel.path_variable.clone(),  // Path variable name
                         );
                         generator.generate_cte()
                     };

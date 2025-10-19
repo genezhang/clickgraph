@@ -30,6 +30,7 @@ pub struct VariableLengthCteGenerator {
     pub shortest_path_mode: Option<ShortestPathMode>, // Shortest path optimization mode
     pub start_node_filters: Option<String>, // WHERE clause for start node (e.g., "start_node.full_name = 'Alice'")
     pub end_node_filters: Option<String>,   // WHERE clause for end node (e.g., "end_full_name = 'Bob'")
+    pub path_variable: Option<String>,   // Path variable name from MATCH clause (e.g., "p" in "MATCH p = ...")
 }
 
 /// Mode for shortest path queries
@@ -68,6 +69,7 @@ impl VariableLengthCteGenerator {
         shortest_path_mode: Option<ShortestPathMode>, // Shortest path mode
         start_node_filters: Option<String>, // WHERE clause for start node
         end_node_filters: Option<String>,   // WHERE clause for end node
+        path_variable: Option<String>,      // Path variable name (e.g., "p")
     ) -> Self {
         // Try to get database from environment
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
@@ -92,6 +94,7 @@ impl VariableLengthCteGenerator {
             shortest_path_mode,
             start_node_filters,
             end_node_filters,
+            path_variable,
         }
     }
     
@@ -320,7 +323,8 @@ mod tests {
             vec![],        // no properties for test
             None,          // no shortest path mode
             None,          // no start node filters
-            None           // no end node filters
+            None,          // no end node filters
+            None,          // no path variable
         );
 
         let cte = generator.generate_cte();
@@ -348,7 +352,8 @@ mod tests {
             vec![],         // no properties for test
             None,           // no shortest path mode
             None,           // no start node filters
-            None            // no end node filters
+            None,           // no end node filters
+            None,           // no path variable
         );
 
         let sql = generator.generate_recursive_sql();

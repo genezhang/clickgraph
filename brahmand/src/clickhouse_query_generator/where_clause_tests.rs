@@ -28,6 +28,7 @@ mod where_clause_tests {
             Some(ShortestPathMode::Shortest),
             start_filter,
             None,
+            None,  // no path variable
         );
         
         let cte = generator.generate_cte();
@@ -63,6 +64,7 @@ mod where_clause_tests {
             Some(ShortestPathMode::Shortest),
             None,
             end_filter,
+            None,  // no path variable
         );
         
         let cte = generator.generate_cte();
@@ -101,6 +103,7 @@ mod where_clause_tests {
             Some(ShortestPathMode::Shortest),
             start_filter,
             end_filter,
+            None,  // no path variable
         );
         
         let cte = generator.generate_cte();
@@ -139,6 +142,7 @@ mod where_clause_tests {
             None,  // No shortest path mode
             None,  // No start filter
             None,  // No end filter
+            None,  // No path variable
         );
         
         let cte = generator.generate_cte();
