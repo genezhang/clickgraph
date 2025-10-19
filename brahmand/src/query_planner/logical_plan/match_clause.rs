@@ -202,6 +202,7 @@ fn traverse_connected_pattern<'a>(
                 right_connection: start_node_alias,
                 is_rel_anchor: false,
                 variable_length: None, // Single-hop relationship by default
+                shortest_path_mode: None, // Not a shortest path query
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -250,6 +251,7 @@ fn traverse_connected_pattern<'a>(
                 right_connection: end_node_alias,
                 is_rel_anchor: false,
                 variable_length: rel.variable_length.clone().map(|v| v.into()),
+                shortest_path_mode: None, // Not a shortest path query
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -313,6 +315,7 @@ fn traverse_connected_pattern<'a>(
                 right_connection: start_node_alias,
                 is_rel_anchor: false,
                 variable_length: rel.variable_length.clone().map(|v| v.into()),
+                shortest_path_mode: None, // Not a shortest path query
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
