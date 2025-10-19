@@ -8,12 +8,12 @@ use nom::error::ErrorKind;
 use nom::{
     IResult, Parser,
     branch::alt,
-    bytes::complete::tag,
+    bytes::complete::{tag, tag_no_case},
     character::complete::{alphanumeric1, multispace0, space0},
     combinator::{map, opt},
     error::Error,
     multi::separated_list0,
-    sequence::{delimited, separated_pair},
+    sequence::{delimited, separated_pair, tuple},
 };
 
 use super::ast::{
@@ -26,40 +26,41 @@ use super::{common, expression};
 use nom::character::complete::digit1;
 /// Try to parse shortestPath() or allShortestPaths() wrapper
 fn parse_shortest_path_function(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>> {
-    use nom::sequence::{delimited, preceded};
+    use nom::sequence::delimited;
     use nom::combinator::map;
     
-    // Try shortestPath()
-    if let Ok((input, inner_pattern)) = preceded(
-        tag::<_, _, Error<&str>>("shortestPath"),
-        delimited(
-            ws(char('(')),
-            parse_path_pattern_inner,
-            ws(char(')'))
-        )
-    ).parse(input) {
-        return Ok((input, PathPattern::ShortestPath(Box::new(inner_pattern))));
-    }
+    // Parse shortestPath()
+    let parse_shortest = map(
+        (tag_no_case::<_, _, Error<&str>>("shortestPath"),
+         multispace0,
+         delimited(
+             char('('),
+             delimited(multispace0, parse_path_pattern_inner, multispace0),
+             char(')')
+         )),
+        |(_, _, pattern)| PathPattern::ShortestPath(Box::new(pattern))
+    );
     
-    // Try allShortestPaths()
-    if let Ok((input, inner_pattern)) = preceded(
-        tag::<_, _, Error<&str>>("allShortestPaths"),
-        delimited(
-            ws(char('(')),
-            parse_path_pattern_inner,
-            ws(char(')'))
-        )
-    ).parse(input) {
-        return Ok((input, PathPattern::AllShortestPaths(Box::new(inner_pattern))));
-    }
+    // Parse allShortestPaths()
+    let parse_all_shortest = map(
+        (tag_no_case::<_, _, Error<&str>>("allShortestPaths"),
+         multispace0,
+         delimited(
+             char('('),
+             delimited(multispace0, parse_path_pattern_inner, multispace0),
+             char(')')
+         )),
+        |(_, _, pattern)| PathPattern::AllShortestPaths(Box::new(pattern))
+    );
     
-    // Not a shortest path function, parse as regular pattern
-    parse_path_pattern_inner(input)
+    // Try both parsers
+    alt((parse_shortest, parse_all_shortest)).parse(input)
 }
 
 /// Main entry point for parsing path patterns
 pub fn parse_path_pattern(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>> {
-    parse_shortest_path_function(input)
+    // Try shortest path functions first, if that fails try regular pattern
+    alt((parse_shortest_path_function, parse_path_pattern_inner)).parse(input)
 }
 
 /// Internal parser for path patterns (without shortest path wrapper)
