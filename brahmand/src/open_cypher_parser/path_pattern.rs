@@ -29,28 +29,30 @@ fn parse_shortest_path_function(input: &'_ str) -> IResult<&'_ str, PathPattern<
     use nom::sequence::delimited;
     use nom::combinator::map;
     
-    // Parse shortestPath()
+    // Parse shortestPath() - consume leading whitespace first!
     let parse_shortest = map(
-        (tag_no_case::<_, _, Error<&str>>("shortestPath"),
+        (multispace0,  // <-- Add this to consume leading whitespace!
+         tag_no_case::<_, _, Error<&str>>("shortestPath"),
          multispace0,
          delimited(
              char('('),
              delimited(multispace0, parse_path_pattern_inner, multispace0),
              char(')')
          )),
-        |(_, _, pattern)| PathPattern::ShortestPath(Box::new(pattern))
+        |(_, _, _, pattern)| PathPattern::ShortestPath(Box::new(pattern))
     );
     
-    // Parse allShortestPaths()
+    // Parse allShortestPaths() - consume leading whitespace first!
     let parse_all_shortest = map(
-        (tag_no_case::<_, _, Error<&str>>("allShortestPaths"),
+        (multispace0,  // <-- Add this to consume leading whitespace!
+         tag_no_case::<_, _, Error<&str>>("allShortestPaths"),
          multispace0,
          delimited(
              char('('),
              delimited(multispace0, parse_path_pattern_inner, multispace0),
              char(')')
          )),
-        |(_, _, pattern)| PathPattern::AllShortestPaths(Box::new(pattern))
+        |(_, _, _, pattern)| PathPattern::AllShortestPaths(Box::new(pattern))
     );
     
     // Try both parsers

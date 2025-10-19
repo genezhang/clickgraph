@@ -11,7 +11,7 @@ BASE_URL = "http://localhost:8080"
 def test_shortest_path_sql_generation():
     """Test that shortestPath() generates correct SQL with ORDER BY and LIMIT"""
     query = """
-    MATCH shortestPath((a:Person)-[*]-(b:Person))
+    MATCH shortestPath((a:Person)-[:KNOWS*]-(b:Person))
     WHERE a.name = 'Alice' AND b.name = 'Bob'
     RETURN a.name, b.name
     """
@@ -40,7 +40,7 @@ def test_shortest_path_sql_generation():
 def test_all_shortest_paths_sql_generation():
     """Test that allShortestPaths() generates correct SQL with MIN filtering"""
     query = """
-    MATCH allShortestPaths((a:Person)-[*]-(b:Person))
+    MATCH allShortestPaths((a:Person)-[:KNOWS*]-(b:Person))
     WHERE a.name = 'Alice' AND b.name = 'Bob'
     RETURN a.name, b.name
     """
@@ -70,7 +70,7 @@ def test_all_shortest_paths_sql_generation():
 def test_regular_variable_length():
     """Test that regular variable-length paths don't add shortest path filtering"""
     query = """
-    MATCH (a:Person)-[*1..3]-(b:Person)
+    MATCH (a:Person)-[:KNOWS*1..3]-(b:Person)
     WHERE a.name = 'Alice'
     RETURN b.name
     """
