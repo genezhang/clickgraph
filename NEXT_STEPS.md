@@ -1,54 +1,101 @@
 # Next Steps - Development Roadmap
 
 **Last Updated**: October 18, 2025  
-**Current Status**: View-based SQL translation FIXED! ViewScan working end-to-end  
+**Current Status**: ViewScan ✅ COMPLETE (nodes + relationships) | Testing infrastructure ✅ READY  
 **Branch**: `graphview1`  
-**Latest Commit**: TBD - ViewScan label-to-table translation + alias fix
-
----
-
-## ⚠️ CRITICAL: Clean Development Environment Setup
-
-### Docker Container Cleanup (MUST DO BEFORE STARTING SERVER!)
-
-**Problem**: Old Docker containers can cause mysterious port conflicts and wrong server versions being tested.
-
-**Symptoms**:
-- Port 8080 already in use
-- Queries work but debug output doesn't appear
-- Code changes don't seem to take effect
-- Server says "running" but can't connect
-
-**Solution - Clean Docker Environment**:
-```powershell
-# 1. Check for old ClickGraph/Brahmand containers
-docker ps -a | Select-String "clickgraph|brahmand"
-
-# 2. Stop and remove any old containers
-docker stop brahmand
-docker rm brahmand
-
-# 3. Optional: Remove old images if needed
-docker images | Select-String "clickgraph|brahmand"
-docker rmi clickgraph-brahmand  # if found
-
-# 4. Verify ports are free
-netstat -ano | Select-String "8080|7687"
-```
-
-**Best Practice**: Always check for old containers before starting development session!
+**Latest Commit**: TBD - ViewScan complete + test infrastructure
 
 ---
 
 ## 🎉 Just Completed (October 18, 2025)
 
-### View-Based SQL Translation Feature 
-- ✅ **Root Cause Found**: `generate_scan()` was passing `None` for label instead of actual label
-- ✅ **Implementation**: Modified to create ViewScan with schema lookup via GLOBAL_GRAPH_SCHEMA
-- ✅ **Table Alias Fix**: Added alias field to ViewTableRef, properly passes Cypher variable names through to SQL
-- ✅ **Port Conflict Resolved**: Stopped old Docker container using port 8080
-- ✅ **Error Handling Improved**: Added proper HTTP bind error handling with clear messages
-- ✅ **Testing**: Query `MATCH (u:User) RETURN u.name` successfully returns data from ClickHouse
+### 1. ViewScan - Complete Schema-Driven Query Planning ✅
+**What**: Fully YAML-driven graph model (no hardcoded table mappings)
+
+**Node Queries** - ✅ DONE:
+- `MATCH (u:User)` → Schema lookup: "User" label → "users" table
+- Implementation: `try_generate_view_scan()` in `match_clause.rs`
+- Uses: `GLOBAL_GRAPH_SCHEMA.get_node_schema()`
+
+**Relationship Queries** - ✅ DONE (just completed):
+- `MATCH ()-[r:FRIENDS_WITH]->()` → Schema lookup: "FRIENDS_WITH" → "friendships" table
+- Implementation: Enhanced `rel_type_to_table_name()` in `plan_builder.rs`
+- Uses: `GLOBAL_GRAPH_SCHEMA.get_rel_schema()`
+- Keeps hardcoded fallback for backwards compatibility
+
+**Impact**:
+- 🎯 Can define entire graph model in YAML (no code changes)
+- 🎯 Add new node/relationship types without touching Rust code
+- 🎯 Multiple graph schemas via different YAML files
+- 🎯 See: `notes/viewscan-complete.md` for full details
+
+### 2. Standardized Testing Infrastructure ✅
+**Problem Solved**: Terminal chaos, port conflicts, process accumulation
+
+**New Tools**:
+1. **PowerShell Runner** (`test_server.ps1`):
+   - `.\test_server.ps1 -Start` - Background server (single window!)
+   - `.\test_server.ps1 -Test` - Quick query test
+   - `.\test_server.ps1 -Clean` - Kill all orphaned processes
+   - ✅ PID tracking prevents duplicates
+   - ✅ Automatic cleanup
+   
+2. **Python Test Suite** (`test_runner.py`):
+   - `python test_runner.py --test` - Run comprehensive tests
+   - `python test_runner.py --query "..."` - Single query
+   - ✅ Cross-platform (Windows/Linux/Mac)
+   - ✅ Structured test results
+   - ✅ Validates both node and relationship ViewScan
+   
+3. **Docker Compose** (`docker-compose.test.yaml`):
+   - Complete isolation (ClickHouse + ClickGraph)
+   - Production-like environment
+   - Clean startup/shutdown
+
+**See**: `TESTING_GUIDE.md` for complete workflows
+
+---
+
+## 🚀 Recommended Next Priority
+
+Now that ViewScan is complete, we can:
+
+### Option A: Add More Cypher Features (High Impact)
+1. **Shortest Path** (`shortestPath()`, `allShortestPaths()`)
+   - Leverage existing recursive CTE infrastructure
+   - High user value for graph analysis
+   - Estimated: 2-4 hours
+   
+2. **Pattern Extensions**
+   - Alternate relationship types: `[:TYPE1|TYPE2]`
+   - Path variables: `p = (a)-[r]->(b)`
+   - Estimated: 1-2 hours each
+
+### Option B: Production Readiness (High Priority)
+1. **Schema Validation**
+   - Verify YAML types match actual ClickHouse tables
+   - Error messages for misconfigurations
+   - Estimated: 2-3 hours
+   
+2. **Hot Reload**
+   - Watch YAML file, reload without restart
+   - Development velocity improvement
+   - Estimated: 3-4 hours
+
+### Option C: Performance & Monitoring
+1. **Query Performance Metrics**
+   - Execution time tracking
+   - Plan visualization
+   - Estimated: 2-3 hours
+   
+2. **Connection Pooling**
+   - ClickHouse connection management
+   - Better concurrency
+   - Estimated: 2-3 hours
+
+**My Recommendation**: **Option A.1 (Shortest Path)** - High user value, builds on existing work
+
+---
 - ✅ **Status**: Working end-to-end!
 
 **Test Result**:
