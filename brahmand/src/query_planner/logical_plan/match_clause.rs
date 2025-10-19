@@ -178,7 +178,7 @@ fn traverse_connected_pattern<'a>(
             }
 
             let end_graph_node = GraphNode {
-                input: generate_scan(end_node_alias.clone(), None),
+                input: generate_scan(end_node_alias.clone(), end_node_label.clone()),
                 alias: end_node_alias.clone(),
             };
             plan_ctx.insert_table_ctx(
@@ -226,7 +226,7 @@ fn traverse_connected_pattern<'a>(
             }
 
             let start_graph_node = GraphNode {
-                input: generate_scan(start_node_alias.clone(), None),
+                input: generate_scan(start_node_alias.clone(), start_node_label.clone()),
                 alias: start_node_alias.clone(),
             };
             plan_ctx.insert_table_ctx(
@@ -274,7 +274,7 @@ fn traverse_connected_pattern<'a>(
 
             // we will keep start graph node at the right side and end at the left side
             let start_graph_node = GraphNode {
-                input: generate_scan(start_node_alias.clone(), None),
+                input: generate_scan(start_node_alias.clone(), start_node_label.clone()),
                 alias: start_node_alias.clone(),
             };
             plan_ctx.insert_table_ctx(
@@ -289,7 +289,7 @@ fn traverse_connected_pattern<'a>(
             );
 
             let end_graph_node = GraphNode {
-                input: generate_scan(end_node_alias.clone(), None),
+                input: generate_scan(end_node_alias.clone(), end_node_label.clone()),
                 alias: end_node_alias.clone(),
             };
             plan_ctx.insert_table_ctx(
