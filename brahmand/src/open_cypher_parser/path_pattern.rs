@@ -880,4 +880,137 @@ mod tests {
         let err_msg = zero_spec.validate().unwrap_err();
         assert!(err_msg.contains("hop count cannot be 0"));
     }
+
+    #[test]
+    fn test_parse_shortest_path_simple() {
+        let input = "shortestPath((a:Person)-[*]-(b:Person))";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse shortestPath: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        // Verify it's a ShortestPath variant
+        match path_pattern {
+            PathPattern::ShortestPath(inner) => {
+                // Verify inner pattern is a ConnectedPattern
+                match inner.as_ref() {
+                    PathPattern::ConnectedPattern(connected) => {
+                        assert_eq!(connected.len(), 1, "Should have one connected pattern");
+                    }
+                    _ => panic!("Expected ConnectedPattern inside ShortestPath"),
+                }
+            }
+            _ => panic!("Expected ShortestPath variant, got: {:?}", path_pattern),
+        }
+    }
+
+    #[test]
+    fn test_parse_all_shortest_paths() {
+        let input = "allShortestPaths((a:Person)-[*]-(b:Person))";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse allShortestPaths: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        // Verify it's an AllShortestPaths variant
+        match path_pattern {
+            PathPattern::AllShortestPaths(inner) => {
+                // Verify inner pattern is a ConnectedPattern
+                match inner.as_ref() {
+                    PathPattern::ConnectedPattern(connected) => {
+                        assert_eq!(connected.len(), 1, "Should have one connected pattern");
+                    }
+                    _ => panic!("Expected ConnectedPattern inside AllShortestPaths"),
+                }
+            }
+            _ => panic!("Expected AllShortestPaths variant, got: {:?}", path_pattern),
+        }
+    }
+
+    #[test]
+    fn test_parse_shortest_path_with_relationship_type() {
+        let input = "shortestPath((a:Person)-[:KNOWS*]-(b:Person))";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse shortestPath with relationship type: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        match path_pattern {
+            PathPattern::ShortestPath(inner) => {
+                match inner.as_ref() {
+                    PathPattern::ConnectedPattern(connected) => {
+                        assert_eq!(connected.len(), 1);
+                        // Verify relationship has KNOWS label
+                        assert_eq!(connected[0].relationship.label, Some("KNOWS"));
+                    }
+                    _ => panic!("Expected ConnectedPattern inside ShortestPath"),
+                }
+            }
+            _ => panic!("Expected ShortestPath variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_shortest_path_with_whitespace() {
+        let input = "shortestPath( ( a : Person ) - [ * ] - ( b : Person ) )";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse shortestPath with whitespace: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        match path_pattern {
+            PathPattern::ShortestPath(_) => {
+                // Success - whitespace handled correctly
+            }
+            _ => panic!("Expected ShortestPath variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_regular_pattern_not_shortest_path() {
+        let input = "(a:Person)-[*]-(b:Person)";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok());
+        let (_, path_pattern) = result.unwrap();
+        
+        // Should NOT be wrapped in ShortestPath
+        match path_pattern {
+            PathPattern::ConnectedPattern(_) => {
+                // Correct - regular pattern without shortest path wrapper
+            }
+            PathPattern::ShortestPath(_) | PathPattern::AllShortestPaths(_) => {
+                panic!("Should not wrap regular pattern in shortest path");
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn test_parse_shortest_path_directed() {
+        let input = "shortestPath((a:Person)-[*]->(b:Person))";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse directed shortestPath: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        match path_pattern {
+            PathPattern::ShortestPath(inner) => {
+                match inner.as_ref() {
+                    PathPattern::ConnectedPattern(connected) => {
+                        assert_eq!(connected.len(), 1);
+                        // Verify direction is outgoing
+                        assert_eq!(connected[0].relationship.direction, Direction::Outgoing);
+                    }
+                    _ => panic!("Expected ConnectedPattern"),
+                }
+            }
+            _ => panic!("Expected ShortestPath variant"),
+        }
+    }
 }
