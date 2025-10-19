@@ -12,6 +12,8 @@
 - **Basic relationships**: `MATCH (u)-[r:FRIENDS_WITH]->(f) RETURN u, f` ✅
 - **Multi-hop traversals**: `(u)-[r1]->(a)-[r2]->(b)` ✅
 - **Variable-length paths**: `(u)-[*1..3]->(f)` with recursive CTEs ✅
+- **Path variables**: `MATCH p = (a)-[:TYPE*]-(b) RETURN p, length(p)` ✅ **[Phase 2.7 COMPLETE]**
+- **Path functions**: `length(p)`, `nodes(p)`, `relationships(p)` on path objects ✅
 - **Shortest path queries**: `shortestPath((a)-[:TYPE*]-(b))` and `allShortestPaths()` ✅ *(see limitations)*
 - **OPTIONAL MATCH**: `OPTIONAL MATCH (u)-[]->(f)` with LEFT JOIN ✅
 - **ViewScan**: Cypher labels → ClickHouse table names via YAML ✅
@@ -121,7 +123,6 @@ Cypher Query → Parser → Query Planner → SQL Generator → ClickHouse → J
 
 ### High Priority
 - ⚠️ **Shortest path WHERE clause**: Core implementation complete, filtering support needed
-- ❌ Path variables: `p = (a)-[r]->(b)` capture and return
 - ❌ Alternate relationships: `[:TYPE1|TYPE2]` multiple types
 - ❌ Pattern comprehensions: `[(a)-[]->(b) | b.name]`
 
@@ -139,6 +140,18 @@ Cypher Query → Parser → Query Planner → SQL Generator → ClickHouse → J
 ---
 
 ## 📝 Recent Changes
+
+### Oct 18, 2025 - Phase 2.7 Integration Testing Complete ✅
+- **Path variables working end-to-end**: `MATCH p = (a)-[:TYPE*]-(b) RETURN p`
+- **Path functions validated**: `length(p)`, `nodes(p)`, `relationships(p)` return correct values
+- **5 critical bugs fixed**:
+  1. PlanCtx registration - path variables now tracked in analyzer context
+  2. Projection expansion - path variables preserved as TableAlias (not `p.*`)
+  3. map() type mismatch - all values wrapped in toString() for uniform String type
+  4. Property aliasing - CTE columns use property names (not SELECT aliases)
+  5. YAML configuration - property mappings corrected to match database schema
+- **Test results**: 10/10 integration tests passing with real data from ClickHouse
+- **Validation**: Path queries successfully retrieve actual user relationships
 
 ### Oct 18, 2025 - ViewScan Implementation
 - Added view-based SQL translation for node queries
