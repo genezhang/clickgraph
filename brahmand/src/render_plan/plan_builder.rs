@@ -239,6 +239,60 @@ fn rewrite_expr_for_var_len_cte(
     use super::render_expr::{RenderExpr, PropertyAccess, TableAlias, Column};
     
     match expr {
+        RenderExpr::ScalarFnCall(fn_call) => {
+            // Check if this is a path function on a path variable
+            if let Some(path_var) = path_variable {
+                let fn_name_lower = fn_call.name.to_lowercase();
+                
+                // Check if the first argument is the path variable
+                if fn_call.args.len() == 1 {
+                    if let RenderExpr::TableAlias(alias) = &fn_call.args[0] {
+                        if alias.0 == path_var {
+                            // This is a path function - map to CTE columns
+                            match fn_name_lower.as_str() {
+                                "length" => {
+                                    // length(p) -> hop_count
+                                    return RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias("t".to_string()),
+                                        column: Column("hop_count".to_string()),
+                                    });
+                                }
+                                "nodes" => {
+                                    // nodes(p) -> path_nodes array
+                                    return RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias("t".to_string()),
+                                        column: Column("path_nodes".to_string()),
+                                    });
+                                }
+                                "relationships" => {
+                                    // relationships(p) -> construct array from path
+                                    // For now, return empty array - will enhance later
+                                    use super::render_expr::ScalarFnCall as SF;
+                                    return RenderExpr::ScalarFnCall(SF {
+                                        name: "array".to_string(),
+                                        args: vec![],
+                                    });
+                                }
+                                _ => {
+                                    // Not a recognized path function, fall through
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Recursively rewrite function arguments
+            use super::render_expr::ScalarFnCall as SF;
+            let rewritten_args: Vec<_> = fn_call.args.iter()
+                .map(|arg| rewrite_expr_for_var_len_cte(arg, left_alias, right_alias, path_variable))
+                .collect();
+            
+            RenderExpr::ScalarFnCall(SF {
+                name: fn_call.name.clone(),
+                args: rewritten_args,
+            })
+        }
         RenderExpr::TableAlias(alias) => {
             // Check if this is a path variable reference
             if let Some(path_var) = path_variable {
@@ -321,7 +375,39 @@ fn rewrite_expr_for_var_len_cte(
             }
             expr.clone()
         }
-        // For other expression types, recursively rewrite if needed
+        // Recursively rewrite operator expressions
+        RenderExpr::OperatorApplicationExp(op) => {
+            use super::render_expr::OperatorApplication;
+            let rewritten_operands: Vec<_> = op.operands.iter()
+                .map(|operand| rewrite_expr_for_var_len_cte(operand, left_alias, right_alias, path_variable))
+                .collect();
+            
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: rewritten_operands,
+            })
+        }
+        // Recursively rewrite list expressions
+        RenderExpr::List(items) => {
+            let rewritten_items: Vec<_> = items.iter()
+                .map(|item| rewrite_expr_for_var_len_cte(item, left_alias, right_alias, path_variable))
+                .collect();
+            
+            RenderExpr::List(rewritten_items)
+        }
+        // Recursively rewrite aggregate function expressions
+        RenderExpr::AggregateFnCall(agg) => {
+            use super::render_expr::AggregateFnCall;
+            let rewritten_args: Vec<_> = agg.args.iter()
+                .map(|arg| rewrite_expr_for_var_len_cte(arg, left_alias, right_alias, path_variable))
+                .collect();
+            
+            RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: agg.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        // For other expression types (literals, stars, etc.), no rewriting needed
         _ => expr.clone(),
     }
 }
