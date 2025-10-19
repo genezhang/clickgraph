@@ -1168,6 +1168,7 @@ mod tests {
             right_connection: right_connection.to_string(),
             is_rel_anchor: false,
             variable_length: None,
+            shortest_path_mode: None,
         }))
     }
 

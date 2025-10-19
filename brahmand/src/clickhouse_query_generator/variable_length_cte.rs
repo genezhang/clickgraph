@@ -140,6 +140,25 @@ impl VariableLengthCteGenerator {
         }
 
         sql.push_str("\n)");
+        
+        // Add shortest path filtering if mode is set
+        // Wrap the CTE in a filtered SELECT to return only shortest paths
+        match &self.shortest_path_mode {
+            Some(ShortestPathMode::Shortest) => {
+                // Return only one shortest path - select the one with minimum hop_count
+                sql = format!("{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner ORDER BY hop_count ASC LIMIT 1\n)",
+                    self.cte_name, sql, self.cte_name, self.cte_name);
+            }
+            Some(ShortestPathMode::AllShortest) => {
+                // Return all paths with minimum hop_count
+                sql = format!("{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count = (SELECT MIN(hop_count) FROM {}_inner)\n)",
+                    self.cte_name, sql, self.cte_name, self.cte_name, self.cte_name);
+            }
+            None => {
+                // No shortest path mode - return paths as-is
+            }
+        }
+        
         sql
     }
 
