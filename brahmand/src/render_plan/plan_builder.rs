@@ -470,6 +470,182 @@ fn get_node_info_from_schema(node_label: &str) -> Option<(String, String)> {
     None
 }
 
+/// Categorized filters for shortest path queries
+#[derive(Debug, Clone)]
+struct CategorizedFilters {
+    start_node_filters: Option<RenderExpr>,
+    end_node_filters: Option<RenderExpr>,
+    relationship_filters: Option<RenderExpr>,
+}
+
+/// Convert RenderExpr to SQL string with node alias mapping for CTE generation
+/// Maps Cypher aliases (e.g., "a", "b") to SQL table aliases (e.g., "start_node", "end_node")
+fn render_expr_to_sql_for_cte(
+    expr: &RenderExpr,
+    start_cypher_alias: &str,
+    end_cypher_alias: &str,
+) -> String {
+    
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            let table_alias = &prop.table_alias.0;
+            let column = &prop.column.0;
+            
+            // Map Cypher alias to SQL table alias
+            if table_alias == start_cypher_alias {
+                format!("start_node.{}", column)
+            } else if table_alias == end_cypher_alias {
+                format!("end_{}", column)  // end_name, end_email, etc.
+            } else {
+                // Fallback: use as-is
+                format!("{}.{}", table_alias, column)
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            use super::render_expr::Operator;
+            
+            let operator_sql = match op.operator {
+                Operator::Equal => "=",
+                Operator::NotEqual => "!=",
+                Operator::LessThan => "<",
+                Operator::GreaterThan => ">",
+                Operator::LessThanEqual => "<=",
+                Operator::GreaterThanEqual => ">=",
+                Operator::And => "AND",
+                Operator::Or => "OR",
+                Operator::Not => "NOT",
+                _ => "=", // Fallback
+            };
+            
+            if op.operands.len() == 2 {
+                format!("{} {} {}", 
+                    render_expr_to_sql_for_cte(&op.operands[0], start_cypher_alias, end_cypher_alias),
+                    operator_sql,
+                    render_expr_to_sql_for_cte(&op.operands[1], start_cypher_alias, end_cypher_alias)
+                )
+            } else if op.operands.len() == 1 {
+                format!("{} {}", 
+                    operator_sql,
+                    render_expr_to_sql_for_cte(&op.operands[0], start_cypher_alias, end_cypher_alias)
+                )
+            } else {
+                // Multiple operands with AND/OR
+                let operand_sqls: Vec<String> = op.operands.iter()
+                    .map(|operand| render_expr_to_sql_for_cte(operand, start_cypher_alias, end_cypher_alias))
+                    .collect();
+                format!("({})", operand_sqls.join(&format!(" {} ", operator_sql)))
+            }
+        }
+        RenderExpr::Literal(lit) => {
+            use super::render_expr::Literal;
+            match lit {
+                Literal::String(s) => format!("'{}'", s),
+                Literal::Integer(i) => i.to_string(),
+                Literal::Float(f) => f.to_string(),
+                Literal::Boolean(b) => b.to_string(),
+                Literal::Null => "NULL".to_string(),
+            }
+        }
+        _ => expr.to_sql(), // Fallback to default to_sql()
+    }
+}
+
+/// Categorize WHERE clause filters based on which node/relationship they reference
+/// This is critical for shortest path queries where:
+/// - Start node filters go in the base case (e.g., WHERE start_node.name = 'Alice')
+/// - End node filters go in the outer CTE (e.g., WHERE end_node.name = 'Bob')
+/// - Relationship filters go in base + recursive cases (e.g., WHERE rel.weight > 5)
+fn categorize_filters(
+    filter_expr: Option<&RenderExpr>,
+    start_node_alias: &str,
+    end_node_alias: &str,
+    _rel_alias: &str, // For future relationship filtering
+) -> CategorizedFilters {
+    let mut result = CategorizedFilters {
+        start_node_filters: None,
+        end_node_filters: None,
+        relationship_filters: None,
+    };
+    
+    if filter_expr.is_none() {
+        return result;
+    }
+    
+    let filter = filter_expr.unwrap();
+    
+    // Helper to check if an expression references a specific alias
+    fn references_alias(expr: &RenderExpr, target_alias: &str) -> bool {
+        match expr {
+            RenderExpr::PropertyAccessExp(prop) => {
+                prop.table_alias.0 == target_alias
+            }
+            RenderExpr::OperatorApplicationExp(op) => {
+                op.operands.iter().any(|operand| references_alias(operand, target_alias))
+            }
+            _ => false,
+        }
+    }
+    
+    // Split AND-connected filters into individual predicates
+    fn split_and_filters(expr: &RenderExpr) -> Vec<RenderExpr> {
+        match expr {
+            RenderExpr::OperatorApplicationExp(op) if matches!(op.operator, Operator::And) => {
+                let mut filters = Vec::new();
+                for operand in &op.operands {
+                    filters.extend(split_and_filters(operand));
+                }
+                filters
+            }
+            _ => vec![expr.clone()],
+        }
+    }
+    
+    // Split the filter into individual predicates
+    let predicates = split_and_filters(filter);
+    
+    let mut start_filters = Vec::new();
+    let mut end_filters = Vec::new();
+    let mut rel_filters = Vec::new();
+    
+    for predicate in predicates {
+        let refs_start = references_alias(&predicate, start_node_alias);
+        let refs_end = references_alias(&predicate, end_node_alias);
+        
+        if refs_start && refs_end {
+            // Filter references both nodes - can't categorize simply
+            // For now, treat as start filter (will be in base case)
+            start_filters.push(predicate);
+        } else if refs_start {
+            start_filters.push(predicate);
+        } else if refs_end {
+            end_filters.push(predicate);
+        } else {
+            // Doesn't reference nodes - might be relationship filter or constant
+            rel_filters.push(predicate);
+        }
+    }
+    
+    // Combine filters with AND
+    fn combine_with_and(filters: Vec<RenderExpr>) -> Option<RenderExpr> {
+        if filters.is_empty() {
+            return None;
+        }
+        if filters.len() == 1 {
+            return Some(filters.into_iter().next().unwrap());
+        }
+        Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: filters,
+        }))
+    }
+    
+    result.start_node_filters = combine_with_and(start_filters);
+    result.end_node_filters = combine_with_and(end_filters);
+    result.relationship_filters = combine_with_and(rel_filters);
+    
+    result
+}
+
 pub(crate) trait RenderPlanBuilder {
     fn extract_last_node_cte(&self) -> RenderPlanBuilderResult<Option<Cte>>;
 
@@ -621,6 +797,8 @@ impl RenderPlanBuilder for LogicalPlan {
                             &graph_rel.right_connection,     // end node alias (for output)
                             properties,                      // properties to include in CTE
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()), // convert logical plan mode to SQL mode
+                            None,                            // no start filters (old path, not used anymore)
+                            None,                            // no end filters (old path, not used anymore)
                         );
                         generator.generate_cte()
                     };
@@ -725,6 +903,24 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Get properties from context - this is the KEY difference!
                     let properties = context.get_properties(&graph_rel.left_connection, &graph_rel.right_connection);
                     
+                    // Extract and categorize filters for shortest path queries
+                    // This is critical: start node filters go in base case, end node filters in outer CTE
+                    let filter_expr = self.extract_filters().ok().flatten();
+                    let categorized = categorize_filters(
+                        filter_expr.as_ref(),
+                        &graph_rel.left_connection,
+                        &graph_rel.right_connection,
+                        &graph_rel.alias,
+                    );
+                    
+                    // Convert filter expressions to SQL strings
+                    let start_filter_sql = categorized.start_node_filters.as_ref().map(|f| 
+                        render_expr_to_sql_for_cte(f, &graph_rel.left_connection, &graph_rel.right_connection)
+                    );
+                    let end_filter_sql = categorized.end_node_filters.as_ref().map(|f| 
+                        render_expr_to_sql_for_cte(f, &graph_rel.left_connection, &graph_rel.right_connection)
+                    );
+                    
                     // Choose between chained JOINs (for exact hop counts) or recursive CTE (for ranges)
                     let var_len_cte = if let Some(exact_hops) = spec.exact_hop_count() {
                         // Exact hop count: use optimized chained JOINs
@@ -757,6 +953,8 @@ impl RenderPlanBuilder for LogicalPlan {
                             &graph_rel.right_connection,
                             properties,  // Properties from context!
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()), // convert logical plan mode to SQL mode
+                            start_filter_sql,  // Start node filters for base case
+                            end_filter_sql,    // End node filters for outer CTE
                         );
                         generator.generate_cte()
                     };

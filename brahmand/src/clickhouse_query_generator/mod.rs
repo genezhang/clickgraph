@@ -11,6 +11,8 @@ mod to_sql;
 mod to_sql_query;
 pub mod variable_length_cte;
 mod view_query;
+#[cfg(test)]
+mod where_clause_tests;
 
 pub use errors::ClickhouseQueryGeneratorError;
 pub use variable_length_cte::{VariableLengthCteGenerator, NodeProperty};

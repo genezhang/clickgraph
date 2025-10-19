@@ -28,6 +28,8 @@ pub struct VariableLengthCteGenerator {
     pub properties: Vec<NodeProperty>,   // Properties to include in the CTE
     pub database: Option<String>,        // Optional database prefix
     pub shortest_path_mode: Option<ShortestPathMode>, // Shortest path optimization mode
+    pub start_node_filters: Option<String>, // WHERE clause for start node (e.g., "start_node.full_name = 'Alice'")
+    pub end_node_filters: Option<String>,   // WHERE clause for end node (e.g., "end_full_name = 'Bob'")
 }
 
 /// Mode for shortest path queries
@@ -64,6 +66,8 @@ impl VariableLengthCteGenerator {
         end_alias: &str,           // Cypher alias (e.g., "u2")
         properties: Vec<NodeProperty>, // Properties to include in CTE
         shortest_path_mode: Option<ShortestPathMode>, // Shortest path mode
+        start_node_filters: Option<String>, // WHERE clause for start node
+        end_node_filters: Option<String>,   // WHERE clause for end node
     ) -> Self {
         // Try to get database from environment
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
@@ -86,6 +90,8 @@ impl VariableLengthCteGenerator {
             properties,
             database,
             shortest_path_mode,
+            start_node_filters,
+            end_node_filters,
         }
     }
     
@@ -137,22 +143,49 @@ impl VariableLengthCteGenerator {
             query_body.push_str(&self.generate_recursive_case(10)); // Default max depth
         }
 
-        // Add shortest path filtering if mode is set
-        // Wrap the CTE in a filtered SELECT to return only shortest paths
-        let sql = match &self.shortest_path_mode {
-            Some(ShortestPathMode::Shortest) => {
-                // Return only one shortest path - select the one with minimum hop_count
-                // Create nested CTE structure: inner CTE generates all paths, outer CTE filters to shortest
-                format!("{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner ORDER BY hop_count ASC LIMIT 1\n)",
-                    self.cte_name, query_body, self.cte_name, self.cte_name)
+        // Build CTE structure based on shortest path mode and filters
+        // 3-tier structure when end node filters present:
+        //   1. path_inner - generates all paths (base + recursive)
+        //   2. path_to_target - filters paths reaching the target node
+        //   3. path - selects shortest path(s)
+        let sql = match (&self.shortest_path_mode, &self.end_node_filters) {
+            (Some(ShortestPathMode::Shortest), Some(end_filters)) => {
+                // 3-tier: inner → filter target → select shortest
+                format!(
+                    "{}_inner AS (\n{}\n),\n{}_to_target AS (\n    SELECT * FROM {}_inner WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target ORDER BY hop_count ASC LIMIT 1\n)",
+                    self.cte_name, query_body, self.cte_name, self.cte_name, end_filters, self.cte_name, self.cte_name
+                )
             }
-            Some(ShortestPathMode::AllShortest) => {
-                // Return all paths with minimum hop_count
-                format!("{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count = (SELECT MIN(hop_count) FROM {}_inner)\n)",
-                    self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name)
+            (Some(ShortestPathMode::AllShortest), Some(end_filters)) => {
+                // 3-tier: inner → filter target → select all shortest
+                format!(
+                    "{}_inner AS (\n{}\n),\n{}_to_target AS (\n    SELECT * FROM {}_inner WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target WHERE hop_count = (SELECT MIN(hop_count) FROM {}_to_target)\n)",
+                    self.cte_name, query_body, self.cte_name, self.cte_name, end_filters, self.cte_name, self.cte_name, self.cte_name
+                )
             }
-            None => {
-                // No shortest path mode - return paths as-is with normal CTE wrapper
+            (Some(ShortestPathMode::Shortest), None) => {
+                // 2-tier: inner → select shortest (no target filter)
+                format!(
+                    "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner ORDER BY hop_count ASC LIMIT 1\n)",
+                    self.cte_name, query_body, self.cte_name, self.cte_name
+                )
+            }
+            (Some(ShortestPathMode::AllShortest), None) => {
+                // 2-tier: inner → select all shortest (no target filter)
+                format!(
+                    "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count = (SELECT MIN(hop_count) FROM {}_inner)\n)",
+                    self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name
+                )
+            }
+            (None, Some(end_filters)) => {
+                // 2-tier: inner → filter target (no shortest path selection)
+                format!(
+                    "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE {}\n)",
+                    self.cte_name, query_body, self.cte_name, self.cte_name, end_filters
+                )
+            }
+            (None, None) => {
+                // Simple: just wrap with CTE name (no filtering)
                 format!("{} AS (\n{}\n)", self.cte_name, query_body)
             }
         };
@@ -186,7 +219,8 @@ impl VariableLengthCteGenerator {
             
             let select_clause = select_items.join(",\n        ");
             
-            format!(
+            // Build the base query without WHERE clause
+            let mut query = format!(
                 "    SELECT \n        {select}\n    FROM {start_table} {start}\n    JOIN {rel_table} {rel} ON {start}.{start_id_col} = {rel}.{from_col}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}",
                 select = select_clause,
                 start = self.start_node_alias,
@@ -199,7 +233,14 @@ impl VariableLengthCteGenerator {
                 from_col = self.relationship_from_column,
                 to_col = self.relationship_to_column,
                 end_table = self.format_table_name(&self.end_node_table)
-            )
+            );
+            
+            // Add WHERE clause if start node filters are present
+            if let Some(ref filters) = self.start_node_filters {
+                query.push_str(&format!("\n    WHERE {}", filters));
+            }
+            
+            query
         } else {
             // Multi-hop base case (for min_hops > 1)
             self.generate_multi_hop_base_case(hop_count)
@@ -277,7 +318,9 @@ mod tests {
             "u",           // start alias
             "p",           // end alias
             vec![],        // no properties for test
-            None           // no shortest path mode
+            None,          // no shortest path mode
+            None,          // no start node filters
+            None           // no end node filters
         );
 
         let cte = generator.generate_cte();
@@ -303,7 +346,9 @@ mod tests {
             "u1",           // start alias
             "u2",           // end alias
             vec![],         // no properties for test
-            None            // no shortest path mode
+            None,           // no shortest path mode
+            None,           // no start node filters
+            None            // no end node filters
         );
 
         let sql = generator.generate_recursive_sql();
