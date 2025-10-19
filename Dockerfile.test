@@ -1,0 +1,25 @@
+# Multi-stage build for testing
+FROM rust:1.82 as builder
+
+WORKDIR /build
+COPY . .
+
+# Build release binary
+RUN cargo build --release --bin brahmand
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/target/release/brahmand /app/brahmand
+
+# Default command
+ENTRYPOINT ["/app/brahmand"]
+CMD ["--http-port", "8080"]
