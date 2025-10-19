@@ -620,6 +620,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             &graph_rel.left_connection,      // start node alias (for output)
                             &graph_rel.right_connection,     // end node alias (for output)
                             properties,                      // properties to include in CTE
+                            graph_rel.shortest_path_mode.clone().map(|m| m.into()), // convert logical plan mode to SQL mode
                         );
                         generator.generate_cte()
                     };
@@ -755,6 +756,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             &graph_rel.left_connection,
                             &graph_rel.right_connection,
                             properties,  // Properties from context!
+                            graph_rel.shortest_path_mode.clone().map(|m| m.into()), // convert logical plan mode to SQL mode
                         );
                         generator.generate_cte()
                     };

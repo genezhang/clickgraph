@@ -27,6 +27,27 @@ pub struct VariableLengthCteGenerator {
     pub end_cypher_alias: String,        // Original Cypher query alias (e.g., "u2")
     pub properties: Vec<NodeProperty>,   // Properties to include in the CTE
     pub database: Option<String>,        // Optional database prefix
+    pub shortest_path_mode: Option<ShortestPathMode>, // Shortest path optimization mode
+}
+
+/// Mode for shortest path queries
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShortestPathMode {
+    /// shortestPath() - return one shortest path
+    Shortest,
+    /// allShortestPaths() - return all paths with minimum length
+    AllShortest,
+}
+
+// Conversion from logical plan's ShortestPathMode to SQL generator's ShortestPathMode
+impl From<crate::query_planner::logical_plan::ShortestPathMode> for ShortestPathMode {
+    fn from(mode: crate::query_planner::logical_plan::ShortestPathMode) -> Self {
+        use crate::query_planner::logical_plan::ShortestPathMode as LogicalMode;
+        match mode {
+            LogicalMode::Shortest => ShortestPathMode::Shortest,
+            LogicalMode::AllShortest => ShortestPathMode::AllShortest,
+        }
+    }
 }
 
 impl VariableLengthCteGenerator {
@@ -42,6 +63,7 @@ impl VariableLengthCteGenerator {
         start_alias: &str,         // Cypher alias (e.g., "u1")
         end_alias: &str,           // Cypher alias (e.g., "u2")
         properties: Vec<NodeProperty>, // Properties to include in CTE
+        shortest_path_mode: Option<ShortestPathMode>, // Shortest path mode
     ) -> Self {
         // Try to get database from environment
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
@@ -63,6 +85,7 @@ impl VariableLengthCteGenerator {
             end_cypher_alias: end_alias.to_string(),
             properties,
             database,
+            shortest_path_mode,
         }
     }
     
@@ -236,7 +259,8 @@ mod tests {
             "post_id",     // end id column
             "u",           // start alias
             "p",           // end alias
-            vec![]         // no properties for test
+            vec![],        // no properties for test
+            None           // no shortest path mode
         );
 
         let cte = generator.generate_cte();
@@ -247,7 +271,7 @@ mod tests {
         assert!(cte.cte_name.starts_with("variable_path_"));
     }
 
-    #[test] 
+    #[test]
     fn test_unbounded_variable_length() {
         let spec = VariableLengthSpec::unbounded();
         let generator = VariableLengthCteGenerator::new(
@@ -261,7 +285,8 @@ mod tests {
             "user_id",      // end id column
             "u1",           // start alias
             "u2",           // end alias
-            vec![]          // no properties for test
+            vec![],         // no properties for test
+            None            // no shortest path mode
         );
 
         let sql = generator.generate_recursive_sql();
@@ -270,9 +295,7 @@ mod tests {
         // Should contain recursive case
         assert!(sql.contains("UNION ALL"));
         assert!(sql.contains("hop_count < 10")); // Default max
-    }
-
-    #[test]
+    }    #[test]
     fn test_fixed_length_spec() {
         let spec = VariableLengthSpec::fixed(2);
         assert_eq!(spec.effective_min_hops(), 2);
