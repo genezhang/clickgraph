@@ -90,15 +90,27 @@ fn table_to_id_column(table: &str) -> String {
 }
 
 /// Map relationship type to actual relationship table name
-/// TODO: This should look up the actual schema from GraphSchema
+/// Looks up the relationship schema from GLOBAL_GRAPH_SCHEMA
+/// Falls back to hardcoded mappings for backwards compatibility
 fn rel_type_to_table_name(rel_type: &str) -> String {
+    // Try to get table name from schema first
+    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
+        if let Ok(schema) = schema_lock.try_read() {
+            if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
+                return rel_schema.table_name.clone();
+            }
+        }
+    }
+    
+    // Fallback to hardcoded mappings for backwards compatibility
+    // This ensures existing queries still work even without YAML config
     match rel_type {
         "FRIEND" | "FRIENDS_WITH" => "friendships".to_string(),
         "FOLLOWS" => "user_follows".to_string(),
         "AUTHORED" => "posts".to_string(),
         "LIKED" => "post_likes".to_string(),
         "PURCHASED" => "orders".to_string(),
-        _ => rel_type.to_string(), // fallback to type itself
+        _ => rel_type.to_string(), // ultimate fallback: use type name as table name
     }
 }
 
@@ -547,32 +559,32 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::ViewScan(_) => Ok(vec![]),
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_ctes(last_node_alias),
             LogicalPlan::GraphRel(graph_rel) => {
+                // Extract table names and column information - SAME LOGIC FOR BOTH PATHS
+                // Apply mapping even if extract_table_name succeeds, in case it returns a label
+                let start_table = label_to_table_name(&extract_table_name(&graph_rel.left)
+                    .unwrap_or_else(|| graph_rel.left_connection.clone()));
+                let end_table = label_to_table_name(&extract_table_name(&graph_rel.right)
+                    .unwrap_or_else(|| graph_rel.right_connection.clone()));
+                let rel_table = rel_type_to_table_name(&extract_table_name(&graph_rel.center)
+                    .unwrap_or_else(|| graph_rel.alias.clone()));
+                
+                // Extract ID columns
+                let start_id_col = extract_id_column(&graph_rel.left)
+                    .unwrap_or_else(|| table_to_id_column(&start_table));
+                let end_id_col = extract_id_column(&graph_rel.right)
+                    .unwrap_or_else(|| table_to_id_column(&end_table));
+                
+                // Extract relationship columns from ViewScan (will use schema-specific names if available)
+                let rel_cols = extract_relationship_columns(&graph_rel.center)
+                    .unwrap_or(RelationshipColumns {
+                        from_column: "from_node_id".to_string(),  // Generic fallback
+                        to_column: "to_node_id".to_string(),      // Generic fallback
+                    });
+                let from_col = rel_cols.from_column;
+                let to_col = rel_cols.to_column;
+                
                 // Handle variable-length paths differently
                 if let Some(spec) = &graph_rel.variable_length {
-                    // Extract actual table names and column information
-                    // Apply mapping even if extract_table_name succeeds, in case it returns a label
-                    let start_table = label_to_table_name(&extract_table_name(&graph_rel.left)
-                        .unwrap_or_else(|| graph_rel.left_connection.clone()));
-                    let end_table = label_to_table_name(&extract_table_name(&graph_rel.right)
-                        .unwrap_or_else(|| graph_rel.right_connection.clone()));
-                    let rel_table = rel_type_to_table_name(&extract_table_name(&graph_rel.center)
-                        .unwrap_or_else(|| graph_rel.alias.clone()));
-                    
-                    // Extract ID columns
-                    let start_id_col = extract_id_column(&graph_rel.left)
-                        .unwrap_or_else(|| table_to_id_column(&start_table));
-                    let end_id_col = extract_id_column(&graph_rel.right)
-                        .unwrap_or_else(|| table_to_id_column(&end_table));
-                    
-                    // Extract relationship columns from ViewScan (will use schema-specific names if available)
-                    let rel_cols = extract_relationship_columns(&graph_rel.center)
-                        .unwrap_or(RelationshipColumns {
-                            from_column: "from_node_id".to_string(),  // Generic fallback
-                            to_column: "to_node_id".to_string(),      // Generic fallback
-                        });
-                    let from_col = rel_cols.from_column;
-                    let to_col = rel_cols.to_column;
-                    
                     // TODO: Extract properties from the projection
                     // For now, using empty properties - will be populated in a later step
                     let properties = vec![];
@@ -619,6 +631,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     return Ok(child_ctes);
                 }
 
+                // Regular single-hop relationship: still need to use resolved table names!
+                // TODO: Apply the resolved table/column names to the child CTEs
+                // For now, fall back to the old path which doesn't resolve properly
                 // first extract the bottom one
                 let mut right_cte = graph_rel.right.extract_ctes(last_node_alias)?;
                 // then process the center
@@ -825,10 +840,33 @@ impl RenderPlanBuilder for LogicalPlan {
     fn extract_from(&self) -> RenderPlanBuilderResult<Option<FromTable>> {
         let from_ref = match &self {
             LogicalPlan::Empty => None,
-            LogicalPlan::Scan(scan) => Some(ViewTableRef::new_view(
-                Arc::new(LogicalPlan::Scan(scan.clone())),
-                scan.table_name.clone().ok_or(RenderBuildError::MissingFromTable)?,
-            )),
+            LogicalPlan::Scan(scan) => {
+                let table_name_raw = scan.table_name.clone().ok_or(RenderBuildError::MissingFromTable)?;
+                // Apply relationship type mapping if this might be a relationship scan
+                // (Node scans should be ViewScan after our fix, so remaining Scans are likely relationships)
+                let table_name = rel_type_to_table_name(&table_name_raw);
+                
+                // Get the alias - use Scan's table_alias if available
+                let alias = if let Some(ref scan_alias) = scan.table_alias {
+                    log::info!("✓ Scan has table_alias='{}' for table '{}'", scan_alias, table_name);
+                    scan_alias.clone()
+                } else {
+                    // No alias in Scan - this shouldn't happen for relationship scans!
+                    // Generate a warning and use a default
+                    let default_alias = "t".to_string();
+                    log::error!("❌ BUG: Scan for table '{}' has NO table_alias! Using fallback '{}'", 
+                        table_name, default_alias);
+                    log::error!("   This indicates the Scan was created without preserving the Cypher variable name!");
+                    default_alias
+                };
+                
+                log::info!("✓ Creating ViewTableRef: table='{}', alias='{}'", table_name, alias);
+                Some(ViewTableRef::new_view_with_alias(
+                    Arc::new(LogicalPlan::Scan(scan.clone())),
+                    table_name,
+                    alias,
+                ))
+            },
             LogicalPlan::ViewScan(scan) => Some(ViewTableRef::new_table(
                 scan.as_ref().clone(),
                 scan.source_table.clone(),
