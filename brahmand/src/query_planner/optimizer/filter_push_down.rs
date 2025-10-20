@@ -93,6 +93,14 @@ impl OptimizerPass for FilterPushDown {
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
             }
+            LogicalPlan::ViewScan(_scan) => {
+                // ViewScan nodes can be optimized by merging additional filters
+                // into their view_filter field for more efficient SQL generation
+                
+                // For now, we'll implement this when we have a proper filter merging strategy
+                // that respects view mappings and property transformations
+                Transformed::No(logical_plan.clone())
+            }
         };
         Ok(transformed_plan)
     }

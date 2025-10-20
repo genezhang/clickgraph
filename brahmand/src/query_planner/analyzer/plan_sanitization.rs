@@ -32,6 +32,7 @@ impl PlanSanitization {
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::Scan(scan) => {
                 if last_node_traversed {
                     let sanitized_scan = self.sanitize_scan(scan);
@@ -119,7 +120,7 @@ impl PlanSanitization {
     fn sanitize_scan(&self, scan: &Scan) -> LogicalPlan {
         let sanitized_scan = Scan {
             table_name: scan.table_name.clone(),
-            table_alias: None,
+            table_alias: scan.table_alias.clone(),  // Preserve the Cypher variable name!
         };
         LogicalPlan::Scan(sanitized_scan)
     }

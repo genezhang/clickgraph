@@ -3,11 +3,19 @@ use crate::{
     query_planner::logical_plan::LogicalPlan,
 };
 use std::{fmt, sync::Arc};
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug, PartialEq, Clone)]
+// Import serde_arc module for serialization
+#[path = "../../utils/serde_arc.rs"]
+mod serde_arc;
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum LogicalExpr {
     /// A literal, such as a number, string, boolean, or null.
     Literal(Literal),
+
+    /// Raw SQL expression as a string
+    Raw(String),
 
     Star,
 
@@ -15,6 +23,9 @@ pub enum LogicalExpr {
     TableAlias(TableAlias),
 
     ColumnAlias(ColumnAlias),
+
+    /// Binary operator application (e.g. a + b)
+    Operator(OperatorApplication),
 
     /// Columns to use in projection.
     Column(Column),
@@ -42,13 +53,14 @@ pub enum LogicalExpr {
     InSubquery(InSubquery),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct InSubquery {
     pub expr: Box<LogicalExpr>,
+    #[serde(with = "serde_arc")]
     pub subplan: Arc<LogicalPlan>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Direction {
     Outgoing,
     Incoming,
@@ -77,7 +89,7 @@ impl Direction {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Literal {
     Integer(i64),
     Float(f64),
@@ -86,16 +98,16 @@ pub enum Literal {
     Null,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct TableAlias(pub String);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ColumnAlias(pub String);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Column(pub String);
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Operator {
     Addition,
     Subtraction,
@@ -119,63 +131,67 @@ pub enum Operator {
     IsNotNull,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct OperatorApplication {
     pub operator: Operator,
     pub operands: Vec<LogicalExpr>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PropertyAccess {
     pub table_alias: TableAlias,
     pub column: Column,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ScalarFnCall {
     pub name: String,
     pub args: Vec<LogicalExpr>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct AggregateFnCall {
     pub name: String,
     pub args: Vec<LogicalExpr>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum PathPattern {
     Node(NodePattern),
     ConnectedPattern(Vec<ConnectedPattern>),
+    ShortestPath(Box<PathPattern>),
+    AllShortestPaths(Box<PathPattern>),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct NodePattern {
     pub name: Option<String>,
     pub label: Option<String>,
     pub properties: Option<Vec<Property>>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Property {
     PropertyKV(PropertyKVPair),
     Param(String),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PropertyKVPair {
     pub key: String,
     pub value: Literal,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ConnectedPattern {
+    #[serde(with = "serde_arc")]
     pub start_node: Arc<NodePattern>,
     pub relationship: RelationshipPattern,
+    #[serde(with = "serde_arc")]
     pub end_node: Arc<NodePattern>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct RelationshipPattern {
     pub name: Option<String>,
     pub direction: Direction,
@@ -278,6 +294,14 @@ impl<'a> From<open_cypher_parser::ast::PathPattern<'a>> for PathPattern {
                 PathPattern::ConnectedPattern(
                     vec_conn.into_iter().map(ConnectedPattern::from).collect(),
                 )
+            }
+            open_cypher_parser::ast::PathPattern::ShortestPath(inner) => {
+                // Recursively convert the inner pattern and wrap it
+                PathPattern::ShortestPath(Box::new(PathPattern::from(*inner)))
+            }
+            open_cypher_parser::ast::PathPattern::AllShortestPaths(inner) => {
+                // Recursively convert the inner pattern and wrap it
+                PathPattern::AllShortestPaths(Box::new(PathPattern::from(*inner)))
             }
         }
     }
@@ -548,6 +572,7 @@ mod tests {
                 key: "since",
                 value: ast::Expression::Literal(ast::Literal::Integer(2020)),
             })]),
+            variable_length: None,
         };
         let logical_relationship_pattern = RelationshipPattern::from(ast_relationship_pattern);
 
@@ -579,18 +604,17 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("user"),
             label: Some("User"),
-            properties: None,
-        };
+            properties: None,        };
         let end_node = ast::NodePattern {
             name: Some("company"),
             label: Some("Company"),
-            properties: None,
-        };
+            properties: None,        };
         let relationship = ast::RelationshipPattern {
             name: Some("works_at"),
             direction: ast::Direction::Outgoing,
             label: Some("WORKS_AT"),
             properties: None,
+            variable_length: None,
         };
 
         let ast_connected_pattern = ast::ConnectedPattern {
@@ -635,8 +659,7 @@ mod tests {
         let ast_node = ast::NodePattern {
             name: Some("customer"),
             label: Some("Customer"),
-            properties: None,
-        };
+            properties: None,        };
         let ast_path_pattern = ast::PathPattern::Node(ast_node);
         let logical_path_pattern = PathPattern::from(ast_path_pattern);
 

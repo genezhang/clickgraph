@@ -7,20 +7,86 @@ use crate::{
         logical_plan::{
             errors::LogicalPlanError,
             plan_builder::LogicalPlanResult,
-            {GraphNode, GraphRel, LogicalPlan, Scan},
+            {GraphNode, GraphRel, LogicalPlan, Scan, ShortestPathMode},
         },
         plan_ctx::{PlanCtx, TableCtx},
     },
 };
 
-use super::generate_id;
+use super::{generate_id, ViewScan};
+use std::collections::HashMap;
 
+/// Generate a scan operation for a node pattern
+/// 
+/// This function creates either a ViewScan (if schema information is available)
+/// or a regular Scan (as fallback). ViewScan translates Cypher labels to actual
+/// ClickHouse table names using the global graph schema.
 fn generate_scan(alias: String, label: Option<String>) -> Arc<LogicalPlan> {
+    log::debug!("generate_scan called with alias='{}', label={:?}", alias, label);
+    
+    // Try to generate a ViewScan if we have schema information
+    if let Some(ref label_str) = label {
+        log::debug!("Trying to create ViewScan for label '{}'", label_str);
+        if let Some(view_scan) = try_generate_view_scan(&alias, label_str) {
+            log::info!("✓ Successfully created ViewScan for label '{}'", label_str);
+            return view_scan;
+        }
+        log::warn!("ViewScan creation failed for label '{}', falling back to regular Scan", label_str);
+    }
+    
+    // Fallback to regular Scan if schema lookup fails or no label provided
+    log::debug!("Creating regular Scan with label={:?}", label);
     let table_alias = if alias.is_empty() { None } else { Some(alias) };
     Arc::new(LogicalPlan::Scan(Scan {
         table_alias,
         table_name: label,
     }))
+}
+
+/// Try to generate a ViewScan by looking up the label in the global schema
+/// 
+/// This function accesses GLOBAL_GRAPH_SCHEMA to translate Cypher labels
+/// (e.g., "User") to actual ClickHouse table names (e.g., "users").
+/// Returns None if schema is not available or label not found.
+fn try_generate_view_scan(alias: &str, label: &str) -> Option<Arc<LogicalPlan>> {
+    // Access the global schema
+    let schema_lock = crate::server::GLOBAL_GRAPH_SCHEMA.get()?;
+    
+    // Try to read the schema - this might fail if another thread is writing
+    let schema = match schema_lock.try_read() {
+        Ok(s) => s,
+        Err(_) => {
+            log::warn!("Could not acquire read lock on GLOBAL_GRAPH_SCHEMA for label '{}'", label);
+            return None;
+        }
+    };
+    
+    // Look up the node schema for this label
+    let node_schema = match schema.get_node_schema(label) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("Could not find node schema for label '{}': {:?}", label, e);
+            return None;
+        }
+    };
+    
+    // Log successful resolution
+    log::info!("✓ ViewScan: Resolved label '{}' to table '{}'", label, node_schema.table_name);
+    
+    // Create property mapping (initially empty - will be populated during projection planning)
+    let property_mapping = HashMap::new();
+    
+    // Create ViewScan with the actual table name from schema
+    let view_scan = ViewScan::new(
+        node_schema.table_name.clone(),  // Use actual ClickHouse table name
+        None,                             // No filter condition yet
+        property_mapping,                 // Empty for now
+        node_schema.node_id.column.clone(), // ID column from schema
+        vec!["id".to_string()],          // Basic output schema
+        vec![],                           // No projections yet
+    );
+    
+    Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))))
 }
 
 fn convert_properties(props: Vec<Property>) -> LogicalPlanResult<Vec<LogicalExpr>> {
@@ -56,11 +122,23 @@ fn convert_properties_to_operator_application(plan_ctx: &mut PlanCtx) -> Logical
     Ok(())
 }
 
+// Wrapper for backwards compatibility
 fn traverse_connected_pattern<'a>(
+    connected_patterns: &Vec<ast::ConnectedPattern<'a>>,
+    plan: Arc<LogicalPlan>,
+    plan_ctx: &mut PlanCtx,
+    path_pattern_idx: usize,
+) -> LogicalPlanResult<Arc<LogicalPlan>> {
+    traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, path_pattern_idx, None, None)
+}
+
+fn traverse_connected_pattern_with_mode<'a>(
     connected_patterns: &Vec<ast::ConnectedPattern<'a>>,
     mut plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
     path_pattern_idx: usize,
+    shortest_path_mode: Option<ShortestPathMode>,
+    path_variable: Option<&str>,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
     for connected_pattern in connected_patterns {
         let start_node_ref = connected_pattern.start_node.borrow();
@@ -112,7 +190,7 @@ fn traverse_connected_pattern<'a>(
             }
 
             let end_graph_node = GraphNode {
-                input: generate_scan(end_node_alias.clone(), None),
+                input: generate_scan(end_node_alias.clone(), end_node_label.clone()),
                 alias: end_node_alias.clone(),
             };
             plan_ctx.insert_table_ctx(
@@ -135,6 +213,10 @@ fn traverse_connected_pattern<'a>(
                 left_connection: end_node_alias,
                 right_connection: start_node_alias,
                 is_rel_anchor: false,
+                variable_length: None, // Single-hop relationship by default
+                shortest_path_mode: shortest_path_mode.clone(),
+                path_variable: path_variable.map(|s| s.to_string()),
+                where_predicate: None, // Will be populated by filter pushdown optimization
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -146,6 +228,20 @@ fn traverse_connected_pattern<'a>(
                     rel.name.is_some(),
                 ),
             );
+
+            // Register path variable in PlanCtx if present
+            if let Some(path_var) = path_variable {
+                plan_ctx.insert_table_ctx(
+                    path_var.to_string(),
+                    TableCtx::build(
+                        path_var.to_string(),
+                        None,  // Path variables don't have labels
+                        vec![], // Path variables don't have properties
+                        false,  // Not a relationship
+                        true,   // Explicitly named by user
+                    ),
+                );
+            }
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
         }
@@ -159,7 +255,7 @@ fn traverse_connected_pattern<'a>(
             }
 
             let start_graph_node = GraphNode {
-                input: generate_scan(start_node_alias.clone(), None),
+                input: generate_scan(start_node_alias.clone(), start_node_label.clone()),
                 alias: start_node_alias.clone(),
             };
             plan_ctx.insert_table_ctx(
@@ -182,6 +278,10 @@ fn traverse_connected_pattern<'a>(
                 left_connection: start_node_alias,
                 right_connection: end_node_alias,
                 is_rel_anchor: false,
+                variable_length: rel.variable_length.clone().map(|v| v.into()),
+                shortest_path_mode: shortest_path_mode.clone(),
+                path_variable: path_variable.map(|s| s.to_string()),
+                where_predicate: None, // Will be populated by filter pushdown optimization
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -193,6 +293,20 @@ fn traverse_connected_pattern<'a>(
                     rel.name.is_some(),
                 ),
             );
+
+            // Register path variable in PlanCtx if present
+            if let Some(path_var) = path_variable {
+                plan_ctx.insert_table_ctx(
+                    path_var.to_string(),
+                    TableCtx::build(
+                        path_var.to_string(),
+                        None,  // Path variables don't have labels
+                        vec![], // Path variables don't have properties
+                        false,  // Not a relationship
+                        true,   // Explicitly named by user
+                    ),
+                );
+            }
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
         }
@@ -206,7 +320,7 @@ fn traverse_connected_pattern<'a>(
 
             // we will keep start graph node at the right side and end at the left side
             let start_graph_node = GraphNode {
-                input: generate_scan(start_node_alias.clone(), None),
+                input: generate_scan(start_node_alias.clone(), start_node_label.clone()),
                 alias: start_node_alias.clone(),
             };
             plan_ctx.insert_table_ctx(
@@ -221,7 +335,7 @@ fn traverse_connected_pattern<'a>(
             );
 
             let end_graph_node = GraphNode {
-                input: generate_scan(end_node_alias.clone(), None),
+                input: generate_scan(end_node_alias.clone(), end_node_label.clone()),
                 alias: end_node_alias.clone(),
             };
             plan_ctx.insert_table_ctx(
@@ -244,6 +358,10 @@ fn traverse_connected_pattern<'a>(
                 left_connection: end_node_alias,
                 right_connection: start_node_alias,
                 is_rel_anchor: false,
+                variable_length: rel.variable_length.clone().map(|v| v.into()),
+                shortest_path_mode: shortest_path_mode.clone(),
+                path_variable: path_variable.map(|s| s.to_string()),
+                where_predicate: None, // Will be populated by filter pushdown optimization
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -255,6 +373,20 @@ fn traverse_connected_pattern<'a>(
                     rel.name.is_some(),
                 ),
             );
+
+            // Register path variable in PlanCtx if present
+            if let Some(path_var) = path_variable {
+                plan_ctx.insert_table_ctx(
+                    path_var.to_string(),
+                    TableCtx::build(
+                        path_var.to_string(),
+                        None,  // Path variables don't have labels
+                        vec![], // Path variables don't have properties
+                        false,  // Not a relationship
+                        true,   // Explicitly named by user
+                    ),
+                );
+            }
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
         }
@@ -295,7 +427,7 @@ fn traverse_node_pattern(
             node_alias.clone(),
             TableCtx::build(
                 node_alias.clone(),
-                node_label,
+                node_label.clone(),  // Clone here so we can use it below
                 node_props,
                 false,
                 node_pattern.name.is_some(),
@@ -303,7 +435,7 @@ fn traverse_node_pattern(
         );
 
         let graph_node = GraphNode {
-            input: generate_scan(node_alias.clone(), None),
+            input: generate_scan(node_alias.clone(), node_label),  // Pass the label here!
             alias: node_alias,
         };
         Ok(Arc::new(LogicalPlan::GraphNode(graph_node)))
@@ -321,13 +453,76 @@ pub fn evaluate_match_clause<'a>(
                 plan = traverse_node_pattern(node_pattern, plan, plan_ctx)?;
             }
             ast::PathPattern::ConnectedPattern(connected_patterns) => {
-                plan = traverse_connected_pattern(connected_patterns, plan, plan_ctx, idx)?;
+                plan = traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, idx, None, match_clause.path_variable)?;
+            }
+            ast::PathPattern::ShortestPath(inner_pattern) => {
+                // Process inner pattern with shortest path mode enabled
+                plan = evaluate_single_path_pattern_with_mode(
+                    inner_pattern.as_ref(), 
+                    plan, 
+                    plan_ctx, 
+                    idx,
+                    Some(ShortestPathMode::Shortest),
+                    match_clause.path_variable,
+                )?;
+            }
+            ast::PathPattern::AllShortestPaths(inner_pattern) => {
+                // Process inner pattern with all shortest paths mode enabled
+                plan = evaluate_single_path_pattern_with_mode(
+                    inner_pattern.as_ref(), 
+                    plan, 
+                    plan_ctx, 
+                    idx,
+                    Some(ShortestPathMode::AllShortest),
+                    match_clause.path_variable,
+                )?;
             }
         }
     }
 
     convert_properties_to_operator_application(plan_ctx)?;
     Ok(plan)
+}
+
+// Helper function to evaluate a single path pattern with shortest path mode
+fn evaluate_single_path_pattern_with_mode<'a>(
+    path_pattern: &ast::PathPattern<'a>,
+    plan: Arc<LogicalPlan>,
+    plan_ctx: &mut PlanCtx,
+    idx: usize,
+    shortest_path_mode: Option<ShortestPathMode>,
+    path_variable: Option<&str>,
+) -> LogicalPlanResult<Arc<LogicalPlan>> {
+    match path_pattern {
+        ast::PathPattern::Node(node_pattern) => {
+            traverse_node_pattern(node_pattern, plan, plan_ctx)
+        }
+        ast::PathPattern::ConnectedPattern(connected_patterns) => {
+            traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, idx, shortest_path_mode, path_variable)
+        }
+        ast::PathPattern::ShortestPath(inner) => {
+            // Recursively unwrap with shortest path mode
+            evaluate_single_path_pattern_with_mode(
+                inner.as_ref(), 
+                plan, 
+                plan_ctx, 
+                idx,
+                Some(ShortestPathMode::Shortest),
+                path_variable,
+            )
+        }
+        ast::PathPattern::AllShortestPaths(inner) => {
+            // Recursively unwrap with all shortest paths mode
+            evaluate_single_path_pattern_with_mode(
+                inner.as_ref(), 
+                plan, 
+                plan_ctx, 
+                idx,
+                Some(ShortestPathMode::AllShortest),
+                path_variable,
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -447,13 +642,18 @@ mod tests {
         match result.as_ref() {
             LogicalPlan::GraphNode(graph_node) => {
                 assert_eq!(graph_node.alias, "customer");
-                // Input should be a scan
+                // Input should be a ViewScan or Scan
                 match graph_node.input.as_ref() {
-                    LogicalPlan::Scan(scan) => {
-                        assert_eq!(scan.table_alias, Some("customer".to_string()));
-                        assert_eq!(scan.table_name, None); // generate_scan sets table_name to label, but we pass None
+                    LogicalPlan::ViewScan(_view_scan) => {
+                        // ViewScan created successfully via try_generate_view_scan
+                        // This happens when GLOBAL_GRAPH_SCHEMA is available
                     }
-                    _ => panic!("Expected Scan as input"),
+                    LogicalPlan::Scan(scan) => {
+                        // Fallback Scan when ViewScan creation fails or schema not available
+                        assert_eq!(scan.table_alias, Some("customer".to_string()));
+                        assert_eq!(scan.table_name, Some("Person".to_string())); // Now we pass the label!
+                    }
+                    _ => panic!("Expected ViewScan or Scan as input"),
                 }
             }
             _ => panic!("Expected GraphNode"),
@@ -512,8 +712,7 @@ mod tests {
         let node_pattern = ast::NodePattern {
             name: None, // Empty node
             label: Some("Person"),
-            properties: None,
-        };
+            properties: None,        };
 
         let result = traverse_node_pattern(&node_pattern, initial_plan, &mut plan_ctx);
         assert!(result.is_err());
@@ -531,20 +730,19 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("user"),
             label: Some("Person"),
-            properties: None,
-        };
+            properties: None,        };
 
         let end_node = ast::NodePattern {
             name: Some("company"),
             label: Some("Organization"),
-            properties: None,
-        };
+            properties: None,        };
 
         let relationship = ast::RelationshipPattern {
             name: Some("works_at"),
             direction: ast::Direction::Outgoing,
             label: Some("WORKS_AT"),
             properties: None,
+            variable_length: None,
         };
 
         let connected_pattern = ast::ConnectedPattern {
@@ -616,20 +814,19 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("user"),      // This exists in plan_ctx
             label: Some("Employee"), // Different label
-            properties: None,
-        };
+            properties: None,        };
 
         let end_node = ast::NodePattern {
             name: Some("project"),
             label: Some("Project"),
-            properties: None,
-        };
+            properties: None,        };
 
         let relationship = ast::RelationshipPattern {
             name: Some("assigned_to"),
             direction: ast::Direction::Incoming,
             label: Some("ASSIGNED_TO"),
             properties: None,
+            variable_length: None,
         };
 
         let connected_pattern = ast::ConnectedPattern {
@@ -676,20 +873,19 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("user1"),
             label: Some("Person"),
-            properties: None,
-        };
+            properties: None,        };
 
         let end_node = ast::NodePattern {
             name: Some("user2"),
             label: Some("Person"),
-            properties: None,
-        };
+            properties: None,        };
 
         let relationship = ast::RelationshipPattern {
             name: Some("knows"),
             direction: ast::Direction::Either,
             label: Some("KNOWS"),
             properties: None,
+            variable_length: None,
         };
 
         let connected_pattern = ast::ConnectedPattern {
@@ -729,20 +925,19 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("admin"), // Same as above - should connect
             label: None,
-            properties: None,
-        };
+            properties: None,        };
 
         let end_node = ast::NodePattern {
             name: Some("system"),
             label: Some("System"),
-            properties: None,
-        };
+            properties: None,        };
 
         let relationship = ast::RelationshipPattern {
             name: Some("manages"),
             direction: ast::Direction::Outgoing,
             label: Some("MANAGES"),
             properties: None,
+            variable_length: None,
         };
 
         let connected_pattern = ast::ConnectedPattern {
@@ -752,6 +947,7 @@ mod tests {
         };
 
         let match_clause = ast::MatchClause {
+            path_variable: None,
             path_patterns: vec![
                 ast::PathPattern::Node(node_pattern),
                 ast::PathPattern::ConnectedPattern(vec![connected_pattern]),

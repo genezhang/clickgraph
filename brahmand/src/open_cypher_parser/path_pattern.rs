@@ -8,23 +8,65 @@ use nom::error::ErrorKind;
 use nom::{
     IResult, Parser,
     branch::alt,
-    bytes::complete::tag,
+    bytes::complete::{tag, tag_no_case},
     character::complete::{alphanumeric1, multispace0, space0},
     combinator::{map, opt},
     error::Error,
     multi::separated_list0,
-    sequence::{delimited, separated_pair},
+    sequence::{delimited, separated_pair, tuple},
 };
 
 use super::ast::{
     ConnectedPattern, Direction, Expression, NodePattern, PathPattern, Property, PropertyKVPair,
-    RelationshipPattern,
+    RelationshipPattern, VariableLengthSpec,
 };
 use super::common::ws;
 use super::expression::parse_parameter;
 use super::{common, expression};
+use nom::character::complete::digit1;
+/// Try to parse shortestPath() or allShortestPaths() wrapper
+fn parse_shortest_path_function(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>> {
+    use nom::sequence::delimited;
+    use nom::combinator::map;
+    
+    // Parse shortestPath() - consume leading whitespace first!
+    let parse_shortest = map(
+        (multispace0,  // <-- Add this to consume leading whitespace!
+         tag_no_case::<_, _, Error<&str>>("shortestPath"),
+         multispace0,
+         delimited(
+             char('('),
+             delimited(multispace0, parse_path_pattern_inner, multispace0),
+             char(')')
+         )),
+        |(_, _, _, pattern)| PathPattern::ShortestPath(Box::new(pattern))
+    );
+    
+    // Parse allShortestPaths() - consume leading whitespace first!
+    let parse_all_shortest = map(
+        (multispace0,  // <-- Add this to consume leading whitespace!
+         tag_no_case::<_, _, Error<&str>>("allShortestPaths"),
+         multispace0,
+         delimited(
+             char('('),
+             delimited(multispace0, parse_path_pattern_inner, multispace0),
+             char(')')
+         )),
+        |(_, _, _, pattern)| PathPattern::AllShortestPaths(Box::new(pattern))
+    );
+    
+    // Try both parsers
+    alt((parse_shortest, parse_all_shortest)).parse(input)
+}
 
+/// Main entry point for parsing path patterns
 pub fn parse_path_pattern(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>> {
+    // Try shortest path functions first, if that fails try regular pattern
+    alt((parse_shortest_path_function, parse_path_pattern_inner)).parse(input)
+}
+
+/// Internal parser for path patterns (without shortest path wrapper)
+fn parse_path_pattern_inner(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>> {
     let (input, start_node_pattern) = parse_node_pattern.parse(input)?;
 
     let (_, is_start_of_relation) = is_start_of_a_relationship.parse(input)?;
@@ -246,10 +288,109 @@ fn parse_relationship_internals(
     delimited(ws(char('[')), parse_name_label, ws(char(']'))).parse(input)
 }
 
+// Parse relationship internals including variable-length spec
+// Returns: ((name, properties), (label, properties), variable_length_spec)
+fn parse_relationship_internals_with_var_len(
+    input: &'_ str,
+) -> IResult<&'_ str, (
+    (NameOrLabelWithProperties<'_>, NameOrLabelWithProperties<'_>),
+    Option<VariableLengthSpec>,
+)> {
+    let (input, _) = ws(char('[')).parse(input)?;
+    let (input, name_label) = parse_name_label(input)?;
+    let (input, var_len) = parse_variable_length_spec(input)?;
+    let (input, _) = ws(char(']')).parse(input)?;
+    Ok((input, (name_label, var_len)))
+}
+
+// Parse variable-length specification: *, *2, *1..3, *..5
+// Returns Some(VariableLengthSpec) if parsed, None if not present
+fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<VariableLengthSpec>> {
+    let (input, _) = multispace0(input)?;
+    
+    // Check if there's a * character
+    let (input, asterisk_opt) = opt(char('*')).parse(input)?;
+    if asterisk_opt.is_none() {
+        // No *, so no variable-length spec
+        return Ok((input, None));
+    }
+    
+    let (input, _) = multispace0(input)?;
+    
+    // Try to parse range specifications
+    // *N..M (range with both bounds)
+    let range_parser = map(
+        separated_pair(
+            map(digit1, |s: &str| s.parse::<u32>().ok()),
+            tag(".."),
+            map(digit1, |s: &str| s.parse::<u32>().ok()),
+        ),
+        |(min, max)| VariableLengthSpec {
+            min_hops: min,
+            max_hops: max,
+        },
+    );
+    
+    // *..M (upper bound only, min defaults to 1)
+    let upper_bound_parser = map(
+        nom::sequence::preceded(
+            tag(".."),
+            map(digit1, |s: &str| s.parse::<u32>().ok()),
+        ),
+        |max| VariableLengthSpec {
+            min_hops: Some(1),
+            max_hops: max,
+        },
+    );
+    
+    // *N (fixed length)
+    let fixed_length_parser = map(
+        map(digit1, |s: &str| s.parse::<u32>().ok()),
+        |n| VariableLengthSpec {
+            min_hops: n,
+            max_hops: n,
+        },
+    );
+    
+    // * (unbounded, equivalent to *1..)
+    let unbounded_parser = map(
+        nom::combinator::peek(nom::branch::alt((
+            nom::character::complete::char(']'),
+            nom::character::complete::char('-'),
+        ))),
+        |_| VariableLengthSpec {
+            min_hops: Some(1),
+            max_hops: None,
+        },
+    );
+    
+    let (input, spec_opt) = alt((
+        range_parser,
+        upper_bound_parser,
+        fixed_length_parser,
+        unbounded_parser,
+    ))
+    .map(|spec| Some(spec))
+    .parse(input)?;
+    
+    // Validate the parsed specification
+    if let Some(ref spec) = spec_opt {
+        if let Err(validation_error) = spec.validate() {
+            // Convert validation error to nom error
+            // Note: We use Failure (not Error) to indicate this is a semantic error, not a parsing error
+            eprintln!("Variable-length path validation error: {}", validation_error);
+            return Err(nom::Err::Failure(Error::new(input, ErrorKind::Verify)));
+        }
+    }
+    
+    Ok((input, spec_opt))
+}
+
 // Parse relationships - e.g -
 //  '<-[ name:KIND ]-' , '-[ name:KIND ]->' '-[ name:KIND ]-',
 // '<-[name]-', '-[name]->', '-[name]-'
 // '<-[]', '-[]->', '-[]-'
+//  '<-[*1..3]-', '-[*2]->', '-[r:KNOWS*]- '
 fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<RelationshipPattern<'_>>> {
     let empty_incoming_relationship_parser =
         map(delimited(ws(tag("<-")), space0, ws(tag("-"))), |_| {
@@ -258,20 +399,23 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
                 name: None,
                 label: None,
                 properties: None,
+                variable_length: None,
             }
         });
 
     let incoming_relationship_with_props_parser = map(
-        delimited(tag("<-"), parse_relationship_internals, tag("-")),
+        delimited(tag("<-"), parse_relationship_internals_with_var_len, tag("-")),
         |(
-            (relationship_name, properties_with_relationship_name),
-            (relationship_label, properties_with_relationship_label),
+            ((relationship_name, properties_with_relationship_name),
+            (relationship_label, properties_with_relationship_label)),
+            variable_length,
         )| RelationshipPattern {
             direction: Direction::Incoming,
             name: relationship_name,
             label: relationship_label,
             properties: properties_with_relationship_name
                 .map_or(properties_with_relationship_label, Some),
+            variable_length,
         },
     );
 
@@ -282,20 +426,23 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
                 name: None,
                 label: None,
                 properties: None,
+                variable_length: None,
             }
         });
 
     let outgoing_relationship_with_props_parser = map(
-        delimited(tag("-"), parse_relationship_internals, tag("->")),
+        delimited(tag("-"), parse_relationship_internals_with_var_len, tag("->")),
         |(
-            (relationship_name, properties_with_relationship_name),
-            (relationship_label, properties_with_relationship_label),
+            ((relationship_name, properties_with_relationship_name),
+            (relationship_label, properties_with_relationship_label)),
+            variable_length,
         )| RelationshipPattern {
             direction: Direction::Outgoing,
             name: relationship_name,
             label: relationship_label,
             properties: properties_with_relationship_name
                 .map_or(properties_with_relationship_label, Some),
+            variable_length,
         },
     );
 
@@ -306,20 +453,23 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
                 name: None,
                 label: None,
                 properties: None,
+                variable_length: None,
             }
         });
 
     let either_relationship_with_props_parser = map(
-        delimited(tag("-"), parse_relationship_internals, tag("-")),
+        delimited(tag("-"), parse_relationship_internals_with_var_len, tag("-")),
         |(
-            (relationship_name, properties_with_relationship_name),
-            (relationship_label, properties_with_relationship_label),
+            ((relationship_name, properties_with_relationship_name),
+            (relationship_label, properties_with_relationship_label)),
+            variable_length,
         )| RelationshipPattern {
             direction: Direction::Either,
             name: relationship_name,
             label: relationship_label,
             properties: properties_with_relationship_name
                 .map_or(properties_with_relationship_label, Some),
+            variable_length,
         },
     );
 
@@ -389,6 +539,7 @@ mod tests {
                     name: None,
                     label: None,
                     properties: None,
+                    variable_length: None,
                 };
                 // Compare start node.
                 assert_eq!(
@@ -446,6 +597,7 @@ mod tests {
                             name: None,
                             label: None,
                             properties: None,
+                            variable_length: None,
                         };
                         // Compare start node.
                         assert_eq!(
@@ -459,6 +611,9 @@ mod tests {
                             format!("{:?}", connected_pattern.end_node),
                             format!("{:?}", Rc::new(expected_node))
                         );
+                    }
+                    PathPattern::ShortestPath(_) | PathPattern::AllShortestPaths(_) => {
+                        panic!("Unexpected shortest path pattern in this test");
                     }
                 }
             }
@@ -487,6 +642,7 @@ mod tests {
                     name: None,
                     label: None,
                     properties: None,
+                    variable_length: None,
                 };
                 // First connected pattern: from node1 to node2.
                 let connected_pattern_1: &ConnectedPattern<'_> = &connected_patterns[0];
@@ -507,6 +663,7 @@ mod tests {
                     name: None,
                     label: None,
                     properties: None,
+                    variable_length: None,
                 };
                 assert_eq!(&connected_pattern_2.relationship, &expected_relationship_2);
                 assert_eq!(
@@ -560,6 +717,7 @@ mod tests {
                     name: None,
                     label: Some("Pointing"),
                     properties: None,
+                    variable_length: None,
                 };
 
                 let expected_relationship_2 = RelationshipPattern {
@@ -570,6 +728,7 @@ mod tests {
                         key: "what",
                         value: Expression::Parameter("dontKnow"),
                     })]),
+                    variable_length: None,
                 };
                 // First connected pattern: from a to b.
                 let connected_pattern_1: &ConnectedPattern<'_> = &connected_patterns[0];
@@ -615,6 +774,246 @@ mod tests {
             _ => {
                 panic!("Expected failure error for incomplete relationship pattern");
             }
+        }
+    }
+
+    // ===== Validation Tests for Variable-Length Paths =====
+
+    #[test]
+    fn test_invalid_range_min_greater_than_max() {
+        // *5..2 should fail validation (min > max)
+        let input = "()-[*5..2]->()";
+        let result = parse_path_pattern(input);
+        match result {
+            Err(Err::Failure(Error { code, .. })) => {
+                assert_eq!(code, ErrorKind::Verify); // Validation error
+            }
+            Ok(_) => {
+                panic!("Expected validation error for *5..2 (min > max)");
+            }
+            Err(e) => {
+                panic!("Expected Failure with Verify, got: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_range_with_zero_min() {
+        // *0..5 should fail validation (zero hops invalid)
+        let input = "()-[*0..5]->()";
+        let result = parse_path_pattern(input);
+        match result {
+            Err(Err::Failure(Error { code, .. })) => {
+                assert_eq!(code, ErrorKind::Verify); // Validation error
+            }
+            Ok(_) => {
+                panic!("Expected validation error for *0..5 (zero hops)");
+            }
+            Err(e) => {
+                panic!("Expected Failure with Verify, got: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_range_with_zero_max() {
+        // *0 should fail validation (zero hops invalid)
+        let input = "()-[*0]->()";
+        let result = parse_path_pattern(input);
+        match result {
+            Err(Err::Failure(Error { code, .. })) => {
+                assert_eq!(code, ErrorKind::Verify); // Validation error
+            }
+            Ok(_) => {
+                panic!("Expected validation error for *0 (zero hops)");
+            }
+            Err(e) => {
+                panic!("Expected Failure with Verify, got: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_valid_variable_length_patterns() {
+        // Test various valid patterns
+        let valid_inputs = vec![
+            "()-[*1..3]->()",   // Normal range
+            "()-[*2]->()",      // Fixed length
+            "()-[*..5]->()",    // Upper bound only
+            "()-[*]->()",       // Unbounded
+            "()-[*1..100]->()," // Large but valid range
+        ];
+
+        for input in valid_inputs {
+            let result = parse_path_pattern(input);
+            assert!(
+                result.is_ok(),
+                "Expected {} to parse successfully, but got: {:?}",
+                input,
+                result
+            );
+        }
+    }
+
+    #[test]
+    fn test_variable_length_spec_validation_direct() {
+        // Test the validation method directly
+        
+        // Valid cases
+        assert!(VariableLengthSpec::range(1, 3).validate().is_ok());
+        assert!(VariableLengthSpec::fixed(5).validate().is_ok());
+        assert!(VariableLengthSpec::unbounded().validate().is_ok());
+        assert!(VariableLengthSpec::max_only(10).validate().is_ok());
+        
+        // Invalid case: min > max
+        let invalid_spec = VariableLengthSpec {
+            min_hops: Some(5),
+            max_hops: Some(2),
+        };
+        assert!(invalid_spec.validate().is_err());
+        let err_msg = invalid_spec.validate().unwrap_err();
+        assert!(err_msg.contains("minimum hops (5) cannot be greater than maximum hops (2)"));
+        
+        // Invalid case: zero hops
+        let zero_spec = VariableLengthSpec {
+            min_hops: Some(0),
+            max_hops: Some(5),
+        };
+        assert!(zero_spec.validate().is_err());
+        let err_msg = zero_spec.validate().unwrap_err();
+        assert!(err_msg.contains("hop count cannot be 0"));
+    }
+
+    #[test]
+    fn test_parse_shortest_path_simple() {
+        let input = "shortestPath((a:Person)-[*]-(b:Person))";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse shortestPath: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        // Verify it's a ShortestPath variant
+        match path_pattern {
+            PathPattern::ShortestPath(inner) => {
+                // Verify inner pattern is a ConnectedPattern
+                match inner.as_ref() {
+                    PathPattern::ConnectedPattern(connected) => {
+                        assert_eq!(connected.len(), 1, "Should have one connected pattern");
+                    }
+                    _ => panic!("Expected ConnectedPattern inside ShortestPath"),
+                }
+            }
+            _ => panic!("Expected ShortestPath variant, got: {:?}", path_pattern),
+        }
+    }
+
+    #[test]
+    fn test_parse_all_shortest_paths() {
+        let input = "allShortestPaths((a:Person)-[*]-(b:Person))";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse allShortestPaths: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        // Verify it's an AllShortestPaths variant
+        match path_pattern {
+            PathPattern::AllShortestPaths(inner) => {
+                // Verify inner pattern is a ConnectedPattern
+                match inner.as_ref() {
+                    PathPattern::ConnectedPattern(connected) => {
+                        assert_eq!(connected.len(), 1, "Should have one connected pattern");
+                    }
+                    _ => panic!("Expected ConnectedPattern inside AllShortestPaths"),
+                }
+            }
+            _ => panic!("Expected AllShortestPaths variant, got: {:?}", path_pattern),
+        }
+    }
+
+    #[test]
+    fn test_parse_shortest_path_with_relationship_type() {
+        let input = "shortestPath((a:Person)-[:KNOWS*]-(b:Person))";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse shortestPath with relationship type: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        match path_pattern {
+            PathPattern::ShortestPath(inner) => {
+                match inner.as_ref() {
+                    PathPattern::ConnectedPattern(connected) => {
+                        assert_eq!(connected.len(), 1);
+                        // Verify relationship has KNOWS label
+                        assert_eq!(connected[0].relationship.label, Some("KNOWS"));
+                    }
+                    _ => panic!("Expected ConnectedPattern inside ShortestPath"),
+                }
+            }
+            _ => panic!("Expected ShortestPath variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_shortest_path_with_whitespace() {
+        let input = "shortestPath( ( a : Person ) - [ * ] - ( b : Person ) )";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse shortestPath with whitespace: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        match path_pattern {
+            PathPattern::ShortestPath(_) => {
+                // Success - whitespace handled correctly
+            }
+            _ => panic!("Expected ShortestPath variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_regular_pattern_not_shortest_path() {
+        let input = "(a:Person)-[*]-(b:Person)";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok());
+        let (_, path_pattern) = result.unwrap();
+        
+        // Should NOT be wrapped in ShortestPath
+        match path_pattern {
+            PathPattern::ConnectedPattern(_) => {
+                // Correct - regular pattern without shortest path wrapper
+            }
+            PathPattern::ShortestPath(_) | PathPattern::AllShortestPaths(_) => {
+                panic!("Should not wrap regular pattern in shortest path");
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn test_parse_shortest_path_directed() {
+        let input = "shortestPath((a:Person)-[*]->(b:Person))";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse directed shortestPath: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        match path_pattern {
+            PathPattern::ShortestPath(inner) => {
+                match inner.as_ref() {
+                    PathPattern::ConnectedPattern(connected) => {
+                        assert_eq!(connected.len(), 1);
+                        // Verify direction is outgoing
+                        assert_eq!(connected[0].relationship.direction, Direction::Outgoing);
+                    }
+                    _ => panic!("Expected ConnectedPattern"),
+                }
+            }
+            _ => panic!("Expected ShortestPath variant"),
         }
     }
 }

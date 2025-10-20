@@ -4,6 +4,55 @@ use std::fmt;
 
 use super::errors::GraphSchemaError;
 
+/// Defines how a graph view maps to underlying ClickHouse tables
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GraphViewDefinition {
+    /// Name of the graph view
+    pub name: String,
+    /// Mappings for each node label to source tables
+    pub nodes: HashMap<String, NodeViewMapping>,
+    /// Mappings for each relationship type to source tables
+    pub relationships: HashMap<String, RelationshipViewMapping>,
+}
+
+/// Maps a node label to a source table in ClickHouse
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NodeViewMapping {
+    /// Source table name in ClickHouse
+    pub source_table: String,
+    /// Column that contains the node ID
+    pub id_column: String,
+    /// Mapping of property names to column names
+    pub property_mappings: HashMap<String, String>,
+    /// Node label this mapping creates
+    pub label: String,
+    /// Optional WHERE clause filter
+    pub filter_condition: Option<String>,
+}
+
+/// Maps a relationship type to a source table in ClickHouse
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RelationshipViewMapping {
+    /// Source table name in ClickHouse
+    pub source_table: String,
+    /// Column containing the source node ID
+    pub from_column: String,
+    /// Column containing the target node ID 
+    pub to_column: String,
+    /// Mapping of property names to column names
+    pub property_mappings: HashMap<String, String>,
+    /// Relationship type this mapping creates
+    pub type_name: String,
+    /// Optional WHERE clause filter
+    pub filter_condition: Option<String>,
+    /// Source node type (optional - can be derived from schema)
+    #[serde(default)]
+    pub from_node_type: Option<String>,
+    /// Target node type (optional - can be derived from schema)
+    #[serde(default)]
+    pub to_node_type: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NodeSchema {
     pub table_name: String,
@@ -16,8 +65,10 @@ pub struct NodeSchema {
 pub struct RelationshipSchema {
     pub table_name: String,
     pub column_names: Vec<String>,
-    pub from_node: String,
-    pub to_node: String,
+    pub from_node: String,  // Node type (e.g., "User")
+    pub to_node: String,    // Node type (e.g., "User")
+    pub from_column: String,  // Column name for source node ID (e.g., "user1_id")
+    pub to_column: String,    // Column name for target node ID (e.g., "user2_id")
     pub from_node_id_dtype: String,
     pub to_node_id_dtype: String,
 }
@@ -79,6 +130,86 @@ pub struct GraphSchema {
     relationships_indexes: HashMap<String, RelationshipIndexSchema>,
 }
 
+/// Trait for resolving view mappings to actual schemas
+pub trait ViewSchemaResolver {
+    /// Convert a view mapping to a concrete node schema
+    fn resolve_node_view(&self, mapping: &NodeViewMapping) -> Result<NodeSchema, GraphSchemaError>;
+    /// Convert a view mapping to a concrete relationship schema
+    fn resolve_relationship_view(&self, mapping: &RelationshipViewMapping) -> Result<RelationshipSchema, GraphSchemaError>;
+}
+
+impl ViewSchemaResolver for GraphSchema {
+    fn resolve_node_view(&self, mapping: &NodeViewMapping) -> Result<NodeSchema, GraphSchemaError> {
+        // Validate source table and columns exist (in real implementation, check against ClickHouse)
+        self.validate_table_exists(&mapping.source_table)?;
+        self.validate_column_exists(&mapping.source_table, &mapping.id_column)?;
+        
+        for column in mapping.property_mappings.values() {
+            self.validate_column_exists(&mapping.source_table, column)?;
+        }
+
+        // Convert view mapping to concrete schema
+        let mut column_names = Vec::new();
+        column_names.extend(mapping.property_mappings.values().cloned());
+        column_names.push(mapping.id_column.clone());
+
+        Ok(NodeSchema {
+            table_name: mapping.source_table.clone(),
+            column_names,
+            primary_keys: mapping.id_column.clone(),
+            node_id: NodeIdSchema {
+                column: mapping.id_column.clone(),
+                dtype: self.get_column_type(&mapping.source_table, &mapping.id_column)
+                    .map_err(|_| GraphSchemaError::InvalidIdColumnType {
+                        column: mapping.id_column.clone(),
+                        table: mapping.source_table.clone(),
+                    })?,
+            },
+        })
+    }
+
+    fn resolve_relationship_view(&self, mapping: &RelationshipViewMapping) -> Result<RelationshipSchema, GraphSchemaError> {
+        // Validate source table and columns exist
+        self.validate_table_exists(&mapping.source_table)?;
+        self.validate_column_exists(&mapping.source_table, &mapping.from_column)?;
+        self.validate_column_exists(&mapping.source_table, &mapping.to_column)?;
+
+        for column in mapping.property_mappings.values() {
+            self.validate_column_exists(&mapping.source_table, column)?;
+        }
+
+        // Get column types for the node ID columns
+        let from_type = self.get_column_type(&mapping.source_table, &mapping.from_column)
+            .map_err(|_| GraphSchemaError::InvalidIdColumnType {
+                column: mapping.from_column.clone(),
+                table: mapping.source_table.clone(),
+            })?;
+        
+        let to_type = self.get_column_type(&mapping.source_table, &mapping.to_column)
+            .map_err(|_| GraphSchemaError::InvalidIdColumnType {
+                column: mapping.to_column.clone(),
+                table: mapping.source_table.clone(),
+            })?;
+
+        let mut column_names = Vec::new();
+        column_names.extend(mapping.property_mappings.values().cloned());
+        column_names.push(mapping.from_column.clone());
+        column_names.push(mapping.to_column.clone());
+
+        Ok(RelationshipSchema {
+            table_name: mapping.source_table.clone(),
+            column_names,
+            // Use from_node_type if provided, otherwise use type_name as fallback
+            from_node: mapping.from_node_type.clone().unwrap_or_else(|| mapping.type_name.clone()),
+            to_node: mapping.to_node_type.clone().unwrap_or_else(|| mapping.type_name.clone()),
+            from_column: mapping.from_column.clone(),   // Column name for source
+            to_column: mapping.to_column.clone(),       // Column name for target
+            from_node_id_dtype: from_type,
+            to_node_id_dtype: to_type,
+        })
+    }
+}
+
 impl GraphSchema {
     pub fn build(
         version: u32,
@@ -96,6 +227,45 @@ impl GraphSchema {
 
     pub fn insert_node_schema(&mut self, node_label: String, node_schema: NodeSchema) {
         self.nodes.insert(node_label, node_schema);
+    }
+
+    pub fn insert_relationship_schema(&mut self, type_name: String, rel_schema: RelationshipSchema) {
+        self.relationships.insert(type_name, rel_schema);
+    }
+
+    /// Register a view mapping in the schema
+    pub fn register_view(&mut self, view: GraphViewDefinition) -> Result<(), GraphSchemaError> {
+        // First validate that all referenced tables exist
+        for (label, node_mapping) in &view.nodes {
+            let node_schema = self.resolve_node_view(node_mapping)?;
+            self.insert_node_schema(label.clone(), node_schema);
+        }
+
+        for (type_name, rel_mapping) in &view.relationships {
+            let rel_schema = self.resolve_relationship_view(rel_mapping)?;
+            self.insert_relationship_schema(type_name.clone(), rel_schema);
+        }
+
+        Ok(())
+    }
+
+    // Helper methods for validation
+    fn validate_table_exists(&self, _table: &str) -> Result<(), GraphSchemaError> {
+        // TODO: Implement actual ClickHouse table existence check
+        // For now, assume table exists
+        Ok(())
+    }
+
+    fn validate_column_exists(&self, _table: &str, _column: &str) -> Result<(), GraphSchemaError> {
+        // TODO: Implement actual ClickHouse column existence check
+        // For now, assume column exists
+        Ok(())
+    }
+
+    fn get_column_type(&self, _table: &str, _column: &str) -> Result<String, GraphSchemaError> {
+        // TODO: Implement actual ClickHouse column type lookup
+        // For now, return a default type
+        Ok("UInt64".to_string())
     }
 
     pub fn insert_rel_schema(&mut self, rel_label: String, rel_schema: RelationshipSchema) {

@@ -1,4 +1,11 @@
 use std::{fmt, sync::Arc};
+use serde::{Deserialize, Serialize};
+
+// Import serde_arc modules for serialization
+#[path = "../../utils/serde_arc.rs"]
+mod serde_arc;
+#[path = "../../utils/serde_arc_vec.rs"] 
+mod serde_arc_vec;
 
 use crate::open_cypher_parser::ast::{
     Expression as CypherExpression, OrderByItem as CypherOrderByItem,
@@ -21,17 +28,26 @@ use super::plan_ctx::PlanCtx;
 pub mod errors;
 // pub mod logical_plan;
 mod match_clause;
+mod optional_match_clause;
 mod order_by_clause;
 pub mod plan_builder;
 mod return_clause;
 mod skip_n_limit_clause;
 mod where_clause;
+mod view_scan;
+mod view_planning;
+mod filter_view;
+mod projection_view;
+
+pub use view_scan::ViewScan;
 
 pub fn evaluate_query(
     query_ast: OpenCypherQueryAst<'_>,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
     plan_builder::build_logical_plan(&query_ast)
 }
+
+
 
 pub fn generate_id() -> String {
     format!(
@@ -42,11 +58,15 @@ pub fn generate_id() -> String {
     )
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(bound = "")]
 pub enum LogicalPlan {
     Empty,
 
     Scan(Scan),
+
+    #[serde(with = "serde_arc")]
+    ViewScan(Arc<ViewScan>),
 
     GraphNode(GraphNode),
 
@@ -71,55 +91,167 @@ pub enum LogicalPlan {
     Union(Union),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Scan {
     pub table_alias: Option<String>,
     pub table_name: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct GraphNode {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub alias: String,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct GraphRel {
+    #[serde(with = "serde_arc")]
     pub left: Arc<LogicalPlan>,
+    #[serde(with = "serde_arc")]
     pub center: Arc<LogicalPlan>,
+    #[serde(with = "serde_arc")]
     pub right: Arc<LogicalPlan>,
     pub alias: String,
     pub direction: Direction,
     pub left_connection: String,
     pub right_connection: String,
     pub is_rel_anchor: bool,
+    pub variable_length: Option<VariableLengthSpec>,
+    pub shortest_path_mode: Option<ShortestPathMode>,
+    pub path_variable: Option<String>,  // For: MATCH p = pattern, stores "p"
+    pub where_predicate: Option<LogicalExpr>,  // WHERE clause predicates for filter placement in CTEs
 }
 
-#[derive(Debug, PartialEq, Clone)]
+/// Mode for shortest path queries
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub enum ShortestPathMode {
+    /// shortestPath() - return one shortest path
+    Shortest,
+    /// allShortestPaths() - return all paths with minimum length
+    AllShortest,
+}
+
+/// Specification for variable-length path relationships
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct VariableLengthSpec {
+    pub min_hops: Option<u32>,
+    pub max_hops: Option<u32>,
+}
+
+impl Default for VariableLengthSpec {
+    /// Default is a single hop (normal relationship)
+    fn default() -> Self {
+        Self {
+            min_hops: Some(1),
+            max_hops: Some(1),
+        }
+    }
+}
+
+impl VariableLengthSpec {
+    /// Create a fixed-length spec: *2 becomes min=2, max=2
+    pub fn fixed(hops: u32) -> Self {
+        Self {
+            min_hops: Some(hops),
+            max_hops: Some(hops),
+        }
+    }
+
+    /// Create a range spec: *1..3 becomes min=1, max=3
+    pub fn range(min: u32, max: u32) -> Self {
+        Self {
+            min_hops: Some(min),
+            max_hops: Some(max),
+        }
+    }
+
+    /// Create an upper-bounded spec: *..5 becomes min=1, max=5
+    pub fn max_only(max: u32) -> Self {
+        Self {
+            min_hops: Some(1),
+            max_hops: Some(max),
+        }
+    }
+
+    /// Create an unbounded spec: * becomes min=1, max=None (unlimited)
+    pub fn unbounded() -> Self {
+        Self {
+            min_hops: Some(1),
+            max_hops: None,
+        }
+    }
+
+    /// Check if this is a single-hop relationship (normal relationship)
+    pub fn is_single_hop(&self) -> bool {
+        matches!(
+            (self.min_hops, self.max_hops),
+            (Some(1), Some(1)) | (None, None)
+        )
+    }
+
+    /// Get effective minimum hops (defaults to 1)
+    pub fn effective_min_hops(&self) -> u32 {
+        self.min_hops.unwrap_or(1)
+    }
+
+    /// Check if there's an upper bound
+    pub fn has_max_bound(&self) -> bool {
+        self.max_hops.is_some()
+    }
+
+    /// Check if this is an exact hop count (e.g., *2, *3, *5)
+    /// Returns Some(n) if min == max == n, None otherwise
+    pub fn exact_hop_count(&self) -> Option<u32> {
+        match (self.min_hops, self.max_hops) {
+            (Some(min), Some(max)) if min == max => Some(min),
+            _ => None,
+        }
+    }
+
+    /// Check if this requires a range (not exact hop count)
+    pub fn is_range(&self) -> bool {
+        self.exact_hop_count().is_none()
+    }
+}
+
+impl From<crate::open_cypher_parser::ast::VariableLengthSpec> for VariableLengthSpec {
+    fn from(ast_spec: crate::open_cypher_parser::ast::VariableLengthSpec) -> Self {
+        Self {
+            min_hops: ast_spec.min_hops,
+            max_hops: ast_spec.max_hops,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Cte {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub name: String,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Union {
+    #[serde(with = "serde_arc_vec")]
     pub inputs: Vec<Arc<LogicalPlan>>,
     pub union_type: UnionType,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum UnionType {
     Distinct,
     All,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct GraphJoins {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub joins: Vec<Join>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Join {
     pub table_name: String,
     pub table_alias: String,
@@ -127,7 +259,7 @@ pub struct Join {
     pub join_type: JoinType,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum JoinType {
     Join,
     Inner,
@@ -135,55 +267,61 @@ pub enum JoinType {
     Right,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Filter {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub predicate: LogicalExpr,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Projection {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub items: Vec<ProjectionItem>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct GroupBy {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub expressions: Vec<LogicalExpr>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ProjectionItem {
     pub expression: LogicalExpr,
     pub col_alias: Option<ColumnAlias>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct OrderBy {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub items: Vec<OrderByItem>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Skip {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub count: i64,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Limit {
+    #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub count: i64,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct OrderByItem {
     pub expression: LogicalExpr,
     pub order: OrderByOrder,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum OrderByOrder {
     Asc,
     Desc,
@@ -347,6 +485,10 @@ impl GraphRel {
                 direction: self.direction.clone(),
                 // is_anchor_graph_rel: self.is_anchor_graph_rel,
                 is_rel_anchor: self.is_rel_anchor,
+                variable_length: self.variable_length.clone(),
+                shortest_path_mode: self.shortest_path_mode.clone(),
+                path_variable: self.path_variable.clone(),
+                where_predicate: self.where_predicate.clone(),
             });
             Transformed::Yes(Arc::new(new_graph_rel))
         } else {
@@ -541,7 +683,15 @@ impl LogicalPlan {
                     children.push(input);
                 }
             }
-            _ => {}
+            LogicalPlan::ViewScan(_) => {
+                // ViewScan is a leaf node - no children to traverse
+            }
+            LogicalPlan::Empty => {
+                // Empty is a leaf node - no children to traverse
+            }
+            LogicalPlan::Scan(_) => {
+                // Scan is a leaf node - no children to traverse
+            }
         }
 
         let n = children.len();
@@ -569,6 +719,40 @@ impl LogicalPlan {
             LogicalPlan::Cte(cte) => format!("Cte({})", cte.name),
             LogicalPlan::GraphJoins(_) => "GraphJoins".to_string(),
             LogicalPlan::Union(_) => "Union".to_string(),
+            LogicalPlan::ViewScan(scan) => format!("ViewScan({:?})", scan.source_table),
+        }
+    }
+
+    /// Check if the logical plan tree contains any variable-length paths
+    pub fn contains_variable_length_path(&self) -> bool {
+        match self {
+            LogicalPlan::GraphRel(graph_rel) => {
+                // Check if this GraphRel has variable_length
+                if graph_rel.variable_length.is_some() {
+                    return true;
+                }
+                // Recursively check children
+                graph_rel.left.contains_variable_length_path()
+                    || graph_rel.center.contains_variable_length_path()
+                    || graph_rel.right.contains_variable_length_path()
+            }
+            LogicalPlan::GraphNode(graph_node) => {
+                graph_node.input.contains_variable_length_path()
+            }
+            LogicalPlan::Filter(filter) => filter.input.contains_variable_length_path(),
+            LogicalPlan::Projection(proj) => proj.input.contains_variable_length_path(),
+            LogicalPlan::GraphJoins(joins) => joins.input.contains_variable_length_path(),
+            LogicalPlan::OrderBy(order_by) => order_by.input.contains_variable_length_path(),
+            LogicalPlan::Skip(skip) => skip.input.contains_variable_length_path(),
+            LogicalPlan::Limit(limit) => limit.input.contains_variable_length_path(),
+            LogicalPlan::GroupBy(group_by) => group_by.input.contains_variable_length_path(),
+            LogicalPlan::Cte(cte) => cte.input.contains_variable_length_path(),
+            LogicalPlan::Union(union) => union
+                .inputs
+                .iter()
+                .any(|input| input.contains_variable_length_path()),
+            // Leaf nodes
+            LogicalPlan::Scan(_) | LogicalPlan::ViewScan(_) | LogicalPlan::Empty => false,
         }
     }
 }
@@ -722,6 +906,10 @@ mod tests {
             left_connection: "employee_id".to_string(),
             right_connection: "company_id".to_string(),
             is_rel_anchor: false,
+            variable_length: None,
+            shortest_path_mode: None,
+            path_variable: None,
+            where_predicate: None,
         };
 
         let old_plan = Arc::new(LogicalPlan::GraphRel(graph_rel.clone()));

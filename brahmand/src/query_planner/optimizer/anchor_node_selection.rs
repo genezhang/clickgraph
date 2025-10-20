@@ -146,6 +146,10 @@ impl AnchorNodeSelection {
                         left_connection: graph_rel.right_connection.clone(),
                         right_connection: graph_rel.left_connection.clone(),
                         is_rel_anchor: false,
+                        variable_length: graph_rel.variable_length.clone(),
+                        shortest_path_mode: graph_rel.shortest_path_mode.clone(),
+                        path_variable: graph_rel.path_variable.clone(),
+                where_predicate: graph_rel.where_predicate.clone(),
                     }));
                     let rotated_plan = Self::rotate_plan(new_anchor_plan, graph_rel.right.clone())?;
 
@@ -163,6 +167,10 @@ impl AnchorNodeSelection {
                         left_connection: graph_rel.right_connection.clone(),
                         right_connection: graph_rel.left_connection.clone(),
                         is_rel_anchor: true,
+                        variable_length: graph_rel.variable_length.clone(),
+                        shortest_path_mode: graph_rel.shortest_path_mode.clone(),
+                        path_variable: graph_rel.path_variable.clone(),
+                where_predicate: graph_rel.where_predicate.clone(),
                     }));
                     let rotated_plan = Self::rotate_plan(new_anchor_plan, graph_rel.right.clone())?;
 
@@ -223,6 +231,7 @@ impl AnchorNodeSelection {
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
             }
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone())
         };
         Ok(transformed_plan)
     }
@@ -243,6 +252,10 @@ impl AnchorNodeSelection {
                         left_connection: graph_node.alias.clone(),
                         right_connection: prev_graph_rel.right_connection.clone(),
                         is_rel_anchor: prev_graph_rel.is_rel_anchor,
+                        variable_length: prev_graph_rel.variable_length.clone(),
+                        shortest_path_mode: prev_graph_rel.shortest_path_mode.clone(),
+                        path_variable: prev_graph_rel.path_variable.clone(),
+                where_predicate: prev_graph_rel.where_predicate.clone(),
                     }));
                     return Ok(new_constructed_plan);
                 }
@@ -271,6 +284,10 @@ impl AnchorNodeSelection {
                             left_connection: prev_graph_rel.left_connection.clone(),
                             right_connection: prev_graph_rel.right_connection.clone(),
                             is_rel_anchor: prev_graph_rel.is_rel_anchor,
+                            variable_length: prev_graph_rel.variable_length.clone(),
+                            shortest_path_mode: prev_graph_rel.shortest_path_mode.clone(),
+                            path_variable: prev_graph_rel.path_variable.clone(),
+                where_predicate: prev_graph_rel.where_predicate.clone(),
                         })),
                         alias: graph_rel.alias.clone(),
                         direction: graph_rel.direction.clone(), //.reverse(),
@@ -279,6 +296,10 @@ impl AnchorNodeSelection {
                         left_connection: graph_rel.left_connection.clone(),
                         right_connection: graph_rel.right_connection.clone(),
                         is_rel_anchor: false,
+                        variable_length: graph_rel.variable_length.clone(),
+                        shortest_path_mode: graph_rel.shortest_path_mode.clone(),
+                        path_variable: graph_rel.path_variable.clone(),
+                where_predicate: graph_rel.where_predicate.clone(),
                     }));
 
                     return Self::rotate_plan(new_constructed_plan, new_remaining);

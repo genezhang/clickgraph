@@ -43,6 +43,11 @@ impl AnalyzerPass for QueryValidation {
             LogicalPlan::GraphRel(graph_rel) => {
                 self.analyze_with_graph_schema(graph_rel.right.clone(), plan_ctx, graph_schema)?;
 
+                // Skip validation for variable-length paths - they don't need relationship schemas
+                if graph_rel.variable_length.is_some() {
+                    return Ok(Transformed::No(logical_plan));
+                }
+
                 let left_alias = &graph_rel.left_connection;
                 let right_alias = &graph_rel.right_connection;
 
@@ -179,6 +184,7 @@ impl AnalyzerPass for QueryValidation {
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
             }
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
         };
         Ok(transformed_plan)
     }

@@ -38,6 +38,7 @@ impl AnalyzerPass for FilterTagging {
             }
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
                 let child_tf = self.analyze(graph_joins.input.clone(), plan_ctx)?;
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())

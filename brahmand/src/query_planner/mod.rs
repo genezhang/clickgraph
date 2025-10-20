@@ -30,6 +30,7 @@ pub fn get_query_type(query_ast: &OpenCypherQueryAst) -> QueryType {
     }
 }
 
+
 pub fn evaluate_read_query(
     query_ast: OpenCypherQueryAst,
     current_graph_schema: &GraphSchema,

@@ -20,47 +20,111 @@ use crate::{
 
 use super::{
     AppState, graph_catalog,
-    models::{OutputFormat, QueryRequest},
+    models::{OutputFormat, QueryRequest, SqlOnlyResponse},
 };
+
+/// Simple health check endpoint
+pub async fn health_check() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({
+        "status": "healthy",
+        "service": "clickgraph",
+        "version": env!("CARGO_PKG_VERSION")
+    })))
+}
 
 pub async fn query_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
+    log::debug!("Query handler called with query: {}", payload.query);
+    
     let instant = Instant::now();
     let output_format = payload.format.unwrap_or(OutputFormat::JSONEachRow);
+    let sql_only = payload.sql_only.unwrap_or(false);
 
     let (ch_sql_queries, maybe_schema_elem, is_read) = {
         let graph_schema = graph_catalog::get_graph_schema().await;
 
-        let cypher_ast = open_cypher_parser::parse_query(&payload.query).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Brahmand Error: {}", e),
-            )
-        })?;
+        // Parse query
+        let cypher_ast = match open_cypher_parser::parse_query(&payload.query) {
+            Ok(ast) => ast,
+            Err(e) => {
+                log::error!("Query parse failed: {:?}", e);
+                if sql_only {
+                    let error_response = SqlOnlyResponse {
+                        cypher_query: payload.query.clone(),
+                        generated_sql: format!("PARSE_ERROR: {}", e),
+                        execution_mode: "sql_only_with_parse_error".to_string(),
+                    };
+                    return Ok(Json(error_response).into_response());
+                } else {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Brahmand Error: {}", e),
+                    ));
+                }
+            }
+        };
 
         let query_type = query_planner::get_query_type(&cypher_ast);
 
         let is_read = query_type == QueryType::Read;
 
         if is_read {
-            let logical_plan = query_planner::evaluate_read_query(cypher_ast, &graph_schema)
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Brahmand Error: {}", e),
-                    )
-                })?;
+            // Step 1: Query planning with error handling
+            let logical_plan = match query_planner::evaluate_read_query(cypher_ast, &graph_schema) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    if sql_only {
+                        let error_response = SqlOnlyResponse {
+                            cypher_query: payload.query.clone(),
+                            generated_sql: format!("PLANNING_ERROR: {}", e),
+                            execution_mode: "sql_only_with_planning_error".to_string(),
+                        };
+                        return Ok(Json(error_response).into_response());
+                    } else {
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Brahmand Error: {}", e),
+                        ));
+                    }
+                }
+            };
 
-            let render_plan = logical_plan.to_render_plan().map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Brahmand Error: {}", e),
-                )
-            })?;
-            let ch_query = clickhouse_query_generator::generate_sql(render_plan);
+            // Step 2: Render plan generation with error handling
+            let render_plan = match logical_plan.to_render_plan() {
+                Ok(plan) => plan,
+                Err(e) => {
+                    if sql_only {
+                        let error_response = SqlOnlyResponse {
+                            cypher_query: payload.query.clone(),
+                            generated_sql: format!("RENDER_ERROR: {}", e),
+                            execution_mode: "sql_only_with_render_error".to_string(),
+                        };
+                        return Ok(Json(error_response).into_response());
+                    } else {
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Brahmand Error: {}", e),
+                        ));
+                    }
+                }
+            };
+
+            // Step 3: SQL generation with configurable CTE depth
+            let ch_query = clickhouse_query_generator::generate_sql(render_plan, app_state.config.max_cte_depth);
             println!("\n ch_query \n {} \n", ch_query);
+            
+            // If SQL-only mode, return the SQL without executing
+            if sql_only {
+                let sql_response = SqlOnlyResponse {
+                    cypher_query: payload.query.clone(),
+                    generated_sql: ch_query.clone(),
+                    execution_mode: "sql_only".to_string(),
+                };
+                return Ok(Json(sql_response).into_response());
+            }
+            
             (vec![ch_query], None, true)
         } else {
             let (queries, schema_elem) =
@@ -149,6 +213,9 @@ async fn execute_cte_queries(
     instant: Instant,
 ) -> Result<Response, (StatusCode, String)> {
     let ch_query_string = ch_sql_queries.join(" ");
+    
+    // Log full SQL for debugging (especially helpful when ClickHouse truncates errors)
+    log::debug!("Executing SQL:\n{}", ch_query_string);
 
     if output_format == OutputFormat::Pretty
         || output_format == OutputFormat::PrettyCompact
@@ -161,6 +228,8 @@ async fn execute_cte_queries(
             .query(&ch_query_string)
             .fetch_bytes(output_format)
             .map_err(|e| {
+                // Log full SQL on error for debugging
+                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", ch_query_string, e);
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Clickhouse Error: {}", e),
@@ -198,6 +267,8 @@ async fn execute_cte_queries(
             .query(&ch_query_string)
             .fetch_bytes("JSONEachRow")
             .map_err(|e| {
+                // Log full SQL on error for debugging
+                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", ch_query_string, e);
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Clickhouse Error: {}", e),
@@ -207,6 +278,8 @@ async fn execute_cte_queries(
 
         let mut rows: Vec<Value> = vec![];
         while let Some(line) = lines.next_line().await.map_err(|e| {
+                // Log full SQL on error for debugging
+                log::error!("ClickHouse response parsing failed. SQL was:\n{}\nError: {}", ch_query_string, e);
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Clickhouse Error: {}", e),

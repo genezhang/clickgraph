@@ -5,3 +5,14 @@
 .env
 
 .DS_Store
+
+# Process management
+server.pid
+
+# Test artifacts
+*.pyc
+__pycache__/
+
+# Session summaries (archive these manually if needed)
+SESSION_COMPLETE_*.md
+SESSION_SUMMARY_*.md

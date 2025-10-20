@@ -30,6 +30,10 @@ impl DuplicateScansRemoving {
         traversed: &mut HashSet<String>,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
+            LogicalPlan::ViewScan(_scan) => {
+                // ViewScans are leaf nodes, no transformation needed
+                Transformed::No(logical_plan.clone())
+            },
             LogicalPlan::Projection(projection) => {
                 let child_tf = Self::remove_duplicate_scans(projection.input.clone(), traversed)?;
                 projection.rebuild_or_clone(child_tf, logical_plan.clone())
@@ -38,7 +42,6 @@ impl DuplicateScansRemoving {
                 traversed.insert(graph_node.alias.clone());
 
                 let child_tf = Self::remove_duplicate_scans(graph_node.input.clone(), traversed)?;
-                // let self_tf = Self::remove_duplicate_scans(graph_node.self_plan.clone(), traversed);
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphRel(graph_rel) => {
@@ -143,6 +146,10 @@ mod tests {
             left_connection: left_connection.to_string(),
             right_connection: right_connection.to_string(),
             is_rel_anchor: false,
+            variable_length: None,
+            shortest_path_mode: None,
+            path_variable: None,
+            where_predicate: None, // Will be populated by filter pushdown
         }))
     }
 

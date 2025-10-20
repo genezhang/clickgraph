@@ -27,4 +27,7 @@ Dockerfile
 # OS files
 .DS_Store
 
+# Local ClickHouse data
+clickhouse_data/
+
 test_data/

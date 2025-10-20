@@ -5,6 +5,7 @@ use std::{cell::RefCell, fmt, rc::Rc};
 #[derive(Debug, PartialEq, Clone)]
 pub struct OpenCypherQueryAst<'a> {
     pub match_clause: Option<MatchClause<'a>>,
+    pub optional_match_clauses: Vec<OptionalMatchClause<'a>>,
     pub with_clause: Option<WithClause<'a>>,
     pub where_clause: Option<WhereClause<'a>>,
     pub create_clause: Option<CreateClause<'a>>,
@@ -22,6 +23,13 @@ pub struct OpenCypherQueryAst<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchClause<'a> {
     pub path_patterns: Vec<PathPattern<'a>>,
+    pub path_variable: Option<&'a str>,  // For: MATCH p = (pattern)
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct OptionalMatchClause<'a> {
+    pub path_patterns: Vec<PathPattern<'a>>,
+    pub where_clause: Option<WhereClause<'a>>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -135,6 +143,8 @@ pub struct LimitClause {
 pub enum PathPattern<'a> {
     Node(NodePattern<'a>),                       //  Standalone nodes `(a)`
     ConnectedPattern(Vec<ConnectedPattern<'a>>), // Nodes with relationships `(a)-[:REL]->(b)`
+    ShortestPath(Box<PathPattern<'a>>),          // shortestPath((a)-[*]-(b))
+    AllShortestPaths(Box<PathPattern<'a>>),      // allShortestPaths((a)-[*]-(b))
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -176,6 +186,114 @@ pub struct RelationshipPattern<'a> {
     pub direction: Direction,
     pub label: Option<&'a str>,
     pub properties: Option<Vec<Property<'a>>>,
+    pub variable_length: Option<VariableLengthSpec>,
+}
+
+/// Represents variable-length path specifications like *1..3, *..5, *2, *
+#[derive(Debug, PartialEq, Clone)]
+pub struct VariableLengthSpec {
+    pub min_hops: Option<u32>,
+    pub max_hops: Option<u32>,
+}
+
+impl VariableLengthSpec {
+    /// Create a fixed-length spec: *2 becomes min=2, max=2
+    pub fn fixed(hops: u32) -> Self {
+        Self {
+            min_hops: Some(hops),
+            max_hops: Some(hops),
+        }
+    }
+
+    /// Create a range spec: *1..3 becomes min=1, max=3
+    pub fn range(min: u32, max: u32) -> Self {
+        Self {
+            min_hops: Some(min),
+            max_hops: Some(max),
+        }
+    }
+
+    /// Create an upper-bounded spec: *..5 becomes min=1, max=5
+    pub fn max_only(max: u32) -> Self {
+        Self {
+            min_hops: Some(1),
+            max_hops: Some(max),
+        }
+    }
+
+    /// Create an unbounded spec: * becomes min=1, max=None (unlimited)
+    pub fn unbounded() -> Self {
+        Self {
+            min_hops: Some(1),
+            max_hops: None,
+        }
+    }
+
+    /// Check if this is a fixed-length relationship (single hop)
+    pub fn is_single_hop(&self) -> bool {
+        matches!(
+            (self.min_hops, self.max_hops),
+            (Some(1), Some(1)) | (None, None)
+        )
+    }
+
+    /// Get effective minimum hops (defaults to 1)
+    pub fn effective_min_hops(&self) -> u32 {
+        self.min_hops.unwrap_or(1)
+    }
+
+    /// Check if there's an upper bound
+    pub fn has_max_bound(&self) -> bool {
+        self.max_hops.is_some()
+    }
+    
+    /// Validate the variable-length specification
+    /// Returns Ok(()) if valid, Err with descriptive message if invalid
+    pub fn validate(&self) -> Result<(), String> {
+        // Check for invalid range where min > max
+        if let (Some(min), Some(max)) = (self.min_hops, self.max_hops) {
+            if min > max {
+                return Err(format!(
+                    "Invalid variable-length range: minimum hops ({}) cannot be greater than maximum hops ({}). \
+                     Use *{}..{} instead of *{}..{}.",
+                    min, max, max, min, min, max
+                ));
+            }
+            
+            // Check for zero in range (special case - 0 hops means same node)
+            if min == 0 || max == 0 {
+                return Err(
+                    "Invalid variable-length range: hop count cannot be 0. \
+                     Variable-length paths must have at least 1 hop. \
+                     If you want to match the same node, use a simple node pattern like (n) instead of a relationship pattern."
+                        .to_string()
+                );
+            }
+            
+            // Warn about very large ranges (potential performance issue)
+            if max > 100 {
+                // Note: This is just a warning, not an error - we still allow it
+                eprintln!(
+                    "Warning: Variable-length path with maximum {} hops may have performance implications. \
+                     Consider using a smaller maximum or adding additional WHERE clause filters.",
+                    max
+                );
+            }
+        }
+        
+        // Check for zero in unbounded spec
+        if let Some(min) = self.min_hops {
+            if min == 0 {
+                return Err(
+                    "Invalid variable-length range: hop count cannot be 0. \
+                     Variable-length paths must have at least 1 hop."
+                        .to_string()
+                );
+            }
+        }
+        
+        Ok(())
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -323,6 +441,11 @@ impl fmt::Display for OpenCypherQueryAst<'_> {
         writeln!(f, "OpenCypherQueryAst")?;
         if let Some(ref m) = self.match_clause {
             writeln!(f, "├── MatchClause: {:#?}", m)?;
+        }
+        if !self.optional_match_clauses.is_empty() {
+            for (i, opt_match) in self.optional_match_clauses.iter().enumerate() {
+                writeln!(f, "├── OptionalMatchClause[{}]: {:#?}", i, opt_match)?;
+            }
         }
         if let Some(ref w) = self.with_clause {
             writeln!(f, "├── WithClause: {:#?}", w)?;

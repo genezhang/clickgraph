@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct QueryRequest {
     pub query: String,
     pub format: Option<OutputFormat>,
+    /// If true, return the generated SQL without executing it
+    pub sql_only: Option<bool>,
 }
 
 // #[derive(Debug, Serialize)]
@@ -56,4 +58,12 @@ pub struct GraphCatalog {
 //     pub column_names: Option<String>,
 //     pub from_node: String,
 //     pub to_node: String
+
+/// Response for SQL-only queries (no execution)
+#[derive(Debug, Serialize)]
+pub struct SqlOnlyResponse {
+    pub cypher_query: String,
+    pub generated_sql: String,
+    pub execution_mode: String,
+}
 // }

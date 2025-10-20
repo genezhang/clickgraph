@@ -1,0 +1,107 @@
+name: ecommerce_analytics
+version: "1.0"
+description: "E-commerce platform graph analysis - Demo version"
+
+views:
+  - name: ecommerce_graph
+    nodes:
+      Customer:
+        source_table: customers_mem
+        id_column: customer_id
+        property_mappings:
+          email: email
+          name: "concat(first_name, ' ', last_name)"
+          first_name: first_name
+          last_name: last_name
+          age: age
+          gender: gender
+          country: country
+          city: city
+          registration_date: registration_date
+          total_spent: total_spent
+          is_premium: is_premium
+        filters:
+          - "customer_id > 0"
+          
+      Product:
+        source_table: products_mem
+        id_column: product_id
+        property_mappings:
+          name: name
+          category: category
+          brand: brand
+          price: price
+          rating: rating
+          num_reviews: num_reviews
+          in_stock: in_stock
+          created_date: created_date
+        filters:
+          - "in_stock = 1"
+          
+      Order:
+        source_table: orders_mem
+        id_column: order_id
+        property_mappings:
+          quantity: quantity
+          unit_price: unit_price
+          total_amount: total_amount
+          order_date: order_date
+          order_time: order_time
+          status: status
+        filters:
+          - "status != 'cancelled'"
+          
+      Review:
+        source_table: reviews_mem
+        id_column: review_id
+        property_mappings:
+          rating: rating
+          review_text: review_text
+          review_date: review_date
+          helpful_votes: helpful_votes
+          
+    relationships:
+      PURCHASED:
+        source_table: orders_mem
+        from_column: customer_id
+        to_column: product_id
+        from_node_type: Customer
+        to_node_type: Product
+        property_mappings:
+          quantity: quantity
+          amount: total_amount
+          date: order_date
+          status: status
+        filters:
+          - "status IN ('shipped', 'delivered')"
+          
+      PLACED_ORDER:
+        source_table: orders_mem
+        from_column: customer_id
+        to_column: order_id
+        from_node_type: Customer
+        to_node_type: Order
+        property_mappings:
+          date: order_date
+          
+      ORDER_CONTAINS:
+        source_table: orders_mem
+        from_column: order_id
+        to_column: product_id
+        from_node_type: Order
+        to_node_type: Product
+        property_mappings:
+          quantity: quantity
+          unit_price: unit_price
+          
+      REVIEWED:
+        source_table: reviews_mem
+        from_column: customer_id
+        to_column: product_id
+        from_node_type: Customer
+        to_node_type: Product
+        property_mappings:
+          rating: rating
+          review_text: review_text
+          date: review_date
+          helpful_votes: helpful_votes

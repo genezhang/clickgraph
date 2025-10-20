@@ -1,0 +1,4 @@
+{
+    "query": "MATCH (c:Customer) RETURN c.name LIMIT 5",
+    "sql_only": true
+}

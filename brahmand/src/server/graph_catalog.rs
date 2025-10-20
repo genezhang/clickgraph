@@ -1,16 +1,141 @@
 use std::time::Duration;
+use std::collections::HashMap;
 
 use clickhouse::Client;
 use tokio::{sync::RwLock, time::interval};
 
-use crate::graph_catalog::graph_schema::{GraphSchema, GraphSchemaElement};
+use crate::graph_catalog::{
+    graph_schema::{GraphSchema, GraphSchemaElement, NodeSchema, RelationshipSchema, RelationshipIndexSchema},
+    config::GraphViewConfig,
+};
 
-use super::{GLOBAL_GRAPH_SCHEMA, models::GraphCatalog};
+use super::{GLOBAL_GRAPH_SCHEMA, GLOBAL_VIEW_CONFIG, models::GraphCatalog};
 
-pub async fn initialize_global_schema(clickhouse_client: Client) {
-    let schema = get_graph_catalog(clickhouse_client).await.unwrap();
-    // Set the global schema wrapped in an RwLock.
-    GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema)).ok();
+/// Test basic ClickHouse connectivity
+async fn test_clickhouse_connection(client: Client) -> Result<(), String> {
+    client
+        .query("SELECT 1")
+        .fetch_one::<u8>()
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("ClickHouse connection test failed: {}", e))
+}
+
+pub async fn initialize_global_schema(clickhouse_client: Option<Client>) -> Result<(), String> {
+    println!("Initializing ClickGraph schema...");
+    
+    // Try to load from YAML configuration first (preferred approach)
+    if let Ok(yaml_config_path) = std::env::var("GRAPH_CONFIG_PATH") {
+        println!("Found GRAPH_CONFIG_PATH: {}", yaml_config_path);
+        
+        match load_schema_and_config_from_yaml(&yaml_config_path).await {
+            Ok((schema, config)) => {
+                println!("✓ Successfully loaded schema from YAML config: {}", yaml_config_path);
+                
+                // Validate the loaded schema
+                let nodes_map = schema.get_nodes_schemas();
+                let rels_map = schema.get_relationships_schemas();
+                
+                if nodes_map.is_empty() && rels_map.is_empty() {
+                    eprintln!("Warning: YAML config loaded but contains no nodes or relationships");
+                } else {
+                    println!("  - Loaded {} node types: {:?}", nodes_map.len(), nodes_map.keys().collect::<Vec<_>>());
+                    println!("  - Loaded {} relationship types: {:?}", rels_map.len(), rels_map.keys().collect::<Vec<_>>());
+                }
+                
+                // Set global state - these should not fail in normal circumstances
+                GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema))
+                    .map_err(|_| "Failed to initialize global graph schema")?;
+                GLOBAL_VIEW_CONFIG.set(RwLock::new(config))
+                    .map_err(|_| "Failed to initialize global view config")?;
+                
+                println!("✓ Schema initialization complete (YAML mode)");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("✗ Failed to load YAML config {}: {}", yaml_config_path, e);
+                eprintln!("  Falling back to database schema loading...");
+            }
+        }
+    } else {
+        println!("No GRAPH_CONFIG_PATH environment variable found, using database schema");
+    }
+    
+    // Fallback to database approach (original Brahmand behavior)
+    if let Some(client) = clickhouse_client.as_ref() {
+        match get_graph_catalog(client.clone()).await {
+            Ok(schema) => {
+                println!("✓ Successfully loaded schema from database");
+                
+                let nodes_map = schema.get_nodes_schemas();
+                let rels_map = schema.get_relationships_schemas();
+                
+                if nodes_map.is_empty() && rels_map.is_empty() {
+                    println!("  Warning: Database schema is empty - this is normal for new installations");
+                    println!("  You can add graph schema using CREATE NODE/RELATIONSHIP statements");
+                } else {
+                    println!("  - Loaded {} node types from database", nodes_map.len());
+                    println!("  - Loaded {} relationship types from database", rels_map.len());
+                }
+                
+                GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema))
+                    .map_err(|_| "Failed to initialize global graph schema")?;
+                    
+                println!("✓ Schema initialization complete (database mode)");
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("✗ Failed to load schema from database: {}", e);
+                
+                // Try to test ClickHouse connectivity
+                match test_clickhouse_connection(client.clone()).await {
+                    Ok(_) => {
+                        println!("✓ ClickHouse connection is working");
+                        println!("  Creating empty schema for new installation...");
+                        
+                        // Initialize with empty but valid schema
+                        let empty_schema = GraphSchema::build(
+                            1,
+                            std::collections::HashMap::new(),
+                            std::collections::HashMap::new(),
+                            std::collections::HashMap::new(),
+                        );
+                        
+                        GLOBAL_GRAPH_SCHEMA.set(RwLock::new(empty_schema))
+                            .map_err(|_| "Failed to initialize global graph schema")?;
+                            
+                        println!("✓ Empty schema initialized successfully");
+                        println!("  ClickGraph is ready to use. Add schema via YAML config or CREATE statements.");
+                        Ok(())
+                    }
+                    Err(conn_err) => {
+                        Err(format!(
+                            "Cannot initialize ClickGraph: ClickHouse connection failed: {}. \
+                            Please check your CLICKHOUSE_URL, credentials, and ensure ClickHouse is running.", 
+                            conn_err
+                        ))
+                    }
+                }
+            }
+        }
+    } else {
+        // No ClickHouse client provided at all
+        println!("⚠ No ClickHouse client configuration available");
+        println!("  Please provide YAML config via GRAPH_CONFIG_PATH or ClickHouse environment variables");
+        
+        let empty_schema = GraphSchema::build(
+            1,
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+        );
+        
+        GLOBAL_GRAPH_SCHEMA.set(RwLock::new(empty_schema))
+            .map_err(|_| "Failed to initialize global graph schema")?;
+            
+        println!("✓ Minimal schema initialized - server ready for YAML configuration");
+        Ok(())
+    }
 }
 
 pub async fn refresh_global_schema(clickhouse_client: Client) -> Result<(), String> {
@@ -32,6 +157,15 @@ pub async fn get_graph_schema() -> GraphSchema {
         .read()
         .await;
     schema_guard.clone()
+}
+
+pub async fn get_view_config() -> Option<GraphViewConfig> {
+    if let Some(config_guard) = GLOBAL_VIEW_CONFIG.get() {
+        let config = config_guard.read().await;
+        Some((*config).clone())
+    } else {
+        None
+    }
 }
 
 pub async fn get_graph_catalog(clickhouse_client: Client) -> Result<GraphSchema, String> {
@@ -216,4 +350,73 @@ pub async fn monitor_schema_updates(ch_client: Client) -> Result<(), String> {
             );
         }
     }
+}
+
+// Load schema from YAML configuration file
+async fn load_schema_and_config_from_yaml(config_path: &str) -> Result<(GraphSchema, GraphViewConfig), String> {
+    use std::collections::HashMap;
+    use crate::graph_catalog::graph_schema::{NodeIdSchema};
+    
+    let config = GraphViewConfig::from_yaml_file(config_path)
+        .map_err(|e| format!("Failed to load YAML config: {}", e))?;
+    
+    let mut nodes = HashMap::new();
+    let mut relationships = HashMap::new();
+    let relationships_indexes = HashMap::new();
+
+    // Convert view config to graph schema
+    for view in &config.views {
+        for (_key, node_mapping) in &view.nodes {
+            let mut column_names = Vec::new();
+            column_names.push(node_mapping.id_column.clone());
+            for column in node_mapping.property_mappings.values() {
+                column_names.push(column.clone());
+            }
+            
+            let node_schema = NodeSchema {
+                table_name: node_mapping.source_table.clone(),
+                column_names,
+                primary_keys: node_mapping.id_column.clone(),
+                node_id: NodeIdSchema {
+                    column: node_mapping.id_column.clone(),
+                    dtype: "UInt32".to_string(), // Default type, could be made configurable
+                },
+            };
+            nodes.insert(node_mapping.label.clone(), node_schema);
+        }
+        
+        for (_rel_key, rel_mapping) in &view.relationships {
+            let mut column_names = Vec::new();
+            column_names.push(rel_mapping.from_column.clone());
+            column_names.push(rel_mapping.to_column.clone());
+            for column in rel_mapping.property_mappings.values() {
+                column_names.push(column.clone());
+            }
+            
+            // Use from_node_type and to_node_type from the mapping if provided, otherwise use generic fallback
+            let from_node = rel_mapping.from_node_type.as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("Node");
+            let to_node = rel_mapping.to_node_type.as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("Node");
+            
+            let rel_schema = RelationshipSchema {
+                table_name: rel_mapping.source_table.clone(),
+                column_names,
+                from_node: from_node.to_string(),
+                to_node: to_node.to_string(),
+                from_column: rel_mapping.from_column.clone(),
+                to_column: rel_mapping.to_column.clone(),
+                from_node_id_dtype: "UInt32".to_string(),
+                to_node_id_dtype: "UInt32".to_string(),
+            };
+            
+            // Use the type_name from the mapping as the schema key (this is what Cypher queries use)
+            let schema_key = rel_mapping.type_name.clone();
+            relationships.insert(schema_key, rel_schema);
+        }
+    }
+    
+    Ok((GraphSchema::build(1, nodes, relationships, relationships_indexes), config))
 }

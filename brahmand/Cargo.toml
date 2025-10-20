@@ -12,9 +12,22 @@ tokio = { version = "1", features = ["full"]}
 clickhouse = "0.13.2"
 serde ={ version = "1", features = ["derive"]}
 serde_json = "1.0.140"
-axum = "0.8.3"
+serde_yaml = "0.9"
+axum = "0.8.6"
 dotenv = { version = "0.15.0" }
 thiserror = "2.0.12"
+clap = { version = "4.5", features = ["derive"] }
+# Bolt protocol dependencies
+sha2 = "0.10"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+env_logger = "0.11"
 
 [dev-dependencies]
 clickhouse = { version = "0.13.2", features = ["test-util"] }
+mockall = "0.12"
+tokio-test = "0.4"
+tempfile = "3.8"
+async-trait = "0.1"
+anyhow = "1.0"

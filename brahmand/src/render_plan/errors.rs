@@ -10,4 +10,7 @@ pub enum RenderBuildError {
 
     #[error("Malformed CTE name.")]
     MalformedCTEName,
+
+    #[error("Unsupported feature: {0}")]
+    UnsupportedFeature(String),
 }

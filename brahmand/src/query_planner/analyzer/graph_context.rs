@@ -1,5 +1,8 @@
 use crate::{
-    graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema},
+    graph_catalog::{
+        graph_schema::{GraphSchema, NodeSchema, RelationshipSchema},
+        GraphViewDefinition,
+    },
     query_planner::{
         analyzer::{
             analyzer_pass::AnalyzerResult,
@@ -11,11 +14,39 @@ use crate::{
     },
 };
 
+use super::view_resolver::ViewResolver;
+
 #[derive(Debug, Clone)]
 pub struct GraphContext<'a> {
     pub left: GraphNodeContext<'a>,
     pub rel: GraphRelContext<'a>,
     pub right: GraphNodeContext<'a>,
+    pub view_resolver: Option<ViewResolver<'a>>,
+    pub schema: &'a GraphSchema,
+}
+
+impl<'a> GraphContext<'a> {
+    /// Get schema for a node table
+    pub fn get_node_schema(&self, table_name: &str) -> Option<&'a NodeSchema> {
+        if let Some(view_resolver) = &self.view_resolver {
+            // First try to get schema from view resolver
+            view_resolver.get_node_schema(table_name)
+        } else {
+            // Fall back to direct schema lookup
+            self.schema.get_node_schema(table_name).ok()
+        }
+    }
+    
+    /// Get schema for a relationship table
+    pub fn get_relationship_schema(&self, table_name: &str) -> Option<&'a RelationshipSchema> {
+        if let Some(view_resolver) = &self.view_resolver {
+            // First try to get schema from view resolver
+            view_resolver.get_relationship_schema(table_name)
+        } else {
+            // Fall back to direct schema lookup
+            self.schema.get_rel_schema(table_name).ok()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -41,13 +72,14 @@ pub fn get_graph_context<'a>(
     graph_rel: &'a GraphRel,
     plan_ctx: &'a mut PlanCtx,
     graph_schema: &'a GraphSchema,
+    view: Option<&'a GraphViewDefinition>,
     pass: Pass,
 ) -> AnalyzerResult<GraphContext<'a>> {
     // get required information
     let left_alias = &graph_rel.left_connection;
     let rel_alias = &graph_rel.alias;
     let right_alias = &graph_rel.right_connection;
-
+    
     let left_ctx = plan_ctx
         .get_node_table_ctx(left_alias)
         .map_err(|e| AnalyzerError::PlanCtx {
@@ -115,7 +147,8 @@ pub fn get_graph_context<'a>(
     let rel_cte_name = format!("{}_{}", rel_label, rel_alias);
     let right_cte_name = format!("{}_{}", right_label, right_alias);
 
-    let graph_context = GraphContext {
+    // Create the initial GraphContext with schema
+    let mut graph_context = GraphContext {
         left: GraphNodeContext {
             alias: left_alias,
             table_ctx: left_ctx,
@@ -139,7 +172,19 @@ pub fn get_graph_context<'a>(
             id_column: right_node_id_column,
             cte_name: right_cte_name,
         },
+        schema: graph_schema,
+        view_resolver: None,
     };
 
+    // Initialize view resolver if we have a view definition
+    let view_resolver = view.and_then(|view_def| {
+        Some(ViewResolver::new(
+            graph_context.schema,
+            view_def
+        ))
+    });
+
+    // Set the resolver and return
+    graph_context.view_resolver = view_resolver;
     Ok(graph_context)
 }
