@@ -441,6 +441,8 @@ use std::collections::HashMap;
 pub(crate) struct CteGenerationContext {
     /// Properties needed for variable-length paths, keyed by "left_alias-right_alias"
     variable_length_properties: HashMap<String, Vec<NodeProperty>>,
+    /// WHERE filter expression to apply to variable-length CTEs
+    filter_expr: Option<RenderExpr>,
 }
 
 impl CteGenerationContext {
@@ -456,6 +458,14 @@ impl CteGenerationContext {
     fn set_properties(&mut self, left_alias: &str, right_alias: &str, properties: Vec<NodeProperty>) {
         let key = format!("{}-{}", left_alias, right_alias);
         self.variable_length_properties.insert(key, properties);
+    }
+    
+    fn get_filter(&self) -> Option<&RenderExpr> {
+        self.filter_expr.as_ref()
+    }
+    
+    fn set_filter(&mut self, filter: RenderExpr) {
+        self.filter_expr = Some(filter);
     }
 }
 
@@ -733,6 +743,8 @@ fn categorize_filters(
     end_node_alias: &str,
     _rel_alias: &str, // For future relationship filtering
 ) -> CategorizedFilters {
+    log::debug!("Categorizing filters for start alias '{}' and end alias '{}'", start_node_alias, end_node_alias);
+    
     let mut result = CategorizedFilters {
         start_node_filters: None,
         end_node_filters: None,
@@ -740,8 +752,11 @@ fn categorize_filters(
     };
     
     if filter_expr.is_none() {
+        log::trace!("No filter expression provided");
         return result;
     }
+    
+    log::trace!("Filter expression: {:?}", filter_expr.unwrap());
     
     let filter = filter_expr.unwrap();
     
@@ -814,6 +829,11 @@ fn categorize_filters(
     result.start_node_filters = combine_with_and(start_filters);
     result.end_node_filters = combine_with_and(end_filters);
     result.relationship_filters = combine_with_and(rel_filters);
+    
+    log::trace!("Filter categorization result:");
+    log::trace!("  Start filters: {:?}", result.start_node_filters);
+    log::trace!("  End filters: {:?}", result.end_node_filters);
+    log::trace!("  Rel filters: {:?}", result.relationship_filters);
     
     result
 }
@@ -1078,7 +1098,29 @@ impl RenderPlanBuilder for LogicalPlan {
                     
                     // Extract and categorize filters for shortest path queries
                     // This is critical: start node filters go in base case, end node filters in outer CTE
-                    let filter_expr = self.extract_filters().ok().flatten();
+                    // NEW: Get filter from graph_rel.where_predicate (populated by FilterIntoGraphRel optimizer)
+                    let filter_expr = graph_rel.where_predicate.as_ref().and_then(|logical_expr| {
+                        use std::convert::TryInto;
+                        use crate::render_plan::render_expr::RenderExpr;
+                        
+                        // Convert LogicalExpr to RenderExpr
+                        let render_expr: Result<RenderExpr, _> = logical_expr.clone().try_into();
+                        match render_expr {
+                            Ok(expr) => Some(expr),
+                            Err(e) => {
+                                log::warn!("Failed to convert LogicalExpr to RenderExpr: {:?}", e);
+                                None
+                            }
+                        }
+                    });
+                    
+                    log::debug!("GraphRel filter extraction: where_predicate exists = {}, converted filter exists = {}", 
+                        graph_rel.where_predicate.is_some(), 
+                        filter_expr.is_some());
+                    if let Some(ref expr) = filter_expr {
+                        log::trace!("Filter expression: {:?}", expr);
+                    }
+                    
                     let categorized = categorize_filters(
                         filter_expr.as_ref(),
                         &graph_rel.left_connection,
@@ -1093,6 +1135,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     let end_filter_sql = categorized.end_node_filters.as_ref().map(|f| 
                         render_expr_to_sql_for_cte(f, &graph_rel.left_connection, &graph_rel.right_connection)
                     );
+                    
+                    log::trace!("Converted filters to SQL:");
+                    log::trace!("  Start filter SQL: {:?}", start_filter_sql);
+                    log::trace!("  End filter SQL: {:?}", end_filter_sql);
                     
                     // Choose between chained JOINs (for exact hop counts) or recursive CTE (for ranges)
                     let var_len_cte = if let Some(exact_hops) = spec.exact_hop_count() {
@@ -1151,8 +1197,34 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
                 Ok(right_cte)
             }
-            LogicalPlan::Filter(filter) => filter.input.extract_ctes_with_context(last_node_alias, context),
-            LogicalPlan::Projection(projection) => projection.input.extract_ctes_with_context(last_node_alias, context),
+            LogicalPlan::Filter(filter) => {
+                // Store the filter in context so GraphRel nodes can access it
+                log::trace!("Filter node detected, storing filter predicate in context: {:?}", filter.predicate);
+                let mut new_context = context.clone();
+                let filter_expr: RenderExpr = filter.predicate.clone().try_into()?;
+                log::trace!("Converted to RenderExpr: {:?}", filter_expr);
+                new_context.set_filter(filter_expr);
+                filter.input.extract_ctes_with_context(last_node_alias, &new_context)
+            }
+            LogicalPlan::Projection(projection) => {
+                log::trace!("Projection node detected, recursing into input type: {}", match &*projection.input {
+                    LogicalPlan::Empty => "Empty",
+                    LogicalPlan::Scan(_) => "Scan",
+                    LogicalPlan::ViewScan(_) => "ViewScan",
+                    LogicalPlan::GraphNode(_) => "GraphNode",
+                    LogicalPlan::GraphRel(_) => "GraphRel",
+                    LogicalPlan::Filter(_) => "Filter",
+                    LogicalPlan::Projection(_) => "Projection",
+                    LogicalPlan::GraphJoins(_) => "GraphJoins",
+                    LogicalPlan::GroupBy(_) => "GroupBy",
+                    LogicalPlan::OrderBy(_) => "OrderBy",
+                    LogicalPlan::Skip(_) => "Skip",
+                    LogicalPlan::Limit(_) => "Limit",
+                    LogicalPlan::Cte(_) => "Cte",
+                    LogicalPlan::Union(_) => "Union",
+                });
+                projection.input.extract_ctes_with_context(last_node_alias, context)
+            }
             LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_ctes_with_context(last_node_alias, context),
             LogicalPlan::GroupBy(group_by) => group_by.input.extract_ctes_with_context(last_node_alias, context),
             LogicalPlan::OrderBy(order_by) => order_by.input.extract_ctes_with_context(last_node_alias, context),
@@ -1274,7 +1346,34 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Scan(_) => None,
             LogicalPlan::ViewScan(_) => None,
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_filters()?,
-            LogicalPlan::GraphRel(_) => None,
+            LogicalPlan::GraphRel(graph_rel) => {
+                log::trace!("GraphRel node detected, extracting filters from left, center, and right sub-plans");
+                
+                // Try extracting from each sub-plan and combine
+                let left_filters = graph_rel.left.extract_filters()?;
+                let center_filters = graph_rel.center.extract_filters()?;
+                let right_filters = graph_rel.right.extract_filters()?;
+                
+                log::trace!("Extracted filters - left: {:?}, center: {:?}, right: {:?}", 
+                    left_filters, center_filters, right_filters);
+                
+                // Combine all filters with AND
+                let all_filters: Vec<RenderExpr> = vec![left_filters, center_filters, right_filters]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                
+                if all_filters.is_empty() {
+                    None
+                } else if all_filters.len() == 1 {
+                    Some(all_filters.into_iter().next().unwrap())
+                } else {
+                    Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::And,
+                        operands: all_filters,
+                    }))
+                }
+            }
             LogicalPlan::Filter(filter) => Some(filter.predicate.clone().try_into()?),
             LogicalPlan::Projection(projection) => projection.input.extract_filters()?,
             LogicalPlan::GroupBy(group_by) => group_by.input.extract_filters()?,
@@ -1385,6 +1484,23 @@ impl RenderPlanBuilder for LogicalPlan {
         // Two-pass architecture:
         // 1. Analyze property requirements across the entire plan
         // 2. Generate CTEs with full context including required properties
+        
+        log::trace!("Starting render plan generation for plan type: {}", match self {
+            LogicalPlan::Empty => "Empty",
+            LogicalPlan::Scan(_) => "Scan",
+            LogicalPlan::ViewScan(_) => "ViewScan",
+            LogicalPlan::GraphNode(_) => "GraphNode",
+            LogicalPlan::GraphRel(_) => "GraphRel",
+            LogicalPlan::Filter(_) => "Filter",
+            LogicalPlan::Projection(_) => "Projection",
+            LogicalPlan::GraphJoins(_) => "GraphJoins",
+            LogicalPlan::GroupBy(_) => "GroupBy",
+            LogicalPlan::OrderBy(_) => "OrderBy",
+            LogicalPlan::Skip(_) => "Skip",
+            LogicalPlan::Limit(_) => "Limit",
+            LogicalPlan::Cte(_) => "Cte",
+            LogicalPlan::Union(_) => "Union",
+        });
         
         // First pass: analyze what properties are needed
         let context = analyze_property_requirements(self);
