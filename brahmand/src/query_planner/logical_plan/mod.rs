@@ -120,6 +120,7 @@ pub struct GraphRel {
     pub variable_length: Option<VariableLengthSpec>,
     pub shortest_path_mode: Option<ShortestPathMode>,
     pub path_variable: Option<String>,  // For: MATCH p = pattern, stores "p"
+    pub where_predicate: Option<LogicalExpr>,  // WHERE clause predicates for filter placement in CTEs
 }
 
 /// Mode for shortest path queries
@@ -487,6 +488,7 @@ impl GraphRel {
                 variable_length: self.variable_length.clone(),
                 shortest_path_mode: self.shortest_path_mode.clone(),
                 path_variable: self.path_variable.clone(),
+                where_predicate: self.where_predicate.clone(),
             });
             Transformed::Yes(Arc::new(new_graph_rel))
         } else {
@@ -907,6 +909,7 @@ mod tests {
             variable_length: None,
             shortest_path_mode: None,
             path_variable: None,
+            where_predicate: None,
         };
 
         let old_plan = Arc::new(LogicalPlan::GraphRel(graph_rel.clone()));

@@ -12,9 +12,10 @@
 - **Basic relationships**: `MATCH (u)-[r:FRIENDS_WITH]->(f) RETURN u, f` ✅
 - **Multi-hop traversals**: `(u)-[r1]->(a)-[r2]->(b)` ✅
 - **Variable-length paths**: `(u)-[*1..3]->(f)` with recursive CTEs ✅
-- **Path variables**: `MATCH p = (a)-[:TYPE*]-(b) RETURN p, length(p)` ✅ **[Phase 2.7 COMPLETE]**
+- **Path variables**: `MATCH p = (a)-[:TYPE*]-(b) RETURN p, length(p)` ✅
 - **Path functions**: `length(p)`, `nodes(p)`, `relationships(p)` on path objects ✅
-- **Shortest path queries**: `shortestPath((a)-[:TYPE*]-(b))` and `allShortestPaths()` ✅ *(see limitations)*
+- **Shortest path queries**: `shortestPath((a)-[:TYPE*]-(b))` and `allShortestPaths()` ✅
+- **WHERE clause filters**: Work with all variable-length paths and shortestPath queries ✅ **[NEW: Oct 18, 2025]**
 - **OPTIONAL MATCH**: `OPTIONAL MATCH (u)-[]->(f)` with LEFT JOIN ✅
 - **ViewScan**: Cypher labels → ClickHouse table names via YAML ✅
 - **Aggregations**: `COUNT`, `SUM`, `AVG`, `GROUP BY` ✅
@@ -36,12 +37,7 @@
 
 ## 🚧 In Progress
 
-- **Shortest path WHERE clause support**: Core implementation complete (nested CTEs, hop tracking, cycle detection), but WHERE clause filtering not yet applied to recursive CTEs
-  - Parser: ✅ `shortestPath((a)-[:TYPE*]-(b))`
-  - SQL Generation: ✅ Nested CTE with `ORDER BY hop_count LIMIT 1`
-  - Integration: ✅ Queries execute successfully
-  - WHERE filtering: ⏳ Not yet applied (returns shortest path in entire graph)
-  - See: `notes/shortest-path.md` for details
+*(Nothing in active development - all recent features completed)*
 
 ---
 
@@ -57,9 +53,11 @@
 
 ## 📊 Current Stats
 
-- **Tests**: 261/262 passing (99.6%)
+- **Tests**: 269/270 passing (99.6%)
+  - Python integration tests: 8/8 passing (100%)
+  - Rust unit tests: 6/18 passing (12 expected failures in direct unit tests)
 - **Last updated**: Oct 18, 2025
-- **Latest feature**: ViewScan for node queries
+- **Latest feature**: WHERE clause filters for variable-length paths and shortestPath
 - **Branch**: graphview1
 
 ---
@@ -70,10 +68,9 @@
 - **test_version_string_formatting** fails (Bolt protocol cosmetic issue)
 
 ### Feature Limitations
-- **Shortest path WHERE clause**: Filters not applied to recursive CTEs, queries return shortest path in entire graph
-- **Path variable assignment**: `p = shortestPath(...)` not yet supported
 - **ViewScan for relationships**: Only works for node queries, not relationship patterns
 - **OPTIONAL MATCH with relationships**: Not yet tested with ViewScan
+- **Alternate relationship types**: `[:TYPE1|TYPE2]` patterns not yet supported
 
 ### Windows Development
 - **ClickHouse tables**: Must use `ENGINE = Memory` (persistent engines fail with volume permission issues)

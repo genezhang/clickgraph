@@ -149,6 +149,7 @@ impl AnchorNodeSelection {
                         variable_length: graph_rel.variable_length.clone(),
                         shortest_path_mode: graph_rel.shortest_path_mode.clone(),
                         path_variable: graph_rel.path_variable.clone(),
+                where_predicate: graph_rel.where_predicate.clone(),
                     }));
                     let rotated_plan = Self::rotate_plan(new_anchor_plan, graph_rel.right.clone())?;
 
@@ -169,6 +170,7 @@ impl AnchorNodeSelection {
                         variable_length: graph_rel.variable_length.clone(),
                         shortest_path_mode: graph_rel.shortest_path_mode.clone(),
                         path_variable: graph_rel.path_variable.clone(),
+                where_predicate: graph_rel.where_predicate.clone(),
                     }));
                     let rotated_plan = Self::rotate_plan(new_anchor_plan, graph_rel.right.clone())?;
 
@@ -253,6 +255,7 @@ impl AnchorNodeSelection {
                         variable_length: prev_graph_rel.variable_length.clone(),
                         shortest_path_mode: prev_graph_rel.shortest_path_mode.clone(),
                         path_variable: prev_graph_rel.path_variable.clone(),
+                where_predicate: prev_graph_rel.where_predicate.clone(),
                     }));
                     return Ok(new_constructed_plan);
                 }
@@ -284,6 +287,7 @@ impl AnchorNodeSelection {
                             variable_length: prev_graph_rel.variable_length.clone(),
                             shortest_path_mode: prev_graph_rel.shortest_path_mode.clone(),
                             path_variable: prev_graph_rel.path_variable.clone(),
+                where_predicate: prev_graph_rel.where_predicate.clone(),
                         })),
                         alias: graph_rel.alias.clone(),
                         direction: graph_rel.direction.clone(), //.reverse(),
@@ -295,6 +299,7 @@ impl AnchorNodeSelection {
                         variable_length: graph_rel.variable_length.clone(),
                         shortest_path_mode: graph_rel.shortest_path_mode.clone(),
                         path_variable: graph_rel.path_variable.clone(),
+                where_predicate: graph_rel.where_predicate.clone(),
                     }));
 
                     return Self::rotate_plan(new_constructed_plan, new_remaining);

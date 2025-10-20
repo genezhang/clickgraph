@@ -216,6 +216,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 variable_length: None, // Single-hop relationship by default
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
+                where_predicate: None, // Will be populated by filter pushdown optimization
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -280,6 +281,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 variable_length: rel.variable_length.clone().map(|v| v.into()),
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
+                where_predicate: None, // Will be populated by filter pushdown optimization
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -359,6 +361,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 variable_length: rel.variable_length.clone().map(|v| v.into()),
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
+                where_predicate: None, // Will be populated by filter pushdown optimization
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
