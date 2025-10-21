@@ -160,7 +160,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         } else {
             generate_id()
         };
-        let rel_label = rel.label.map(|val| val.to_string());
+        let rel_labels = rel.labels.as_ref().map(|labels| labels.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         let rel_properties = rel
             .properties
             .clone()
@@ -183,7 +183,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         // if start alias already present in ctx map, it means the current nested connected pattern's start node will be connecting at right side plan and end node will be at the left
         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&start_node_alias) {
             if start_node_label.is_some() {
-                table_ctx.set_label(start_node_label);
+                table_ctx.set_labels(start_node_label.map(|l| vec![l]));
             }
             if !start_node_props.is_empty() {
                 table_ctx.append_properties(start_node_props);
@@ -197,7 +197,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 end_node_alias.clone(),
                 TableCtx::build(
                     end_node_alias.clone(),
-                    end_node_label,
+                    end_node_label.map(|l| vec![l]),
                     end_node_props,
                     false,
                     end_node_ref.name.is_some(),
@@ -217,12 +217,13 @@ fn traverse_connected_pattern_with_mode<'a>(
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization
+                labels: rel_labels.clone(),
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
                 TableCtx::build(
                     rel_alias,
-                    rel_label,
+                    rel_labels,
                     rel_properties,
                     true,
                     rel.name.is_some(),
@@ -235,7 +236,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     path_var.to_string(),
                     TableCtx::build(
                         path_var.to_string(),
-                        None,  // Path variables don't have labels
+                        None.map(|l| vec![l]),  // Path variables don't have labels
                         vec![], // Path variables don't have properties
                         false,  // Not a relationship
                         true,   // Explicitly named by user
@@ -248,7 +249,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         // if end alias already present in ctx map, it means the current nested connected pattern's end node will be connecting at right side plan and start node will be at the left
         else if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
             if end_node_label.is_some() {
-                table_ctx.set_label(end_node_label);
+                table_ctx.set_labels(end_node_label.map(|l| vec![l]));
             }
             if !end_node_props.is_empty() {
                 table_ctx.append_properties(end_node_props);
@@ -262,7 +263,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 start_node_alias.clone(),
                 TableCtx::build(
                     start_node_alias.clone(),
-                    start_node_label,
+                    start_node_label.map(|l| vec![l]),
                     start_node_props,
                     false,
                     start_node_ref.name.is_some(),
@@ -282,12 +283,13 @@ fn traverse_connected_pattern_with_mode<'a>(
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization
+                labels: rel_labels.clone(),
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
                 TableCtx::build(
                     rel_alias,
-                    rel_label,
+                    rel_labels,
                     rel_properties,
                     true,
                     rel.name.is_some(),
@@ -300,7 +302,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     path_var.to_string(),
                     TableCtx::build(
                         path_var.to_string(),
-                        None,  // Path variables don't have labels
+                        None.map(|l| vec![l]),  // Path variables don't have labels
                         vec![], // Path variables don't have properties
                         false,  // Not a relationship
                         true,   // Explicitly named by user
@@ -327,7 +329,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 start_node_alias.clone(),
                 TableCtx::build(
                     start_node_alias.clone(),
-                    start_node_label,
+                    start_node_label.map(|l| vec![l]),
                     start_node_props,
                     false,
                     start_node_ref.name.is_some(),
@@ -342,7 +344,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 end_node_alias.clone(),
                 TableCtx::build(
                     end_node_alias.clone(),
-                    end_node_label,
+                    end_node_label.map(|l| vec![l]),
                     end_node_props,
                     false,
                     end_node_ref.name.is_some(),
@@ -362,12 +364,13 @@ fn traverse_connected_pattern_with_mode<'a>(
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization
+                labels: rel_labels.clone(),
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
                 TableCtx::build(
                     rel_alias,
-                    rel_label,
+                    rel_labels,
                     rel_properties,
                     true,
                     rel.name.is_some(),
@@ -380,7 +383,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     path_var.to_string(),
                     TableCtx::build(
                         path_var.to_string(),
-                        None,  // Path variables don't have labels
+                        None.map(|l| vec![l]),  // Path variables don't have labels
                         vec![], // Path variables don't have properties
                         false,  // Not a relationship
                         true,   // Explicitly named by user
@@ -415,7 +418,7 @@ fn traverse_node_pattern(
     // if alias already present in ctx map then just add its conditions and do not add it in the logical plan
     if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&node_alias) {
         if node_label.is_some() {
-            table_ctx.set_label(node_label);
+            table_ctx.set_labels(node_label.map(|l| vec![l]));
         }
         if !node_props.is_empty() {
             table_ctx.append_properties(node_props);
@@ -427,7 +430,7 @@ fn traverse_node_pattern(
             node_alias.clone(),
             TableCtx::build(
                 node_alias.clone(),
-                node_label.clone(),  // Clone here so we can use it below
+                node_label.clone().map(|l| vec![l]),  // Clone here so we can use it below
                 node_props,
                 false,
                 node_pattern.name.is_some(),
@@ -676,7 +679,7 @@ mod tests {
             "customer".to_string(),
             TableCtx::build(
                 "customer".to_string(),
-                Some("User".to_string()),
+                Some("User".to_string()).map(|l| vec![l]),
                 vec![],
                 false,
                 true,
@@ -740,7 +743,7 @@ mod tests {
         let relationship = ast::RelationshipPattern {
             name: Some("works_at"),
             direction: ast::Direction::Outgoing,
-            label: Some("WORKS_AT"),
+            labels: Some(vec!["WORKS_AT"]),
             properties: None,
             variable_length: None,
         };
@@ -804,7 +807,7 @@ mod tests {
             "user".to_string(),
             TableCtx::build(
                 "user".to_string(),
-                Some("Person".to_string()),
+                Some("Person".to_string()).map(|l| vec![l]),
                 vec![],
                 false,
                 true,
@@ -824,7 +827,7 @@ mod tests {
         let relationship = ast::RelationshipPattern {
             name: Some("assigned_to"),
             direction: ast::Direction::Incoming,
-            label: Some("ASSIGNED_TO"),
+            labels: Some(vec!["ASSIGNED_TO"]),
             properties: None,
             variable_length: None,
         };
@@ -883,7 +886,7 @@ mod tests {
         let relationship = ast::RelationshipPattern {
             name: Some("knows"),
             direction: ast::Direction::Either,
-            label: Some("KNOWS"),
+            labels: Some(vec!["KNOWS"]),
             properties: None,
             variable_length: None,
         };
@@ -935,7 +938,7 @@ mod tests {
         let relationship = ast::RelationshipPattern {
             name: Some("manages"),
             direction: ast::Direction::Outgoing,
-            label: Some("MANAGES"),
+            labels: Some(vec!["MANAGES"]),
             properties: None,
             variable_length: None,
         };
@@ -983,7 +986,7 @@ mod tests {
 
         let table_ctx = TableCtx::build(
             "user".to_string(),
-            Some("Person".to_string()),
+            Some("Person".to_string()).map(|l| vec![l]),
             properties,
             false,
             true,
@@ -1031,3 +1034,4 @@ mod tests {
         }
     }
 }
+

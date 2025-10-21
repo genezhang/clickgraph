@@ -184,7 +184,7 @@ pub struct ConnectedPattern<'a> {
 pub struct RelationshipPattern<'a> {
     pub name: Option<&'a str>,
     pub direction: Direction,
-    pub label: Option<&'a str>,
+    pub labels: Option<Vec<&'a str>>,  // Support multiple labels: [:TYPE1|TYPE2]
     pub properties: Option<Vec<Property<'a>>>,
     pub variable_length: Option<VariableLengthSpec>,
 }

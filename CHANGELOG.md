@@ -4,6 +4,15 @@
 
 ### 🚀 Features
 
+- **Alternate Relationship Types** (Oct 21): Complete implementation for `[:TYPE1|TYPE2]` multiple relationship patterns
+  - Parser: Extended relationship pattern parsing to handle multiple labels separated by `|`
+  - Logical planning: GraphRel.labels stores Vec<String> for multiple relationship types
+  - SQL generation: UNION ALL CTEs for multiple relationship types in render plan
+  - Query execution: `MATCH (a)-[:FOLLOWS|FRIENDS_WITH]->(b)` generates UNION SQL
+  - Backward compatibility: Single relationship types work unchanged
+  - Tests: 44/44 render plan tests passing, new comprehensive test coverage
+  - See `notes/alternate-relationship-types.md` for implementation details
+
 - **Shortest Path Queries** (Oct 18-20): Complete implementation for `shortestPath()` and `allShortestPaths()`
   - Parser: Case-insensitive matching for `shortestPath((a)-[:TYPE*]-(b))`
   - Query planner: ShortestPath/AllShortestPaths pattern handling

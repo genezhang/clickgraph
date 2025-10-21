@@ -237,6 +237,36 @@ fn parse_name_or_label_with_properties(
     Ok((remainder, (node_label, node_properties)))
 }
 
+// Parse relationship labels that can be multiple labels separated by |
+fn parse_relationship_labels(
+    input: &'_ str,
+) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
+    let (remainder, first_label) =
+        ws(opt(common::parse_alphanumeric_with_underscore)).parse(input)?;
+
+    if first_label.is_none() {
+        return Ok((remainder, None));
+    }
+
+    let mut labels = vec![first_label.unwrap()];
+
+    // Parse additional labels separated by |
+    let mut current_input = remainder;
+    loop {
+        let (new_input, pipe) = opt(ws(char('|'))).parse(current_input)?;
+        if pipe.is_none() {
+            break;
+        }
+
+        let (new_input, additional_label) =
+            ws(common::parse_alphanumeric_with_underscore).parse(new_input)?;
+        labels.push(additional_label);
+        current_input = new_input;
+    }
+
+    Ok((current_input, Some(labels)))
+}
+
 type NameOrLabelWithProperties<'a> = (Option<&'a str>, Option<Vec<Property<'a>>>);
 
 fn parse_name_label(
@@ -288,8 +318,34 @@ fn parse_relationship_internals(
     delimited(ws(char('[')), parse_name_label, ws(char(']'))).parse(input)
 }
 
+// Parse relationship internals with support for multiple labels
+fn parse_relationship_internals_with_multiple_labels(
+    input: &'_ str,
+) -> IResult<&'_ str, (Option<&'_ str>, Option<Vec<&'_ str>>, Option<Vec<Property<'_>>>, Option<VariableLengthSpec>)> {
+    let (input, _) = ws(char('[')).parse(input)?;
+    let (input, _) = multispace0(input)?;
+
+    // Parse relationship name (optional)
+    let (input, rel_name) = ws(opt(common::parse_alphanumeric_with_underscore)).parse(input)?;
+
+    // Parse : separator
+    let (input, _) = opt(ws(char(':'))).parse(input)?;
+
+    // Parse relationship labels (can be multiple separated by |)
+    let (input, rel_labels) = parse_relationship_labels(input)?;
+
+    // Parse variable length spec
+    let (input, var_len) = parse_variable_length_spec(input)?;
+
+    // Parse properties
+    let (input, rel_properties) = opt(parse_properties).parse(input)?;
+
+    let (input, _) = ws(char(']')).parse(input)?;
+    Ok((input, (rel_name, rel_labels, rel_properties, var_len)))
+}
+
 // Parse relationship internals including variable-length spec
-// Returns: ((name, properties), (label, properties), variable_length_spec)
+// Returns: ((name, properties), (labels, properties), variable_length_spec)
 fn parse_relationship_internals_with_var_len(
     input: &'_ str,
 ) -> IResult<&'_ str, (
@@ -397,25 +453,20 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
             RelationshipPattern {
                 direction: Direction::Incoming,
                 name: None,
-                label: None,
+                labels: None,
                 properties: None,
                 variable_length: None,
             }
         });
 
     let incoming_relationship_with_props_parser = map(
-        delimited(tag("<-"), parse_relationship_internals_with_var_len, tag("-")),
-        |(
-            ((relationship_name, properties_with_relationship_name),
-            (relationship_label, properties_with_relationship_label)),
-            variable_length,
-        )| RelationshipPattern {
+        delimited(tag("<-"), parse_relationship_internals_with_multiple_labels, tag("-")),
+        |(rel_name, rel_labels, rel_properties, var_len)| RelationshipPattern {
             direction: Direction::Incoming,
-            name: relationship_name,
-            label: relationship_label,
-            properties: properties_with_relationship_name
-                .map_or(properties_with_relationship_label, Some),
-            variable_length,
+            name: rel_name,
+            labels: rel_labels,
+            properties: rel_properties,
+            variable_length: var_len,
         },
     );
 
@@ -424,25 +475,20 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
             RelationshipPattern {
                 direction: Direction::Outgoing,
                 name: None,
-                label: None,
+                labels: None,
                 properties: None,
                 variable_length: None,
             }
         });
 
     let outgoing_relationship_with_props_parser = map(
-        delimited(tag("-"), parse_relationship_internals_with_var_len, tag("->")),
-        |(
-            ((relationship_name, properties_with_relationship_name),
-            (relationship_label, properties_with_relationship_label)),
-            variable_length,
-        )| RelationshipPattern {
+        delimited(tag("-"), parse_relationship_internals_with_multiple_labels, tag("->")),
+        |(rel_name, rel_labels, rel_properties, var_len)| RelationshipPattern {
             direction: Direction::Outgoing,
-            name: relationship_name,
-            label: relationship_label,
-            properties: properties_with_relationship_name
-                .map_or(properties_with_relationship_label, Some),
-            variable_length,
+            name: rel_name,
+            labels: rel_labels,
+            properties: rel_properties,
+            variable_length: var_len,
         },
     );
 
@@ -451,25 +497,20 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
             RelationshipPattern {
                 direction: Direction::Either,
                 name: None,
-                label: None,
+                labels: None,
                 properties: None,
                 variable_length: None,
             }
         });
 
     let either_relationship_with_props_parser = map(
-        delimited(tag("-"), parse_relationship_internals_with_var_len, tag("-")),
-        |(
-            ((relationship_name, properties_with_relationship_name),
-            (relationship_label, properties_with_relationship_label)),
-            variable_length,
-        )| RelationshipPattern {
+        delimited(tag("-"), parse_relationship_internals_with_multiple_labels, tag("-")),
+        |(rel_name, rel_labels, rel_properties, var_len)| RelationshipPattern {
             direction: Direction::Either,
-            name: relationship_name,
-            label: relationship_label,
-            properties: properties_with_relationship_name
-                .map_or(properties_with_relationship_label, Some),
-            variable_length,
+            name: rel_name,
+            labels: rel_labels,
+            properties: rel_properties,
+            variable_length: var_len,
         },
     );
 
@@ -537,7 +578,7 @@ mod tests {
                 let expected_relationship = RelationshipPattern {
                     direction: Direction::Outgoing,
                     name: None,
-                    label: None,
+                    labels: None,
                     properties: None,
                     variable_length: None,
                 };
@@ -595,7 +636,7 @@ mod tests {
                         let expected_relationship = RelationshipPattern {
                             direction: Direction::Outgoing,
                             name: None,
-                            label: None,
+                            labels: None,
                             properties: None,
                             variable_length: None,
                         };
@@ -640,7 +681,7 @@ mod tests {
                 let expected_relationship_1 = RelationshipPattern {
                     direction: Direction::Outgoing,
                     name: None,
-                    label: None,
+                    labels: None,
                     properties: None,
                     variable_length: None,
                 };
@@ -661,7 +702,7 @@ mod tests {
                 let expected_relationship_2 = RelationshipPattern {
                     direction: Direction::Incoming,
                     name: None,
-                    label: None,
+                    labels: None,
                     properties: None,
                     variable_length: None,
                 };
@@ -715,7 +756,7 @@ mod tests {
                 let expected_relationship_1 = RelationshipPattern {
                     direction: Direction::Outgoing,
                     name: None,
-                    label: Some("Pointing"),
+                    labels: Some(vec!["Pointing"]),
                     properties: None,
                     variable_length: None,
                 };
@@ -723,7 +764,7 @@ mod tests {
                 let expected_relationship_2 = RelationshipPattern {
                     direction: Direction::Incoming,
                     name: Some("pointing"),
-                    label: None,
+                    labels: None,
                     properties: Some(vec![Property::PropertyKV(PropertyKVPair {
                         key: "what",
                         value: Expression::Parameter("dontKnow"),
@@ -947,7 +988,7 @@ mod tests {
                     PathPattern::ConnectedPattern(connected) => {
                         assert_eq!(connected.len(), 1);
                         // Verify relationship has KNOWS label
-                        assert_eq!(connected[0].relationship.label, Some("KNOWS"));
+                        assert_eq!(connected[0].relationship.labels, Some(vec!["KNOWS"]));
                     }
                     _ => panic!("Expected ConnectedPattern inside ShortestPath"),
                 }
@@ -1014,6 +1055,51 @@ mod tests {
                 }
             }
             _ => panic!("Expected ShortestPath variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_path_pattern_multiple_relationship_labels() {
+        let input = "()- [:TYPE1|TYPE2] -> ()";
+        let result = parse_path_pattern(input);
+        match result {
+            Ok((remaining, PathPattern::ConnectedPattern(connected_patterns))) => {
+                assert_eq!(remaining, "");
+                assert_eq!(connected_patterns.len(), 1);
+                let connected_pattern: &ConnectedPattern<'_> = &connected_patterns[0];
+                // The start and end nodes are parsed as empty nodes.
+                let expected_node = Rc::new(RefCell::new(NodePattern {
+                    name: None,
+                    label: None,
+                    properties: None,
+                }));
+                // For this test, we expect an outgoing relationship with multiple labels.
+                let expected_relationship = RelationshipPattern {
+                    direction: Direction::Outgoing,
+                    name: None,
+                    labels: Some(vec!["TYPE1", "TYPE2"]),
+                    properties: None,
+                    variable_length: None,
+                };
+                // Compare start node.
+                assert_eq!(
+                    format!("{:?}", connected_pattern.start_node),
+                    format!("{:?}", expected_node)
+                );
+                // Compare relationship.
+                assert_eq!(&connected_pattern.relationship, &expected_relationship);
+                // Compare end node.
+                assert_eq!(
+                    format!("{:?}", connected_pattern.end_node),
+                    format!("{:?}", Rc::new(expected_node))
+                );
+            }
+            Ok((_, other)) => {
+                panic!("Expected a ConnectedPattern variant, got: {:?}", other);
+            }
+            Err(e) => {
+                panic!("Parse error: {:?}", e);
+            }
         }
     }
 }

@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: October 20, 2025*
+*Updated: October 21, 2025*
 
 ---
 
@@ -16,8 +16,8 @@
 - **Path functions**: `length(p)`, `nodes(p)`, `relationships(p)` on path objects ✅
 - **Shortest path queries**: `shortestPath((a)-[:TYPE*]-(b))` and `allShortestPaths()` ✅ **[VERIFIED: Oct 20, 2025]**
 - **WHERE clause filters**: Work with all variable-length paths and shortestPath queries ✅ **[VERIFIED: Oct 20, 2025]**
-- **OPTIONAL MATCH**: `OPTIONAL MATCH (u)-[]->(f)` with LEFT JOIN ✅
-- **ViewScan**: Cypher labels → ClickHouse table names via YAML ✅
+- **Alternate relationships**: `[:TYPE1|TYPE2]` multiple relationship types in patterns ✅ **[COMPLETED: Oct 21, 2025]**
+- **ViewScan**: Cypher labels → ClickHouse table names via YAML, supports both nodes and relationships ✅
 - **Aggregations**: `COUNT`, `SUM`, `AVG`, `GROUP BY` ✅
 - **Ordering & Limits**: `ORDER BY`, `SKIP`, `LIMIT` ✅
 
@@ -43,11 +43,7 @@
 
 ## 🎯 Next Priorities
 
-1. **WHERE clause for shortest path** - Apply filters in base case of recursive CTEs
-2. **ViewScan relationships** - Extend ViewScan to relationship traversal patterns
-3. **Path variable assignment** - `p = shortestPath(...)` capture and return
-4. **Alternate relationships** - `[:TYPE1|TYPE2]` multiple types in patterns
-5. **Performance optimization** - Benchmarking and query caching
+1. **Performance optimization** - Benchmarking and query caching
 
 ---
 

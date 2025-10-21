@@ -114,6 +114,12 @@ fn rel_type_to_table_name(rel_type: &str) -> String {
     }
 }
 
+/// Map multiple relationship types to their actual table names
+/// For [:TYPE1|TYPE2] patterns, returns all corresponding table names
+fn rel_types_to_table_names(rel_types: &[String]) -> Vec<String> {
+    rel_types.iter().map(|rel_type| rel_type_to_table_name(rel_type)).collect()
+}
+
 /// Extract relationship columns from plan or table name
 /// TODO: This should look up the actual schema from GraphSchema
 /// For now, uses hardcoded mappings for known relationship types
@@ -933,8 +939,29 @@ impl RenderPlanBuilder for LogicalPlan {
                     .unwrap_or_else(|| graph_rel.left_connection.clone()));
                 let end_table = label_to_table_name(&extract_table_name(&graph_rel.right)
                     .unwrap_or_else(|| graph_rel.right_connection.clone()));
-                let rel_table = rel_type_to_table_name(&extract_table_name(&graph_rel.center)
-                    .unwrap_or_else(|| graph_rel.alias.clone()));
+                
+                // Handle multiple relationship types
+                let rel_tables = if let Some(labels) = &graph_rel.labels {
+                    if labels.len() > 1 {
+                        // Multiple relationship types: get all table names
+                        rel_types_to_table_names(labels)
+                    } else if labels.len() == 1 {
+                        // Single relationship type
+                        vec![rel_type_to_table_name(&labels[0])]
+                    } else {
+                        // Fallback to old logic
+                        vec![rel_type_to_table_name(&extract_table_name(&graph_rel.center)
+                            .unwrap_or_else(|| graph_rel.alias.clone()))]
+                    }
+                } else {
+                    // Fallback to old logic
+                    vec![rel_type_to_table_name(&extract_table_name(&graph_rel.center)
+                        .unwrap_or_else(|| graph_rel.alias.clone()))]
+                };
+                
+                // For now, use the first table for single-table logic
+                // TODO: Implement UNION logic for multiple tables
+                let mut rel_table = rel_tables.first().unwrap().clone();
                 
                 // Extract ID columns
                 let start_id_col = extract_id_column(&graph_rel.left)
@@ -1004,6 +1031,28 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
 
                 // Regular single-hop relationship: still need to use resolved table names!
+                // Handle multiple relationship types with UNION if needed
+                let mut relationship_ctes = vec![];
+                
+                if rel_tables.len() > 1 {
+                    // Multiple relationship types: create a UNION CTE
+                    let union_queries: Vec<String> = rel_tables.iter().map(|table| {
+                        format!("SELECT from_node_id, to_node_id FROM {}", table)
+                    }).collect();
+                    
+                    let union_sql = union_queries.join(" UNION ALL ");
+                    let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
+                    
+                    relationship_ctes.push(Cte {
+                        cte_name: cte_name.clone(),
+                        content: super::CteContent::RawSql(union_sql),
+                        is_recursive: false,
+                    });
+                    
+                    // Update rel_table to use the CTE name for subsequent processing
+                    rel_table = cte_name;
+                }
+                
                 // TODO: Apply the resolved table/column names to the child CTEs
                 // For now, fall back to the old path which doesn't resolve properly
                 // first extract the bottom one
@@ -1018,7 +1067,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     right_cte.append(&mut left_cte);
                 }
 
-                Ok(right_cte)
+                // Add relationship CTEs to the result
+                relationship_ctes.append(&mut right_cte);
+                
+                Ok(relationship_ctes)
             }
             LogicalPlan::Filter(filter) => filter.input.extract_ctes(last_node_alias),
             LogicalPlan::Projection(projection) => projection.input.extract_ctes(last_node_alias),
@@ -1186,6 +1238,30 @@ impl RenderPlanBuilder for LogicalPlan {
                     return Ok(child_ctes);
                 }
 
+                // Handle multiple relationship types for regular single-hop relationships
+                let mut relationship_ctes = vec![];
+                
+                if let Some(labels) = &graph_rel.labels {
+                    if labels.len() > 1 {
+                        // Multiple relationship types: get all table names
+                        let rel_tables = rel_types_to_table_names(labels);
+                        
+                        // Create a UNION CTE
+                        let union_queries: Vec<String> = rel_tables.iter().map(|table| {
+                            format!("SELECT from_node_id, to_node_id FROM {}", table)
+                        }).collect();
+                        
+                        let union_sql = union_queries.join(" UNION ALL ");
+                        let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
+                        
+                        relationship_ctes.push(Cte {
+                            cte_name: cte_name.clone(),
+                            content: super::CteContent::RawSql(union_sql),
+                            is_recursive: false,
+                        });
+                    }
+                }
+
                 // Normal path - recurse through children
                 let mut right_cte = graph_rel.right.extract_ctes_with_context(last_node_alias, context)?;
                 let mut center_cte = graph_rel.center.extract_ctes_with_context(last_node_alias, context)?;
@@ -1195,7 +1271,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     let mut left_cte = graph_rel.left.extract_ctes_with_context(last_node_alias, context)?;
                     right_cte.append(&mut left_cte);
                 }
-                Ok(right_cte)
+
+                // Add relationship CTEs
+                relationship_ctes.append(&mut right_cte);
+                
+                Ok(relationship_ctes)
             }
             LogicalPlan::Filter(filter) => {
                 // Store the filter in context so GraphRel nodes can access it
