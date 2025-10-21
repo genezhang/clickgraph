@@ -31,6 +31,7 @@ pub struct VariableLengthCteGenerator {
     pub start_node_filters: Option<String>, // WHERE clause for start node (e.g., "start_node.full_name = 'Alice'")
     pub end_node_filters: Option<String>,   // WHERE clause for end node (e.g., "end_full_name = 'Bob'")
     pub path_variable: Option<String>,   // Path variable name from MATCH clause (e.g., "p" in "MATCH p = ...")
+    pub relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
 }
 
 /// Mode for shortest path queries
@@ -70,6 +71,7 @@ impl VariableLengthCteGenerator {
         start_node_filters: Option<String>, // WHERE clause for start node
         end_node_filters: Option<String>,   // WHERE clause for end node
         path_variable: Option<String>,      // Path variable name (e.g., "p")
+        relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
     ) -> Self {
         // Try to get database from environment
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
@@ -95,6 +97,7 @@ impl VariableLengthCteGenerator {
             start_node_filters,
             end_node_filters,
             path_variable,
+            relationship_types,
         }
     }
     
@@ -104,6 +107,33 @@ impl VariableLengthCteGenerator {
             format!("{}.{}", db, table)
         } else {
             table.to_string()
+        }
+    }
+
+    /// Generate relationship type expression for a given hop
+    fn generate_relationship_type_for_hop(&self, _hop_count: u32) -> String {
+        // For now, return the first relationship type if available, otherwise a placeholder
+        if let Some(ref types) = self.relationship_types {
+            if let Some(first_type) = types.first() {
+                format!("['{}'] as path_relationships", first_type)
+            } else {
+                "[] as path_relationships".to_string()
+            }
+        } else {
+            "[] as path_relationships".to_string()
+        }
+    }
+
+    /// Get relationship type array for appending in recursive case
+    fn get_relationship_type_array(&self) -> String {
+        if let Some(ref types) = self.relationship_types {
+            if let Some(first_type) = types.first() {
+                format!("['{}']", first_type)
+            } else {
+                "[]".to_string()
+            }
+        } else {
+            "[]".to_string()
         }
     }
 
@@ -205,6 +235,7 @@ impl VariableLengthCteGenerator {
                 format!("{}.{} as end_id", self.end_node_alias, self.end_node_id_column),
                 "1 as hop_count".to_string(),
                 format!("[{}.{}] as path_nodes", self.start_node_alias, self.start_node_id_column),
+                self.generate_relationship_type_for_hop(1), // path_relationships for single hop
             ];
             
             // Add properties for start and end nodes
@@ -255,7 +286,7 @@ impl VariableLengthCteGenerator {
         // This is a simplified version - in practice, we'd need to handle
         // different relationship types and intermediate node types
         format!(
-            "    -- Multi-hop base case for {} hops (simplified)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_nodes\n    WHERE false  -- Placeholder",
+            "    -- Multi-hop base case for {} hops (simplified)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_nodes, [] as path_relationships\n    WHERE false  -- Placeholder",
             hop_count, hop_count
         )
     }
@@ -268,6 +299,7 @@ impl VariableLengthCteGenerator {
             format!("{}.{} as end_id", self.end_node_alias, self.end_node_id_column),
             "vp.hop_count + 1 as hop_count".to_string(),
             format!("arrayConcat(vp.path_nodes, [current_node.{}]) as path_nodes", self.end_node_id_column),
+            format!("arrayConcat(vp.path_relationships, {}) as path_relationships", self.get_relationship_type_array()),
         ];
         
         // Add properties: start properties come from CTE, end properties from new joined node
@@ -325,6 +357,7 @@ mod tests {
             None,          // no start node filters
             None,          // no end node filters
             None,          // no path variable
+            None,          // no relationship types
         );
 
         let cte = generator.generate_cte();
@@ -354,6 +387,7 @@ mod tests {
             None,           // no start node filters
             None,           // no end node filters
             None,           // no path variable
+            None,           // no relationship types
         );
 
         let sql = generator.generate_recursive_sql();

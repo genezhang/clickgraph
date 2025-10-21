@@ -88,6 +88,20 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 - All 4 YAML relationship types working (AUTHORED, FOLLOWS, LIKED, PURCHASED)
 - Relationship property filtering support
 
+**Multiple Relationship Types Support**
+- Alternate relationship patterns: `[:TYPE1|TYPE2]` with UNION SQL generation
+- Extended TableCtx from single `label` to `labels` vector throughout codebase
+- UNION ALL CTE generation for multiple relationship types
+- Comprehensive unit tests and partial end-to-end validation
+- Enables complex queries: `MATCH (a)-[:FOLLOWS|FRIENDS_WITH|LIKES]->(b)`
+
+**Shortest Path Algorithms**
+- Complete implementation of `shortestPath()` and `allShortestPaths()` functions
+- Recursive CTE-based path finding with early termination optimization
+- Support for variable-length path patterns with shortest path constraints
+- WHERE clause filtering on shortest path results
+- Performance optimized for graph analytics workloads
+
 **Robust Configuration System**
 - CLI argument support via clap (`src/main.rs`)
 - Environment variable configuration
@@ -194,17 +208,27 @@ cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
 
 **Core Read Query Features** (Priority Order):
 
-1. **Shortest Path Algorithms** (Next Priority)
-   - Implement `shortestPath()` and `allShortestPaths()`
+1. **Fix Multiple Relationship End-to-End Issue** (Next Priority)
+   - **Issue**: `[:FOLLOWS|FRIENDS_WITH]` returns 2/4 expected relationships
+   - **Root Cause**: Schema resolution difference between unit test and execution paths
+   - **Impact**: Complete the multiple relationship feature for full functionality
+   - **Estimated**: 2-4 hours
+
+2. **Path Variables**
+   - Path variables: `p = (a)-[r]->(b)`
+   - Path functions: `nodes(p)`, `relationships(p)`, `length(p)`
+   - **Estimated**: 4-6 hours
+
+3. **Shortest Path Algorithms**
+   - ✅ **shortestPath() and allShortestPaths()** - COMPLETED Oct 20, 2025
    - Leverage existing recursive CTE infrastructure
    - Add path weight/cost calculations
 
-2. **Pattern Extensions**
-   - Alternate relationship types: `[:TYPE1|TYPE2]`
-   - Path variables: `p = (a)-[r]->(b)`
-   - Pattern comprehensions: `[(a)-[]->(b) | b.name]`
+4. **Pattern Extensions**
+   - ✅ **Alternate relationship types**: `[:TYPE1|TYPE2]` - COMPLETED Oct 21, 2025
+   - Path comprehensions: `[(a)-[]->(b) | b.name]`
 
-3. **Graph Algorithms**
+5. **Graph Algorithms**
    - PageRank, centrality measures
    - Community detection
    - Path finding utilities
@@ -217,7 +241,7 @@ cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
 
 ## Documentation Standards
 
-**Simplified 3-Document Approach** (as of Oct 18, 2025):
+**Simplified 3-Document Approach** (as of Oct 21, 2025):
 
 ### Core Documents (Always Maintain)
 

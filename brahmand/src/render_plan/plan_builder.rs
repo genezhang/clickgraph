@@ -214,9 +214,91 @@ fn has_variable_length_rel(plan: &LogicalPlan) -> Option<(String, String)> {
     }
 }
 
-/// Extract path variable name from variable-length relationship
-/// Returns the path variable name (e.g., "p") if found
-fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
+/// Extract start and end node filters from a filter expression for variable-length paths
+fn extract_start_end_filters(
+    filter_expr: &RenderExpr,
+    left_alias: &str,
+    right_alias: &str,
+) -> (Option<String>, Option<String>, Option<RenderExpr>) {
+    use super::render_expr::OperatorApplication;
+    
+    match filter_expr {
+        RenderExpr::OperatorApplication(op_app) if op_app.operator == Operator::And => {
+            // AND expression - check each operand
+            let mut start_filters = vec![];
+            let mut end_filters = vec![];
+            let mut other_filters = vec![];
+            
+            for operand in &op_app.operands {
+                let (start_f, end_f, other_f) = extract_start_end_filters(operand, left_alias, right_alias);
+                if let Some(sf) = start_f { start_filters.push(sf); }
+                if let Some(ef) = end_f { end_filters.push(sf); }
+                if let Some(of) = other_f { other_filters.push(of); }
+            }
+            
+            let start_filter = if start_filters.is_empty() { None } else { Some(start_filters.join(" AND ")) };
+            let end_filter = if end_filters.is_empty() { None } else { Some(end_filters.join(" AND ")) };
+            let remaining_filter = if other_filters.is_empty() { 
+                None 
+            } else if other_filters.len() == 1 {
+                Some(other_filters.into_iter().next().unwrap())
+            } else {
+                Some(RenderExpr::OperatorApplication(OperatorApplication {
+                    operator: Operator::And,
+                    operands: other_filters,
+                }))
+            };
+            
+            (start_filter, end_filter, remaining_filter)
+        }
+        _ => {
+            // Check if this filter references start or end node
+            if references_alias(filter_expr, left_alias) {
+                // Convert to SQL string for start filter
+                (Some(filter_expr_to_sql(filter_expr, left_alias, "start_")), None, None)
+            } else if references_alias(filter_expr, right_alias) {
+                // Convert to SQL string for end filter
+                (None, Some(filter_expr_to_sql(filter_expr, right_alias, "end_")), None)
+            } else {
+                // Keep as general filter
+                (None, None, Some(filter_expr.clone()))
+            }
+        }
+    }
+}
+
+/// Check if a filter expression references a specific alias
+fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => prop.table_alias.0 == alias,
+        RenderExpr::OperatorApplication(op_app) => op_app.operands.iter().any(|op| references_alias(op, alias)),
+        RenderExpr::ScalarFnCall(fn_call) => fn_call.args.iter().any(|arg| references_alias(arg, alias)),
+        _ => false,
+    }
+}
+
+/// Convert a filter expression to SQL string for CTE filters
+fn filter_expr_to_sql(expr: &RenderExpr, alias: &str, prefix: &str) -> String {
+    match expr {
+        RenderExpr::OperatorApplication(op_app) if op_app.operator == Operator::Eq && op_app.operands.len() == 2 => {
+            if let (RenderExpr::PropertyAccessExp(prop), RenderExpr::Literal(lit)) = (&op_app.operands[0], &op_app.operands[1]) {
+                if prop.table_alias.0 == alias {
+                    let column = format!("{}{}", prefix, prop.column.0);
+                    match lit {
+                        super::render_expr::Literal::String(s) => format!("{} = '{}'", column, s),
+                        super::render_expr::Literal::Number(n) => format!("{} = {}", column, n),
+                        _ => format!("{} = {}", column, lit), // fallback
+                    }
+                } else {
+                    "true".to_string() // fallback
+                }
+            } else {
+                "true".to_string() // fallback
+            }
+        }
+        _ => "true".to_string() // fallback for complex expressions
+    }
+}
     match plan {
         LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
             rel.path_variable.clone()
@@ -271,12 +353,10 @@ fn rewrite_expr_for_var_len_cte(
                                     });
                                 }
                                 "relationships" => {
-                                    // relationships(p) -> construct array from path
-                                    // For now, return empty array - will enhance later
-                                    use super::render_expr::ScalarFnCall as SF;
-                                    return RenderExpr::ScalarFnCall(SF {
-                                        name: "array".to_string(),
-                                        args: vec![],
+                                    // relationships(p) -> path_relationships array
+                                    return RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias("t".to_string()),
+                                        column: Column("path_relationships".to_string()),
                                     });
                                 }
                                 _ => {
@@ -1019,6 +1099,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             None,                            // no start filters (old path, not used anymore)
                             None,                            // no end filters (old path, not used anymore)
                             graph_rel.path_variable.clone(), // path variable name
+                            graph_rel.labels.clone(),        // relationship type labels
                         );
                         generator.generate_cte()
                     };
@@ -1230,6 +1311,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             start_filter_sql,  // Start node filters for base case
                             end_filter_sql,    // End node filters for outer CTE
                             graph_rel.path_variable.clone(),  // Path variable name
+                            graph_rel.labels.clone(),        // relationship type labels
                         );
                         generator.generate_cte()
                     };

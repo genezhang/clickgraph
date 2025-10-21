@@ -29,6 +29,7 @@ mod where_clause_tests {
             start_filter,
             None,
             None,  // no path variable
+            None,  // no relationship types
         );
         
         let cte = generator.generate_cte();
@@ -65,6 +66,7 @@ mod where_clause_tests {
             None,
             end_filter,
             None,  // no path variable
+            None,  // no relationship types
         );
         
         let cte = generator.generate_cte();
@@ -104,6 +106,7 @@ mod where_clause_tests {
             start_filter,
             end_filter,
             None,  // no path variable
+            None,  // no relationship types
         );
         
         let cte = generator.generate_cte();
@@ -143,6 +146,7 @@ mod where_clause_tests {
             None,  // No start filter
             None,  // No end filter
             None,  // No path variable
+            None,  // no relationship types
         );
         
         let cte = generator.generate_cte();
