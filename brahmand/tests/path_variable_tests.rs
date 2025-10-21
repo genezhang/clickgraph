@@ -1,8 +1,8 @@
 // Integration test for path variable SQL generation
 use brahmand::{
-    open_cypher_parser::parse_cypher_query,
+    open_cypher_parser::parse_query,
     query_planner::logical_plan::plan_builder::build_logical_plan,
-    render_plan::plan_builder::RenderPlanBuilder,
+    render_plan::logical_plan_to_render_plan,
 };
 
 #[test]
@@ -11,7 +11,7 @@ fn test_path_variable_sql_generation() {
     let cypher = "MATCH p = shortestPath((a:Person)-[:FOLLOWS*]-(b:Person)) WHERE a.name = 'Alice' RETURN p";
     
     // Parse the query
-    let ast = parse_cypher_query(cypher)
+    let ast = parse_query(cypher)
         .expect("Failed to parse Cypher query");
     
     // Build logical plan
@@ -19,7 +19,7 @@ fn test_path_variable_sql_generation() {
         .expect("Failed to build logical plan");
     
     // Build render plan
-    let render_plan = logical_plan.to_render_plan()
+    let render_plan = logical_plan_to_render_plan(logical_plan)
         .expect("Failed to build render plan");
     
     // Convert to SQL
@@ -42,7 +42,7 @@ fn test_path_variable_with_properties() {
     let cypher = "MATCH p = shortestPath((a:Person)-[:FOLLOWS*]-(b:Person)) WHERE a.name = 'Alice' RETURN p, a.name";
     
     // Parse the query
-    let ast = parse_cypher_query(cypher)
+    let ast = parse_query(cypher)
         .expect("Failed to parse Cypher query");
     
     // Build logical plan
@@ -50,7 +50,7 @@ fn test_path_variable_with_properties() {
         .expect("Failed to build logical plan");
     
     // Build render plan
-    let render_plan = logical_plan.to_render_plan()
+    let render_plan = logical_plan_to_render_plan(logical_plan)
         .expect("Failed to build render plan");
     
     // Convert to SQL
@@ -70,7 +70,7 @@ fn test_non_path_variable_unchanged() {
     let cypher = "MATCH (a:Person)-[:FOLLOWS*]-(b:Person) WHERE a.name = 'Alice' RETURN a, b";
     
     // Parse the query
-    let ast = parse_cypher_query(cypher)
+    let ast = parse_query(cypher)
         .expect("Failed to parse Cypher query");
     
     // Build logical plan
@@ -78,7 +78,7 @@ fn test_non_path_variable_unchanged() {
         .expect("Failed to build logical plan");
     
     // Build render plan
-    let render_plan = logical_plan.to_render_plan()
+    let render_plan = logical_plan_to_render_plan(logical_plan)
         .expect("Failed to build render plan");
     
     // Convert to SQL

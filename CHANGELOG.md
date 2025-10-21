@@ -4,15 +4,16 @@
 
 ### 🚀 Features
 
-- **Shortest Path Queries** (Oct 18): Core implementation for `shortestPath()` and `allShortestPaths()`
+- **Shortest Path Queries** (Oct 18-20): Complete implementation for `shortestPath()` and `allShortestPaths()`
   - Parser: Case-insensitive matching for `shortestPath((a)-[:TYPE*]-(b))`
   - Query planner: ShortestPath/AllShortestPaths pattern handling
   - SQL generation: Nested CTE structure with hop count tracking
   - `shortestPath()`: `ORDER BY hop_count ASC LIMIT 1` (single shortest)
   - `allShortestPaths()`: `WHERE hop_count = MIN(hop_count)` (all shortest)
   - Cycle detection with `NOT has(path_nodes, node.id)`
+  - **WHERE clause filtering**: Applied in base case of recursive CTEs ✅ **[FIXED: Oct 20]**
   - Integration: Queries execute successfully against ClickHouse
-  - **Known limitation**: WHERE clause filtering not yet applied (returns shortest in entire graph)
+  - Tests: 18/18 WHERE filter tests passing, allShortestPaths SQL generation verified
   - 267/268 tests passing (99.6% coverage)
   - See `notes/shortest-path.md` for implementation details and debugging story
 

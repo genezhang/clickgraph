@@ -29,6 +29,12 @@ pub trait ToSql {
     fn to_sql(&self) -> String;
 }
 
+/// Convert a LogicalPlan to a RenderPlan
+pub fn logical_plan_to_render_plan(logical_plan: crate::query_planner::logical_plan::LogicalPlan) -> Result<RenderPlan, errors::RenderBuildError> {
+    use plan_builder::RenderPlanBuilder;
+    logical_plan.to_render_plan()
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct RenderPlan {
     pub ctes: CteItems,

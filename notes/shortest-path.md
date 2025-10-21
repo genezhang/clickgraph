@@ -1,8 +1,8 @@
 # Shortest Path Implementation
 
-**Status**: ✅ Core functionality complete, ⚠️ WHERE clause support pending  
-**Date**: October 18, 2025  
-**Commits**: 440e1de → 53b4852 (11 commits)
+**Status**: ✅ Complete - `shortestPath()` and `allShortestPaths()` with WHERE clause filtering  
+**Date**: October 18-20, 2025  
+**Commits**: 440e1de → 53b4852 (11 commits) + WHERE filter fixes (Oct 20)
 
 ## Summary
 
@@ -13,10 +13,10 @@ Implemented `shortestPath()` and `allShortestPaths()` functions for ClickGraph, 
 - ✅ Query planning: ShortestPath/AllShortestPaths pattern handling
 - ✅ SQL generation: Nested CTE structure with hop count tracking
 - ✅ Cycle detection: `NOT has(path_nodes, current_node.id)`
+- ✅ WHERE clause filtering: Applied in base case of recursive CTEs ✅ **[FIXED: Oct 20]**
 - ✅ Integration: Queries execute successfully against ClickHouse
 
 **Known Limitations**:
-- ⚠️ WHERE clause filtering not applied to recursive CTEs (see "Next Steps")
 - ⚠️ Path variable assignment (`p = shortestPath(...)`) not yet supported
 - ⚠️ Property filters in relationships not tested
 

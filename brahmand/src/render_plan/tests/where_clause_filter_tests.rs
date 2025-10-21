@@ -12,26 +12,36 @@
 
 use crate::{
     clickhouse_query_generator,
+    graph_catalog::graph_schema::GraphSchema,
     open_cypher_parser,
     query_planner::logical_plan::plan_builder::build_logical_plan,
     render_plan::plan_builder::RenderPlanBuilder,
 };
+use std::collections::HashMap;
 
 /// Helper function to parse Cypher, build logical plan, and generate SQL
 fn cypher_to_sql(cypher: &str) -> String {
     let ast = open_cypher_parser::parse_query(cypher)
         .expect("Failed to parse Cypher query");
-    
-    let (logical_plan, _plan_ctx) = build_logical_plan(&ast)
+
+    let (logical_plan, mut plan_ctx) = build_logical_plan(&ast)
         .expect("Failed to build logical plan");
-    
+
+    // Run optimizer passes to inject filters into GraphRel nodes
+    use crate::query_planner::optimizer;
+    use crate::graph_catalog::graph_schema::GraphSchema;
+
+    // Create a minimal graph schema for testing
+    let graph_schema = GraphSchema::build(1, HashMap::new(), HashMap::new(), HashMap::new());
+
+    let logical_plan = optimizer::initial_optimization(logical_plan, &mut plan_ctx).unwrap();
+    let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx).unwrap();
+
     let render_plan = logical_plan.to_render_plan()
         .expect("Failed to build render plan");
-    
-    clickhouse_query_generator::generate_sql(render_plan, 100)
-}
 
-#[cfg(test)]
+    clickhouse_query_generator::generate_sql(render_plan, 100)
+}#[cfg(test)]
 mod variable_length_path_filters {
     use super::*;
 
@@ -342,5 +352,32 @@ mod edge_cases {
             "SQL should contain the filter even with unbounded path");
         assert!(sql.contains("hop_count"),
             "SQL should still track hop_count for unbounded paths");
+    }
+
+    #[test]
+    fn test_all_shortest_paths_basic() {
+        let cypher = "MATCH allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) RETURN a.name, b.name";
+        let sql = cypher_to_sql(cypher);
+        
+        println!("allShortestPaths SQL:\n{}", sql);
+        
+        // Check for allShortestPaths-specific patterns
+        assert!(sql.contains("WHERE hop_count = (SELECT MIN(hop_count) FROM"),
+            "allShortestPaths should use MIN filtering to get all paths with minimum length");
+        // The SQL doesn't contain "allShortestPaths" literal, but should have the MIN filtering logic
+    }
+
+    #[test]
+    fn test_all_shortest_paths_with_filters() {
+        let cypher = "MATCH allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) WHERE a.name = 'Alice Johnson' AND b.name = 'David Lee' RETURN a.name, b.name";
+        let sql = cypher_to_sql(cypher);
+        
+        println!("allShortestPaths with filters SQL:\n{}", sql);
+        
+        // Check for both MIN filtering and WHERE clause filters
+        assert!(sql.contains("WHERE hop_count = (SELECT MIN(hop_count) FROM"),
+            "allShortestPaths should use MIN filtering");
+        assert!(sql.contains("Alice Johnson") && sql.contains("David Lee"),
+            "WHERE clause filters should be applied");
     }
 }

@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: October 18, 2025*
+*Updated: October 20, 2025*
 
 ---
 
@@ -14,8 +14,8 @@
 - **Variable-length paths**: `(u)-[*1..3]->(f)` with recursive CTEs ✅
 - **Path variables**: `MATCH p = (a)-[:TYPE*]-(b) RETURN p, length(p)` ✅
 - **Path functions**: `length(p)`, `nodes(p)`, `relationships(p)` on path objects ✅
-- **Shortest path queries**: `shortestPath((a)-[:TYPE*]-(b))` and `allShortestPaths()` ✅
-- **WHERE clause filters**: Work with all variable-length paths and shortestPath queries ✅ **[NEW: Oct 18, 2025]**
+- **Shortest path queries**: `shortestPath((a)-[:TYPE*]-(b))` and `allShortestPaths()` ✅ **[VERIFIED: Oct 20, 2025]**
+- **WHERE clause filters**: Work with all variable-length paths and shortestPath queries ✅ **[VERIFIED: Oct 20, 2025]**
 - **OPTIONAL MATCH**: `OPTIONAL MATCH (u)-[]->(f)` with LEFT JOIN ✅
 - **ViewScan**: Cypher labels → ClickHouse table names via YAML ✅
 - **Aggregations**: `COUNT`, `SUM`, `AVG`, `GROUP BY` ✅
