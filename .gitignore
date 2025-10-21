@@ -16,3 +16,18 @@ __pycache__/
 # Session summaries (archive these manually if needed)
 SESSION_COMPLETE_*.md
 SESSION_SUMMARY_*.md
+
+# Log files
+*.log
+server.log
+server_error.log
+clickgraph_server.log
+debug_server.log
+
+# Temporary scripts and files
+cleanup_*.ps1
+start_server_*.bat
+setup_social_*.sql
+
+# VS Code
+.vscode/
