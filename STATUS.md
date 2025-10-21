@@ -17,6 +17,9 @@
 - **Shortest path queries**: `shortestPath((a)-[:TYPE*]-(b))` and `allShortestPaths()` ✅ **[VERIFIED: Oct 20, 2025]**
 - **WHERE clause filters**: Work with all variable-length paths and shortestPath queries ✅ **[VERIFIED: Oct 20, 2025]**
 - **Alternate relationships**: `[:TYPE1|TYPE2]` multiple relationship types in patterns ✅ **[COMPLETED: Oct 21, 2025]**
+  - UNION SQL generation: ✅ Working
+  - Unit tests: ✅ Passing  
+  - End-to-end: ⚠️ Partial - returns 2/4 expected relationships
 - **ViewScan**: Cypher labels → ClickHouse table names via YAML, supports both nodes and relationships ✅
 - **Aggregations**: `COUNT`, `SUM`, `AVG`, `GROUP BY` ✅
 - **Ordering & Limits**: `ORDER BY`, `SKIP`, `LIMIT` ✅
