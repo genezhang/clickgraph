@@ -1043,9 +1043,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     let union_sql = union_queries.join(" UNION ALL ");
                     let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
                     
+                    // Format as proper CTE: cte_name AS (union_sql)
+                    let formatted_union_sql = format!("{} AS (\n{}\n)", cte_name, union_sql);
+                    
                     relationship_ctes.push(Cte {
                         cte_name: cte_name.clone(),
-                        content: super::CteContent::RawSql(union_sql),
+                        content: super::CteContent::RawSql(formatted_union_sql),
                         is_recursive: false,
                     });
                     
@@ -1242,9 +1245,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 let mut relationship_ctes = vec![];
                 
                 if let Some(labels) = &graph_rel.labels {
+                    log::debug!("GraphRel labels: {:?}", labels);
                     if labels.len() > 1 {
                         // Multiple relationship types: get all table names
                         let rel_tables = rel_types_to_table_names(labels);
+                        log::debug!("Resolved tables for labels {:?}: {:?}", labels, rel_tables);
                         
                         // Create a UNION CTE
                         let union_queries: Vec<String> = rel_tables.iter().map(|table| {
@@ -1254,9 +1259,12 @@ impl RenderPlanBuilder for LogicalPlan {
                         let union_sql = union_queries.join(" UNION ALL ");
                         let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
                         
+                        // Format as proper CTE: cte_name AS (union_sql)
+                        let formatted_union_sql = format!("{} AS (\n{}\n)", cte_name, union_sql);
+                        
                         relationship_ctes.push(Cte {
                             cte_name: cte_name.clone(),
-                            content: super::CteContent::RawSql(union_sql),
+                            content: super::CteContent::RawSql(formatted_union_sql),
                             is_recursive: false,
                         });
                     }
