@@ -11,7 +11,7 @@ test_queries = [
     {
         "name": "Basic path variable return",
         "query": """
-MATCH p = shortestPath((a:Person)-[:FOLLOWS*]-(b:Person))
+MATCH p = shortestPath((a:User)-[:FOLLOWS*]-(b:User))
 WHERE a.name = 'Alice' AND b.name = 'Bob'
 RETURN p
 """
@@ -19,7 +19,7 @@ RETURN p
     {
         "name": "Path with properties",
         "query": """
-MATCH p = shortestPath((a:Person)-[:FOLLOWS*]-(b:Person))
+MATCH p = shortestPath((a:User)-[:FOLLOWS*]-(b:User))
 WHERE a.name = 'Alice' AND b.name = 'Bob'
 RETURN p, a.name AS start_name, b.name AS end_name
 """
@@ -27,7 +27,7 @@ RETURN p, a.name AS start_name, b.name AS end_name
     {
         "name": "Variable-length path with range",
         "query": """
-MATCH p = (a:Person)-[:FOLLOWS*1..3]-(b:Person)
+MATCH p = (a:User)-[:FOLLOWS*1..3]-(b:User)
 WHERE a.name = 'Alice'
 RETURN p
 """

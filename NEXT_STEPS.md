@@ -1,15 +1,41 @@
 # Next Steps - Development Roadmap
 
 **Last Updated**: October 21, 2025
-**Current Status**: Multiple Relationship Types ✅ COMPLETE | ViewScan ✅ COMPLETE | Testing infrastructure ✅ READY
+**Current Status**: Multiple Relationship Types ✅ COMPLETE | ViewScan ✅ COMPLETE | Path Variables ✅ COMPLETE | Testing infrastructure ✅ READY
 **Branch**: `main`
-**Latest Commit**: Multiple relationship types with UNION logic
+**Latest Commit**: Path Variables feature with length(), nodes(), relationships() functions
 
 ---
 
 ## 🎉 Just Completed (October 21, 2025)
 
-### 1. Multiple Relationship Types - Complete ✅
+### 1. Path Variables - Complete ✅
+**What**: Full support for path variables and path functions in Cypher queries
+
+**Implementation**:
+- Path variables: `p = (a)-[r*]->(b)` → Captures entire path data
+- Path functions: `length(p)`, `nodes(p)`, `relationships(p)` → Extract path components
+- CTE-based implementation with array columns: `hop_count`, `path_nodes`, `path_relationships`
+- End-to-end testing with comprehensive validation
+
+**Files Modified**:
+- `brahmand/src/clickhouse_query_generator/variable_length_cte.rs` - CTE column generation
+- `brahmand/src/render_plan/plan_builder.rs` - Path function mapping
+- `brahmand/src/open_cypher_parser/ast.rs` - Path variable AST support
+- `test_path_variable.py` - End-to-end testing
+
+**Testing Status**:
+- ✅ Path variable parsing: Works correctly
+- ✅ Path functions: `length(p)`, `nodes(p)`, `relationships(p)` all functional
+- ✅ End-to-end queries: Return correct data types and values
+- ✅ CTE generation: Proper array column handling
+
+**Impact**:
+- 🎯 Enables complex path analysis: `MATCH p=(a)-[*2..4]->(b) RETURN length(p), nodes(p)`
+- 🎯 Foundation for advanced graph algorithms and analytics
+- 🎯 See: `notes/path-variables.md` for implementation details
+
+### 2. Multiple Relationship Types - Complete ✅
 **What**: Support for `[:TYPE1|TYPE2]` alternate relationship patterns with UNION SQL generation
 
 **Implementation**:
@@ -99,15 +125,15 @@ Now that Multiple Relationship Types, ViewScan, and Shortest Path are complete, 
    - **Estimated**: 2-3 hours
 
 ### Option B: Add More Cypher Features (High Impact)
-1. **Path Variables** (RECOMMENDED NEXT)
-   - Path variables: `p = (a)-[r]->(b)`
-   - Path functions: `nodes(p)`, `relationships(p)`, `length(p)`
-   - **Estimated**: 4-6 hours
-
-2. **Graph Algorithms**
+1. **Graph Algorithms**
    - PageRank implementation
    - Centrality measures (betweenness, closeness, degree)
    - **Estimated**: 1-2 weeks per algorithm
+
+2. **Pattern Comprehensions**
+   - List comprehensions: `[(a)-[]->(b) | b.name]`
+   - Pattern predicates in WHERE clauses
+   - **Estimated**: 4-6 hours
 
 ### Option C: Performance & Monitoring
 1. **Query Performance Metrics**
@@ -120,7 +146,7 @@ Now that Multiple Relationship Types, ViewScan, and Shortest Path are complete, 
    - Development velocity improvement
    - **Estimated**: 3-4 hours
 
-**My Recommendation**: **Option B.1 (Path Variables)** - Build on existing path infrastructure
+**My Recommendation**: **Option A.1 (Fix Multiple Relationship End-to-End Issue)** - Complete the multiple relationship feature for full functionality, then move to graph algorithms
 
 ---
 - ✅ **Status**: Working end-to-end!

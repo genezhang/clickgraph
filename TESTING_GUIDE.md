@@ -228,3 +228,101 @@ test_cases = [
 | Full suite | N/A | `python test_runner.py --test` | `python test_runner.py --test` |
 | Start/Stop | `.\test_server.ps1 -Start/Stop` | `python test_runner.py --start/stop` | `docker-compose ... up/down` |
 | Clean up | `.\test_server.ps1 -Clean` | `python test_runner.py --clean` | `docker-compose ... down -v` |
+
+---
+
+## Path Variable Testing Challenges & Solutions
+
+### Overview
+Path variable testing (`test_path_variable.py`) presents unique challenges due to the complexity of CTE generation, schema mapping, and WHERE clause handling in recursive queries.
+
+### Common Issues & Fixes
+
+#### 1. Server Hanging/Not Responding
+**Symptoms**: Server logs show successful binding but doesn't accept connections
+**Root Cause**: Port conflicts or improper background execution
+**Solution**:
+```powershell
+# Kill any existing processes
+Get-Process -Name brahmand -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# Use the test script for proper background execution
+.\test_server.ps1 -Start
+```
+
+#### 2. Schema Mapping Errors
+**Symptoms**: `UNKNOWN_IDENTIFIER` errors like `end_node.name` not found
+**Root Cause**: YAML schema doesn't match actual ClickHouse table structure
+**Solution**:
+```bash
+# Check actual table schema
+docker exec clickhouse clickhouse-client --database test_multi_rel --query "DESCRIBE users"
+
+# Update YAML to match (example)
+property_mappings:
+  name: full_name  # if ClickHouse column is 'full_name'
+```
+
+#### 3. CTE WHERE Clause Issues
+**Symptoms**: `end_node.name = 'Alice'` fails in CTE filtering
+**Root Cause**: WHERE conditions applied at wrong level in recursive CTE
+**Current Status**: Known limitation - path variable WHERE clauses need special handling
+**Workaround**: Test with simpler queries first, then add WHERE conditions
+
+#### 4. Column Reference Problems
+**Symptoms**: `end_node.full_name` cannot be resolved
+**Root Cause**: CTE column generation doesn't include all required properties
+**Solution**: Ensure path variable CTE includes all referenced columns:
+```sql
+-- Generated CTE should include:
+SELECT ..., end_node.full_name AS end_name, start_node.full_name AS start_name
+```
+
+### Testing Strategy for Path Variables
+
+1. **Start Simple**: Test basic path existence first
+   ```cypher
+   MATCH p = (a:User)-[:FOLLOWS*]-(b:User) RETURN p
+   ```
+
+2. **Add Constraints Gradually**: Test range limits before WHERE clauses
+   ```cypher
+   MATCH p = (a:User)-[:FOLLOWS*1..3]-(b:User) RETURN p
+   ```
+
+3. **Verify Schema Mapping**: Ensure YAML matches ClickHouse tables
+   ```bash
+   docker exec clickhouse clickhouse-client --database test_multi_rel --query "SELECT * FROM users LIMIT 1"
+   ```
+
+4. **Check CTE Generation**: Review generated SQL for column references
+   - Look for `path_nodes`, `path_relationships` arrays
+   - Verify `hop_count` column exists
+   - Check WHERE clause placement
+
+### Debugging Commands
+
+```powershell
+# View server logs
+Get-Content server.log -Tail 20
+
+# Check ClickHouse tables
+docker exec clickhouse clickhouse-client --database test_multi_rel --query "SHOW TABLES"
+docker exec clickhouse clickhouse-client --database test_multi_rel --query "DESCRIBE users"
+
+# Test basic connectivity
+Invoke-WebRequest -Uri "http://localhost:8080/query" -Method POST -ContentType "application/json" -Body '{"query":"MATCH (u:User) RETURN count(u)"}'
+```
+
+### Current Path Variable Status
+- ✅ Basic path variable parsing: Working
+- ✅ CTE generation with arrays: Working
+- ✅ Path functions (length, nodes): Working
+- ⚠️ WHERE clause filtering: Needs refinement
+- ⚠️ Schema mapping validation: Requires attention
+
+### Future Improvements
+1. Enhanced WHERE clause handling for path variables
+2. Automatic schema validation against ClickHouse
+3. Better error messages for CTE generation issues
+4. Path relationship type tracking in arrays

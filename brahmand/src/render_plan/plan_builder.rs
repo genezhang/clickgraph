@@ -220,10 +220,10 @@ fn extract_start_end_filters(
     left_alias: &str,
     right_alias: &str,
 ) -> (Option<String>, Option<String>, Option<RenderExpr>) {
-    use super::render_expr::OperatorApplication;
+    use super::render_expr::{OperatorApplication, Operator};
     
     match filter_expr {
-        RenderExpr::OperatorApplication(op_app) if op_app.operator == Operator::And => {
+        RenderExpr::OperatorApplicationExp(op_app) if op_app.operator == Operator::And => {
             // AND expression - check each operand
             let mut start_filters = vec![];
             let mut end_filters = vec![];
@@ -232,7 +232,7 @@ fn extract_start_end_filters(
             for operand in &op_app.operands {
                 let (start_f, end_f, other_f) = extract_start_end_filters(operand, left_alias, right_alias);
                 if let Some(sf) = start_f { start_filters.push(sf); }
-                if let Some(ef) = end_f { end_filters.push(sf); }
+                if let Some(ef) = end_f { end_filters.push(ef); }
                 if let Some(of) = other_f { other_filters.push(of); }
             }
             
@@ -243,7 +243,7 @@ fn extract_start_end_filters(
             } else if other_filters.len() == 1 {
                 Some(other_filters.into_iter().next().unwrap())
             } else {
-                Some(RenderExpr::OperatorApplication(OperatorApplication {
+                Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
                     operator: Operator::And,
                     operands: other_filters,
                 }))
@@ -271,7 +271,7 @@ fn extract_start_end_filters(
 fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
     match expr {
         RenderExpr::PropertyAccessExp(prop) => prop.table_alias.0 == alias,
-        RenderExpr::OperatorApplication(op_app) => op_app.operands.iter().any(|op| references_alias(op, alias)),
+        RenderExpr::OperatorApplicationExp(op_app) => op_app.operands.iter().any(|op| references_alias(op, alias)),
         RenderExpr::ScalarFnCall(fn_call) => fn_call.args.iter().any(|arg| references_alias(arg, alias)),
         _ => false,
     }
@@ -280,14 +280,15 @@ fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
 /// Convert a filter expression to SQL string for CTE filters
 fn filter_expr_to_sql(expr: &RenderExpr, alias: &str, prefix: &str) -> String {
     match expr {
-        RenderExpr::OperatorApplication(op_app) if op_app.operator == Operator::Eq && op_app.operands.len() == 2 => {
+        RenderExpr::OperatorApplicationExp(op_app) if op_app.operator == Operator::Equal && op_app.operands.len() == 2 => {
             if let (RenderExpr::PropertyAccessExp(prop), RenderExpr::Literal(lit)) = (&op_app.operands[0], &op_app.operands[1]) {
                 if prop.table_alias.0 == alias {
                     let column = format!("{}{}", prefix, prop.column.0);
                     match lit {
                         super::render_expr::Literal::String(s) => format!("{} = '{}'", column, s),
-                        super::render_expr::Literal::Number(n) => format!("{} = {}", column, n),
-                        _ => format!("{} = {}", column, lit), // fallback
+                        super::render_expr::Literal::Integer(n) => format!("{} = {}", column, n),
+                        super::render_expr::Literal::Float(f) => format!("{} = {}", column, f),
+                        _ => "true".to_string(), // fallback
                     }
                 } else {
                     "true".to_string() // fallback
@@ -299,6 +300,8 @@ fn filter_expr_to_sql(expr: &RenderExpr, alias: &str, prefix: &str) -> String {
         _ => "true".to_string() // fallback for complex expressions
     }
 }
+
+fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
             rel.path_variable.clone()
@@ -763,7 +766,7 @@ fn render_expr_to_sql_for_cte(
             if table_alias == start_cypher_alias {
                 format!("start_node.{}", column)
             } else if table_alias == end_cypher_alias {
-                format!("end_{}", column)  // end_name, end_email, etc.
+                format!("end_node.{}", column)  // end_node.name, end_node.email, etc.
             } else {
                 // Fallback: use as-is
                 format!("{}.{}", table_alias, column)
