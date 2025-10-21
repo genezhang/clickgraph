@@ -204,8 +204,8 @@ pub mod utils {
 
     /// Format version as string for logging
     pub fn version_to_string(version: u32) -> String {
-        let major = (version >> 16) & 0xFF;
-        let minor = (version >> 8) & 0xFF;
+        let major = (version >> 8) & 0xFF;
+        let minor = version & 0xFF;
         format!("{}.{}", major, minor)
     }
 }

@@ -1059,7 +1059,7 @@ mod tests {
             "p1".to_string(),
             TableCtx::build(
                 "p1".to_string(),
-                Some("Person".to_string()),
+                Some(vec!["Person".to_string()]),
                 vec![],
                 false,
                 true,
@@ -1069,7 +1069,7 @@ mod tests {
             "p2".to_string(),
             TableCtx::build(
                 "p2".to_string(),
-                Some("Person".to_string()),
+                Some(vec!["Person".to_string()]),
                 vec![],
                 false,
                 true,
@@ -1079,7 +1079,7 @@ mod tests {
             "p3".to_string(),
             TableCtx::build(
                 "p3".to_string(),
-                Some("Person".to_string()),
+                Some(vec!["Person".to_string()]),
                 vec![],
                 false,
                 true,
@@ -1091,7 +1091,7 @@ mod tests {
             "c1".to_string(),
             TableCtx::build(
                 "c1".to_string(),
-                Some("Company".to_string()),
+                Some(vec!["Company".to_string()]),
                 vec![],
                 false,
                 true,
@@ -1103,7 +1103,7 @@ mod tests {
             "f1".to_string(),
             TableCtx::build(
                 "f1".to_string(),
-                Some("FOLLOWS".to_string()),
+                Some(vec!["FOLLOWS".to_string()]),
                 vec![],
                 true,
                 true,
@@ -1113,7 +1113,7 @@ mod tests {
             "f2".to_string(),
             TableCtx::build(
                 "f2".to_string(),
-                Some("FOLLOWS".to_string()),
+                Some(vec!["FOLLOWS".to_string()]),
                 vec![],
                 true,
                 true,
@@ -1125,7 +1125,7 @@ mod tests {
             "w1".to_string(),
             TableCtx::build(
                 "w1".to_string(),
-                Some("WORKS_AT".to_string()),
+                Some(vec!["WORKS_AT".to_string()]),
                 vec![],
                 true,
                 true,
@@ -1171,6 +1171,7 @@ mod tests {
             shortest_path_mode: None,
             path_variable: None,
             where_predicate: None, // Will be populated by filter pushdown
+            labels: None,
         }))
     }
 
@@ -1465,7 +1466,7 @@ mod tests {
             "f1".to_string(),
             TableCtx::build(
                 "f1".to_string(),
-                Some("FOLLOWS_outgoing".to_string()),
+                Some(vec!["FOLLOWS_outgoing".to_string()]),
                 vec![],
                 true,
                 true,
@@ -1696,7 +1697,7 @@ mod tests {
         let mut plan_ctx = setup_plan_ctx_with_graph_entities();
 
         // Update relationship label for incoming direction
-        // plan_ctx.get_mut_table_ctx("f1").unwrap().set_label(Some("FOLLOWS_incoming".to_string()));
+        // plan_ctx.get_mut_table_ctx("f1").unwrap().set_labels(Some(vec!["FOLLOWS_incoming"]));
         plan_ctx
             .get_mut_table_ctx("f1")
             .unwrap()

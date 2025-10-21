@@ -195,7 +195,7 @@ pub struct ConnectedPattern {
 pub struct RelationshipPattern {
     pub name: Option<String>,
     pub direction: Direction,
-    pub label: Option<String>,
+    pub labels: Option<Vec<String>>,  // Support multiple labels: [:TYPE1|TYPE2]
     pub properties: Option<Vec<Property>>,
 }
 
@@ -357,7 +357,7 @@ impl<'a> From<open_cypher_parser::ast::RelationshipPattern<'a>> for Relationship
         RelationshipPattern {
             name: value.name.map(|s| s.to_string()),
             direction: Direction::from(value.direction),
-            label: value.label.map(|s| s.to_string()),
+            labels: value.labels.map(|labels| labels.into_iter().map(|s| s.to_string()).collect()),
             properties: value
                 .properties
                 .map(|props| props.into_iter().map(Property::from).collect()),
@@ -567,7 +567,7 @@ mod tests {
         let ast_relationship_pattern = ast::RelationshipPattern {
             name: Some("follows"),
             direction: ast::Direction::Outgoing,
-            label: Some("FOLLOWS"),
+            labels: Some(vec!["FOLLOWS"]),
             properties: Some(vec![ast::Property::PropertyKV(ast::PropertyKVPair {
                 key: "since",
                 value: ast::Expression::Literal(ast::Literal::Integer(2020)),
@@ -582,8 +582,8 @@ mod tests {
         );
         assert_eq!(logical_relationship_pattern.direction, Direction::Outgoing);
         assert_eq!(
-            logical_relationship_pattern.label,
-            Some("FOLLOWS".to_string())
+            logical_relationship_pattern.labels,
+            Some(vec!["FOLLOWS".to_string()])
         );
         assert!(logical_relationship_pattern.properties.is_some());
 
@@ -612,7 +612,7 @@ mod tests {
         let relationship = ast::RelationshipPattern {
             name: Some("works_at"),
             direction: ast::Direction::Outgoing,
-            label: Some("WORKS_AT"),
+            labels: Some(vec!["WORKS_AT"]),
             properties: None,
             variable_length: None,
         };
@@ -645,8 +645,8 @@ mod tests {
             Some("works_at".to_string())
         );
         assert_eq!(
-            logical_connected_pattern.relationship.label,
-            Some("WORKS_AT".to_string())
+            logical_connected_pattern.relationship.labels,
+            Some(vec!["WORKS_AT".to_string()])
         );
         assert_eq!(
             logical_connected_pattern.relationship.direction,

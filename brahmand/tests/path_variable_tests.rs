@@ -2,7 +2,7 @@
 use brahmand::{
     open_cypher_parser::parse_query,
     query_planner::logical_plan::plan_builder::build_logical_plan,
-    render_plan::logical_plan_to_render_plan,
+    render_plan::{logical_plan_to_render_plan, ToSql},
 };
 
 #[test]
@@ -15,11 +15,11 @@ fn test_path_variable_sql_generation() {
         .expect("Failed to parse Cypher query");
     
     // Build logical plan
-    let logical_plan = build_logical_plan(&ast)
+    let (logical_plan, _plan_ctx) = build_logical_plan(&ast)
         .expect("Failed to build logical plan");
     
     // Build render plan
-    let render_plan = logical_plan_to_render_plan(logical_plan)
+    let render_plan = logical_plan_to_render_plan((*logical_plan).clone())
         .expect("Failed to build render plan");
     
     // Convert to SQL
@@ -46,11 +46,11 @@ fn test_path_variable_with_properties() {
         .expect("Failed to parse Cypher query");
     
     // Build logical plan
-    let logical_plan = build_logical_plan(&ast)
+    let (logical_plan, _plan_ctx) = build_logical_plan(&ast)
         .expect("Failed to build logical plan");
     
     // Build render plan
-    let render_plan = logical_plan_to_render_plan(logical_plan)
+    let render_plan = logical_plan_to_render_plan((*logical_plan).clone())
         .expect("Failed to build render plan");
     
     // Convert to SQL
@@ -74,11 +74,11 @@ fn test_non_path_variable_unchanged() {
         .expect("Failed to parse Cypher query");
     
     // Build logical plan
-    let logical_plan = build_logical_plan(&ast)
+    let (logical_plan, _plan_ctx) = build_logical_plan(&ast)
         .expect("Failed to build logical plan");
     
     // Build render plan
-    let render_plan = logical_plan_to_render_plan(logical_plan)
+    let render_plan = logical_plan_to_render_plan((*logical_plan).clone())
         .expect("Failed to build render plan");
     
     // Convert to SQL

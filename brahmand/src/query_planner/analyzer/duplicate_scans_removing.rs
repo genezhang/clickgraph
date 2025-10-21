@@ -150,6 +150,7 @@ mod tests {
             shortest_path_mode: None,
             path_variable: None,
             where_predicate: None, // Will be populated by filter pushdown
+            labels: None,
         }))
     }
 

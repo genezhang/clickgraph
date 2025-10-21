@@ -11,7 +11,7 @@ use crate::query_planner::{
 #[derive(Debug, PartialEq, Clone)]
 pub struct TableCtx {
     alias: String,
-    label: Option<String>,
+    labels: Option<Vec<String>>,
     properties: Vec<Property>,
     filter_predicates: Vec<LogicalExpr>,
     projection_items: Vec<ProjectionItem>,
@@ -39,14 +39,14 @@ impl TableCtx {
 
     pub fn build(
         alias: String,
-        label: Option<String>,
+        labels: Option<Vec<String>>,
         properties: Vec<Property>,
         is_rel: bool,
         explicit_alias: bool,
     ) -> Self {
         TableCtx {
             alias,
-            label,
+            labels,
             properties,
             filter_predicates: vec![],
             projection_items: vec![],
@@ -57,17 +57,21 @@ impl TableCtx {
     }
 
     pub fn get_label_str(&self) -> Result<String, PlanCtxError> {
-        self.label.clone().ok_or(PlanCtxError::Label {
+        self.labels.as_ref().and_then(|v| v.first()).cloned().ok_or(PlanCtxError::Label {
             alias: self.alias.clone(),
         })
     }
 
-    pub fn get_label_opt(&self) -> Option<String> {
-        self.label.clone()
+    pub fn get_labels(&self) -> Option<&Vec<String>> {
+        self.labels.as_ref()
     }
 
-    pub fn set_label(&mut self, label_otp: Option<String>) {
-        self.label = label_otp;
+    pub fn get_label_opt(&self) -> Option<String> {
+        self.labels.as_ref().and_then(|v| v.first()).cloned()
+    }
+
+    pub fn set_labels(&mut self, labels_opt: Option<Vec<String>>) {
+        self.labels = labels_opt;
     }
 
     pub fn get_projections(&self) -> &Vec<ProjectionItem> {
@@ -256,7 +260,7 @@ impl fmt::Display for PlanCtx {
 impl TableCtx {
     fn fmt_with_indent(&self, f: &mut fmt::Formatter<'_>, indent: usize) -> fmt::Result {
         let pad = " ".repeat(indent);
-        writeln!(f, "{}         label: {:?}", pad, self.label)?;
+        writeln!(f, "{}         labels: {:?}", pad, self.labels)?;
         writeln!(f, "{}         properties: {:?}", pad, self.properties)?;
         writeln!(
             f,

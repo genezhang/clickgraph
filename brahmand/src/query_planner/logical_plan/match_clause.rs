@@ -161,6 +161,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             generate_id()
         };
         let rel_labels = rel.labels.as_ref().map(|labels| labels.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        log::debug!("Parsed relationship labels: {:?}", rel_labels);
         let rel_properties = rel
             .properties
             .clone()

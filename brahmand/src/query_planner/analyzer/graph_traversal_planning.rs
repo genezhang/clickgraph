@@ -57,7 +57,7 @@ impl AnalyzerPass for GraphTRaversalPlanning {
 
                     for mut ctx in ctxs_to_update.into_iter() {
                         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&ctx.alias) {
-                            table_ctx.set_label(Some(ctx.label));
+                            table_ctx.set_labels(Some(vec![ctx.label]));
                             // table_ctx.projection_items.append(&mut ctx.projections);
                             if let Some(plan_expr) = ctx.insubquery {
                                 table_ctx.insert_filter(plan_expr);
@@ -71,10 +71,10 @@ impl AnalyzerPass for GraphTRaversalPlanning {
                             // add new table contexts
                             let mut new_table_ctx = TableCtx::build(
                                 ctx.alias.clone(),
-                                Some(ctx.label),
+                                Some(vec![ctx.label]),
                                 vec![],
                                 ctx.is_rel,
-                                false,
+                                true,
                             );
                             if let Some(plan_expr) = ctx.insubquery {
                                 new_table_ctx.insert_filter(plan_expr);
@@ -102,7 +102,7 @@ impl AnalyzerPass for GraphTRaversalPlanning {
 
                     for mut ctx in ctxs_to_update.into_iter() {
                         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&ctx.alias) {
-                            table_ctx.set_label(Some(ctx.label));
+                            table_ctx.set_labels(Some(vec![ctx.label]));
                             // table_ctx.projection_items.append(&mut ctx.projections);
                             if let Some(plan_expr) = ctx.insubquery {
                                 table_ctx.insert_filter(plan_expr);
@@ -116,10 +116,10 @@ impl AnalyzerPass for GraphTRaversalPlanning {
                             // add new table contexts
                             let mut new_table_ctx = TableCtx::build(
                                 ctx.alias.clone(),
-                                Some(ctx.label),
+                                Some(vec![ctx.label]),
                                 vec![],
                                 ctx.is_rel,
-                                false,
+                                true,
                             );
                             if let Some(plan_expr) = ctx.insubquery {
                                 new_table_ctx.insert_filter(plan_expr);

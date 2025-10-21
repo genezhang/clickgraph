@@ -4,9 +4,9 @@ REM Start ClickGraph server in a new window
 set CLICKHOUSE_URL=http://localhost:8123
 set CLICKHOUSE_USER=test_user
 set CLICKHOUSE_PASSWORD=test_pass
-set CLICKHOUSE_DATABASE=brahmand
-set GRAPH_CONFIG_PATH=social_network.yaml
-set RUST_LOG=trace
+set CLICKHOUSE_DATABASE=test_multi_rel
+set GRAPH_CONFIG_PATH=multi_rel_test.yaml
+set RUST_LOG=debug
 
 echo.
 echo ==========================================

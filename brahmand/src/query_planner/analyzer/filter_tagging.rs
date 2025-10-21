@@ -493,7 +493,7 @@ mod tests {
             "user".to_string(),
             TableCtx::build(
                 "user".to_string(),
-                Some("Person".to_string()),
+                Some(vec!["Person".to_string()]),
                 vec![],
                 false,
                 true,
@@ -505,7 +505,7 @@ mod tests {
             "follows".to_string(),
             TableCtx::build(
                 "follows".to_string(),
-                Some("FOLLOWS".to_string()),
+                Some(vec!["FOLLOWS".to_string()]),
                 vec![],
                 true,
                 true,
@@ -517,7 +517,7 @@ mod tests {
             "company".to_string(),
             TableCtx::build(
                 "company".to_string(),
-                Some("Company".to_string()),
+                Some(vec!["Company".to_string()]),
                 vec![],
                 false,
                 true,

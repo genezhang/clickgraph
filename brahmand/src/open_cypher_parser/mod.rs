@@ -332,7 +332,7 @@ mod tests {
                     relationship: RelationshipPattern {
                         name: None,
                         direction: Direction::Either,
-                        label: None,
+                        labels: None,
                         properties: None,
                         variable_length: None,
                     },
@@ -349,7 +349,7 @@ mod tests {
                     relationship: RelationshipPattern {
                         name: None,
                         direction: Direction::Outgoing,                        variable_length: None,
-                        label: None,
+                        labels: None,
                         properties: None,                    },
                     end_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("b"),
@@ -500,7 +500,7 @@ mod tests {
                     relationship: RelationshipPattern {
                         name: Some("r"),
                         direction: Direction::Outgoing,                        variable_length: None,
-                        label: Some("ACTED_IN"),
+                        labels: Some(vec!["ACTED_IN"]),
                         properties: None,                    },
                     end_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("movie"),
@@ -516,7 +516,7 @@ mod tests {
                     relationship: RelationshipPattern {
                         name: None,
                         direction: Direction::Incoming,                        variable_length: None,
-                        label: Some("DIRECTED"),
+                        labels: Some(vec!["DIRECTED"]),
                         properties: None,                    },
                     end_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("director"),
@@ -582,7 +582,7 @@ mod tests {
                             relationship: RelationshipPattern {
                                 name: None,
                                 direction: Direction::Outgoing,                        variable_length: None,
-                                label: None,
+                                labels: None,
                                 properties: None,                            },
                             end_node: Rc::new(RefCell::new(NodePattern {
                                 name: Some("c"),
@@ -700,7 +700,7 @@ mod tests {
                 relationship: RelationshipPattern {
                     name: Some("r"),
                     direction: Direction::Outgoing,                        variable_length: None,
-                    label: Some("RELTYPE"),
+                    labels: Some(vec!["RELTYPE"]),
                     properties: Some(vec![Property::PropertyKV(PropertyKVPair {
                         key: "name",
                         value: Expression::PropertyAccessExp(PropertyAccess {

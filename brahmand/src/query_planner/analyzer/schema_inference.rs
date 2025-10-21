@@ -179,7 +179,7 @@ impl SchemaInference {
                                 pass: Pass::SchemaInference,
                                 source: e,
                             })?;
-                    table_ctx.set_label(Some(label));
+                    table_ctx.set_labels(Some(vec![label]));
                 }
 
                 // let left_tf = self.infer_schema(graph_rel.left.clone(), plan_ctx, graph_schema);
