@@ -20,6 +20,7 @@
 - **Stateless Architecture**: Offloads all storage and query execution to ClickHouse—no extra datastore required
 - **Cypher Query Language**: Industry-standard Cypher read syntax for intuitive, expressive property-graph querying
 - **Variable-Length Paths**: Recursive traversals with `*1..3` syntax using ClickHouse WITH RECURSIVE CTEs
+- **Path Variables & Functions**: Capture and analyze path data with `length(p)`, `nodes(p)`, `relationships(p)` functions
 - **Analytical-scale Performance**: Optimized for very large datasets and complex multi-hop traversals
 
 ### Neo4j Ecosystem Compatibility
@@ -202,7 +203,40 @@ export BRAHMAND_MAX_CTE_DEPTH=150  # Or via environment variable
 
 See `docs/configuration.md` for complete configuration documentation.
 
-## 📚 Documentation
+## � Running in Background (Windows)
+
+For Windows users, ClickGraph supports running in the background using PowerShell jobs:
+
+### PowerShell Background Jobs (Recommended)
+
+```powershell
+# Start server in background
+.\start_server_background.ps1
+
+# Check if server is running
+Invoke-WebRequest -Uri "http://localhost:8080/health"
+
+# Stop the server (replace JOB_ID with actual job ID shown)
+Stop-Job -Id JOB_ID; Remove-Job -Id JOB_ID
+```
+
+### Alternative: New Command Window
+
+Use the batch file to start the server in a separate command window:
+
+```batch
+start_server_background.bat
+```
+
+### Manual Daemon Mode
+
+The server also supports a `--daemon` flag for Unix-like daemon behavior:
+
+```bash
+cargo run --bin brahmand -- --daemon --http-port 8080
+```
+
+## �📚 Documentation
 
 ### User Guides
 - **[Getting Started](docs/getting-started.md)** - Complete setup walkthrough and first queries
@@ -230,6 +264,7 @@ ClickGraph includes the following completed features:
 - ✅ **Neo4j Bolt Protocol v4.4**: Full compatibility with Neo4j drivers and tools
 - ✅ **OPTIONAL MATCH**: LEFT JOIN semantics for optional graph patterns with NULL handling
 - ✅ **Variable-Length Paths**: Recursive traversals with configurable depth limits
+- ✅ **Path Variables & Functions**: `MATCH p = (a)-[*]->(b) RETURN length(p), nodes(p), relationships(p)`
 - ✅ **View-Based Graph Model**: Transform existing tables to graphs via YAML configuration  
 - ✅ **Dual Server Architecture**: HTTP REST API and Bolt protocol simultaneously
 - ✅ **Comprehensive Testing**: 261/262 tests passing (99.6% success rate)

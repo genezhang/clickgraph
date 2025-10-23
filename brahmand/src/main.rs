@@ -35,6 +35,10 @@ struct Cli {
     /// Maximum recursive CTE evaluation depth for variable-length paths
     #[arg(long, default_value_t = 100)]
     max_cte_depth: u32,
+
+    /// Run server in daemon mode (background process)
+    #[arg(long)]
+    daemon: bool,
 }
 
 impl From<Cli> for server::ServerConfig {
@@ -46,6 +50,7 @@ impl From<Cli> for server::ServerConfig {
             bolt_port: cli.bolt_port,
             bolt_enabled: !cli.disable_bolt,  // Invert the flag
             max_cte_depth: cli.max_cte_depth,
+            daemon: cli.daemon,
         })
     }
 }

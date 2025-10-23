@@ -177,23 +177,21 @@ impl VariableLengthCteGenerator {
         }
 
         // Build CTE structure based on shortest path mode and filters
-        // 3-tier structure when end node filters present:
-        //   1. path_inner - generates all paths (base + recursive)
-        //   2. path_to_target - filters paths reaching the target node
-        //   3. path - selects shortest path(s)
+        // For shortest path queries, end filters are now applied during path generation
+        // in the inner CTE, so we don't need separate filtering steps
         let sql = match (&self.shortest_path_mode, &self.end_node_filters) {
             (Some(ShortestPathMode::Shortest), Some(end_filters)) => {
-                // 3-tier: inner → filter target → select shortest
+                // Find shortest path first, then apply end filters
                 format!(
-                    "{}_inner AS (\n{}\n),\n{}_to_target AS (\n    SELECT * FROM {}_inner WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target ORDER BY hop_count ASC LIMIT 1\n)",
-                    self.cte_name, query_body, self.cte_name, self.cte_name, end_filters, self.cte_name, self.cte_name
+                    "{}_inner AS (\n{}\n),\n{}_shortest AS (\n    SELECT * FROM {}_inner ORDER BY hop_count ASC LIMIT 1\n),\n{}_to_target AS (\n    SELECT * FROM {}_shortest WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target\n)",
+                    self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name, self.cte_name, end_filters, self.cte_name, self.cte_name
                 )
             }
             (Some(ShortestPathMode::AllShortest), Some(end_filters)) => {
-                // 3-tier: inner → filter target → select all shortest
+                // Find all shortest paths first, then apply end filters
                 format!(
-                    "{}_inner AS (\n{}\n),\n{}_to_target AS (\n    SELECT * FROM {}_inner WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target WHERE hop_count = (SELECT MIN(hop_count) FROM {}_to_target)\n)",
-                    self.cte_name, query_body, self.cte_name, self.cte_name, end_filters, self.cte_name, self.cte_name, self.cte_name
+                    "{}_inner AS (\n{}\n),\n{}_all_shortest AS (\n    SELECT * FROM {}_inner WHERE hop_count = (SELECT MIN(hop_count) FROM {}_inner)\n),\n{}_to_target AS (\n    SELECT * FROM {}_all_shortest WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target\n)",
+                    self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name, self.cte_name, self.cte_name, end_filters, self.cte_name, self.cte_name
                 )
             }
             (Some(ShortestPathMode::Shortest), None) => {
@@ -211,10 +209,10 @@ impl VariableLengthCteGenerator {
                 )
             }
             (None, Some(end_filters)) => {
-                // 2-tier: inner → filter target (no shortest path selection)
+                // End filters are applied in separate _to_target CTE
                 format!(
-                    "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE {}\n)",
-                    self.cte_name, query_body, self.cte_name, self.cte_name, end_filters
+                    "{}_inner AS (\n{}\n),\n{}_to_target AS (\n    SELECT * FROM {}_inner WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target\n)",
+                    self.cte_name, query_body, self.cte_name, self.cte_name, end_filters, self.cte_name, self.cte_name
                 )
             }
             (None, None) => {
@@ -269,9 +267,14 @@ impl VariableLengthCteGenerator {
                 end_table = self.format_table_name(&self.end_node_table)
             );
             
-            // Add WHERE clause if start node filters are present
+            // Add WHERE clause with only start node filters (end filters applied later)
+            let mut where_conditions = Vec::new();
             if let Some(ref filters) = self.start_node_filters {
-                query.push_str(&format!("\n    WHERE {}", filters));
+                where_conditions.push(filters.clone());
+            }
+            
+            if !where_conditions.is_empty() {
+                query.push_str(&format!("\n    WHERE {}", where_conditions.join(" AND ")));
             }
             
             query
@@ -316,8 +319,20 @@ impl VariableLengthCteGenerator {
         
         let select_clause = select_items.join(",\n        ");
         
+        let mut where_conditions = vec![
+            format!("vp.hop_count < {}", max_hops),
+            format!("NOT has(vp.path_nodes, current_node.{})", self.end_node_id_column),  // Cycle detection
+        ];
+        
+        // Add end node filters if present
+        if let Some(ref filters) = self.end_node_filters {
+            where_conditions.push(filters.clone());
+        }
+        
+        let where_clause = where_conditions.join("\n      AND ");
+        
         format!(
-            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON vp.end_id = current_node.{current_id_col}\n    JOIN {rel_table} {rel} ON current_node.{current_id_col} = {rel}.{from_col}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}\n    WHERE vp.hop_count < {max_hops}\n      AND NOT has(vp.path_nodes, current_node.{current_id_col})  -- Cycle detection",
+            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON vp.end_id = current_node.{current_id_col}\n    JOIN {rel_table} {rel} ON current_node.{current_id_col} = {rel}.{from_col}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}\n    WHERE {where_clause}",
             select = select_clause,
             end = self.end_node_alias,
             end_id_col = self.end_node_id_column,
@@ -329,7 +344,7 @@ impl VariableLengthCteGenerator {
             to_col = self.relationship_to_column,
             rel = self.relationship_alias,
             end_table = self.format_table_name(&self.end_node_table),
-            max_hops = max_hops
+            where_clause = where_clause
         )
     }
 }

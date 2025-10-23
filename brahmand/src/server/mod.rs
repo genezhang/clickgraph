@@ -7,6 +7,10 @@ use handlers::{query_handler, health_check};
 use dotenv::dotenv;
 use tokio::sync::{OnceCell, RwLock};
 use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::signal::unix::{signal, SignalKind};
+#[cfg(windows)]
+use tokio::signal;
 
 use crate::graph_catalog::{
     graph_schema::GraphSchema,
@@ -29,6 +33,7 @@ pub struct ServerConfig {
     pub bolt_port: u16,
     pub bolt_enabled: bool,
     pub max_cte_depth: u32,
+    pub daemon: bool,
 }
 
 impl ServerConfig {
@@ -52,6 +57,7 @@ impl ServerConfig {
                 .unwrap_or("100".to_string())
                 .parse()
                 .unwrap_or(100),
+            daemon: false, // Environment-based config always runs in foreground
         }
     }
     
@@ -64,6 +70,7 @@ impl ServerConfig {
             bolt_port: cli_config.bolt_port,
             bolt_enabled: cli_config.bolt_enabled,
             max_cte_depth: cli_config.max_cte_depth,
+            daemon: cli_config.daemon,
         }
     }
 }
@@ -76,6 +83,7 @@ pub struct CliConfig {
     pub bolt_port: u16,
     pub bolt_enabled: bool,
     pub max_cte_depth: u32,
+    pub daemon: bool,
 }
 
 // #[derive(Clone)]
@@ -227,6 +235,44 @@ pub async fn run_with_config(config: ServerConfig) {
         println!("  Bolt Protocol: bolt://{}", format!("{}:{}", config.bolt_host, config.bolt_port));
     }
     
-    // Run HTTP server (this will block until shutdown)
-    http_server.await.unwrap();
+    if config.daemon {
+        println!("Running in daemon mode - press Ctrl+C to stop");
+        
+        // Run server and signal handler concurrently
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm = signal(SignalKind::terminate()).unwrap();
+            let mut sigint = signal(SignalKind::interrupt()).unwrap();
+            
+            tokio::select! {
+                result = http_server => {
+                    if let Err(e) = result {
+                        eprintln!("HTTP server error: {:?}", e);
+                    }
+                }
+                _ = sigterm.recv() => println!("Received SIGTERM, shutting down..."),
+                _ = sigint.recv() => println!("Received SIGINT, shutting down..."),
+            }
+        }
+        
+        #[cfg(windows)]
+        {
+            tokio::select! {
+                result = http_server => {
+                    if let Err(e) = result {
+                        eprintln!("HTTP server error: {:?}", e);
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    println!("Received shutdown signal, shutting down...");
+                }
+            }
+        }
+        
+        println!("Server stopped");
+    } else {
+        // Run HTTP server (this will block until shutdown)
+        http_server.await.unwrap();
+    }
 }

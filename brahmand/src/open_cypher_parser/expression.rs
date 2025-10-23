@@ -322,6 +322,7 @@ pub fn parse_parameter_property_access_literal_variable_expression(
 pub fn parse_literal_or_variable_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     alt((
         map(ws(parse_string_literal), Expression::Literal),
+        map(ws(parse_double_quoted_string_literal), Expression::Literal),
         map(
             ws(common::parse_alphanumeric_with_underscore_dot_star),
             |s: &str| {
@@ -347,6 +348,12 @@ pub fn parse_literal_or_variable_expression(input: &'_ str) -> IResult<&'_ str, 
 
 pub fn parse_string_literal(input: &'_ str) -> IResult<&'_ str, Literal<'_>> {
     let (input, s) = delimited(char('\''), take_until("\'"), char('\'')).parse(input)?;
+
+    Ok((input, Literal::String(s)))
+}
+
+pub fn parse_double_quoted_string_literal(input: &'_ str) -> IResult<&'_ str, Literal<'_>> {
+    let (input, s) = delimited(char('"'), take_until("\""), char('"')).parse(input)?;
 
     Ok((input, Literal::String(s)))
 }

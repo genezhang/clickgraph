@@ -126,9 +126,13 @@ Functional but suboptimal performance for exact hop count queries.
 ### Missing Test Scenarios
 - Edge cases: 0 hops, negative ranges, circular paths
 - Relationship properties in variable-length patterns
-- WHERE clauses on path properties
+- **WHERE clauses on path properties** (path variables with filtering)
 - Multiple variable-length patterns in single query
 - Performance benchmarks for deep traversals (>5 hops)
+
+### Recently Added Coverage ✅
+- ✅ **Path Variables**: `MATCH p = (a)-[*]->(b) RETURN p, length(p), nodes(p), relationships(p)`
+- ✅ **Path Function Testing**: Comprehensive test suite for path analysis functions
 
 ### Impact
 Core functionality works, but edge cases may have unexpected behavior.
