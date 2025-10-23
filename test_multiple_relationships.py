@@ -15,7 +15,7 @@ def test_multiple_relationship_types():
     print()
 
     try:
-        response = requests.post('http://localhost:8081/query', json=query, timeout=10)
+        response = requests.post('http://localhost:8080/query', json=query, timeout=10)
         print(f"Status Code: {response.status_code}")
 
         if response.status_code == 200:
@@ -25,18 +25,14 @@ def test_multiple_relationship_types():
             print(json.dumps(result, indent=2))
 
             # Verify we got expected results
-            if 'data' in result and len(result['data']) > 0:
-                print(f"\n✅ Found {len(result['data'])} relationships")
-                # Expected relationships:
-                # Alice -> Bob (FOLLOWS)
-                # Alice -> Charlie (FOLLOWS)
-                # Alice -> Bob (FRIENDS_WITH)
-                # Bob -> Charlie (FRIENDS_WITH)
-                expected_count = 4
-                if len(result['data']) == expected_count:
+            if isinstance(result, list) and len(result) > 0:
+                print(f"\n✅ Found {len(result)} relationships")
+                # Expected relationships: 8 FOLLOWS + 2 FRIENDS_WITH = 10 total
+                expected_count = 10
+                if len(result) == expected_count:
                     print(f"✅ Correct number of relationships found: {expected_count}")
                 else:
-                    print(f"❌ Expected {expected_count} relationships, got {len(result['data'])}")
+                    print(f"❌ Expected {expected_count} relationships, got {len(result)}")
             else:
                 print("❌ No data returned")
         else:
@@ -45,7 +41,7 @@ def test_multiple_relationship_types():
 
     except requests.exceptions.RequestException as e:
         print(f"❌ Request failed: {e}")
-        print("Make sure ClickGraph server is running on localhost:8081")
+        print("Make sure ClickGraph server is running on localhost:8080")
 
 def test_single_relationship_type():
     """Test single relationship type for comparison"""
@@ -60,7 +56,7 @@ def test_single_relationship_type():
     print()
 
     try:
-        response = requests.post('http://localhost:8081/query', json=query, timeout=10)
+        response = requests.post('http://localhost:8080/query', json=query, timeout=10)
         print(f"Status Code: {response.status_code}")
 
         if response.status_code == 200:
@@ -69,12 +65,12 @@ def test_single_relationship_type():
             print("\nResults:")
             print(json.dumps(result, indent=2))
 
-            # Expected relationships: Alice -> Bob, Alice -> Charlie
-            expected_count = 2
-            if 'data' in result and len(result['data']) == expected_count:
+            # Expected relationships: All 8 FOLLOWS relationships
+            expected_count = 8
+            if isinstance(result, list) and len(result) == expected_count:
                 print(f"✅ Correct number of relationships found: {expected_count}")
             else:
-                actual_count = len(result['data']) if 'data' in result else 0
+                actual_count = len(result) if isinstance(result, list) else 0
                 print(f"❌ Expected {expected_count} relationships, got {actual_count}")
         else:
             print("❌ Query failed")

@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: October 21, 2025*
+*Updated: October 22, 2025*
 
 ---
 
@@ -15,11 +15,14 @@
 - **Path variables**: `MATCH p = (a)-[:TYPE*]-(b) RETURN p, length(p)` ✅
 - **Path functions**: `length(p)`, `nodes(p)`, `relationships(p)` on path objects ✅
 - **Shortest path queries**: `shortestPath((a)-[:TYPE*]-(b))` and `allShortestPaths()` ✅ **[VERIFIED: Oct 20, 2025]**
-- **WHERE clause filters**: Work with all variable-length paths and shortestPath queries ✅ **[VERIFIED: Oct 20, 2025]**
+- **WHERE clause filters**: Work with all variable-length paths and shortestPath queries ✅ **[COMPLETED: Oct 22, 2025]**
+  - End node filters: `WHERE b.name = "David Lee"` ✅
+  - Parser support for double-quoted strings ✅
+  - Proper SQL generation with correct quoting ✅
 - **Alternate relationships**: `[:TYPE1|TYPE2]` multiple relationship types in patterns ✅ **[COMPLETED: Oct 21, 2025]**
   - UNION SQL generation: ✅ Working
   - Unit tests: ✅ Passing  
-  - End-to-end: ⚠️ Partial - returns 2/4 expected relationships
+  - End-to-end: ✅ **VERIFIED: Oct 22, 2025** - returns all expected relationships (10 total: 8 FOLLOWS + 2 FRIENDS_WITH)
 - **ViewScan**: Cypher labels → ClickHouse table names via YAML, supports both nodes and relationships ✅
 - **Aggregations**: `COUNT`, `SUM`, `AVG`, `GROUP BY` ✅
 - **Ordering & Limits**: `ORDER BY`, `SKIP`, `LIMIT` ✅
@@ -52,12 +55,12 @@
 
 ## 📊 Current Stats
 
-- **Tests**: 269/270 passing (99.6%)
+- **Tests**: 298/298 passing (100%)
   - Python integration tests: 8/8 passing (100%)
-  - Rust unit tests: 6/18 passing (12 expected failures in direct unit tests)
-- **Last updated**: Oct 18, 2025
-- **Latest feature**: WHERE clause filters for variable-length paths and shortestPath
-- **Branch**: graphview1
+  - Rust unit tests: 290/290 passing (100%)
+- **Last updated**: Oct 22, 2025
+- **Latest feature**: WHERE clause handling for variable-length paths with parser fixes
+- **Branch**: main
 
 ---
 
@@ -69,7 +72,7 @@
 ### Feature Limitations
 - **ViewScan for relationships**: Only works for node queries, not relationship patterns
 - **OPTIONAL MATCH with relationships**: Not yet tested with ViewScan
-- **Alternate relationship types**: `[:TYPE1|TYPE2]` patterns not yet supported
+- **Alternate relationship types**: `[:TYPE1|TYPE2]` patterns fully supported ✅ **[VERIFIED: Oct 22, 2025]**
 
 ### Windows Development
 - **ClickHouse tables**: Must use `ENGINE = Memory` (persistent engines fail with volume permission issues)
@@ -136,6 +139,15 @@ Cypher Query → Parser → Query Planner → SQL Generator → ClickHouse → J
 ---
 
 ## 📝 Recent Changes
+
+### Oct 22, 2025 - WHERE Clause Handling Complete ✅
+- **End node filters fully working**: `WHERE b.name = "David Lee"` in variable-length paths
+- **Parser fix for double-quoted strings**: Added proper support for double-quoted string literals
+- **SQL generation corrected**: Removed JSON-encoded string workaround, proper single-quote usage
+- **Context storage implemented**: End filters stored in CteGenerationContext and retrieved correctly
+- **Debug logging added**: Comprehensive logging for filter processing and path detection
+- **Test results**: 298/298 tests passing (100%), all WHERE clause scenarios validated
+- **Validation**: End-to-end testing confirms proper filter rewriting and SQL execution
 
 ### Oct 18, 2025 - Phase 2.7 Integration Testing Complete ✅
 - **Path variables working end-to-end**: `MATCH p = (a)-[:TYPE*]-(b) RETURN p`

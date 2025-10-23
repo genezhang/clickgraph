@@ -160,26 +160,34 @@ impl SchemaInference {
                     }
                 })?;
 
-                let (left_label, rel_label, right_label) = self.infer_missing_labels(
-                    graph_schema,
-                    left_table_ctx,
-                    rel_table_ctx,
-                    right_table_ctx,
-                )?;
+                // Skip label inference for relationships with multiple types
+                // (e.g., [:FOLLOWS|FRIENDS_WITH]) to preserve the multiple labels
+                let should_infer_labels = !rel_table_ctx.get_labels()
+                    .map(|labels| labels.len() > 1)
+                    .unwrap_or(false);
 
-                for (alias, label) in [
-                    (left_alias, left_label),
-                    (&graph_rel.alias, rel_label),
-                    (right_alias, right_label),
-                ] {
-                    let table_ctx =
-                        plan_ctx
-                            .get_mut_table_ctx(alias)
-                            .map_err(|e| AnalyzerError::PlanCtx {
-                                pass: Pass::SchemaInference,
-                                source: e,
-                            })?;
-                    table_ctx.set_labels(Some(vec![label]));
+                if should_infer_labels {
+                    let (left_label, rel_label, right_label) = self.infer_missing_labels(
+                        graph_schema,
+                        left_table_ctx,
+                        rel_table_ctx,
+                        right_table_ctx,
+                    )?;
+
+                    for (alias, label) in [
+                        (left_alias, left_label),
+                        (&graph_rel.alias, rel_label),
+                        (right_alias, right_label),
+                    ] {
+                        let table_ctx =
+                            plan_ctx
+                                .get_mut_table_ctx(alias)
+                                .map_err(|e| AnalyzerError::PlanCtx {
+                                    pass: Pass::SchemaInference,
+                                    source: e,
+                                })?;
+                        table_ctx.set_labels(Some(vec![label]));
+                    }
                 }
 
                 // let left_tf = self.infer_schema(graph_rel.left.clone(), plan_ctx, graph_schema);

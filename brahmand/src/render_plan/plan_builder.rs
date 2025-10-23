@@ -4,7 +4,7 @@ use crate::clickhouse_query_generator::variable_length_cte::{VariableLengthCteGe
 
 use super::errors::RenderBuildError;
 use super::render_expr::{
-    AggregateFnCall, ColumnAlias, Operator, OperatorApplication, RenderExpr, ScalarFnCall,
+    AggregateFnCall, Column, ColumnAlias, Operator, OperatorApplication, RenderExpr, ScalarFnCall,
 };
 use super::{
     Cte, CteItems, FilterItems, FromTable, FromTableItem, GroupByExpressions, Join, JoinItems,
@@ -725,28 +725,93 @@ impl CteGenerationContext {
     }
 }
 
-/// Get variable-length relationship info including node labels
-/// Returns (left_cypher_alias, right_cypher_alias, left_node_label, right_node_label, rel_type)
+/// Extract node label from a GraphNode plan
+fn extract_node_label_from_plan(plan: &LogicalPlan) -> String {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            // Look for ViewScan in the input
+            if let Some(label) = extract_node_label_from_viewscan(&node.input) {
+                return label;
+            }
+            // Fallback to alias if no label found
+            node.alias.clone()
+        }
+        _ => "User".to_string(), // fallback
+    }
+}
+
+/// Extract node label from ViewScan in the plan
+fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::ViewScan(view_scan) => {
+            // Try to get the label from the schema using the table name
+            if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
+                if let Ok(schema) = schema_lock.try_read() {
+                    if let Some((label, _)) = get_node_schema_by_table(&schema, &view_scan.source_table) {
+                        return Some(label.to_string());
+                    }
+                }
+            }
+            None
+        }
+        LogicalPlan::Scan(scan) => {
+            // For Scan nodes, try to get from table name
+            scan.table_name.as_ref().and_then(|table| {
+                if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
+                    if let Ok(schema) = schema_lock.try_read() {
+                        if let Some((label, _)) = get_node_schema_by_table(&schema, table) {
+                            return Some(label.to_string());
+                        }
+                    }
+                }
+                None
+            })
+        }
+        LogicalPlan::GraphNode(node) => extract_node_label_from_viewscan(&node.input),
+        LogicalPlan::Filter(filter) => extract_node_label_from_viewscan(&filter.input),
+        _ => None,
+    }
+}
+
+/// Get node schema by table name
+fn get_node_schema_by_table<'a>(schema: &'a crate::graph_catalog::graph_schema::GraphSchema, table_name: &str) -> Option<(&'a str, &'a crate::graph_catalog::graph_schema::NodeSchema)> {
+    for (label, node_schema) in schema.get_nodes_schemas() {
+        if node_schema.table_name == table_name {
+            return Some((label.as_str(), node_schema));
+        }
+    }
+    None
+}
+
+/// Get variable length info from the plan
+/// Returns (left_alias, right_alias, left_label, right_label, rel_type) if a variable-length relationship is found
 fn get_variable_length_info(plan: &LogicalPlan) -> Option<(String, String, String, String, String)> {
     match plan {
-        LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
-            Some((
-                rel.left_connection.clone(),  // left node's Cypher alias (u1)
-                rel.right_connection.clone(), // right node's Cypher alias (u2)
-                rel.left_connection.clone(),  // left node label (user) - same as alias for now
-                rel.right_connection.clone(), // right node label (user)
-                rel.alias.clone(),            // relationship type (FRIEND)
-            ))
+        LogicalPlan::GraphRel(graph_rel) => {
+            if graph_rel.variable_length.is_some() {
+                let left_alias = extract_alias_from_plan(&graph_rel.left)?;
+                let right_alias = extract_alias_from_plan(&graph_rel.right)?;
+                let left_label = extract_node_label_from_viewscan(&graph_rel.left)?;
+                let right_label = extract_node_label_from_viewscan(&graph_rel.right)?;
+                let rel_type = graph_rel.labels.as_ref()?.first()?.clone();
+                Some((left_alias, right_alias, left_label, right_label, rel_type))
+            } else {
+                None
+            }
         }
         LogicalPlan::GraphNode(node) => get_variable_length_info(&node.input),
         LogicalPlan::Filter(filter) => get_variable_length_info(&filter.input),
         LogicalPlan::Projection(proj) => get_variable_length_info(&proj.input),
-        LogicalPlan::GraphJoins(joins) => get_variable_length_info(&joins.input),
-        LogicalPlan::GroupBy(gb) => get_variable_length_info(&gb.input),
-        LogicalPlan::OrderBy(ob) => get_variable_length_info(&ob.input),
-        LogicalPlan::Skip(skip) => get_variable_length_info(&skip.input),
-        LogicalPlan::Limit(limit) => get_variable_length_info(&limit.input),
-        LogicalPlan::Cte(cte) => get_variable_length_info(&cte.input),
+        _ => None,
+    }
+}
+
+/// Extract alias from a plan node
+fn extract_alias_from_plan(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) => Some(node.alias.clone()),
+        LogicalPlan::Scan(scan) => scan.table_alias.clone(),
+        LogicalPlan::ViewScan(_) => None, // ViewScan doesn't have an alias field
         _ => None,
     }
 }
@@ -835,24 +900,21 @@ fn map_property_to_column(property: &str) -> String {
 /// Schema-aware property mapping using GraphSchema
 /// Looks up the property mapping from the schema for a given node label
 fn map_property_to_column_with_schema(property: &str, node_label: &str) -> String {
-    // Try to get the schema from the global state
-    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-        if let Ok(schema) = schema_lock.try_read() {
-            // Get the node schema for this label
-            if let Ok(node_schema) = schema.get_node_schema(node_label) {
-                // Check if there's a property mapping in the schema
-                // Note: NodeSchema doesn't have property_mappings, so we need to look at ViewConfig
-                // For now, use the column names directly if they match
-                for column in &node_schema.column_names {
-                    // Simple heuristic: if column contains the property name, use it
-                    if column.to_lowercase().contains(&property.to_lowercase()) {
+    // Try to get the view config from the global state
+    if let Some(config_lock) = crate::server::GLOBAL_VIEW_CONFIG.get() {
+        if let Ok(config) = config_lock.try_read() {
+            // Find the node mapping for this label
+            for view in &config.views {
+                if let Some(node_mapping) = view.nodes.get(node_label) {
+                    // Check if there's a property mapping
+                    if let Some(column) = node_mapping.property_mappings.get(property) {
                         return column.clone();
                     }
                 }
             }
         }
     }
-    
+
     // Fallback to the hardcoded mapping
     map_property_to_column(property)
 }
@@ -1462,7 +1524,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 if rel_tables.len() > 1 {
                     // Multiple relationship types: create a UNION CTE
                     let union_queries: Vec<String> = rel_tables.iter().map(|table| {
-                        format!("SELECT from_node_id, to_node_id FROM {}", table)
+                        // Get the correct column names for this table
+                        let (from_col, to_col) = get_relationship_columns_by_table(table)
+                            .unwrap_or(("from_node_id".to_string(), "to_node_id".to_string())); // fallback
+                        format!("SELECT {} as from_node_id, {} as to_node_id FROM {}", from_col, to_col, table)
                     }).collect();
                     
                     let union_sql = union_queries.join(" UNION ALL ");
@@ -1479,6 +1544,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     
                     // Update rel_table to use the CTE name for subsequent processing
                     rel_table = cte_name;
+                    // PATCH: Ensure join uses the union CTE name
+                    // Instead of context, propagate rel_table for join construction
+                    // We'll use rel_table (CTE name) directly in join construction below
                 }
                 
                 // TODO: Apply the resolved table/column names to the child CTEs
@@ -1684,7 +1752,10 @@ impl RenderPlanBuilder for LogicalPlan {
                         
                         // Create a UNION CTE
                         let union_queries: Vec<String> = rel_tables.iter().map(|table| {
-                            format!("SELECT from_node_id, to_node_id FROM {}", table)
+                            // Get the correct column names for this table
+                            let (from_col, to_col) = get_relationship_columns_by_table(table)
+                                .unwrap_or(("from_node_id".to_string(), "to_node_id".to_string())); // fallback
+                            format!("SELECT {} as from_node_id, {} as to_node_id FROM {}", from_col, to_col, table)
                         }).collect();
                         
                         let union_sql = union_queries.join(" UNION ALL ");
@@ -1781,7 +1852,9 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Filter(filter) => filter.input.extract_select_items()?,
             LogicalPlan::Projection(projection) => {
                 let items = projection.items.iter().map(|item| {
-                    let expr = item.expression.clone().try_into()?;
+                    let mut expr: RenderExpr = item.expression.clone().try_into()?;
+                    // Apply property mapping to the expression
+                    apply_property_mapping_to_expr(&mut expr, &projection.input);
                     let alias = item
                         .col_alias
                         .clone()
@@ -1898,7 +1971,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     }))
                 }
             }
-            LogicalPlan::Filter(filter) => Some(filter.predicate.clone().try_into()?),
+            LogicalPlan::Filter(filter) => {
+                let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
+                // Apply property mapping to the filter expression
+                apply_property_mapping_to_expr(&mut expr, &filter.input);
+                Some(expr)
+            }
             LogicalPlan::Projection(projection) => projection.input.extract_filters()?,
             LogicalPlan::GroupBy(group_by) => group_by.input.extract_filters()?,
             LogicalPlan::OrderBy(order_by) => order_by.input.extract_filters()?,
@@ -1919,11 +1997,18 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GroupBy(group_by) => group_by.input.extract_final_filters()?,
             LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_final_filters()?,
             LogicalPlan::Projection(projection) => projection.input.extract_final_filters()?,
-            LogicalPlan::Filter(filter) => Some(filter.predicate.clone().try_into()?),
+            LogicalPlan::Filter(filter) => {
+                let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
+                // Apply property mapping to the filter expression
+                apply_property_mapping_to_expr(&mut expr, &filter.input);
+                Some(expr)
+            },
             LogicalPlan::GraphRel(graph_rel) => {
                 // For GraphRel, extract path function filters that should be applied to the final query
                 if let Some(logical_expr) = &graph_rel.where_predicate {
-                    let filter_expr: RenderExpr = logical_expr.clone().try_into()?;
+                    let mut filter_expr: RenderExpr = logical_expr.clone().try_into()?;
+                    // Apply property mapping to the where predicate
+                    apply_property_mapping_to_expr(&mut filter_expr, &LogicalPlan::GraphRel(graph_rel.clone()));
                     let start_alias = extract_node_alias(&graph_rel.left)
                         .unwrap_or_else(|| graph_rel.left_connection.clone());
                     let end_alias = extract_node_alias(&graph_rel.right)
@@ -1956,7 +2041,16 @@ impl RenderPlanBuilder for LogicalPlan {
                 .joins
                 .iter()
                 .cloned()
-                .map(Join::try_from)
+                .map(|mut join| {
+                    // PATCH: If this is a multi-relationship query, use rel_table (CTE name) for join.table_name
+                    // This requires propagating rel_table from the CTE generation above
+                    // For now, if join.table_name starts with "rel_" (our CTE naming convention), keep it
+                    // Otherwise, use as-is
+                    if join.table_name.starts_with("rel_") {
+                        // Already the CTE name, do nothing
+                    }
+                    Join::try_from(join)
+                })
                 .collect::<Result<Vec<Join>, RenderBuildError>>()?,
             _ => vec![],
         };
@@ -1972,7 +2066,12 @@ impl RenderPlanBuilder for LogicalPlan {
                 .expressions
                 .iter()
                 .cloned()
-                .map(RenderExpr::try_from)
+                .map(|expr| {
+                    let mut render_expr: RenderExpr = expr.try_into()?;
+                    // Apply property mapping to the group by expression
+                    apply_property_mapping_to_expr(&mut render_expr, &group_by.input);
+                    Ok(render_expr)
+                })
                 .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?, //.collect::<Vec<RenderExpr>>(),
             _ => vec![],
         };
@@ -1987,7 +2086,12 @@ impl RenderPlanBuilder for LogicalPlan {
                 .items
                 .iter()
                 .cloned()
-                .map(OrderByItem::try_from)
+                .map(|item| {
+                    let mut order_item: OrderByItem = item.try_into()?;
+                    // Apply property mapping to the order by expression
+                    apply_property_mapping_to_expr(&mut order_item.expression, &order_by.input);
+                    Ok(order_item)
+                })
                 .collect::<Result<Vec<OrderByItem>, RenderBuildError>>()?,
             _ => vec![],
         };
@@ -2210,6 +2314,43 @@ impl RenderPlanBuilder for LogicalPlan {
         }
 
         let mut extracted_joins = self.extract_joins()?;
+        // PATCH: For multi-relationship queries, ensure relationship joins use rel_table (CTE name) if present
+        // This applies to both variable-length and regular multi-relationship queries
+        // Find any non-recursive CTE named rel_*_* and update joins that reference it
+        if let Some(union_cte) = extracted_ctes.iter().find(|cte| {
+            cte.cte_name.starts_with("rel_") && !cte.is_recursive
+        }) {
+            let cte_name = union_cte.cte_name.clone();
+            for join in extracted_joins.iter_mut() {
+                // Update joins that are relationship CTEs
+                if join.table_name.starts_with("FOLLOWS") || 
+                   join.table_name.starts_with("FRIENDS_WITH") ||
+                   join.table_name.starts_with("rel_") {
+                    join.table_name = cte_name.clone();
+                    // Also update joining_on expressions to use standardized column names
+                    for op_app in join.joining_on.iter_mut() {
+                        update_join_expression_for_union_cte(op_app, &join.table_alias);
+                    }
+                }
+                // Also update any join that references the union CTE in its expressions
+                else if references_union_cte_in_join(&join.joining_on, &cte_name) {
+                    for op_app in join.joining_on.iter_mut() {
+                        update_join_expression_for_union_cte(op_app, &cte_name);
+                    }
+                }
+            }
+        }
+        // For variable-length (recursive) CTEs, keep previous logic
+        if let Some(last_node_cte) = self.extract_last_node_cte().ok().flatten() {
+            if let super::CteContent::RawSql(_) = &last_node_cte.content {
+                let cte_name = last_node_cte.cte_name.clone();
+                if cte_name.starts_with("rel_") {
+                    for join in extracted_joins.iter_mut() {
+                        join.table_name = cte_name.clone();
+                    }
+                }
+            }
+        }
         extracted_joins.sort_by_key(|join| join.joining_on.len());
 
         let mut extracted_group_by_exprs = self.extract_group_by()?;
@@ -2335,5 +2476,134 @@ fn clean_last_node_filters(filter_opt: Option<RenderExpr>) -> Option<RenderExpr>
         }
     } else {
         None
+    }
+}
+
+/// Post-process a RenderExpr to apply property mapping based on node labels
+/// This function recursively walks the expression tree and maps property names to column names
+fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            // Get the node label for this table alias
+            if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
+                // Map the property to the correct column
+                let mapped_column = map_property_to_column_with_schema(&prop.column.0, &node_label);
+                prop.column = super::render_expr::Column(mapped_column);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &mut op.operands {
+                apply_property_mapping_to_expr(operand, plan);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            for arg in &mut func.args {
+                apply_property_mapping_to_expr(arg, plan);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &mut agg.args {
+                apply_property_mapping_to_expr(arg, plan);
+            }
+        }
+        RenderExpr::List(list) => {
+            for item in list {
+                apply_property_mapping_to_expr(item, plan);
+            }
+        }
+        RenderExpr::InSubquery(subq) => {
+            apply_property_mapping_to_expr(&mut subq.expr, plan);
+        }
+        // Other expression types don't contain nested expressions
+        _ => {}
+    }
+}
+
+/// Get the node label for a given Cypher alias by searching the plan
+fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) if node.alias == alias => {
+            extract_node_label_from_viewscan(&node.input)
+        }
+        LogicalPlan::GraphNode(node) => get_node_label_for_alias(alias, &node.input),
+        LogicalPlan::GraphRel(rel) => {
+            get_node_label_for_alias(alias, &rel.left)
+                .or_else(|| get_node_label_for_alias(alias, &rel.center))
+                .or_else(|| get_node_label_for_alias(alias, &rel.right))
+        }
+        LogicalPlan::Filter(filter) => get_node_label_for_alias(alias, &filter.input),
+        LogicalPlan::Projection(proj) => get_node_label_for_alias(alias, &proj.input),
+        LogicalPlan::GraphJoins(joins) => get_node_label_for_alias(alias, &joins.input),
+        LogicalPlan::OrderBy(order_by) => get_node_label_for_alias(alias, &order_by.input),
+        LogicalPlan::Skip(skip) => get_node_label_for_alias(alias, &skip.input),
+        LogicalPlan::Limit(limit) => get_node_label_for_alias(alias, &limit.input),
+        LogicalPlan::GroupBy(group_by) => get_node_label_for_alias(alias, &group_by.input),
+        LogicalPlan::Cte(cte) => get_node_label_for_alias(alias, &cte.input),
+        LogicalPlan::Union(union) => {
+            for input in &union.inputs {
+                if let Some(label) = get_node_label_for_alias(alias, input) {
+                    return Some(label);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn references_union_cte_in_join(joining_on: &[OperatorApplication], cte_name: &str) -> bool {
+    for op_app in joining_on {
+        if references_union_cte_in_operand(&op_app.operands[0], cte_name) ||
+           references_union_cte_in_operand(&op_app.operands[1], cte_name) {
+            return true;
+        }
+    }
+    false
+}
+
+fn references_union_cte_in_operand(operand: &RenderExpr, cte_name: &str) -> bool {
+    match operand {
+        RenderExpr::PropertyAccessExp(prop_access) => {
+            // Check if this property access references the union CTE
+            // We can't easily check table alias here, but we can check if it references the CTE name
+            // For now, just check if it's a property access that might need updating
+            prop_access.column.0 == "from_id" || prop_access.column.0 == "to_id"
+        }
+        RenderExpr::OperatorApplicationExp(op_app) => {
+            references_union_cte_in_join(&[op_app.clone()], cte_name)
+        }
+        _ => false,
+    }
+}
+
+fn update_join_expression_for_union_cte(op_app: &mut OperatorApplication, table_alias: &str) {
+    // Recursively update expressions to use standardized column names for union CTEs
+    for operand in op_app.operands.iter_mut() {
+        update_operand_for_union_cte(operand, table_alias);
+    }
+}
+
+fn update_operand_for_union_cte(operand: &mut RenderExpr, table_alias: &str) {
+    match operand {
+        RenderExpr::Column(col) => {
+            // Update column references to use standardized names
+            if col.0 == "from_id" {
+                *operand = RenderExpr::Column(Column("from_node_id".to_string()));
+            } else if col.0 == "to_id" {
+                *operand = RenderExpr::Column(Column("to_node_id".to_string()));
+            }
+        }
+        RenderExpr::PropertyAccessExp(prop_access) => {
+            // Update property access column references
+            if prop_access.column.0 == "from_id" {
+                prop_access.column = Column("from_node_id".to_string());
+            } else if prop_access.column.0 == "to_id" {
+                prop_access.column = Column("to_node_id".to_string());
+            }
+        }
+        RenderExpr::OperatorApplicationExp(inner_op_app) => {
+            update_join_expression_for_union_cte(inner_op_app, table_alias);
+        }
+        _ => {} // Other expression types don't need updating
     }
 }

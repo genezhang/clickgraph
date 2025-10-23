@@ -2,7 +2,16 @@
 
 ## [Unreleased] - 2025-10-18
 
-### 🚀 Features
+### � Bug Fixes
+
+- **Multiple Relationship End-to-End Fix** (Oct 22): Complete fix for `[:TYPE1|TYPE2]` queries returning all expected relationships
+  - Root cause: Join expressions referenced old column names (`from_id`/`to_id`) instead of union CTE names (`from_node_id`/`to_node_id`)
+  - Fix: Added `update_join_expression_for_union_cte()` function to recursively update PropertyAccess expressions in joins
+  - Logic: Detects union CTEs and updates all join expressions that reference relationship columns
+  - Verification: `MATCH (a)-[:FOLLOWS|FRIENDS_WITH]->(b)` now returns 10 relationships (8 FOLLOWS + 2 FRIENDS_WITH) ✅
+  - Impact: Multiple relationship type queries now work end-to-end
+
+### �🚀 Features
 
 - **Path Variables & Functions** (Oct 21): Complete implementation for path variables and functions
   - Parser: `MATCH p = (a)-[:TYPE*]-(b)` syntax parsing ✅
