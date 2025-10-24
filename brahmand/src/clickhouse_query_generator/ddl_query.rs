@@ -894,6 +894,7 @@ mod tests {
         let ast = OpenCypherQueryAst {
             match_clause: None,
             optional_match_clauses: vec![],
+            call_clause: None,
             with_clause: None,
             where_clause: None,
             create_clause: None,

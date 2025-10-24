@@ -9,8 +9,24 @@ PageRank algorithm implementation for ClickGraph, enabling graph centrality anal
 ## Syntax
 
 ```cypher
-CALL pagerank(iterations: 10, damping: 0.85)
+CALL pagerank(maxIterations: 10, dampingFactor: 0.85)
+CALL pagerank(graph: 'User', maxIterations: 10, dampingFactor: 0.85)
+CALL pagerank(nodeLabels: 'Person,Company', relationshipTypes: 'KNOWS,WORKS_FOR', maxIterations: 10, dampingFactor: 0.85)
 ```
+
+### Parameters
+
+- `graph` (optional): Name of the node type to run PageRank on. Defaults to 'User' for backward compatibility
+- `nodeLabels` (optional): Comma-separated list of node labels to include in PageRank calculation (e.g., 'Person,Company')
+- `relationshipTypes` (optional): Comma-separated list of relationship types to include (e.g., 'KNOWS,WORKS_FOR')
+- `maxIterations` (optional): Maximum number of PageRank iterations. Defaults to 10
+- `dampingFactor` (optional): Damping factor between 0.0 and 1.0. Defaults to 0.85
+
+### Backward Compatibility
+
+The following legacy parameter names are also supported:
+- `iterations` (alias for `maxIterations`)
+- `damping` (alias for `dampingFactor`)
 
 ## Algorithm
 

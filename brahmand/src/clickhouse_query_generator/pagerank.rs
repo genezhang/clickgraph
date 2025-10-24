@@ -78,11 +78,26 @@ impl Default for PageRankConfig {
 pub struct PageRankGenerator<'a> {
     schema: &'a GraphSchema,
     config: PageRankConfig,
+    graph_name: Option<String>,
+    node_labels: Option<Vec<String>>,
+    relationship_types: Option<Vec<String>>,
 }
 
 impl<'a> PageRankGenerator<'a> {
-    pub fn new(schema: &'a GraphSchema, config: PageRankConfig) -> Self {
-        Self { schema, config }
+    pub fn new(
+        schema: &'a GraphSchema,
+        config: PageRankConfig,
+        graph_name: Option<String>,
+        node_labels: Option<Vec<String>>,
+        relationship_types: Option<Vec<String>>,
+    ) -> Self {
+        Self {
+            schema,
+            config,
+            graph_name,
+            node_labels,
+            relationship_types,
+        }
     }
 
     /// Generate the complete PageRank SQL query
@@ -177,28 +192,72 @@ ORDER BY pagerank DESC
 
     /// Get the primary node table and ID column from schema
     fn get_node_info(&self) -> Result<(String, String), ClickhouseQueryGeneratorError> {
-        // For simplicity, assume we want User nodes
-        // In practice, this would be determined from the query
-        let user_nodes = self.schema.get_nodes_schemas()
-            .get("User")
-            .ok_or_else(|| ClickhouseQueryGeneratorError::SchemaError(
-                "No User node type found in schema".to_string()
-            ))?;
+        // If specific node labels are provided, use them
+        if let Some(ref labels) = self.node_labels {
+            if labels.is_empty() {
+                return Err(ClickhouseQueryGeneratorError::SchemaError(
+                    "nodeLabels parameter cannot be empty".to_string()
+                ));
+            }
 
-        Ok((user_nodes.table_name.clone(), user_nodes.node_id.column.clone()))
+            // Get all node schemas for the specified labels
+            let mut node_tables = Vec::new();
+            let mut id_column = None;
+
+            for label in labels {
+                let node_schema = self.schema.get_nodes_schemas()
+                    .get(label)
+                    .ok_or_else(|| ClickhouseQueryGeneratorError::SchemaError(
+                        format!("Node label '{}' not found in schema", label)
+                    ))?;
+
+                node_tables.push(format!("SELECT {} AS node_id FROM {}", node_schema.node_id.column, node_schema.table_name));
+
+                // All node types should have the same ID column structure for PageRank
+                if id_column.is_none() {
+                    id_column = Some(node_schema.node_id.column.clone());
+                } else if id_column.as_ref() != Some(&node_schema.node_id.column) {
+                    return Err(ClickhouseQueryGeneratorError::SchemaError(
+                        format!("Node label '{}' has different ID column '{}' than others", label, node_schema.node_id.column)
+                    ));
+                }
+            }
+
+            // Create UNION ALL of all node tables
+            let union_sql = node_tables.join("\n        UNION ALL\n        ");
+            Ok((format!("({})", union_sql), "node_id".to_string()))
+        } else {
+            // Use specified graph name or default to "User" for backward compatibility
+            let node_type = self.graph_name.as_deref().unwrap_or("User");
+
+            let node_schema = self.schema.get_nodes_schemas()
+                .get(node_type)
+                .ok_or_else(|| ClickhouseQueryGeneratorError::SchemaError(
+                    format!("No '{}' node type found in schema", node_type)
+                ))?;
+
+            Ok((node_schema.table_name.clone(), node_schema.node_id.column.clone()))
+        }
     }
 
     /// Get all relationship tables that connect nodes
     fn get_relationship_tables(&self) -> Result<Vec<String>, ClickhouseQueryGeneratorError> {
         let mut tables = Vec::new();
 
-        for (_type_name, rel_schema) in self.schema.get_relationships_schemas() {
+        for (type_name, rel_schema) in self.schema.get_relationships_schemas() {
+            // If specific relationship types are provided, filter by them
+            if let Some(ref types) = self.relationship_types {
+                if !types.contains(type_name) {
+                    continue; // Skip this relationship type
+                }
+            }
+
             tables.push(rel_schema.table_name.clone());
         }
 
         if tables.is_empty() {
             return Err(ClickhouseQueryGeneratorError::SchemaError(
-                "No relationship tables found in schema".to_string()
+                "No relationship tables found in schema matching the specified types".to_string()
             ));
         }
 

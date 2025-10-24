@@ -23,11 +23,11 @@
   - UNION SQL generation: ✅ Working
   - Unit tests: ✅ Passing  
   - End-to-end: ✅ **VERIFIED: Oct 22, 2025** - returns all expected relationships (10 total: 8 FOLLOWS + 2 FRIENDS_WITH)
-- **PageRank algorithm**: `CALL pagerank(iterations: 10, damping: 0.85)` graph centrality measures ✅ **[COMPLETED: Oct 23, 2025]**
+- **PageRank algorithm**: `CALL pagerank(nodeLabels: 'Person,Company', relationshipTypes: 'KNOWS,WORKS_FOR', maxIterations: 10, dampingFactor: 0.85)` graph centrality measures ✅ **[COMPLETED: Oct 23, 2025]**
   - Iterative SQL implementation with UNION ALL approach
   - Configurable iterations and damping factor
   - End-to-end tested with multiple parameter combinations
-- **ViewScan**: Cypher labels → ClickHouse table names via YAML, supports both nodes and relationships ✅
+- **ViewScan**: Cypher labels → ClickHouse table names via YAML, supports node queries ✅
 - **Aggregations**: `COUNT`, `SUM`, `AVG`, `GROUP BY` ✅
 - **Ordering & Limits**: `ORDER BY`, `SKIP`, `LIMIT` ✅
 
@@ -66,9 +66,9 @@
 
 ## 📊 Current Stats
 
-- **Tests**: 298/298 passing (100%)
+- **Tests**: 303/303 passing (100%)
   - Python integration tests: 8/8 passing (100%)
-  - Rust unit tests: 290/290 passing (100%)
+  - Rust unit tests: 295/295 passing (100%)
 - **Last updated**: Oct 23, 2025
 - **Latest feature**: PageRank algorithm implementation with CALL statement support
 - **Branch**: main
@@ -77,13 +77,9 @@
 
 ## ❌ Known Issues & Limitations
 
-### Test Failures
-- **test_version_string_formatting** fails (Bolt protocol cosmetic issue)
-
 ### Feature Limitations
 - **ViewScan for relationships**: Only works for node queries, not relationship patterns
 - **OPTIONAL MATCH with relationships**: Not yet tested with ViewScan
-- **Alternate relationship types**: `[:TYPE1|TYPE2]` patterns fully supported ✅ **[VERIFIED: Oct 22, 2025]**
 
 ### Windows Development
 - **ClickHouse tables**: Must use `ENGINE = Memory` (persistent engines fail with volume permission issues)
@@ -134,7 +130,6 @@ Cypher Query → Parser → Query Planner → SQL Generator → ClickHouse → J
 
 ### High Priority
 - ⚠️ **Shortest path WHERE clause**: Core implementation complete, filtering support needed
-- ❌ Alternate relationships: `[:TYPE1|TYPE2]` multiple types
 - ❌ Pattern comprehensions: `[(a)-[]->(b) | b.name]`
 
 ### Medium Priority
@@ -144,7 +139,7 @@ Cypher Query → Parser → Query Planner → SQL Generator → ClickHouse → J
 - ❌ EXISTS patterns
 
 ### Future
-- ❌ Graph algorithms: PageRank, centrality, community detection
+- ❌ Graph algorithms: Community detection, centrality measures
 - ❌ Performance: Advanced JOIN optimization, query caching
 - ❌ Large-scale: Partitioning support for huge graphs
 
@@ -158,7 +153,7 @@ Cypher Query → Parser → Query Planner → SQL Generator → ClickHouse → J
 - **SQL generation corrected**: Removed JSON-encoded string workaround, proper single-quote usage
 - **Context storage implemented**: End filters stored in CteGenerationContext and retrieved correctly
 - **Debug logging added**: Comprehensive logging for filter processing and path detection
-- **Test results**: 298/298 tests passing (100%), all WHERE clause scenarios validated
+- **Test results**: 303/303 tests passing (100%), all WHERE clause scenarios validated
 - **Validation**: End-to-end testing confirms proper filter rewriting and SQL execution
 
 ### Oct 18, 2025 - Phase 2.7 Integration Testing Complete ✅

@@ -83,13 +83,46 @@ pub fn evaluate_call_query(
 ) -> Result<LogicalPlan, QueryPlannerError> {
     if let Some(call_clause) = query_ast.call_clause {
         match call_clause.procedure_name {
-            "pagerank" => {
+            "pagerank" | "pagerank.graph" => {
                 // Parse PageRank arguments
+                let mut graph_name = None;
                 let mut iterations = 10;
                 let mut damping_factor = 0.85;
+                let mut node_labels = None;
+                let mut relationship_types = None;
 
                 for arg in call_clause.arguments {
                     match arg.name {
+                        "graph" => {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::String(s)) = arg.value {
+                                graph_name = Some(s.to_string());
+                            }
+                        }
+                        "nodeLabels" => {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::String(s)) = arg.value {
+                                // Parse comma-separated list
+                                let labels: Vec<String> = s.split(',').map(|s| s.trim().to_string()).collect();
+                                node_labels = Some(labels);
+                            }
+                        }
+                        "relationshipTypes" => {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::String(s)) = arg.value {
+                                // Parse comma-separated list
+                                let types: Vec<String> = s.split(',').map(|s| s.trim().to_string()).collect();
+                                relationship_types = Some(types);
+                            }
+                        }
+                        "maxIterations" => {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::Integer(i)) = arg.value {
+                                iterations = i as usize;
+                            }
+                        }
+                        "dampingFactor" => {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::Float(f)) = arg.value {
+                                damping_factor = f;
+                            }
+                        }
+                        // Backward compatibility - also accept old parameter names
                         "iterations" => {
                             if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::Integer(i)) = arg.value {
                                 iterations = i as usize;
@@ -106,8 +139,11 @@ pub fn evaluate_call_query(
 
                 // Create PageRank logical plan
                 Ok(LogicalPlan::PageRank(PageRank {
+                    graph_name,
                     iterations,
                     damping_factor,
+                    node_labels,
+                    relationship_types,
                 }))
             }
             _ => Err(QueryPlannerError::UnsupportedProcedure {

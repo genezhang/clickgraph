@@ -249,8 +249,11 @@ pub enum UnionType {
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PageRank {
+    pub graph_name: Option<String>,
     pub iterations: usize,
     pub damping_factor: f64,
+    pub node_labels: Option<Vec<String>>,
+    pub relationship_types: Option<Vec<String>>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

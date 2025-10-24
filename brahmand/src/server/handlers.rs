@@ -106,7 +106,13 @@ pub async fn query_handler(
                         convergence_threshold: None,
                     };
                     
-                    let generator = PageRankGenerator::new(&graph_schema, config);
+                    let generator = PageRankGenerator::new(
+                        &graph_schema,
+                        config,
+                        pagerank.graph_name.clone(),
+                        pagerank.node_labels.clone(),
+                        pagerank.relationship_types.clone()
+                    );
                     match generator.generate_pagerank_sql() {
                         Ok(sql) => sql,
                         Err(e) => {

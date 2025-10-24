@@ -14,10 +14,25 @@
 ### 🚀 Features
 
 - **PageRank Algorithm** (Oct 23): Complete implementation of graph centrality analysis
-  - Cypher syntax: `CALL pagerank(iterations: 10, damping: 0.85)`
+  - Cypher syntax: `CALL pagerank(maxIterations: 10, dampingFactor: 0.85)`
   - Algorithm: Iterative PageRank using UNION ALL SQL approach (avoids recursive CTE depth limits)
-  - Parameters: Configurable iterations (1-100) and damping factor (0.0-1.0)
+  - Parameters: Configurable maxIterations (1-100) and dampingFactor (0.0-1.0)
   - SQL generation: Dynamic iteration CTEs with proper out-degree calculations
+  - **Multi-Graph Support** (Oct 23): Added optional `graph` parameter for specifying node types
+    - Syntax: `CALL pagerank(graph: 'User', maxIterations: 10, dampingFactor: 0.85)`
+    - Backward compatibility: Defaults to 'User' when no graph specified
+    - Schema-aware: Uses YAML-defined node types from graph configuration
+    - **Standard Parameters**: Uses Cypher/GDS-compliant parameter names (`maxIterations`, `dampingFactor`)
+    - Legacy support: Accepts `iterations` and `damping` as backward-compatible aliases
+  - **Node & Relationship Filtering** (Oct 23): Added selective node and relationship inclusion
+    - `nodeLabels`: Comma-separated list of node labels to include (e.g., 'Person,Company')
+    - `relationshipTypes`: Comma-separated list of relationship types to include (e.g., 'KNOWS,WORKS_FOR')
+    - Enables targeted PageRank calculations on specific graph subsets
+  - **Parameter Parsing Fix** (Oct 23): Fixed CALL clause parser to support `=>` syntax
+    - Issue: Parser only supported `name: value` but Cypher/GDS uses `name => value`
+    - Fix: Updated `parse_call_argument()` to accept both `=>` and `:` operators
+    - Impact: All PageRank parameters now work with proper Cypher syntax
+    - Validates node labels and relationship types against schema
   - End-to-end testing: Verified convergence with different parameter combinations
   - Performance: O(iterations × |E|) complexity leveraging ClickHouse parallel processing
   - Integration: Direct SQL execution bypassing render plan processing
@@ -136,12 +151,12 @@
 
 ### 🧪 Testing
 
-- Test suite: 261/262 passing (99.6%)
+- Test suite: 303/303 passing (100%)
 - End-to-end validation with real ClickHouse queries
 - Variable-length path queries verified with 3 users, 3 friendships (Oct 15)
 - Test data creation with Windows Memory engine constraint
 - 11/11 OPTIONAL MATCH-specific tests (100%)
-- Only failure: test_version_string_formatting (Bolt protocol, cosmetic)
+- All tests passing (previously only failure: test_version_string_formatting)
 
 ### ⚙️ Infrastructure
 
