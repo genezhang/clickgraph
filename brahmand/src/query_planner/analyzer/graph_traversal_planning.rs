@@ -182,6 +182,7 @@ impl AnalyzerPass for GraphTRaversalPlanning {
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
             }
+            LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
         };
         Ok(transformed_plan)
     }

@@ -89,6 +89,8 @@ pub enum LogicalPlan {
     GraphJoins(GraphJoins),
 
     Union(Union),
+
+    PageRank(PageRank),
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -243,6 +245,12 @@ pub struct Union {
 pub enum UnionType {
     Distinct,
     All,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct PageRank {
+    pub iterations: usize,
+    pub damping_factor: f64,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -685,6 +693,9 @@ impl LogicalPlan {
                     children.push(input);
                 }
             }
+            LogicalPlan::PageRank(_) => {
+                // PageRank is a leaf node - no children to traverse
+            }
             LogicalPlan::ViewScan(_) => {
                 // ViewScan is a leaf node - no children to traverse
             }
@@ -721,6 +732,7 @@ impl LogicalPlan {
             LogicalPlan::Cte(cte) => format!("Cte({})", cte.name),
             LogicalPlan::GraphJoins(_) => "GraphJoins".to_string(),
             LogicalPlan::Union(_) => "Union".to_string(),
+            LogicalPlan::PageRank(pagerank) => format!("PageRank(iterations: {}, damping: {:.2})", pagerank.iterations, pagerank.damping_factor),
             LogicalPlan::ViewScan(scan) => format!("ViewScan({:?})", scan.source_table),
         }
     }
@@ -754,7 +766,7 @@ impl LogicalPlan {
                 .iter()
                 .any(|input| input.contains_variable_length_path()),
             // Leaf nodes
-            LogicalPlan::Scan(_) | LogicalPlan::ViewScan(_) | LogicalPlan::Empty => false,
+            LogicalPlan::Scan(_) | LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => false,
         }
     }
 }

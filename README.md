@@ -262,6 +262,7 @@ Preliminary informal tests on a MacBook Pro (M3 Pro, 18 GB RAM) running ClickGra
 
 ClickGraph includes the following completed features:
 - ✅ **Neo4j Bolt Protocol v4.4**: Full compatibility with Neo4j drivers and tools
+- ✅ **PageRank Algorithm**: Graph centrality analysis with `CALL pagerank(iterations: 10, damping: 0.85)`
 - ✅ **OPTIONAL MATCH**: LEFT JOIN semantics for optional graph patterns with NULL handling
 - ✅ **Variable-Length Paths**: Recursive traversals with configurable depth limits
 - ✅ **Path Variables & Functions**: `MATCH p = (a)-[*]->(b) RETURN length(p), nodes(p), relationships(p)`

@@ -4,4 +4,5 @@ pub enum QueryType {
     Read,
     Update,
     Delete,
+    Call,
 }

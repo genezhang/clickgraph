@@ -6,7 +6,7 @@ use types::QueryType;
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
     open_cypher_parser::ast::OpenCypherQueryAst,
-    query_planner::{analyzer::errors::AnalyzerError, logical_plan::LogicalPlan},
+    query_planner::{analyzer::errors::AnalyzerError, logical_plan::{LogicalPlan, PageRank}},
 };
 
 pub mod analyzer;
@@ -19,7 +19,9 @@ pub mod transformed;
 pub mod types;
 
 pub fn get_query_type(query_ast: &OpenCypherQueryAst) -> QueryType {
-    if query_ast.create_node_table_clause.is_some() || query_ast.create_rel_table_clause.is_some() {
+    if query_ast.call_clause.is_some() {
+        QueryType::Call
+    } else if query_ast.create_node_table_clause.is_some() || query_ast.create_rel_table_clause.is_some() {
         QueryType::Ddl
     } else if query_ast.delete_clause.is_some() {
         QueryType::Delete
@@ -73,4 +75,46 @@ pub fn evaluate_read_query(
     let logical_plan =
         Arc::into_inner(logical_plan).ok_or(QueryPlannerError::LogicalPlanExtractor)?;
     Ok(logical_plan)
+}
+
+pub fn evaluate_call_query(
+    query_ast: OpenCypherQueryAst,
+    current_graph_schema: &GraphSchema,
+) -> Result<LogicalPlan, QueryPlannerError> {
+    if let Some(call_clause) = query_ast.call_clause {
+        match call_clause.procedure_name {
+            "pagerank" => {
+                // Parse PageRank arguments
+                let mut iterations = 10;
+                let mut damping_factor = 0.85;
+
+                for arg in call_clause.arguments {
+                    match arg.name {
+                        "iterations" => {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::Integer(i)) = arg.value {
+                                iterations = i as usize;
+                            }
+                        }
+                        "damping" => {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::Float(f)) = arg.value {
+                                damping_factor = f;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Create PageRank logical plan
+                Ok(LogicalPlan::PageRank(PageRank {
+                    iterations,
+                    damping_factor,
+                }))
+            }
+            _ => Err(QueryPlannerError::UnsupportedProcedure {
+                procedure: call_clause.procedure_name.to_string(),
+            }),
+        }
+    } else {
+        Err(QueryPlannerError::InvalidQuery("No CALL clause found".to_string()))
+    }
 }

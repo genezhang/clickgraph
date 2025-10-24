@@ -13,7 +13,15 @@
 
 ### 🚀 Features
 
-- **Schema Validation Enhancement** (Oct 23): Optional startup validation of YAML configurations against ClickHouse schema
+- **PageRank Algorithm** (Oct 23): Complete implementation of graph centrality analysis
+  - Cypher syntax: `CALL pagerank(iterations: 10, damping: 0.85)`
+  - Algorithm: Iterative PageRank using UNION ALL SQL approach (avoids recursive CTE depth limits)
+  - Parameters: Configurable iterations (1-100) and damping factor (0.0-1.0)
+  - SQL generation: Dynamic iteration CTEs with proper out-degree calculations
+  - End-to-end testing: Verified convergence with different parameter combinations
+  - Performance: O(iterations × |E|) complexity leveraging ClickHouse parallel processing
+  - Integration: Direct SQL execution bypassing render plan processing
+  - See `notes/pagerank.md` for implementation details and test results
   - CLI flag: `--validate-schema` (opt-in for performance, defaults to disabled)
   - Environment variable: `BRAHMAND_VALIDATE_SCHEMA=true`
   - Validation scope: Table existence, column mappings, ID column types, relationship columns

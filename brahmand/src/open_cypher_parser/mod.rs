@@ -1,5 +1,5 @@
 use ast::{
-    CreateClause, CreateNodeTableClause, CreateRelTableClause, DeleteClause, LimitClause,
+    CallClause, CreateClause, CreateNodeTableClause, CreateRelTableClause, DeleteClause, LimitClause,
     MatchClause, OpenCypherQueryAst, OptionalMatchClause, OrderByClause, RemoveClause, 
     ReturnClause, SetClause, SkipClause, WhereClause, WithClause,
 };
@@ -14,6 +14,7 @@ use nom::sequence::terminated;
 use nom::{IResult, Parser};
 
 pub mod ast;
+mod call_clause;
 mod common;
 mod create_clause;
 mod create_node_table_clause;
@@ -55,6 +56,9 @@ pub fn parse_query_with_nom(
     let (input, optional_match_clauses): (&str, Vec<OptionalMatchClause>) =
         many0(optional_match_clause::parse_optional_match_clause).parse(input)?;
     
+    let (input, call_clause): (&str, Option<CallClause>) =
+        opt(call_clause::parse_call_clause).parse(input)?;
+    
     let (input, with_clause): (&str, Option<WithClause>) =
         opt(with_clause::parse_with_clause).parse(input)?;
     let (input, where_clause): (&str, Option<WhereClause>) =
@@ -83,6 +87,7 @@ pub fn parse_query_with_nom(
     let cypher_query = OpenCypherQueryAst {
         match_clause,
         optional_match_clauses,
+        call_clause,
         with_clause,
         where_clause,
         create_clause,

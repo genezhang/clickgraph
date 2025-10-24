@@ -23,6 +23,10 @@
   - UNION SQL generation: ✅ Working
   - Unit tests: ✅ Passing  
   - End-to-end: ✅ **VERIFIED: Oct 22, 2025** - returns all expected relationships (10 total: 8 FOLLOWS + 2 FRIENDS_WITH)
+- **PageRank algorithm**: `CALL pagerank(iterations: 10, damping: 0.85)` graph centrality measures ✅ **[COMPLETED: Oct 23, 2025]**
+  - Iterative SQL implementation with UNION ALL approach
+  - Configurable iterations and damping factor
+  - End-to-end tested with multiple parameter combinations
 - **ViewScan**: Cypher labels → ClickHouse table names via YAML, supports both nodes and relationships ✅
 - **Aggregations**: `COUNT`, `SUM`, `AVG`, `GROUP BY` ✅
 - **Ordering & Limits**: `ORDER BY`, `SKIP`, `LIMIT` ✅
@@ -54,9 +58,9 @@
 
 ## 🎯 Next Priorities
 
-1. **PageRank Implementation** - Graph analytics algorithm for centrality measures
-2. **Query Performance Metrics** - Execution time tracking and plan visualization
-3. **Performance optimization** - Benchmarking and query caching
+1. **Query Performance Metrics** - Execution time tracking and plan visualization
+2. **Performance optimization** - Benchmarking and query caching
+3. **Additional graph algorithms** - Community detection, centrality measures
 
 ---
 
@@ -65,8 +69,8 @@
 - **Tests**: 298/298 passing (100%)
   - Python integration tests: 8/8 passing (100%)
   - Rust unit tests: 290/290 passing (100%)
-- **Last updated**: Oct 22, 2025
-- **Latest feature**: WHERE clause handling for variable-length paths with parser fixes
+- **Last updated**: Oct 23, 2025
+- **Latest feature**: PageRank algorithm implementation with CALL statement support
 - **Branch**: main
 
 ---
@@ -91,6 +95,7 @@
 
 Detailed implementation notes for major features:
 
+- **[notes/pagerank.md](notes/pagerank.md)** - PageRank algorithm implementation with iterative SQL approach
 - **[notes/shortest-path.md](notes/shortest-path.md)** - Shortest path implementation and debugging story
 - **[notes/viewscan.md](notes/viewscan.md)** - View-based SQL translation
 - **[notes/optional-match.md](notes/optional-match.md)** - LEFT JOIN semantics

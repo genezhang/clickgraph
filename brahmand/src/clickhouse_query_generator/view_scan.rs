@@ -10,11 +10,9 @@ use crate::query_planner::{
     logical_plan::{LogicalPlan, ViewScan},
 };
 
-use super::ToSql;
-
 /// Build a SQL query for a ViewScan operation
 pub fn build_view_scan(scan: &ViewScan, plan: &LogicalPlan) -> String {
     let mut sql = String::new();
-    sql.push_str(&format!("SELECT * FROM {}", scan.table_name));
+    sql.push_str(&format!("SELECT * FROM {}", scan.source_table));
     sql
 }

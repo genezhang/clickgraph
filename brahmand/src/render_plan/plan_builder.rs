@@ -1382,6 +1382,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
                 None
             }
+            LogicalPlan::PageRank(_) => None,
         };
         Ok(last_node_cte)
     }
@@ -1606,6 +1607,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
                 Ok(ctes)
             }
+            LogicalPlan::PageRank(_) => Ok(vec![]),
         }
     }
 
@@ -1817,6 +1819,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     LogicalPlan::Limit(_) => "Limit",
                     LogicalPlan::Cte(_) => "Cte",
                     LogicalPlan::Union(_) => "Union",
+                    LogicalPlan::PageRank(_) => "PageRank",
                 });
                 projection.input.extract_ctes_with_context(last_node_alias, context)
             }
@@ -1839,6 +1842,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
                 Ok(ctes)
             }
+            LogicalPlan::PageRank(_) => Ok(vec![]),
         }
     }
 
@@ -1875,6 +1879,7 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Limit(limit) => limit.input.extract_select_items()?,
             LogicalPlan::Cte(cte) => cte.input.extract_select_items()?,
             LogicalPlan::Union(_) => vec![],
+            LogicalPlan::PageRank(_) => vec![],
         };
 
         Ok(select_items)
@@ -1933,6 +1938,7 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Limit(limit) => from_table_to_view_ref(limit.input.extract_from()?),
             LogicalPlan::Cte(cte) => from_table_to_view_ref(cte.input.extract_from()?),
             LogicalPlan::Union(_) => None,
+            LogicalPlan::PageRank(_) => None,
         };
         Ok(view_ref_to_from_table(from_ref))
     }
@@ -1985,6 +1991,7 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Cte(cte) => cte.input.extract_filters()?,
             LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_filters()?,
             LogicalPlan::Union(_) => None,
+            LogicalPlan::PageRank(_) => None,
         };
         Ok(filters)
     }
@@ -2130,6 +2137,25 @@ impl RenderPlanBuilder for LogicalPlan {
 
     fn to_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
         eprintln!("DEBUG: to_render_plan called on plan type: {:?}", std::mem::discriminant(self));
+        
+        // Special case for PageRank - it generates complete SQL directly
+        if let LogicalPlan::PageRank(pagerank) = self {
+            // For PageRank, we create a minimal RenderPlan that will be handled specially
+            // The actual SQL generation happens in the server handler
+            return Ok(RenderPlan {
+                ctes: CteItems(vec![]),
+                select: SelectItems(vec![]),
+                from: FromTableItem(None),
+                joins: JoinItems(vec![]),
+                filters: FilterItems(None),
+                group_by: GroupByExpressions(vec![]),
+                order_by: OrderByItems(vec![]),
+                skip: SkipItem(None),
+                limit: LimitItem(None),
+                union: UnionItems(None),
+            });
+        }
+        
         // Variable-length paths are now supported via recursive CTE generation
         // Two-pass architecture:
         // 1. Analyze property requirements across the entire plan
@@ -2150,6 +2176,7 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Limit(_) => "Limit",
             LogicalPlan::Cte(_) => "Cte",
             LogicalPlan::Union(_) => "Union",
+            LogicalPlan::PageRank(_) => "PageRank",
         });
         
         // First pass: analyze what properties are needed

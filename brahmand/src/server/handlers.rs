@@ -69,8 +69,93 @@ pub async fn query_handler(
         let query_type = query_planner::get_query_type(&cypher_ast);
 
         let is_read = query_type == QueryType::Read;
+        let is_call = query_type == QueryType::Call;
 
-        if is_read {
+        if is_call {
+            // Handle CALL queries (like PageRank)
+            let logical_plan = match query_planner::evaluate_call_query(cypher_ast, &graph_schema) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    if sql_only {
+                        let error_response = SqlOnlyResponse {
+                            cypher_query: payload.query.clone(),
+                            generated_sql: format!("CALL_PLANNING_ERROR: {}", e),
+                            execution_mode: "sql_only_with_call_error".to_string(),
+                        };
+                        return Ok(Json(error_response).into_response());
+                    } else {
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Brahmand Error: {}", e),
+                        ));
+                    }
+                }
+            };
+
+            // For CALL queries, we need to generate SQL directly from the logical plan
+            // Since PageRank generates complete SQL, we'll use a special approach
+            let ch_sql = match &logical_plan {
+                crate::query_planner::logical_plan::LogicalPlan::PageRank(pagerank) => {
+                    // Generate PageRank SQL directly
+                    use crate::clickhouse_query_generator::pagerank::PageRankGenerator;
+                    use crate::clickhouse_query_generator::pagerank::PageRankConfig;
+                    
+                    let config = PageRankConfig {
+                        iterations: pagerank.iterations as usize,
+                        damping_factor: pagerank.damping_factor,
+                        convergence_threshold: None,
+                    };
+                    
+                    let generator = PageRankGenerator::new(&graph_schema, config);
+                    match generator.generate_pagerank_sql() {
+                        Ok(sql) => sql,
+                        Err(e) => {
+                            if sql_only {
+                                let error_response = SqlOnlyResponse {
+                                    cypher_query: payload.query.clone(),
+                                    generated_sql: format!("PAGERANK_SQL_ERROR: {}", e),
+                                    execution_mode: "sql_only_with_pagerank_error".to_string(),
+                                };
+                                return Ok(Json(error_response).into_response());
+                            } else {
+                                return Err((
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!("Brahmand Error: {}", e),
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // For other CALL queries (not implemented yet)
+                    if sql_only {
+                        let error_response = SqlOnlyResponse {
+                            cypher_query: payload.query.clone(),
+                            generated_sql: "UNSUPPORTED_CALL_QUERY".to_string(),
+                            execution_mode: "sql_only_unsupported_call".to_string(),
+                        };
+                        return Ok(Json(error_response).into_response());
+                    } else {
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Unsupported CALL query type".to_string(),
+                        ));
+                    }
+                }
+            };
+
+            // If SQL-only mode, return the SQL without executing
+            if sql_only {
+                let sql_response = SqlOnlyResponse {
+                    cypher_query: payload.query.clone(),
+                    generated_sql: ch_sql.clone(),
+                    execution_mode: "sql_only".to_string(),
+                };
+                return Ok(Json(sql_response).into_response());
+            }
+
+            (vec![ch_sql], None, true)
+        } else if is_read {
             // Step 1: Query planning with error handling
             let logical_plan = match query_planner::evaluate_read_query(cypher_ast, &graph_schema) {
                 Ok(plan) => plan,

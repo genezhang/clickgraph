@@ -98,6 +98,10 @@ impl DuplicateScansRemoving {
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
             }
+            LogicalPlan::PageRank(_) => {
+                // PageRank is a leaf node, no transformation needed
+                Transformed::No(logical_plan.clone())
+            }
         };
         Ok(transformed_plan)
     }

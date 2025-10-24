@@ -7,10 +7,12 @@ use crate::{
 mod common;
 mod ddl_query;
 mod errors;
+pub mod pagerank;
 mod to_sql;
 mod to_sql_query;
 pub mod variable_length_cte;
 mod view_query;
+mod view_scan;
 #[cfg(test)]
 mod where_clause_tests;
 

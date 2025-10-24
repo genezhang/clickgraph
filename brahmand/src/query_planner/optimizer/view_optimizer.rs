@@ -215,6 +215,7 @@ impl OptimizerPass for ViewOptimizer {
                 let child_tf = self.optimize(graph_joins.input.clone(), plan_ctx)?;
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             },
+            LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
         };
         
         Ok(transformed_plan)

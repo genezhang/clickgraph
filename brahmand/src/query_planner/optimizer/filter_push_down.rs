@@ -101,6 +101,7 @@ impl OptimizerPass for FilterPushDown {
                 // that respects view mappings and property transformations
                 Transformed::No(logical_plan.clone())
             }
+            LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
         };
         Ok(transformed_plan)
     }

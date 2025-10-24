@@ -18,4 +18,8 @@ pub enum QueryPlannerError {
     // RenderBuild(#[from] RenderBuildError),
     #[error("Logical Plan Extractor")]
     LogicalPlanExtractor,
+    #[error("Unsupported procedure: {procedure}")]
+    UnsupportedProcedure { procedure: String },
+    #[error("Invalid query: {0}")]
+    InvalidQuery(String),
 }
