@@ -1,13 +1,13 @@
 # Next Steps - Development Roadmap
 
 **Last Updated**: October 23, 2025
-**Current Status**: Schema Validation ✅ COMPLETE | Multiple Relationship Types ✅ COMPLETE | ViewScan ✅ COMPLETE | Path Variables ✅ COMPLETE | Testing infrastructure ✅ READY
+**Current Status**: PageRank ✅ COMPLETE | WHERE Clause Filtering ✅ COMPLETE | Schema Validation ✅ COMPLETE | Multiple Relationship Types ✅ COMPLETE | ViewScan ✅ COMPLETE | Path Variables ✅ COMPLETE | Testing infrastructure ✅ READY
 **Branch**: `main`
-**Latest Commit**: Schema validation enhancement with optional startup validation
+**Latest Commit**: PageRank algorithm implementation with CALL statement support
 
 ---
 
-## 🎉 Just Completed (October 21, 2025)
+## 🎉 Just Completed (October 21-23, 2025)
 
 ### 1. Path Variables - Complete ✅
 **What**: Full support for path variables and path functions in Cypher queries
@@ -140,26 +140,142 @@
 - 🎯 Performance conscious: Opt-in validation with minimal overhead
 - 🎯 Backward compatible: No impact on existing deployments
 
+### 4. WHERE Clause Filtering for Variable-Length Paths - Complete ✅ (October 22, 2025)
+**What**: Full WHERE clause support for variable-length path queries and shortest path functions
+
+**Implementation**:
+- End node filters: `WHERE b.name = "David Lee"` in variable-length paths
+- Parser support for double-quoted strings and proper SQL quoting
+- Context storage in `CteGenerationContext` for filter propagation
+- Expression rewriting for CTE column mapping (`b.name` → `end_name`)
+
+**Files Modified**:
+- `brahmand/src/render_plan/plan_builder.rs` - Main filter processing and SQL generation
+- `brahmand/src/open_cypher_parser/expression.rs` - Double-quoted string support
+- `brahmand/src/clickhouse_query_generator/variable_length_cte.rs` - CTE property selection
+
+**Testing Status**:
+- ✅ End node filters: Work with all variable-length paths
+- ✅ Shortest path WHERE clauses: Fully functional
+- ✅ Parser: Double-quoted strings properly handled
+- ✅ SQL generation: Correct quoting and column mapping
+- ✅ Test results: 303/303 tests passing (100%)
+
+**Impact**:
+- 🎯 Complete Cypher WHERE clause support for graph queries
+- 🎯 Enables filtered shortest path queries: `shortestPath((a)-[*]-(b)) WHERE b.city = "NYC"`
+- 🎯 Foundation for complex graph analytics with filtering
+- 🎯 See: `notes/where-clause-complete.md` for implementation details
+
+### 5. PageRank Algorithm Implementation - Complete ✅ (October 23, 2025)
+**What**: Complete graph centrality algorithm with CALL statement support
+
+**Implementation**:
+- Cypher syntax: `CALL pagerank(maxIterations: 10, dampingFactor: 0.85)`
+- Iterative SQL approach using UNION ALL (avoids CTE depth limits)
+- Configurable parameters: `maxIterations`, `dampingFactor`, `nodeLabels`, `relationshipTypes`
+- Multi-graph support with YAML schema integration
+- Parameter parsing with both `=>` (GDS style) and `:` syntax
+
+**Files Modified**:
+- `brahmand/src/clickhouse_query_generator/pagerank.rs` - SQL generation logic
+- `brahmand/src/open_cypher_parser/call_clause.rs` - CALL statement parsing
+- `brahmand/src/query_planner/mod.rs` - Procedure name matching
+- `brahmand/src/server/handlers.rs` - HTTP endpoint integration
+- `test_pagerank_*.py` - Comprehensive test suite (3 new files)
+
+**Testing Status**:
+- ✅ Parameter validation: All combinations tested (13/13 passing)
+- ✅ SQL generation: Correct iterative CTEs with out-degree calculations
+- ✅ End-to-end execution: Converges properly with different parameters
+- ✅ Schema integration: Works with YAML-defined node/relationship types
+- ✅ Error handling: Proper validation and error messages
+
+**Impact**:
+- 🎯 Graph analytics capabilities: Node importance ranking
+- 🎯 Enterprise features: Multi-graph support with selective node/relationship filtering
+- 🎯 Performance: O(iterations × |E|) leveraging ClickHouse parallel processing
+- 🎯 Cypher/GDS compatibility: Standard parameter names and syntax
+- 🎯 See: `notes/pagerank.md` for implementation details
+
+## ⚠️ Known Issues That Need Attention
+
+**Last Updated**: October 23, 2025
+
+### High Priority Issues
+
+#### 1. ViewScan Relationship Support
+**Issue**: ViewScan only works for node queries, not relationship patterns
+**Impact**: `MATCH ()-[r:FRIENDS_WITH]->()` queries fall back to hardcoded table mappings
+**Current Status**: Node queries work perfectly via YAML schema, relationships still use fallback
+**Files to investigate**:
+- `brahmand/src/query_planner/analyzer/view_resolver.rs` - View resolution logic
+- `brahmand/src/render_plan/plan_builder.rs` - Relationship JOIN generation
+**Estimated effort**: 4-6 hours
+
+#### 2. OPTIONAL MATCH with ViewScan
+**Issue**: OPTIONAL MATCH with relationships not tested with ViewScan
+**Impact**: `OPTIONAL MATCH (a)-[r:FRIENDS_WITH]->(b)` may not work with YAML-defined schemas
+**Current Status**: OPTIONAL MATCH works with hardcoded relationships, not validated with ViewScan
+**Testing needed**: End-to-end validation with YAML schema relationships
+**Estimated effort**: 2-3 hours
+
+### Windows Development Constraints
+
+#### 3. ClickHouse Volume Permission Issues
+**Issue**: ClickHouse Docker containers cannot write to mounted volumes on Windows
+**Workaround**: Must use `ENGINE = Memory` instead of persistent engines
+**Impact**: Data is not persisted between container restarts (acceptable for development)
+**Status**: Documented constraint, no code changes needed
+**Note**: This is a Windows Docker limitation, not a ClickGraph issue
+
+#### 4. PowerShell curl Command Unavailable
+**Issue**: `curl` command not available in Windows PowerShell environment
+**Workaround**: Use `Invoke-RestMethod` PowerShell cmdlet or Python `requests`
+**Impact**: HTTP testing requires different commands on Windows
+**Status**: Documented in README and test scripts
+**Note**: Cross-platform testing scripts handle this automatically
+
 ---
 
 ## 🚀 Recommended Next Priority
 
-Now that Schema Validation, Multiple Relationship Types, ViewScan, and Shortest Path are complete, we can focus on:
+Now that PageRank, WHERE clause filtering, Schema Validation, Multiple Relationship Types, ViewScan, and Path Variables are complete, we can focus on:
 
-### Option A: Graph Analytics & Algorithms (High Impact)
-1. **PageRank Implementation**
-   - Graph centrality algorithm for importance ranking
-   - Foundation for advanced graph analytics
-   - **Estimated**: 1-2 weeks
+### Option A: Address Known Issues (High Priority)
+1. **ViewScan Relationship Support**
+   - Extend ViewScan to handle relationship patterns (currently only works for nodes)
+   - Investigate: `view_resolver.rs` and relationship JOIN generation
+   - **Estimated**: 4-6 hours
 
-2. **Query Performance Metrics**
+2. **OPTIONAL MATCH with ViewScan Testing**
+   - Validate OPTIONAL MATCH works with YAML-defined schemas
+   - End-to-end testing with relationship patterns
+   - **Estimated**: 2-3 hours
+
+### Option B: Performance & Monitoring (Medium Priority)
+1. **Query Performance Metrics**
    - Execution time tracking and plan visualization
    - Performance monitoring and optimization
    - **Estimated**: 2-3 hours
 
-### Option B: Advanced Cypher Features (Medium Impact)
-1. **Pattern Comprehensions**
+2. **Hot Reload for YAML Configs**
+   - Watch YAML files and reload without server restart
+   - Development velocity improvement
+   - **Estimated**: 3-4 hours
+
+### Option C: Advanced Graph Features (Future)
+1. **Additional Graph Algorithms**
+   - Betweenness centrality, closeness centrality
+   - Community detection algorithms
+   - **Estimated**: 1-2 weeks per algorithm
+
+2. **Pattern Comprehensions**
    - List comprehensions: `[(a)-[]->(b) | b.name]`
+   - Advanced query patterns
+   - **Estimated**: 4-6 hours
+
+**My Recommendation**: **Option A.1 (ViewScan Relationship Support)** - Complete the ViewScan implementation for full YAML-driven graph modeling.
    - Advanced query patterns
    - **Estimated**: 4-6 hours
 
