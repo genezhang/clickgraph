@@ -33,6 +33,7 @@ pub struct ServerConfig {
     pub bolt_port: u16,
     pub bolt_enabled: bool,
     pub max_cte_depth: u32,
+    pub validate_schema: bool,
     pub daemon: bool,
 }
 
@@ -57,6 +58,10 @@ impl ServerConfig {
                 .unwrap_or("100".to_string())
                 .parse()
                 .unwrap_or(100),
+            validate_schema: env::var("BRAHMAND_VALIDATE_SCHEMA")
+                .unwrap_or("false".to_string())
+                .parse()
+                .unwrap_or(false),
             daemon: false, // Environment-based config always runs in foreground
         }
     }
@@ -70,6 +75,7 @@ impl ServerConfig {
             bolt_port: cli_config.bolt_port,
             bolt_enabled: cli_config.bolt_enabled,
             max_cte_depth: cli_config.max_cte_depth,
+            validate_schema: cli_config.validate_schema,
             daemon: cli_config.daemon,
         }
     }
@@ -83,6 +89,7 @@ pub struct CliConfig {
     pub bolt_port: u16,
     pub bolt_enabled: bool,
     pub max_cte_depth: u32,
+    pub validate_schema: bool,
     pub daemon: bool,
 }
 
@@ -135,7 +142,7 @@ pub async fn run_with_config(config: ServerConfig) {
     };
 
     // Initialize schema with proper error handling
-    if let Err(e) = graph_catalog::initialize_global_schema(client_opt).await {
+    if let Err(e) = graph_catalog::initialize_global_schema(client_opt, config.validate_schema).await {
         eprintln!("✗ Failed to initialize ClickGraph: {}", e);
         eprintln!("  Server cannot start without proper schema initialization.");
         std::process::exit(1);

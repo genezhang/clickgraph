@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: October 22, 2025*
+*Updated: October 23, 2025*
 
 ---
 
@@ -38,18 +38,25 @@
 - **Configurable CTE depth**: Via CLI `--max-cte-depth` or env `BRAHMAND_MAX_CTE_DEPTH`
 - **Flexible binding**: HTTP and Bolt ports configurable
 - **Environment variables**: Full env var support for all settings
+- **Schema validation**: Optional startup validation of YAML configs against ClickHouse schema ✅ **[COMPLETED: Oct 23, 2025]**
+  - CLI flag: `--validate-schema` (opt-in for performance)
+  - Environment variable: `BRAHMAND_VALIDATE_SCHEMA`
+  - Validates table/column existence and data types
+  - Better error messages for misconfigurations
 
 ---
 
 ## 🚧 In Progress
 
-*(Nothing in active development - all recent features completed)*
+*(Schema validation enhancement completed - ready for next feature)*
 
 ---
 
 ## 🎯 Next Priorities
 
-1. **Performance optimization** - Benchmarking and query caching
+1. **PageRank Implementation** - Graph analytics algorithm for centrality measures
+2. **Query Performance Metrics** - Execution time tracking and plan visualization
+3. **Performance optimization** - Benchmarking and query caching
 
 ---
 

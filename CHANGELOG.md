@@ -11,7 +11,16 @@
   - Verification: `MATCH (a)-[:FOLLOWS|FRIENDS_WITH]->(b)` now returns 10 relationships (8 FOLLOWS + 2 FRIENDS_WITH) ✅
   - Impact: Multiple relationship type queries now work end-to-end
 
-### �🚀 Features
+### 🚀 Features
+
+- **Schema Validation Enhancement** (Oct 23): Optional startup validation of YAML configurations against ClickHouse schema
+  - CLI flag: `--validate-schema` (opt-in for performance, defaults to disabled)
+  - Environment variable: `BRAHMAND_VALIDATE_SCHEMA=true`
+  - Validation scope: Table existence, column mappings, ID column types, relationship columns
+  - Performance: Minimal impact (4-6 fast system.columns queries cached per validator)
+  - Error handling: Clear, actionable error messages for misconfigurations
+  - Integration: Validates during server startup when YAML configs are loaded
+  - Backward compatibility: No impact on existing deployments (validation disabled by default)
 
 - **Path Variables & Functions** (Oct 21): Complete implementation for path variables and functions
   - Parser: `MATCH p = (a)-[:TYPE*]-(b)` syntax parsing ✅

@@ -7,6 +7,7 @@ use tokio::{sync::RwLock, time::interval};
 use crate::graph_catalog::{
     graph_schema::{GraphSchema, GraphSchemaElement, NodeSchema, RelationshipSchema, RelationshipIndexSchema},
     config::GraphViewConfig,
+    SchemaValidator,
 };
 
 use super::{GLOBAL_GRAPH_SCHEMA, GLOBAL_VIEW_CONFIG, models::GraphCatalog};
@@ -21,7 +22,7 @@ async fn test_clickhouse_connection(client: Client) -> Result<(), String> {
         .map_err(|e| format!("ClickHouse connection test failed: {}", e))
 }
 
-pub async fn initialize_global_schema(clickhouse_client: Option<Client>) -> Result<(), String> {
+pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validate_schema: bool) -> Result<(), String> {
     println!("Initializing ClickGraph schema...");
     
     // Try to load from YAML configuration first (preferred approach)
@@ -32,15 +33,21 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>) -> Resu
             Ok((schema, config)) => {
                 println!("✓ Successfully loaded schema from YAML config: {}", yaml_config_path);
                 
-                // Validate the loaded schema
-                let nodes_map = schema.get_nodes_schemas();
-                let rels_map = schema.get_relationships_schemas();
-                
-                if nodes_map.is_empty() && rels_map.is_empty() {
-                    eprintln!("Warning: YAML config loaded but contains no nodes or relationships");
-                } else {
-                    println!("  - Loaded {} node types: {:?}", nodes_map.len(), nodes_map.keys().collect::<Vec<_>>());
-                    println!("  - Loaded {} relationship types: {:?}", rels_map.len(), rels_map.keys().collect::<Vec<_>>());
+                // Validate schema against ClickHouse if requested
+                if validate_schema {
+                    if let Some(client) = clickhouse_client.as_ref() {
+                        println!("  Validating schema against ClickHouse...");
+                        match config.validate_schema(&mut crate::graph_catalog::SchemaValidator::new(client.clone())).await {
+                            Ok(_) => println!("  ✓ Schema validation passed"),
+                            Err(e) => {
+                                eprintln!("  ✗ Schema validation failed: {}", e);
+                                return Err(format!("Schema validation failed: {}", e));
+                            }
+                        }
+                    } else {
+                        eprintln!("  ⚠ Schema validation requested but no ClickHouse client available");
+                        eprintln!("    Skipping validation - some queries may fail at runtime");
+                    }
                 }
                 
                 // Set global state - these should not fail in normal circumstances
