@@ -78,8 +78,7 @@
 ## ❌ Known Issues & Limitations
 
 ### Feature Limitations
-- **ViewScan for relationships**: Only works for node queries, not relationship patterns
-- **OPTIONAL MATCH with relationships**: Not yet tested with ViewScan
+- **OPTIONAL MATCH with relationships**: Not yet tested with YAML-defined schemas
 
 ### Windows Development
 - **ClickHouse tables**: Must use `ENGINE = Memory` (persistent engines fail with volume permission issues)
