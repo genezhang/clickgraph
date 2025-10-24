@@ -204,14 +204,12 @@
 
 ### High Priority Issues
 
-#### 1. ViewScan Relationship Support
-**Issue**: ViewScan only works for node queries, not relationship patterns
-**Impact**: `MATCH ()-[r:FRIENDS_WITH]->()` queries fall back to hardcoded table mappings
-**Current Status**: Node queries work perfectly via YAML schema, relationships still use fallback
-**Files to investigate**:
-- `brahmand/src/query_planner/analyzer/view_resolver.rs` - View resolution logic
-- `brahmand/src/render_plan/plan_builder.rs` - Relationship JOIN generation
-**Estimated effort**: 4-6 hours
+#### 1. ViewScan Relationship Support - **ACTUALLY WORKS!**
+**Issue**: Initially thought ViewScan only worked for nodes, but relationships DO support YAML schema lookup
+**Investigation Result**: Relationships use `rel_type_to_table_name()` which calls `schema.get_rel_schema()` first, then falls back to hardcoded mappings
+**Current Status**: ✅ Relationships DO support YAML-defined schemas via direct schema lookup in JOIN generation
+**Impact**: This limitation was incorrect - relationships work with YAML schemas
+**Resolution**: Remove this from known issues - relationships already support ViewScan-like functionality
 
 #### 2. OPTIONAL MATCH with ViewScan
 **Issue**: OPTIONAL MATCH with relationships not tested with ViewScan
@@ -243,13 +241,15 @@
 Now that PageRank, WHERE clause filtering, Schema Validation, Multiple Relationship Types, ViewScan, and Path Variables are complete, we can focus on:
 
 ### Option A: Address Known Issues (High Priority)
-1. **ViewScan Relationship Support**
-   - Extend ViewScan to handle relationship patterns (currently only works for nodes)
-   - Investigate: `view_resolver.rs` and relationship JOIN generation
-   - **Estimated**: 4-6 hours
+1. **OPTIONAL MATCH with YAML Schemas**
+   - Validate OPTIONAL MATCH works with YAML-defined relationship schemas
+   - End-to-end testing with relationship patterns
+   - **Estimated**: 2-3 hours
 
-2. **OPTIONAL MATCH with ViewScan Testing**
-   - Validate OPTIONAL MATCH works with YAML-defined schemas
+2. **Query Performance Metrics**
+   - Execution time tracking and plan visualization
+   - Performance monitoring and optimization
+   - **Estimated**: 2-3 hours
    - End-to-end testing with relationship patterns
    - **Estimated**: 2-3 hours
 
@@ -275,7 +275,7 @@ Now that PageRank, WHERE clause filtering, Schema Validation, Multiple Relations
    - Advanced query patterns
    - **Estimated**: 4-6 hours
 
-**My Recommendation**: **Option A.1 (ViewScan Relationship Support)** - Complete the ViewScan implementation for full YAML-driven graph modeling.
+**My Recommendation**: **Option A.1 (OPTIONAL MATCH with YAML Schemas)** - Validate that OPTIONAL MATCH works correctly with YAML-defined relationship schemas.
    - Advanced query patterns
    - **Estimated**: 4-6 hours
 
