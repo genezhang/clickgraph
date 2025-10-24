@@ -241,12 +241,7 @@
 Now that PageRank, WHERE clause filtering, Schema Validation, Multiple Relationship Types, ViewScan, and Path Variables are complete, we can focus on:
 
 ### Option A: Address Known Issues (High Priority)
-1. **OPTIONAL MATCH with YAML Schemas**
-   - Validate OPTIONAL MATCH works with YAML-defined relationship schemas
-   - End-to-end testing with relationship patterns
-   - **Estimated**: 2-3 hours
-
-2. **Query Performance Metrics**
+1. **Query Performance Metrics**
    - Execution time tracking and plan visualization
    - Performance monitoring and optimization
    - **Estimated**: 2-3 hours
@@ -275,7 +270,7 @@ Now that PageRank, WHERE clause filtering, Schema Validation, Multiple Relations
    - Advanced query patterns
    - **Estimated**: 4-6 hours
 
-**My Recommendation**: **Option A.1 (OPTIONAL MATCH with YAML Schemas)** - Validate that OPTIONAL MATCH works correctly with YAML-defined relationship schemas.
+**My Recommendation**: **Option A.1 (Query Performance Metrics)** - Add execution time tracking and plan visualization to monitor performance and optimize queries.
    - Advanced query patterns
    - **Estimated**: 4-6 hours
 

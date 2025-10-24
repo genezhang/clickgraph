@@ -78,7 +78,6 @@
 ## ❌ Known Issues & Limitations
 
 ### Feature Limitations
-- **OPTIONAL MATCH with relationships**: Not yet tested with YAML-defined schemas
 
 ### Windows Development
 - **ClickHouse tables**: Must use `ENGINE = Memory` (persistent engines fail with volume permission issues)
