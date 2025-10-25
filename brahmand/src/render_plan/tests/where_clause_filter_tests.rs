@@ -12,7 +12,7 @@
 
 use crate::{
     clickhouse_query_generator,
-    graph_catalog::graph_schema::GraphSchema,
+    graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, NodeIdSchema},
     open_cypher_parser,
     query_planner::logical_plan::plan_builder::build_logical_plan,
     render_plan::plan_builder::RenderPlanBuilder,
@@ -27,13 +27,25 @@ fn cypher_to_sql(cypher: &str) -> String {
     let (logical_plan, mut plan_ctx) = build_logical_plan(&ast)
         .expect("Failed to build logical plan");
 
-    // Run optimizer passes to inject filters into GraphRel nodes
+    // Debug: Print logical plan before analyzer passes
+    println!("Logical plan before analyzer passes: {:?}", logical_plan);
+
+    // Run analyzer passes to extract filters from Filter nodes
+    use crate::query_planner::analyzer;
     use crate::query_planner::optimizer;
-    use crate::graph_catalog::graph_schema::GraphSchema;
+    use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, NodeIdSchema};
 
-    // Create a minimal graph schema for testing
-    let graph_schema = GraphSchema::build(1, HashMap::new(), HashMap::new(), HashMap::new());
+    // Create a proper graph schema for testing with property mappings
+    let graph_schema = setup_test_graph_schema();
 
+    // Run analyzer passes to extract and tag filters
+    let logical_plan = analyzer::initial_analyzing(logical_plan, &mut plan_ctx, &graph_schema).unwrap();
+    let logical_plan = analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, &graph_schema).unwrap();
+
+    // Debug: Print plan_ctx to see if filters were extracted
+    println!("PlanCtx after analyzer passes: {:?}", plan_ctx);
+
+    // Run optimizer passes to inject filters into GraphRel nodes
     let logical_plan = optimizer::initial_optimization(logical_plan, &mut plan_ctx).unwrap();
     let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx).unwrap();
 
@@ -41,6 +53,50 @@ fn cypher_to_sql(cypher: &str) -> String {
         .expect("Failed to build render plan");
 
     clickhouse_query_generator::generate_sql(render_plan, 100)
+}
+
+/// Create a test graph schema with proper property mappings
+fn setup_test_graph_schema() -> GraphSchema {
+    use crate::graph_catalog::graph_schema::RelationshipIndexSchema;
+
+    let mut nodes = HashMap::new();
+    let mut relationships = HashMap::new();
+    let relationships_indexes = HashMap::new();
+
+    // Create User node schema
+    let user_node = NodeSchema {
+        table_name: "users".to_string(),
+        column_names: vec!["id".to_string(), "name".to_string(), "age".to_string(), "status".to_string(), "user_id".to_string()],
+        primary_keys: "id".to_string(),
+        node_id: NodeIdSchema {
+            column: "id".to_string(),
+            dtype: "UInt64".to_string(),
+        },
+        property_mappings: [
+            ("name".to_string(), "name".to_string()),
+            ("age".to_string(), "age".to_string()),
+            ("status".to_string(), "status".to_string()),
+            ("user_id".to_string(), "user_id".to_string()),
+            ("full_name".to_string(), "name".to_string()), // Alias for name
+        ].into_iter().collect(),
+    };
+    nodes.insert("User".to_string(), user_node);
+
+    // Create FOLLOWS relationship schema
+    let follows_rel = RelationshipSchema {
+        table_name: "follows".to_string(),
+        column_names: vec!["from_id".to_string(), "to_id".to_string()],
+        from_node: "User".to_string(),
+        to_node: "User".to_string(),
+        from_column: "from_id".to_string(),
+        to_column: "to_id".to_string(),
+        from_node_id_dtype: "UInt64".to_string(),
+        to_node_id_dtype: "UInt64".to_string(),
+        property_mappings: HashMap::new(),
+    };
+    relationships.insert("FOLLOWS".to_string(), follows_rel);
+
+    GraphSchema::build(1, nodes, relationships, relationships_indexes)
 }#[cfg(test)]
 mod variable_length_path_filters {
     use super::*;

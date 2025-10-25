@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::query_planner::{
     logical_expr::{LogicalExpr, PropertyAccess, Column, TableAlias},
-    logical_plan::{GraphRel, LogicalPlan},
+    logical_plan::{GraphRel, LogicalPlan, Projection},
     optimizer::optimizer_pass::{OptimizerPass, OptimizerResult},
     plan_ctx::PlanCtx,
     transformed::Transformed,
@@ -137,7 +137,28 @@ impl OptimizerPass for FilterIntoGraphRel {
                 let child_tf = self.optimize(graph_node.input.clone(), plan_ctx)?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
+            LogicalPlan::Projection(proj) => {
+                let child_tf = self.optimize(proj.input.clone(), plan_ctx)?;
+                match child_tf {
+                    Transformed::Yes(new_input) => {
+                        let new_proj = LogicalPlan::Projection(Projection {
+                            input: new_input,
+                            items: proj.items.clone(),
+                        });
+                        Transformed::Yes(Arc::new(new_proj))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
             LogicalPlan::GraphRel(graph_rel) => {
+                // Skip if already has filters injected
+                if graph_rel.where_predicate.is_some() {
+                    log::debug!("FilterIntoGraphRel: GraphRel already has where_predicate, skipping");
+                    return Ok(Transformed::No(logical_plan.clone()));
+                }
+                
+                println!("FilterIntoGraphRel: Processing GraphRel with left_connection='{}', right_connection='{}'",
+                         graph_rel.left_connection, graph_rel.right_connection);
                 // Extract filters from plan_ctx for this GraphRel's aliases
                 let mut combined_filters: Vec<LogicalExpr> = vec![];                // Check left connection for filters
                 if let Ok(table_ctx) = plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_rel.left_connection.clone())) {
@@ -158,9 +179,9 @@ impl OptimizerPass for FilterIntoGraphRel {
                 if let Ok(table_ctx) = plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_rel.right_connection.clone())) {
                     let filters = table_ctx.get_filters().clone();
                     if !filters.is_empty() {
-                        log::debug!("FilterIntoGraphRel: Found {} filters for right connection alias '{}' in GraphRel", 
+                        println!("FilterIntoGraphRel: Found {} filters for right connection alias '{}' in GraphRel", 
                                    filters.len(), graph_rel.right_connection);
-                        log::trace!("FilterIntoGraphRel: Right alias filters: {:?}", filters);
+                        println!("FilterIntoGraphRel: Right alias filters: {:?}", filters);
                         // Qualify filters with the right alias
                         let qualified_filters: Vec<LogicalExpr> = filters.into_iter()
                             .map(|f| qualify_columns_with_alias(f, &graph_rel.right_connection))
@@ -182,8 +203,8 @@ impl OptimizerPass for FilterIntoGraphRel {
                     });
                     
                     if let Some(predicate) = combined_predicate {
-                        log::debug!("FilterIntoGraphRel: Injecting combined filter into GraphRel.where_predicate");
-                        log::trace!("FilterIntoGraphRel: Combined predicate: {:?}", predicate);
+                        println!("FilterIntoGraphRel: Injecting combined filter into GraphRel.where_predicate");
+                        println!("FilterIntoGraphRel: Combined predicate: {:?}", predicate);
                         
                         let new_graph_rel = Arc::new(LogicalPlan::GraphRel(GraphRel {
                             left: graph_rel.left.clone(),

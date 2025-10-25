@@ -184,12 +184,16 @@ fn traverse_connected_pattern_with_mode<'a>(
         // if start alias already present in ctx map, it means the current nested connected pattern's start node will be connecting at right side plan and end node will be at the left
         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&start_node_alias) {
             if start_node_label.is_some() {
-                table_ctx.set_labels(start_node_label.map(|l| vec![l]));
+                table_ctx.set_labels(start_node_label.clone().map(|l| vec![l]));
             }
             if !start_node_props.is_empty() {
                 table_ctx.append_properties(start_node_props);
             }
 
+            let start_graph_node = GraphNode {
+                input: generate_scan(start_node_alias.clone(), start_node_label.clone()),
+                alias: start_node_alias.clone(),
+            };
             let end_graph_node = GraphNode {
                 input: generate_scan(end_node_alias.clone(), end_node_label.clone()),
                 alias: end_node_alias.clone(),
@@ -205,14 +209,26 @@ fn traverse_connected_pattern_with_mode<'a>(
                 ),
             );
 
+            let (left_conn, right_conn) = match rel.direction {
+                ast::Direction::Outgoing => (start_node_alias, end_node_alias),
+                ast::Direction::Incoming => (end_node_alias, start_node_alias),
+                ast::Direction::Either => (start_node_alias, end_node_alias),
+            };
+
+            let (left_node, right_node) = match rel.direction {
+                ast::Direction::Outgoing => (Arc::new(LogicalPlan::GraphNode(start_graph_node)), Arc::new(LogicalPlan::GraphNode(end_graph_node))),
+                ast::Direction::Incoming => (Arc::new(LogicalPlan::GraphNode(end_graph_node)), Arc::new(LogicalPlan::GraphNode(start_graph_node))),
+                ast::Direction::Either => (Arc::new(LogicalPlan::GraphNode(start_graph_node)), Arc::new(LogicalPlan::GraphNode(end_graph_node))),
+            };
+
             let graph_rel_node = GraphRel {
-                left: Arc::new(LogicalPlan::GraphNode(end_graph_node)),
+                left: left_node,
                 center: generate_scan(rel_alias.clone(), None),
-                right: plan.clone(),
+                right: right_node,
                 alias: rel_alias.clone(),
                 direction: rel.direction.clone().into(),
-                left_connection: end_node_alias,
-                right_connection: start_node_alias,
+                left_connection: left_conn,
+                right_connection: right_conn,
                 is_rel_anchor: false,
                 variable_length: None, // Single-hop relationship by default
                 shortest_path_mode: shortest_path_mode.clone(),
@@ -352,14 +368,20 @@ fn traverse_connected_pattern_with_mode<'a>(
                 ),
             );
 
+            let (left_conn, right_conn) = match rel.direction {
+                ast::Direction::Outgoing => (start_node_alias, end_node_alias),
+                ast::Direction::Incoming => (end_node_alias, start_node_alias),
+                ast::Direction::Either => (start_node_alias, end_node_alias),
+            };
+
             let graph_rel_node = GraphRel {
                 left: Arc::new(LogicalPlan::GraphNode(end_graph_node)),
                 center: generate_scan(rel_alias.clone(), None),
                 right: Arc::new(LogicalPlan::GraphNode(start_graph_node)),
                 alias: rel_alias.clone(),
                 direction: rel.direction.clone().into(),
-                left_connection: end_node_alias,
-                right_connection: start_node_alias,
+                left_connection: left_conn,
+                right_connection: right_conn,
                 is_rel_anchor: false,
                 variable_length: rel.variable_length.clone().map(|v| v.into()),
                 shortest_path_mode: shortest_path_mode.clone(),
@@ -766,8 +788,8 @@ mod tests {
             LogicalPlan::GraphRel(graph_rel) => {
                 assert_eq!(graph_rel.alias, "works_at");
                 assert_eq!(graph_rel.direction, Direction::Outgoing);
-                assert_eq!(graph_rel.left_connection, "company");
-                assert_eq!(graph_rel.right_connection, "user");
+                assert_eq!(graph_rel.left_connection, "user");
+                assert_eq!(graph_rel.right_connection, "company");
                 assert!(!graph_rel.is_rel_anchor);
 
                 // Check left side (end node)

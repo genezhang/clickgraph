@@ -267,9 +267,12 @@ impl VariableLengthCteGenerator {
                 end_table = self.format_table_name(&self.end_node_table)
             );
             
-            // Add WHERE clause with only start node filters (end filters applied later)
+            // Add WHERE clause with start and end node filters
             let mut where_conditions = Vec::new();
             if let Some(ref filters) = self.start_node_filters {
+                where_conditions.push(filters.clone());
+            }
+            if let Some(ref filters) = self.end_node_filters {
                 where_conditions.push(filters.clone());
             }
             

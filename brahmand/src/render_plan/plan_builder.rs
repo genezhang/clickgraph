@@ -1,10 +1,14 @@
 use std::sync::Arc;
+use std::fs::OpenOptions;
+use std::io::Write;
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::query_planner::logical_expr::Direction;
+use crate::query_planner::plan_ctx::PlanCtx;
 use crate::clickhouse_query_generator::variable_length_cte::{VariableLengthCteGenerator, ChainedJoinGenerator};
 
 use super::errors::RenderBuildError;
 use super::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, Operator, OperatorApplication, RenderExpr, ScalarFnCall,
+    AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
 };
 use super::{
     Cte, CteItems, FilterItems, FromTable, FromTableItem, GroupByExpressions, Join, JoinItems, JoinType,
@@ -54,10 +58,21 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
         RenderExpr::PropertyAccessExp(prop) => {
             // Convert property access to table.column format
             // Apply alias mapping to convert Cypher aliases to CTE aliases
+            println!("DEBUG: render_expr_to_sql_string PropertyAccessExp - table_alias: '{}', column: '{}'", prop.table_alias.0, prop.column.0);
+            println!("DEBUG: alias_mapping: {:?}", alias_mapping);
             let table_alias = alias_mapping.iter()
-                .find(|(cypher, _)| cypher == &prop.table_alias.0)
-                .map(|(_, cte)| cte.clone())
-                .unwrap_or_else(|| prop.table_alias.0.clone());
+                .find(|(cypher, _)| {
+                    println!("DEBUG: comparing '{}' == '{}'", cypher, &prop.table_alias.0);
+                    *cypher == prop.table_alias.0
+                })
+                .map(|(_, cte)| {
+                    println!("DEBUG: found mapping, using CTE alias: '{}'", cte);
+                    cte.clone()
+                })
+                .unwrap_or_else(|| {
+                    println!("DEBUG: no mapping found, using original: '{}'", prop.table_alias.0);
+                    prop.table_alias.0.clone()
+                });
             format!("{}.{}", table_alias, prop.column.0)
         }
         RenderExpr::OperatorApplicationExp(op) => {
@@ -387,209 +402,6 @@ fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::Limit(limit) => get_path_variable(&limit.input),
         LogicalPlan::Cte(cte) => get_path_variable(&cte.input),
         _ => None,
-    }
-}
-
-/// Rewrite expressions to use CTE columns instead of node references
-/// Maps u1.user_id -> t.start_id, u2.user_id -> t.end_id, u1.name -> t.start_name, etc.
-fn rewrite_expr_for_var_len_cte(
-    expr: &super::render_expr::RenderExpr,
-    left_alias: &str,
-    right_alias: &str,
-    path_variable: Option<&str>,
-) -> super::render_expr::RenderExpr {
-    use super::render_expr::{RenderExpr, PropertyAccess, TableAlias, Column};
-    
-    match expr {
-        RenderExpr::ScalarFnCall(fn_call) => {
-            // Check if this is a path function on a path variable
-            if let Some(path_var) = path_variable {
-                let fn_name_lower = fn_call.name.to_lowercase();
-                
-                // Check if the first argument is the path variable
-                if fn_call.args.len() == 1 {
-                    if let RenderExpr::TableAlias(alias) = &fn_call.args[0] {
-                        if alias.0 == path_var {
-                            // This is a path function - map to CTE columns
-                            match fn_name_lower.as_str() {
-                                "length" => {
-                                    // length(p) -> hop_count
-                                    return RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias("t".to_string()),
-                                        column: Column("hop_count".to_string()),
-                                    });
-                                }
-                                "nodes" => {
-                                    // nodes(p) -> path_nodes array
-                                    return RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias("t".to_string()),
-                                        column: Column("path_nodes".to_string()),
-                                    });
-                                }
-                                "relationships" => {
-                                    // relationships(p) -> path_relationships array
-                                    return RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias("t".to_string()),
-                                        column: Column("path_relationships".to_string()),
-                                    });
-                                }
-                                _ => {
-                                    // Not a recognized path function, fall through
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Recursively rewrite function arguments
-            use super::render_expr::ScalarFnCall as SF;
-            let rewritten_args: Vec<_> = fn_call.args.iter()
-                .map(|arg| rewrite_expr_for_var_len_cte(arg, left_alias, right_alias, path_variable))
-                .collect();
-            
-            RenderExpr::ScalarFnCall(SF {
-                name: fn_call.name.clone(),
-                args: rewritten_args,
-            })
-        }
-        RenderExpr::TableAlias(alias) => {
-            // Check if this is a path variable reference
-            if let Some(path_var) = path_variable {
-                if alias.0 == path_var {
-                    // This is a path variable - construct a path object from CTE columns
-                    // Use ClickHouse map() function to create a structure with path data
-                    use super::render_expr::{ScalarFnCall, Literal};
-                    
-                    return RenderExpr::ScalarFnCall(ScalarFnCall {
-                        name: "map".to_string(),
-                        args: vec![
-                            // 'nodes' key
-                            RenderExpr::Literal(Literal::String("nodes".to_string())),
-                            // path_nodes value - convert to string
-                            RenderExpr::ScalarFnCall(ScalarFnCall {
-                                name: "toString".to_string(),
-                                args: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias("t".to_string()),
-                                        column: Column("path_nodes".to_string()),
-                                    }),
-                                ],
-                            }),
-                            // 'length' key
-                            RenderExpr::Literal(Literal::String("length".to_string())),
-                            // hop_count value - convert to string
-                            RenderExpr::ScalarFnCall(ScalarFnCall {
-                                name: "toString".to_string(),
-                                args: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias("t".to_string()),
-                                        column: Column("hop_count".to_string()),
-                                    }),
-                                ],
-                            }),
-                            // 'start' key
-                            RenderExpr::Literal(Literal::String("start".to_string())),
-                            // start_id value - convert to string
-                            RenderExpr::ScalarFnCall(ScalarFnCall {
-                                name: "toString".to_string(),
-                                args: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias("t".to_string()),
-                                        column: Column("start_id".to_string()),
-                                    }),
-                                ],
-                            }),
-                            // 'end' key
-                            RenderExpr::Literal(Literal::String("end".to_string())),
-                            // end_id value - convert to string
-                            RenderExpr::ScalarFnCall(ScalarFnCall {
-                                name: "toString".to_string(),
-                                args: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias("t".to_string()),
-                                        column: Column("end_id".to_string()),
-                                    }),
-                                ],
-                            }),
-                        ],
-                    });
-                }
-            }
-            
-            expr.clone()
-        }
-        RenderExpr::PropertyAccessExp(prop_access) => {
-            let node_alias = &prop_access.table_alias.0;
-            let property = &prop_access.column.0;
-            
-            // Check if this is referencing the left or right node
-            if node_alias == left_alias {
-                // Left node reference
-                let cte_column = if property.ends_with("_id") || property == "user_id" || property == "id" {
-                    // ID column -> start_id
-                    "start_id".to_string()
-                } else {
-                    // Property column -> start_{property}
-                    // Use the Cypher property name directly (not the database column name)
-                    // The CTE already maps column_name to alias, so we use the alias here
-                    format!("start_{}", property)
-                };
-                return RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias("t".to_string()),
-                    column: Column(cte_column),
-                });
-            } else if node_alias == right_alias {
-                // Right node reference
-                let cte_column = if property.ends_with("_id") || property == "user_id" || property == "id" {
-                    // ID column -> end_id
-                    "end_id".to_string()
-                } else {
-                    // Property column -> end_{property}
-                    // Use the Cypher property name directly (not the database column name)
-                    format!("end_{}", property)
-                };
-                return RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias("t".to_string()),
-                    column: Column(cte_column),
-                });
-            }
-            expr.clone()
-        }
-        // Recursively rewrite operator expressions
-        RenderExpr::OperatorApplicationExp(op) => {
-            use super::render_expr::OperatorApplication;
-            let rewritten_operands: Vec<_> = op.operands.iter()
-                .map(|operand| rewrite_expr_for_var_len_cte(operand, left_alias, right_alias, path_variable))
-                .collect();
-            
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator,
-                operands: rewritten_operands,
-            })
-        }
-        // Recursively rewrite list expressions
-        RenderExpr::List(items) => {
-            let rewritten_items: Vec<_> = items.iter()
-                .map(|item| rewrite_expr_for_var_len_cte(item, left_alias, right_alias, path_variable))
-                .collect();
-            
-            RenderExpr::List(rewritten_items)
-        }
-        // Recursively rewrite aggregate function expressions
-        RenderExpr::AggregateFnCall(agg) => {
-            use super::render_expr::AggregateFnCall;
-            let rewritten_args: Vec<_> = agg.args.iter()
-                .map(|arg| rewrite_expr_for_var_len_cte(arg, left_alias, right_alias, path_variable))
-                .collect();
-            
-            RenderExpr::AggregateFnCall(AggregateFnCall {
-                name: agg.name.clone(),
-                args: rewritten_args,
-            })
-        }
-        // For other expression types (literals, stars, etc.), no rewriting needed
-        _ => expr.clone(),
     }
 }
 
@@ -1179,6 +991,59 @@ fn rewrite_end_filters_for_variable_length_cte(
     }
 }
 
+/// Rewrite expressions for variable-length CTE outer query
+/// Converts Cypher property accesses to CTE column references for SELECT clauses
+fn rewrite_expr_for_var_len_cte(
+    expr: &RenderExpr,
+    start_cypher_alias: &str,
+    end_cypher_alias: &str,
+    _path_var: Option<&str>,
+) -> RenderExpr {
+    use super::render_expr::{PropertyAccess, TableAlias, Column};
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            let mut new_prop = prop.clone();
+            if prop.table_alias.0 == start_cypher_alias {
+                new_prop.table_alias = TableAlias("t".to_string());
+                if prop.column.0 == "*" {
+                    new_prop.column = prop.column.clone();
+                } else {
+                    new_prop.column = Column(format!("start_{}", prop.column.0));
+                }
+            } else if prop.table_alias.0 == end_cypher_alias {
+                // End node properties stay as is
+            } else {
+                // Other properties stay as is
+            }
+            RenderExpr::PropertyAccessExp(new_prop)
+        }
+        RenderExpr::TableAlias(alias) => {
+            if alias.0 == start_cypher_alias {
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("t".to_string()),
+                    column: Column("start_id".to_string()),
+                })
+            } else if alias.0 == end_cypher_alias {
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(end_cypher_alias.to_string()),
+                    column: Column("id".to_string()),
+                })
+            } else {
+                expr.clone()
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator.clone(),
+                operands: op.operands.iter()
+                    .map(|operand| rewrite_expr_for_var_len_cte(operand, start_cypher_alias, end_cypher_alias, _path_var))
+                    .collect(),
+            })
+        }
+        _ => expr.clone(), // Literals, etc. stay the same
+    }
+}
+
 /// Categorize WHERE clause filters based on which node/relationship they reference
 /// This is critical for shortest path queries where:
 /// - Start node filters go in the base case (e.g., WHERE start_node.name = 'Alice')
@@ -1263,19 +1128,29 @@ fn categorize_filters(
         let refs_end = references_alias(&predicate, end_cypher_alias, "end_node");
         let has_path_fn = contains_path_function(&predicate);
         
+        println!("DEBUG: Categorizing predicate: {:?}", predicate);
+        println!("DEBUG: refs_start (alias '{}'): {}", start_cypher_alias, refs_start);
+        println!("DEBUG: refs_end (alias '{}'): {}", end_cypher_alias, refs_end);
+        println!("DEBUG: has_path_fn: {}", has_path_fn);
+        
         if has_path_fn {
             // Path function filters (e.g., WHERE length(p) <= 3) go in path function filters
+            println!("DEBUG: Going to path_fn_filters");
             path_fn_filters.push(predicate);
         } else if refs_start && refs_end {
             // Filter references both nodes - can't categorize simply
             // For now, treat as start filter (will be in base case)
+            println!("DEBUG: Going to start_filters (refs both)");
             start_filters.push(predicate);
         } else if refs_start {
+            println!("DEBUG: Going to start_filters");
             start_filters.push(predicate);
         } else if refs_end {
+            println!("DEBUG: Going to end_filters");
             end_filters.push(predicate);
         } else {
             // Doesn't reference nodes - might be relationship filter or constant
+            println!("DEBUG: Going to rel_filters");
             rel_filters.push(predicate);
         }
     }
@@ -1446,10 +1321,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Handle variable-length paths differently
                 if let Some(spec) = &graph_rel.variable_length {
                     // Define aliases that will be used throughout
-                    let start_alias = extract_node_alias(&graph_rel.left)
-                        .unwrap_or_else(|| graph_rel.left_connection.clone());
-                    let end_alias = extract_node_alias(&graph_rel.right)
-                        .unwrap_or_else(|| graph_rel.right_connection.clone());
+                    let start_alias = graph_rel.left_connection.clone();
+                    let end_alias = graph_rel.right_connection.clone();
                     
                     // Extract node labels for property mapping
                     let start_label = extract_node_label_from_viewscan(&graph_rel.left)
@@ -1457,43 +1330,44 @@ impl RenderPlanBuilder for LogicalPlan {
                     let end_label = extract_node_label_from_viewscan(&graph_rel.right)
                         .unwrap_or_else(|| "User".to_string()); // fallback
                     
-                    // Extract and categorize filters for variable-length paths
-                    let (start_filters_sql, end_filters_sql) = if let Some(logical_expr) = &graph_rel.where_predicate {
-                        println!("DEBUG: Processing WHERE predicate for variable-length path");
-                        let mut filter_expr: RenderExpr = logical_expr.clone().try_into()?;
-                        println!("DEBUG: Converted logical expr to render expr");
+                    // Extract and categorize filters for variable-length paths from GraphRel.where_predicate
+                    let (start_filters_sql, end_filters_sql) = if let Some(where_predicate) = &graph_rel.where_predicate {
+                        // Convert LogicalExpr to RenderExpr
+                        let mut render_expr = RenderExpr::try_from(where_predicate.clone())
+                            .map_err(|e| RenderBuildError::UnsupportedFeature(format!("Failed to convert LogicalExpr to RenderExpr: {}", e)))?;
                         
-                        // Apply property mapping to convert Cypher property names to database column names
-                        apply_property_mapping_to_expr(&mut filter_expr, self);
-                        println!("DEBUG: Applied property mapping to filter expr");
+                        // Apply property mapping to the filter expression before categorization
+                        apply_property_mapping_to_expr(&mut render_expr, &LogicalPlan::GraphRel(graph_rel.clone()));
                         
+                        println!("DEBUG: After property mapping, render_expr: {:?}", render_expr);
+                        
+                        // Categorize filters
                         let categorized = categorize_filters(
-                            Some(&filter_expr),
+                            Some(&render_expr),
                             &start_alias,
                             &end_alias,
-                            &graph_rel.alias,
+                            "", // rel_alias not used yet
                         );
                         
-                        // Convert filter expressions to SQL strings for the CTE generator
-                        let start_filters = categorized.start_node_filters
-                            .as_ref()
-                            .map(|expr| render_expr_to_sql_string(&expr, &[(start_alias.clone(), "start_node".to_string())]));
-                        let end_filters = categorized.end_node_filters
-                            .as_ref()
-                            .map(|expr| render_end_filter_to_column_alias(&expr, &start_alias, &end_alias, &start_label, &end_label));
+                        println!("DEBUG: categorized.start_node_filters: {:?}", categorized.start_node_filters);
                         
-                        // Store end filters in context for outer query application
-                        if let Some(_end_filters_expr) = &categorized.end_node_filters {
-                            // TODO: Re-enable when context parameter is available
-                            // context.set_end_filters_for_outer_query(end_filters_expr.clone());
-                            // context.set_start_cypher_alias(start_alias.clone());
-                            // context.set_end_cypher_alias(end_alias.clone());
-                        }
+                        // Create alias mapping
+                        let alias_mapping = [
+                            (start_alias.clone(), "start_node".to_string()),
+                            (end_alias.clone(), "end_node".to_string()),
+                        ];
                         
-                        (start_filters, None) // End filters applied in outer query, not in CTE
+                        let start_sql = categorized.start_node_filters
+                            .map(|expr| render_expr_to_sql_string(&expr, &alias_mapping));
+                        let end_sql = categorized.end_node_filters
+                            .map(|expr| render_expr_to_sql_string(&expr, &alias_mapping));
+                        
+                        (start_sql, end_sql)
                     } else {
                         (None, None)
                     };
+                    
+                    println!("DEBUG: start_filters: {:?}, end_filters: {:?}", start_filters_sql, end_filters_sql);
                     
                     // Extract properties from the projection for variable-length paths
                     let properties = extract_var_len_properties(self, &start_alias, &end_alias, &start_label, &end_label);
@@ -1673,8 +1547,75 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Get properties from context - this is the KEY difference!
                     let properties = context.get_properties(&graph_rel.left_connection, &graph_rel.right_connection);
                     
-                    // SQL_ONLY mode: Skip complex property mapping and filter processing
-                    // Just generate basic CTE structure
+                    // Define aliases based on traversal direction
+                    // For variable-length paths, we need to know which node is the traversal start vs end
+                    let (start_alias, end_alias) = match graph_rel.direction {
+                        Direction::Outgoing => {
+                            (graph_rel.left_connection.clone(), graph_rel.right_connection.clone())
+                        }
+                        Direction::Incoming => {
+                            (graph_rel.right_connection.clone(), graph_rel.left_connection.clone())
+                        }
+                        Direction::Either => {
+                            // For Either, assume left to right traversal
+                            (graph_rel.left_connection.clone(), graph_rel.right_connection.clone())
+                        }
+                    };
+                    
+                    println!("DEBUG: graph_rel.direction: {:?}", graph_rel.direction);
+                    println!("DEBUG: graph_rel.left_connection: {}", graph_rel.left_connection);
+                    println!("DEBUG: graph_rel.right_connection: {}", graph_rel.right_connection);
+                    println!("DEBUG: start_alias: {}, end_alias: {}", start_alias, end_alias);
+                    
+                    // Extract and categorize filters for variable-length paths from GraphRel.where_predicate
+                    let (start_filters_sql, end_filters_sql) = if let Some(where_predicate) = &graph_rel.where_predicate {
+                        // Convert LogicalExpr to RenderExpr
+                        let mut render_expr = RenderExpr::try_from(where_predicate.clone())
+                            .map_err(|e| RenderBuildError::UnsupportedFeature(format!("Failed to convert LogicalExpr to RenderExpr: {}", e)))?;
+                        
+                        // Apply property mapping to the filter expression before categorization
+                        apply_property_mapping_to_expr(&mut render_expr, &LogicalPlan::GraphRel(graph_rel.clone()));
+                        
+                        println!("DEBUG extract_ctes_with_context: After property mapping, render_expr: {:?}", render_expr);
+                        
+                        // Categorize filters
+                        let categorized = categorize_filters(
+                            Some(&render_expr),
+                            &start_alias,
+                            &end_alias,
+                            "", // rel_alias not used yet
+                        );
+                        
+                        println!("DEBUG extract_ctes_with_context: categorized.start_node_filters: {:?}", categorized.start_node_filters);
+                        println!("DEBUG extract_ctes_with_context: categorized.end_node_filters: {:?}", categorized.end_node_filters);
+                        
+                        // Create alias mapping
+                        let alias_mapping = [
+                            (start_alias.clone(), "start_node".to_string()),
+                            (end_alias.clone(), "end_node".to_string()),
+                        ];
+                        
+                        let start_sql = categorized.start_node_filters
+                            .map(|expr| render_expr_to_sql_string(&expr, &alias_mapping));
+                        let end_sql = categorized.end_node_filters
+                            .as_ref()
+                            .map(|expr| render_expr_to_sql_string(expr, &alias_mapping));
+                        
+                        // For variable-length queries (not shortest path), store end filters in context for outer query
+                        if graph_rel.shortest_path_mode.is_none() {
+                            if let Some(end_filter_expr) = &categorized.end_node_filters {
+                                context.set_end_filters_for_outer_query(end_filter_expr.clone());
+                            }
+                        }
+                        
+                        (start_sql, end_sql)
+                    } else {
+                        (None, None)
+                    };
+                    
+                    println!("DEBUG extract_ctes_with_context: start_filters: {:?}, end_filters: {:?}", start_filters_sql, end_filters_sql);
+                    
+                    // Generate CTE with filters
                     let var_len_cte = if let Some(exact_hops) = spec.exact_hop_count() {
                         // Exact hop count: use optimized chained JOINs
                         let generator = ChainedJoinGenerator::new(
@@ -1702,12 +1643,12 @@ impl RenderPlanBuilder for LogicalPlan {
                             &to_col,
                             &end_table,
                             &end_id_col,
-                            &graph_rel.right_connection,
                             &graph_rel.left_connection,
+                            &graph_rel.right_connection,
                             vec![],  // No properties in SQL_ONLY mode
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()),
-                            None,   // No start filters in SQL_ONLY mode
-                            None,   // No end filters in SQL_ONLY mode
+                            start_filters_sql,   // Start filters
+                            if graph_rel.shortest_path_mode.is_some() { end_filters_sql } else { None },     // End filters only for shortest path
                             graph_rel.path_variable.clone(),
                             graph_rel.labels.clone(),
                         );
@@ -1834,8 +1775,28 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GraphRel(_) => vec![],
             LogicalPlan::Filter(filter) => filter.input.extract_select_items()?,
             LogicalPlan::Projection(projection) => {
+                let path_var = get_path_variable(&projection.input);
                 let items = projection.items.iter().map(|item| {
                     let mut expr: RenderExpr = item.expression.clone().try_into()?;
+                    
+                    // Check if this is a path variable that needs to be converted to map construction
+                    if let (Some(path_var_name), RenderExpr::TableAlias(TableAlias(alias))) = (&path_var, &expr) {
+                        if alias == path_var_name {
+                            // Convert path variable to map construction
+                            expr = RenderExpr::ScalarFnCall(ScalarFnCall {
+                                name: "map".to_string(),
+                                args: vec![
+                                    RenderExpr::Literal(Literal::String("nodes".to_string())),
+                                    RenderExpr::Column(Column("path_nodes".to_string())),
+                                    RenderExpr::Literal(Literal::String("length".to_string())),
+                                    RenderExpr::Column(Column("hop_count".to_string())),
+                                    RenderExpr::Literal(Literal::String("relationships".to_string())),
+                                    RenderExpr::Column(Column("path_relationships".to_string())),
+                                ],
+                            });
+                        }
+                    }
+                    
                     // Apply property mapping to the expression
                     apply_property_mapping_to_expr(&mut expr, &projection.input);
                     let alias = item
@@ -1996,15 +1957,13 @@ impl RenderPlanBuilder for LogicalPlan {
                     let mut filter_expr: RenderExpr = logical_expr.clone().try_into()?;
                     // Apply property mapping to the where predicate
                     apply_property_mapping_to_expr(&mut filter_expr, &LogicalPlan::GraphRel(graph_rel.clone()));
-                    let start_alias = extract_node_alias(&graph_rel.left)
-                        .unwrap_or_else(|| graph_rel.left_connection.clone());
-                    let end_alias = extract_node_alias(&graph_rel.right)
-                        .unwrap_or_else(|| graph_rel.right_connection.clone());
+                    let start_alias = graph_rel.left_connection.clone();
+                    let end_alias = graph_rel.right_connection.clone();
                     
                     let categorized = categorize_filters(
                         Some(&filter_expr),
-                        "start_node",
-                        "end_node",
+                        &start_alias,
+                        &end_alias,
                         &graph_rel.alias,
                     );
                     
@@ -2024,6 +1983,10 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Skip(skip) => skip.input.extract_joins()?,
             LogicalPlan::OrderBy(order_by) => order_by.input.extract_joins()?,
             LogicalPlan::GroupBy(group_by) => group_by.input.extract_joins()?,
+            LogicalPlan::Filter(filter) => filter.input.extract_joins()?,
+            LogicalPlan::Projection(projection) => {
+                projection.input.extract_joins()?
+            }
             LogicalPlan::GraphNode(graph_node) => {
                 // For nested GraphNodes (multiple standalone nodes), create CROSS JOINs
                 let mut joins = vec![];
@@ -2325,24 +2288,76 @@ impl RenderPlanBuilder for LogicalPlan {
 
         let mut final_select_items = self.extract_select_items()?;
         
-        // If we have a variable-length relationship, rewrite SELECT items to use CTE columns
-        if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
-            let path_var = get_path_variable(self);
-            final_select_items = final_select_items.into_iter().map(|item| {
-                let new_expr = rewrite_expr_for_var_len_cte(
-                    &item.expression, 
-                    &left_alias, 
-                    &right_alias,
-                    path_var.as_deref()
-                );
-                SelectItem {
-                    expression: new_expr,
-                    col_alias: item.col_alias,
-                }
-            }).collect();
-        }
+        // NOTE: Removed rewrite for select_items in variable-length paths to keep a.*, b.*
 
         let mut extracted_joins = self.extract_joins()?;
+        
+        // For variable-length paths, add joins to get full user data
+        if has_variable_length_rel(self).is_some() {
+            extracted_joins.push(Join {
+                table_name: "users".to_string(),
+                table_alias: "a".to_string(),
+                joining_on: vec![OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias("t".to_string()),
+                            column: Column("start_id".to_string()),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias("a".to_string()),
+                            column: Column("id".to_string()),
+                        }),
+                    ],
+                }],
+                join_type: JoinType::Join,
+            });
+            extracted_joins.push(Join {
+                table_name: "users".to_string(),
+                table_alias: "b".to_string(),
+                joining_on: vec![OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias("t".to_string()),
+                            column: Column("end_id".to_string()),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias("b".to_string()),
+                            column: Column("id".to_string()),
+                        }),
+                    ],
+                }],
+                join_type: JoinType::Join,
+            });
+        }
+        
+        // DEBUG: Log the extracted joins
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+            let _ = writeln!(file, "DEBUG: Full plan structure before extract_joins:");
+            let _ = writeln!(file, "DEBUG: Plan type: {:?}", match self {
+                LogicalPlan::Empty => "Empty",
+                LogicalPlan::Scan(_) => "Scan", 
+                LogicalPlan::ViewScan(_) => "ViewScan",
+                LogicalPlan::GraphNode(_) => "GraphNode",
+                LogicalPlan::GraphRel(_) => "GraphRel",
+                LogicalPlan::Filter(_) => "Filter",
+                LogicalPlan::Projection(_) => "Projection",
+                LogicalPlan::GraphJoins(_) => "GraphJoins",
+                LogicalPlan::GroupBy(_) => "GroupBy",
+                LogicalPlan::OrderBy(_) => "OrderBy",
+                LogicalPlan::Skip(_) => "Skip",
+                LogicalPlan::Limit(_) => "Limit",
+                LogicalPlan::Cte(_) => "Cte",
+                LogicalPlan::Union(_) => "Union",
+                LogicalPlan::PageRank(_) => "PageRank",
+            });
+            let _ = writeln!(file, "DEBUG: extracted_joins count: {}", extracted_joins.len());
+            for (i, join) in extracted_joins.iter().enumerate() {
+                let _ = writeln!(file, "DEBUG: join {}: table='{}', alias='{}', type={:?}, conditions={}", 
+                    i, join.table_name, join.table_alias, join.join_type, join.joining_on.len());
+            }
+        }
         // PATCH: For multi-relationship queries, ensure relationship joins use rel_table (CTE name) if present
         // This applies to both variable-length and regular multi-relationship queries
         // Find any non-recursive CTE named rel_*_* and update joins that reference it
@@ -2510,20 +2525,66 @@ fn clean_last_node_filters(filter_opt: Option<RenderExpr>) -> Option<RenderExpr>
 
 /// Post-process a RenderExpr to apply property mapping based on node labels
 /// This function recursively walks the expression tree and maps property names to column names
+fn plan_to_string(plan: &LogicalPlan, depth: usize) -> String {
+    let indent = "  ".repeat(depth);
+    match plan {
+        LogicalPlan::GraphNode(node) => format!("{}GraphNode(alias='{}', input={})", indent, node.alias, plan_to_string(&node.input, depth + 1)),
+        LogicalPlan::GraphRel(rel) => format!("{}GraphRel(alias='{}', left={}, center={}, right={})", indent, rel.alias,
+            plan_to_string(&rel.left, depth + 1), plan_to_string(&rel.center, depth + 1), plan_to_string(&rel.right, depth + 1)),
+        LogicalPlan::Filter(filter) => format!("{}Filter(input={})", indent, plan_to_string(&filter.input, depth + 1)),
+        LogicalPlan::Projection(proj) => format!("{}Projection(input={})", indent, plan_to_string(&proj.input, depth + 1)),
+        LogicalPlan::ViewScan(scan) => format!("{}ViewScan(table='{}')", indent, scan.source_table),
+        LogicalPlan::Scan(scan) => format!("{}Scan(table={:?})", indent, scan.table_name),
+        _ => format!("{}Other({})", indent, plan_type_name(plan)),
+    }
+}
+
+fn plan_type_name(plan: &LogicalPlan) -> &'static str {
+    match plan {
+        LogicalPlan::Empty => "Empty",
+        LogicalPlan::Scan(_) => "Scan",
+        LogicalPlan::ViewScan(_) => "ViewScan",
+        LogicalPlan::GraphNode(_) => "GraphNode",
+        LogicalPlan::GraphRel(_) => "GraphRel",
+        LogicalPlan::Filter(_) => "Filter",
+        LogicalPlan::Projection(_) => "Projection",
+        LogicalPlan::GraphJoins(_) => "GraphJoins",
+        LogicalPlan::GroupBy(_) => "GroupBy",
+        LogicalPlan::OrderBy(_) => "OrderBy",
+        LogicalPlan::Skip(_) => "Skip",
+        LogicalPlan::Limit(_) => "Limit",
+        LogicalPlan::Cte(_) => "Cte",
+        LogicalPlan::Union(_) => "Union",
+        LogicalPlan::PageRank(_) => "PageRank",
+    }
+}
+
 fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
-    println!("DEBUG: apply_property_mapping_to_expr called!");
+    // Write debug info to a file
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+        let _ = writeln!(file, "DEBUG: apply_property_mapping_to_expr called!");
+        let _ = writeln!(file, "DEBUG: Plan structure: {}", plan_to_string(plan, 0));
+    }
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
             // Get the node label for this table alias
             if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
-                println!("DEBUG: apply_property_mapping_to_expr: Found node label '{}' for alias '{}', property '{}'", 
-                    node_label, prop.table_alias.0, prop.column.0);
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                    let _ = writeln!(file, "DEBUG: apply_property_mapping_to_expr: Found node label '{}' for alias '{}', property '{}'",
+                        node_label, prop.table_alias.0, prop.column.0);
+                }
                 // Map the property to the correct column
                 let mapped_column = map_property_to_column_with_schema(&prop.column.0, &node_label);
-                println!("DEBUG: apply_property_mapping_to_expr: Mapped property '{}' to column '{}'", prop.column.0, mapped_column);
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                    let _ = writeln!(file, "DEBUG: apply_property_mapping_to_expr: Mapped property '{}' to column '{}'", prop.column.0, mapped_column);
+                }
                 prop.column = super::render_expr::Column(mapped_column);
             } else {
-                println!("DEBUG: apply_property_mapping_to_expr: No node label found for alias '{}'", prop.table_alias.0);
+                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                    let _ = writeln!(file, "DEBUG: apply_property_mapping_to_expr: No node label found for alias '{}'", prop.table_alias.0);
+                }
             }
         }
         RenderExpr::OperatorApplicationExp(op) => {

@@ -43,18 +43,29 @@ pub fn initial_analyzing(
     // println!("\n plan_ctx Before {} \n\n", plan_ctx);
     // println!("\n\n PLAN Before  {} \n\n", plan);
 
+    println!("Initial analyzing: Starting with plan type: {:?}", std::mem::discriminant(&*plan));
+
     // For initial schema inference, we do not propogate the error. We will try to infer schema in this initial pass. If not able to infer then it will be done in the later pass after projection and filter tagging.
     let schema_inference = SchemaInference::new();
     let plan = if let Ok(transformed_plan) =
         schema_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)
     {
+        let transformed_plan_clone = transformed_plan.clone();
+        println!("Initial analyzing: After SchemaInference, plan type: {:?}", std::mem::discriminant(&*transformed_plan_clone.get_plan()));
         transformed_plan.get_plan()
     } else {
+        println!("Initial analyzing: SchemaInference failed, using original plan");
         plan
     };
 
     let filter_tagging = FilterTagging::new();
-    let transformed_plan = filter_tagging.analyze(plan.clone(), plan_ctx)?;
+    let transformed_plan = filter_tagging.analyze_with_graph_schema(
+        plan.clone(),
+        plan_ctx,
+        current_graph_schema,
+    )?;
+    let transformed_plan_clone = transformed_plan.clone();
+    println!("Initial analyzing: After FilterTagging, plan type: {:?}", std::mem::discriminant(&*transformed_plan_clone.get_plan()));
     let plan = transformed_plan.get_plan();
 
     let projection_tagging = ProjectionTagging::new();

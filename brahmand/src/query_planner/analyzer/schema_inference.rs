@@ -23,6 +23,7 @@ impl AnalyzerPass for SchemaInference {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
+        println!("SchemaInference: analyze_with_graph_schema called with plan: {:?}", logical_plan);
         self.infer_schema(logical_plan.clone(), plan_ctx, graph_schema)?;
 
         Self::push_inferred_table_names_to_scan(logical_plan, plan_ctx)

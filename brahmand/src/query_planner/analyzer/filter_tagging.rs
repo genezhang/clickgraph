@@ -25,7 +25,28 @@ impl AnalyzerPass for FilterTagging {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        let transformed_plan = match logical_plan.as_ref() {
+        println!("FilterTagging: analyze_with_graph_schema called with plan: {:?}", logical_plan);
+        println!("FilterTagging: analyze_with_graph_schema called with plan type: {:?}", std::mem::discriminant(&*logical_plan));
+        let variant_name = match &*logical_plan {
+            LogicalPlan::Empty => "Empty",
+            LogicalPlan::Scan(_) => "Scan",
+            LogicalPlan::ViewScan(_) => "ViewScan",
+            LogicalPlan::GraphNode(_) => "GraphNode",
+            LogicalPlan::GraphRel(_) => "GraphRel",
+            LogicalPlan::Filter(_) => "Filter",
+            LogicalPlan::Projection(_) => "Projection",
+            LogicalPlan::GroupBy(_) => "GroupBy",
+            LogicalPlan::OrderBy(_) => "OrderBy",
+            LogicalPlan::Skip(_) => "Skip",
+            LogicalPlan::Limit(_) => "Limit",
+            LogicalPlan::Cte(_) => "Cte",
+            LogicalPlan::GraphJoins(_) => "GraphJoins",
+            LogicalPlan::Union(_) => "Union",
+            LogicalPlan::PageRank(_) => "PageRank",
+        };
+        println!("FilterTagging: About to match on variant: {}", variant_name);
+        Ok(match logical_plan.as_ref() {
+            LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphNode(graph_node) => {
                 let child_tf = self.analyze_with_graph_schema(graph_node.input.clone(), plan_ctx, graph_schema)?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
@@ -48,11 +69,15 @@ impl AnalyzerPass for FilterTagging {
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Filter(filter) => {
+                println!("FilterTagging: ENTERING Filter case - processing Filter node");
+                println!("FilterTagging: Processing Filter node with predicate: {:?}", filter.predicate);
                 let child_tf = self.analyze_with_graph_schema(filter.input.clone(), plan_ctx, graph_schema)?;
                 // Apply property mapping to the filter predicate
                 let mapped_predicate = self.apply_property_mapping(filter.predicate.clone(), plan_ctx, graph_schema)?;
+                println!("FilterTagging: Mapped predicate: {:?}", mapped_predicate);
                 // call filter tagging and get new filter
                 let final_filter_opt = self.extract_filters(mapped_predicate, plan_ctx)?;
+                println!("FilterTagging: Final filter option: {:?}", final_filter_opt);
                 // if final filter has some predicate left then create new filter else remove the filter node and return the child input
                 if let Some(final_filter) = final_filter_opt {
                     Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
@@ -64,7 +89,12 @@ impl AnalyzerPass for FilterTagging {
                 }
             }
             LogicalPlan::Projection(projection) => {
+                println!("FilterTagging: Processing Projection, analyzing child input");
+                println!("FilterTagging: Projection input type: {:?}", std::mem::discriminant(&*projection.input));
+                println!("FilterTagging: About to call analyze_with_graph_schema on child input: {:?}", projection.input);
                 let child_tf = self.analyze_with_graph_schema(projection.input.clone(), plan_ctx, graph_schema)?;
+                println!("FilterTagging: Finished analyzing child input, result: {:?}", child_tf);
+                println!("FilterTagging: Projection child processed, applying property mapping to projection items");
                 // Apply property mapping to projection expressions
                 let mut mapped_items = Vec::new();
                 for item in &projection.items {
@@ -116,8 +146,7 @@ impl AnalyzerPass for FilterTagging {
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
             }
             LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
-        };
-        Ok(transformed_plan)
+        })
     }
 }
 
@@ -209,6 +238,7 @@ impl FilterTagging {
         filter_predicate: LogicalExpr,
         plan_ctx: &mut PlanCtx,
     ) -> AnalyzerResult<Option<LogicalExpr>> {
+        println!("FilterTagging: extract_filters called with predicate: {:?}", filter_predicate);
         let mut extracted_filters: Vec<OperatorApplication> = vec![];
         let mut extracted_projections: Vec<PropertyAccess> = vec![];
 
@@ -219,6 +249,9 @@ impl FilterTagging {
             false,
         );
 
+        println!("FilterTagging: Extracted {} filters, {} projections, remaining: {:?}", 
+                 extracted_filters.len(), extracted_projections.len(), remaining);
+
         // tag extracted filters to respective table data
         for extracted_filter in extracted_filters {
             let table_alias = Self::get_table_alias_if_single_table_condition(
@@ -226,6 +259,7 @@ impl FilterTagging {
                 true,
             )
             .unwrap_or_default();
+            println!("FilterTagging: Extracted filter for table alias: '{}'", table_alias);
             // let mut table_alias = "";
             // for operand in &extracted_filter.operands {
             //     match operand {
@@ -626,7 +660,7 @@ mod tests {
             TableCtx::build(
                 "company".to_string(),
                 Some(vec!["Company".to_string()]),
-                vec![],
+                vec![], 
                 false,
                 true,
             ),
@@ -635,7 +669,64 @@ mod tests {
         plan_ctx
     }
 
-    #[test]
+    fn setup_test_graph_schema() -> GraphSchema {
+        use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema, NodeIdSchema};
+        use std::collections::HashMap;
+        
+        let mut node_schemas = HashMap::new();
+        let mut rel_schemas = HashMap::new();
+        
+        // Person node with properties
+        let mut person_props = HashMap::new();
+        person_props.insert("age".to_string(), "age".to_string());
+        person_props.insert("status".to_string(), "status".to_string());
+        person_props.insert("name".to_string(), "name".to_string());
+        
+        node_schemas.insert("Person".to_string(), NodeSchema {
+            table_name: "users".to_string(),
+            column_names: vec!["user_id".to_string(), "name".to_string(), "age".to_string(), "status".to_string()],
+            primary_keys: "user_id".to_string(),
+            node_id: NodeIdSchema {
+                column: "user_id".to_string(),
+                dtype: "UInt32".to_string(),
+            },
+            property_mappings: person_props,
+        });
+        
+        // Company node
+        let mut company_props = HashMap::new();
+        company_props.insert("name".to_string(), "name".to_string());
+        company_props.insert("owner_id".to_string(), "owner_id".to_string());
+        
+        node_schemas.insert("Company".to_string(), NodeSchema {
+            table_name: "companies".to_string(),
+            column_names: vec!["company_id".to_string(), "name".to_string(), "owner_id".to_string()],
+            primary_keys: "company_id".to_string(),
+            node_id: NodeIdSchema {
+                column: "company_id".to_string(),
+                dtype: "UInt32".to_string(),
+            },
+            property_mappings: company_props,
+        });
+        
+        // FOLLOWS relationship
+        let mut follows_props = HashMap::new();
+        follows_props.insert("since".to_string(), "created_at".to_string());
+        
+        rel_schemas.insert("FOLLOWS".to_string(), RelationshipSchema {
+            table_name: "follows".to_string(),
+            column_names: vec!["from_node_id".to_string(), "to_node_id".to_string(), "created_at".to_string()],
+            from_node: "Person".to_string(),
+            to_node: "Person".to_string(),
+            from_column: "from_node_id".to_string(),
+            to_column: "to_node_id".to_string(),
+            from_node_id_dtype: "UInt32".to_string(),
+            to_node_id_dtype: "UInt32".to_string(),
+            property_mappings: follows_props,
+        });
+        
+        GraphSchema::build(1, node_schemas, rel_schemas, HashMap::new())
+    }    #[test]
     fn test_single_table_filter_extraction() {
         let analyzer = FilterTagging::new();
         let mut plan_ctx = setup_plan_ctx_with_tables();
@@ -942,6 +1033,7 @@ mod tests {
     fn test_filter_node_removal_when_all_extracted() {
         let analyzer = FilterTagging::new();
         let mut plan_ctx = setup_plan_ctx_with_tables();
+        let graph_schema = setup_test_graph_schema();
 
         // Create a Filter node with completely extractable predicate
         let scan = Arc::new(LogicalPlan::Scan(Scan {
@@ -954,7 +1046,7 @@ mod tests {
             predicate: create_simple_filter("user", "age", 30),
         }));
 
-        let result = analyzer.analyze(filter, &mut plan_ctx).unwrap();
+        let result = analyzer.analyze_with_graph_schema(filter, &mut plan_ctx, &graph_schema).unwrap();
 
         // Should remove Filter node and return the scan directly
         match result {
@@ -973,6 +1065,7 @@ mod tests {
     fn test_complex_nested_logical_plan_traversal() {
         let analyzer = FilterTagging::new();
         let mut plan_ctx = setup_plan_ctx_with_tables();
+        let graph_schema = setup_test_graph_schema();
 
         // Create complex nested plan: GraphNode -> Filter -> Scan
         let scan = Arc::new(LogicalPlan::Scan(Scan {
@@ -990,7 +1083,7 @@ mod tests {
             alias: "user".to_string(),
         }));
 
-        let result = analyzer.analyze(graph_node, &mut plan_ctx).unwrap();
+        let result = analyzer.analyze_with_graph_schema(graph_node, &mut plan_ctx, &graph_schema).unwrap();
 
         // Should transform the nested structure
         match result {

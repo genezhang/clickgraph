@@ -995,6 +995,7 @@ mod tests {
                     column: "id".to_string(),
                     dtype: "UInt64".to_string(),
                 },
+                property_mappings: HashMap::new(),
             },
         );
 
@@ -1009,6 +1010,7 @@ mod tests {
                     column: "id".to_string(),
                     dtype: "UInt64".to_string(),
                 },
+                property_mappings: HashMap::new(),
             },
         );
 
@@ -1028,6 +1030,7 @@ mod tests {
                 to_column: "to_id".to_string(),
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
+                property_mappings: HashMap::new(),
             },
         );
 
@@ -1047,6 +1050,7 @@ mod tests {
                 to_column: "to_id".to_string(),
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
+                property_mappings: HashMap::new(),
             },
         );
 

@@ -132,10 +132,35 @@ impl AnchorNodeSelection {
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphRel(graph_rel) => {
-                // if anchor node found at right side then it means we have found it at the end of the graph traversal. It is already a start node.
+                // Skip anchor optimization for variable-length paths - they need fixed start/end semantics
+                if graph_rel.variable_length.is_some() {
+                    return Ok(Transformed::No(logical_plan));
+                }
 
                 // If found at left then we need to create a new plan and rotate the right side.
                 if graph_rel.left_connection == anchor_node_alias {
+                    let new_anchor_plan = Arc::new(LogicalPlan::GraphRel(GraphRel {
+                        left: Arc::new(LogicalPlan::Empty),
+                        center: graph_rel.center.clone(),
+                        right: graph_rel.left.clone(),
+                        alias: graph_rel.alias.clone(),
+                        direction: graph_rel.direction.clone().reverse(),
+                        // as we are rotating the nodes, we will rotate the connections as well
+                        left_connection: graph_rel.right_connection.clone(),
+                        right_connection: graph_rel.left_connection.clone(),
+                        is_rel_anchor: false,
+                        variable_length: graph_rel.variable_length.clone(),
+                        shortest_path_mode: graph_rel.shortest_path_mode.clone(),
+                        path_variable: graph_rel.path_variable.clone(),
+                        where_predicate: graph_rel.where_predicate.clone(),
+                        labels: graph_rel.labels.clone(),
+                    }));
+                    let rotated_plan = Self::rotate_plan(new_anchor_plan, graph_rel.right.clone())?;
+
+                    Transformed::Yes(rotated_plan)
+
+                    // If found at right then we need to rotate so that right becomes the new left (start node).
+                } else if graph_rel.right_connection == anchor_node_alias {
                     let new_anchor_plan = Arc::new(LogicalPlan::GraphRel(GraphRel {
                         left: Arc::new(LogicalPlan::Empty),
                         center: graph_rel.center.clone(),

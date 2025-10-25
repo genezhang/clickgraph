@@ -10,15 +10,19 @@
 - **Simple node queries**: `MATCH (u:User) RETURN u.name` ✅
 - **Property filtering**: `WHERE u.age > 25` ✅
 - **Basic relationships**: `MATCH (u)-[r:FRIENDS_WITH]->(f) RETURN u, f` ✅
+- **Multi-variable queries**: `MATCH (b:User), (a:User)` with CROSS JOINs ✅ **[COMPLETED: Oct 25, 2025]**
 - **Multi-hop traversals**: `(u)-[r1]->(a)-[r2]->(b)` ✅
 - **Variable-length paths**: `(u)-[*1..3]->(f)` with recursive CTEs ✅
 - **Path variables**: `MATCH p = (a)-[:TYPE*]-(b) RETURN p, length(p)` ✅
 - **Path functions**: `length(p)`, `nodes(p)`, `relationships(p)` on path objects ✅
 - **Shortest path queries**: `shortestPath((a)-[:TYPE*]-(b))` and `allShortestPaths()` ✅ **[VERIFIED: Oct 20, 2025]**
-- **WHERE clause filters**: Work with all variable-length paths and shortestPath queries ✅ **[COMPLETED: Oct 22, 2025]**
+- **WHERE clause filters**: Fully working for variable-length paths ✅ **[COMPLETED: Oct 25, 2025]**
   - End node filters: `WHERE b.name = "David Lee"` ✅
-  - Parser support for double-quoted strings ✅
-  - Proper SQL generation with correct quoting ✅
+  - Start node filters: `WHERE a.name = "Alice Johnson"` ✅
+  - Combined start and end filters: `WHERE a.name = "Alice" AND b.name = "Bob"` ✅
+  - Path variables in SELECT: `MATCH p = shortestPath((a)-[*]-(b)) RETURN p` generates `map('nodes', path_nodes, 'length', hop_count, 'relationships', path_relationships)` ✅
+  - Proper filter placement: End filters in final WHERE clause for regular queries, target conditions for shortest path ✅
+  - Direction-aware alias determination for correct filter categorization ✅
 - **CASE expressions**: `CASE WHEN condition THEN result ELSE default END` conditional logic ✅ **[COMPLETED: Oct 25, 2025]**
   - Simple CASE: `CASE x WHEN val THEN result END` ✅
   - Searched CASE: `CASE WHEN condition THEN result END` ✅
@@ -66,18 +70,11 @@
 
 ## 🚧 In Progress
 
-### Property Mapping Debug (Oct 24, 2025)
-- **Issue**: Property mapping works for first variable but fails for second variable in multi-variable queries
-- **Example**: `MATCH (b:User), (a:User) WHERE a.name = "Alice" AND b.name = "Charlie"`
-  - ✅ `a.name` correctly maps to `a.full_name` 
-  - ❌ `b.name` remains unmapped as `b.name`
-- **Root cause investigation**:
-  - Query processing pipeline: Parse → Plan → Render Plan → SQL Generation
-  - FilterTagging analyzer applies property mapping during initial analyzing phase
-  - Table contexts created correctly during logical plan building
-  - ViewResolver finds correct property mappings from YAML schema
-- **Suspected issue**: Table context for 'b' may not have correct label or FilterTagging not applied to 'b.name' expression
-- **Next steps**: Debug why `table_ctx.get_label_opt()` returns None for 'b' or why mapping fails
+- **Multi-variable queries**: `MATCH (b:User), (a:User)` with CROSS JOINs ✅ **[COMPLETED: Oct 25, 2025]**
+  - Property mapping works for all variables: `a.name`, `b.name` → `full_name` ✅
+  - CROSS JOIN generation for multiple standalone nodes ✅
+  - Nested GraphNode logical plan structure ✅
+  - Proper SQL generation with multiple table instances ✅
 
 *(All major features completed - focusing on performance and additional algorithms)*
 
@@ -92,11 +89,16 @@
 
 ## 📊 Current Stats
 
-- **Tests**: 304/304 passing (100%)
+- **Tests**: 307/307 passing (100%)
   - Python integration tests: 8/8 passing (100%)
-  - Rust unit tests: 296/296 passing (100%)
+  - Rust unit tests: 299/299 passing (100%)
+  - Path variable tests: 3/3 passing (100%)
 - **Last updated**: Oct 25, 2025
-- **Latest feature**: CASE expressions with full context support (WHERE, functions, complex expressions) - **COMPLETED & VERIFIED**
+- **Latest feature**: WHERE clause filtering pipeline for variable-length paths - **COMPLETED & VERIFIED**
+  - End filters correctly placed in final WHERE clause for regular queries
+  - Start filters working with direction-aware alias determination
+  - Path variables converted to map() function calls in SELECT clauses
+  - Anchor node optimization skipped for variable-length paths to preserve semantics
 - **Branch**: main
 
 ---
