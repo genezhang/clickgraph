@@ -8,6 +8,7 @@ views:
       Customer:
         source_table: customers_mem
         id_column: customer_id
+        label: Customer
         property_mappings:
           email: email
           name: "concat(first_name, ' ', last_name)"
@@ -26,6 +27,7 @@ views:
       Product:
         source_table: products_mem
         id_column: product_id
+        label: Product
         property_mappings:
           name: name
           category: category
@@ -41,6 +43,7 @@ views:
       Order:
         source_table: orders_mem
         id_column: order_id
+        label: Order
         property_mappings:
           quantity: quantity
           unit_price: unit_price
@@ -54,6 +57,7 @@ views:
       Review:
         source_table: reviews_mem
         id_column: review_id
+        label: Review
         property_mappings:
           rating: rating
           review_text: review_text
@@ -65,6 +69,7 @@ views:
         source_table: orders_mem
         from_column: customer_id
         to_column: product_id
+        type_name: PURCHASED
         from_node_type: Customer
         to_node_type: Product
         property_mappings:
@@ -79,6 +84,7 @@ views:
         source_table: orders_mem
         from_column: customer_id
         to_column: order_id
+        type_name: PLACED_ORDER
         from_node_type: Customer
         to_node_type: Order
         property_mappings:
@@ -88,6 +94,7 @@ views:
         source_table: orders_mem
         from_column: order_id
         to_column: product_id
+        type_name: ORDER_CONTAINS
         from_node_type: Order
         to_node_type: Product
         property_mappings:
@@ -98,6 +105,7 @@ views:
         source_table: reviews_mem
         from_column: customer_id
         to_column: product_id
+        type_name: REVIEWED
         from_node_type: Customer
         to_node_type: Product
         property_mappings:

@@ -32,6 +32,14 @@ Content-Type: application/json
 ```http
 200 OK
 Content-Type: application/json
+X-Query-Total-Time: 15.234ms
+X-Query-Parse-Time: 1.234ms
+X-Query-Planning-Time: 5.678ms
+X-Query-Render-Time: 0.123ms
+X-Query-SQL-Gen-Time: 0.456ms
+X-Query-Execution-Time: 7.743ms
+X-Query-Type: read
+X-Query-SQL-Count: 1
 
 {
   "columns": ["n"],
@@ -46,6 +54,19 @@ Content-Type: application/json
   }
 }
 ```
+
+### Performance Metrics Headers
+
+All successful query responses include performance timing headers for monitoring and optimization:
+
+- `X-Query-Total-Time`: Total end-to-end query processing time
+- `X-Query-Parse-Time`: Time spent parsing Cypher query
+- `X-Query-Planning-Time`: Time spent planning the query execution
+- `X-Query-Render-Time`: Time spent rendering the query plan
+- `X-Query-SQL-Gen-Time`: Time spent generating ClickHouse SQL
+- `X-Query-Execution-Time`: Time spent executing SQL in ClickHouse
+- `X-Query-Type`: Query type (`read`, `write`, `call`, `ddl`)
+- `X-Query-SQL-Count`: Number of SQL queries generated
 
 **Error Response:**
 ```http

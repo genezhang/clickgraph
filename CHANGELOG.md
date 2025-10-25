@@ -13,6 +13,16 @@
 
 ### 🚀 Features
 
+- **Query Performance Metrics** (Oct 25): Comprehensive query performance monitoring and optimization
+  - Phase-by-phase timing: Parse, planning, render, SQL generation, execution phases
+  - HTTP response headers: `X-Query-Total-Time`, `X-Query-Parse-Time`, `X-Query-Planning-Time`, etc.
+  - Structured logging: INFO-level performance metrics with millisecond precision
+  - Query type classification: read/write/call with SQL query count tracking
+  - Result count tracking: Optional row count in performance logs
+  - Integration: Non-intrusive timing added to existing query pipeline
+  - Performance impact: Minimal overhead (microsecond-level timing measurements)
+  - See `notes/query-performance-metrics.md` for implementation details
+
 - **PageRank Algorithm** (Oct 23): Complete implementation of graph centrality analysis
   - Cypher syntax: `CALL pagerank(maxIterations: 10, dampingFactor: 0.85)`
   - Algorithm: Iterative PageRank using UNION ALL SQL approach (avoids recursive CTE depth limits)

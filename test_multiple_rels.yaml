@@ -1,0 +1,62 @@
+name: test_multiple_rels
+version: "1.0"
+description: "Test schema with multiple relationship types"
+
+views:
+  - name: test_graph
+    nodes:
+      User:
+        source_table: users
+        id_column: user_id
+        property_mappings:
+          name: full_name
+          email: email_address
+
+      Product:
+        source_table: products_mem
+        id_column: product_id
+        property_mappings:
+          name: name
+          price: price
+
+    relationships:
+      FOLLOWS:
+        source_table: user_follows
+        from_column: follower_id
+        to_column: followed_id
+        type_name: FOLLOWS
+        from_node_type: User
+        to_node_type: User
+        property_mappings:
+          since: follow_date
+
+      FRIENDS_WITH:
+        source_table: friendships
+        from_column: user1_id
+        to_column: user2_id
+        type_name: FRIENDS_WITH
+        from_node_type: User
+        to_node_type: User
+        property_mappings:
+          since: since_date
+
+      LIKES:
+        source_table: user_likes
+        from_column: user_id
+        to_column: product_id
+        type_name: LIKES
+        from_node_type: User
+        to_node_type: Product
+        property_mappings:
+          rating: rating
+
+      PURCHASED:
+        source_table: orders_mem
+        from_column: customer_id
+        to_column: product_id
+        type_name: PURCHASED
+        from_node_type: User
+        to_node_type: Product
+        property_mappings:
+          quantity: quantity
+          amount: total_amount

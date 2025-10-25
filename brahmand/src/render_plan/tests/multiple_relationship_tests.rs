@@ -50,6 +50,52 @@ mod multiple_relationship_tests {
     }
 
     #[test]
+    fn test_three_relationship_types_union() {
+        // Test that [:PURCHASED|PLACED_ORDER|ORDER_CONTAINS] generates UNION CTE with 3 tables
+        let cypher = "MATCH (c:Customer)-[:PURCHASED|PLACED_ORDER|ORDER_CONTAINS]->(target) RETURN c, target";
+        let parse_result = open_cypher_parser::parse_query(cypher);
+        assert!(parse_result.is_ok(), "Failed to parse three relationship types: {:?}", parse_result.err());
+
+        let query = parse_result.unwrap();
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query)
+            .expect("Failed to build logical plan");
+
+        let render_plan = logical_plan.to_render_plan();
+        assert!(render_plan.is_ok(), "Failed to create render plan: {:?}", render_plan.err());
+
+        let render_plan = render_plan.unwrap();
+
+        // Check that we have CTEs
+        assert!(!render_plan.ctes.0.is_empty(), "Expected CTEs for three relationship types");
+
+        // Find the relationship CTE
+        let rel_cte = render_plan.ctes.0.iter().find(|cte| cte.cte_name.starts_with("rel_"));
+        assert!(rel_cte.is_some(), "Expected relationship CTE with name starting with 'rel_'");
+
+        let rel_cte = rel_cte.unwrap();
+
+        // Check that the CTE content contains UNION and all three tables
+        match &rel_cte.content {
+            crate::render_plan::CteContent::RawSql(sql) => {
+                println!("Generated SQL for 3 relationship types:\n{}", sql);
+                assert!(sql.contains("UNION ALL"), "Expected UNION ALL in CTE SQL: {}", sql);
+
+                // Count UNION ALL occurrences - should be 2 for 3 tables (table1 UNION ALL table2 UNION ALL table3)
+                let union_count = sql.matches("UNION ALL").count();
+                assert_eq!(union_count, 2, "Expected 2 UNION ALL clauses for 3 tables, got {}: {}", union_count, sql);
+
+                // Check all three tables are present
+                assert!(sql.contains("orders_mem"), "Expected orders_mem table in UNION: {}", sql);
+                // Note: PURCHASED, PLACED_ORDER, and ORDER_CONTAINS all use orders_mem table
+                // but with different column mappings, so we should see multiple SELECT statements
+                let select_count = sql.matches("SELECT").count();
+                assert_eq!(select_count, 3, "Expected 3 SELECT statements for 3 relationship types, got {}: {}", select_count, sql);
+            }
+            _ => panic!("Expected RawSql content for relationship CTE"),
+        }
+    }
+
+    #[test]
     fn test_single_relationship_type_no_union() {
         // Test that single relationship type doesn't generate UNION
         let cypher = "MATCH (u1:User)-[:FOLLOWS]->(u2:User) RETURN u1, u2";

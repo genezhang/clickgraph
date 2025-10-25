@@ -1,15 +1,42 @@
 # Next Steps - Development Roadmap
 
-**Last Updated**: October 23, 2025
-**Current Status**: PageRank ✅ COMPLETE | WHERE Clause Filtering ✅ COMPLETE | Schema Validation ✅ COMPLETE | Multiple Relationship Types ✅ COMPLETE | ViewScan ✅ COMPLETE | Path Variables ✅ COMPLETE | Testing infrastructure ✅ READY
+**Last Updated**: October 25, 2025
+**Current Status**: Query Performance Metrics ✅ COMPLETE | PageRank ✅ COMPLETE | WHERE Clause Filtering ✅ COMPLETE | Schema Validation ✅ COMPLETE | Multiple Relationship Types ✅ COMPLETE | ViewScan ✅ COMPLETE | Path Variables ✅ COMPLETE | Testing infrastructure ✅ READY
 **Branch**: `main`
-**Latest Commit**: PageRank algorithm implementation with CALL statement support
+**Latest Commit**: Query Performance Metrics with phase-by-phase timing and HTTP headers
 
 ---
 
-## 🎉 Just Completed (October 21-23, 2025)
+## 🎉 Just Completed (October 21-25, 2025)
 
-### 1. Path Variables - Complete ✅
+### 1. Query Performance Metrics - Complete ✅ (October 25, 2025)
+**What**: Comprehensive query performance monitoring with phase-by-phase timing, HTTP headers, and structured logging
+
+**Implementation**:
+- Phase-by-phase timing: Parse, planning, render, SQL generation, execution
+- HTTP response headers: `X-Query-Total-Time`, `X-Query-Parse-Time`, etc.
+- Structured logging: INFO-level performance metrics with millisecond precision
+- Query type classification: read/write/call with SQL query count tracking
+
+**Files Modified**:
+- `brahmand/src/server/handlers.rs` - QueryPerformanceMetrics struct and timing integration
+- `notes/query-performance-metrics.md` - Comprehensive implementation documentation
+- `STATUS.md` - Updated with completion status
+- `README.md` - Added to features and development status
+
+**Testing Status**:
+- ✅ Phase timing: All phases properly measured and logged
+- ✅ HTTP headers: Performance data included in responses
+- ✅ Structured logging: Clean, parseable log format
+- ✅ Server integration: Works with existing query pipeline
+
+**Impact**:
+- 🎯 Performance monitoring: Track query bottlenecks and optimization opportunities
+- 🎯 Debugging support: Detailed timing breakdown for slow queries
+- 🎯 Production readiness: HTTP headers for monitoring and alerting
+- 🎯 See: `notes/query-performance-metrics.md` for implementation details
+
+### 2. Path Variables - Complete ✅
 **What**: Full support for path variables and path functions in Cypher queries
 
 **Implementation**:
@@ -53,7 +80,8 @@
 **Testing Status**:
 - ✅ Unit tests: `test_multiple_relationship_types_union` passes
 - ✅ Single relationships: Work correctly
-- ⚠️ End-to-end multiple relationships: Returns 2/4 expected relationships (known issue)
+- ✅ End-to-end multiple relationships: **VERIFIED Oct 22, 2025** - returns all expected relationships (10 total: 8 FOLLOWS + 2 FRIENDS_WITH)
+- ✅ Multiple relationship types (>2): **VERIFIED Oct 25, 2025** - correctly generates (N-1) UNION ALL clauses
 
 **Impact**:
 - � Enables complex relationship queries: `[:FOLLOWS|FRIENDS_WITH|LIKES]`
@@ -200,23 +228,21 @@
 
 ## ⚠️ Known Issues That Need Attention
 
-**Last Updated**: October 23, 2025
+**Last Updated**: October 25, 2025
 
 ### High Priority Issues
 
-#### 1. ViewScan Relationship Support - **ACTUALLY WORKS!**
+#### 1. ViewScan Relationship Support - **RESOLVED! ✅**
 **Issue**: Initially thought ViewScan only worked for nodes, but relationships DO support YAML schema lookup
 **Investigation Result**: Relationships use `rel_type_to_table_name()` which calls `schema.get_rel_schema()` first, then falls back to hardcoded mappings
 **Current Status**: ✅ Relationships DO support YAML-defined schemas via direct schema lookup in JOIN generation
-**Impact**: This limitation was incorrect - relationships work with YAML schemas
-**Resolution**: Remove this from known issues - relationships already support ViewScan-like functionality
+**Resolution**: Confirmed working - relationships already support ViewScan-like functionality
 
-#### 2. OPTIONAL MATCH with ViewScan
-**Issue**: OPTIONAL MATCH with relationships not tested with ViewScan
-**Impact**: `OPTIONAL MATCH (a)-[r:FRIENDS_WITH]->(b)` may not work with YAML-defined schemas
-**Current Status**: OPTIONAL MATCH works with hardcoded relationships, not validated with ViewScan
-**Testing needed**: End-to-end validation with YAML schema relationships
-**Estimated effort**: 2-3 hours
+#### 2. OPTIONAL MATCH with ViewScan - **NOT BROKEN - Test Config Issue**
+**Issue**: OPTIONAL MATCH e2e tests were failing with 500 errors
+**Root Cause**: Tests were using "view": "social_graph" but server was running with "ecommerce_graph_demo.yaml" schema
+**Current Status**: ✅ **WORKS**: OPTIONAL MATCH works correctly with ViewScan when using matching schemas
+**Resolution**: Test configuration issue, not a code bug - OPTIONAL MATCH + ViewScan integration is working
 
 ### Windows Development Constraints
 
@@ -238,17 +264,9 @@
 
 ## 🚀 Recommended Next Priority
 
-Now that PageRank, WHERE clause filtering, Schema Validation, Multiple Relationship Types, ViewScan, and Path Variables are complete, we can focus on:
+Now that Query Performance Metrics, PageRank, WHERE clause filtering, Schema Validation, Multiple Relationship Types, ViewScan, and Path Variables are complete, we can focus on:
 
-### Option A: Address Known Issues (High Priority)
-1. **Query Performance Metrics**
-   - Execution time tracking and plan visualization
-   - Performance monitoring and optimization
-   - **Estimated**: 2-3 hours
-   - End-to-end testing with relationship patterns
-   - **Estimated**: 2-3 hours
-
-### Option B: Performance & Monitoring (Medium Priority)
+### Option A: Performance & Monitoring (High Priority)
 1. **Query Performance Metrics**
    - Execution time tracking and plan visualization
    - Performance monitoring and optimization

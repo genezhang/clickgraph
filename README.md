@@ -22,6 +22,7 @@
 - **Variable-Length Paths**: Recursive traversals with `*1..3` syntax using ClickHouse WITH RECURSIVE CTEs
 - **Path Variables & Functions**: Capture and analyze path data with `length(p)`, `nodes(p)`, `relationships(p)` functions
 - **Analytical-scale Performance**: Optimized for very large datasets and complex multi-hop traversals
+- **Query Performance Metrics**: Phase-by-phase timing with HTTP headers and structured logging for monitoring and optimization
 
 ### Neo4j Ecosystem Compatibility
 - **Bolt Protocol v4.4**: Full Neo4j driver compatibility for seamless integration
@@ -261,6 +262,7 @@ Preliminary informal tests on a MacBook Pro (M3 Pro, 18 GB RAM) running ClickGra
 ## 🧪 Development Status
 
 ClickGraph includes the following completed features:
+- ✅ **Query Performance Metrics**: Phase-by-phase timing with HTTP headers and structured logging
 - ✅ **Neo4j Bolt Protocol v4.4**: Full compatibility with Neo4j drivers and tools
 - ✅ **PageRank Algorithm**: Graph centrality analysis with `CALL pagerank(iterations: 10, damping: 0.85)`
 - ✅ **OPTIONAL MATCH**: LEFT JOIN semantics for optional graph patterns with NULL handling

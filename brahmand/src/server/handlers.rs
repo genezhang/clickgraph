@@ -23,6 +23,68 @@ use super::{
     models::{OutputFormat, QueryRequest, SqlOnlyResponse},
 };
 
+/// Performance metrics for query execution
+#[derive(Debug, Clone)]
+pub struct QueryPerformanceMetrics {
+    pub total_time: f64,
+    pub parse_time: f64,
+    pub planning_time: f64,
+    pub render_time: f64,
+    pub sql_generation_time: f64,
+    pub execution_time: f64,
+    pub query_type: String,
+    pub sql_queries_count: usize,
+    pub result_rows: Option<usize>,
+}
+
+impl QueryPerformanceMetrics {
+    pub fn new() -> Self {
+        Self {
+            total_time: 0.0,
+            parse_time: 0.0,
+            planning_time: 0.0,
+            render_time: 0.0,
+            sql_generation_time: 0.0,
+            execution_time: 0.0,
+            query_type: "unknown".to_string(),
+            sql_queries_count: 0,
+            result_rows: None,
+        }
+    }
+
+    pub fn log_performance(&self, query: &str) {
+        log::info!(
+            "Query performance - Total: {:.3}ms, Parse: {:.3}ms, Planning: {:.3}ms, Render: {:.3}ms, SQL Gen: {:.3}ms, Exec: {:.3}ms, Type: {}, Queries: {}, Rows: {}",
+            self.total_time * 1000.0,
+            self.parse_time * 1000.0,
+            self.planning_time * 1000.0,
+            self.render_time * 1000.0,
+            self.sql_generation_time * 1000.0,
+            self.execution_time * 1000.0,
+            self.query_type,
+            self.sql_queries_count,
+            self.result_rows.map_or("N/A".to_string(), |r| r.to_string())
+        );
+
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!("Performance breakdown for query: {}", query.chars().take(100).collect::<String>());
+        }
+    }
+
+    pub fn to_headers(&self) -> Vec<(String, String)> {
+        vec![
+            ("X-Query-Total-Time".to_string(), format!("{:.3}ms", self.total_time * 1000.0)),
+            ("X-Query-Parse-Time".to_string(), format!("{:.3}ms", self.parse_time * 1000.0)),
+            ("X-Query-Planning-Time".to_string(), format!("{:.3}ms", self.planning_time * 1000.0)),
+            ("X-Query-Render-Time".to_string(), format!("{:.3}ms", self.render_time * 1000.0)),
+            ("X-Query-SQL-Gen-Time".to_string(), format!("{:.3}ms", self.sql_generation_time * 1000.0)),
+            ("X-Query-Execution-Time".to_string(), format!("{:.3}ms", self.execution_time * 1000.0)),
+            ("X-Query-Type".to_string(), self.query_type.clone()),
+            ("X-Query-SQL-Count".to_string(), self.sql_queries_count.to_string()),
+        ]
+    }
+}
+
 /// Simple health check endpoint
 pub async fn health_check() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({
@@ -36,19 +98,23 @@ pub async fn query_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
+    let start_time = Instant::now();
+    let mut metrics = QueryPerformanceMetrics::new();
+
     log::debug!("Query handler called with query: {}", payload.query);
-    
-    let instant = Instant::now();
+
     let output_format = payload.format.unwrap_or(OutputFormat::JSONEachRow);
     let sql_only = payload.sql_only.unwrap_or(false);
 
-    let (ch_sql_queries, maybe_schema_elem, is_read) = {
+        let (ch_sql_queries, maybe_schema_elem, is_read, query_type_str) = {
         let graph_schema = graph_catalog::get_graph_schema().await;
 
-        // Parse query
+        // Phase 1: Parse query
+        let parse_start = Instant::now();
         let cypher_ast = match open_cypher_parser::parse_query(&payload.query) {
             Ok(ast) => ast,
             Err(e) => {
+                metrics.parse_time = parse_start.elapsed().as_secs_f64();
                 log::error!("Query parse failed: {:?}", e);
                 if sql_only {
                     let error_response = SqlOnlyResponse {
@@ -65,8 +131,16 @@ pub async fn query_handler(
                 }
             }
         };
+        metrics.parse_time = parse_start.elapsed().as_secs_f64();
 
         let query_type = query_planner::get_query_type(&cypher_ast);
+        let query_type_str = match query_type {
+            QueryType::Read => "read",
+            QueryType::Ddl => "ddl",
+            QueryType::Update => "update",
+            QueryType::Delete => "delete",
+            QueryType::Call => "call",
+        }.to_string();
 
         let is_read = query_type == QueryType::Read;
         let is_call = query_type == QueryType::Call;
@@ -160,12 +234,14 @@ pub async fn query_handler(
                 return Ok(Json(sql_response).into_response());
             }
 
-            (vec![ch_sql], None, true)
+            (vec![ch_sql], None, true, query_type_str)
         } else if is_read {
-            // Step 1: Query planning with error handling
+            // Phase 2: Plan query
+            let planning_start = Instant::now();
             let logical_plan = match query_planner::evaluate_read_query(cypher_ast, &graph_schema) {
                 Ok(plan) => plan,
                 Err(e) => {
+                    metrics.planning_time = planning_start.elapsed().as_secs_f64();
                     if sql_only {
                         let error_response = SqlOnlyResponse {
                             cypher_query: payload.query.clone(),
@@ -181,11 +257,14 @@ pub async fn query_handler(
                     }
                 }
             };
+            metrics.planning_time = planning_start.elapsed().as_secs_f64();
 
-            // Step 2: Render plan generation with error handling
+            // Phase 3: Render plan generation
+            let render_start = Instant::now();
             let render_plan = match logical_plan.to_render_plan() {
                 Ok(plan) => plan,
                 Err(e) => {
+                    metrics.render_time = render_start.elapsed().as_secs_f64();
                     if sql_only {
                         let error_response = SqlOnlyResponse {
                             cypher_query: payload.query.clone(),
@@ -201,9 +280,12 @@ pub async fn query_handler(
                     }
                 }
             };
+            metrics.render_time = render_start.elapsed().as_secs_f64();
 
-            // Step 3: SQL generation with configurable CTE depth
+            // Phase 4: SQL generation
+            let sql_generation_start = Instant::now();
             let ch_query = clickhouse_query_generator::generate_sql(render_plan, app_state.config.max_cte_depth);
+            metrics.sql_generation_time = sql_generation_start.elapsed().as_secs_f64();
             println!("\n ch_query \n {} \n", ch_query);
             
             // If SQL-only mode, return the SQL without executing
@@ -216,7 +298,7 @@ pub async fn query_handler(
                 return Ok(Json(sql_response).into_response());
             }
             
-            (vec![ch_query], None, true)
+            (vec![ch_query], None, true, query_type_str)
         } else {
             let (queries, schema_elem) =
                 clickhouse_query_generator::generate_ddl_query(cypher_ast, &graph_schema).map_err(
@@ -227,12 +309,15 @@ pub async fn query_handler(
                         )
                     },
                 )?;
-            (queries, Some(schema_elem), false)
+            (queries, Some(schema_elem), false, query_type_str)
         }
     };
 
-    if is_read {
-        execute_cte_queries(app_state, ch_sql_queries, output_format, instant).await
+    // Phase 5: Execute query
+    let execution_start = Instant::now();
+    let sql_queries_count = ch_sql_queries.len();
+    let response = if is_read {
+        execute_cte_queries(app_state, ch_sql_queries, output_format).await
     } else {
         ddl_handler(
             app_state.clickhouse_client.clone(),
@@ -240,6 +325,39 @@ pub async fn query_handler(
             maybe_schema_elem,
         )
         .await
+    };
+    metrics.execution_time = execution_start.elapsed().as_secs_f64();
+
+    // Complete metrics collection
+    metrics.total_time = start_time.elapsed().as_secs_f64();
+    metrics.query_type = query_type_str;
+    metrics.sql_queries_count = sql_queries_count;
+
+    // Extract result count if available (for read queries)
+    if let Ok(ref resp) = response {
+        if let Some(result_count) = extract_result_count(resp) {
+            metrics.result_rows = Some(result_count);
+        }
+    }
+
+    // Log performance metrics
+    metrics.log_performance(&payload.query);
+
+    // Add performance headers to response
+    match response {
+        Ok(mut resp) => {
+            let headers = metrics.to_headers();
+            for (key, value) in headers {
+                if let (Ok(header_name), Ok(header_value)) = (
+                    axum::http::HeaderName::try_from(key),
+                    axum::http::HeaderValue::try_from(value)
+                ) {
+                    resp.headers_mut().insert(header_name, header_value);
+                }
+            }
+            Ok(resp)
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -301,7 +419,6 @@ async fn execute_cte_queries(
     app_state: Arc<AppState>,
     ch_sql_queries: Vec<String>,
     output_format: OutputFormat,
-    instant: Instant,
 ) -> Result<Response, (StatusCode, String)> {
     let ch_query_string = ch_sql_queries.join(" ");
     
@@ -338,11 +455,6 @@ async fn execute_cte_queries(
             // let value: serde_json::Value = serde_json::de::from_str(&line).unwrap();
             rows.push(line);
         }
-
-        let now = Instant::now();
-        let elapsed = now.duration_since(instant).as_secs_f64();
-        let elapsed_rounded = (elapsed * 1000.0).round() / 1000.0;
-        rows.push(format!("\nElapsed: {} sec", elapsed_rounded));
 
         let text = rows.join("\n");
 
@@ -533,4 +645,16 @@ pub async fn ddl_handler(
 
     // println!("IN DDL HANDLER GLOBAL_GRAPH_SCHEMA {:?}",GLOBAL_GRAPH_SCHEMA.get());
     Ok(response)
+}
+
+/// Extract result count from a response for performance metrics
+/// Note: This is a simplified implementation. In a production system,
+/// you might want to track result counts during query execution.
+fn extract_result_count(_response: &axum::response::Response) -> Option<usize> {
+    // TODO: Implement proper result count extraction
+    // This would require either:
+    // 1. Modifying the query execution to track row counts
+    // 2. Parsing the response body (complex with streaming)
+    // For now, we return None
+    None
 }

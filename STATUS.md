@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: October 23, 2025*
+*Updated: October 25, 2025*
 
 ---
 
@@ -23,6 +23,9 @@
   - UNION SQL generation: ✅ Working
   - Unit tests: ✅ Passing  
   - End-to-end: ✅ **VERIFIED: Oct 22, 2025** - returns all expected relationships (10 total: 8 FOLLOWS + 2 FRIENDS_WITH)
+  - **Multiple relationship types (>2)**: ✅ **VERIFIED: Oct 25, 2025** - correctly generates (N-1) UNION ALL clauses for N relationship types
+    - 3 relationship types: 2 UNION ALL clauses ✅
+    - 4 relationship types: 3 UNION ALL clauses ✅
 - **PageRank algorithm**: `CALL pagerank(nodeLabels: 'Person,Company', relationshipTypes: 'KNOWS,WORKS_FOR', maxIterations: 10, dampingFactor: 0.85)` graph centrality measures ✅ **[COMPLETED: Oct 23, 2025]**
   - Iterative SQL implementation with UNION ALL approach
   - Configurable iterations and damping factor
@@ -37,6 +40,11 @@
 - **YAML Configuration**: View-based schema mapping
 - **Docker Deployment**: Ready for containerized environments
 - **Windows Support**: Native Windows development working
+- **Query Performance Metrics**: Phase-by-phase timing, structured logging, HTTP headers ✅ **[COMPLETED: Oct 25, 2025]**
+  - Parse time, planning time, render time, SQL generation time, execution time
+  - Structured logging with millisecond precision
+  - HTTP response headers: `X-Query-Total-Time`, `X-Query-Parse-Time`, etc.
+  - Query type classification and SQL query count tracking
 
 ### Configuration
 - **Configurable CTE depth**: Via CLI `--max-cte-depth` or env `BRAHMAND_MAX_CTE_DEPTH`
@@ -58,9 +66,8 @@
 
 ## 🎯 Next Priorities
 
-1. **Query Performance Metrics** - Execution time tracking and plan visualization
-2. **Performance optimization** - Benchmarking and query caching
-3. **Additional graph algorithms** - Community detection, centrality measures
+1. **Performance optimization** - Benchmarking and query caching
+2. **Additional graph algorithms** - Community detection, centrality measures
 
 ---
 
@@ -69,8 +76,8 @@
 - **Tests**: 303/303 passing (100%)
   - Python integration tests: 8/8 passing (100%)
   - Rust unit tests: 295/295 passing (100%)
-- **Last updated**: Oct 23, 2025
-- **Latest feature**: PageRank algorithm implementation with CALL statement support
+- **Last updated**: Oct 25, 2025
+- **Latest feature**: Query Performance Metrics with phase-by-phase timing and HTTP headers
 - **Branch**: main
 
 ---
@@ -89,6 +96,7 @@
 
 Detailed implementation notes for major features:
 
+- **[notes/query-performance-metrics.md](notes/query-performance-metrics.md)** - Phase-by-phase timing and performance monitoring
 - **[notes/pagerank.md](notes/pagerank.md)** - PageRank algorithm implementation with iterative SQL approach
 - **[notes/shortest-path.md](notes/shortest-path.md)** - Shortest path implementation and debugging story
 - **[notes/viewscan.md](notes/viewscan.md)** - View-based SQL translation
