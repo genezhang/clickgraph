@@ -15,6 +15,7 @@ use super::{
     LimitItem, OrderByItem, OrderByItems, RenderPlan, SelectItem, SelectItems, SkipItem, Union,
     UnionItems, ViewTableRef, view_table_ref::{view_ref_to_from_table, from_table_to_view_ref},
 };
+use super::cte_generation::{analyze_property_requirements, map_property_to_column_with_schema, extract_var_len_properties};
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
 
@@ -470,72 +471,7 @@ fn rewrite_expr_for_outer_query(
     }
 }
 
-use crate::clickhouse_query_generator::NodeProperty;
-use crate::query_planner::logical_expr::LogicalExpr;
-use std::collections::HashMap;
-
-/// Context for CTE generation - holds property requirements and other metadata
-#[derive(Debug, Clone, Default)]
-pub(crate) struct CteGenerationContext {
-    /// Properties needed for variable-length paths, keyed by "left_alias-right_alias"
-    variable_length_properties: HashMap<String, Vec<NodeProperty>>,
-    /// WHERE filter expression to apply to variable-length CTEs
-    filter_expr: Option<RenderExpr>,
-    /// End node filters to be applied in the outer query for variable-length paths
-    end_filters_for_outer_query: Option<RenderExpr>,
-    /// Cypher aliases for start and end nodes (for filter rewriting)
-    start_cypher_alias: Option<String>,
-    end_cypher_alias: Option<String>,
-}
-
-impl CteGenerationContext {
-    fn new() -> Self {
-        Self::default()
-    }
-    
-    fn get_properties(&self, left_alias: &str, right_alias: &str) -> Vec<NodeProperty> {
-        let key = format!("{}-{}", left_alias, right_alias);
-        self.variable_length_properties.get(&key).cloned().unwrap_or_default()
-    }
-    
-    fn set_properties(&mut self, left_alias: &str, right_alias: &str, properties: Vec<NodeProperty>) {
-        let key = format!("{}-{}", left_alias, right_alias);
-        self.variable_length_properties.insert(key, properties);
-    }
-    
-    fn get_filter(&self) -> Option<&RenderExpr> {
-        self.filter_expr.as_ref()
-    }
-    
-    fn set_filter(&mut self, filter: RenderExpr) {
-        self.filter_expr = Some(filter);
-    }
-    
-    fn get_end_filters_for_outer_query(&self) -> Option<&RenderExpr> {
-        let result = self.end_filters_for_outer_query.as_ref();
-        result
-    }
-    
-    fn set_end_filters_for_outer_query(&mut self, filters: RenderExpr) {
-        self.end_filters_for_outer_query = Some(filters);
-    }
-    
-    fn get_start_cypher_alias(&self) -> Option<&str> {
-        self.start_cypher_alias.as_deref()
-    }
-    
-    fn set_start_cypher_alias(&mut self, alias: String) {
-        self.start_cypher_alias = Some(alias);
-    }
-    
-    fn get_end_cypher_alias(&self) -> Option<&str> {
-        self.end_cypher_alias.as_deref()
-    }
-    
-    fn set_end_cypher_alias(&mut self, alias: String) {
-        self.end_cypher_alias = Some(alias);
-    }
-}
+use super::CteGenerationContext;
 
 /// Extract node label from a GraphNode plan
 fn extract_node_label_from_plan(plan: &LogicalPlan) -> String {
@@ -626,109 +562,6 @@ fn extract_alias_from_plan(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::ViewScan(_) => None, // ViewScan doesn't have an alias field
         _ => None,
     }
-}
-
-/// Analyze the plan to determine what properties are needed for variable-length CTEs
-fn analyze_property_requirements(plan: &LogicalPlan) -> CteGenerationContext {
-    let mut context = CteGenerationContext::new();
-    
-    // Find variable-length relationships and their required properties
-    if let Some((left_alias, right_alias, left_label, right_label, _rel_type)) = get_variable_length_info(plan) {
-        let properties = extract_var_len_properties(plan, &left_alias, &right_alias, &left_label, &right_label);
-        context.set_properties(&left_alias, &right_alias, properties);
-    }
-    
-    context
-}
-
-/// Extract property requirements from projection for variable-length paths
-/// Returns a vector of properties that need to be included in the CTE
-/// Recursively searches through the plan to find the Projection node
-fn extract_var_len_properties(
-    plan: &LogicalPlan, 
-    left_alias: &str, 
-    right_alias: &str,
-    left_label: &str,
-    right_label: &str
-) -> Vec<NodeProperty> {
-    let mut properties = Vec::new();
-    
-    // Find the projection in the plan (recursively)
-    match plan {
-        LogicalPlan::Projection(proj) => {
-            for item in &proj.items {
-                // Check if this is a property access expression
-                if let LogicalExpr::PropertyAccessExp(prop_acc) = &item.expression {
-                    let node_alias = prop_acc.table_alias.0.as_str();
-                    let property_name = prop_acc.column.0.as_str();
-                    
-                    // Determine if this is for the left or right node
-                    if node_alias == left_alias || node_alias == right_alias {
-                        // Determine which node label to use
-                        let node_label = if node_alias == left_alias {
-                            left_label
-                        } else {
-                            right_label
-                        };
-                        
-                        // Map property name to actual column name using schema
-                        let column_name = map_property_to_column_with_schema(property_name, node_label);
-                        // Use property_name for CTE column alias, not Cypher SELECT alias
-                        // E.g., for "a.name AS start", use "name" not "start" for CTE column
-                        let alias = property_name.to_string();
-                        
-                        properties.push(NodeProperty {
-                            cypher_alias: node_alias.to_string(),
-                            column_name,
-                            alias,
-                        });
-                    }
-                }
-            }
-        }
-        // Recursively search in child plans
-        LogicalPlan::Filter(filter) => return extract_var_len_properties(&filter.input, left_alias, right_alias, left_label, right_label),
-        LogicalPlan::OrderBy(order_by) => return extract_var_len_properties(&order_by.input, left_alias, right_alias, left_label, right_label),
-        LogicalPlan::Skip(skip) => return extract_var_len_properties(&skip.input, left_alias, right_alias, left_label, right_label),
-        LogicalPlan::Limit(limit) => return extract_var_len_properties(&limit.input, left_alias, right_alias, left_label, right_label),
-        LogicalPlan::GroupBy(group_by) => return extract_var_len_properties(&group_by.input, left_alias, right_alias, left_label, right_label),
-        LogicalPlan::GraphJoins(joins) => return extract_var_len_properties(&joins.input, left_alias, right_alias, left_label, right_label),
-        _ => {}
-    }
-    
-    properties
-}
-
-/// Map Cypher property name to actual column name
-/// TODO: This should look up the actual schema from GraphSchema
-fn map_property_to_column(property: &str) -> String {
-    match property {
-        "name" => "full_name".to_string(),  // For users
-        "email" => "email_address".to_string(),
-        _ => property.to_string(), // fallback to property name itself
-    }
-}
-
-/// Schema-aware property mapping using GraphSchema
-/// Looks up the property mapping from the schema for a given node label
-fn map_property_to_column_with_schema(property: &str, node_label: &str) -> String {
-    // Try to get the view config from the global state
-    if let Some(config_lock) = crate::server::GLOBAL_VIEW_CONFIG.get() {
-        if let Ok(config) = config_lock.try_read() {
-            // Find the node mapping for this label
-            for view in &config.views {
-                if let Some(node_mapping) = view.nodes.get(node_label) {
-                    // Check if there's a property mapping
-                    if let Some(column) = node_mapping.property_mappings.get(property) {
-                        return column.clone();
-                    }
-                }
-            }
-        }
-    }
-
-    // Fallback to the hardcoded mapping
-    map_property_to_column(property)
 }
 
 /// Get relationship columns from schema by relationship type

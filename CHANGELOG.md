@@ -17,7 +17,20 @@
     - `RETURN length(CASE u.name WHEN 'Alice' THEN 'Administrator' ELSE 'User' END)`
   - **Test Results**: All 5 test scenarios passing with correct property mapping and boolean handling
 
-### �🔧 Infrastructure
+### � Infrastructure
+
+- **Codebase Health Refactoring** (Oct 25): Major architectural improvement for long-term maintainability
+  - **CTE Generation Module Extraction**: Broke up massive 2600+ line `plan_builder.rs` file
+  - **New Module**: Created dedicated `render_plan/cte_generation.rs` with clean separation of concerns
+  - **Extracted Components**:
+    - `CteGenerationContext` struct and methods for variable-length path metadata
+    - `analyze_property_requirements()` function for CTE property analysis
+    - `extract_var_len_properties()` function for property extraction from projections
+    - `map_property_to_column_with_schema()` for schema-aware property mapping
+    - `get_node_schema_by_table()` utility for schema lookups
+  - **Zero Breaking Changes**: All 304 tests pass, full backward compatibility maintained
+  - **Benefits**: Improved code organization, easier debugging, better error handling, reduced cognitive load
+  - **Future Impact**: Foundation for additional refactoring (filter pipeline, expression rewriting, error handling improvements)
 
 - **Property Mapping Debug Session** (Oct 24): Investigation and fixes for multi-variable query property mapping
   - Issue identified: Property mapping works for first variable but fails for second in queries like `MATCH (b:User), (a:User) WHERE a.name = "Alice" AND b.name = "Charlie"`
