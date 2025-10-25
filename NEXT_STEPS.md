@@ -1,7 +1,7 @@
 # Next Steps - Development Roadmap
 
 **Last Updated**: October 25, 2025
-**Current Status**: Query Performance Metrics ✅ COMPLETE | PageRank ✅ COMPLETE | WHERE Clause Filtering ✅ COMPLETE | Schema Validation ✅ COMPLETE | Multiple Relationship Types ✅ COMPLETE | ViewScan ✅ COMPLETE | Path Variables ✅ COMPLETE | Testing infrastructure ✅ READY
+**Current Status**: Query Performance Metrics ✅ COMPLETE | PageRank ✅ COMPLETE | WHERE Clause Filtering 🔄 IN PROGRESS | Schema Validation ✅ COMPLETE | Multiple Relationship Types ✅ COMPLETE | ViewScan ✅ COMPLETE | Path Variables ✅ COMPLETE | Testing infrastructure ✅ READY
 **Branch**: `main`
 **Latest Commit**: Query Performance Metrics with phase-by-phase timing and HTTP headers
 
@@ -62,7 +62,7 @@
 - 🎯 Foundation for advanced graph algorithms and analytics
 - 🎯 See: `notes/path-variables.md` for implementation details
 
-### 2. Multiple Relationship Types - Complete ✅
+### 3. Multiple Relationship Types - Complete ✅
 **What**: Support for `[:TYPE1|TYPE2]` alternate relationship patterns with UNION SQL generation
 
 **Implementation**:
@@ -89,7 +89,7 @@
 - 🎯 Foundation for advanced graph pattern matching
 - 🎯 See: `notes/alternate-relationships.md` for implementation details
 
-### 2. ViewScan - Complete Schema-Driven Query Planning ✅
+### 4. ViewScan - Complete Schema-Driven Query Planning ✅
 **What**: Fully YAML-driven graph model (no hardcoded table mappings)
 
 **Node Queries** - ✅ DONE:
@@ -109,7 +109,7 @@
 - 🎯 Multiple graph schemas via different YAML files
 - 🎯 See: `notes/viewscan-complete.md` for full details
 
-### 3. Standardized Testing Infrastructure ✅
+### 5. Standardized Testing Infrastructure ✅
 **Problem Solved**: Terminal chaos, port conflicts, process accumulation
 
 **New Tools**:
@@ -134,7 +134,7 @@
 
 **See**: `TESTING_GUIDE.md` for complete workflows
 
-### 4. Schema Validation Enhancement - Complete ✅
+### 6. Schema Validation Enhancement - Complete ✅
 **What**: Optional startup validation of YAML configurations against ClickHouse schema
 
 **Problem Solved**: 
@@ -168,7 +168,7 @@
 - 🎯 Performance conscious: Opt-in validation with minimal overhead
 - 🎯 Backward compatible: No impact on existing deployments
 
-### 4. WHERE Clause Filtering for Variable-Length Paths - Complete ✅ (October 22, 2025)
+### 7. WHERE Clause Filtering for Variable-Length Paths - 🔄 IN PROGRESS (October 22, 2025)
 **What**: Full WHERE clause support for variable-length path queries and shortest path functions
 
 **Implementation**:
@@ -186,8 +186,8 @@
 - ✅ End node filters: Work with all variable-length paths
 - ✅ Shortest path WHERE clauses: Fully functional
 - ✅ Parser: Double-quoted strings properly handled
-- ✅ SQL generation: Correct quoting and column mapping
-- ✅ Test results: 303/303 tests passing (100%)
+- 🔄 SQL generation: Column alias mapping in CTEs needs debugging
+- ✅ Test results: Most tests passing, alias mapping issue in progress
 
 **Impact**:
 - 🎯 Complete Cypher WHERE clause support for graph queries
@@ -195,7 +195,7 @@
 - 🎯 Foundation for complex graph analytics with filtering
 - 🎯 See: `notes/where-clause-complete.md` for implementation details
 
-### 5. PageRank Algorithm Implementation - Complete ✅ (October 23, 2025)
+### 8. PageRank Algorithm Implementation - Complete ✅ (October 23, 2025)
 **What**: Complete graph centrality algorithm with CALL statement support
 
 **Implementation**:
@@ -289,15 +289,6 @@ Now that Query Performance Metrics, PageRank, WHERE clause filtering, Schema Val
    - **Estimated**: 4-6 hours
 
 **My Recommendation**: **Option A.1 (Query Performance Metrics)** - Add execution time tracking and plan visualization to monitor performance and optimize queries.
-   - Advanced query patterns
-   - **Estimated**: 4-6 hours
-
-2. **Additional Graph Algorithms**
-   - Betweenness centrality, closeness centrality
-   - Community detection algorithms
-   - **Estimated**: 1-2 weeks per algorithm
-
-**My Recommendation**: **Option A.2 (Query Performance Metrics)** - Quick win with immediate value for performance monitoring and optimization.
 
 ### Option B: Add More Cypher Features (High Impact)
 1. **Graph Algorithms**
@@ -339,9 +330,7 @@ Now that Query Performance Metrics, PageRank, WHERE clause filtering, Schema Val
 
 ## 🔍 Previously Known Issues (NOW RESOLVED)
 
-### 1. View-Based SQL Translation (HIGH PRIORITY)
-
-**Issue**: YAML schema loads correctly, but queries don't translate Cypher labels to source tables### 1. View-Based SQL Translation (✅ RESOLVED!)
+### 1. View-Based SQL Translation (✅ RESOLVED!)
 
 **Issue**: YAML schema loads correctly, but queries didn't translate Cypher labels to source tables
 
@@ -462,7 +451,7 @@ RETURN paths
 
 ---
 
-### 2. Path Variables
+### 3. Path Variables
 
 **Feature**:
 ```cypher
