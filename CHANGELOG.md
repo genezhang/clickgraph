@@ -2,7 +2,22 @@
 
 ## [Unreleased] - 2025-10-18
 
-### 🔧 Infrastructure
+### � Features
+
+- **CASE Expressions with Full Context Support** (Oct 24): Complete implementation of conditional expressions in all query contexts
+  - **Simple CASE**: `CASE x WHEN val THEN result END` with ClickHouse `caseWithExpression` optimization
+  - **Searched CASE**: `CASE WHEN condition THEN result END` using standard SQL CASE syntax
+  - **Universal Support**: Works in RETURN clauses, WHERE clauses, function arguments, and complex expressions
+  - **Property Mapping**: Automatic resolution of Cypher properties (`u.name` → `u.full_name`) in expressions
+  - **Performance Optimization**: Simple CASE uses ClickHouse's efficient `caseWithExpression(expr, val1, res1, ..., default)`
+  - **Comprehensive Testing**: 5 test files covering all usage patterns with real data validation
+  - **Examples**:
+    - `RETURN CASE u.name WHEN 'Alice' THEN 'Admin' ELSE 'User' END`
+    - `WHERE CASE WHEN u.age > 25 THEN true ELSE false END`
+    - `RETURN length(CASE u.name WHEN 'Alice' THEN 'Administrator' ELSE 'User' END)`
+  - **Test Results**: All 5 test scenarios passing with correct property mapping and boolean handling
+
+### �🔧 Infrastructure
 
 - **Property Mapping Debug Session** (Oct 24): Investigation and fixes for multi-variable query property mapping
   - Issue identified: Property mapping works for first variable but fails for second in queries like `MATCH (b:User), (a:User) WHERE a.name = "Alice" AND b.name = "Charlie"`
