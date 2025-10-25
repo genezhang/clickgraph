@@ -59,6 +59,7 @@ pub struct NodeSchema {
     pub column_names: Vec<String>,
     pub primary_keys: String,
     pub node_id: NodeIdSchema,
+    pub property_mappings: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -71,6 +72,7 @@ pub struct RelationshipSchema {
     pub to_column: String,    // Column name for target node ID (e.g., "user2_id")
     pub from_node_id_dtype: String,
     pub to_node_id_dtype: String,
+    pub property_mappings: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -165,6 +167,7 @@ impl ViewSchemaResolver for GraphSchema {
                         table: mapping.source_table.clone(),
                     })?,
             },
+            property_mappings: mapping.property_mappings.clone(),
         })
     }
 
@@ -206,6 +209,7 @@ impl ViewSchemaResolver for GraphSchema {
             to_column: mapping.to_column.clone(),       // Column name for target
             from_node_id_dtype: from_type,
             to_node_id_dtype: to_type,
+            property_mappings: mapping.property_mappings.clone(),
         })
     }
 }
@@ -236,14 +240,14 @@ impl GraphSchema {
     /// Register a view mapping in the schema
     pub fn register_view(&mut self, view: GraphViewDefinition) -> Result<(), GraphSchemaError> {
         // First validate that all referenced tables exist
-        for (label, node_mapping) in &view.nodes {
+        for (_key, node_mapping) in &view.nodes {
             let node_schema = self.resolve_node_view(node_mapping)?;
-            self.insert_node_schema(label.clone(), node_schema);
+            self.insert_node_schema(node_mapping.label.clone(), node_schema);
         }
 
-        for (type_name, rel_mapping) in &view.relationships {
+        for (_key, rel_mapping) in &view.relationships {
             let rel_schema = self.resolve_relationship_view(rel_mapping)?;
-            self.insert_relationship_schema(type_name.clone(), rel_schema);
+            self.insert_relationship_schema(rel_mapping.type_name.clone(), rel_schema);
         }
 
         Ok(())

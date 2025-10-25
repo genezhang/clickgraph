@@ -408,6 +408,16 @@ pub struct FunctionCall<'a> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct Case<'a> {
+    /// Expression for simple CASE (CASE x WHEN ...), None for searched CASE
+    pub expr: Option<Box<Expression<'a>>>,
+    /// WHEN conditions and THEN expressions
+    pub when_then: Vec<(Expression<'a>, Expression<'a>)>,
+    /// Optional ELSE expression
+    pub else_expr: Option<Box<Expression<'a>>>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expression<'a> {
     /// A literal, such as a number, string, boolean, or null.
     Literal(Literal<'a>),
@@ -434,13 +444,9 @@ pub enum Expression<'a> {
 
     // A path-pattern, for instance: (a)-[]->()<-[]-(b)
     PathPattern(PathPattern<'a>),
-    // /// A CASE expression.
-    // /// `expr` is used for the simple CASE (e.g. CASE x WHEN ...), and if absent, it's the searched CASE.
-    // Case {
-    //     expr: Option<Box<Expression>>,
-    //     when_then: Vec<(Expression, Expression)>,
-    //     else_expr: Option<Box<Expression>>,
-    // },
+    /// A CASE expression.
+    /// `expr` is used for the simple CASE (e.g. CASE x WHEN ...), and if absent, it's the searched CASE.
+    Case(Case<'a>),
 }
 
 impl fmt::Display for Expression<'_> {

@@ -50,6 +50,9 @@ pub enum LogicalExpr {
     /// A path-pattern, for instance: (a)-[]->()<-[]-(b)
     PathPattern(PathPattern),
 
+    /// A CASE expression
+    Case(LogicalCase),
+
     InSubquery(InSubquery),
 }
 
@@ -141,6 +144,16 @@ pub struct OperatorApplication {
 pub struct PropertyAccess {
     pub table_alias: TableAlias,
     pub column: Column,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct LogicalCase {
+    /// Expression for simple CASE (CASE x WHEN ...), None for searched CASE
+    pub expr: Option<Box<LogicalExpr>>,
+    /// WHEN conditions and THEN expressions
+    pub when_then: Vec<(LogicalExpr, LogicalExpr)>,
+    /// Optional ELSE expression
+    pub else_expr: Option<Box<LogicalExpr>>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -365,6 +378,18 @@ impl<'a> From<open_cypher_parser::ast::RelationshipPattern<'a>> for Relationship
     }
 }
 
+impl<'a> From<open_cypher_parser::ast::Case<'a>> for LogicalCase {
+    fn from(case: open_cypher_parser::ast::Case<'a>) -> Self {
+        LogicalCase {
+            expr: case.expr.map(|e| Box::new(LogicalExpr::from(*e))),
+            when_then: case.when_then.into_iter()
+                .map(|(when, then)| (LogicalExpr::from(when), LogicalExpr::from(then)))
+                .collect(),
+            else_expr: case.else_expr.map(|e| Box::new(LogicalExpr::from(*e))),
+        }
+    }
+}
+
 impl<'a> From<open_cypher_parser::ast::Expression<'a>> for LogicalExpr {
     fn from(expr: open_cypher_parser::ast::Expression<'a>) -> Self {
         use open_cypher_parser::ast::Expression;
@@ -391,6 +416,7 @@ impl<'a> From<open_cypher_parser::ast::Expression<'a>> for LogicalExpr {
                 LogicalExpr::OperatorApplicationExp(OperatorApplication::from(oa))
             }
             Expression::PathPattern(pp) => LogicalExpr::PathPattern(PathPattern::from(pp)),
+            Expression::Case(case) => LogicalExpr::Case(LogicalCase::from(case)),
         }
     }
 }

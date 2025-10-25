@@ -49,9 +49,7 @@ impl OptimizerPass for FilterIntoGraphRel {
         let transformed_plan = match logical_plan.as_ref() {
             // When we find a Filter node, check if it wraps a GraphRel (possibly through Projection)
             LogicalPlan::Filter(filter) => {
-                log::trace!("FilterIntoGraphRel: Found Filter node with predicate: {:?}", filter.predicate);
-                
-                // First, recursively optimize the child
+                log::trace!("FilterIntoGraphRel: Found Filter node with predicate: {:?}", filter.predicate);                // First, recursively optimize the child
                 let child_tf = self.optimize(filter.input.clone(), plan_ctx)?;
                 
                 // Check if the child is a GraphRel (either transformed or not)
@@ -141,9 +139,7 @@ impl OptimizerPass for FilterIntoGraphRel {
             }
             LogicalPlan::GraphRel(graph_rel) => {
                 // Extract filters from plan_ctx for this GraphRel's aliases
-                let mut combined_filters: Vec<LogicalExpr> = vec![];
-                
-                // Check left connection for filters
+                let mut combined_filters: Vec<LogicalExpr> = vec![];                // Check left connection for filters
                 if let Ok(table_ctx) = plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_rel.left_connection.clone())) {
                     let filters = table_ctx.get_filters().clone();
                     if !filters.is_empty() {

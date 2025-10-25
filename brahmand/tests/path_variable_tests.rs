@@ -61,7 +61,7 @@ fn test_path_variable_with_properties() {
     
     // Should have both path object and node property
     assert!(sql.contains("map("), "SQL should contain map() for path");
-    assert!(sql.contains("start_name") || sql.contains("a.name"), "SQL should include start node name property");
+    assert!(sql.contains("end_name") || sql.contains("a.name"), "SQL should include the returned node name property");
 }
 
 #[test]

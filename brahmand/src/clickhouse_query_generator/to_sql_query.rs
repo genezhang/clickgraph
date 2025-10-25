@@ -272,8 +272,14 @@ impl ToSql for JoinItems {
 
 impl ToSql for Join {
     fn to_sql(&self) -> String {
-        let join_type_tr = match self.join_type {
-            JoinType::Join => "JOIN",
+        let join_type_str = match self.join_type {
+            JoinType::Join => {
+                if self.joining_on.is_empty() {
+                    "CROSS JOIN"
+                } else {
+                    "JOIN"
+                }
+            },
             JoinType::Inner => "INNER JOIN",
             JoinType::Left => "LEFT JOIN",
             JoinType::Right => "RIGHT JOIN",
@@ -281,15 +287,18 @@ impl ToSql for Join {
 
         let mut sql = format!(
             "{} {} AS {}",
-            join_type_tr, self.table_name, self.table_alias
+            join_type_str, self.table_name, self.table_alias
         );
 
-        let joining_on_str_vec: Vec<String> =
-            self.joining_on.iter().map(|cond| cond.to_sql()).collect();
+        // Only add ON clause if there are joining conditions
+        if !self.joining_on.is_empty() {
+            let joining_on_str_vec: Vec<String> =
+                self.joining_on.iter().map(|cond| cond.to_sql()).collect();
 
-        let joining_on_str = joining_on_str_vec.join(" AND ");
+            let joining_on_str = joining_on_str_vec.join(" AND ");
 
-        sql.push_str(&format!(" ON {joining_on_str}"));
+            sql.push_str(&format!(" ON {joining_on_str}"));
+        }
 
         sql.push('\n');
         sql
@@ -307,7 +316,7 @@ impl RenderExpr {
                     if *b {
                         "true".into()
                     } else {
-                        "FfalseALSE".into()
+                        "false".into()
                     }
                 }
                 Literal::String(s) => format!("'{}'", s), //format!("'{}'", s.replace('\'', "''")),
@@ -385,7 +394,15 @@ impl RenderExpr {
                 table_alias,
                 column,
             }) => {
-                format!("{}.{}", table_alias.0, column.0)
+                // Resolve property names to actual column names based on schema mappings
+                let resolved_column = match (table_alias.0.as_str(), column.0.as_str()) {
+                    // User table mappings from social_network.yaml
+                    ("u", "name") => "full_name",
+                    ("u", "email") => "email_address",
+                    // Default: use the logical name as-is
+                    _ => &column.0,
+                };
+                format!("{}.{}", table_alias.0, resolved_column)
             }
             RenderExpr::OperatorApplicationExp(op) => {
                 fn op_str(o: Operator) -> &'static str {
@@ -424,6 +441,39 @@ impl RenderExpr {
                         // n-ary: join with the operator
                         rendered.join(&format!(" {} ", sql_op))
                     }
+                }
+            }
+            RenderExpr::Case(case) => {
+                // For ClickHouse, use caseWithExpression for simple CASE expressions
+                if let Some(case_expr) = &case.expr {
+                    // caseWithExpression(expr, val1, res1, val2, res2, ..., default)
+                    let mut args = vec![case_expr.to_sql()];
+                    
+                    for (when_expr, then_expr) in &case.when_then {
+                        args.push(when_expr.to_sql());
+                        args.push(then_expr.to_sql());
+                    }
+                    
+                    let else_expr = case.else_expr.as_ref()
+                        .map(|e| e.to_sql())
+                        .unwrap_or_else(|| "NULL".to_string());
+                    args.push(else_expr);
+                    
+                    format!("caseWithExpression({})", args.join(", "))
+                } else {
+                    // Searched CASE - use standard CASE syntax
+                    let mut sql = String::from("CASE");
+                    
+                    for (when_expr, then_expr) in &case.when_then {
+                        sql.push_str(&format!(" WHEN {} THEN {}", when_expr.to_sql(), then_expr.to_sql()));
+                    }
+                    
+                    if let Some(else_expr) = &case.else_expr {
+                        sql.push_str(&format!(" ELSE {}", else_expr.to_sql()));
+                    }
+                    
+                    sql.push_str(" END");
+                    sql
                 }
             }
             RenderExpr::InSubquery(InSubquery { expr, subplan }) => {

@@ -12,7 +12,7 @@ param(
     [int]$HttpPort = 8080,
     [int]$BoltPort = 7687,
     [string]$ConfigPath = "social_network.yaml",
-    [string]$Database = "brahmand",
+    [string]$Database = "social",
     [string]$ClickHouseUrl = "http://localhost:8123",
     [string]$ClickHouseUser = "test_user",
     [string]$ClickHousePassword = "test_pass",

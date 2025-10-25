@@ -3,10 +3,10 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case, take_until, take_while1},
     character::complete::{alphanumeric1, multispace0},
-    combinator::{map, not, peek},
+    combinator::{map, not, opt, peek},
     error::{Error, ErrorKind},
     multi::{separated_list0, separated_list1},
-    sequence::{delimited, preceded, terminated},
+    sequence::{delimited, preceded, separated_pair, terminated},
 };
 
 use nom::character::complete::char;
@@ -65,8 +65,64 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
     }
 }
 
+fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    let (input, _) = ws(tag_no_case("CASE")).parse(input)?;
+
+    // Check if this is a searched CASE (starts with WHEN) or simple CASE (has an expression)
+    // Try to peek ahead to see if the next non-whitespace token is "WHEN"
+    let (input_after_ws, _) = multispace0.parse(input)?;
+    let is_searched = input_after_ws.starts_with("WHEN") || input_after_ws.starts_with("when");
+    
+    let (input, case_expr) = if is_searched {
+        // Searched CASE - no case_expr
+        (input, None)
+    } else {
+        // Try to parse simple CASE expression
+        match opt(parse_expression).parse(input) {
+            Ok((input, expr)) => (input, expr),
+            Err(_) => (input, None), // If parsing fails, assume searched CASE
+        }
+    };
+
+    // Parse WHEN/THEN pairs
+    let mut when_then = Vec::new();
+    let mut remaining_input = input;
+
+    loop {
+        let res = preceded(
+            ws(tag_no_case("WHEN")),
+            separated_pair(parse_expression, ws(tag_no_case("THEN")), parse_expression)
+        ).parse(remaining_input);
+
+        match res {
+            Ok((new_input, (when_expr, then_expr))) => {
+                when_then.push((when_expr, then_expr));
+                remaining_input = new_input;
+            }
+            Err(nom::Err::Error(_)) => break,
+            Err(e) => return Err(e),
+        }
+    }
+
+    // Optional ELSE clause
+    let (input, else_expr) = opt(preceded(
+        ws(tag_no_case("ELSE")),
+        parse_expression
+    )).parse(remaining_input)?;
+
+    // END keyword
+    let (input, _) = ws(tag_no_case("END")).parse(input)?;
+
+    Ok((input, Expression::Case(crate::open_cypher_parser::ast::Case {
+        expr: case_expr.map(Box::new),
+        when_then,
+        else_expr: else_expr.map(Box::new),
+    })))
+}
+
 fn parse_primary(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     alt((
+        parse_case_expression,
         parse_path_pattern_expression,
         parse_function_call,
         parse_postfix_expression,

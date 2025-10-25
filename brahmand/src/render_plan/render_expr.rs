@@ -8,7 +8,7 @@ use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_expr::{
     AggregateFnCall as LogicalAggregateFnCall, Column as LogicalColumn,
     ColumnAlias as LogicalColumnAlias, InSubquery as LogicalInSubquery, Literal as LogicalLiteral,
-    Operator as LogicalOperator, OperatorApplication as LogicalOperatorApplication,
+    LogicalCase, Operator as LogicalOperator, OperatorApplication as LogicalOperatorApplication,
     PropertyAccess as LogicalPropertyAccess, ScalarFnCall as LogicalScalarFnCall,
     TableAlias as LogicalTableAlias,
 };
@@ -39,6 +39,8 @@ pub enum RenderExpr {
 
     OperatorApplicationExp(OperatorApplication),
 
+    Case(RenderCase),
+
     InSubquery(InSubquery),
 }
 
@@ -46,6 +48,16 @@ pub enum RenderExpr {
 pub struct InSubquery {
     pub expr: Box<RenderExpr>,
     pub subplan: Box<RenderPlan>,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct RenderCase {
+    /// Expression for simple CASE (CASE x WHEN ...), None for searched CASE
+    pub expr: Option<Box<RenderExpr>>,
+    /// WHEN conditions and THEN expressions
+    pub when_then: Vec<(RenderExpr, RenderExpr)>,
+    /// Optional ELSE expression
+    pub else_expr: Option<Box<RenderExpr>>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -138,6 +150,7 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                 RenderExpr::OperatorApplicationExp(op.try_into()?)
             }
             LogicalExpr::InSubquery(subq) => RenderExpr::InSubquery(subq.try_into()?),
+            LogicalExpr::Case(case) => RenderExpr::Case(case.try_into()?),
             // PathPattern is not present in RenderExpr
             _ => unimplemented!("Conversion for this LogicalExpr variant is not implemented"),
         };
@@ -284,5 +297,35 @@ impl TryFrom<LogicalAggregateFnCall> for AggregateFnCall {
                 .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
         };
         Ok(agg_fn)
+    }
+}
+
+impl TryFrom<LogicalCase> for RenderCase {
+    type Error = RenderBuildError;
+
+    fn try_from(case: LogicalCase) -> Result<Self, Self::Error> {
+        let expr = if let Some(e) = case.expr {
+            Some(Box::new(RenderExpr::try_from(*e)?))
+        } else {
+            None
+        };
+
+        let when_then = case.when_then.into_iter()
+            .map(|(when, then)| {
+                Ok((RenderExpr::try_from(when)?, RenderExpr::try_from(then)?))
+            })
+            .collect::<Result<Vec<(RenderExpr, RenderExpr)>, RenderBuildError>>()?;
+
+        let else_expr = if let Some(e) = case.else_expr {
+            Some(Box::new(RenderExpr::try_from(*e)?))
+        } else {
+            None
+        };
+
+        Ok(RenderCase {
+            expr,
+            when_then,
+            else_expr,
+        })
     }
 }

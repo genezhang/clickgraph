@@ -1,52 +1,58 @@
 use std::{collections::HashSet, sync::Arc};
 
-use crate::query_planner::{
-    analyzer::{
-        analyzer_pass::{AnalyzerPass, AnalyzerResult},
-        errors::{AnalyzerError, Pass},
+use crate::{
+    graph_catalog::graph_schema::GraphSchema,
+    query_planner::{
+        analyzer::{
+            analyzer_pass::{AnalyzerPass, AnalyzerResult},
+            errors::{AnalyzerError, Pass},
+        },
+        logical_expr::{
+            AggregateFnCall, LogicalExpr, Operator, OperatorApplication, PropertyAccess, ScalarFnCall, Column,
+        },
+        logical_plan::{Filter, LogicalPlan, ProjectionItem},
+        plan_ctx::PlanCtx,
+        transformed::Transformed,
     },
-    logical_expr::{
-        AggregateFnCall, LogicalExpr, Operator, OperatorApplication, PropertyAccess, ScalarFnCall,
-    },
-    logical_plan::{Filter, LogicalPlan, ProjectionItem},
-    plan_ctx::PlanCtx,
-    transformed::Transformed,
 };
 
 pub struct FilterTagging;
 
 impl AnalyzerPass for FilterTagging {
-    fn analyze(
+    fn analyze_with_graph_schema(
         &self,
         logical_plan: Arc<LogicalPlan>,
         plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::GraphNode(graph_node) => {
-                let child_tf = self.analyze(graph_node.input.clone(), plan_ctx)?;
+                let child_tf = self.analyze_with_graph_schema(graph_node.input.clone(), plan_ctx, graph_schema)?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphRel(graph_rel) => {
-                let left_tf = self.analyze(graph_rel.left.clone(), plan_ctx)?;
-                let center_tf = self.analyze(graph_rel.center.clone(), plan_ctx)?;
-                let right_tf = self.analyze(graph_rel.right.clone(), plan_ctx)?;
+                let left_tf = self.analyze_with_graph_schema(graph_rel.left.clone(), plan_ctx, graph_schema)?;
+                let center_tf = self.analyze_with_graph_schema(graph_rel.center.clone(), plan_ctx, graph_schema)?;
+                let right_tf = self.analyze_with_graph_schema(graph_rel.right.clone(), plan_ctx, graph_schema)?;
                 graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
             }
             LogicalPlan::Cte(cte) => {
-                let child_tf = self.analyze(cte.input.clone(), plan_ctx)?;
+                let child_tf = self.analyze_with_graph_schema(cte.input.clone(), plan_ctx, graph_schema)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
-                let child_tf = self.analyze(graph_joins.input.clone(), plan_ctx)?;
+                let child_tf = self.analyze_with_graph_schema(graph_joins.input.clone(), plan_ctx, graph_schema)?;
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Filter(filter) => {
-                let child_tf = self.analyze(filter.input.clone(), plan_ctx)?;
+                let child_tf = self.analyze_with_graph_schema(filter.input.clone(), plan_ctx, graph_schema)?;
+                // Apply property mapping to the filter predicate
+                let mapped_predicate = self.apply_property_mapping(filter.predicate.clone(), plan_ctx, graph_schema)?;
                 // call filter tagging and get new filter
-                let final_filter_opt = self.extract_filters(filter.predicate.clone(), plan_ctx)?;
+                let final_filter_opt = self.extract_filters(mapped_predicate, plan_ctx)?;
                 // if final filter has some predicate left then create new filter else remove the filter node and return the child input
                 if let Some(final_filter) = final_filter_opt {
                     Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
@@ -58,29 +64,53 @@ impl AnalyzerPass for FilterTagging {
                 }
             }
             LogicalPlan::Projection(projection) => {
-                let child_tf = self.analyze(projection.input.clone(), plan_ctx)?;
-                projection.rebuild_or_clone(child_tf, logical_plan.clone())
+                let child_tf = self.analyze_with_graph_schema(projection.input.clone(), plan_ctx, graph_schema)?;
+                // Apply property mapping to projection expressions
+                let mut mapped_items = Vec::new();
+                for item in &projection.items {
+                    let mapped_expr = self.apply_property_mapping(item.expression.clone(), plan_ctx, graph_schema)?;
+                    mapped_items.push(ProjectionItem {
+                        expression: mapped_expr,
+                        col_alias: item.col_alias.clone(),
+                    });
+                }
+                Transformed::Yes(Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
+                    input: child_tf.get_plan(),
+                    items: mapped_items,
+                })))
             }
             LogicalPlan::GroupBy(group_by) => {
-                let child_tf = self.analyze(group_by.input.clone(), plan_ctx)?;
+                let child_tf = self.analyze_with_graph_schema(group_by.input.clone(), plan_ctx, graph_schema)?;
                 group_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::OrderBy(order_by) => {
-                let child_tf = self.analyze(order_by.input.clone(), plan_ctx)?;
-                order_by.rebuild_or_clone(child_tf, logical_plan.clone())
+                let child_tf = self.analyze_with_graph_schema(order_by.input.clone(), plan_ctx, graph_schema)?;
+                // Apply property mapping to order by expressions
+                let mut mapped_items = Vec::new();
+                for item in &order_by.items {
+                    let mapped_expr = self.apply_property_mapping(item.expression.clone(), plan_ctx, graph_schema)?;
+                    mapped_items.push(crate::query_planner::logical_plan::OrderByItem {
+                        expression: mapped_expr,
+                        order: item.order.clone(),
+                    });
+                }
+                Transformed::Yes(Arc::new(LogicalPlan::OrderBy(crate::query_planner::logical_plan::OrderBy {
+                    input: child_tf.get_plan(),
+                    items: mapped_items,
+                })))
             }
             LogicalPlan::Skip(skip) => {
-                let child_tf = self.analyze(skip.input.clone(), plan_ctx)?;
+                let child_tf = self.analyze_with_graph_schema(skip.input.clone(), plan_ctx, graph_schema)?;
                 skip.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Limit(limit) => {
-                let child_tf = self.analyze(limit.input.clone(), plan_ctx)?;
+                let child_tf = self.analyze_with_graph_schema(limit.input.clone(), plan_ctx, graph_schema)?;
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Union(union) => {
                 let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
                 for input_plan in union.inputs.iter() {
-                    let child_tf = self.analyze(input_plan.clone(), plan_ctx)?;
+                    let child_tf = self.analyze_with_graph_schema(input_plan.clone(), plan_ctx, graph_schema)?;
                     inputs_tf.push(child_tf);
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
@@ -94,6 +124,83 @@ impl AnalyzerPass for FilterTagging {
 impl FilterTagging {
     pub fn new() -> Self {
         FilterTagging
+    }
+
+    /// Apply property mapping to a LogicalExpr, converting Cypher property names to database column names
+    pub fn apply_property_mapping(
+        &self,
+        expr: LogicalExpr,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<LogicalExpr> {
+        match expr {
+            LogicalExpr::PropertyAccessExp(property_access) => {
+                // Get the table context for this alias
+                let table_ctx = plan_ctx.get_table_ctx(&property_access.table_alias.0)
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::FilterTagging,
+                        source: e,
+                    })?;
+
+                // Get the label for this table
+                let label = table_ctx.get_label_opt()
+                    .ok_or_else(|| AnalyzerError::PropertyNotFound {
+                        entity_type: "node".to_string(),
+                        entity_name: property_access.table_alias.0.clone(),
+                        property: property_access.column.0.clone(),
+                    })?;
+
+                // Use view resolver to map the property
+                let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
+                let mapped_column = if table_ctx.is_relation() {
+                    view_resolver.resolve_relationship_property(&label, &property_access.column.0)
+                } else {
+                    view_resolver.resolve_node_property(&label, &property_access.column.0)
+                }?;
+
+                Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: property_access.table_alias,
+                    column: Column(mapped_column),
+                }))
+            }
+            LogicalExpr::OperatorApplicationExp(mut op) => {
+                // Recursively apply property mapping to operands
+                let mut mapped_operands = Vec::new();
+                for operand in op.operands {
+                    mapped_operands.push(self.apply_property_mapping(operand, plan_ctx, graph_schema)?);
+                }
+                op.operands = mapped_operands;
+                Ok(LogicalExpr::OperatorApplicationExp(op))
+            }
+            LogicalExpr::ScalarFnCall(mut fn_call) => {
+                // Recursively apply property mapping to function arguments
+                let mut mapped_args = Vec::new();
+                for arg in fn_call.args {
+                    mapped_args.push(self.apply_property_mapping(arg, plan_ctx, graph_schema)?);
+                }
+                fn_call.args = mapped_args;
+                Ok(LogicalExpr::ScalarFnCall(fn_call))
+            }
+            LogicalExpr::AggregateFnCall(mut agg_call) => {
+                // Recursively apply property mapping to aggregate function arguments
+                let mut mapped_args = Vec::new();
+                for arg in agg_call.args {
+                    mapped_args.push(self.apply_property_mapping(arg, plan_ctx, graph_schema)?);
+                }
+                agg_call.args = mapped_args;
+                Ok(LogicalExpr::AggregateFnCall(agg_call))
+            }
+            LogicalExpr::List(mut list) => {
+                // Recursively apply property mapping to list elements
+                let mut mapped_elements = Vec::new();
+                for element in list {
+                    mapped_elements.push(self.apply_property_mapping(element, plan_ctx, graph_schema)?);
+                }
+                Ok(LogicalExpr::List(mapped_elements))
+            }
+            // For other expression types, return as-is
+            other => Ok(other),
+        }
     }
 
     // If there is any filter on relationship then use edgelist of that relation.

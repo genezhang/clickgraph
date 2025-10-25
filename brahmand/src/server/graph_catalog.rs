@@ -388,6 +388,7 @@ async fn load_schema_and_config_from_yaml(config_path: &str) -> Result<(GraphSch
                     column: node_mapping.id_column.clone(),
                     dtype: "UInt32".to_string(), // Default type, could be made configurable
                 },
+                property_mappings: node_mapping.property_mappings.clone(),
             };
             nodes.insert(node_mapping.label.clone(), node_schema);
         }
@@ -417,6 +418,7 @@ async fn load_schema_and_config_from_yaml(config_path: &str) -> Result<(GraphSch
                 to_column: rel_mapping.to_column.clone(),
                 from_node_id_dtype: "UInt32".to_string(),
                 to_node_id_dtype: "UInt32".to_string(),
+                property_mappings: rel_mapping.property_mappings.clone(),
             };
             
             // Use the type_name from the mapping as the schema key (this is what Cypher queries use)

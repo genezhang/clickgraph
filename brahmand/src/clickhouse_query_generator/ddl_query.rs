@@ -197,6 +197,7 @@ fn generate_create_node_table_query(
         column_names,
         node_id: node_props.node_id,
         primary_keys: node_props.primary_keys,
+        property_mappings: std::collections::HashMap::new(), // DDL creation doesn't have property mappings
     };
 
     Ok((
@@ -277,6 +278,7 @@ fn generate_create_rel_table_query(
         to_column: format!("to_{}", to_node),
         from_node_id_dtype: from_table_schema.node_id.dtype.clone(),
         to_node_id_dtype: to_table_schema.node_id.dtype.clone(),
+        property_mappings: std::collections::HashMap::new(), // DDL creation doesn't have property mappings
     };
 
     graph_schema_elements.push(GraphSchemaElement::Rel(relationship_schema));
@@ -763,6 +765,7 @@ mod tests {
                     column: "user_id".to_string(),
                     dtype: "UInt64".to_string(),
                 },
+                property_mappings: HashMap::new(),
             },
         );
         nodes.insert(
@@ -775,6 +778,7 @@ mod tests {
                     column: "post_id".to_string(),
                     dtype: "UInt64".to_string(),
                 },
+                property_mappings: HashMap::new(),
             },
         );
         GraphSchema::build(1, nodes, HashMap::new(), HashMap::new())
