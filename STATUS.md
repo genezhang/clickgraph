@@ -228,6 +228,15 @@ Cypher Query → Parser → Query Planner → SQL Generator → ClickHouse → J
 - **Pattern matching approach**: Used safe pattern matching instead of unwrap() for filter combination logic
 - **Function signature updates**: Updated function signatures to propagate errors properly through the call stack
 
+### Oct 25, 2025 - TODO/FIXME Items Resolution Complete ✅
+- **Critical panic fixes**: Resolved all unimplemented!() calls causing runtime panics in expression processing
+- **LogicalExpr ToSql implementation**: Added complete SQL generation for all expression variants (AggregateFnCall, ScalarFnCall, PropertyAccessExp, OperatorApplicationExp, Case, InSubquery)
+- **RenderExpr Raw support**: Added Raw(String) variant and conversion logic for pre-formatted SQL expressions
+- **Expression utilities updated**: All RenderExpr utility functions now handle Raw expressions properly
+- **SQL generation fixed**: render_expr_to_sql_string functions updated in plan_builder.rs and cte_extraction.rs
+- **Zero regressions maintained**: All 312 tests passing (100% success rate) after fixes
+- **Improved reliability**: Eliminated panic points in core query processing, better error handling throughout expression pipeline
+
 ### Oct 25, 2025 - Expression Processing Utilities Complete ✅
 - **Common expression utilities extracted**: Created `expression_utils.rs` module with visitor pattern for RenderExpr tree traversal
 - **Code duplication eliminated**: Consolidated 4 duplicate `references_alias` implementations into single shared function
