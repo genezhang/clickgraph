@@ -8,6 +8,7 @@
 
 pub mod utils;
 
+pub mod config;
 pub mod graph_catalog;
 pub mod query_planner;
 pub mod render_plan;
