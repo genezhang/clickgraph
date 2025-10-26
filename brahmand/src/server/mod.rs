@@ -1,4 +1,4 @@
-use std::{env, sync::Arc};
+use std::sync::Arc;
 
 use axum::{Router, routing::{get, post}};
 use clickhouse::Client;
@@ -17,81 +17,13 @@ use crate::graph_catalog::{
     config::GraphViewConfig,
 };
 use bolt_protocol::{BoltServer, BoltConfig};
+use crate::config::{ServerConfig, CliConfig, ConfigError};
 
 pub mod bolt_protocol;
 mod clickhouse_client;
 pub mod graph_catalog;
 pub mod handlers;
 mod models;
-
-// Server configuration
-#[derive(Clone)]
-pub struct ServerConfig {
-    pub http_host: String,
-    pub http_port: u16,
-    pub bolt_host: String,
-    pub bolt_port: u16,
-    pub bolt_enabled: bool,
-    pub max_cte_depth: u32,
-    pub validate_schema: bool,
-    pub daemon: bool,
-}
-
-impl ServerConfig {
-    fn from_env() -> Self {
-        Self {
-            http_host: env::var("BRAHMAND_HOST").unwrap_or("0.0.0.0".to_string()),
-            http_port: env::var("BRAHMAND_PORT")
-                .unwrap_or("8080".to_string())
-                .parse()
-                .expect("Invalid HTTP port"),
-            bolt_host: env::var("BRAHMAND_BOLT_HOST").unwrap_or("0.0.0.0".to_string()),
-            bolt_port: env::var("BRAHMAND_BOLT_PORT")
-                .unwrap_or("7687".to_string())
-                .parse()
-                .expect("Invalid Bolt port"),
-            bolt_enabled: env::var("BRAHMAND_BOLT_ENABLED")
-                .unwrap_or("true".to_string())
-                .parse()
-                .unwrap_or(true),
-            max_cte_depth: env::var("BRAHMAND_MAX_CTE_DEPTH")
-                .unwrap_or("100".to_string())
-                .parse()
-                .unwrap_or(100),
-            validate_schema: env::var("BRAHMAND_VALIDATE_SCHEMA")
-                .unwrap_or("false".to_string())
-                .parse()
-                .unwrap_or(false),
-            daemon: false, // Environment-based config always runs in foreground
-        }
-    }
-    
-    /// Create config from command-line arguments with env variable fallbacks
-    pub fn from_args(cli_config: CliConfig) -> Self {
-        Self {
-            http_host: cli_config.http_host,
-            http_port: cli_config.http_port,
-            bolt_host: cli_config.bolt_host,
-            bolt_port: cli_config.bolt_port,
-            bolt_enabled: cli_config.bolt_enabled,
-            max_cte_depth: cli_config.max_cte_depth,
-            validate_schema: cli_config.validate_schema,
-            daemon: cli_config.daemon,
-        }
-    }
-}
-
-/// Configuration from CLI arguments
-pub struct CliConfig {
-    pub http_host: String,
-    pub http_port: u16,
-    pub bolt_host: String,
-    pub bolt_port: u16,
-    pub bolt_enabled: bool,
-    pub max_cte_depth: u32,
-    pub validate_schema: bool,
-    pub daemon: bool,
-}
 
 // #[derive(Clone)]
 struct AppState {
@@ -104,10 +36,16 @@ pub static GLOBAL_VIEW_CONFIG: OnceCell<RwLock<GraphViewConfig>> = OnceCell::con
 
 pub async fn run() {
     dotenv().ok();
-    
+
     // Load server configuration from environment variables
-    let config = ServerConfig::from_env();
-    
+    let config = match ServerConfig::from_env() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Configuration error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
     run_with_config(config).await;
 }
 
@@ -142,7 +80,7 @@ pub async fn run_with_config(config: ServerConfig) {
     };
 
     // Initialize schema with proper error handling
-    if let Err(e) = graph_catalog::initialize_global_schema(client_opt, config.validate_schema).await {
+    if let Err(e) = graph_catalog::initialize_global_schema(client_opt.clone(), config.validate_schema).await {
         eprintln!("✗ Failed to initialize ClickGraph: {}", e);
         eprintln!("  Server cannot start without proper schema initialization.");
         std::process::exit(1);
@@ -150,14 +88,15 @@ pub async fn run_with_config(config: ServerConfig) {
 
     println!("GLOBAL_GRAPH_SCHEMA initialized: {:?}", GLOBAL_GRAPH_SCHEMA.get().is_some());
 
-    // Disabled background schema monitoring for now to allow server to run stably
-    // TODO: Fix schema monitoring to not cause server exit
-    // let schema_client = client.clone();
-    // tokio::spawn(async move {
-    //     if let Err(e) = graph_catalog::monitor_schema_updates(schema_client).await {
-    //         eprintln!("Error in schema monitor: {}", e);
-    //     }
-    // });
+    // Start background schema monitoring
+    if let Some(schema_client) = client_opt {
+        tokio::spawn(async move {
+            println!("Starting background schema monitoring (checks every 60 seconds)");
+            graph_catalog::monitor_schema_updates(schema_client).await;
+        });
+    } else {
+        println!("Schema monitoring disabled: No ClickHouse client available");
+    }
 
     // Start HTTP server
     let http_bind_address = format!("{}:{}", config.http_host, config.http_port);

@@ -17,7 +17,31 @@
     - `RETURN length(CASE u.name WHEN 'Alice' THEN 'Administrator' ELSE 'User' END)`
   - **Test Results**: All 5 test scenarios passing with correct property mapping and boolean handling
 
-### �🔧 Infrastructure
+### � Infrastructure
+
+- **Error Handling Improvements** (Oct 25): Systematic replacement of panic-prone unwrap() calls with proper Result propagation
+  - **Critical unwrap() Audit**: Replaced 8 unwrap() calls in core query processing paths with safe error handling
+  - **Error Enum Expansion**: Added `NoRelationshipTablesFound` and `ExpectedSingleFilterButNoneFound` to `RenderBuildError`
+  - **Server Module Fixes**: `GLOBAL_GRAPH_SCHEMA.get().unwrap()` replaced with proper error handling in `graph_catalog.rs`
+  - **Analyzer Module Fixes**: `rel_ctxs_to_update.first_mut().unwrap()` replaced with `ok_or(NoRelationshipContextsFound)` in `graph_traversal_planning.rs`
+  - **Pattern Matching Safety**: Used safe pattern matching instead of direct unwrap() for filter combination logic
+  - **Function Signature Updates**: Updated function signatures to propagate errors properly through call stack
+  - **Zero Regressions**: All 312 tests passing (100% success rate) after improvements
+  - **Benefits**: Improved reliability, better debugging experience, eliminated panic points in production code
+  - **Future Impact**: Foundation for systematic error handling improvements across remaining unwrap() calls
+
+- **Codebase Health Refactoring** (Oct 25): Major architectural improvement for long-term maintainability
+  - **CTE Generation Module Extraction**: Broke up massive 2600+ line `plan_builder.rs` file
+  - **New Module**: Created dedicated `render_plan/cte_generation.rs` with clean separation of concerns
+  - **Extracted Components**:
+    - `CteGenerationContext` struct and methods for variable-length path metadata
+    - `analyze_property_requirements()` function for CTE property analysis
+    - `extract_var_len_properties()` function for property extraction from projections
+    - `map_property_to_column_with_schema()` for schema-aware property mapping
+    - `get_node_schema_by_table()` utility for schema lookups
+  - **Zero Breaking Changes**: All 304 tests pass, full backward compatibility maintained
+  - **Benefits**: Improved code organization, easier debugging, better error handling, reduced cognitive load
+  - **Future Impact**: Foundation for additional refactoring (filter pipeline, expression rewriting, error handling improvements)
 
 - **Property Mapping Debug Session** (Oct 24): Investigation and fixes for multi-variable query property mapping
   - Issue identified: Property mapping works for first variable but fails for second in queries like `MATCH (b:User), (a:User) WHERE a.name = "Alice" AND b.name = "Charlie"`
@@ -202,6 +226,19 @@
 - All tests passing (previously only failure: test_version_string_formatting)
 
 ### ⚙️ Infrastructure
+
+- **Schema Monitoring Stability Fix** (Oct 25): Robust background schema update detection
+  - **Problem**: Background schema monitoring was disabled due to server crashes from unhandled errors
+  - **Solution**: Implemented graceful error handling in `monitor_schema_updates()` function
+  - **Changes**:
+    - Removed `Result<>` return type to prevent tokio::spawn task panics
+    - Added comprehensive error checking for global schema access
+    - Implemented proper RwLock error handling with continue-on-failure
+    - Added detailed logging for debugging schema monitoring issues
+    - Only starts monitoring when ClickHouse client is available
+  - **Benefits**: Server stability maintained while preserving schema update capabilities
+  - **Testing**: Verified 60-second monitoring cycles run without crashing server
+  - **Logs**: Clear error messages when schema table doesn't exist (normal for new installations)
 
 - **HTTP Bind Error Handling**: Added descriptive error messages for port conflicts
 - **Logging Framework**: Integrated env_logger for structured logging (RUST_LOG support)

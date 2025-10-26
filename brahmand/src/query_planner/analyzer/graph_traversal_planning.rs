@@ -5,7 +5,7 @@ use crate::{
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
-            errors::Pass,
+            errors::{AnalyzerError, Pass},
             graph_context::{self, GraphContext},
         },
         logical_expr::{Column, ColumnAlias, Direction, InSubquery, LogicalExpr, PropertyAccess},
@@ -347,7 +347,7 @@ impl GraphTRaversalPlanning {
             };
             ctxs_to_update.push(right_ctx_to_update);
 
-            rel_ctxs_to_update.first_mut().unwrap().insubquery = None;
+            rel_ctxs_to_update.first_mut().ok_or(AnalyzerError::NoRelationshipContextsFound { pass: Pass::GraphTraversalPlanning })?.insubquery = None;
 
             ctxs_to_update.append(&mut rel_ctxs_to_update);
 

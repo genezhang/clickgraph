@@ -7,6 +7,7 @@ mod graph_catalog;
 mod query_planner;
 pub mod render_plan;
 mod server;
+mod config;
 
 /// ClickGraph - A graph analysis layer for ClickHouse
 #[derive(Parser)]
@@ -45,9 +46,9 @@ struct Cli {
     daemon: bool,
 }
 
-impl From<Cli> for server::ServerConfig {
+impl From<Cli> for config::CliConfig {
     fn from(cli: Cli) -> Self {
-        server::ServerConfig::from_args(server::CliConfig {
+        config::CliConfig {
             http_host: cli.http_host,
             http_port: cli.http_port,
             bolt_host: cli.bolt_host,
@@ -56,7 +57,7 @@ impl From<Cli> for server::ServerConfig {
             max_cte_depth: cli.max_cte_depth,
             validate_schema: cli.validate_schema,
             daemon: cli.daemon,
-        })
+        }
     }
 }
 
@@ -65,10 +66,20 @@ async fn main() {
     // Initialize logger - defaults to INFO level, can be overridden with RUST_LOG env var
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
         .init();
-    
+
     let cli = Cli::parse();
-    
+
     println!("\nClickGraph v{} (fork of Brahmand)\n", env!("CARGO_PKG_VERSION"));
-    
-    server::run_with_config(cli.into()).await;
+
+    // Create configuration from CLI args
+    let cli_config: config::CliConfig = cli.into();
+    let config = match config::ServerConfig::from_cli(cli_config) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Configuration error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    server::run_with_config(config).await;
 }

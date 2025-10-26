@@ -23,6 +23,7 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 log = "0.4"
 env_logger = "0.11"
+validator = { version = "0.18", features = ["derive"] }
 
 [dev-dependencies]
 clickhouse = { version = "0.13.2", features = ["test-util"] }
@@ -31,3 +32,15 @@ tokio-test = "0.4"
 tempfile = "3.8"
 async-trait = "0.1"
 anyhow = "1.0"
+
+[[test]]
+name = "unit"
+path = "tests/unit/mod.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/mod.rs"

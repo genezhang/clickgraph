@@ -87,4 +87,7 @@ pub enum AnalyzerError {
 
     #[error("Table '{0}' not found in schema")]
     TableNotFound(String),
+
+    #[error(" {pass}: No relationship contexts found for edge list traversal")]
+    NoRelationshipContextsFound { pass: Pass },
 }

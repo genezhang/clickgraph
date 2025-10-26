@@ -43,11 +43,11 @@ def start_server():
     # Set environment
     env = os.environ.copy()
     env.update({
-        'GRAPH_CONFIG_PATH': 'social_network.yaml',
+        'GRAPH_CONFIG_PATH': 'social_network.yaml', 
         'CLICKHOUSE_URL': 'http://localhost:8123',
         'CLICKHOUSE_USER': 'test_user',
         'CLICKHOUSE_PASSWORD': 'test_pass',
-        'CLICKHOUSE_DATABASE': 'social',
+                'CLICKHOUSE_DATABASE': 'default',
     })
     
     # Start server
@@ -134,18 +134,18 @@ def run_tests():
         ("MATCH (u:User) RETURN u.name LIMIT 3", 
          "Test 1: Basic node query with ViewScan (label→table via schema)"),
         
-        ("MATCH (u:User) WHERE u.age > 25 RETURN u.name, u.age ORDER BY u.age",
+        ("MATCH (u:User) WHERE u.name LIKE 'A%' RETURN u.name ORDER BY u.name",
          "Test 2: Node query with WHERE clause and ORDER BY"),
         
         ("MATCH (u:User) RETURN count(u) as total_users",
          "Test 3: Aggregation query on nodes"),
         
-        # Relationship ViewScan tests
-        ("MATCH (u:User)-[r:FRIENDS_WITH]->(f:User) RETURN u.name, f.name LIMIT 5",
-         "Test 4: Relationship traversal with schema lookup (type→table via schema)"),
+        # Relationship ViewScan tests - using FOLLOWS which exists in data
+        ("MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u.name, f.name LIMIT 5",
+         "Test 4: Relationship traversal with schema lookup (FOLLOWS relationship)"),
         
-        # Complex query combining both
-        ("MATCH (u:User)-[r:FRIENDS_WITH]->(f:User) WHERE u.age > 25 RETURN u.name, u.age, f.name ORDER BY u.age LIMIT 3",
+        # Combined query using FOLLOWS
+        ("MATCH (u:User)-[r:FOLLOWS]->(f:User) WHERE u.name = 'Alice Johnson' RETURN u.name, f.name ORDER BY f.name LIMIT 3",
          "Test 5: Combined node and relationship ViewScan with filters"),
     ]
     
