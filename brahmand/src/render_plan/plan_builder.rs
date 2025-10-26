@@ -384,7 +384,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 
                 // For now, use the first table for single-table logic
                 // TODO: Implement UNION logic for multiple tables
-                let mut rel_table = rel_tables.first().unwrap().clone();
+                let mut rel_table = rel_tables.first().ok_or(RenderBuildError::NoRelationshipTablesFound)?.clone();
                 
                 // Extract ID columns
                 let start_id_col = extract_id_column(&graph_rel.left)
@@ -743,7 +743,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 if all_filters.is_empty() {
                     None
                 } else if all_filters.len() == 1 {
-                    Some(all_filters.into_iter().next().unwrap())
+                    Some(all_filters.into_iter().next().ok_or(RenderBuildError::ExpectedSingleFilterButNoneFound)?)
                 } else {
                     Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
                         operator: Operator::And,
@@ -1062,10 +1062,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 let final_filters_opt = self.extract_final_filters()?;
 
                 let final_combined_filters =
-                    if last_node_filters_opt.is_some() && final_filters_opt.is_some() {
+                    if let (Some(final_filters), Some(last_node_filters)) = (&final_filters_opt, &last_node_filters_opt) {
                         Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
                             operator: Operator::And,
-                            operands: vec![final_filters_opt.unwrap(), last_node_filters_opt.unwrap()],
+                            operands: vec![final_filters.clone(), last_node_filters.clone()],
                         }))
                     } else if final_filters_opt.is_some() {
                         final_filters_opt

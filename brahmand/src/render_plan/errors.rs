@@ -13,4 +13,10 @@ pub enum RenderBuildError {
 
     #[error("Unsupported feature: {0}")]
     UnsupportedFeature(String),
+
+    #[error("No relationship tables found for relationship pattern")]
+    NoRelationshipTablesFound,
+
+    #[error("Expected exactly one filter but found none")]
+    ExpectedSingleFilterButNoneFound,
 }

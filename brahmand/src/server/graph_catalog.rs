@@ -269,7 +269,8 @@ pub async fn add_to_schema(
     clickhouse_client: Client,
     graph_schema_elements: Vec<GraphSchemaElement>,
 ) -> Result<(), String> {
-    let mut graph_schema = GLOBAL_GRAPH_SCHEMA.get().unwrap().write().await;
+    let global_schema = GLOBAL_GRAPH_SCHEMA.get().ok_or_else(|| "Global graph schema not initialized".to_string())?;
+    let mut graph_schema = global_schema.write().await;
 
     for element in graph_schema_elements {
         match element {
