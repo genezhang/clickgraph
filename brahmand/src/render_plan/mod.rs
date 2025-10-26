@@ -3,6 +3,7 @@ mod from_table;
 mod cte_generation;
 mod filter_pipeline;
 mod cte_extraction;
+mod expression_utils;
 
 use errors::RenderBuildError;
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};

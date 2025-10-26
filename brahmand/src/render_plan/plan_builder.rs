@@ -18,9 +18,10 @@ use super::{
 use super::cte_generation::{analyze_property_requirements, map_property_to_column_with_schema, extract_var_len_properties};
 use super::filter_pipeline::{
     categorize_filters, clean_last_node_filters, extract_start_end_filters, filter_expr_to_sql,
-    references_alias, render_end_filter_to_column_alias, rewrite_end_filters_for_variable_length_cte,
+    render_end_filter_to_column_alias, rewrite_end_filters_for_variable_length_cte,
     rewrite_expr_for_outer_query, rewrite_expr_for_var_len_cte, CategorizedFilters,
 };
+use super::expression_utils::references_alias;
 use crate::render_plan::cte_extraction::extract_ctes_with_context;
 use crate::render_plan::cte_extraction::{label_to_table_name, rel_types_to_table_names, rel_type_to_table_name, table_to_id_column, extract_relationship_columns, RelationshipColumns, extract_node_label_from_viewscan, has_variable_length_rel, get_path_variable};
 

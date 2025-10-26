@@ -1,6 +1,7 @@
 use super::render_expr::{
     AggregateFnCall, Column, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
 };
+use super::expression_utils::references_alias;
 
 /// Represents categorized filters for different parts of a query
 #[derive(Debug, Clone)]
@@ -194,16 +195,6 @@ pub fn extract_start_end_filters(
                 (None, None, Some(filter_expr.clone()))
             }
         }
-    }
-}
-
-/// Check if a filter expression references a specific alias
-pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
-    match expr {
-        RenderExpr::PropertyAccessExp(prop) => prop.table_alias.0 == alias,
-        RenderExpr::OperatorApplicationExp(op_app) => op_app.operands.iter().any(|op| references_alias(op, alias)),
-        RenderExpr::ScalarFnCall(fn_call) => fn_call.args.iter().any(|arg| references_alias(arg, alias)),
-        _ => false,
     }
 }
 

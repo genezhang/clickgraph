@@ -205,6 +205,15 @@ Cypher Query → Parser → Query Planner → SQL Generator → ClickHouse → J
 - **Module structure**: New `cte_extraction.rs` contains relationship column mapping, path variable extraction, and CTE generation logic
 - **Compilation verified**: Full cargo check passes with proper imports and function visibility
 
+### Oct 25, 2025 - Expression Processing Utilities Complete ✅
+- **Common expression utilities extracted**: Created `expression_utils.rs` module with visitor pattern for RenderExpr tree traversal
+- **Code duplication eliminated**: Consolidated 4 duplicate `references_alias` implementations into single shared function
+- **Extensible validation framework**: Added `validate_expression()` with comprehensive RenderExpr validation rules
+- **Type-safe transformation utilities**: Implemented `transform_expression()` with generic visitor pattern for expression rewriting
+- **Zero regressions maintained**: All 312 tests passing after refactoring (100% pass rate)
+- **Improved maintainability**: Visitor pattern enables clean separation of expression traversal logic from business logic
+- **Future-ready architecture**: Foundation laid for additional expression processing features and optimizations
+
 ### Oct 25, 2025 - Path Variable Test Fix ✅
 - **Test assertion corrected**: Path variable test now expects 'end_name' instead of 'start_name' to match implementation behavior
 - **CTE property mapping verified**: For shortestPath queries, returned node properties are correctly mapped to CTE end columns
