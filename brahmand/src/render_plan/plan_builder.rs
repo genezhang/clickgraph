@@ -64,6 +64,7 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
             super::render_expr::Literal::Boolean(b) => b.to_string(),
             super::render_expr::Literal::Null => "NULL".to_string(),
         },
+        RenderExpr::Raw(raw) => raw.clone(),
         RenderExpr::PropertyAccessExp(prop) => {
             // Convert property access to table.column format
             // Apply alias mapping to convert Cypher aliases to CTE aliases

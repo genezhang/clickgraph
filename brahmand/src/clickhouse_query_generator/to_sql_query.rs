@@ -323,6 +323,7 @@ impl RenderExpr {
                 Literal::Null => "NULL".into(),
             },
             RenderExpr::Parameter(name) => name.clone(),
+            RenderExpr::Raw(raw) => raw.clone(),
             RenderExpr::Star => "*".into(),
             RenderExpr::TableAlias(TableAlias(a))
             | RenderExpr::ColumnAlias(ColumnAlias(a)) => a.clone(),

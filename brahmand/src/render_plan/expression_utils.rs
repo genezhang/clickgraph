@@ -71,6 +71,7 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
         RenderExpr::InSubquery(subquery) => references_alias(&subquery.expr, alias),
         // Simple expressions that don't contain aliases
         RenderExpr::Literal(_)
+        | RenderExpr::Raw(_)
         | RenderExpr::Star
         | RenderExpr::TableAlias(_)
         | RenderExpr::ColumnAlias(_)
@@ -122,6 +123,7 @@ pub fn extract_table_aliases(expr: &RenderExpr) -> Vec<String> {
             }
             // Simple expressions that don't contain aliases
             RenderExpr::Literal(_)
+            | RenderExpr::Raw(_)
             | RenderExpr::Star
             | RenderExpr::TableAlias(_)
             | RenderExpr::ColumnAlias(_)
@@ -236,6 +238,7 @@ pub fn validate_expression(expr: &RenderExpr) -> Result<(), RenderBuildError> {
         }
         // Simple expressions that are always valid
         RenderExpr::Literal(_)
+        | RenderExpr::Raw(_)
         | RenderExpr::Star
         | RenderExpr::TableAlias(_)
         | RenderExpr::ColumnAlias(_)
@@ -336,6 +339,7 @@ where
         }
         // Leaf nodes that can't be transformed further
         RenderExpr::Literal(_)
+        | RenderExpr::Raw(_)
         | RenderExpr::Star
         | RenderExpr::TableAlias(_)
         | RenderExpr::ColumnAlias(_)
