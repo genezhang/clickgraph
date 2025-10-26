@@ -1,6 +1,8 @@
 mod view_table_ref;
 mod from_table;
 mod cte_generation;
+mod filter_pipeline;
+mod cte_extraction;
 
 use errors::RenderBuildError;
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
@@ -8,6 +10,7 @@ use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
 pub use view_table_ref::ViewTableRef;
 pub use from_table::FromTable;
 pub use cte_generation::CteGenerationContext;
+pub use filter_pipeline::CategorizedFilters;
 
 use crate::query_planner::logical_plan::{
     Join as LogicalJoin, JoinType as LogicalJoinType, OrderByItem as LogicalOrderByItem,
