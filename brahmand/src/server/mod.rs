@@ -80,7 +80,7 @@ pub async fn run_with_config(config: ServerConfig) {
     };
 
     // Initialize schema with proper error handling
-    if let Err(e) = graph_catalog::initialize_global_schema(client_opt, config.validate_schema).await {
+    if let Err(e) = graph_catalog::initialize_global_schema(client_opt.clone(), config.validate_schema).await {
         eprintln!("✗ Failed to initialize ClickGraph: {}", e);
         eprintln!("  Server cannot start without proper schema initialization.");
         std::process::exit(1);
@@ -88,14 +88,15 @@ pub async fn run_with_config(config: ServerConfig) {
 
     println!("GLOBAL_GRAPH_SCHEMA initialized: {:?}", GLOBAL_GRAPH_SCHEMA.get().is_some());
 
-    // Disabled background schema monitoring for now to allow server to run stably
-    // TODO: Fix schema monitoring to not cause server exit
-    // let schema_client = client.clone();
-    // tokio::spawn(async move {
-    //     if let Err(e) = graph_catalog::monitor_schema_updates(schema_client).await {
-    //         eprintln!("Error in schema monitor: {}", e);
-    //     }
-    // });
+    // Start background schema monitoring
+    if let Some(schema_client) = client_opt {
+        tokio::spawn(async move {
+            println!("Starting background schema monitoring (checks every 60 seconds)");
+            graph_catalog::monitor_schema_updates(schema_client).await;
+        });
+    } else {
+        println!("Schema monitoring disabled: No ClickHouse client available");
+    }
 
     // Start HTTP server
     let http_bind_address = format!("{}:{}", config.http_host, config.http_port);

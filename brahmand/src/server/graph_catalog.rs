@@ -316,42 +316,44 @@ pub async fn add_to_schema(
 // This function periodically checks for schema updates.
 // This will be helpful in distributed environment where schema has changed.
 // In distributed environment, I think Keeper Map engine makes sense.
-pub async fn monitor_schema_updates(ch_client: Client) -> Result<(), String> {
+pub async fn monitor_schema_updates(ch_client: Client) {
     // TODO Currently checking after every min. Make it an option to set by user.
     let mut ticker = interval(Duration::from_secs(60));
 
     loop {
         ticker.tick().await;
 
-        // get in memory data for the graph schema
-        let in_mem_schema_guard = GLOBAL_GRAPH_SCHEMA
-            .get()
-            .expect("Global schema not initialized")
-            .read()
-            .await;
-
-        let mem_version = in_mem_schema_guard.get_version();
-
-        // Fetch the schema from ClickHouse.
-        let remote_schema = match get_graph_catalog(ch_client.clone()).await {
-            Ok(schema) => schema,
-            Err(err) => {
-                eprintln!("Error fetching remote schema: {}", err);
+        // Check if global schema is initialized before proceeding
+        let global_schema = match GLOBAL_GRAPH_SCHEMA.get() {
+            Some(schema) => schema,
+            None => {
+                eprintln!("Schema monitor: Global schema not initialized, skipping check");
                 continue;
             }
         };
 
-        // Compare versions. If they differ, update the global schema.
+        // Get current in-memory schema version
+        let mem_version = {
+            let in_mem_schema_guard = global_schema.read().await;
+            in_mem_schema_guard.get_version()
+        };
+
+        // Fetch the schema from ClickHouse
+        let remote_schema = match get_graph_catalog(ch_client.clone()).await {
+            Ok(schema) => schema,
+            Err(err) => {
+                eprintln!("Schema monitor: Error fetching remote schema: {}", err);
+                continue;
+            }
+        };
+
+        // Compare versions and update if needed
         if remote_schema.get_version() != mem_version {
-            let mut schema_guard = GLOBAL_GRAPH_SCHEMA
-                .get()
-                .expect("Global schema not initialized")
-                .write()
-                .await;
+            let mut schema_guard = global_schema.write().await;
             *schema_guard = remote_schema.clone();
 
             println!(
-                "Global schema updated from version {} to {}",
+                "✓ Schema monitor: Global schema updated from version {} to {}",
                 mem_version,
                 remote_schema.get_version()
             );

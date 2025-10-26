@@ -216,6 +216,19 @@
 
 ### ⚙️ Infrastructure
 
+- **Schema Monitoring Stability Fix** (Oct 25): Robust background schema update detection
+  - **Problem**: Background schema monitoring was disabled due to server crashes from unhandled errors
+  - **Solution**: Implemented graceful error handling in `monitor_schema_updates()` function
+  - **Changes**:
+    - Removed `Result<>` return type to prevent tokio::spawn task panics
+    - Added comprehensive error checking for global schema access
+    - Implemented proper RwLock error handling with continue-on-failure
+    - Added detailed logging for debugging schema monitoring issues
+    - Only starts monitoring when ClickHouse client is available
+  - **Benefits**: Server stability maintained while preserving schema update capabilities
+  - **Testing**: Verified 60-second monitoring cycles run without crashing server
+  - **Logs**: Clear error messages when schema table doesn't exist (normal for new installations)
+
 - **HTTP Bind Error Handling**: Added descriptive error messages for port conflicts
 - **Logging Framework**: Integrated env_logger for structured logging (RUST_LOG support)
 - **Development Tools**: Batch files and PowerShell scripts for server startup

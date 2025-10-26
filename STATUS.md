@@ -48,6 +48,12 @@
 - **HTTP API**: RESTful endpoints with Axum (all platforms)
 - **Bolt Protocol**: Neo4j wire protocol v4.4
 - **YAML Configuration**: View-based schema mapping
+- **Schema Monitoring**: Background schema update detection with graceful error handling ✅ **[COMPLETED: Oct 25, 2025]**
+  - 60-second interval checks for schema changes in ClickHouse
+  - Automatic global schema refresh when changes detected
+  - Graceful error handling prevents server crashes
+  - Only runs when ClickHouse client is available
+  - Comprehensive logging for debugging
 - **Codebase Health**: Systematic refactoring for maintainability ✅ **[COMPLETED: Oct 25, 2025]**
   - **Filter Pipeline Module**: Extracted filter processing logic into dedicated `filter_pipeline.rs` module ✅ **[COMPLETED: Oct 25, 2025]**
   - **CTE Extraction Module**: Extracted 250-line `extract_ctes_with_context` function into `cte_extraction.rs` module ✅ **[COMPLETED: Oct 25, 2025]**
