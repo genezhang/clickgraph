@@ -234,6 +234,7 @@ Cypher Query → Parser → Query Planner → SQL Generator → ClickHouse → J
 - **RenderExpr Raw support**: Added Raw(String) variant and conversion logic for pre-formatted SQL expressions
 - **Expression utilities updated**: All RenderExpr utility functions now handle Raw expressions properly
 - **SQL generation fixed**: render_expr_to_sql_string functions updated in plan_builder.rs and cte_extraction.rs
+- **DDL parser TODOs**: Marked as out-of-scope (upstream code, ClickGraph is read-only engine)
 - **Zero regressions maintained**: All 312 tests passing (100% success rate) after fixes
 - **Improved reliability**: Eliminated panic points in core query processing, better error handling throughout expression pipeline
 
