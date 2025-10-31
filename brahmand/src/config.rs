@@ -72,13 +72,13 @@ impl ServerConfig {
     /// Create configuration from environment variables with validation
     pub fn from_env() -> Result<Self, ConfigError> {
         let config = Self {
-            http_host: env::var("BRAHMAND_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
-            http_port: parse_env_var("BRAHMAND_PORT", "8080")?,
-            bolt_host: env::var("BRAHMAND_BOLT_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
-            bolt_port: parse_env_var("BRAHMAND_BOLT_PORT", "7687")?,
-            bolt_enabled: parse_env_var("BRAHMAND_BOLT_ENABLED", "true")?,
-            max_cte_depth: parse_env_var("BRAHMAND_MAX_CTE_DEPTH", "100")?,
-            validate_schema: parse_env_var("BRAHMAND_VALIDATE_SCHEMA", "false")?,
+            http_host: env::var("CLICKGRAPH_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
+            http_port: parse_env_var("CLICKGRAPH_PORT", "8080")?,
+            bolt_host: env::var("CLICKGRAPH_BOLT_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
+            bolt_port: parse_env_var("CLICKGRAPH_BOLT_PORT", "7687")?,
+            bolt_enabled: parse_env_var("CLICKGRAPH_BOLT_ENABLED", "true")?,
+            max_cte_depth: parse_env_var("CLICKGRAPH_MAX_CTE_DEPTH", "100")?,
+            validate_schema: parse_env_var("CLICKGRAPH_VALIDATE_SCHEMA", "false")?,
             daemon: false, // Environment-based config always runs in foreground
         };
 

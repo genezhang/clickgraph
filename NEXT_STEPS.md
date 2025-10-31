@@ -146,7 +146,7 @@
 
 **Implementation**:
 - CLI flag: `--validate-schema` (opt-in, defaults to disabled for performance)
-- Environment variable: `BRAHMAND_VALIDATE_SCHEMA=true`
+- Environment variable: `CLICKGRAPH_VALIDATE_SCHEMA=true`
 - Validation scope: Table existence, column mappings, ID column types, relationship columns
 - Performance: Minimal impact (4-6 cached system.columns queries)
 - Error handling: Clear, actionable error messages
@@ -159,7 +159,7 @@
 
 **Testing Status**:
 - ✅ CLI flag integration: `--validate-schema` appears in help output
-- ✅ Environment variable support: `BRAHMAND_VALIDATE_SCHEMA`
+- ✅ Environment variable support: `CLICKGRAPH_VALIDATE_SCHEMA`
 - ✅ Validation logic: Table/column existence, type checking
 - ✅ Error messages: Clear feedback for misconfigurations
 - ✅ Performance: No impact when disabled (default)

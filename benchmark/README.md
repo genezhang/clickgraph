@@ -21,7 +21,7 @@ benchmark/
    docker-compose up -d
 
    # Start ClickGraph server
-   cargo run --bin brahmand
+   cargo run --bin clickgraph
    ```
 
 2. **Generate test data**:

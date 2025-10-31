@@ -97,11 +97,11 @@ export CLICKHOUSE_PASSWORD="test_pass"
 export CLICKHOUSE_DATABASE="brahmand"
 
 # Server configuration (optional)
-export BRAHMAND_HOST="0.0.0.0"              # HTTP host
-export BRAHMAND_PORT="8080"                 # HTTP port
-export BRAHMAND_BOLT_HOST="0.0.0.0"         # Bolt host
-export BRAHMAND_BOLT_PORT="7687"            # Bolt port
-export BRAHMAND_BOLT_ENABLED="true"         # Enable/disable Bolt
+export CLICKGRAPH_HOST="0.0.0.0"              # HTTP host
+export CLICKGRAPH_PORT="8080"                 # HTTP port
+export CLICKGRAPH_BOLT_HOST="0.0.0.0"         # Bolt host
+export CLICKGRAPH_BOLT_PORT="7687"            # Bolt port
+export CLICKGRAPH_BOLT_ENABLED="true"         # Enable/disable Bolt
 ```
 
 **Note**: Command-line arguments take precedence over environment variables.

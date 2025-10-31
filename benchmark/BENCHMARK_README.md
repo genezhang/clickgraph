@@ -279,7 +279,7 @@ def get_custom_queries(self):
 Enable detailed logging for performance analysis:
 
 ```bash
-RUST_LOG=debug ./target/release/brahmand
+RUST_LOG=debug ./target/release/clickgraph
 ```
 
 ### Comparative Benchmarks
@@ -306,7 +306,7 @@ To add new benchmark queries or datasets:
 ```
 ❌ Cannot connect to server at http://localhost:8080
 ```
-- Ensure ClickGraph is running: `cargo run --bin brahmand`
+- Ensure ClickGraph is running: `cargo run --bin clickgraph`
 - Check server logs for startup errors
 - Verify port 8080 is not in use
 

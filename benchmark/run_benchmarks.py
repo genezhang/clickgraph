@@ -27,35 +27,35 @@ class BenchmarkRunner:
 
     def run_command(self, cmd: str, description: str = "") -> bool:
         """Run a command and return success status."""
-        print(f"🔧 {description}")
+        print(f"[EXEC] {description}")
         print(f"   $ {cmd}")
 
         try:
             result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
-            print("   ✅ Success")
+            print("   [SUCCESS]")
             return True
         except subprocess.CalledProcessError as e:
-            print(f"   ❌ Failed: {e}")
+            print(f"   [ERROR] Failed: {e}")
             print(f"   Error output: {e.stderr}")
             return False
 
     def setup_data(self, dataset: str = "social", size: str = "small") -> bool:
         """Set up benchmark data."""
-        print(f"📊 Setting up {dataset} dataset ({size})...")
+        print(f"[INFO] Setting up {dataset} dataset ({size})...")
 
-        cmd = f"python setup_benchmark_data.py --dataset {dataset} --size {size}"
+        cmd = f"python benchmark/setup_benchmark_data.py --dataset {dataset} --size {size}"
         return self.run_command(cmd, f"Setting up {dataset} {size} dataset")
 
     def run_benchmark(self, dataset: str, queries: str, iterations: int, output_file: str) -> bool:
         """Run a single benchmark configuration."""
-        print(f"🏃 Running {dataset} benchmark ({queries})...")
+        print(f"[RUN] Running {dataset} benchmark ({queries})...")
 
-        cmd = f"python benchmark.py --dataset {dataset} --queries {queries} --iterations {iterations} --output {output_file}"
+        cmd = f"python benchmark/benchmark.py --dataset {dataset} --queries {queries} --iterations {iterations} --output {output_file}"
         return self.run_command(cmd, f"Benchmarking {dataset} with {queries} queries")
 
     def run_default_suite(self) -> bool:
         """Run the default benchmark suite."""
-        print("🚀 Running Default Benchmark Suite")
+        print("[START] Running Default Benchmark Suite")
         print("=" * 50)
 
         success = True
@@ -83,7 +83,7 @@ class BenchmarkRunner:
 
     def run_comprehensive_suite(self) -> bool:
         """Run comprehensive benchmark suite with all configurations."""
-        print("🚀 Running Comprehensive Benchmark Suite")
+        print("[START] Running Comprehensive Benchmark Suite")
         print("=" * 50)
 
         success = True
@@ -106,7 +106,7 @@ class BenchmarkRunner:
 
     def run_quick_validation(self) -> bool:
         """Run quick validation benchmark."""
-        print("⚡ Running Quick Validation")
+        print("[QUICK] Running Quick Validation")
         print("=" * 30)
 
         # Setup minimal data
@@ -121,7 +121,7 @@ class BenchmarkRunner:
 
     def run_comparison_suite(self) -> bool:
         """Run comparative analysis between query types."""
-        print("📊 Running Query Type Comparison")
+        print("[INFO] Running Query Type Comparison")
         print("=" * 35)
 
         success = True
@@ -145,7 +145,7 @@ class BenchmarkRunner:
 
     def generate_comparison_report(self, timestamp: str):
         """Generate a comparison report across query types."""
-        print("📈 Generating comparison report...")
+        print("[REPORT] Generating comparison report...")
 
         results = {}
         for query_type in ["simple", "traversal", "aggregation", "variable_length"]:
@@ -155,7 +155,7 @@ class BenchmarkRunner:
                     results[query_type] = json.load(f)
 
         if not results:
-            print("❌ No result files found for comparison")
+            print("[ERROR] No result files found for comparison")
             return
 
         # Generate summary
@@ -189,10 +189,10 @@ class BenchmarkRunner:
         with open(report_file, 'w') as f:
             json.dump(comparison, f, indent=2)
 
-        print(f"✅ Comparison report saved: {report_file}")
+        print(f"[SUCCESS] Comparison report saved: {report_file}")
 
         # Print summary
-        print("\n📊 QUERY TYPE COMPARISON SUMMARY")
+        print("\n[INFO] QUERY TYPE COMPARISON SUMMARY")
         print("=" * 40)
         for query_type, stats in comparison["summary"].items():
             print(f"{query_type.upper()}:")
@@ -262,12 +262,12 @@ def main():
     if success:
         print("\n🎉 Benchmark suite completed successfully!")
         print(f"📁 Results saved in: {runner.results_dir}/")
-        print("\n💡 Next steps:")
+        print("\n[HINT] Next steps:")
         print("   - Review JSON result files for detailed metrics")
         print("   - Compare results across different runs")
         print("   - Analyze performance bottlenecks")
     else:
-        print("\n❌ Benchmark suite failed!")
+        print("\n[ERROR] Benchmark suite failed!")
         print("   Check the output above for error details")
         exit(1)
 

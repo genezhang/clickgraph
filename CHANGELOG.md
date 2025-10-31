@@ -105,7 +105,7 @@
   - Integration: Direct SQL execution bypassing render plan processing
   - See `notes/pagerank.md` for implementation details and test results
   - CLI flag: `--validate-schema` (opt-in for performance, defaults to disabled)
-  - Environment variable: `BRAHMAND_VALIDATE_SCHEMA=true`
+  - Environment variable: `CLICKGRAPH_VALIDATE_SCHEMA=true`
   - Validation scope: Table existence, column mappings, ID column types, relationship columns
   - Performance: Minimal impact (4-6 fast system.columns queries cached per validator)
   - Error handling: Clear, actionable error messages for misconfigurations

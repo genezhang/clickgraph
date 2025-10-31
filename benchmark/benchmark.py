@@ -129,7 +129,8 @@ class ClickGraphBenchmark:
                 result = self.run_query(query, description)
 
                 if result["success"]:
-                    print(".3f"                else:
+                    print(f"✅ {result['total_time_seconds']:.3f}s")
+                else:
                     print(f"❌ FAILED ({result['status_code']})")
 
                 iteration_results.append(result)
@@ -338,7 +339,8 @@ class ClickGraphBenchmark:
             if success_rate > 0:
                 successful_queries += 1
                 mean_time = query_result["total_time_stats"]["mean"]
-                print(".3f"            else:
+                print(f"✅ {name}: {mean_time:.3f}s (avg)")
+            else:
                 print(f"❌ {name}: FAILED (0% success)")
 
         print(f"\n✅ Overall Success: {successful_queries}/{total_queries} queries successful")
@@ -351,7 +353,9 @@ class ClickGraphBenchmark:
                     all_times.extend([r["total_time_seconds"] for r in query_result["individual_results"] if r["success"]])
 
             if all_times:
-                print(".3f"                print(".3f"                print(".3f"
+                print(f"📊 Min: {min(all_times):.3f}s")
+                print(f"📊 Max: {max(all_times):.3f}s")
+                print(f"📊 Avg: {statistics.mean(all_times):.3f}s")
 def main():
     parser = argparse.ArgumentParser(description="ClickGraph Benchmark Suite")
     parser.add_argument("--dataset", choices=["social", "ecommerce", "all"],

@@ -231,46 +231,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "brahmand"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "chrono",
- "clap",
- "clickhouse",
- "dotenv",
- "env_logger",
- "log",
- "mockall",
- "nom",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "tempfile",
- "thiserror 2.0.12",
- "tokio",
- "tokio-test",
- "uuid",
- "validator",
-]
-
-[[package]]
-name = "brahmand-client"
-version = "0.0.1"
-dependencies = [
- "clap",
- "reqwest",
- "rustyline",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "bstr"
 version = "1.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -371,6 +331,46 @@ name = "clap_lex"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f46ad14479a25103f283c0f10005961cf086d8dc42205bb44c46ac563475dca6"
+
+[[package]]
+name = "clickgraph"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "clickhouse",
+ "dotenv",
+ "env_logger",
+ "log",
+ "mockall",
+ "nom",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tokio",
+ "tokio-test",
+ "uuid",
+ "validator",
+]
+
+[[package]]
+name = "clickgraph-client"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "reqwest",
+ "rustyline",
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "clickhouse"

@@ -1,5 +1,5 @@
 // Integration test for path variable SQL generation
-use brahmand::{
+use clickgraph::{
     open_cypher_parser::parse_query,
     query_planner::logical_plan::plan_builder::build_logical_plan,
     render_plan::{logical_plan_to_render_plan, ToSql},

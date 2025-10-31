@@ -133,7 +133,7 @@ pub async fn run_with_config(config: ServerConfig) {
             connection_timeout: 300,
             enable_auth: false,
             default_user: Some("neo4j".to_string()),
-            server_agent: format!("Brahmand/{}", env!("CARGO_PKG_VERSION")),
+            server_agent: format!("ClickGraph/{}", env!("CARGO_PKG_VERSION")),
         };
         
         let bolt_server = Arc::new(tokio::sync::Mutex::new(BoltServer::new(bolt_config)));
@@ -175,7 +175,7 @@ pub async fn run_with_config(config: ServerConfig) {
         });
     }
     
-    println!("Brahmand server is running");
+    println!("ClickGraph server is running");
     println!("  HTTP API: http://{}", http_bind_address);
     if config.bolt_enabled {
         println!("  Bolt Protocol: bolt://{}", format!("{}:{}", config.bolt_host, config.bolt_port));

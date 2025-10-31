@@ -6,16 +6,16 @@ views:
   - name: social_graph
     nodes:
       user:
-        source_table: users
+        source_table: users_bench
         id_column: user_id
         label: User
         property_mappings:
           name: full_name
           email: email_address
-          
+
     relationships:
       follows:
-        source_table: user_follows
+        source_table: user_follows_bench
         from_column: follower_id
         to_column: followed_id
         type_name: FOLLOWS
@@ -23,13 +23,3 @@ views:
         to_node_type: User
         property_mappings:
           since: follow_date
-      
-      friends_with:
-        source_table: friendships
-        from_column: user1_id
-        to_column: user2_id
-        type_name: FRIENDS_WITH
-        from_node_type: User
-        to_node_type: User
-        property_mappings:
-          since: since_date

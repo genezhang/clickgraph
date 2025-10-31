@@ -25,22 +25,28 @@ import time
 class BenchmarkDataGenerator:
     """Generate benchmark data for ClickGraph testing."""
 
-    def __init__(self, clickhouse_url: str = "http://localhost:8123", database: str = "default"):
+    def __init__(self, clickhouse_url: str = "http://localhost:8123", database: str = "brahmand"):
         self.clickhouse_url = clickhouse_url
         self.database = database
         self.session = requests.Session()
 
     def execute_sql(self, sql: str) -> bool:
         """Execute SQL query against ClickHouse."""
+        print(f"[DEBUG] Executing: {sql[:100]}...")
         try:
             response = self.session.post(
                 f"{self.clickhouse_url}/",
                 params={"database": self.database, "query": sql},
+                auth=("test_user", "test_pass"),
                 timeout=30
             )
-            return response.status_code == 200
+            if response.status_code != 200:
+                print(f"[ERROR] SQL failed with status {response.status_code}: {response.text}")
+                return False
+            print(f"[DEBUG] Success")
+            return True
         except Exception as e:
-            print(f"❌ SQL execution failed: {e}")
+            print(f"[ERROR] SQL execution failed: {e}")
             return False
 
     def setup_social_network(self, size: str = "small"):
@@ -60,51 +66,51 @@ class BenchmarkDataGenerator:
         num_follows = num_users * config["follows_multiplier"]
         num_posts = num_users * config["posts_multiplier"]
 
-        print(f"📊 Generating: {num_users} users, {num_follows} follows, {num_posts} posts")
+        print(f"[INFO] Generating: {num_users} users, {num_follows} follows, {num_posts} posts")
 
         # Create tables
-        self.execute_sql(f"""
-            CREATE DATABASE IF NOT EXISTS social_bench;
-            USE social_bench;
+        self.execute_sql("USE brahmand")
+        self.execute_sql("DROP TABLE IF EXISTS user_follows_bench")
+        self.execute_sql("DROP TABLE IF EXISTS posts_bench")
+        self.execute_sql("DROP TABLE IF EXISTS post_likes_bench")
+        self.execute_sql("DROP TABLE IF EXISTS users_bench")
 
-            DROP TABLE IF EXISTS user_follows;
-            DROP TABLE IF EXISTS posts;
-            DROP TABLE IF EXISTS post_likes;
-            DROP TABLE IF EXISTS users;
+        self.execute_sql("""
+CREATE TABLE users_bench (
+    user_id UInt32,
+    full_name String,
+    email_address String,
+    registration_date Date,
+    is_active UInt8,
+    country String,
+    city String
+) ENGINE = Memory
+        """)
 
-            CREATE TABLE users (
-                user_id UInt32,
-                full_name String,
-                email_address String,
-                registration_date Date,
-                is_active UInt8,
-                country String,
-                city String
-            ) ENGINE = MergeTree()
-            ORDER BY user_id;
+        self.execute_sql("""
+CREATE TABLE user_follows_bench (
+    follower_id UInt32,
+    followed_id UInt32,
+    follow_date Date
+) ENGINE = Memory
+        """)
 
-            CREATE TABLE user_follows (
-                follower_id UInt32,
-                followed_id UInt32,
-                follow_date Date
-            ) ENGINE = MergeTree()
-            ORDER BY (follower_id, followed_id);
+        self.execute_sql("""
+CREATE TABLE posts_bench (
+    post_id UInt32,
+    author_id UInt32,
+    post_title String,
+    post_content String,
+    post_date DateTime
+) ENGINE = Memory
+        """)
 
-            CREATE TABLE posts (
-                post_id UInt32,
-                author_id UInt32,
-                post_title String,
-                post_content String,
-                post_date DateTime
-            ) ENGINE = MergeTree()
-            ORDER BY post_id;
-
-            CREATE TABLE post_likes (
-                user_id UInt32,
-                post_id UInt32,
-                like_date DateTime
-            ) ENGINE = MergeTree()
-            ORDER BY (user_id, post_id);
+        self.execute_sql("""
+CREATE TABLE post_likes_bench (
+    user_id UInt32,
+    post_id UInt32,
+    like_date DateTime
+) ENGINE = Memory
         """)
 
         # Generate and insert users
@@ -125,12 +131,12 @@ class BenchmarkDataGenerator:
 
             users_data.append(f"({i}, '{full_name}', '{email}', '{reg_date}', {is_active}, '{country}', '{city}')")
 
-            if len(users_data) >= 1000:  # Batch insert
-                self.execute_sql(f"INSERT INTO users VALUES {','.join(users_data)};")
+            if len(users_data) >= 100:  # Batch insert
+                self.execute_sql(f"INSERT INTO users_bench VALUES {','.join(users_data)};")
                 users_data = []
 
         if users_data:
-            self.execute_sql(f"INSERT INTO users VALUES {','.join(users_data)};")
+            self.execute_sql(f"INSERT INTO users_bench VALUES {','.join(users_data)};")
 
         # Generate follows
         print("🤝 Generating follows...")
@@ -142,12 +148,12 @@ class BenchmarkDataGenerator:
                 follow_date = (datetime.now() - timedelta(days=random.randint(0, 365))).date()
                 follows_data.append(f"({follower}, {followed}, '{follow_date}')")
 
-                if len(follows_data) >= 1000:
-                    self.execute_sql(f"INSERT INTO user_follows VALUES {','.join(follows_data)};")
+                if len(follows_data) >= 100:
+                    self.execute_sql(f"INSERT INTO user_follows_bench VALUES {','.join(follows_data)};")
                     follows_data = []
 
         if follows_data:
-            self.execute_sql(f"INSERT INTO user_follows VALUES {','.join(follows_data)};")
+            self.execute_sql(f"INSERT INTO user_follows_bench VALUES {','.join(follows_data)};")
 
         # Generate posts
         print("📝 Generating posts...")
@@ -163,18 +169,18 @@ class BenchmarkDataGenerator:
             title = random.choice(post_titles)
             content = ''.join(random.choices(string.ascii_letters + ' ', k=random.randint(50, 500)))
             content = content.replace("'", "''")  # Escape quotes
-            post_date = datetime.now() - timedelta(minutes=random.randint(0, 365*24*60))
+            post_date = (datetime.now() - timedelta(minutes=random.randint(0, 365*24*60))).strftime('%Y-%m-%d %H:%M:%S')
 
             posts_data.append(f"({i}, {author_id}, '{title}', '{content}', '{post_date}')")
 
-            if len(posts_data) >= 500:
-                self.execute_sql(f"INSERT INTO posts VALUES {','.join(posts_data)};")
+            if len(posts_data) >= 100:
+                self.execute_sql(f"INSERT INTO posts_bench VALUES {','.join(posts_data)};")
                 posts_data = []
 
         if posts_data:
-            self.execute_sql(f"INSERT INTO posts VALUES {','.join(posts_data)};")
+            self.execute_sql(f"INSERT INTO posts_bench VALUES {','.join(posts_data)};")
 
-        print("✅ Social network dataset setup complete!")
+        print("[SUCCESS] Social network dataset setup complete!")
 
     def setup_ecommerce(self, size: str = "small"):
         """Set up e-commerce dataset."""
@@ -192,7 +198,7 @@ class BenchmarkDataGenerator:
         num_products = config["products"]
         num_orders = num_customers * config["orders_multiplier"]
 
-        print(f"📊 Generating: {num_customers} customers, {num_products} products, {num_orders} orders")
+        print(f"[INFO] Generating: {num_customers} customers, {num_products} products, {num_orders} orders")
 
         # Create tables
         self.execute_sql(f"""
@@ -334,7 +340,7 @@ class BenchmarkDataGenerator:
         if orders_data:
             self.execute_sql(f"INSERT INTO orders VALUES {','.join(orders_data)};")
 
-        print("✅ E-commerce dataset setup complete!")
+        print("[SUCCESS] E-commerce dataset setup complete!")
 
     def create_yaml_configs(self):
         """Create YAML configuration files for the benchmark datasets."""
@@ -346,7 +352,7 @@ class BenchmarkDataGenerator:
 graph_schema:
   nodes:
     - label: User
-      table: users
+      table: users_bench
       id_column: user_id
       properties:
         user_id: user_id
@@ -359,7 +365,7 @@ graph_schema:
 
   relationships:
     - type: FOLLOWS
-      table: user_follows
+      table: user_follows_bench
       from_column: follower_id
       to_column: followed_id
       properties:
@@ -421,7 +427,7 @@ graph_schema:
         with open("ecommerce_benchmark.yaml", "w") as f:
             f.write(ecommerce_config)
 
-        print("✅ YAML configurations created!")
+        print("[SUCCESS] YAML configurations created!")
 
 def main():
     parser = argparse.ArgumentParser(description="ClickGraph Benchmark Data Setup")
@@ -438,11 +444,11 @@ def main():
 
     # Test connection
     if not generator.execute_sql("SELECT 1"):
-        print("❌ Cannot connect to ClickHouse server")
-        print("💡 Make sure ClickHouse is running on the specified URL")
+        print("[ERROR] Cannot connect to ClickHouse server")
+        print("[HINT] Make sure ClickHouse is running on the specified URL")
         return
 
-    print("✅ Connected to ClickHouse server")
+    print("[SUCCESS] Connected to ClickHouse server")
 
     # Setup datasets
     if args.dataset in ["social", "all"]:

@@ -208,17 +208,17 @@ cargo run --bin brahmand -- --disable-bolt
 cargo run --bin brahmand -- --http-host 127.0.0.1
 
 # Show all options
-cargo run --bin brahmand -- --help
+cargo run --bin clickgraph -- --help
 ```
 
 ### Environment Variable Configuration
 ```bash
 # Server settings
-export BRAHMAND_HOST="127.0.0.1"
-export BRAHMAND_PORT="8081"  
-export BRAHMAND_BOLT_HOST="127.0.0.1"
-export BRAHMAND_BOLT_PORT="7688"
-export BRAHMAND_BOLT_ENABLED="false"
+export CLICKGRAPH_HOST="127.0.0.1"
+export CLICKGRAPH_PORT="8081"  
+export CLICKGRAPH_BOLT_HOST="127.0.0.1"
+export CLICKGRAPH_BOLT_PORT="7688"
+export CLICKGRAPH_BOLT_ENABLED="false"
 
 # ClickHouse connection
 export CLICKHOUSE_URL="http://your-clickhouse:8123"

@@ -96,7 +96,7 @@ Both protocols share the same underlying query engine and ClickHouse backend.
    export CLICKHOUSE_PASSWORD="test_pass"
    export CLICKHOUSE_DATABASE="brahmand"
    
-   cargo run --bin brahmand
+   cargo run --bin clickgraph
    ```
 
 3. **Test with HTTP API**:
@@ -186,20 +186,20 @@ ClickGraph supports flexible configuration via command-line arguments and enviro
 
 ```bash
 # View all options
-cargo run --bin brahmand -- --help
+cargo run --bin clickgraph -- --help
 
 # Custom ports
-cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
+cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 
 # Disable Bolt protocol (HTTP only)
-cargo run --bin brahmand -- --disable-bolt
+cargo run --bin clickgraph -- --disable-bolt
 
 # Custom host binding
-cargo run --bin brahmand -- --http-host 127.0.0.1 --bolt-host 127.0.0.1
+cargo run --bin clickgraph -- --http-host 127.0.0.1 --bolt-host 127.0.0.1
 
 # Configure CTE depth limit for variable-length paths (default: 100)
-cargo run --bin brahmand -- --max-cte-depth 150
-export BRAHMAND_MAX_CTE_DEPTH=150  # Or via environment variable
+cargo run --bin clickgraph -- --max-cte-depth 150
+export CLICKGRAPH_MAX_CTE_DEPTH=150  # Or via environment variable
 ```
 
 See `docs/configuration.md` for complete configuration documentation.
@@ -234,7 +234,7 @@ start_server_background.bat
 The server also supports a `--daemon` flag for Unix-like daemon behavior:
 
 ```bash
-cargo run --bin brahmand -- --daemon --http-port 8080
+cargo run --bin clickgraph -- --daemon --http-port 8080
 ```
 
 ## �📚 Documentation

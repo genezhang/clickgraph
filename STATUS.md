@@ -78,7 +78,7 @@
   - Query type classification and SQL query count tracking
 
 ### Configuration
-- **Configurable CTE depth**: Via CLI `--max-cte-depth` or env `BRAHMAND_MAX_CTE_DEPTH`
+- **Configurable CTE depth**: Via CLI `--max-cte-depth` or env `CLICKGRAPH_MAX_CTE_DEPTH`
 - **Flexible binding**: HTTP and Bolt ports configurable
 - **Environment variables**: Full env var support for all settings
 - **Schema validation**: Optional startup validation of YAML configs against ClickHouse schema ✅ **[COMPLETED: Oct 23, 2025]**

@@ -1,0 +1,22 @@
+
+graph_schema:
+  nodes:
+    - label: User
+      table: users_bench
+      id_column: user_id
+      properties:
+        user_id: user_id
+        full_name: full_name
+        email_address: email_address
+        registration_date: registration_date
+        is_active: is_active
+        country: country
+        city: city
+
+  relationships:
+    - type: FOLLOWS
+      table: user_follows_bench
+      from_column: follower_id
+      to_column: followed_id
+      properties:
+        follow_date: follow_date

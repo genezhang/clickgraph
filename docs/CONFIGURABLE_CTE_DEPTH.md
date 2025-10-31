@@ -8,17 +8,17 @@ The maximum recursive CTE evaluation depth for variable-length path queries is n
 
 ### 1. Environment Variable (Recommended)
 
-Set the `BRAHMAND_MAX_CTE_DEPTH` environment variable:
+Set the `CLICKGRAPH_MAX_CTE_DEPTH` environment variable:
 
 ```bash
 # Linux/macOS
-export BRAHMAND_MAX_CTE_DEPTH=150
+export CLICKGRAPH_MAX_CTE_DEPTH=150
 
 # Windows PowerShell
-$env:BRAHMAND_MAX_CTE_DEPTH=150
+$env:CLICKGRAPH_MAX_CTE_DEPTH=150
 
 # Windows CMD
-set BRAHMAND_MAX_CTE_DEPTH=150
+set CLICKGRAPH_MAX_CTE_DEPTH=150
 ```
 
 ### 2. Command-Line Argument

@@ -162,10 +162,10 @@ export CLICKHOUSE_DATABASE="brahmand"
 
 # Build and run ClickGraph with default configuration
 cargo build
-cargo run --bin brahmand
+cargo run --bin clickgraph
 
 # Or with custom configuration
-cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
+cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 ```
 
 ### Key File Patterns

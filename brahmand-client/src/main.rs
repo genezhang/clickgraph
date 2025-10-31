@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = DefaultEditor::new()?;
 
     loop {
-        let readline = rl.readline("brahmand-client :) ");
+        let readline = rl.readline("clickgraph-client :) ");
         match readline {
             Ok(line) => {
                 let query = line.trim();
