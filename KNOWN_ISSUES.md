@@ -95,6 +95,169 @@ Extended the expression rewriting logic to handle GROUP BY and ORDER BY clauses 
 
 ---
 
+## ✅ RESOLVED: WHERE Clause Filtering for Variable-Length Paths
+
+**Status**: ✅ **COMPLETED** (October 25, 2025)  
+**Severity**: Medium  
+**Completed**: October 25, 2025
+
+### Description
+Full WHERE clause support for variable-length path queries and shortest path functions was implemented.
+
+### Features Implemented
+- **End node filters**: `WHERE b.name = "David Lee"` in variable-length paths ✅
+- **Start node filters**: `WHERE a.name = "Alice Johnson"` ✅
+- **Combined filters**: `WHERE a.name = "Alice" AND b.name = "Bob"` ✅
+- **Shortest path WHERE clauses**: Filtering on shortest path results ✅
+- **Path variables in SELECT**: `MATCH p = shortestPath((a)-[*]-(b)) RETURN p` ✅
+- **Proper filter placement**: End filters in final WHERE clause for regular queries, target conditions for shortest path ✅
+- **Direction-aware alias determination**: Correct filter categorization based on relationship direction ✅
+
+### Implementation Details
+- Parser support for double-quoted strings and proper SQL quoting
+- Context storage in `CteGenerationContext` for filter propagation
+- Expression rewriting for CTE column mapping (`b.name` → `end_name`)
+- Comprehensive test coverage with 303/303 tests passing
+
+### Files Modified
+- `brahmand/src/render_plan/plan_builder.rs` - Main filter processing and SQL generation
+- `brahmand/src/open_cypher_parser/expression.rs` - Double-quoted string support
+- `brahmand/src/clickhouse_query_generator/variable_length_cte.rs` - CTE property selection
+
+### Testing Status
+- ✅ End node filters: Work with all variable-length paths
+- ✅ Shortest path WHERE clauses: Fully functional
+- ✅ Parser: Double-quoted strings properly handled
+- ✅ Test results: 303/303 tests passing (100%)
+
+---
+
+## ✅ RESOLVED: Multi-Variable CROSS JOIN Queries
+
+**Status**: ✅ **COMPLETED** (October 25, 2025)  
+**Severity**: Medium  
+**Completed**: October 25, 2025
+
+### Description
+Support for queries with multiple standalone variables using CROSS JOIN semantics.
+
+### Features Implemented
+- **Property mapping**: Works for all variables (`a.name`, `b.name` → `full_name`) ✅
+- **CROSS JOIN generation**: For multiple standalone nodes ✅
+- **Nested GraphNode logical plan structure**: Proper handling of multiple variables ✅
+- **SQL generation**: Multiple table instances with correct aliases ✅
+
+### Example
+```cypher
+MATCH (b:User), (a:User) 
+RETURN a.name, b.name
+```
+
+**Generated SQL**:
+```sql
+SELECT a.full_name AS a_name, b.full_name AS b_name 
+FROM users AS a 
+CROSS JOIN users AS b
+```
+
+### Files Modified
+- `brahmand/src/render_plan/plan_builder.rs` - CROSS JOIN generation logic
+- `brahmand/src/query_planner/logical_plan/graph_node.rs` - Nested structure support
+
+---
+
+## ✅ RESOLVED: CASE Expression Support
+
+**Status**: ✅ **COMPLETED** (October 25, 2025)  
+**Severity**: Medium  
+**Completed**: October 25, 2025
+
+### Description
+Full CASE WHEN THEN ELSE conditional expression support with ClickHouse optimization.
+
+### Features Implemented
+- **Simple CASE**: `CASE x WHEN val THEN result END` ✅
+- **Searched CASE**: `CASE WHEN condition THEN result END` ✅
+- **ClickHouse optimization**: `caseWithExpression` for simple CASE ✅
+- **Property mapping**: Resolution in expressions ✅
+- **Full context support**: WHERE clauses, function calls, complex expressions ✅
+
+### Files Modified
+- `brahmand/src/open_cypher_parser/expression.rs` - CASE expression parsing
+- `brahmand/src/clickhouse_query_generator/expression.rs` - SQL generation with optimization
+
+---
+
+## ✅ RESOLVED: Schema Monitoring and Error Handling
+
+**Status**: ✅ **COMPLETED** (October 25, 2025)  
+**Severity**: Medium  
+**Completed**: October 25, 2025
+
+### Description
+Background schema update detection with graceful error handling.
+
+### Features Implemented
+- **60-second interval checks**: For schema changes in ClickHouse ✅
+- **Automatic global schema refresh**: When changes detected ✅
+- **Graceful error handling**: Prevents server crashes ✅
+- **Only runs when available**: ClickHouse client availability check ✅
+- **Comprehensive logging**: For debugging schema monitoring ✅
+
+### Files Modified
+- `brahmand/src/server/graph_catalog.rs` - Schema monitoring implementation
+- `brahmand/src/server/mod.rs` - Background task integration
+
+---
+
+## ✅ RESOLVED: Codebase Health Improvements
+
+**Status**: ✅ **COMPLETED** (October 25, 2025)  
+**Severity**: Medium  
+**Completed**: October 25, 2025
+
+### Description
+Systematic refactoring for maintainability and error handling improvements.
+
+### Features Implemented
+- **Filter Pipeline Module**: Extracted filter processing logic into dedicated `filter_pipeline.rs` ✅
+- **CTE Extraction Module**: Extracted 250-line function into `cte_extraction.rs` ✅
+- **Type-Safe Configuration**: Implemented strongly-typed configuration with validator crate ✅
+- **Test Organization**: Standardized test structure with unit/, integration/, e2e/ directories ✅
+- **Clean Separation**: Variable-length path logic isolated from main orchestration ✅
+- **Zero Regressions**: All 312 tests passing (100% success rate) ✅
+- **Improved Maintainability**: Better error handling, cleaner code organization ✅
+
+### Error Handling Improvements
+- **Critical unwrap() calls replaced**: 8 unwrap() calls in `plan_builder.rs` replaced with proper Result propagation ✅
+- **Error enum expansion**: Added `NoRelationshipTablesFound` and `ExpectedSingleFilterButNoneFound` variants ✅
+- **Server module fixes**: `GLOBAL_GRAPH_SCHEMA.get().unwrap()` replaced with proper error handling ✅
+- **Analyzer module fixes**: `rel_ctxs_to_update.first_mut().unwrap()` replaced with `ok_or(NoRelationshipContextsFound)` ✅
+- **Zero regressions maintained**: All 312 tests passing (100% success rate) ✅
+- **Improved reliability**: Eliminated panic points, better debugging experience ✅
+
+---
+
+## ✅ RESOLVED: Query Performance Metrics
+
+**Status**: ✅ **COMPLETED** (October 25, 2025)  
+**Severity**: Medium  
+**Completed**: October 25, 2025
+
+### Description
+Comprehensive query performance monitoring with phase-by-phase timing and HTTP headers.
+
+### Features Implemented
+- **Phase-by-phase timing**: Parse, planning, render, SQL generation, execution ✅
+- **HTTP response headers**: `X-Query-Total-Time`, `X-Query-Parse-Time`, etc. ✅
+- **Structured logging**: INFO-level performance metrics with millisecond precision ✅
+- **Query type classification**: read/write/call with SQL query count tracking ✅
+
+### Files Modified
+- `brahmand/src/server/handlers.rs` - QueryPerformanceMetrics struct and timing integration
+
+---
+
 ## 📝 Multi-hop Base Cases (*2, *3..5)
 
 **Status**: Planned  

@@ -159,17 +159,38 @@ pub(crate) fn extract_var_len_properties(
                             right_label
                         };
 
-                        // Map property name to actual column name using schema
-                        let column_name = map_property_to_column_with_schema(property_name, node_label);
-                        // Use property_name for CTE column alias, not Cypher SELECT alias
-                        // E.g., for "a.name AS start", use "name" not "start" for CTE column
-                        let alias = property_name.to_string();
+                        // Handle wildcard property selection
+                        if property_name == "*" {
+                            // Expand * to all properties for this node type
+                            if let Some(config_lock) = crate::server::GLOBAL_VIEW_CONFIG.get() {
+                                if let Ok(config) = config_lock.try_read() {
+                                    // Find the node mapping for this label
+                                    for view in &config.views {
+                                        if let Some(node_mapping) = view.nodes.get(node_label) {
+                                            // Create a property for each mapping
+                                            for (prop_name, column_name) in &node_mapping.property_mappings {
+                                                properties.push(NodeProperty {
+                                                    cypher_alias: node_alias.to_string(),
+                                                    column_name: column_name.clone(),
+                                                    alias: prop_name.clone(),
+                                                });
+                                            }
+                                            break; // Found the mapping, no need to check other views
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Regular property
+                            let column_name = map_property_to_column_with_schema(property_name, node_label);
+                            let alias = property_name.to_string();
 
-                        properties.push(NodeProperty {
-                            cypher_alias: node_alias.to_string(),
-                            column_name,
-                            alias,
-                        });
+                            properties.push(NodeProperty {
+                                cypher_alias: node_alias.to_string(),
+                                column_name,
+                                alias,
+                            });
+                        }
                     }
                 }
             }
