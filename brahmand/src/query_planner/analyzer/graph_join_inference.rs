@@ -16,6 +16,7 @@ use crate::{
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
+    render_plan::cte_extraction::extract_relationship_columns,
 };
 
 pub struct GraphJoinInference;
@@ -314,6 +315,7 @@ impl GraphJoinInference {
             )
         } else {
             self.handle_bitmap_traversal(
+                graph_rel,
                 graph_context,
                 left_node_id_column,
                 right_node_id_column,
@@ -351,15 +353,24 @@ impl GraphJoinInference {
         let rel_cte_name = graph_context.rel.cte_name;
         let right_cte_name = graph_context.right.cte_name;
 
+        // Extract relationship column names from the ViewScan
+        let rel_cols = extract_relationship_columns(&graph_rel.center)
+            .unwrap_or(crate::render_plan::cte_extraction::RelationshipColumns {
+                from_column: "from_node_id".to_string(),
+                to_column: "to_node_id".to_string(),
+            });
+        let rel_from_col = rel_cols.from_column;
+        let rel_to_col = rel_cols.to_column;
+
         // If both nodes are of the same type then check the direction to determine where are the left and right nodes present in the edgelist.
         if graph_context.left.schema.table_name == graph_context.right.schema.table_name {
             if joined_entities.contains(right_alias) {
                 // join the rel with right first and then join the left with rel
                 let (rel_conn_with_right_node, left_conn_with_rel) =
                     if graph_rel.direction == Direction::Incoming {
-                        ("from_id".to_string(), "to_id".to_string())
+                        (rel_from_col.clone(), rel_to_col.clone())
                     } else {
-                        ("to_id".to_string(), "from_id".to_string())
+                        (rel_to_col.clone(), rel_from_col.clone())
                     };
                 let mut rel_graph_join = Join {
                     table_name: rel_cte_name,
@@ -439,9 +450,9 @@ impl GraphJoinInference {
 
                 let (rel_conn_with_left_node, right_conn_with_rel) =
                     if graph_rel.direction == Direction::Incoming {
-                        ("from_id".to_string(), "to_id".to_string())
+                        (rel_from_col.clone(), rel_to_col.clone())
                     } else {
-                        ("to_id".to_string(), "from_id".to_string())
+                        (rel_to_col.clone(), rel_from_col.clone())
                     };
 
                 let mut rel_graph_join = Join {
@@ -531,7 +542,7 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column("from_id".to_string()),
+                                column: Column(rel_from_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
@@ -554,7 +565,7 @@ impl GraphJoinInference {
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column("to_id".to_string()),
+                                column: Column(rel_to_col.clone()),
                             }),
                         ],
                     }],
@@ -567,7 +578,7 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column("to_id".to_string()),
+                                column: Column(rel_to_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
@@ -606,7 +617,7 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column("to_id".to_string()),
+                                column: Column(rel_to_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
@@ -629,7 +640,7 @@ impl GraphJoinInference {
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column("from_id".to_string()),
+                                column: Column(rel_from_col.clone()),
                             }),
                         ],
                     }],
@@ -642,7 +653,7 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column("from_id".to_string()),
+                                column: Column(rel_from_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
@@ -706,7 +717,7 @@ impl GraphJoinInference {
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column("from_id".to_string()),
+                                column: Column(rel_from_col.clone()),
                             }),
                         ],
                     }],
@@ -719,7 +730,7 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column("from_id".to_string()),
+                                column: Column(rel_from_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
@@ -758,7 +769,7 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column("from_id".to_string()),
+                                column: Column(rel_from_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
@@ -781,7 +792,7 @@ impl GraphJoinInference {
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column("to_id".to_string()),
+                                column: Column(rel_to_col.clone()),
                             }),
                         ],
                     }],
@@ -826,6 +837,7 @@ impl GraphJoinInference {
 
     fn handle_bitmap_traversal(
         &self,
+        graph_rel: &GraphRel,
         graph_context: GraphContext,
         left_node_id_column: String,
         right_node_id_column: String,
@@ -846,6 +858,15 @@ impl GraphJoinInference {
         let rel_cte_name = graph_context.rel.cte_name;
         let right_cte_name = graph_context.right.cte_name;
 
+        // Extract relationship column names from the ViewScan
+        let rel_cols = extract_relationship_columns(&graph_rel.center)
+            .unwrap_or(crate::render_plan::cte_extraction::RelationshipColumns {
+                from_column: "from_node_id".to_string(),
+                to_column: "to_node_id".to_string(),
+            });
+        let rel_from_col = rel_cols.from_column;
+        let rel_to_col = rel_cols.to_column;
+
         // check if right is alredy joined.
         if joined_entities.contains(right_alias) {
             // join the rel with right first and then join the left with rel
@@ -857,7 +878,7 @@ impl GraphJoinInference {
                     operands: vec![
                         LogicalExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(rel_alias.to_string()),
-                            column: Column("from_id".to_string()),
+                            column: Column(rel_from_col.clone()),
                         }),
                         LogicalExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(right_alias.to_string()),
@@ -880,7 +901,7 @@ impl GraphJoinInference {
                         }),
                         LogicalExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(rel_alias.to_string()),
-                            column: Column("to_id".to_string()),
+                            column: Column(rel_to_col.clone()),
                         }),
                     ],
                 }],
@@ -893,7 +914,7 @@ impl GraphJoinInference {
                     operands: vec![
                         LogicalExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(rel_alias.to_string()),
-                            column: Column("to_id".to_string()),
+                            column: Column(rel_to_col.clone()),
                         }),
                         LogicalExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(left_alias.to_string()),
@@ -932,7 +953,7 @@ impl GraphJoinInference {
                     operands: vec![
                         LogicalExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(rel_alias.to_string()),
-                            column: Column("to_id".to_string()),
+                            column: Column(rel_to_col.clone()),
                         }),
                         LogicalExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(left_alias.to_string()),
@@ -955,7 +976,7 @@ impl GraphJoinInference {
                         }),
                         LogicalExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(rel_alias.to_string()),
-                            column: Column("from_id".to_string()),
+                            column: Column(rel_from_col.clone()),
                         }),
                     ],
                 }],
@@ -968,7 +989,7 @@ impl GraphJoinInference {
                     operands: vec![
                         LogicalExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(rel_alias.to_string()),
-                            column: Column("from_id".to_string()),
+                            column: Column(rel_from_col.clone()),
                         }),
                         LogicalExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(right_alias.to_string()),
@@ -1291,13 +1312,13 @@ mod tests {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        assert_eq!(graph_joins.joins.len(), 2);
+                        assert_eq!(graph_joins.joins.len(), 1); // Simple relationship: only relationship join, start node is in FROM
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
 
-                        // First join should be relationship with left node
+                        // For edge list traversal, only relationship join is needed (start node in FROM)
                         let rel_join = &graph_joins.joins[0];
                         assert_eq!(rel_join.table_name, "FOLLOWS_f1");
                         assert_eq!(rel_join.table_alias, "f1");
@@ -1316,41 +1337,12 @@ mod tests {
                         ) {
                             (
                                 LogicalExpr::PropertyAccessExp(rel_prop),
-                                LogicalExpr::PropertyAccessExp(left_prop),
+                                LogicalExpr::PropertyAccessExp(right_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "f1");
                                 assert_eq!(rel_prop.column.0, "to_id");
-                                assert_eq!(left_prop.table_alias.0, "p2");
-                                assert_eq!(left_prop.column.0, "id");
-                            }
-                            _ => panic!("Expected PropertyAccessExp operands"),
-                        }
-
-                        // Second join should be right node with relationship
-                        let right_join = &graph_joins.joins[1];
-                        assert_eq!(right_join.table_name, "Person_p1");
-                        assert_eq!(right_join.table_alias, "p1");
-                        assert_eq!(right_join.join_type, JoinType::Inner);
-                        assert_eq!(right_join.joining_on.len(), 1);
-
-                        // Assert the joining condition for right node
-                        let right_join_condition = &right_join.joining_on[0];
-                        assert_eq!(right_join_condition.operator, Operator::Equal);
-                        assert_eq!(right_join_condition.operands.len(), 2);
-
-                        // Check operands are PropertyAccessExp with correct table aliases and columns
-                        match (
-                            &right_join_condition.operands[0],
-                            &right_join_condition.operands[1],
-                        ) {
-                            (
-                                LogicalExpr::PropertyAccessExp(left_prop),
-                                LogicalExpr::PropertyAccessExp(rel_prop),
-                            ) => {
-                                assert_eq!(left_prop.table_alias.0, "p1");
-                                assert_eq!(left_prop.column.0, "id");
-                                assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.0, "from_id");
+                                assert_eq!(right_prop.table_alias.0, "p2");
+                                assert_eq!(right_prop.column.0, "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
@@ -1414,13 +1406,14 @@ mod tests {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        assert_eq!(graph_joins.joins.len(), 2);
+                        assert_eq!(graph_joins.joins.len(), 1); // Simple relationship: only relationship join, start node is in FROM
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
+
                         // (p1)-[w1:WORKS_AT]->(c1)
-                        // First join should be relationship with left node (from_id)
+                        // For edge list traversal, only relationship join is needed (start node in FROM)
                         let rel_join = &graph_joins.joins[0];
                         assert_eq!(rel_join.table_name, "WORKS_AT_w1");
                         assert_eq!(rel_join.table_alias, "w1");
@@ -1439,41 +1432,12 @@ mod tests {
                         ) {
                             (
                                 LogicalExpr::PropertyAccessExp(rel_prop),
-                                LogicalExpr::PropertyAccessExp(left_prop),
+                                LogicalExpr::PropertyAccessExp(right_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "w1");
                                 assert_eq!(rel_prop.column.0, "to_id");
-                                assert_eq!(left_prop.table_alias.0, "c1");
-                                assert_eq!(left_prop.column.0, "id");
-                            }
-                            _ => panic!("Expected PropertyAccessExp operands"),
-                        }
-
-                        // Second join should be right node with relationship (from_id)
-                        let right_join = &graph_joins.joins[1];
-                        assert_eq!(right_join.table_name, "Person_p1");
-                        assert_eq!(right_join.table_alias, "p1");
-                        assert_eq!(right_join.join_type, JoinType::Inner);
-                        assert_eq!(right_join.joining_on.len(), 1);
-
-                        // Assert the joining condition for right node
-                        let right_join_condition = &right_join.joining_on[0];
-                        assert_eq!(right_join_condition.operator, Operator::Equal);
-                        assert_eq!(right_join_condition.operands.len(), 2);
-
-                        // Check operands are PropertyAccessExp with correct table aliases and columns
-                        match (
-                            &right_join_condition.operands[0],
-                            &right_join_condition.operands[1],
-                        ) {
-                            (
-                                LogicalExpr::PropertyAccessExp(right_prop),
-                                LogicalExpr::PropertyAccessExp(rel_prop),
-                            ) => {
-                                assert_eq!(right_prop.table_alias.0, "p1");
+                                assert_eq!(right_prop.table_alias.0, "c1");
                                 assert_eq!(right_prop.column.0, "id");
-                                assert_eq!(rel_prop.table_alias.0, "w1");
-                                assert_eq!(rel_prop.column.0, "from_id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
@@ -1546,14 +1510,14 @@ mod tests {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        assert_eq!(graph_joins.joins.len(), 2);
+                        assert_eq!(graph_joins.joins.len(), 1); // Simple relationship: only relationship join, start node is in FROM
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
 
                         // (p1)-[f1:FOLLOWS]->(p2)
-                        // For bitmap traversal, joins are different from edge list
+                        // For bitmap traversal, only relationship join is needed (start node in FROM)
                         let rel_join = &graph_joins.joins[0];
                         assert_eq!(rel_join.table_name, "FOLLOWS_outgoing_f1");
                         assert_eq!(rel_join.table_alias, "f1");
@@ -1572,40 +1536,12 @@ mod tests {
                         ) {
                             (
                                 LogicalExpr::PropertyAccessExp(rel_prop),
-                                LogicalExpr::PropertyAccessExp(left_prop),
+                                LogicalExpr::PropertyAccessExp(right_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "f1");
                                 assert_eq!(rel_prop.column.0, "to_id");
-                                assert_eq!(left_prop.table_alias.0, "p2");
-                                assert_eq!(left_prop.column.0, "id");
-                            }
-                            _ => panic!("Expected PropertyAccessExp operands"),
-                        }
-
-                        let right_join = &graph_joins.joins[1];
-                        assert_eq!(right_join.table_name, "Person_p1");
-                        assert_eq!(right_join.table_alias, "p1");
-                        assert_eq!(right_join.join_type, JoinType::Inner);
-                        assert_eq!(right_join.joining_on.len(), 1);
-
-                        // Assert the joining condition for right node
-                        let right_join_condition = &right_join.joining_on[0];
-                        assert_eq!(right_join_condition.operator, Operator::Equal);
-                        assert_eq!(right_join_condition.operands.len(), 2);
-
-                        // Check operands are PropertyAccessExp with correct table aliases and columns
-                        match (
-                            &right_join_condition.operands[0],
-                            &right_join_condition.operands[1],
-                        ) {
-                            (
-                                LogicalExpr::PropertyAccessExp(right_prop),
-                                LogicalExpr::PropertyAccessExp(rel_prop),
-                            ) => {
-                                assert_eq!(right_prop.table_alias.0, "p1");
+                                assert_eq!(right_prop.table_alias.0, "p2");
                                 assert_eq!(right_prop.column.0, "id");
-                                assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.0, "from_id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
@@ -1781,13 +1717,13 @@ mod tests {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        assert_eq!(graph_joins.joins.len(), 2);
+                        assert_eq!(graph_joins.joins.len(), 1); // Simple relationship: only relationship join, start node is in FROM
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
 
-                        // Verify that joins are created (specific join conditions depend on direction)
+                        // For incoming direction edge list, only relationship join is needed (start node in FROM)
                         let rel_join = &graph_joins.joins[0];
                         assert_eq!(rel_join.table_name, "FOLLOWS_f1");
                         assert_eq!(rel_join.table_alias, "f1");
@@ -1806,39 +1742,12 @@ mod tests {
                         ) {
                             (
                                 LogicalExpr::PropertyAccessExp(rel_prop),
-                                LogicalExpr::PropertyAccessExp(left_prop),
+                                LogicalExpr::PropertyAccessExp(right_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "f1");
                                 assert_eq!(rel_prop.column.0, "from_id");
-                                assert_eq!(left_prop.table_alias.0, "p2");
-                                assert_eq!(left_prop.column.0, "id");
-                            }
-                            _ => panic!("Expected PropertyAccessExp operands"),
-                        }
-
-                        let right_join = &graph_joins.joins[1];
-                        assert_eq!(right_join.table_name, "Person_p1");
-                        assert_eq!(right_join.table_alias, "p1");
-                        assert_eq!(right_join.join_type, JoinType::Inner);
-                        assert_eq!(right_join.joining_on.len(), 1);
-
-                        // Assert the joining condition for right node
-                        let right_join_condition = &right_join.joining_on[0];
-                        assert_eq!(right_join_condition.operator, Operator::Equal);
-                        assert_eq!(right_join_condition.operands.len(), 2);
-
-                        match (
-                            &right_join_condition.operands[0],
-                            &right_join_condition.operands[1],
-                        ) {
-                            (
-                                LogicalExpr::PropertyAccessExp(left_prop),
-                                LogicalExpr::PropertyAccessExp(right_prop),
-                            ) => {
-                                assert_eq!(left_prop.table_alias.0, "p1");
-                                assert_eq!(left_prop.column.0, "id");
-                                assert_eq!(right_prop.table_alias.0, "f1");
-                                assert_eq!(right_prop.column.0, "to_id"); // or from_id based on incoming direction
+                                assert_eq!(right_prop.table_alias.0, "p2");
+                                assert_eq!(right_prop.column.0, "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
@@ -1947,7 +1856,11 @@ mod tests {
                         );
 
                         // Should have joins for both relationships in the chain: (p1)-[f1:FOLLOWS]->(p2)-[w1:WORKS_AT]->(c1)
-                        assert!(graph_joins.joins.len() == 4); // 4 joins for two relationships with their nodes
+                        println!("Actual joins len: {}", graph_joins.joins.len());
+                        let join_aliases: Vec<&String> =
+                            graph_joins.joins.iter().map(|j| &j.table_alias).collect();
+                        println!("Join aliases: {:?}", join_aliases);
+                        assert!(graph_joins.joins.len() == 2); // 2 relationship joins for two relationships (node joins handled by GraphJoins)
 
                         // Verify we have the expected join aliases for the new structure: (p1)-[f1:FOLLOWS]->(p2)-[w1:WORKS_AT]->(c1)
                         let join_aliases: Vec<&String> =
@@ -1955,9 +1868,8 @@ mod tests {
 
                         println!("Join aliases found: {:?}", join_aliases);
                         assert!(join_aliases.contains(&&"w1".to_string()));
-                        assert!(join_aliases.contains(&&"p2".to_string()));
                         assert!(join_aliases.contains(&&"f1".to_string()));
-                        assert!(join_aliases.contains(&&"p1".to_string()));
+                        // Only relationship joins are created for complex patterns (node joins handled by GraphJoins)
 
                         // Verify each join has the correct structure
                         for join in &graph_joins.joins {

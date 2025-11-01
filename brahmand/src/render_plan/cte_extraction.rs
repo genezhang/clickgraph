@@ -196,8 +196,8 @@ pub fn extract_relationship_columns_from_table(table_name: &str) -> Relationship
     // No schema available or table not found - use generic defaults
     // This ensures the system works in schema-less mode but doesn't bypass user configuration
     RelationshipColumns {
-        from_column: "from_node_id".to_string(),
-        to_column: "to_node_id".to_string(),
+        from_column: "from_id".to_string(),
+        to_column: "to_id".to_string(),
     }
 }
 
@@ -208,7 +208,16 @@ pub fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipCo
             scan.table_name.as_ref().map(|table| extract_relationship_columns_from_table(table))
         }
         LogicalPlan::ViewScan(view_scan) => {
-            Some(extract_relationship_columns_from_table(&view_scan.source_table))
+            // Check if ViewScan already has relationship columns configured
+            if let (Some(from_col), Some(to_col)) = (&view_scan.from_column, &view_scan.to_column) {
+                Some(RelationshipColumns {
+                    from_column: from_col.clone(),
+                    to_column: to_col.clone(),
+                })
+            } else {
+                // Fallback to table-based lookup
+                Some(extract_relationship_columns_from_table(&view_scan.source_table))
+            }
         }
         LogicalPlan::GraphRel(rel) => extract_relationship_columns(&rel.center),
         LogicalPlan::Filter(filter) => extract_relationship_columns(&filter.input),
@@ -221,7 +230,7 @@ pub fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipCo
 fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::Scan(scan) => scan.table_name.as_ref().map(|table| table_to_id_column(table)),
-        LogicalPlan::ViewScan(view_scan) => Some(table_to_id_column(&view_scan.source_table)),
+        LogicalPlan::ViewScan(view_scan) => Some(view_scan.id_column.clone()),
         LogicalPlan::GraphNode(node) => extract_id_column(&node.input),
         LogicalPlan::Filter(filter) => extract_id_column(&filter.input),
         LogicalPlan::Projection(proj) => extract_id_column(&proj.input),
@@ -353,7 +362,17 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                     .unwrap_or_else(|| "User".to_string());
                 let start_table = label_to_table_name(&start_label);
                 let end_table = label_to_table_name(&end_label);
-                let rel_table = rel_type_to_table_name(&graph_rel.alias.clone());
+                let rel_table = if let Some(labels) = &graph_rel.labels {
+                    if let Some(first_label) = labels.first() {
+                        rel_type_to_table_name(first_label)
+                    } else {
+                        // Fallback to alias if no labels (shouldn't happen)
+                        rel_type_to_table_name(&graph_rel.alias)
+                    }
+                } else {
+                    // Fallback to alias if no labels
+                    rel_type_to_table_name(&graph_rel.alias)
+                };
 
                 // Extract ID columns
                 let start_id_col = extract_id_column(&graph_rel.left)

@@ -13,8 +13,8 @@ views:
           name: full_name
           
     relationships:
-      FRIEND:
-        type_name: FRIEND
+      FOLLOWS:
+        type_name: FOLLOWS
         source_table: friendships
         from_column: user1_id
         to_column: user2_id

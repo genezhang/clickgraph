@@ -15,7 +15,7 @@ def test_multiple_relationships():
     # For now, test 2 relationships with the social_graph schema
     query = """
     MATCH (u1:User)-[:FOLLOWS|FRIENDS_WITH]->(u2:User)
-    RETURN u1.user_id, u2.user_id
+    RETURN u1, u2
     """
 
     payload = {
@@ -81,7 +81,7 @@ def test_three_relationships():
     # We'll extend this once we confirm the basic functionality works
     query = """
     MATCH (u1:User)-[:FOLLOWS|FRIENDS_WITH]->(u2:User)
-    RETURN u1.user_id, u2.user_id
+    RETURN u1, u2
     """
 
     payload = {

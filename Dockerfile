@@ -11,8 +11,8 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 # Build application
 COPY . .
-RUN cargo build --release --bin brahmand \
-    && cargo build --release --bin brahmand-client
+RUN cargo build --release --bin clickgraph \
+    && cargo build --release --bin clickgraph-client
 
 # We do not need the Rust toolchain to run the binary!
 FROM debian:bullseye-slim AS runtime
@@ -21,6 +21,6 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # Copy binaries
-COPY --from=builder /app/target/release/brahmand /usr/local/bin/
-COPY --from=builder /app/target/release/brahmand-client /usr/local/bin/
-ENTRYPOINT ["/usr/local/bin/brahmand"]
+COPY --from=builder /app/target/release/clickgraph /usr/local/bin/
+COPY --from=builder /app/target/release/clickgraph-client /usr/local/bin/
+ENTRYPOINT ["/usr/local/bin/clickgraph"]

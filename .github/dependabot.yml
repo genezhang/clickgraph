@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Auto-merge minor and patch updates
+    open-pull-requests-limit: 10
+    reviewers:
+      - "genezhang"
+    assignees:
+      - "genezhang"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    # Auto-approve and auto-merge configuration
+    automerge: true
+    automerge-type: "version"
+    ignore:
+      # Ignore major version updates for now
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

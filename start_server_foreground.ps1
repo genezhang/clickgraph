@@ -1,9 +1,9 @@
-# ClickGraph Server Background Launcher for Windows
-# This script starts the ClickGraph server as a background job with full environment variable configuration
+# ClickGraph Server Background Launcher with Output Monitoring for Windows
+# This script starts the ClickGraph server as a background job but monitors output in real-time
 #
 # Usage Examples:
-#   .\start_server_background.ps1                                    # Default config
-#   .\start_server_background.ps1 -ConfigPath "ecommerce_graph_demo.yaml"  # Ecommerce schema
+#   .\start_server_foreground.ps1                                    # Default config
+#   .\start_server_foreground.ps1 -ConfigPath "ecommerce_graph_demo.yaml"  # Ecommerce schema
 #   .\start_server_background.ps1 -HttpPort 8081 -LogLevel "debug"  # Custom port and logging
 #   .\start_server_background.ps1 -Database "test_db" -DisableBolt   # Custom database, HTTP only
 #   .\start_server_background.ps1 -MaxCteDepth 200 -ValidateSchema  # Custom CTE depth with validation
@@ -91,10 +91,37 @@ $job = Start-Job -ScriptBlock {
 } -ArgumentList $HttpPort, $BoltPort, $ConfigPath, $Database, $ClickHouseUrl, $ClickHouseUser, $ClickHousePassword, $LogLevel, $HttpHost, $BoltHost, $DisableBolt, $MaxCteDepth, $ValidateSchema, $EnableBolt, $DebugBuild
 
 Write-Host "Server job started with ID: $($job.Id)" -ForegroundColor Green
+Write-Host "Monitoring server output in real-time..." -ForegroundColor Yellow
+Write-Host "Press Ctrl+C to stop monitoring (server will continue running)" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "To stop the server:" -ForegroundColor Yellow
-Write-Host "  Stop-Job -Id $($job.Id); Remove-Job -Id $($job.Id)" -ForegroundColor Gray
-Write-Host ""
-Write-Host "To check server status:" -ForegroundColor Yellow
-Write-Host "  Receive-Job -Id $($job.Id) -Keep" -ForegroundColor Gray
-Write-Host "  Invoke-WebRequest -Uri 'http://localhost:$HttpPort/health'" -ForegroundColor Gray
+
+# Monitor the job output in real-time
+try {
+    while ($true) {
+        # Get any new output from the job
+        $output = Receive-Job -Job $job -Keep
+        if ($output) {
+            $output | ForEach-Object { Write-Host $_ }
+        }
+
+        # Check if job is still running
+        if ($job.State -ne "Running") {
+            Write-Host "Server job has stopped. Final output:" -ForegroundColor Yellow
+            Receive-Job -Job $job -Wait
+            break
+        }
+
+        # Small delay to avoid busy waiting
+        Start-Sleep -Milliseconds 100
+    }
+} catch {
+    Write-Host ""
+    Write-Host "Monitoring stopped. Server job is still running in background." -ForegroundColor Green
+    Write-Host "Job ID: $($job.Id)" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "To stop the server completely:" -ForegroundColor Yellow
+    Write-Host "  Stop-Job -Id $($job.Id); Remove-Job -Id $($job.Id)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "To check server status:" -ForegroundColor Yellow
+    Write-Host "  Receive-Job -Id $($job.Id) -Keep" -ForegroundColor Gray
+}

@@ -2,7 +2,7 @@ mod view_table_ref;
 mod from_table;
 mod cte_generation;
 mod filter_pipeline;
-mod cte_extraction;
+pub mod cte_extraction;
 mod expression_utils;
 
 use errors::RenderBuildError;

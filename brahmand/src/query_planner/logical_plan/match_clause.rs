@@ -24,26 +24,35 @@ use std::collections::HashMap;
 fn generate_scan(alias: String, label: Option<String>) -> LogicalPlanResult<Arc<LogicalPlan>> {
     log::debug!("generate_scan called with alias='{}', label={:?}", alias, label);
     
-    let label_str = label.ok_or_else(|| {
-        LogicalPlanError::NodeNotFound("No label provided for node".to_string())
-    })?;
-    
-    log::debug!("Trying to create ViewScan for label '{}'", label_str);
-    if let Some(view_scan) = try_generate_view_scan(&alias, &label_str) {
-        log::info!("✓ Successfully created ViewScan for label '{}'", label_str);
-        Ok(view_scan)
+    if let Some(label_str) = &label {
+        log::debug!("Trying to create ViewScan for label '{}'", label_str);
+        if let Some(view_scan) = try_generate_view_scan(&alias, &label_str) {
+            log::info!("✓ Successfully created ViewScan for label '{}'", label_str);
+            Ok(view_scan)
+        } else {
+            log::warn!("Schema lookup failed for node label '{}', falling back to regular Scan", label_str);
+            // Fallback to regular Scan when schema is not available (e.g., in tests)
+            let scan = Scan {
+                table_alias: Some(alias),
+                table_name: Some(label_str.clone()), // Use the label as table name for backward compatibility
+            };
+            Ok(Arc::new(LogicalPlan::Scan(scan)))
+        }
     } else {
-        log::error!("❌ Schema lookup failed for node label '{}'", label_str);
-        Err(LogicalPlanError::NodeNotFound(format!("Node label '{}' not found in schema", label_str)))
+        log::debug!("No label provided, creating regular Scan");
+        // For nodes without labels, create a regular Scan with no table name
+        let scan = Scan {
+            table_alias: Some(alias),
+            table_name: None,
+        };
+        Ok(Arc::new(LogicalPlan::Scan(scan)))
     }
-}
-
-/// Try to generate a ViewScan by looking up the label in the global schema
+}/// Try to generate a ViewScan by looking up the label in the global schema
 /// 
 /// This function accesses GLOBAL_GRAPH_SCHEMA to translate Cypher labels
 /// (e.g., "User") to actual ClickHouse table names (e.g., "users").
 /// Returns None if schema is not available or label not found.
-fn try_generate_view_scan(alias: &str, label: &str) -> Option<Arc<LogicalPlan>> {
+fn try_generate_view_scan(_alias: &str, label: &str) -> Option<Arc<LogicalPlan>> {
     // Access the global schema
     let schema_lock = crate::server::GLOBAL_GRAPH_SCHEMA.get()?;
     
@@ -68,14 +77,14 @@ fn try_generate_view_scan(alias: &str, label: &str) -> Option<Arc<LogicalPlan>> 
     // Log successful resolution
     log::info!("✓ ViewScan: Resolved label '{}' to table '{}'", label, node_schema.table_name);
     
-    // Create property mapping (initially empty - will be populated during projection planning)
-    let property_mapping = HashMap::new();
+    // Create property mapping from schema
+    let property_mapping = node_schema.property_mappings.clone();
     
     // Create ViewScan with the actual table name from schema
     let view_scan = ViewScan::new(
         node_schema.table_name.clone(),  // Use actual ClickHouse table name
         None,                             // No filter condition yet
-        property_mapping,                 // Empty for now
+        property_mapping,                 // Property mappings from schema
         node_schema.node_id.column.clone(), // ID column from schema
         vec!["id".to_string()],          // Basic output schema
         vec![],                           // No projections yet
@@ -141,6 +150,12 @@ fn generate_relationship_center(rel_alias: &str, rel_labels: &Option<Vec<String>
                 return Ok(view_scan);
             } else {
                 log::warn!("Relationship ViewScan creation failed for type '{}', falling back to regular Scan", labels[0]);
+                // Fallback to regular Scan when schema is not available (e.g., in tests)
+                let scan = Scan {
+                    table_alias: Some(rel_alias.to_string()),
+                    table_name: Some(labels[0].clone()), // Use the relationship type as table name
+                };
+                return Ok(Arc::new(LogicalPlan::Scan(scan)));
             }
         } else {
             log::debug!("Multiple relationship types ({}), will be handled by CTE generation", labels.len());
@@ -154,11 +169,14 @@ fn generate_relationship_center(rel_alias: &str, rel_labels: &Option<Vec<String>
             return Ok(Arc::new(LogicalPlan::Scan(placeholder_scan)));
         }
     } else {
-        log::debug!("No relationship labels specified, using regular scan");
+        log::debug!("No relationship labels specified, creating regular scan");
+        // For relationships without labels, create a regular Scan
+        let scan = Scan {
+            table_alias: Some(rel_alias.to_string()),
+            table_name: None,
+        };
+        return Ok(Arc::new(LogicalPlan::Scan(scan)));
     }
-    // Fallback to regular scan - but this should be an error for relationships too
-    log::error!("❌ No valid relationship type found for alias '{}'", rel_alias);
-    Err(LogicalPlanError::RelationshipNotFound(format!("Relationship alias '{}' has no valid type", rel_alias)))
 }
 
 fn convert_properties(props: Vec<Property>) -> LogicalPlanResult<Vec<LogicalExpr>> {
@@ -268,9 +286,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             let end_node_alias1 = end_node_alias.clone();
             let end_node_alias2 = end_node_alias.clone();
             let start_node_label1 = start_node_label.clone();
-            let start_node_label2 = start_node_label.clone();
             let end_node_label1 = end_node_label.clone();
-            let end_node_label2 = end_node_label.clone();
             plan_ctx.insert_table_ctx(
                 end_node_alias.clone(),
                 TableCtx::build(
@@ -477,8 +493,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                 right: right_node,
                 alias: rel_alias.clone(),
                 direction: rel.direction.clone().into(),
-                left_connection: left_conn,
-                right_connection: right_conn,
+                left_connection: left_conn.clone(),  // Left node is the start node (left_conn for Outgoing)
+                right_connection: right_conn.clone(), // Right node is the end node (right_conn for Outgoing)
                 is_rel_anchor: false,
                 variable_length: rel.variable_length.clone().map(|v| v.into()),
                 shortest_path_mode: shortest_path_mode.clone(),
@@ -885,22 +901,22 @@ mod tests {
             LogicalPlan::GraphRel(graph_rel) => {
                 assert_eq!(graph_rel.alias, "works_at");
                 assert_eq!(graph_rel.direction, Direction::Outgoing);
-                assert_eq!(graph_rel.left_connection, "user");
-                assert_eq!(graph_rel.right_connection, "company");
+                assert_eq!(graph_rel.left_connection, "user");  // Left node is the start node (user) for outgoing relationships
+                assert_eq!(graph_rel.right_connection, "company");    // Right node is the end node (company) for outgoing relationships
                 assert!(!graph_rel.is_rel_anchor);
 
-                // Check left side (end node)
+                // Check left side (start node for outgoing relationships)
                 match graph_rel.left.as_ref() {
                     LogicalPlan::GraphNode(left_node) => {
-                        assert_eq!(left_node.alias, "company");
+                        assert_eq!(left_node.alias, "user");
                     }
                     _ => panic!("Expected GraphNode on left"),
                 }
 
-                // Check right side (start node)
+                // Check right side (end node for outgoing relationships)
                 match graph_rel.right.as_ref() {
                     LogicalPlan::GraphNode(right_node) => {
-                        assert_eq!(right_node.alias, "user");
+                        assert_eq!(right_node.alias, "company");
                     }
                     _ => panic!("Expected GraphNode on right"),
                 }

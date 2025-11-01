@@ -6,7 +6,7 @@ views:
   - name: social_graph
     nodes:
       user:
-        source_table: users_bench
+        source_table: users
         id_column: user_id
         label: User
         property_mappings:
@@ -15,7 +15,7 @@ views:
 
     relationships:
       follows:
-        source_table: user_follows_bench
+        source_table: user_follows
         from_column: follower_id
         to_column: followed_id
         type_name: FOLLOWS
