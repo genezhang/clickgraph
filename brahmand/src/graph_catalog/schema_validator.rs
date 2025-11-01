@@ -41,7 +41,6 @@ use clickhouse::Client;
 
 
 use super::errors::GraphSchemaError;
-use super::graph_schema::{NodeViewMapping, RelationshipViewMapping};
 
 #[cfg(test)]
 mod tests;
@@ -62,42 +61,6 @@ impl SchemaValidator {
             client,
             column_cache: HashMap::new(),
         }
-    }
-
-    /// Validate a node view mapping against ClickHouse schema
-    pub async fn validate_node_mapping(&mut self, mapping: &NodeViewMapping) -> Result<(), GraphSchemaError> {
-        // Check if table exists and get columns
-        let columns = self.get_table_columns(&mapping.source_table).await?;
-
-        // Validate ID column exists and has a valid type
-        self.validate_id_column(&mapping.source_table, &mapping.id_column, &columns)?;
-
-        // Validate all mapped property columns exist
-        for column_name in mapping.property_mappings.values() {
-            self.validate_column_exists(&mapping.source_table, column_name, &columns)?;
-        }
-
-        Ok(())
-    }
-
-    /// Validate a relationship view mapping against ClickHouse schema
-    pub async fn validate_relationship_mapping(
-        &mut self,
-        mapping: &RelationshipViewMapping,
-    ) -> Result<(), GraphSchemaError> {
-        // Check if table exists and get columns
-        let columns = self.get_table_columns(&mapping.source_table).await?;
-
-        // Validate source and target ID columns exist
-        self.validate_column_exists(&mapping.source_table, &mapping.from_column, &columns)?;
-        self.validate_column_exists(&mapping.source_table, &mapping.to_column, &columns)?;
-
-        // Validate all mapped property columns exist
-        for column_name in mapping.property_mappings.values() {
-            self.validate_column_exists(&mapping.source_table, column_name, &columns)?;
-        }
-
-        Ok(())
     }
 
     /// Get column information for a table, using cache if available

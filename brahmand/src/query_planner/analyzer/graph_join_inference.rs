@@ -275,7 +275,6 @@ impl GraphJoinInference {
             graph_rel,
             plan_ctx,
             graph_schema,
-            None, // No view definition needed for join inference
             Pass::GraphJoinInference,
         )?;
 
@@ -1042,6 +1041,7 @@ mod tests {
         nodes.insert(
             "Person".to_string(),
             NodeSchema {
+                database: "default".to_string(),
                 table_name: "Person".to_string(),
                 column_names: vec!["id".to_string(), "name".to_string(), "age".to_string()],
                 primary_keys: "id".to_string(),
@@ -1057,6 +1057,7 @@ mod tests {
         nodes.insert(
             "Company".to_string(),
             NodeSchema {
+                database: "default".to_string(),
                 table_name: "Company".to_string(),
                 column_names: vec!["id".to_string(), "name".to_string(), "founded".to_string()],
                 primary_keys: "id".to_string(),
@@ -1072,6 +1073,7 @@ mod tests {
         relationships.insert(
             "FOLLOWS".to_string(),
             RelationshipSchema {
+                database: "default".to_string(),
                 table_name: "FOLLOWS".to_string(),
                 column_names: vec![
                     "from_id".to_string(),
@@ -1092,6 +1094,7 @@ mod tests {
         relationships.insert(
             "WORKS_AT".to_string(),
             RelationshipSchema {
+                database: "default".to_string(),
                 table_name: "WORKS_AT".to_string(),
                 column_names: vec![
                     "from_id".to_string(),
@@ -1108,7 +1111,7 @@ mod tests {
             },
         );
 
-        GraphSchema::build(1, nodes, relationships, HashMap::new())
+        GraphSchema::build(1, "default".to_string(), nodes, relationships, HashMap::new())
     }
 
     fn setup_plan_ctx_with_graph_entities() -> PlanCtx {

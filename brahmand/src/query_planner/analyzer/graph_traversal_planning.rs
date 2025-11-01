@@ -217,7 +217,6 @@ impl GraphTRaversalPlanning {
             graph_rel,
             plan_ctx,
             graph_schema,
-            None, // No view in use
             Pass::GraphTraversalPlanning,
         )?;
 

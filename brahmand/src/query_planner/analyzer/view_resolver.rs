@@ -4,12 +4,7 @@
 //! during query planning. It maps node and relationship patterns to their
 //! corresponding view definitions and resolves property references.
 
-use std::collections::HashMap;
-
 use crate::graph_catalog::{
-    GraphViewDefinition,
-    NodeViewMapping,
-    RelationshipViewMapping,
     graph_schema::{GraphSchema, NodeSchema, RelationshipSchema},
 };
 
@@ -21,110 +16,33 @@ use super::errors::AnalyzerError;
 pub struct ViewResolver<'a> {
     /// Graph schema for direct lookups
     schema: &'a GraphSchema,
-    /// Node contexts for resolving property mappings
-    left_node: Option<&'a NodeViewMapping>,
-    rel: Option<&'a RelationshipViewMapping>,
-    right_node: Option<&'a NodeViewMapping>,
-    /// Active view definition (optional for schema-only mode)
-    view: Option<&'a GraphViewDefinition>,
-    /// Cache of resolved node mappings
-    node_mappings: HashMap<String, &'a NodeViewMapping>,
-    /// Cache of resolved relationship mappings
-    relationship_mappings: HashMap<String, &'a RelationshipViewMapping>,
 }
 
 impl<'a> ViewResolver<'a> {
-    pub fn new(
-        schema: &'a GraphSchema,
-        view: &'a GraphViewDefinition
-    ) -> Self {
-        let mut resolver = ViewResolver {
+    /// Create a new ViewResolver that works directly with schema property mappings
+    pub fn new(schema: &'a GraphSchema) -> Self {
+        ViewResolver {
             schema,
-            left_node: None,
-            rel: None,
-            right_node: None,
-            view: Some(view),
-            node_mappings: HashMap::new(),
-            relationship_mappings: HashMap::new(),
-        };
-        resolver.initialize_mappings();
-        resolver
+        }
     }
 
     /// Create a new ViewResolver that works directly with schema property mappings
     pub fn from_schema(schema: &'a GraphSchema) -> Self {
         ViewResolver {
             schema,
-            left_node: None,
-            rel: None,
-            right_node: None,
-            view: None,
-            node_mappings: HashMap::new(),
-            relationship_mappings: HashMap::new(),
         }
     }
 
-    /// Get schema for a node from the view definition
-    pub fn get_node_schema(&self, table_name: &str) -> Option<&'a NodeSchema> {
-        // Look up mapping from view definition
-        self.view.and_then(|v| v.nodes.get(table_name)).map(|mapping| {
-            // For now, return underlying table schema
-            // TODO: Transform view mapping into proper NodeSchema
-            self.schema.get_node_schema(&mapping.source_table)
-                .ok()
-        }).flatten()
+    /// Get the schema for a node label
+    pub fn resolve_node(&self, label: &str) -> Result<&'a NodeSchema, AnalyzerError> {
+        self.schema.get_node_schema(label)
+            .map_err(|_| AnalyzerError::NodeLabelNotFound(label.to_string()))
     }
 
-    /// Get schema for a relationship from the view definition
-    pub fn get_relationship_schema(&self, table_name: &str) -> Option<&'a RelationshipSchema> {
-        // Look up mapping from view definition
-        self.view.and_then(|v| v.relationships.get(table_name)).map(|mapping| {
-            // For now, return underlying table schema
-            // TODO: Transform view mapping into proper RelationshipSchema
-            self.schema.get_rel_schema(&mapping.source_table)
-                .ok()
-        }).flatten()
-    }
-
-    /// Initialize mapping caches
-    fn initialize_mappings(&mut self) {
-        if let Some(view) = self.view {
-            self.node_mappings = view.nodes
-                .iter()
-                .map(|(label, mapping)| (label.clone(), mapping))
-                .collect();
-
-            self.relationship_mappings = view.relationships
-                .iter()
-                .map(|(type_name, mapping)| (type_name.clone(), mapping))
-                .collect();
-        }
-    }
-
-    /// Get the complete view mapping for a node label
-    pub fn resolve_node(&self, label: &str) -> Result<(NodeViewMapping, &'a NodeSchema), AnalyzerError> {
-        // Get the view mapping for this label
-        let mapping = self.node_mappings.get(label)
-            .ok_or_else(|| AnalyzerError::NodeLabelNotFound(label.to_string()))?;
-
-        let schema = self.schema.get_node_schema(&mapping.source_table)
-            .map_err(|_| AnalyzerError::TableNotFound(mapping.source_table.clone()))?;
-
-        // Return cloned mapping and schema reference
-        Ok(((*mapping).clone(), schema))
-    }
-
-    /// Get the complete view mapping for a relationship type 
-    pub fn resolve_relationship(&self, type_name: &str) -> Result<(RelationshipViewMapping, &'a RelationshipSchema), AnalyzerError> {
-        // Get the view mapping for this type
-        let mapping = self.relationship_mappings.get(type_name)
-            .ok_or_else(|| AnalyzerError::RelationshipTypeNotFound(type_name.to_string()))?;
-
-        let schema = self.schema.get_rel_schema(&mapping.source_table)
-            .map_err(|_| AnalyzerError::TableNotFound(mapping.source_table.clone()))?;
-
-        // Return cloned mapping and schema reference
-        Ok(((*mapping).clone(), schema))
+    /// Get the schema for a relationship type 
+    pub fn resolve_relationship(&self, type_name: &str) -> Result<&'a RelationshipSchema, AnalyzerError> {
+        self.schema.get_rel_schema(type_name)
+            .map_err(|_| AnalyzerError::RelationshipTypeNotFound(type_name.to_string()))
     }
 
     /// Resolve a node property to its underlying column
@@ -155,11 +73,5 @@ impl<'a> ViewResolver<'a> {
                 entity_name: type_name.to_string(),
                 property: property.to_string(),
             })
-    }
-
-    /// Get any additional filtering conditions from the view definition
-    pub fn get_view_filters(&self, label: &str) -> Option<String> {
-        self.node_mappings.get(label)
-            .and_then(|mapping| mapping.filter_condition.clone())
     }
 }

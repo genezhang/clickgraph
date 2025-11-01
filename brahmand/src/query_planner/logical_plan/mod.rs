@@ -35,7 +35,6 @@ mod return_clause;
 mod skip_n_limit_clause;
 mod where_clause;
 mod view_scan;
-mod view_planning;
 mod filter_view;
 mod projection_view;
 

@@ -50,7 +50,7 @@
 //! WHERE iteration = (SELECT MAX(iteration) FROM pagerank_iterations)
 //! ```
 
-use crate::graph_catalog::graph_schema::{GraphSchema, NodeViewMapping, RelationshipViewMapping};
+use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::clickhouse_query_generator::errors::ClickhouseQueryGeneratorError;
 
 /// Configuration for PageRank computation

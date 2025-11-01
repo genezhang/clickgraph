@@ -1,7 +1,6 @@
 use crate::{
     graph_catalog::{
         graph_schema::{GraphSchema, NodeSchema, RelationshipSchema},
-        GraphViewDefinition,
     },
     query_planner::{
         analyzer::{
@@ -28,24 +27,12 @@ pub struct GraphContext<'a> {
 impl<'a> GraphContext<'a> {
     /// Get schema for a node table
     pub fn get_node_schema(&self, table_name: &str) -> Option<&'a NodeSchema> {
-        if let Some(view_resolver) = &self.view_resolver {
-            // First try to get schema from view resolver
-            view_resolver.get_node_schema(table_name)
-        } else {
-            // Fall back to direct schema lookup
-            self.schema.get_node_schema(table_name).ok()
-        }
+        self.schema.get_node_schema(table_name).ok()
     }
     
     /// Get schema for a relationship table
     pub fn get_relationship_schema(&self, table_name: &str) -> Option<&'a RelationshipSchema> {
-        if let Some(view_resolver) = &self.view_resolver {
-            // First try to get schema from view resolver
-            view_resolver.get_relationship_schema(table_name)
-        } else {
-            // Fall back to direct schema lookup
-            self.schema.get_rel_schema(table_name).ok()
-        }
+        self.schema.get_rel_schema(table_name).ok()
     }
 }
 
@@ -72,7 +59,6 @@ pub fn get_graph_context<'a>(
     graph_rel: &'a GraphRel,
     plan_ctx: &'a mut PlanCtx,
     graph_schema: &'a GraphSchema,
-    view: Option<&'a GraphViewDefinition>,
     pass: Pass,
 ) -> AnalyzerResult<GraphContext<'a>> {
     // get required information
@@ -176,13 +162,8 @@ pub fn get_graph_context<'a>(
         view_resolver: None,
     };
 
-    // Initialize view resolver if we have a view definition
-    let view_resolver = view.and_then(|view_def| {
-        Some(ViewResolver::new(
-            graph_context.schema,
-            view_def
-        ))
-    });
+    // Initialize view resolver for schema-only operation
+    let view_resolver = Some(ViewResolver::from_schema(graph_schema));
 
     // Set the resolver and return
     graph_context.view_resolver = view_resolver;
