@@ -57,8 +57,8 @@ class BenchmarkDataGenerator:
         # Size configurations
         sizes = {
             "small": {"users": 1000, "follows_multiplier": 5, "posts_multiplier": 2},
-            "medium": {"users": 10000, "follows_multiplier": 8, "posts_multiplier": 3},
-            "large": {"users": 50000, "follows_multiplier": 10, "posts_multiplier": 5}
+            "medium": {"users": 50000, "follows_multiplier": 10, "posts_multiplier": 5},
+            "large": {"users": 5000000, "follows_multiplier": 10, "posts_multiplier": 5}
         }
 
         config = sizes.get(size, sizes["small"])
@@ -189,8 +189,8 @@ CREATE TABLE post_likes_bench (
 
         sizes = {
             "small": {"customers": 1000, "products": 500, "orders_multiplier": 3},
-            "medium": {"customers": 10000, "products": 2000, "orders_multiplier": 5},
-            "large": {"customers": 50000, "products": 10000, "orders_multiplier": 8}
+            "medium": {"customers": 50000, "products": 10000, "orders_multiplier": 8},
+            "large": {"customers": 5000000, "products": 1000000, "orders_multiplier": 8}
         }
 
         config = sizes.get(size, sizes["small"])

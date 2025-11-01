@@ -69,8 +69,8 @@ class ClickGraphBenchmark:
                 "status_code": response.status_code,
                 "total_time_seconds": total_time,
                 "performance_metrics": perf_metrics,
-                "result_count": len(response.json().get("data", [])) if response.status_code == 200 else 0,
-                "error": response.json().get("error") if response.status_code != 200 else None
+                "result_count": len(response.json()) if response.status_code == 200 and isinstance(response.json(), list) else 0,
+                "error": response.text if response.status_code != 200 else None
             }
 
         except Exception as e:

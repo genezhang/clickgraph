@@ -21,11 +21,11 @@ services:
     volumes:
       - ./clickhouse_data:/var/lib/clickhouse
 
-  brahmand-benchmark:
+  clickgraph-benchmark:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: brahmand-benchmark
+    container_name: clickgraph-benchmark
     depends_on:
       clickhouse-service:
         condition: service_healthy
@@ -34,12 +34,12 @@ services:
       CLICKHOUSE_USER: "test_user"
       CLICKHOUSE_PASSWORD: "test_pass"
       CLICKHOUSE_DATABASE: "brahmand"
-      GRAPH_CONFIG_PATH: "/app/social_network.yaml"
+      GRAPH_CONFIG_PATH: "/app/social_benchmark.yaml"
     ports:
       - "8080:8080"
     volumes:
-      - ./social_network.yaml:/app/social_network.yaml:ro
-      - ./ecommerce_graph_demo.yaml:/app/ecommerce_graph_demo.yaml:ro
+      - ./social_benchmark.yaml:/app/social_benchmark.yaml:ro
+      - ./ecommerce_benchmark.yaml:/app/ecommerce_benchmark.yaml:ro
 
 volumes:
   clickhouse_data:

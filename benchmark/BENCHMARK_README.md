@@ -67,8 +67,8 @@ python benchmark/run_benchmarks.py --quick           # Fast validation
 
 **Sizes**:
 - Small: 1K users, 5K follows, 2K posts
-- Medium: 10K users, 80K follows, 30K posts
-- Large: 50K users, 500K follows, 250K posts
+- Medium: 50K users, 500K follows, 250K posts
+- Large: 5M users, 50M follows, 25M posts
 
 ### E-commerce Dataset
 
@@ -80,8 +80,8 @@ python benchmark/run_benchmarks.py --quick           # Fast validation
 
 **Sizes**:
 - Small: 1K customers, 500 products, 3K orders
-- Medium: 10K customers, 2K products, 50K orders
-- Large: 50K customers, 10K products, 400K orders
+- Medium: 50K customers, 10K products, 400K orders
+- Large: 5M customers, 1M products, 40M orders
 
 ## Query Types
 
@@ -249,8 +249,8 @@ python benchmark.py --dataset social --queries complex --iterations 10 --output 
 - **Solution**: Run multiple iterations, focus on median performance
 
 **Memory Issues**: Large datasets may cause out-of-memory errors
-- **Cause**: ClickHouse memory limits, complex queries
-- **Solution**: Reduce dataset size, optimize queries, increase memory limits
+- **Cause**: ClickHouse memory limits, complex queries on 5M+ users
+- **Solution**: Use medium size (50K users) for initial testing, increase ClickHouse memory limits for large datasets, optimize queries
 
 **Timeout Errors**: Long-running queries may timeout
 - **Cause**: Complex shortest path queries, large datasets
