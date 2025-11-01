@@ -91,6 +91,12 @@ impl AnalyzerPass for QueryValidation {
                     }
                 })?;
 
+                // Skip validation for relationships with multiple types (e.g., [:FOLLOWS|FRIENDS_WITH])
+                // The CTE generation will handle validation for multiple relationships
+                if rel_ctx.get_labels().map(|labels| labels.len() > 1).unwrap_or(false) {
+                    return Ok(Transformed::No(logical_plan));
+                }
+
                 let rel_lable = rel_ctx
                     .get_label_str()
                     .map_err(|e| AnalyzerError::PlanCtx {

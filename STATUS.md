@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: October 25, 2025*
+*Updated: November 1, 2025*
 
 ---
 
@@ -9,7 +9,7 @@
 ### Query Features
 - **Simple node queries**: `MATCH (u:User) RETURN u.name` ✅
 - **Property filtering**: `WHERE u.age > 25` ✅
-- **Basic relationships**: `MATCH (u)-[r:FRIENDS_WITH]->(f) RETURN u, f` ✅
+- **Basic relationships**: `MATCH (u)-[r:FRIENDS_WITH]->(f) RETURN u, f` ✅ **[FIXED: Nov 1, 2025]** - Root cause fix: No more duplicate CTE-style node JOINs, efficient JOIN generation for simple relationships
 - **Multi-variable queries**: `MATCH (b:User), (a:User)` with CROSS JOINs ✅ **[COMPLETED: Oct 25, 2025]**
 - **Multi-hop traversals**: `(u)-[r1]->(a)-[r2]->(b)` ✅
 - **Variable-length paths**: `(u)-[*1..3]->(f)` with recursive CTEs ✅
@@ -36,6 +36,8 @@
   - **Multiple relationship types (>2)**: ✅ **VERIFIED: Oct 25, 2025** - correctly generates (N-1) UNION ALL clauses for N relationship types
     - 3 relationship types: 2 UNION ALL clauses ✅
     - 4 relationship types: 3 UNION ALL clauses ✅
+  - **JOIN logic**: ✅ **FIXED: Oct 25, 2025** - main query now correctly JOINs with CTE instead of individual relationship tables
+  - **CTE integration**: ✅ **FIXED: Nov 1, 2025** - CTE placeholders properly skipped in FROM clause, CTE names used in JOINs
 - **PageRank algorithm**: `CALL pagerank(nodeLabels: 'Person,Company', relationshipTypes: 'KNOWS,WORKS_FOR', maxIterations: 10, dampingFactor: 0.85)` graph centrality measures ✅ **[COMPLETED: Oct 23, 2025]**
   - Iterative SQL implementation with UNION ALL approach
   - Configurable iterations and damping factor

@@ -1,6 +1,4 @@
 use std::sync::Arc;
-use std::fs::OpenOptions;
-use std::io::Write;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::plan_ctx::PlanCtx;
@@ -26,16 +24,6 @@ use crate::render_plan::cte_extraction::extract_ctes_with_context;
 use crate::render_plan::cte_extraction::{label_to_table_name, rel_types_to_table_names, rel_type_to_table_name, table_to_id_column, extract_relationship_columns, RelationshipColumns, extract_node_label_from_viewscan, has_variable_length_rel, get_path_variable};
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
-
-/// Helper function to extract the node alias from a GraphNode
-fn extract_node_alias(plan: &LogicalPlan) -> Option<String> {
-    match plan {
-        LogicalPlan::GraphNode(node) => Some(node.alias.clone()),
-        LogicalPlan::Filter(filter) => extract_node_alias(&filter.input),
-        LogicalPlan::Projection(proj) => extract_node_alias(&proj.input),
-        _ => None,
-    }
-}
 
 /// Helper function to extract the actual table name from a LogicalPlan node
 /// Recursively traverses the plan tree to find the Scan or ViewScan node
@@ -68,21 +56,10 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
         RenderExpr::PropertyAccessExp(prop) => {
             // Convert property access to table.column format
             // Apply alias mapping to convert Cypher aliases to CTE aliases
-            println!("DEBUG: render_expr_to_sql_string PropertyAccessExp - table_alias: '{}', column: '{}'", prop.table_alias.0, prop.column.0);
-            println!("DEBUG: alias_mapping: {:?}", alias_mapping);
             let table_alias = alias_mapping.iter()
-                .find(|(cypher, _)| {
-                    println!("DEBUG: comparing '{}' == '{}'", cypher, &prop.table_alias.0);
-                    *cypher == prop.table_alias.0
-                })
-                .map(|(_, cte)| {
-                    println!("DEBUG: found mapping, using CTE alias: '{}'", cte);
-                    cte.clone()
-                })
-                .unwrap_or_else(|| {
-                    println!("DEBUG: no mapping found, using original: '{}'", prop.table_alias.0);
-                    prop.table_alias.0.clone()
-                });
+                .find(|(cypher, _)| *cypher == prop.table_alias.0)
+                .map(|(_, cte)| cte.clone())
+                .unwrap_or_else(|| prop.table_alias.0.clone());
             format!("{}.{}", table_alias, prop.column.0)
         }
         RenderExpr::OperatorApplicationExp(op) => {
@@ -134,6 +111,97 @@ fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::Projection(proj) => extract_id_column(&proj.input),
         _ => None,
     }
+}
+
+/// Helper function to check if a plan tree contains a GraphRel with multiple relationships
+fn has_multiple_relationships(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            if let Some(labels) = &graph_rel.labels {
+                labels.len() > 1
+            } else {
+                false
+            }
+        }
+        LogicalPlan::Projection(proj) => has_multiple_relationships(&proj.input),
+        LogicalPlan::Filter(filter) => has_multiple_relationships(&filter.input),
+        LogicalPlan::GraphJoins(graph_joins) => has_multiple_relationships(&graph_joins.input),
+        LogicalPlan::GraphNode(graph_node) => has_multiple_relationships(&graph_node.input),
+        _ => false,
+    }
+}
+
+/// Helper function to extract multiple relationship info from a plan tree
+fn get_multiple_rel_info(plan: &LogicalPlan) -> Option<(String, String, String)> {
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            if let Some(labels) = &graph_rel.labels {
+                if labels.len() > 1 {
+                    let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
+                    Some((graph_rel.left_connection.clone(), graph_rel.right_connection.clone(), cte_name))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        LogicalPlan::Projection(proj) => get_multiple_rel_info(&proj.input),
+        LogicalPlan::Filter(filter) => get_multiple_rel_info(&filter.input),
+        LogicalPlan::GraphJoins(graph_joins) => get_multiple_rel_info(&graph_joins.input),
+        LogicalPlan::GraphNode(graph_node) => get_multiple_rel_info(&graph_node.input),
+        _ => None,
+    }
+}
+
+/// Helper function to extract all relationship connections from a plan tree
+/// Returns a vector of (left_connection, right_connection, relationship_alias) tuples
+fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(String, String, String)> {
+    let mut connections = vec![];
+    
+    fn collect_connections(plan: &LogicalPlan, connections: &mut Vec<(String, String, String)>) {
+        match plan {
+            LogicalPlan::GraphRel(graph_rel) => {
+                connections.push((
+                    graph_rel.left_connection.clone(),
+                    graph_rel.right_connection.clone(),
+                    graph_rel.alias.clone(),
+                ));
+            }
+            LogicalPlan::Projection(proj) => collect_connections(&proj.input, connections),
+            LogicalPlan::Filter(filter) => collect_connections(&filter.input, connections),
+            LogicalPlan::GraphJoins(graph_joins) => collect_connections(&graph_joins.input, connections),
+            LogicalPlan::GraphNode(graph_node) => collect_connections(&graph_node.input, connections),
+            _ => {}
+        }
+    }
+    
+    collect_connections(plan, &mut connections);
+    connections
+}
+
+/// Helper function to check if a condition references an end node alias
+fn references_end_node_alias(condition: &OperatorApplication, connections: &[(String, String, String)]) -> bool {
+    let end_aliases: std::collections::HashSet<String> = connections.iter()
+        .map(|(_, right_alias, _)| right_alias.clone())
+        .collect();
+    
+    // Check if any operand in the condition references an end node alias
+    condition.operands.iter().any(|operand| {
+        match operand {
+            RenderExpr::PropertyAccessExp(prop) => {
+                end_aliases.contains(&prop.table_alias.0)
+            }
+            _ => false,
+        }
+    })
+}
+
+/// Helper function to get node table name for a given alias
+fn get_node_table_for_alias(_alias: &str) -> String {
+    // For now, assume all nodes are from users table
+    // In a real implementation, this would look up the table from the schema
+    "users".to_string()
 }
 
 use super::CteGenerationContext;
@@ -294,6 +362,12 @@ pub(crate) trait RenderPlanBuilder {
 
     fn extract_union(&self) -> RenderPlanBuilderResult<Option<Union>>;
 
+    fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan>;
+
+    fn is_simple_relationship_query(&self) -> bool;
+
+    fn build_simple_relationship_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan>;
+
     fn to_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan>;
 }
 
@@ -358,11 +432,13 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_ctes(last_node_alias),
             LogicalPlan::GraphRel(graph_rel) => {
                 // Extract table names and column information - SAME LOGIC FOR BOTH PATHS
-                // Apply mapping even if extract_table_name succeeds, in case it returns a label
-                let start_table = label_to_table_name(&extract_table_name(&graph_rel.left)
-                    .unwrap_or_else(|| graph_rel.left_connection.clone()));
-                let end_table = label_to_table_name(&extract_table_name(&graph_rel.right)
-                    .unwrap_or_else(|| graph_rel.right_connection.clone()));
+                // Get node labels first, then convert to table names
+                let start_label = extract_node_label_from_viewscan(&graph_rel.left)
+                    .unwrap_or_else(|| "User".to_string()); // Fallback to User if not found
+                let end_label = extract_node_label_from_viewscan(&graph_rel.right)
+                    .unwrap_or_else(|| "User".to_string()); // Fallback to User if not found
+                let start_table = label_to_table_name(&start_label);
+                let end_table = label_to_table_name(&end_label);
                 
                 // Handle multiple relationship types
                 let rel_tables = if let Some(labels) = &graph_rel.labels {
@@ -379,15 +455,13 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 } else {
                     // Fallback to old logic
-                    vec![rel_type_to_table_name(&extract_table_name(&graph_rel.center)
-                        .unwrap_or_else(|| graph_rel.alias.clone()))]
+                vec![rel_type_to_table_name(&extract_table_name(&graph_rel.center)
+                    .unwrap_or_else(|| graph_rel.alias.clone()))]
                 };
                 
                 // For now, use the first table for single-table logic
                 // TODO: Implement UNION logic for multiple tables
-                let mut rel_table = rel_tables.first().ok_or(RenderBuildError::NoRelationshipTablesFound)?.clone();
-                
-                // Extract ID columns
+                let rel_table = rel_tables.first().ok_or(RenderBuildError::NoRelationshipTablesFound)?.clone();                // Extract ID columns
                 let start_id_col = extract_id_column(&graph_rel.left)
                     .unwrap_or_else(|| table_to_id_column(&start_table));
                 let end_id_col = extract_id_column(&graph_rel.right)
@@ -423,8 +497,6 @@ impl RenderPlanBuilder for LogicalPlan {
                         // Apply property mapping to the filter expression before categorization
                         apply_property_mapping_to_expr(&mut render_expr, &LogicalPlan::GraphRel(graph_rel.clone()));
                         
-                        println!("DEBUG: After property mapping, render_expr: {:?}", render_expr);
-                        
                         // Categorize filters
                         let categorized = categorize_filters(
                             Some(&render_expr),
@@ -432,8 +504,6 @@ impl RenderPlanBuilder for LogicalPlan {
                             &end_alias,
                             "", // rel_alias not used yet
                         );
-                        
-                        println!("DEBUG: categorized.start_node_filters: {:?}", categorized.start_node_filters);
                         
                         // Create alias mapping
                         let alias_mapping = [
@@ -450,8 +520,6 @@ impl RenderPlanBuilder for LogicalPlan {
                     } else {
                         (None, None)
                     };
-                    
-                    println!("DEBUG: start_filters: {:?}, end_filters: {:?}", start_filters_sql, end_filters_sql);
                     
                     // Extract properties from the projection for variable-length paths
                     let properties = extract_var_len_properties(self, &start_alias, &end_alias, &start_label, &end_label);
@@ -503,8 +571,15 @@ impl RenderPlanBuilder for LogicalPlan {
                     return Ok(child_ctes);
                 }
 
-                // Regular single-hop relationship: still need to use resolved table names!
-                // Handle multiple relationship types with UNION if needed
+                // Regular single-hop relationship: use JOIN logic instead of CTEs
+                // For simple relationships (single type, no variable-length), don't create CTEs
+                // Let the normal plan building logic handle JOINs
+                if rel_tables.len() == 1 && graph_rel.variable_length.is_none() {
+                    // Simple relationship: no CTEs needed, use JOINs
+                    return Ok(vec![]);
+                }
+                
+                // Handle multiple relationship types or complex cases with UNION/CTEs
                 let mut relationship_ctes = vec![];
                 
                 if rel_tables.len() > 1 {
@@ -528,8 +603,6 @@ impl RenderPlanBuilder for LogicalPlan {
                         is_recursive: false,
                     });
                     
-                    // Update rel_table to use the CTE name for subsequent processing
-                    rel_table = cte_name;
                     // PATCH: Ensure join uses the union CTE name
                     // Instead of context, propagate rel_table for join construction
                     // We'll use rel_table (CTE name) directly in join construction below
@@ -664,6 +737,14 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Empty => None,
             LogicalPlan::Scan(scan) => {
                 let table_name_raw = scan.table_name.clone().ok_or(RenderBuildError::MissingFromTable)?;
+                
+                // Check if this is a CTE placeholder for multiple relationships
+                // CTE names start with "rel_" and should not be included in FROM clause
+                if table_name_raw.starts_with("rel_") {
+                    log::info!("✓ Skipping CTE placeholder '{}' in FROM clause - will be referenced in JOINs", table_name_raw);
+                    return Ok(None);
+                }
+                
                 // Apply relationship type mapping if this might be a relationship scan
                 // (Node scans should be ViewScan after our fix, so remaining Scans are likely relationships)
                 let table_name = rel_type_to_table_name(&table_name_raw);
@@ -696,17 +777,159 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GraphNode(graph_node) => {
                 // For GraphNode, extract FROM from the input but use this GraphNode's alias
                 // CROSS JOINs for multiple standalone nodes are handled in extract_joins
-                let mut from_ref = from_table_to_view_ref(graph_node.input.extract_from()?);
-                // Use this GraphNode's alias
-                if let Some(ref mut view_ref) = from_ref {
-                    view_ref.alias = Some(graph_node.alias.clone());
+                println!("DEBUG: GraphNode.extract_from() - alias: {}, input: {:?}", graph_node.alias, graph_node.input);
+                match &*graph_node.input {
+                    LogicalPlan::ViewScan(scan) => {
+                        println!("DEBUG: GraphNode.extract_from() - matched ViewScan, table: {}", scan.source_table);
+                        // ViewScan already returns ViewTableRef, just update the alias
+                        let mut view_ref = ViewTableRef::new_table(
+                            scan.as_ref().clone(),
+                            scan.source_table.clone(),
+                        );
+                        view_ref.alias = Some(graph_node.alias.clone());
+                        println!("DEBUG: GraphNode.extract_from() - created ViewTableRef: {:?}", view_ref);
+                        Some(view_ref)
+                    },
+                    _ => {
+                        println!("DEBUG: GraphNode.extract_from() - not a ViewScan, input type: {:?}", graph_node.input);
+                        // For other input types, extract FROM and convert
+                        let mut from_ref = from_table_to_view_ref(graph_node.input.extract_from()?);
+                        // Use this GraphNode's alias
+                        if let Some(ref mut view_ref) = from_ref {
+                            view_ref.alias = Some(graph_node.alias.clone());
+                        }
+                        from_ref
+                    }
                 }
-                from_ref
             },
-            LogicalPlan::GraphRel(_) => None,
+            LogicalPlan::GraphRel(graph_rel) => {
+                // For GraphRel, we need to include the start node in the FROM clause
+                // This handles simple relationship queries where the start node should be FROM
+
+                // For simple relationships, use the start node as FROM
+                let left_from = graph_rel.left.extract_from();
+                println!("DEBUG: graph_rel.left = {:?}", graph_rel.left);
+                println!("DEBUG: left_from = {:?}", left_from);
+
+                if let Ok(Some(from_table)) = left_from {
+                    from_table_to_view_ref(Some(from_table))
+                } else {
+                    // If left node doesn't have FROM (e.g., it's Empty due to anchor node rotation),
+                    // check if the right contains a nested GraphRel with the actual nodes
+                    if let LogicalPlan::GraphRel(nested_graph_rel) = graph_rel.right.as_ref() {
+                        // Extract FROM from the nested GraphRel's left node
+                        let nested_left_from = nested_graph_rel.left.extract_from();
+                        println!("DEBUG: nested_graph_rel.left = {:?}", nested_graph_rel.left);
+                        println!("DEBUG: nested_left_from = {:?}", nested_left_from);
+
+                        if let Ok(Some(nested_from_table)) = nested_left_from {
+                            from_table_to_view_ref(Some(nested_from_table))
+                        } else {
+                            // If nested left also doesn't have FROM, create one from the left_connection alias
+                            let table_name = extract_table_name(&nested_graph_rel.left)
+                                .ok_or_else(|| super::errors::RenderBuildError::TableNameNotFound(format!(
+                                    "Could not resolve table name for alias '{}', plan: {:?}",
+                                    graph_rel.left_connection, nested_graph_rel.left
+                                )))?;
+
+                            Some(super::ViewTableRef {
+                                source: std::sync::Arc::new(LogicalPlan::Empty),
+                                name: table_name,
+                                alias: Some(graph_rel.left_connection.clone()),
+                            })
+                        }
+                    } else {
+                        // If left node doesn't have FROM, create one from the left_connection alias
+                        // Extract table name from the left node
+                        // If we cannot extract a table name, propagate an error instead of using 'unknown_table'
+                        let table_name = extract_table_name(&graph_rel.left)
+                            .ok_or_else(|| super::errors::RenderBuildError::TableNameNotFound(format!(
+                                "Could not resolve table name for alias '{}', plan: {:?}",
+                                graph_rel.left_connection, graph_rel.left
+                            )))?;
+
+                        Some(super::ViewTableRef {
+                            source: std::sync::Arc::new(LogicalPlan::Empty),
+                            name: table_name,
+                            alias: Some(graph_rel.left_connection.clone()),
+                        })
+                    }
+                }
+            },
             LogicalPlan::Filter(filter) => from_table_to_view_ref(filter.input.extract_from()?),
             LogicalPlan::Projection(projection) => from_table_to_view_ref(projection.input.extract_from()?),
-            LogicalPlan::GraphJoins(graph_joins) => from_table_to_view_ref(graph_joins.input.extract_from()?),
+            LogicalPlan::GraphJoins(graph_joins) => {
+                // Check if this is a multiple relationship query that should use a CTE
+                if let LogicalPlan::GraphRel(graph_rel) = graph_joins.input.as_ref() {
+                    if let Some(labels) = &graph_rel.labels {
+                        if labels.len() > 1 {
+                            // Multiple relationship types: need both start and end nodes in FROM
+                            // Get end node from GraphRel
+                            let end_from = graph_rel.right.extract_from()?;
+                            
+                            // Return the end node - start node will be added as CROSS JOIN
+                            from_table_to_view_ref(end_from)
+                        } else {
+                            // Single relationship type: normal processing
+                            // First try to extract FROM from the input
+                            let input_from = graph_joins.input.extract_from()?;
+                            if input_from.is_some() {
+                                from_table_to_view_ref(input_from)
+                            } else {
+                                // If input has no FROM clause but we have joins, use the first join as FROM
+                                // This handles the case of simple relationships where GraphRel returns None
+                                if let Some(first_join) = graph_joins.joins.first() {
+                                    Some(super::ViewTableRef {
+                                        source: std::sync::Arc::new(LogicalPlan::Empty),
+                                        name: first_join.table_name.clone(),
+                                        alias: Some(first_join.table_alias.clone()),
+                                    })
+                                } else {
+                                    None
+                                }
+                            }
+                        }
+                    } else {
+                        // No labels: normal processing
+                        // First try to extract FROM from the input
+                        let input_from = graph_joins.input.extract_from()?;
+                        if input_from.is_some() {
+                            from_table_to_view_ref(input_from)
+                        } else {
+                            // If input has no FROM clause but we have joins, use the first join as FROM
+                            // This handles the case of simple relationships where GraphRel returns None
+                            if let Some(first_join) = graph_joins.joins.first() {
+                                Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(LogicalPlan::Empty),
+                                    name: first_join.table_name.clone(),
+                                    alias: Some(first_join.table_alias.clone()),
+                                })
+                            } else {
+                                None
+                            }
+                        }
+                    }
+                } else {
+                    // Not a GraphRel input: normal processing
+                    // First try to extract FROM from the input
+                    let input_from = graph_joins.input.extract_from()?;
+                    if input_from.is_some() {
+                        from_table_to_view_ref(input_from)
+                    } else {
+                        // If input has no FROM clause but we have joins, use the first join as FROM
+                        // This handles the case of simple relationships where GraphRel returns None
+                        if let Some(first_join) = graph_joins.joins.first() {
+                            Some(super::ViewTableRef {
+                                source: std::sync::Arc::new(LogicalPlan::Empty),
+                                name: first_join.table_name.clone(),
+                                alias: Some(first_join.table_alias.clone()),
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                }
+            },
             LogicalPlan::GroupBy(group_by) => from_table_to_view_ref(group_by.input.extract_from()?),
             LogicalPlan::OrderBy(order_by) => from_table_to_view_ref(order_by.input.extract_from()?),
             LogicalPlan::Skip(skip) => from_table_to_view_ref(skip.input.extract_from()?),
@@ -843,21 +1066,126 @@ impl RenderPlanBuilder for LogicalPlan {
                 
                 joins
             },
-            LogicalPlan::GraphJoins(graph_joins) => graph_joins
-                .joins
-                .iter()
-                .cloned()
-                .map(|mut join| {
-                    // PATCH: If this is a multi-relationship query, use rel_table (CTE name) for join.table_name
-                    // This requires propagating rel_table from the CTE generation above
-                    // For now, if join.table_name starts with "rel_" (our CTE naming convention), keep it
-                    // Otherwise, use as-is
-                    if join.table_name.starts_with("rel_") {
-                        // Already the CTE name, do nothing
+            LogicalPlan::GraphJoins(graph_joins) => {
+                // Check if this GraphJoins contains multiple relationships anywhere in the tree
+                if has_multiple_relationships(&graph_joins.input) {
+                    // Multiple relationships: generate JOINs that use the CTE instead of relationship tables
+                    let mut joins = vec![];
+
+                    // For multiple relationships, we need:
+                    // 1. JOIN from start node to CTE
+                    // 2. JOIN from CTE to end node
+
+                    // Get the relationship info from the GraphRel
+                    if let Some((start_alias, end_alias, cte_name)) = get_multiple_rel_info(&graph_joins.input) {
+                        // Get table names for nodes
+                        let end_table = get_node_table_for_alias(&end_alias);
+
+                        // JOIN: start_node -> CTE
+                        joins.push(Join {
+                            table_name: cte_name.clone(),
+                            table_alias: cte_name.clone(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(cte_name.clone()),
+                                        column: Column("from_node_id".to_string()),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(start_alias.clone()),
+                                        column: Column("user_id".to_string()),
+                                    }),
+                                ],
+                            }],
+                            join_type: JoinType::Inner,
+                        });
+
+                        // JOIN: CTE -> end_node
+                        joins.push(Join {
+                            table_name: end_table,
+                            table_alias: end_alias.clone(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(end_alias.clone()),
+                                        column: Column("user_id".to_string()),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(cte_name.clone()),
+                                        column: Column("to_node_id".to_string()),
+                                    }),
+                                ],
+                            }],
+                            join_type: JoinType::Inner,
+                        });
                     }
-                    Join::try_from(join)
-                })
-                .collect::<Result<Vec<Join>, RenderBuildError>>()?,
+
+                    joins
+                } else {
+                    // Not multiple relationships: normal join processing
+                    let mut joins = graph_joins
+                        .joins
+                        .iter()
+                        .cloned()
+                        .map(|join| Join::try_from(join))
+                        .collect::<Result<Vec<Join>, RenderBuildError>>()?;
+                    
+                    // For simple relationships, we need to modify the relationship JOINs to remove
+                    // conditions that reference end nodes, and add separate end node JOINs
+                    let connections = get_all_relationship_connections(&graph_joins.input);
+                    
+                    // Modify relationship JOINs to only connect to start nodes
+                    for join in &mut joins {
+                        if let Some(rel_alias) = connections.iter().find(|(_, _, rel_alias)| *rel_alias == join.table_alias).cloned() {
+                            let (_left_alias, _right_alias, _rel_alias) = rel_alias;
+                            
+                            // Filter the joining conditions to only keep those that connect to start nodes
+                            // Remove conditions that reference end node aliases
+                            join.joining_on.retain(|condition| {
+                                // Keep conditions that don't reference end node aliases
+                                !references_end_node_alias(condition, &connections)
+                            });
+                        }
+                    }
+                    
+                    // Add JOINs to end node tables
+                    for (_left_alias, right_alias, rel_alias) in connections {
+                        // Get the relationship table name from the join
+                        if let Some(rel_join) = joins.iter().find(|j| j.table_alias == rel_alias) {
+                            let rel_table = &rel_join.table_name;
+                            
+                            // Get relationship columns from schema
+                            if let Some((_from_col, to_col)) = get_relationship_columns_by_table(rel_table) {
+                                // Add JOIN from relationship table to end node
+                                let end_table = get_node_table_for_alias(&right_alias);
+                                
+                                joins.push(Join {
+                                    table_name: end_table,
+                                    table_alias: right_alias.clone(),
+                                    joining_on: vec![OperatorApplication {
+                                        operator: Operator::Equal,
+                                        operands: vec![
+                                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(right_alias.clone()),
+                                                column: Column("user_id".to_string()),
+                                            }),
+                                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(rel_alias.clone()),
+                                                column: Column(to_col),
+                                            }),
+                                        ],
+                                    }],
+                                    join_type: JoinType::Inner,
+                                });
+                            }
+                        }
+                    }
+                    
+                    joins
+                }
+            }
             _ => vec![],
         };
         Ok(joins)
@@ -934,11 +1262,79 @@ impl RenderPlanBuilder for LogicalPlan {
         Ok(union_opt)
     }
 
+    /// Try to build a JOIN-based render plan for simple queries
+    /// Returns Ok(plan) if successful, Err(_) if this query needs CTE-based processing
+    fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
+        
+        // For now, only handle simple relationship queries
+        if self.is_simple_relationship_query() {
+            return self.build_simple_relationship_render_plan();
+        }
+        
+        // If not a simple relationship, this query needs CTE-based processing
+        Err(RenderBuildError::ComplexQueryRequiresCTEs)
+    }
+
+    /// Check if this is a simple relationship query that should use direct JOINs
+    /// instead of CTE-based processing
+    fn is_simple_relationship_query(&self) -> bool {
+        // A simple relationship query has:
+        // 1. A single GraphRel (not variable-length, not multiple relationships)
+        // 2. No complex nesting
+        
+        fn is_simple_graph_rel(plan: &LogicalPlan) -> bool {
+            match plan {
+                LogicalPlan::GraphRel(graph_rel) => {
+                    // Not variable-length and not multiple relationship types
+                    graph_rel.variable_length.is_none() && 
+                        graph_rel.labels.as_ref().map_or(true, |labels| labels.len() == 1)
+                }
+                LogicalPlan::Projection(proj) => is_simple_graph_rel(&proj.input),
+                LogicalPlan::Filter(filter) => is_simple_graph_rel(&filter.input),
+                LogicalPlan::Limit(limit) => is_simple_graph_rel(&limit.input),
+                LogicalPlan::Skip(skip) => is_simple_graph_rel(&skip.input),
+                LogicalPlan::OrderBy(order_by) => is_simple_graph_rel(&order_by.input),
+                LogicalPlan::GraphJoins(graph_joins) => {
+                    // Check if this is a simple single relationship
+                    is_simple_graph_rel(&graph_joins.input)
+                }
+                _ => false,
+            }
+        }
+        
+        let result = is_simple_graph_rel(self);
+        result
+    }
+    
+    /// Build render plan for simple relationship queries using direct JOINs
+    fn build_simple_relationship_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
+        
+        let final_select_items = self.extract_select_items()?;
+        let final_from = self.extract_from()?;
+        let final_filters = self.extract_filters()?;
+        let extracted_joins = self.extract_joins()?;
+        
+        // For simple relationships, we need to ensure proper JOIN ordering
+        // The extract_joins should handle this correctly
+        
+        Ok(RenderPlan {
+            ctes: CteItems(vec![]),
+            select: SelectItems(final_select_items),
+            from: FromTableItem(from_table_to_view_ref(final_from)),
+            joins: JoinItems(extracted_joins),
+            filters: FilterItems(final_filters),
+            group_by: GroupByExpressions(self.extract_group_by()?),
+            order_by: OrderByItems(self.extract_order_by()?),
+            skip: SkipItem(self.extract_skip()),
+            limit: LimitItem(self.extract_limit()),
+            union: UnionItems(None),
+        })
+    }
+
     fn to_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
-        eprintln!("DEBUG: to_render_plan called on plan type: {:?}", std::mem::discriminant(self));
         
         // Special case for PageRank - it generates complete SQL directly
-        if let LogicalPlan::PageRank(pagerank) = self {
+        if let LogicalPlan::PageRank(_pagerank) = self {
             // For PageRank, we create a minimal RenderPlan that will be handled specially
             // The actual SQL generation happens in the server handler
             return Ok(RenderPlan {
@@ -953,6 +1349,16 @@ impl RenderPlanBuilder for LogicalPlan {
                 limit: LimitItem(None),
                 union: UnionItems(None),
             });
+        }
+        
+        // NEW ARCHITECTURE: Prioritize JOINs over CTEs
+        // Only use CTEs for variable-length paths and complex cases
+        // Try to build a simple JOIN-based plan first
+        match self.try_build_join_based_plan() {
+            Ok(plan) => return Ok(plan),
+            Err(_) => {
+                // Fall back to the complex CTE-based logic for variable-length paths, etc.
+            }
         }
         
         // Variable-length paths are now supported via recursive CTE generation
@@ -981,12 +1387,11 @@ impl RenderPlanBuilder for LogicalPlan {
         // First pass: analyze what properties are needed
         let mut context = analyze_property_requirements(self);
         
-        let mut extracted_ctes: Vec<Cte> = vec![];
+        let extracted_ctes: Vec<Cte>;
         let final_from: Option<FromTable>;
         let final_filters: Option<RenderExpr>;
 
         let last_node_cte_opt = self.extract_last_node_cte()?;
-        eprintln!("DEBUG: extract_last_node_cte returned: {:?}", last_node_cte_opt.is_some());
 
         if let Some(last_node_cte) = last_node_cte_opt {
             let last_node_alias = last_node_cte
@@ -1002,23 +1407,8 @@ impl RenderPlanBuilder for LogicalPlan {
             let has_variable_length_cte = extracted_ctes.iter().any(|cte| {
                 let is_recursive = cte.is_recursive;
                 let is_raw_sql = matches!(&cte.content, super::CteContent::RawSql(_));
-                eprintln!("DEBUG: Checking CTE '{}': is_recursive={}, is_raw_sql={}, combined={}", 
-                    cte.cte_name, is_recursive, is_raw_sql, is_recursive && is_raw_sql);
                 is_recursive && is_raw_sql
             });
-            
-            eprintln!("DEBUG: has_variable_length_cte = {}", has_variable_length_cte);
-            eprintln!("DEBUG: extracted_ctes count = {}", extracted_ctes.len());
-            for (i, cte) in extracted_ctes.iter().enumerate() {
-                eprintln!("DEBUG: CTE {}: name={}, is_recursive={}, content_type={}", 
-                    i, cte.cte_name, cte.is_recursive, 
-                    match &cte.content {
-                        super::CteContent::Structured(_) => "Structured",
-                        super::CteContent::RawSql(_) => "RawSql",
-                    });
-            }
-            
-            eprintln!("DEBUG: About to check has_variable_length_cte condition: {}", has_variable_length_cte);
             
             if has_variable_length_cte {
                 // For variable-length paths, use the CTE itself as the FROM clause
@@ -1036,19 +1426,12 @@ impl RenderPlanBuilder for LogicalPlan {
                 
                 // Check if there are end filters stored in the context that need to be applied to the outer query
                 final_filters = context.get_end_filters_for_outer_query().cloned().map(|filters| {
-                    eprintln!("DEBUG: Found end filters in context: {:?}", filters);
                     // Rewrite the filters to use the CTE table alias 't' instead of Cypher aliases
                     let start_alias = context.get_start_cypher_alias().unwrap_or("a");
                     let end_alias = context.get_end_cypher_alias().unwrap_or("b");
                     let rewritten = rewrite_end_filters_for_variable_length_cte(&filters, "t", start_alias, end_alias);
-                    eprintln!("DEBUG: Rewritten end filters: {:?}", rewritten);
                     rewritten
                 });
-                if final_filters.is_some() {
-                    eprintln!("DEBUG: Applied end filters to final_filters");
-                } else {
-                    eprintln!("DEBUG: No end filters found in context");
-                }
             } else {
                 // Extract from the CTE content (normal path)
                 let (cte_from, cte_filters) = match &last_node_cte.content {
@@ -1081,7 +1464,6 @@ impl RenderPlanBuilder for LogicalPlan {
         } else {
             // No CTE wrapper, but check for variable-length paths which generate CTEs directly
             // Extract CTEs with a dummy alias and context (variable-length doesn't use the alias)
-            eprintln!("DEBUG: Taking second path - no last_node_cte");
             extracted_ctes = self.extract_ctes_with_context("_", &mut context)?;
             
             // Check if we have a variable-length CTE
@@ -1104,10 +1486,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 // For variable-length paths, apply end filters in the outer query
                 if let Some((start_alias, end_alias)) = has_variable_length_rel(self) {
                     final_filters = context.get_end_filters_for_outer_query().cloned().map(|expr| {
-                        eprintln!("DEBUG: Found end filters in context: {:?}", expr);
                         // Rewrite the filters to use the CTE table alias 't' instead of Cypher aliases
                         let rewritten = rewrite_end_filters_for_variable_length_cte(&expr, "t", &start_alias, &end_alias);
-                        eprintln!("DEBUG: Rewritten end filters: {:?}", rewritten);
                         rewritten
                     });
                 } else {
@@ -1120,7 +1500,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
-        let mut final_select_items = self.extract_select_items()?;
+        let final_select_items = self.extract_select_items()?;
         
         // NOTE: Removed rewrite for select_items in variable-length paths to keep a.*, b.*
 
@@ -1166,32 +1546,6 @@ impl RenderPlanBuilder for LogicalPlan {
             });
         }
         
-        // DEBUG: Log the extracted joins
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-            let _ = writeln!(file, "DEBUG: Full plan structure before extract_joins:");
-            let _ = writeln!(file, "DEBUG: Plan type: {:?}", match self {
-                LogicalPlan::Empty => "Empty",
-                LogicalPlan::Scan(_) => "Scan", 
-                LogicalPlan::ViewScan(_) => "ViewScan",
-                LogicalPlan::GraphNode(_) => "GraphNode",
-                LogicalPlan::GraphRel(_) => "GraphRel",
-                LogicalPlan::Filter(_) => "Filter",
-                LogicalPlan::Projection(_) => "Projection",
-                LogicalPlan::GraphJoins(_) => "GraphJoins",
-                LogicalPlan::GroupBy(_) => "GroupBy",
-                LogicalPlan::OrderBy(_) => "OrderBy",
-                LogicalPlan::Skip(_) => "Skip",
-                LogicalPlan::Limit(_) => "Limit",
-                LogicalPlan::Cte(_) => "Cte",
-                LogicalPlan::Union(_) => "Union",
-                LogicalPlan::PageRank(_) => "PageRank",
-            });
-            let _ = writeln!(file, "DEBUG: extracted_joins count: {}", extracted_joins.len());
-            for (i, join) in extracted_joins.iter().enumerate() {
-                let _ = writeln!(file, "DEBUG: join {}: table='{}', alias='{}', type={:?}, conditions={}", 
-                    i, join.table_name, join.table_alias, join.join_type, join.joining_on.len());
-            }
-        }
         // PATCH: For multi-relationship queries, ensure relationship joins use rel_table (CTE name) if present
         // This applies to both variable-length and regular multi-relationship queries
         // Find any non-recursive CTE named rel_*_* and update joins that reference it
