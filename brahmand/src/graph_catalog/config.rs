@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_yaml;
 use super::errors::GraphSchemaError;
 use super::schema_validator::SchemaValidator;
-use super::graph_schema::{GraphViewDefinition, NodeViewMapping, RelationshipViewMapping, GraphSchema, NodeSchema, RelationshipSchema, NodeIdSchema};
+use super::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, NodeIdSchema};
 
 /// Graph views are defined in YAML with the following structure:
 ///
@@ -67,18 +67,7 @@ use super::graph_schema::{GraphViewDefinition, NodeViewMapping, RelationshipView
 /// 
 /// See `tests::config_tests` for examples.
 
-/// Configuration for graph views loaded from YAML/JSON
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphViewConfig {
-    /// Name of the graph view configuration
-    pub name: String,
-    /// Version of the configuration format
-    pub version: String,
-    /// View definitions
-    pub views: Vec<GraphViewDefinition>,
-}
-
-/// Configuration for graph schema loaded from YAML
+/// Configuration for graph schemas loaded from YAML/JSON
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphSchemaConfig {
     /// Graph schema definition
@@ -125,148 +114,6 @@ pub struct RelationshipDefinition {
     pub to_column: String,
     /// Property mappings
     pub properties: HashMap<String, String>,
-}
-
-impl GraphViewConfig {
-    /// Load graph view configuration from a YAML file and validate against ClickHouse schema
-    pub async fn from_yaml_file_validated<P: AsRef<Path>>(
-        path: P,
-        validator: &mut SchemaValidator,
-    ) -> Result<Self, GraphSchemaError> {
-        let config = Self::from_yaml_file(path)?;
-        config.validate_schema(validator).await?;
-        Ok(config)
-    }
-
-    /// Load graph view configuration from a YAML file
-    pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, GraphSchemaError> {
-        let contents = fs::read_to_string(path)
-            .map_err(|e| GraphSchemaError::ConfigReadError {
-                error: e.to_string(),
-            })?;
-        
-        let config = Self::from_yaml_str(&contents)?;
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// Parse graph view configuration from YAML string
-    pub fn from_yaml_str(yaml: &str) -> Result<Self, GraphSchemaError> {
-        serde_yaml::from_str(yaml)
-            .map_err(|e| GraphSchemaError::ConfigParseError {
-                error: e.to_string(),
-            })
-    }
-
-    /// Load graph view configuration from a JSON file
-    pub fn from_json_file<P: AsRef<Path>>(path: P) -> Result<Self, GraphSchemaError> {
-        let contents = fs::read_to_string(path)
-            .map_err(|e| GraphSchemaError::ConfigReadError {
-                error: e.to_string(),
-            })?;
-        
-        let config = Self::from_json_str(&contents)?;
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// Parse graph view configuration from JSON string
-    pub fn from_json_str(json: &str) -> Result<Self, GraphSchemaError> {
-        serde_json::from_str(json)
-            .map_err(|e| GraphSchemaError::ConfigParseError {
-                error: e.to_string(),
-            })
-    }
-
-    /// Validate the configuration structure and contents
-    pub fn validate(&self) -> Result<(), GraphSchemaError> {
-        // Check version format
-        if !self.version.chars().all(|c| c.is_digit(10) || c == '.') {
-            return Err(GraphSchemaError::InvalidConfig {
-                message: format!("Invalid version format: {}", self.version),
-            });
-        }
-
-        // Validate each view
-        for view in &self.views {
-            self.validate_view(view)?;
-        }
-
-        Ok(())
-    }
-
-    /// Validate a single view definition
-    fn validate_view(&self, view: &GraphViewDefinition) -> Result<(), GraphSchemaError> {
-        // Ensure view has at least one node mapping
-        if view.nodes.is_empty() {
-            return Err(GraphSchemaError::InvalidConfig {
-                message: format!("View '{}' must have at least one node mapping", view.name),
-            });
-        }
-
-        // Validate node mappings
-        for (label, mapping) in &view.nodes {
-            self.validate_node_mapping(label, mapping)?;
-        }
-
-        // Validate relationship mappings
-        for (type_name, mapping) in &view.relationships {
-            self.validate_relationship_mapping(type_name, mapping)?;
-        }
-
-        Ok(())
-    }
-
-    /// Validate a node view mapping
-    fn validate_node_mapping(&self, label: &str, mapping: &NodeViewMapping) -> Result<(), GraphSchemaError> {
-        // Check required fields are not empty
-        if mapping.source_table.is_empty() {
-            return Err(GraphSchemaError::InvalidConfig {
-                message: format!("Node '{}': source_table cannot be empty", label),
-            });
-        }
-        if mapping.id_column.is_empty() {
-            return Err(GraphSchemaError::InvalidConfig {
-                message: format!("Node '{}': id_column cannot be empty", label),
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Validate a relationship view mapping
-    fn validate_relationship_mapping(&self, type_name: &str, mapping: &RelationshipViewMapping) -> Result<(), GraphSchemaError> {
-        // Check required fields are not empty
-        if mapping.source_table.is_empty() {
-            return Err(GraphSchemaError::InvalidConfig {
-                message: format!("Relationship '{}': source_table cannot be empty", type_name),
-            });
-        }
-        if mapping.from_column.is_empty() || mapping.to_column.is_empty() {
-            return Err(GraphSchemaError::InvalidConfig {
-                message: format!("Relationship '{}': from_column and to_column must be specified", type_name),
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Validate configuration against ClickHouse schema
-    pub async fn validate_schema(&self, validator: &mut SchemaValidator) -> Result<(), GraphSchemaError> {
-        for view in &self.views {
-            // Validate all node mappings
-            for (_label, node_mapping) in &view.nodes {
-                validator.validate_node_mapping(node_mapping).await?;
-            }
-
-            // Validate all relationship mappings
-            for (_type, rel_mapping) in &view.relationships {
-                validator.validate_relationship_mapping(rel_mapping).await?;
-            }
-        }
-
-        Ok(())
-    }
 }
 
 impl GraphSchemaConfig {

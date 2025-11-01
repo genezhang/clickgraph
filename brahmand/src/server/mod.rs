@@ -35,11 +35,11 @@ pub struct AppState {
 }
 
 pub static GLOBAL_GRAPH_SCHEMA: OnceCell<RwLock<GraphSchema>> = OnceCell::const_new();
-pub static GLOBAL_VIEW_CONFIG: OnceCell<RwLock<crate::graph_catalog::config::GraphSchemaConfig>> = OnceCell::const_new();
+pub static GLOBAL_SCHEMA_CONFIG: OnceCell<RwLock<crate::graph_catalog::config::GraphSchemaConfig>> = OnceCell::const_new();
 
 // Multi-schema support - NEW
 pub static GLOBAL_SCHEMAS: OnceCell<RwLock<HashMap<String, GraphSchema>>> = OnceCell::const_new();
-pub static GLOBAL_VIEW_CONFIGS: OnceCell<RwLock<HashMap<String, crate::graph_catalog::config::GraphSchemaConfig>>> = OnceCell::const_new();
+pub static GLOBAL_SCHEMA_CONFIGS: OnceCell<RwLock<HashMap<String, crate::graph_catalog::config::GraphSchemaConfig>>> = OnceCell::const_new();
 
 pub async fn run() {
     dotenv().ok();

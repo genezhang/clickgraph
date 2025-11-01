@@ -16,7 +16,7 @@ pub enum SchemaSource {
     Database,
 }
 
-use super::{GLOBAL_GRAPH_SCHEMA, GLOBAL_VIEW_CONFIG, GLOBAL_SCHEMAS, GLOBAL_VIEW_CONFIGS, models::GraphCatalog};
+use super::{GLOBAL_GRAPH_SCHEMA, GLOBAL_SCHEMA_CONFIG, GLOBAL_SCHEMAS, GLOBAL_SCHEMA_CONFIGS, models::GraphCatalog};
 
 /// Test basic ClickHouse connectivity
 async fn test_clickhouse_connection(client: Client) -> Result<(), String> {
@@ -69,7 +69,7 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                 // Set global state - these should not fail in normal circumstances
                 GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema.clone()))
                     .map_err(|_| "Failed to initialize global graph schema")?;
-                GLOBAL_VIEW_CONFIG.set(RwLock::new(config.clone()))
+                GLOBAL_SCHEMA_CONFIG.set(RwLock::new(config.clone()))
                     .map_err(|_| "Failed to initialize global view config")?;
 
                 // Initialize multi-schema storage with default schema
@@ -80,7 +80,7 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
 
                 let mut view_configs = HashMap::new();
                 view_configs.insert("default".to_string(), config);
-                GLOBAL_VIEW_CONFIGS.set(RwLock::new(view_configs))
+                GLOBAL_SCHEMA_CONFIGS.set(RwLock::new(view_configs))
                     .map_err(|_| "Failed to initialize global view configs")?;
 
                 println!("✓ Schema initialization complete (single schema mode)");
@@ -130,7 +130,7 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                     },
                 };
                 view_configs.insert("default".to_string(), empty_config);
-                GLOBAL_VIEW_CONFIGS.set(RwLock::new(view_configs))
+                GLOBAL_SCHEMA_CONFIGS.set(RwLock::new(view_configs))
                     .map_err(|_| "Failed to initialize global view configs")?;
 
                 println!("✓ Schema initialization complete (database mode)");
@@ -171,7 +171,7 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                             },
                         };
                         view_configs.insert("default".to_string(), empty_config);
-                        GLOBAL_VIEW_CONFIGS.set(RwLock::new(view_configs))
+                        GLOBAL_SCHEMA_CONFIGS.set(RwLock::new(view_configs))
                             .map_err(|_| "Failed to initialize global view configs")?;
 
                         println!("✓ Empty schema initialized successfully");
@@ -218,7 +218,7 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
             },
         };
         view_configs.insert("default".to_string(), empty_config);
-        GLOBAL_VIEW_CONFIGS.set(RwLock::new(view_configs))
+        GLOBAL_SCHEMA_CONFIGS.set(RwLock::new(view_configs))
             .map_err(|_| "Failed to initialize global view configs")?;
 
         println!("✓ Minimal schema initialized - server ready for YAML configuration");
@@ -248,7 +248,7 @@ pub async fn get_graph_schema() -> GraphSchema {
 }
 
 pub async fn get_view_config() -> Option<GraphSchemaConfig> {
-    if let Some(config_guard) = GLOBAL_VIEW_CONFIG.get() {
+    if let Some(config_guard) = GLOBAL_SCHEMA_CONFIG.get() {
         let config = config_guard.read().await;
         Some((*config).clone())
     } else {
@@ -271,7 +271,7 @@ pub async fn get_graph_schema_by_name(schema_name: &str) -> Result<GraphSchema, 
 }
 
 pub async fn get_view_config_by_name(schema_name: &str) -> Result<GraphSchemaConfig, String> {
-    let configs_guard = GLOBAL_VIEW_CONFIGS
+    let configs_guard = GLOBAL_SCHEMA_CONFIGS
         .get()
         .ok_or("Global view configs not initialized")?
         .read()
@@ -323,7 +323,7 @@ pub async fn load_schema_by_name(schema_name: &str, config_path: &str, clickhous
             let mut schemas_guard = schemas_lock.write().await;
             schemas_guard.insert(schema_name.to_string(), schema);
 
-            let configs_lock = GLOBAL_VIEW_CONFIGS
+            let configs_lock = GLOBAL_SCHEMA_CONFIGS
                 .get()
                 .ok_or("Global view configs not initialized")?;
             let mut configs_guard = configs_lock.write().await;

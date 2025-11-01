@@ -12,7 +12,7 @@ pub mod testing;
 #[allow(unused_imports)]
 pub use column_info::ColumnInfo;
 #[allow(unused_imports)]
-pub use config::{GraphViewConfig, GraphSchemaConfig, GraphSchemaDefinition};
+pub use config::{GraphSchemaConfig, GraphSchemaDefinition};
 pub use graph_schema::{GraphViewDefinition, NodeViewMapping, RelationshipViewMapping};
 #[allow(unused_imports)]
 pub use schema_validator::SchemaValidator;

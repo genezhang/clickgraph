@@ -161,8 +161,23 @@ pub(crate) fn extract_var_len_properties(
 
                         // Handle wildcard property selection
                         if property_name == "*" {
-                            // For now, skip wildcard expansion - would need schema access
-                            // TODO: Implement wildcard expansion using GraphSchema
+                            // Expand * to all properties for this node type
+                            if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                                if let Ok(schemas) = schema_lock.try_read() {
+                                    if let Some(schema) = schemas.get("default") {
+                                        if let Some(node_schema) = schema.get_nodes_schemas().get(node_label) {
+                                            // Create a property for each mapping
+                                            for (prop_name, column_name) in &node_schema.property_mappings {
+                                                properties.push(NodeProperty {
+                                                    cypher_alias: node_alias.to_string(),
+                                                    column_name: column_name.clone(),
+                                                    alias: prop_name.clone(),
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         } else {
                             // Regular property
                             let column_name = map_property_to_column_with_schema(property_name, node_label);
