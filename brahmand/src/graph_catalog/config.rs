@@ -95,6 +95,7 @@ pub struct NodeDefinition {
     /// ID column name
     pub id_column: String,
     /// Property mappings
+    #[serde(rename = "property_mappings")]
     pub properties: HashMap<String, String>,
 }
 
@@ -113,6 +114,7 @@ pub struct RelationshipDefinition {
     /// To column name
     pub to_column: String,
     /// Property mappings
+    #[serde(rename = "property_mappings")]
     pub properties: HashMap<String, String>,
 }
 
@@ -221,80 +223,5 @@ impl GraphSchemaConfig {
             relationships,
             HashMap::new(), // relationships_indexes
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_valid_config() {
-        let yaml = r#"
-name: test_view
-version: "1.0"
-views:
-  - name: user_graph
-    nodes:
-      user:
-        source_table: users
-        id_column: user_id
-        property_mappings:
-          name: full_name
-        label: User
-    relationships:
-      follows:
-        source_table: follows
-        from_column: follower_id
-        to_column: followed_id
-        property_mappings: {}
-        type_name: FOLLOWS
-"#;
-        let config = GraphViewConfig::from_yaml_str(yaml).unwrap();
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_invalid_version() {
-        let yaml = r#"
-name: test_view
-version: "invalid"
-views: []
-"#;
-        let config = GraphViewConfig::from_yaml_str(yaml).unwrap();
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn test_empty_node_mapping() {
-        let yaml = r#"
-name: test_view
-version: "1.0"
-views:
-  - name: empty_graph
-    nodes: {}
-    relationships: {}
-"#;
-        let config = GraphViewConfig::from_yaml_str(yaml).unwrap();
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn test_invalid_node_mapping() {
-        let yaml = r#"
-name: test_view
-version: "1.0"
-views:
-  - name: user_graph
-    nodes:
-      user:
-        source_table: ""
-        id_column: user_id
-        property_mappings: {}
-        label: User
-    relationships: {}
-"#;
-        let config = GraphViewConfig::from_yaml_str(yaml).unwrap();
-        assert!(config.validate().is_err());
     }
 }

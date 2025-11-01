@@ -65,6 +65,7 @@ fn setup_test_graph_schema() -> GraphSchema {
 
     // Create User node schema
     let user_node = NodeSchema {
+        database: "test_db".to_string(),
         table_name: "users".to_string(),
         column_names: vec!["id".to_string(), "name".to_string(), "age".to_string(), "status".to_string(), "user_id".to_string()],
         primary_keys: "id".to_string(),
@@ -84,6 +85,7 @@ fn setup_test_graph_schema() -> GraphSchema {
 
     // Create FOLLOWS relationship schema
     let follows_rel = RelationshipSchema {
+        database: "test_db".to_string(),
         table_name: "follows".to_string(),
         column_names: vec!["from_id".to_string(), "to_id".to_string()],
         from_node: "User".to_string(),
@@ -96,7 +98,7 @@ fn setup_test_graph_schema() -> GraphSchema {
     };
     relationships.insert("FOLLOWS".to_string(), follows_rel);
 
-    GraphSchema::build(1, nodes, relationships, relationships_indexes)
+    GraphSchema::build(1, "test_db".to_string(), nodes, relationships, relationships_indexes)
 }#[cfg(test)]
 mod variable_length_path_filters {
     use super::*;

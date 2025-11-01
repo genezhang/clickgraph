@@ -683,6 +683,7 @@ mod tests {
         person_props.insert("name".to_string(), "name".to_string());
         
         node_schemas.insert("Person".to_string(), NodeSchema {
+            database: "test_db".to_string(),
             table_name: "users".to_string(),
             column_names: vec!["user_id".to_string(), "name".to_string(), "age".to_string(), "status".to_string()],
             primary_keys: "user_id".to_string(),
@@ -699,6 +700,7 @@ mod tests {
         company_props.insert("owner_id".to_string(), "owner_id".to_string());
         
         node_schemas.insert("Company".to_string(), NodeSchema {
+            database: "test_db".to_string(),
             table_name: "companies".to_string(),
             column_names: vec!["company_id".to_string(), "name".to_string(), "owner_id".to_string()],
             primary_keys: "company_id".to_string(),
@@ -714,6 +716,7 @@ mod tests {
         follows_props.insert("since".to_string(), "created_at".to_string());
         
         rel_schemas.insert("FOLLOWS".to_string(), RelationshipSchema {
+            database: "test_db".to_string(),
             table_name: "follows".to_string(),
             column_names: vec!["from_node_id".to_string(), "to_node_id".to_string(), "created_at".to_string()],
             from_node: "Person".to_string(),
@@ -725,7 +728,7 @@ mod tests {
             property_mappings: follows_props,
         });
         
-        GraphSchema::build(1, node_schemas, rel_schemas, HashMap::new())
+        GraphSchema::build(1, "test_db".to_string(), node_schemas, rel_schemas, HashMap::new())
     }    #[test]
     fn test_single_table_filter_extraction() {
         let analyzer = FilterTagging::new();

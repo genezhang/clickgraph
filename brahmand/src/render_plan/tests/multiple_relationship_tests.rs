@@ -26,6 +26,7 @@ fn setup_test_schema() {
     
     // FOLLOWS -> user_follows
     relationships.insert("FOLLOWS".to_string(), RelationshipSchema {
+        database: "test_db".to_string(),
         table_name: "user_follows".to_string(),
         column_names: vec!["follower_id".to_string(), "followed_id".to_string()],
         from_node: "User".to_string(),
@@ -39,6 +40,7 @@ fn setup_test_schema() {
 
     // FRIENDS_WITH -> friendships
     relationships.insert("FRIENDS_WITH".to_string(), RelationshipSchema {
+        database: "test_db".to_string(),
         table_name: "friendships".to_string(),
         column_names: vec!["user1_id".to_string(), "user2_id".to_string()],
         from_node: "User".to_string(),
@@ -52,6 +54,7 @@ fn setup_test_schema() {
 
     // PURCHASED -> orders
     relationships.insert("PURCHASED".to_string(), RelationshipSchema {
+        database: "test_db".to_string(),
         table_name: "orders".to_string(),
         column_names: vec!["customer_id".to_string(), "product_id".to_string()],
         from_node: "Customer".to_string(),
@@ -65,6 +68,7 @@ fn setup_test_schema() {
 
     // PLACED_ORDER -> orders (same table for this test)
     relationships.insert("PLACED_ORDER".to_string(), RelationshipSchema {
+        database: "test_db".to_string(),
         table_name: "orders".to_string(),
         column_names: vec!["customer_id".to_string(), "order_id".to_string()],
         from_node: "Customer".to_string(),
@@ -78,6 +82,7 @@ fn setup_test_schema() {
 
     // ORDER_CONTAINS -> order_items
     relationships.insert("ORDER_CONTAINS".to_string(), RelationshipSchema {
+        database: "test_db".to_string(),
         table_name: "order_items".to_string(),
         column_names: vec!["order_id".to_string(), "product_id".to_string()],
         from_node: "Order".to_string(),
@@ -93,7 +98,7 @@ fn setup_test_schema() {
     let nodes = HashMap::new();
     let relationships_indexes = HashMap::new();
 
-    let schema = GraphSchema::build(1, nodes, relationships, relationships_indexes);
+    let schema = GraphSchema::build(1, "test_db".to_string(), nodes, relationships, relationships_indexes);
     
     // Try to set the global schema, ignore if already set
     let _ = GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema));

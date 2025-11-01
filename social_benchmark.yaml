@@ -5,10 +5,10 @@ graph_schema:
       database: brahmand
       table: users_bench
       id_column: user_id
-      properties:
+      property_mappings:
         user_id: user_id
-        full_name: full_name
-        email_address: email_address
+        name: full_name
+        email: email_address
         registration_date: registration_date
         is_active: is_active
         country: country
@@ -20,5 +20,5 @@ graph_schema:
       table: user_follows_bench
       from_column: follower_id
       to_column: followed_id
-      properties:
+      property_mappings:
         follow_date: follow_date

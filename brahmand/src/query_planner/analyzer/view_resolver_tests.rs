@@ -2,63 +2,108 @@
 
 use std::collections::HashMap;
 use crate::query_planner::analyzer::view_resolver::ViewResolver;
-use crate::graph_catalog::{
-    graph_schema::GraphSchema,
-    GraphViewDefinition, NodeViewMapping,
-};
+use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, RelationshipIndexSchema};
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn create_test_schema() -> GraphSchema {
-        let nodes = HashMap::new();
-        let relationships = HashMap::new();
+        let mut nodes = HashMap::new();
+        let mut relationships = HashMap::new();
         let relationships_indexes = HashMap::new();
 
-        GraphSchema::build(1, nodes, relationships, relationships_indexes)
-    }
-
-    fn create_test_view() -> GraphViewDefinition {
-        let mut nodes = HashMap::new();
-        let relationships = HashMap::new();
-
-        // Create a simple node mapping
-        let node_mapping = NodeViewMapping {
-            source_table: "users".to_string(),
-            id_column: "user_id".to_string(),
+        // Create a test node schema
+        let node_schema = NodeSchema {
+            database: "test_db".to_string(),
+            table_name: "users".to_string(),
+            column_names: vec!["user_id".to_string(), "name".to_string()],
+            primary_keys: "user_id".to_string(),
+            node_id: crate::graph_catalog::graph_schema::NodeIdSchema {
+                column: "user_id".to_string(),
+                dtype: "UInt64".to_string(),
+            },
             property_mappings: HashMap::new(),
-            label: "User".to_string(),
-            filter_condition: None,
         };
-        nodes.insert("User".to_string(), node_mapping);
+        nodes.insert("User".to_string(), node_schema);
 
-        GraphViewDefinition {
-            name: "test_view".to_string(),
-            nodes,
-            relationships,
-        }
+        // Create a test relationship schema
+        let rel_schema = RelationshipSchema {
+            database: "test_db".to_string(),
+            table_name: "follows".to_string(),
+            column_names: vec!["follower_id".to_string(), "followed_id".to_string()],
+            from_node: "User".to_string(),
+            to_node: "User".to_string(),
+            from_column: "follower_id".to_string(),
+            to_column: "followed_id".to_string(),
+            from_node_id_dtype: "UInt64".to_string(),
+            to_node_id_dtype: "UInt64".to_string(),
+            property_mappings: HashMap::new(),
+        };
+        relationships.insert("FOLLOWS".to_string(), rel_schema);
+
+        GraphSchema::build(1, "test_db".to_string(), nodes, relationships, relationships_indexes)
     }
 
     #[test]
     fn test_view_resolver_creation() {
         let schema = create_test_schema();
-        let view = create_test_view();
-        let resolver = ViewResolver::new(&schema, &view);
+        let resolver = ViewResolver::new(&schema);
         
         // Basic test - just verify it can be created without panicking
-        // The actual functionality testing would require implementing proper APIs
         drop(resolver);
     }
 
     #[test] 
     fn test_basic_structure() {
         let schema = create_test_schema();
-        let view = create_test_view();
-        let resolver = ViewResolver::new(&schema, &view);
+        let resolver = ViewResolver::new(&schema);
 
         // This is just a basic structure test to ensure the types compile
         // More comprehensive tests would require implementing the full API
         drop(resolver);
+    }
+
+    #[test]
+    fn test_resolve_node() {
+        let schema = create_test_schema();
+        let resolver = ViewResolver::new(&schema);
+
+        // Test resolving a node
+        let node_schema = resolver.resolve_node("User").unwrap();
+        assert_eq!(node_schema.table_name, "users");
+        assert_eq!(node_schema.node_id.column, "user_id");
+    }
+
+    #[test]
+    fn test_resolve_relationship() {
+        let schema = create_test_schema();
+        let resolver = ViewResolver::new(&schema);
+
+        // Test resolving a relationship
+        let rel_schema = resolver.resolve_relationship("FOLLOWS").unwrap();
+        assert_eq!(rel_schema.table_name, "follows");
+        assert_eq!(rel_schema.from_column, "follower_id");
+        assert_eq!(rel_schema.to_column, "followed_id");
+    }
+
+    #[test]
+    fn test_resolve_nonexistent_node() {
+        let schema = create_test_schema();
+        let resolver = ViewResolver::new(&schema);
+
+        // Test resolving a nonexistent node
+        let result = resolver.resolve_node("NonExistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_nonexistent_relationship() {
+        let schema = create_test_schema();
+        let resolver = ViewResolver::new(&schema);
+
+        // Test resolving a nonexistent relationship
+        let result = resolver.resolve_relationship("NONEXISTENT");
+        assert!(result.is_err());
     }
 }
