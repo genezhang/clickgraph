@@ -55,6 +55,7 @@ pub struct RelationshipViewMapping {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NodeSchema {
+    pub database: String,
     pub table_name: String,
     pub column_names: Vec<String>,
     pub primary_keys: String,
@@ -64,6 +65,7 @@ pub struct NodeSchema {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RelationshipSchema {
+    pub database: String,
     pub table_name: String,
     pub column_names: Vec<String>,
     pub from_node: String,  // Node type (e.g., "User")
@@ -127,6 +129,7 @@ pub struct NodeIdSchema {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GraphSchema {
     version: u32,
+    database: String,
     nodes: HashMap<String, NodeSchema>,
     relationships: HashMap<String, RelationshipSchema>,
     relationships_indexes: HashMap<String, RelationshipIndexSchema>,
@@ -156,6 +159,7 @@ impl ViewSchemaResolver for GraphSchema {
         column_names.push(mapping.id_column.clone());
 
         Ok(NodeSchema {
+            database: "default".to_string(), // Default database
             table_name: mapping.source_table.clone(),
             column_names,
             primary_keys: mapping.id_column.clone(),
@@ -200,6 +204,7 @@ impl ViewSchemaResolver for GraphSchema {
         column_names.push(mapping.to_column.clone());
 
         Ok(RelationshipSchema {
+            database: "default".to_string(), // Default database
             table_name: mapping.source_table.clone(),
             column_names,
             // Use from_node_type if provided, otherwise use type_name as fallback
@@ -217,16 +222,22 @@ impl ViewSchemaResolver for GraphSchema {
 impl GraphSchema {
     pub fn build(
         version: u32,
+        database: String,
         nodes: HashMap<String, NodeSchema>,
         relationships: HashMap<String, RelationshipSchema>,
         relationships_indexes: HashMap<String, RelationshipIndexSchema>,
     ) -> GraphSchema {
         GraphSchema {
             version,
+            database,
             nodes,
             relationships,
             relationships_indexes,
         }
+    }
+
+    pub fn database(&self) -> &str {
+        &self.database
     }
 
     pub fn insert_node_schema(&mut self, node_label: String, node_schema: NodeSchema) {

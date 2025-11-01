@@ -2,6 +2,7 @@
 graph_schema:
   nodes:
     - label: User
+      database: brahmand
       table: users_bench
       id_column: user_id
       properties:
@@ -15,6 +16,7 @@ graph_schema:
 
   relationships:
     - type: FOLLOWS
+      database: brahmand
       table: user_follows_bench
       from_column: follower_id
       to_column: followed_id

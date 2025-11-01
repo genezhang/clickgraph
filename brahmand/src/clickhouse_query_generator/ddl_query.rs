@@ -193,6 +193,7 @@ fn generate_create_node_table_query(
         .collect();
 
     let node_schema = NodeSchema {
+        database: "default".to_string(),
         table_name: create_node_table_clause.table_name.to_string(),
         column_names,
         node_id: node_props.node_id,
@@ -270,6 +271,7 @@ fn generate_create_rel_table_query(
         .collect();
 
     let relationship_schema = RelationshipSchema {
+        database: "default".to_string(),
         table_name: rel_table_name.to_string(),
         column_names,
         from_node: from_node.to_string(),
@@ -758,6 +760,7 @@ mod tests {
         nodes.insert(
             "User".to_string(),
             NodeSchema {
+                database: "default".to_string(),
                 table_name: "User".to_string(),
                 column_names: vec!["user_id".to_string()],
                 primary_keys: "user_id".to_string(),
@@ -771,6 +774,7 @@ mod tests {
         nodes.insert(
             "Post".to_string(),
             NodeSchema {
+                database: "default".to_string(),
                 table_name: "Post".to_string(),
                 column_names: vec!["post_id".to_string()],
                 primary_keys: "post_id".to_string(),
@@ -781,7 +785,7 @@ mod tests {
                 property_mappings: HashMap::new(),
             },
         );
-        GraphSchema::build(1, nodes, HashMap::new(), HashMap::new())
+        GraphSchema::build(1, "default".to_string(), nodes, HashMap::new(), HashMap::new())
     }
 
     // #[test]

@@ -161,25 +161,8 @@ pub(crate) fn extract_var_len_properties(
 
                         // Handle wildcard property selection
                         if property_name == "*" {
-                            // Expand * to all properties for this node type
-                            if let Some(config_lock) = crate::server::GLOBAL_VIEW_CONFIG.get() {
-                                if let Ok(config) = config_lock.try_read() {
-                                    // Find the node mapping for this label
-                                    for view in &config.views {
-                                        if let Some(node_mapping) = view.nodes.get(node_label) {
-                                            // Create a property for each mapping
-                                            for (prop_name, column_name) in &node_mapping.property_mappings {
-                                                properties.push(NodeProperty {
-                                                    cypher_alias: node_alias.to_string(),
-                                                    column_name: column_name.clone(),
-                                                    alias: prop_name.clone(),
-                                                });
-                                            }
-                                            break; // Found the mapping, no need to check other views
-                                        }
-                                    }
-                                }
-                            }
+                            // For now, skip wildcard expansion - would need schema access
+                            // TODO: Implement wildcard expansion using GraphSchema
                         } else {
                             // Regular property
                             let column_name = map_property_to_column_with_schema(property_name, node_label);
@@ -253,14 +236,13 @@ fn map_property_to_column(property: &str) -> String {
 /// Schema-aware property mapping using GraphSchema
 /// Map a property to column with schema awareness
 pub(crate) fn map_property_to_column_with_schema(property: &str, node_label: &str) -> String {
-    // Try to get the view config from the global state
-    if let Some(config_lock) = crate::server::GLOBAL_VIEW_CONFIG.get() {
-        if let Ok(config) = config_lock.try_read() {
-            // Find the node mapping for this label
-            for view in &config.views {
-                if let Some(node_mapping) = view.nodes.get(node_label) {
+    // Try to get the schema from the global state
+    if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schema_lock.try_read() {
+            if let Some(schema) = schemas.get("default") {
+                if let Some(node_schema) = schema.get_nodes_schemas().get(node_label) {
                     // Check if there's a property mapping
-                    if let Some(column) = node_mapping.property_mappings.get(property) {
+                    if let Some(column) = node_schema.property_mappings.get(property) {
                         return column.clone();
                     }
                 }

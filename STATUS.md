@@ -139,7 +139,11 @@
   - Property mapping integration (name→full_name, user_id→user_id)
   - Proper CTE-to-table JOIN generation for variable-length paths
   - Correct filter placement in recursive queries
-  - All benchmark queries now execute without 500 errors
+  - **Benchmark environment**: ✅ **SETUP COMPLETE: Nov 1, 2025**
+    - Docker containers running with corrected YAML configuration
+    - Social network dataset: 5/10 query types working (simple lookups, traversals, friends-of-friends)
+    - Advanced features still in development: variable-length paths, shortest path, complex aggregations
+    - Schema loading issues resolved - no more "Could not find node schema" errors
 - **Branch**: main
 
 ---

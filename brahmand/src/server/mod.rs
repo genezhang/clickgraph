@@ -1,8 +1,9 @@
 use std::sync::Arc;
+use std::collections::HashMap;
 
 use axum::{Router, routing::{get, post}};
 use clickhouse::Client;
-use handlers::{query_handler, health_check};
+use handlers::{query_handler, health_check, simple_test_handler, list_schemas_handler, load_schema_handler};
 
 use dotenv::dotenv;
 use tokio::sync::{OnceCell, RwLock};
@@ -14,8 +15,9 @@ use tokio::signal;
 
 use crate::graph_catalog::{
     graph_schema::GraphSchema,
-    config::GraphViewConfig,
+    config::GraphSchemaConfig,
 };
+use crate::server::graph_catalog::SchemaSource;
 use bolt_protocol::{BoltServer, BoltConfig};
 use crate::config::{ServerConfig, CliConfig, ConfigError};
 
@@ -26,13 +28,18 @@ pub mod handlers;
 mod models;
 
 // #[derive(Clone)]
-struct AppState {
-    clickhouse_client: Client,
-    config: ServerConfig,
+#[derive(Clone)]
+pub struct AppState {
+    pub clickhouse_client: Client,
+    pub config: ServerConfig,
 }
 
 pub static GLOBAL_GRAPH_SCHEMA: OnceCell<RwLock<GraphSchema>> = OnceCell::const_new();
-pub static GLOBAL_VIEW_CONFIG: OnceCell<RwLock<GraphViewConfig>> = OnceCell::const_new();
+pub static GLOBAL_VIEW_CONFIG: OnceCell<RwLock<crate::graph_catalog::config::GraphSchemaConfig>> = OnceCell::const_new();
+
+// Multi-schema support - NEW
+pub static GLOBAL_SCHEMAS: OnceCell<RwLock<HashMap<String, GraphSchema>>> = OnceCell::const_new();
+pub static GLOBAL_VIEW_CONFIGS: OnceCell<RwLock<HashMap<String, crate::graph_catalog::config::GraphSchemaConfig>>> = OnceCell::const_new();
 
 pub async fn run() {
     dotenv().ok();
@@ -50,6 +57,7 @@ pub async fn run() {
 }
 
 pub async fn run_with_config(config: ServerConfig) {
+    println!("DEBUG: run_with_config called!");
     dotenv().ok();
     
     // Test that logging is working
@@ -80,20 +88,30 @@ pub async fn run_with_config(config: ServerConfig) {
     };
 
     // Initialize schema with proper error handling
-    if let Err(e) = graph_catalog::initialize_global_schema(client_opt.clone(), config.validate_schema).await {
-        eprintln!("✗ Failed to initialize ClickGraph: {}", e);
-        eprintln!("  Server cannot start without proper schema initialization.");
-        std::process::exit(1);
-    }
+    let schema_source = match graph_catalog::initialize_global_schema(client_opt.clone(), config.validate_schema).await {
+        Ok(source) => source,
+        Err(e) => {
+            eprintln!("✗ Failed to initialize ClickGraph: {}", e);
+            eprintln!("  Server cannot start without proper schema initialization.");
+            std::process::exit(1);
+        }
+    };
 
     println!("GLOBAL_GRAPH_SCHEMA initialized: {:?}", GLOBAL_GRAPH_SCHEMA.get().is_some());
 
-    // Start background schema monitoring
+    // Start background schema monitoring (only for database-loaded schemas)
     if let Some(schema_client) = client_opt {
-        tokio::spawn(async move {
-            println!("Starting background schema monitoring (checks every 60 seconds)");
-            graph_catalog::monitor_schema_updates(schema_client).await;
-        });
+        match schema_source {
+            SchemaSource::Database => {
+                tokio::spawn(async move {
+                    println!("Starting background schema monitoring (checks every 60 seconds)");
+                    graph_catalog::monitor_schema_updates(schema_client).await;
+                });
+            }
+            SchemaSource::Yaml => {
+                println!("Schema monitoring disabled: Schema loaded from YAML (static configuration)");
+            }
+        }
     } else {
         println!("Schema monitoring disabled: No ClickHouse client available");
     }
@@ -104,8 +122,20 @@ pub async fn run_with_config(config: ServerConfig) {
     
     let app = Router::new()
         .route("/health", get(health_check))
+        .route("/test", get(health_check))  // TEMP: Use health_check instead of simple_test_handler
         .route("/query", post(query_handler))
+        // Schema management endpoints - NEW
+        .route("/test-schemas", get(list_schemas_handler))
+        .route("/api/schemas/load", post(load_schema_handler))
         .with_state(Arc::new(app_state));
+    
+    println!("DEBUG: Routes registered:");
+    println!("  - /health");
+    println!("  - /test"); 
+    println!("  - /query");
+    println!("  - /test-schemas");
+    println!("  - /api/schemas/load");
+    println!("DEBUG: Router created with routes registered");
 
     let http_listener = match TcpListener::bind(&http_bind_address).await {
         Ok(listener) => {

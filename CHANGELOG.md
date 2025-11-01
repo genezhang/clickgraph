@@ -1,6 +1,18 @@
 # Changelog
 
-## [Unreleased] - 2025-10-18
+## [Unreleased] - 2025-11-01
+
+### 🧪 Testing & Benchmarking
+
+- **Benchmark Environment Setup** (Nov 1): Complete benchmarking infrastructure with Docker containers and corrected YAML configuration
+  - **Schema Configuration Fix**: Converted benchmark YAML files from legacy `graph_schema` array format to proper `views` key-value format
+  - **Required Fields Added**: Added missing `name` and `version` fields to `GraphViewConfig` structure in both `social_benchmark.yaml` and `ecommerce_benchmark.yaml`
+  - **Docker Image Rebuild**: Built new ClickGraph container with latest features (multiple relationship types, WHERE clause filters)
+  - **Container Orchestration**: Successfully restarted benchmark containers with corrected configuration
+  - **Schema Loading Verification**: Eliminated "Could not find node schema for label 'User'" errors through proper YAML structure
+  - **Social Dataset Testing**: 5/10 query types working (simple lookups, traversals, friends-of-friends) with sub-20ms average latency
+  - **Performance Baseline**: Established benchmark metrics for working features (0.006s - 0.062s query times)
+  - **Remaining Work Identified**: Variable-length paths, shortest path algorithms, and complex aggregations still under development
 
 ### � Features
 

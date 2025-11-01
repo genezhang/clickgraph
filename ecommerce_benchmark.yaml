@@ -2,6 +2,7 @@
 graph_schema:
   nodes:
     - label: Customer
+      database: brahmand
       table: customers
       id_column: customer_id
       properties:
@@ -18,6 +19,7 @@ graph_schema:
         is_premium: is_premium
 
     - label: Product
+      database: brahmand
       table: products
       id_column: product_id
       properties:

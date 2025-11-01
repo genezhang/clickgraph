@@ -7,6 +7,8 @@ pub struct QueryRequest {
     pub format: Option<OutputFormat>,
     /// If true, return the generated SQL without executing it
     pub sql_only: Option<bool>,
+    /// Name of the schema to use for this query (defaults to "default")
+    pub schema_name: Option<String>,
 }
 
 // #[derive(Debug, Serialize)]

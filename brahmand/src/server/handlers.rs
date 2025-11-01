@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use clickhouse::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::AsyncBufReadExt;
 
@@ -87,11 +88,18 @@ impl QueryPerformanceMetrics {
 
 /// Simple health check endpoint
 pub async fn health_check() -> impl IntoResponse {
-    (StatusCode::OK, Json(serde_json::json!({
-        "status": "healthy",
+    println!("DEBUG: health_check handler called!");
+    Json(serde_json::json!({
         "service": "clickgraph",
+        "status": "healthy",
         "version": env!("CARGO_PKG_VERSION")
-    })))
+    }))
+}
+
+/// Simple test endpoint
+pub async fn simple_test_handler() -> impl IntoResponse {
+    println!("DEBUG: simple_test_handler called!");
+    "Hello from simple test"
 }
 
 pub async fn query_handler(
@@ -105,9 +113,18 @@ pub async fn query_handler(
 
     let output_format = payload.format.unwrap_or(OutputFormat::JSONEachRow);
     let sql_only = payload.sql_only.unwrap_or(false);
+    let schema_name = payload.schema_name.as_deref().unwrap_or("default");
 
         let (ch_sql_queries, maybe_schema_elem, is_read, query_type_str) = {
-        let graph_schema = graph_catalog::get_graph_schema().await;
+        let graph_schema = match graph_catalog::get_graph_schema_by_name(schema_name).await {
+            Ok(schema) => schema,
+            Err(e) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("Schema error: {}", e),
+                ));
+            }
+        };
 
         // Phase 1: Parse query
         let parse_start = Instant::now();
@@ -650,6 +667,97 @@ pub async fn ddl_handler(
 /// Extract result count from a response for performance metrics
 /// Note: This is a simplified implementation. In a production system,
 /// you might want to track result counts during query execution.
+
+// Multi-schema management endpoints - NEW
+
+#[derive(Deserialize)]
+pub struct LoadSchemaRequest {
+    pub schema_name: String,
+    pub config_path: String,
+    pub validate_schema: Option<bool>,
+}
+
+#[derive(Serialize)]
+pub struct SchemaInfo {
+    pub name: String,
+    pub node_count: usize,
+    pub relationship_count: usize,
+}
+
+pub async fn list_schemas_handler(
+    State(_app_state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    println!("DEBUG: list_schemas_handler called");
+    let schema_names = graph_catalog::list_available_schemas().await;
+    println!("DEBUG: Found {} schemas: {:?}", schema_names.len(), schema_names);
+    let mut schemas_info = Vec::new();
+
+    for name in schema_names {
+        if let Ok(schema) = graph_catalog::get_graph_schema_by_name(&name).await {
+            let node_count = schema.get_nodes_schemas().len();
+            let relationship_count = schema.get_relationships_schemas().len();
+            schemas_info.push(SchemaInfo {
+                name,
+                node_count,
+                relationship_count,
+            });
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "schemas": schemas_info
+    })))
+}
+
+pub async fn load_schema_handler(
+    State(app_state): State<Arc<AppState>>,
+    Json(payload): Json<LoadSchemaRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let validate_schema = payload.validate_schema.unwrap_or(false);
+
+    match graph_catalog::load_schema_by_name(
+        &payload.schema_name,
+        &payload.config_path,
+        Some(app_state.clickhouse_client.clone()),
+        validate_schema,
+    ).await {
+        Ok(_) => Ok(Json(serde_json::json!({
+            "message": format!("Schema '{}' loaded successfully", payload.schema_name),
+            "schema_name": payload.schema_name
+        }))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to load schema: {}", e)
+            }))
+        )),
+    }
+}
+
+pub async fn get_schema_handler(
+    axum::extract::Path(schema_name): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    match graph_catalog::get_graph_schema_by_name(&schema_name).await {
+        Ok(schema) => {
+            let node_count = schema.get_nodes_schemas().len();
+            let relationship_count = schema.get_relationships_schemas().len();
+
+            Ok(Json(serde_json::json!({
+                "schema_name": schema_name,
+                "node_types": node_count,
+                "relationship_types": relationship_count,
+                "nodes": schema.get_nodes_schemas().keys().collect::<Vec<_>>(),
+                "relationships": schema.get_relationships_schemas().keys().collect::<Vec<_>>()
+            })))
+        },
+        Err(e) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": e
+            }))
+        )),
+    }
+}
 fn extract_result_count(_response: &axum::response::Response) -> Option<usize> {
     // TODO: Implement proper result count extraction
     // This would require either:

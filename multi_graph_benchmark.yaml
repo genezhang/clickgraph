@@ -1,0 +1,77 @@
+name: multi_graph_benchmark
+version: "1.0"
+description: "Multiple graph configurations for benchmarking"
+
+graphs:
+  social_network:
+    name: social_network
+    version: "1.0"
+    description: "Social network graph schema"
+    views:
+      - name: social_network
+        nodes:
+          User:
+            source_table: users_bench
+            id_column: user_id
+            label: User
+            property_mappings:
+              user_id: user_id
+              full_name: full_name
+              email_address: email_address
+              registration_date: registration_date
+              is_active: is_active
+              country: country
+              city: city
+
+        relationships:
+          FOLLOWS:
+            source_table: user_follows_bench
+            from_column: follower_id
+            to_column: followed_id
+            type_name: FOLLOWS
+            from_node_type: User
+            to_node_type: User
+            property_mappings:
+              follow_date: follow_date
+
+  ecommerce:
+    name: ecommerce
+    version: "1.0"
+    description: "E-commerce graph schema"
+    views:
+      - name: ecommerce
+        nodes:
+          Customer:
+            source_table: customers_bench
+            id_column: customer_id
+            label: Customer
+            property_mappings:
+              customer_id: customer_id
+              name: name
+              email: email
+              registration_date: registration_date
+              country: country
+
+          Product:
+            source_table: products_bench
+            id_column: product_id
+            label: Product
+            property_mappings:
+              product_id: product_id
+              name: name
+              category: category
+              price: price
+              in_stock: in_stock
+
+        relationships:
+          PURCHASED:
+            source_table: purchases_bench
+            from_column: customer_id
+            to_column: product_id
+            type_name: PURCHASED
+            from_node_type: Customer
+            to_node_type: Product
+            property_mappings:
+              purchase_date: purchase_date
+              quantity: quantity
+              total_amount: total_amount
