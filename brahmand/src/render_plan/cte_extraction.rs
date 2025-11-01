@@ -1,6 +1,4 @@
 use std::sync::Arc;
-use std::fs::OpenOptions;
-use std::io::Write;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::plan_ctx::PlanCtx;
@@ -68,21 +66,10 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
         RenderExpr::PropertyAccessExp(prop) => {
             // Convert property access to table.column format
             // Apply alias mapping to convert Cypher aliases to CTE aliases
-            println!("DEBUG: render_expr_to_sql_string PropertyAccessExp - table_alias: '{}', column: '{}'", prop.table_alias.0, prop.column.0);
-            println!("DEBUG: alias_mapping: {:?}", alias_mapping);
             let table_alias = alias_mapping.iter()
-                .find(|(cypher, _)| {
-                    println!("DEBUG: comparing '{}' == '{}'", cypher, &prop.table_alias.0);
-                    *cypher == prop.table_alias.0
-                })
-                .map(|(_, cte)| {
-                    println!("DEBUG: found mapping, using CTE alias: '{}'", cte);
-                    cte.clone()
-                })
-                .unwrap_or_else(|| {
-                    println!("DEBUG: no mapping found, using original: '{}'", prop.table_alias.0);
-                    prop.table_alias.0.clone()
-                });
+                .find(|(cypher, _)| *cypher == prop.table_alias.0)
+                .map(|(_, cte)| cte.clone())
+                .unwrap_or_else(|| prop.table_alias.0.clone());
             format!("{}.{}", table_alias, prop.column.0)
         }
         RenderExpr::OperatorApplicationExp(op) => {
@@ -156,26 +143,32 @@ pub struct RelationshipColumns {
 
 /// Convert a label to its corresponding table name
 pub fn label_to_table_name(label: &str) -> String {
-    match label.to_lowercase().as_str() {
-        "user" | "users" => "users".to_string(),
-        "person" | "people" => "users".to_string(),
-        "post" | "posts" => "posts".to_string(),
-        "order" | "orders" => "orders".to_string(),
-        "product" | "products" => "products".to_string(),
-        _ => label.to_lowercase(),
+    // Get the table name from the schema
+    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
+        if let Ok(schema) = schema_lock.try_read() {
+            if let Ok(node_schema) = schema.get_node_schema(label) {
+                return node_schema.table_name.clone();
+            }
+        }
     }
+    
+    // Fallback to label as table name (not ideal but better than wrong hardcoded values)
+    label.to_lowercase()
 }
 
 /// Convert a relationship type to its corresponding table name
 pub fn rel_type_to_table_name(rel_type: &str) -> String {
-    match rel_type.to_uppercase().as_str() {
-        "FOLLOWS" => "user_follows".to_string(),
-        "FRIEND" | "FRIENDS_WITH" => "friendships".to_string(),
-        "AUTHORED" => "posts".to_string(),
-        "LIKED" => "post_likes".to_string(),
-        "PURCHASED" => "orders".to_string(),
-        _ => rel_type.to_string(),
+    // Get the table name from the schema
+    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
+        if let Ok(schema) = schema_lock.try_read() {
+            if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
+                return rel_schema.table_name.clone();
+            }
+        }
     }
+    
+    // Fallback to relationship type as table name (not ideal but better than wrong hardcoded values)
+    rel_type.to_string()
 }
 
 /// Convert multiple relationship types to table names
@@ -185,31 +178,26 @@ pub fn rel_types_to_table_names(rel_types: &[String]) -> Vec<String> {
 
 /// Extract relationship columns from a table name
 pub fn extract_relationship_columns_from_table(table_name: &str) -> RelationshipColumns {
-    match table_name {
-        "user_follows" | "FOLLOWS" => RelationshipColumns {
-            from_column: "follower_id".to_string(),
-            to_column: "followed_id".to_string(),
-        },
-        "friendships" | "FRIEND" => RelationshipColumns {
-            from_column: "user_id".to_string(),
-            to_column: "friend_id".to_string(),
-        },
-        "posts" | "AUTHORED" => RelationshipColumns {
-            from_column: "author_id".to_string(),
-            to_column: "post_id".to_string(),
-        },
-        "post_likes" | "LIKED" => RelationshipColumns {
-            from_column: "user_id".to_string(),
-            to_column: "post_id".to_string(),
-        },
-        "orders" | "PURCHASED" => RelationshipColumns {
-            from_column: "user_id".to_string(),
-            to_column: "product_id".to_string(),
-        },
-        _ => RelationshipColumns {
-            from_column: "from_node_id".to_string(),
-            to_column: "to_node_id".to_string(),
-        },
+    // Get columns from schema - this should be the single source of truth
+    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
+        if let Ok(schema) = schema_lock.try_read() {
+            // Find relationship schema by table name
+            for rel_schema in schema.get_relationships_schemas().values() {
+                if rel_schema.table_name == table_name {
+                    return RelationshipColumns {
+                        from_column: rel_schema.from_column.clone(),
+                        to_column: rel_schema.to_column.clone(),
+                    };
+                }
+            }
+        }
+    }
+    
+    // No schema available or table not found - use generic defaults
+    // This ensures the system works in schema-less mode but doesn't bypass user configuration
+    RelationshipColumns {
+        from_column: "from_node_id".to_string(),
+        to_column: "to_node_id".to_string(),
     }
 }
 
@@ -279,31 +267,13 @@ fn get_node_info_from_schema(node_label: &str) -> Option<(String, String)> {
 
 /// Apply property mapping to an expression
 fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
-    // Write debug info to a file
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-        let _ = writeln!(file, "DEBUG: apply_property_mapping_to_expr called!");
-        let _ = writeln!(file, "DEBUG: Plan structure: {}", plan_to_string(plan, 0));
-    }
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
             // Get the node label for this table alias
             if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                    let _ = writeln!(file, "DEBUG: apply_property_mapping_to_expr: Found node label '{}' for alias '{}', property '{}'",
-                        node_label, prop.table_alias.0, prop.column.0);
-                }
                 // Map the property to the correct column
                 let mapped_column = map_property_to_column_with_schema(&prop.column.0, &node_label);
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                    let _ = writeln!(file, "DEBUG: apply_property_mapping_to_expr: Mapped property '{}' to column '{}'", prop.column.0, mapped_column);
-                }
                 prop.column = super::render_expr::Column(mapped_column);
-            } else {
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                    let _ = writeln!(file, "DEBUG: apply_property_mapping_to_expr: No node label found for alias '{}'", prop.table_alias.0);
-                }
             }
         }
         RenderExpr::OperatorApplicationExp(op) => {
@@ -366,31 +336,6 @@ fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
     }
 }
 
-/// Convert a plan to string for debugging
-fn plan_to_string(plan: &LogicalPlan, depth: usize) -> String {
-    let indent = "  ".repeat(depth);
-    match plan {
-        LogicalPlan::Empty => format!("{}Empty", indent),
-        LogicalPlan::Scan(scan) => format!("{}Scan(table: {:?})", indent, scan.table_name),
-        LogicalPlan::ViewScan(view_scan) => format!("{}ViewScan(table: {})", indent, view_scan.source_table),
-        LogicalPlan::GraphNode(node) => format!("{}GraphNode(alias: {}, input: {})", indent, node.alias, plan_to_string(&node.input, depth + 1)),
-        LogicalPlan::GraphRel(rel) => format!("{}GraphRel(left: {}, center: {}, right: {})", indent,
-            plan_to_string(&rel.left, depth + 1),
-            plan_to_string(&rel.center, depth + 1),
-            plan_to_string(&rel.right, depth + 1)),
-        LogicalPlan::Filter(filter) => format!("{}Filter(input: {})", indent, plan_to_string(&filter.input, depth + 1)),
-        LogicalPlan::Projection(proj) => format!("{}Projection(input: {})", indent, plan_to_string(&proj.input, depth + 1)),
-        LogicalPlan::GraphJoins(joins) => format!("{}GraphJoins(input: {})", indent, plan_to_string(&joins.input, depth + 1)),
-        LogicalPlan::OrderBy(order_by) => format!("{}OrderBy(input: {})", indent, plan_to_string(&order_by.input, depth + 1)),
-        LogicalPlan::Skip(skip) => format!("{}Skip(input: {})", indent, plan_to_string(&skip.input, depth + 1)),
-        LogicalPlan::Limit(limit) => format!("{}Limit(input: {})", indent, plan_to_string(&limit.input, depth + 1)),
-        LogicalPlan::GroupBy(group_by) => format!("{}GroupBy(input: {})", indent, plan_to_string(&group_by.input, depth + 1)),
-        LogicalPlan::Cte(cte) => format!("{}Cte(name: {}, input: {})", indent, cte.name, plan_to_string(&cte.input, depth + 1)),
-        LogicalPlan::Union(union) => format!("{}Union(inputs: {})", indent, union.inputs.len()),
-        LogicalPlan::PageRank(_) => format!("{}PageRank", indent),
-    }
-}
-
 /// Extract CTEs with context - the main CTE extraction function
 pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, context: &mut super::cte_generation::CteGenerationContext) -> RenderPlanBuilderResult<Vec<Cte>> {
     match plan {
@@ -402,12 +347,13 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
             // Handle variable-length paths with context
             if let Some(spec) = &graph_rel.variable_length {
                 // Extract actual table names and column information
-                let start_table = label_to_table_name(&extract_table_name(&graph_rel.left)
-                    .unwrap_or_else(|| graph_rel.left_connection.clone()));
-                let end_table = label_to_table_name(&extract_table_name(&graph_rel.right)
-                    .unwrap_or_else(|| graph_rel.right_connection.clone()));
-                let rel_table = rel_type_to_table_name(&extract_table_name(&graph_rel.center)
-                    .unwrap_or_else(|| graph_rel.alias.clone()));
+                let start_label = extract_node_label_from_viewscan(&graph_rel.left)
+                    .unwrap_or_else(|| "User".to_string());
+                let end_label = extract_node_label_from_viewscan(&graph_rel.right)
+                    .unwrap_or_else(|| "User".to_string());
+                let start_table = label_to_table_name(&start_label);
+                let end_table = label_to_table_name(&end_label);
+                let rel_table = rel_type_to_table_name(&graph_rel.alias.clone());
 
                 // Extract ID columns
                 let start_id_col = extract_id_column(&graph_rel.left)
@@ -424,9 +370,6 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                 let from_col = rel_cols.from_column;
                 let to_col = rel_cols.to_column;
 
-                // Get properties from context - this is the KEY difference!
-                let properties = context.get_properties(&graph_rel.left_connection, &graph_rel.right_connection);
-
                 // Define aliases based on traversal direction
                 // For variable-length paths, we need to know which node is the traversal start vs end
                 let (start_alias, end_alias) = match graph_rel.direction {
@@ -442,11 +385,6 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                     }
                 };
 
-                println!("DEBUG: graph_rel.direction: {:?}", graph_rel.direction);
-                println!("DEBUG: graph_rel.left_connection: {}", graph_rel.left_connection);
-                println!("DEBUG: graph_rel.right_connection: {}", graph_rel.right_connection);
-                println!("DEBUG: start_alias: {}, end_alias: {}", start_alias, end_alias);
-
                 // Extract and categorize filters for variable-length paths from GraphRel.where_predicate
                 let (start_filters_sql, end_filters_sql) = if let Some(where_predicate) = &graph_rel.where_predicate {
                     // Convert LogicalExpr to RenderExpr
@@ -456,8 +394,6 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                     // Apply property mapping to the filter expression before categorization
                     apply_property_mapping_to_expr(&mut render_expr, &LogicalPlan::GraphRel(graph_rel.clone()));
 
-                    println!("DEBUG extract_ctes_with_context: After property mapping, render_expr: {:?}", render_expr);
-
                     // Categorize filters
                     let categorized = categorize_filters(
                         Some(&render_expr),
@@ -465,9 +401,6 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                         &end_alias,
                         "", // rel_alias not used yet
                     );
-
-                    println!("DEBUG extract_ctes_with_context: categorized.start_node_filters: {:?}", categorized.start_node_filters);
-                    println!("DEBUG extract_ctes_with_context: categorized.end_node_filters: {:?}", categorized.end_node_filters);
 
                     // Create alias mapping
                     let alias_mapping = [
@@ -492,8 +425,6 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                 } else {
                     (None, None)
                 };
-
-                println!("DEBUG extract_ctes_with_context: start_filters: {:?}, end_filters: {:?}", start_filters_sql, end_filters_sql);
 
                 // Generate CTE with filters
                 let var_len_cte = if let Some(exact_hops) = spec.exact_hop_count() {
@@ -548,7 +479,7 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
             if let Some(labels) = &graph_rel.labels {
                 log::debug!("GraphRel labels: {:?}", labels);
                 if labels.len() > 1 {
-                    // Multiple relationship types: get all table names
+                    // Multiple relationship types: create a UNION CTE
                     let rel_tables = rel_types_to_table_names(labels);
                     log::debug!("Resolved tables for labels {:?}: {:?}", labels, rel_tables);
 
@@ -574,19 +505,10 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                 }
             }
 
-            // Normal path - recurse through children
-            let mut right_cte = extract_ctes_with_context(&graph_rel.right, last_node_alias, context)?;
-            let mut center_cte = extract_ctes_with_context(&graph_rel.center, last_node_alias, context)?;
-            right_cte.append(&mut center_cte);
-            let left_alias = &graph_rel.left_connection;
-            if left_alias != last_node_alias {
-                let mut left_cte = extract_ctes_with_context(&graph_rel.left, last_node_alias, context)?;
-                right_cte.append(&mut left_cte);
-            }
-
-            // Add relationship CTEs
-            relationship_ctes.append(&mut right_cte);
-
+            // Normal path - for simple relationships, don't create CTEs
+            // Let the normal plan building logic handle JOINs
+            // Only create CTEs for variable-length paths or multiple relationship types
+            // For simple relationships, don't recurse into child nodes
             Ok(relationship_ctes)
         }
         LogicalPlan::Filter(filter) => {

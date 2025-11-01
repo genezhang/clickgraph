@@ -144,7 +144,7 @@ pub fn get_graph_context<'a>(
     let right_node_id_column = right_schema.node_id.column.clone();
 
     let left_cte_name = format!("{}_{}", left_label, left_alias);
-    let rel_cte_name = format!("{}_{}", rel_label, rel_alias);
+    let rel_cte_name = rel_schema.table_name.clone();
     let right_cte_name = format!("{}_{}", right_label, right_alias);
 
     // Create the initial GraphContext with schema

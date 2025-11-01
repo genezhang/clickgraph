@@ -45,8 +45,11 @@ impl AnalyzerPass for GraphTRaversalPlanning {
             }
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphRel(graph_rel) => {
-                // Skip traversal planning for variable-length paths - they'll be handled by SQL generator
-                if graph_rel.variable_length.is_some() {
+                // Skip traversal planning for variable-length paths and simple relationships
+                // Variable-length paths are handled by SQL generator
+                // Simple relationships should use direct JOINs, not CTEs/InSubquery
+                let should_skip = graph_rel.variable_length.is_some() || graph_rel.labels.as_ref().map_or(true, |labels| labels.len() <= 1);
+                if should_skip {
                     return Ok(Transformed::No(logical_plan));
                 }
 

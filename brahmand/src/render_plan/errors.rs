@@ -19,4 +19,10 @@ pub enum RenderBuildError {
 
     #[error("Expected exactly one filter but found none")]
     ExpectedSingleFilterButNoneFound,
+
+    #[error("Query is too complex and requires CTE-based processing")]
+    ComplexQueryRequiresCTEs,
+
+    #[error("Could not resolve table name: {0}")]
+    TableNameNotFound(String),
 }
