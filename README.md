@@ -261,23 +261,46 @@ Preliminary informal tests on a MacBook Pro (M3 Pro, 18 GB RAM) running ClickGra
 
 ## 🧪 Development Status
 
-ClickGraph includes the following completed features:
+**Latest Update**: November 1, 2025 - **100% Benchmark Success Rate** 🎉
+
+### Production-Ready Features
+- ✅ **All Graph Query Types Working**: 10/10 benchmark queries passing (100% success rate)
+  - Simple node lookups and filtered scans
+  - Direct and multi-hop relationship traversals
+  - Variable-length paths with exact (`*2`) and range (`*1..3`) specifications
+  - Shortest path algorithms with WHERE clause filtering
+  - Aggregations with GROUP BY and ORDER BY
+  - Bidirectional patterns (mutual relationships)
 - ✅ **Query Performance Metrics**: Phase-by-phase timing with HTTP headers and structured logging
 - ✅ **Neo4j Bolt Protocol v4.4**: Full compatibility with Neo4j drivers and tools
 - ✅ **PageRank Algorithm**: Graph centrality analysis with `CALL pagerank(iterations: 10, damping: 0.85)`
 - ✅ **OPTIONAL MATCH**: LEFT JOIN semantics for optional graph patterns with NULL handling
-- ✅ **Variable-Length Paths**: Recursive traversals with configurable depth limits
+- ✅ **Variable-Length Paths**: Recursive CTEs with chained JOIN optimization for exact hop counts
+- ✅ **Shortest Path Functions**: `shortestPath()` and `allShortestPaths()` with early termination
 - ✅ **Path Variables & Functions**: `MATCH p = (a)-[*]->(b) RETURN length(p), nodes(p), relationships(p)`
+- ✅ **Multiple Relationship Types**: `[:FOLLOWS|FRIENDS_WITH]` with UNION ALL SQL generation
 - ✅ **View-Based Graph Model**: Transform existing tables to graphs via YAML configuration  
 - ✅ **Dual Server Architecture**: HTTP REST API and Bolt protocol simultaneously
-- ✅ **Comprehensive Testing**: 261/262 tests passing (99.6% success rate)
+- ✅ **Comprehensive Testing**: 312/312 tests passing (100% success rate)
 - ✅ **Flexible Configuration**: CLI options, environment variables, Docker deployment
-- ✅ **Query Optimization**: Advanced optimization passes including chained JOIN optimization for exact hop counts
+
+### Recent Bug Fixes (November 1, 2025)
+- 🐛 **Fixed**: ChainedJoin CTE wrapper for exact hop queries (`*2`, `*3`)
+- 🐛 **Fixed**: Shortest path filter rewriting for WHERE clauses
+- 🐛 **Fixed**: Table name schema lookup for aggregation queries
+- 📊 **Validated**: All fixes confirmed with production benchmark suite
 
 ### Known Considerations
+- ⚠️ **Read-Only Engine**: Write operations (CREATE, SET, DELETE, MERGE) are not supported
 - ⚠️ **Schema warnings**: Cosmetic warnings about internal catalog system (functionality unaffected)
 - 🔧 **Memory vs MergeTree**: Use Memory engine for development, MergeTree for persistent storage
 - 🐳 **Docker permissions**: May require volume permission fixes on some systems
+
+### Benchmark Results
+Tested with 1,000 users, 4,997 relationships on `social_benchmark.yaml`:
+- **Success Rate**: 10/10 queries (100%)
+- **Performance**: All query types executing correctly
+- **Documentation**: See `notes/benchmarking.md` for detailed results
 
 ## 🤝 Contributing
 
