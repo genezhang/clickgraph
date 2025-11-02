@@ -1,8 +1,29 @@
 # Changelog
 
-## [Unreleased] - 2025-11-02
+All notable changes to ClickGraph will be documented in this file.
 
-### � Features
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+## [Unreleased]
+
+## [0.1.0] - 2025-11-02
+
+### Release Highlights
+- 🎉 **First official release** - Enterprise-scale graph analytics on ClickHouse
+- 🚀 **5M nodes tested** - 90% success rate on 50M relationships
+- 🔌 **Neo4j compatible** - Full Bolt protocol v4.4 with multi-database support
+- ✅ **318/318 tests passing** - Production-ready quality
+
+### Features
+
+- **USE Clause for Database Selection** (Nov 2): Neo4j 4.0+ compatible `USE database_name` syntax
+  - Three-way precedence: USE clause > session/request parameter > default schema
+  - Case-insensitive syntax (USE/use/Use all supported)
+  - Qualified database names (`USE neo4j.database`)
+  - Universal support for HTTP API and Bolt protocol
+  - 6 parser unit tests + 6 end-to-end integration tests
+  - Commits: 5cbd7fe (implementation), d43dc15 (tests), 9a25992 (docs)
+  - See: [RELEASE_NOTES_v0.1.0.md](RELEASE_NOTES_v0.1.0.md) for examples
 
 - **Bolt Protocol Multi-Database Support** (Nov 2): Implemented Neo4j 4.0+ multi-database selection
   - **Standard**: Extracts `db` or `database` field from HELLO message extra metadata
