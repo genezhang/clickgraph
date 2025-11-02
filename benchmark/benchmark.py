@@ -189,7 +189,7 @@ class ClickGraphBenchmark:
                 queries.extend([
                     {
                         "name": "social_simple_node_lookup",
-                        "query": 'MATCH (u:User) WHERE u.user_id = 1 RETURN u.full_name, u.email_address',
+                        "query": 'MATCH (u:User) WHERE u.user_id = 1 RETURN u.name, u.email',
                         "description": "Simple node lookup by ID",
                         "category": "simple"
                     },
@@ -205,13 +205,13 @@ class ClickGraphBenchmark:
                 queries.extend([
                     {
                         "name": "social_direct_relationships",
-                        "query": 'MATCH (u1:User)-[r:FOLLOWS]->(u2:User) WHERE u1.user_id = 1 RETURN u2.full_name, r.follow_date',
+                        "query": 'MATCH (u1:User)-[r:FOLLOWS]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name, r.follow_date',
                         "description": "Direct relationship traversal",
                         "category": "traversal"
                     },
                     {
                         "name": "social_multi_hop",
-                        "query": 'MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u3:User) WHERE u1.user_id = 1 RETURN u3.full_name',
+                        "query": 'MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u3:User) WHERE u1.user_id = 1 RETURN u3.name',
                         "description": "Multi-hop relationship traversal",
                         "category": "traversal"
                     }
@@ -221,13 +221,13 @@ class ClickGraphBenchmark:
                 queries.extend([
                     {
                         "name": "social_variable_length_2",
-                        "query": 'MATCH (u1:User)-[:FOLLOWS*2]->(u2:User) WHERE u1.user_id = 1 RETURN u2.full_name',
+                        "query": 'MATCH (u1:User)-[:FOLLOWS*2]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name',
                         "description": "Variable-length path (exactly 2 hops)",
                         "category": "variable_length"
                     },
                     {
                         "name": "social_variable_length_range",
-                        "query": 'MATCH (u1:User)-[:FOLLOWS*1..3]->(u2:User) WHERE u1.user_id = 1 RETURN u2.full_name, length(path)',
+                        "query": 'MATCH (u1:User)-[:FOLLOWS*1..3]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name, length(path)',
                         "description": "Variable-length path (1-3 hops)",
                         "category": "variable_length"
                     }
@@ -247,7 +247,7 @@ class ClickGraphBenchmark:
                 queries.extend([
                     {
                         "name": "social_follower_count",
-                        "query": 'MATCH (u:User)<-[:FOLLOWS]-(follower) RETURN u.full_name, COUNT(follower) as follower_count ORDER BY follower_count DESC LIMIT 5',
+                        "query": 'MATCH (u:User)<-[:FOLLOWS]-(follower) RETURN u.name, COUNT(follower) as follower_count ORDER BY follower_count DESC LIMIT 5',
                         "description": "User follower counts with ranking",
                         "category": "aggregation"
                     },
@@ -263,7 +263,7 @@ class ClickGraphBenchmark:
                 queries.extend([
                     {
                         "name": "social_friends_of_friends",
-                        "query": 'MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u3:User) WHERE u1.user_id = 1 AND u3.user_id <> 1 RETURN DISTINCT u3.full_name',
+                        "query": 'MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u3:User) WHERE u1.user_id = 1 AND u3.user_id <> 1 RETURN DISTINCT u3.name',
                         "description": "Friends of friends (excluding direct friends)",
                         "category": "complex"
                     }

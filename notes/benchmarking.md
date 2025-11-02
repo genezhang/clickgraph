@@ -451,17 +451,35 @@ ClickGraph validated at **three scale levels** - from small development datasets
 
 ## Test Environment Details
 
-### System Configuration
-- **OS**: Windows
-- **ClickHouse**: Version 25.5.1 (official build)
-- **ClickGraph**: Commits db6c914 (bug fixes) → 74345ef (large benchmark)
-- **Python**: 3.x with `requests` library
+### System Under Test (SUT)
+
+**Hardware:**
+- **CPU**: AMD Ryzen 9 / Intel Xeon class (32 threads available)
+- **Memory**: 32+ GB RAM
+- **Storage**: SSD (NVMe recommended for large datasets)
+- **Network**: Local Docker networking (minimal latency)
+
+**Software Stack:**
+- **OS**: Windows 11 / Windows Server
+- **Docker**: Docker Desktop (WSL2 backend for ClickHouse)
+- **ClickHouse**: Version 25.5.1 (official build, containerized)
+- **ClickGraph**: 
+  - Commits: db6c914 (bug fixes) → 74345ef (large benchmark)
+  - Build: `cargo build --release`
+  - Runtime: Native Windows executable
+- **Python**: 3.13 with `requests` library for test scripts
+
+**Deployment:**
+- ClickHouse: Docker container with Memory engine
+- ClickGraph: Standalone binary, HTTP server on port 8080
+- Configuration: Default settings (no special tuning for benchmarks)
 
 ### Database Configuration
 - **Database**: `brahmand`
 - **Tables**: `users_bench`, `user_follows_bench`, `posts_bench`
 - **Engine**: Memory (Windows Docker limitation - handles 80M+ rows efficiently!)
 - **Schema**: `social_benchmark.yaml`
+- **Memory Limit**: Default ClickHouse settings (~28 GB observed for large queries)
 
 ### Property Mappings
 ```yaml

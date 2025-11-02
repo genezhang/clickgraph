@@ -1,0 +1,723 @@
+{
+  "benchmark_info": {
+    "dataset": "social",
+    "query_types": [
+      "simple",
+      "traversal",
+      "variable_length",
+      "shortest_path",
+      "aggregation",
+      "complex"
+    ],
+    "iterations": 3,
+    "timestamp": "2025-11-01T20:00:36.998502",
+    "server_url": "http://localhost:8080"
+  },
+  "results": [
+    {
+      "query_name": "social_simple_node_lookup",
+      "description": "Simple node lookup by ID",
+      "category": "simple",
+      "iterations_run": 3,
+      "success_rate": 1.0,
+      "total_time_stats": {
+        "mean": 2.0748213132222495,
+        "median": 2.070366859436035,
+        "min": 2.0645742416381836,
+        "max": 2.0895228385925293,
+        "stdev": 0.013057172029108577
+      },
+      "performance_time_stats": {
+        "mean": 11.192333333333334,
+        "median": 11.214,
+        "min": 11.092,
+        "max": 11.271
+      },
+      "avg_result_count": 1000,
+      "individual_results": [
+        {
+          "query": "MATCH (u:User) WHERE u.user_id = 1 RETURN u.name, u.email",
+          "description": "Simple node lookup by ID",
+          "timestamp": "2025-11-01T20:00:39.063392",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.0645742416381836,
+          "performance_metrics": {
+            "total_time_ms": 11.214,
+            "parse_time_ms": 0.231,
+            "planning_time_ms": 0.41,
+            "render_time_ms": 0.076,
+            "sql_gen_time_ms": 0.016,
+            "execution_time_ms": 10.423
+          },
+          "result_count": 1000,
+          "error": null
+        },
+        {
+          "query": "MATCH (u:User) WHERE u.user_id = 1 RETURN u.name, u.email",
+          "description": "Simple node lookup by ID",
+          "timestamp": "2025-11-01T20:00:41.134923",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.070366859436035,
+          "performance_metrics": {
+            "total_time_ms": 11.271,
+            "parse_time_ms": 0.242,
+            "planning_time_ms": 0.424,
+            "render_time_ms": 0.085,
+            "sql_gen_time_ms": 0.016,
+            "execution_time_ms": 10.45
+          },
+          "result_count": 1000,
+          "error": null
+        },
+        {
+          "query": "MATCH (u:User) WHERE u.user_id = 1 RETURN u.name, u.email",
+          "description": "Simple node lookup by ID",
+          "timestamp": "2025-11-01T20:00:43.225228",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.0895228385925293,
+          "performance_metrics": {
+            "total_time_ms": 11.092,
+            "parse_time_ms": 0.263,
+            "planning_time_ms": 0.694,
+            "render_time_ms": 0.086,
+            "sql_gen_time_ms": 0.017,
+            "execution_time_ms": 9.961
+          },
+          "result_count": 1000,
+          "error": null
+        }
+      ]
+    },
+    {
+      "query_name": "social_node_filter",
+      "description": "Node filtering with aggregation",
+      "category": "simple",
+      "iterations_run": 3,
+      "success_rate": 1.0,
+      "total_time_stats": {
+        "mean": 2.074012597401937,
+        "median": 2.0771687030792236,
+        "min": 2.06543231010437,
+        "max": 2.079436779022217,
+        "stdev": 0.0075167838669463445
+      },
+      "performance_time_stats": {
+        "mean": 8.368666666666666,
+        "median": 8.18,
+        "min": 7.735,
+        "max": 9.191
+      },
+      "avg_result_count": 1,
+      "individual_results": [
+        {
+          "query": "MATCH (u:User) WHERE u.is_active = 1 AND u.country = \"USA\" RETURN COUNT(u)",
+          "description": "Node filtering with aggregation",
+          "timestamp": "2025-11-01T20:00:45.305814",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.079436779022217,
+          "performance_metrics": {
+            "total_time_ms": 7.735,
+            "parse_time_ms": 0.276,
+            "planning_time_ms": 0.425,
+            "render_time_ms": 0.086,
+            "sql_gen_time_ms": 0.023,
+            "execution_time_ms": 6.869
+          },
+          "result_count": 1,
+          "error": null
+        },
+        {
+          "query": "MATCH (u:User) WHERE u.is_active = 1 AND u.country = \"USA\" RETURN COUNT(u)",
+          "description": "Node filtering with aggregation",
+          "timestamp": "2025-11-01T20:00:47.371587",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.06543231010437,
+          "performance_metrics": {
+            "total_time_ms": 8.18,
+            "parse_time_ms": 0.538,
+            "planning_time_ms": 0.463,
+            "render_time_ms": 0.088,
+            "sql_gen_time_ms": 0.022,
+            "execution_time_ms": 6.988
+          },
+          "result_count": 1,
+          "error": null
+        },
+        {
+          "query": "MATCH (u:User) WHERE u.is_active = 1 AND u.country = \"USA\" RETURN COUNT(u)",
+          "description": "Node filtering with aggregation",
+          "timestamp": "2025-11-01T20:00:49.449037",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.0771687030792236,
+          "performance_metrics": {
+            "total_time_ms": 9.191,
+            "parse_time_ms": 0.508,
+            "planning_time_ms": 0.423,
+            "render_time_ms": 0.08,
+            "sql_gen_time_ms": 0.022,
+            "execution_time_ms": 8.084
+          },
+          "result_count": 1,
+          "error": null
+        }
+      ]
+    },
+    {
+      "query_name": "social_direct_relationships",
+      "description": "Direct relationship traversal",
+      "category": "traversal",
+      "iterations_run": 3,
+      "success_rate": 1.0,
+      "total_time_stats": {
+        "mean": 2.0958073139190674,
+        "median": 2.0968832969665527,
+        "min": 2.0740227699279785,
+        "max": 2.116515874862671,
+        "stdev": 0.021266976663046194
+      },
+      "performance_time_stats": {
+        "mean": 31.528,
+        "median": 31.332,
+        "min": 30.678,
+        "max": 32.574
+      },
+      "avg_result_count": 4997,
+      "individual_results": [
+        {
+          "query": "MATCH (u1:User)-[r:FOLLOWS]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name, r.follow_date",
+          "description": "Direct relationship traversal",
+          "timestamp": "2025-11-01T20:00:51.546575",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.0968832969665527,
+          "performance_metrics": {
+            "total_time_ms": 32.574,
+            "parse_time_ms": 0.357,
+            "planning_time_ms": 0.737,
+            "render_time_ms": 0.312,
+            "sql_gen_time_ms": 0.043,
+            "execution_time_ms": 31.019
+          },
+          "result_count": 4997,
+          "error": null
+        },
+        {
+          "query": "MATCH (u1:User)-[r:FOLLOWS]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name, r.follow_date",
+          "description": "Direct relationship traversal",
+          "timestamp": "2025-11-01T20:00:53.623579",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.0740227699279785,
+          "performance_metrics": {
+            "total_time_ms": 30.678,
+            "parse_time_ms": 0.422,
+            "planning_time_ms": 0.681,
+            "render_time_ms": 0.173,
+            "sql_gen_time_ms": 0.031,
+            "execution_time_ms": 29.293
+          },
+          "result_count": 4997,
+          "error": null
+        },
+        {
+          "query": "MATCH (u1:User)-[r:FOLLOWS]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name, r.follow_date",
+          "description": "Direct relationship traversal",
+          "timestamp": "2025-11-01T20:00:55.744713",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.116515874862671,
+          "performance_metrics": {
+            "total_time_ms": 31.332,
+            "parse_time_ms": 0.463,
+            "planning_time_ms": 1.078,
+            "render_time_ms": 0.758,
+            "sql_gen_time_ms": 0.072,
+            "execution_time_ms": 28.844
+          },
+          "result_count": 4997,
+          "error": null
+        }
+      ]
+    },
+    {
+      "query_name": "social_multi_hop",
+      "description": "Multi-hop relationship traversal",
+      "category": "traversal",
+      "iterations_run": 3,
+      "success_rate": 1.0,
+      "total_time_stats": {
+        "mean": 2.0704015096028647,
+        "median": 2.067934513092041,
+        "min": 2.0449230670928955,
+        "max": 2.0983469486236572,
+        "stdev": 0.026797244882478637
+      },
+      "performance_time_stats": {
+        "mean": 22.417666666666666,
+        "median": 22.229,
+        "min": 21.677,
+        "max": 23.347
+      },
+      "avg_result_count": 4997,
+      "individual_results": [
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u3:User) WHERE u1.user_id = 1 RETURN u3.name",
+          "description": "Multi-hop relationship traversal",
+          "timestamp": "2025-11-01T20:00:57.846092",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.0983469486236572,
+          "performance_metrics": {
+            "total_time_ms": 23.347,
+            "parse_time_ms": 0.271,
+            "planning_time_ms": 0.819,
+            "render_time_ms": 0.19,
+            "sql_gen_time_ms": 0.03,
+            "execution_time_ms": 21.969
+          },
+          "result_count": 4997,
+          "error": null
+        },
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u3:User) WHERE u1.user_id = 1 RETURN u3.name",
+          "description": "Multi-hop relationship traversal",
+          "timestamp": "2025-11-01T20:00:59.892801",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.0449230670928955,
+          "performance_metrics": {
+            "total_time_ms": 21.677,
+            "parse_time_ms": 0.265,
+            "planning_time_ms": 0.837,
+            "render_time_ms": 0.161,
+            "sql_gen_time_ms": 0.029,
+            "execution_time_ms": 20.32
+          },
+          "result_count": 4997,
+          "error": null
+        },
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u3:User) WHERE u1.user_id = 1 RETURN u3.name",
+          "description": "Multi-hop relationship traversal",
+          "timestamp": "2025-11-01T20:01:01.962733",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.067934513092041,
+          "performance_metrics": {
+            "total_time_ms": 22.229,
+            "parse_time_ms": 0.494,
+            "planning_time_ms": 0.757,
+            "render_time_ms": 0.164,
+            "sql_gen_time_ms": 0.029,
+            "execution_time_ms": 20.705
+          },
+          "result_count": 4997,
+          "error": null
+        }
+      ]
+    },
+    {
+      "query_name": "social_variable_length_2",
+      "description": "Variable-length path (exactly 2 hops)",
+      "category": "variable_length",
+      "iterations_run": 0,
+      "success_rate": 0.0,
+      "error": "All iterations failed",
+      "individual_results": [
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS*2]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name",
+          "description": "Variable-length path (exactly 2 hops)",
+          "timestamp": "2025-11-01T20:01:04.053308",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.088287353515625,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Clickhouse Error: bad response: Code: 62. DB::Exception: Syntax error: failed at position 18 (s) (line 2, col 5): s.user_id as start_id,\n    e.user_id as end_id\nFROM brahmand.users_bench s\nJOIN brahmand.user_follows_bench r1 ON s.user_id = r1.follower_id\nJOIN brahmand.users_ben... Expected one of: token, OpeningRoundBracket, AS, token sequence, Dot, OR, AND, IS NOT DISTINCT FROM, IS NULL, IS NOT NULL, BETWEEN, NOT BETWEEN, LIKE, ILIKE, NOT LIKE, NOT ILIKE, REGEXP, IN, NOT IN, GLOBAL IN, GLOBAL NOT IN, MOD, DIV, alias, Comma, FROM, SELECT, INSERT INTO. (SYNTAX_ERROR) (version 25.5.1.2782 (official build))"
+        },
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS*2]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name",
+          "description": "Variable-length path (exactly 2 hops)",
+          "timestamp": "2025-11-01T20:01:06.118146",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.0645508766174316,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Clickhouse Error: bad response: Code: 62. DB::Exception: Syntax error: failed at position 18 (s) (line 2, col 5): s.user_id as start_id,\n    e.user_id as end_id\nFROM brahmand.users_bench s\nJOIN brahmand.user_follows_bench r1 ON s.user_id = r1.follower_id\nJOIN brahmand.users_ben... Expected one of: token, OpeningRoundBracket, AS, token sequence, Dot, OR, AND, IS NOT DISTINCT FROM, IS NULL, IS NOT NULL, BETWEEN, NOT BETWEEN, LIKE, ILIKE, NOT LIKE, NOT ILIKE, REGEXP, IN, NOT IN, GLOBAL IN, GLOBAL NOT IN, MOD, DIV, alias, Comma, FROM, SELECT, INSERT INTO. (SYNTAX_ERROR) (version 25.5.1.2782 (official build))"
+        },
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS*2]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name",
+          "description": "Variable-length path (exactly 2 hops)",
+          "timestamp": "2025-11-01T20:01:08.185825",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.067399263381958,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Clickhouse Error: bad response: Code: 62. DB::Exception: Syntax error: failed at position 18 (s) (line 2, col 5): s.user_id as start_id,\n    e.user_id as end_id\nFROM brahmand.users_bench s\nJOIN brahmand.user_follows_bench r1 ON s.user_id = r1.follower_id\nJOIN brahmand.users_ben... Expected one of: token, OpeningRoundBracket, AS, token sequence, Dot, OR, AND, IS NOT DISTINCT FROM, IS NULL, IS NOT NULL, BETWEEN, NOT BETWEEN, LIKE, ILIKE, NOT LIKE, NOT ILIKE, REGEXP, IN, NOT IN, GLOBAL IN, GLOBAL NOT IN, MOD, DIV, alias, Comma, FROM, SELECT, INSERT INTO. (SYNTAX_ERROR) (version 25.5.1.2782 (official build))"
+        }
+      ]
+    },
+    {
+      "query_name": "social_variable_length_range",
+      "description": "Variable-length path (1-3 hops)",
+      "category": "variable_length",
+      "iterations_run": 0,
+      "success_rate": 0.0,
+      "error": "All iterations failed",
+      "individual_results": [
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS*1..3]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name, length(path)",
+          "description": "Variable-length path (1-3 hops)",
+          "timestamp": "2025-11-01T20:01:10.243102",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.0568675994873047,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Brahmand Error: AnalyzerError: PlanCtxError: ProjectionTagging: No table context for alias `path`."
+        },
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS*1..3]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name, length(path)",
+          "description": "Variable-length path (1-3 hops)",
+          "timestamp": "2025-11-01T20:01:12.330231",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.0867252349853516,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Brahmand Error: AnalyzerError: PlanCtxError: ProjectionTagging: No table context for alias `path`."
+        },
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS*1..3]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name, length(path)",
+          "description": "Variable-length path (1-3 hops)",
+          "timestamp": "2025-11-01T20:01:14.402621",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.0719637870788574,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Brahmand Error: AnalyzerError: PlanCtxError: ProjectionTagging: No table context for alias `path`."
+        }
+      ]
+    },
+    {
+      "query_name": "social_shortest_path",
+      "description": "Shortest path between users",
+      "category": "shortest_path",
+      "iterations_run": 0,
+      "success_rate": 0.0,
+      "error": "All iterations failed",
+      "individual_results": [
+        {
+          "query": "MATCH path = shortestPath((u1:User)-[:FOLLOWS*]-(u2:User)) WHERE u1.user_id = 1 AND u2.user_id = 10 RETURN length(path)",
+          "description": "Shortest path between users",
+          "timestamp": "2025-11-01T20:01:16.481704",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.0786426067352295,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `end_node.user_id` in scope variable_path_1cb9e04ad8dd4f7c97867dc2ab29e622_to_target AS (SELECT * FROM variable_path_1cb9e04ad8dd4f7c97867dc2ab29e622_shortest WHERE end_node.user_id = 10). (UNKNOWN_IDENTIFIER) (version 25.5.1.2782 (official build))\"}"
+        },
+        {
+          "query": "MATCH path = shortestPath((u1:User)-[:FOLLOWS*]-(u2:User)) WHERE u1.user_id = 1 AND u2.user_id = 10 RETURN length(path)",
+          "description": "Shortest path between users",
+          "timestamp": "2025-11-01T20:01:18.534764",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.0527591705322266,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `end_node.user_id` in scope variable_path_59e45676a8c74d1ebe4dec9cd6510d34_to_target AS (SELECT * FROM variable_path_59e45676a8c74d1ebe4dec9cd6510d34_shortest WHERE end_node.user_id = 10). (UNKNOWN_IDENTIFIER) (version 25.5.1.2782 (official build))\"}"
+        },
+        {
+          "query": "MATCH path = shortestPath((u1:User)-[:FOLLOWS*]-(u2:User)) WHERE u1.user_id = 1 AND u2.user_id = 10 RETURN length(path)",
+          "description": "Shortest path between users",
+          "timestamp": "2025-11-01T20:01:20.576784",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.0416829586029053,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `end_node.user_id` in scope variable_path_9caab62cff4d4786a909129b6f562d10_to_target AS (SELECT * FROM variable_path_9caab62cff4d4786a909129b6f562d10_shortest WHERE end_node.user_id = 10). (UNKNOWN_IDENTIFIER) (version 25.5.1.2782 (official build))\"}"
+        }
+      ]
+    },
+    {
+      "query_name": "social_follower_count",
+      "description": "User follower counts with ranking",
+      "category": "aggregation",
+      "iterations_run": 0,
+      "success_rate": 0.0,
+      "error": "All iterations failed",
+      "individual_results": [
+        {
+          "query": "MATCH (u:User)<-[:FOLLOWS]-(follower) RETURN u.name, COUNT(follower) as follower_count ORDER BY follower_count DESC LIMIT 5",
+          "description": "User follower counts with ranking",
+          "timestamp": "2025-11-01T20:01:22.661949",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.084721088409424,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Clickhouse Error: bad response: {\"exception\": \"Code: 60. DB::Exception: Unknown table expression identifier 'User' in scope SELECT u.full_name, COUNT(follower.user_id) AS follower_count FROM User AS follower INNER JOIN user_follows_bench AS a755106ad2 ON a755106ad2.follower_id = follower.user_id INNER JOIN users_bench AS u ON u.user_id = a755106ad2.followed_id GROUP BY u.full_name ORDER BY follower_count DESC LIMIT 5. (UNKNOWN_TABLE) (version 25.5.1.2782 (official build))\"}"
+        },
+        {
+          "query": "MATCH (u:User)<-[:FOLLOWS]-(follower) RETURN u.name, COUNT(follower) as follower_count ORDER BY follower_count DESC LIMIT 5",
+          "description": "User follower counts with ranking",
+          "timestamp": "2025-11-01T20:01:24.709591",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.0473549365997314,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Clickhouse Error: bad response: {\"exception\": \"Code: 60. DB::Exception: Unknown table expression identifier 'User' in scope SELECT u.full_name, COUNT(follower.user_id) AS follower_count FROM User AS follower INNER JOIN user_follows_bench AS a231dd95a6 ON a231dd95a6.follower_id = follower.user_id INNER JOIN users_bench AS u ON u.user_id = a231dd95a6.followed_id GROUP BY u.full_name ORDER BY follower_count DESC LIMIT 5. (UNKNOWN_TABLE) (version 25.5.1.2782 (official build))\"}"
+        },
+        {
+          "query": "MATCH (u:User)<-[:FOLLOWS]-(follower) RETURN u.name, COUNT(follower) as follower_count ORDER BY follower_count DESC LIMIT 5",
+          "description": "User follower counts with ranking",
+          "timestamp": "2025-11-01T20:01:26.793819",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.0839524269104004,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Clickhouse Error: bad response: {\"exception\": \"Code: 60. DB::Exception: Unknown table expression identifier 'User' in scope SELECT u.full_name, COUNT(follower.user_id) AS follower_count FROM User AS follower INNER JOIN user_follows_bench AS a448114410 ON a448114410.follower_id = follower.user_id INNER JOIN users_bench AS u ON u.user_id = a448114410.followed_id GROUP BY u.full_name ORDER BY follower_count DESC LIMIT 5. (UNKNOWN_TABLE) (version 25.5.1.2782 (official build))\"}"
+        }
+      ]
+    },
+    {
+      "query_name": "social_mutual_follows",
+      "description": "Count of mutual follow relationships",
+      "category": "aggregation",
+      "iterations_run": 0,
+      "success_rate": 0.0,
+      "error": "All iterations failed",
+      "individual_results": [
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u1) RETURN COUNT(DISTINCT u1) as mutual_follow_pairs",
+          "description": "Count of mutual follow relationships",
+          "timestamp": "2025-11-01T20:01:28.886220",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.0919575691223145,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `u1` in scope SELECT COUNTDistinct(u1) AS mutual_follow_pairs FROM users_bench AS u2 INNER JOIN user_follows_bench AS aa89413a79 ON aa89413a79.followed_id = u2.user_id INNER JOIN users_bench AS u1 ON u1.user_id = aa89413a79.followed_id. (UNKNOWN_IDENTIFIER) (version 25.5.1.2782 (official build))\"}"
+        },
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u1) RETURN COUNT(DISTINCT u1) as mutual_follow_pairs",
+          "description": "Count of mutual follow relationships",
+          "timestamp": "2025-11-01T20:01:30.965581",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.0790579319000244,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `u1` in scope SELECT COUNTDistinct(u1) AS mutual_follow_pairs FROM users_bench AS u2 INNER JOIN user_follows_bench AS a56e5a3682 ON a56e5a3682.followed_id = u2.user_id INNER JOIN users_bench AS u1 ON u1.user_id = a56e5a3682.followed_id. (UNKNOWN_IDENTIFIER) (version 25.5.1.2782 (official build))\"}"
+        },
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u1) RETURN COUNT(DISTINCT u1) as mutual_follow_pairs",
+          "description": "Count of mutual follow relationships",
+          "timestamp": "2025-11-01T20:01:33.047384",
+          "success": false,
+          "status_code": 500,
+          "total_time_seconds": 2.0814898014068604,
+          "performance_metrics": {
+            "total_time_ms": 0.0,
+            "parse_time_ms": 0.0,
+            "planning_time_ms": 0.0,
+            "render_time_ms": 0.0,
+            "sql_gen_time_ms": 0.0,
+            "execution_time_ms": 0.0
+          },
+          "result_count": 0,
+          "error": "Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `u1` in scope SELECT COUNTDistinct(u1) AS mutual_follow_pairs FROM users_bench AS u2 INNER JOIN user_follows_bench AS a067e4b9e1 ON a067e4b9e1.followed_id = u2.user_id INNER JOIN users_bench AS u1 ON u1.user_id = a067e4b9e1.followed_id. (UNKNOWN_IDENTIFIER) (version 25.5.1.2782 (official build))\"}"
+        }
+      ]
+    },
+    {
+      "query_name": "social_friends_of_friends",
+      "description": "Friends of friends (excluding direct friends)",
+      "category": "complex",
+      "iterations_run": 3,
+      "success_rate": 1.0,
+      "total_time_stats": {
+        "mean": 2.060183525085449,
+        "median": 2.062657356262207,
+        "min": 2.0352706909179688,
+        "max": 2.082622528076172,
+        "stdev": 0.023772652377944088
+      },
+      "performance_time_stats": {
+        "mean": 13.318666666666667,
+        "median": 12.905,
+        "min": 12.158,
+        "max": 14.893
+      },
+      "avg_result_count": 992,
+      "individual_results": [
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u3:User) WHERE u1.user_id = 1 AND u3.user_id <> 1 RETURN DISTINCT u3.name",
+          "description": "Friends of friends (excluding direct friends)",
+          "timestamp": "2025-11-01T20:01:35.130387",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.082622528076172,
+          "performance_metrics": {
+            "total_time_ms": 12.158,
+            "parse_time_ms": 0.387,
+            "planning_time_ms": 0.83,
+            "render_time_ms": 0.593,
+            "sql_gen_time_ms": 0.095,
+            "execution_time_ms": 10.109
+          },
+          "result_count": 992,
+          "error": null
+        },
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u3:User) WHERE u1.user_id = 1 AND u3.user_id <> 1 RETURN DISTINCT u3.name",
+          "description": "Friends of friends (excluding direct friends)",
+          "timestamp": "2025-11-01T20:01:37.193716",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.062657356262207,
+          "performance_metrics": {
+            "total_time_ms": 12.905,
+            "parse_time_ms": 0.309,
+            "planning_time_ms": 0.919,
+            "render_time_ms": 0.175,
+            "sql_gen_time_ms": 0.032,
+            "execution_time_ms": 11.41
+          },
+          "result_count": 992,
+          "error": null
+        },
+        {
+          "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u3:User) WHERE u1.user_id = 1 AND u3.user_id <> 1 RETURN DISTINCT u3.name",
+          "description": "Friends of friends (excluding direct friends)",
+          "timestamp": "2025-11-01T20:01:39.229654",
+          "success": true,
+          "status_code": 200,
+          "total_time_seconds": 2.0352706909179688,
+          "performance_metrics": {
+            "total_time_ms": 14.893,
+            "parse_time_ms": 0.277,
+            "planning_time_ms": 0.983,
+            "render_time_ms": 0.244,
+            "sql_gen_time_ms": 0.036,
+            "execution_time_ms": 13.291
+          },
+          "result_count": 992,
+          "error": null
+        }
+      ]
+    }
+  ]
+}
