@@ -1,15 +1,57 @@
 # Next Steps - Development Roadmap
 
-**Last Updated**: October 30, 2025
-**Current Status**: All major features completed - focusing on performance optimization and benchmarking
+**Last Updated**: November 1, 2025
+**Current Status**: Critical bug fixes completed - 100% benchmark success
 **Branch**: `main`
-**Latest Commit**: Codebase health improvements and error handling fixes
+**Latest Commit**: db6c914 - Three critical bug fixes for graph query execution
 
 ---
 
+## 🎉 Just Completed (November 1, 2025)
+
+### Bug Fix Session - All Graph Queries Working ✅
+**What**: Fixed three critical bugs blocking production benchmarking
+
+**Bug #1**: ChainedJoin CTE Wrapper (`variable_length_cte.rs:505-514`)
+- Issue: Exact hop queries (`*2`, `*3`) generated malformed SQL
+- Fix: Added CTE wrapper matching recursive CTE structure
+- Impact: Variable-length exact hop queries now work perfectly
+
+**Bug #2**: Shortest Path Filter Rewriting (`variable_length_cte.rs:152-173`)
+- Issue: End node filters used wrong column references (`end_node.user_id` vs `end_id`)
+- Fix: Added `rewrite_end_filter_for_cte()` method to transform filters
+- Impact: Shortest path queries with WHERE clauses now work
+
+**Bug #3**: Aggregation Table Names (`schema_inference.rs:72-99`, `match_clause.rs:31-60`)
+- Issue: Scans used label "User" instead of table "users_bench" in SQL
+- Fix: Schema inference now looks up actual table names from GLOBAL_GRAPH_SCHEMA
+- Impact: All aggregation queries with incoming relationships work
+
+**Benchmark Results**:
+- ✅ **10/10 queries passing (100% success rate)**
+- ✅ All query types validated:
+  - Simple node lookups
+  - Filtered scans
+  - Direct relationships
+  - Multi-hop traversals
+  - Variable-length paths (`*2`, `*1..3`)
+  - Shortest paths with filters
+  - Aggregations with incoming relationships
+  - Bidirectional patterns
+
+**Files Modified**:
+- `variable_length_cte.rs` - CTE wrapper and filter rewriting
+- `schema_inference.rs` - Table name schema lookup
+- `match_clause.rs` - Fallback scan table lookup
+- `plan_builder.rs` - Duplicate alias detection
+- `social_benchmark.yaml` - Added from_node/to_node
+- `test_benchmark_final.py` - Comprehensive validation script
+
+**Testing**: 1000 users, 5000 follows, 2000 posts on `social_benchmark.yaml`
+
 ---
 
-## 🎉 Just Completed (October 21-25, 2025)
+## 🎉 Previously Completed (October 21-25, 2025)
 
 ### 1. Query Performance Metrics - Complete ✅ (October 25, 2025)
 **What**: Comprehensive query performance monitoring with phase-by-phase timing, HTTP headers, and structured logging
@@ -291,57 +333,49 @@
 
 ---
 
-## 🚀 Recommended Next Priority
+## 🚀 Current Priorities (November 1, 2025)
 
-Now that Query Performance Metrics, PageRank, WHERE clause filtering, Schema Validation, Multiple Relationship Types, ViewScan, and Path Variables are complete, we can focus on:
+### Immediate Next Steps
 
-### Option A: Performance & Monitoring (High Priority)
-1. **Query Performance Metrics**
-   - Execution time tracking and plan visualization
-   - Performance monitoring and optimization
-   - **Estimated**: 2-3 hours
+1. **Document Performance Baseline** ⏳ (1-2 hours)
+   - Extract metrics from `test_benchmark_final.py` results
+   - Create `notes/benchmarking.md` with:
+     - Query latencies (mean, median, min, max)
+     - Throughput measurements
+     - Performance characteristics by query type
+   - Baseline for future optimization work
 
-2. **Hot Reload for YAML Configs**
+2. **Update CHANGELOG** ⏳ (30 minutes)
+   - Add entry for Bug #1 (ChainedJoin CTE wrapper)
+   - Add entry for Bug #2 (Shortest path filter rewriting)
+   - Add entry for Bug #3 (Table name schema lookup)
+   - Include benchmark results: 10/10 queries passing
+
+### Medium-Term Priorities
+
+3. **Production Benchmarking Suite** (2-4 hours)
+   - Expand `benchmark/benchmark.py` with more query patterns
+   - Add stress testing with larger datasets
+   - Performance regression detection
+   - Automated benchmark runs in CI/CD
+
+4. **Hot Reload for YAML Configs** (3-4 hours)
    - Watch YAML files and reload without server restart
    - Development velocity improvement
-   - **Estimated**: 3-4 hours
+   - Safer production updates
 
-### Option C: Advanced Graph Features (Future)
-1. **Additional Graph Algorithms**
+### Future Features
+
+5. **Additional Graph Algorithms** (1-2 weeks each)
    - Betweenness centrality, closeness centrality
    - Community detection algorithms
-   - **Estimated**: 1-2 weeks per algorithm
+   - Leverage existing PageRank infrastructure
 
-2. **Pattern Comprehensions**
+6. **Pattern Comprehensions** (4-6 hours)
    - List comprehensions: `[(a)-[]->(b) | b.name]`
    - Advanced query patterns
-   - **Estimated**: 4-6 hours
 
-**My Recommendation**: **Option A.1 (Query Performance Metrics)** - Add execution time tracking and plan visualization to monitor performance and optimize queries.
-
-### Option B: Add More Cypher Features (High Impact)
-1. **Graph Algorithms**
-   - PageRank implementation
-   - Centrality measures (betweenness, closeness, degree)
-   - **Estimated**: 1-2 weeks per algorithm
-
-2. **Pattern Comprehensions**
-   - List comprehensions: `[(a)-[]->(b) | b.name]`
-   - Pattern predicates in WHERE clauses
-   - **Estimated**: 4-6 hours
-
-### Option C: Performance & Monitoring
-1. **Query Performance Metrics**
-   - Execution time tracking
-   - Plan visualization
-   - **Estimated**: 2-3 hours
-
-2. **Hot Reload**
-   - Watch YAML file, reload without restart
-   - Development velocity improvement
-   - **Estimated**: 3-4 hours
-
-**My Recommendation**: **Option A.1 (Fix Multiple Relationship End-to-End Issue)** - Complete the multiple relationship feature for full functionality, then move to graph algorithms
+**My Recommendation**: Complete documentation tasks (1-2), then move to production benchmarking (#3) to establish performance baselines before adding new features.
 
 ---
 - ✅ **Status**: Working end-to-end!

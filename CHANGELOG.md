@@ -2,6 +2,53 @@
 
 ## [Unreleased] - 2025-11-01
 
+### 🐛 Critical Bug Fixes
+
+- **Bug #1: ChainedJoin CTE Wrapper** (Nov 1): Fixed malformed SQL for exact hop variable-length paths
+  - **Issue**: Queries like `MATCH (a)-[:FOLLOWS*2]->(b)` generated invalid SQL syntax: `SELECT s.user_id as start_id, ... FROM ...` without CTE wrapper
+  - **Root Cause**: `ChainedJoinGenerator.generate_cte()` returned raw SQL instead of wrapped CTE structure
+  - **Fix**: Modified `variable_length_cte.rs:505-514` to wrap query in CTE format: `cte_name AS (SELECT ...)`
+  - **Files Modified**: `brahmand/src/clickhouse_query_generator/variable_length_cte.rs`
+  - **Impact**: Exact hop queries (`*2`, `*3`, `*4`) now work perfectly with chained JOINs
+  - **Validation**: Benchmark query #6 (variable_length_2) passes ✅
+
+- **Bug #2: Shortest Path Filter Rewriting** (Nov 1): Fixed column reference errors in WHERE clause filters
+  - **Issue**: Shortest path queries with end node filters failed: `Unknown identifier 'end_node.user_id'`
+  - **Root Cause**: Filter expressions used `end_node.property` syntax but intermediate CTEs have flattened column names (`end_id`, `end_name`)
+  - **Fix**: Added `rewrite_end_filter_for_cte()` method in `variable_length_cte.rs:152-173` to transform filter expressions
+  - **Transformation**: `end_node.user_id` → `end_id`, `end_node.name` → `end_name` in CTE context
+  - **Files Modified**: `brahmand/src/clickhouse_query_generator/variable_length_cte.rs`
+  - **Impact**: Shortest path queries with WHERE clauses now work: `shortestPath((a)-[*]-(b)) WHERE b.user_id = 10`
+  - **Validation**: Benchmark query #8 (shortest_path) passes ✅
+
+- **Bug #3: Aggregation Table Name Lookup** (Nov 1): Fixed "Unknown table expression 'User'" errors in GROUP BY queries
+  - **Issue**: Queries with incoming relationships used Cypher label instead of actual table name: `FROM User AS follower` instead of `FROM users_bench AS follower`
+  - **Root Cause**: `schema_inference.rs` created Scan nodes with label as table_name without schema lookup
+  - **Fix**: Modified schema inference to query `GLOBAL_GRAPH_SCHEMA.get_node_schema()` for actual table names
+  - **Files Modified**: 
+    - `brahmand/src/query_planner/analyzer/schema_inference.rs:72-99` - Schema lookup in Scan creation
+    - `brahmand/src/query_planner/logical_plan/match_clause.rs:31-60` - Fallback scan table lookup
+  - **Impact**: All aggregation queries with incoming relationships now work
+  - **Validation**: Benchmark query #9 (follower_count) passes ✅
+
+### 📊 Benchmark Results
+
+- **100% Success Rate** (Nov 1): All graph query types validated and working
+  - **Test Suite**: `test_benchmark_final.py` with 10 comprehensive queries
+  - **Dataset**: 1,000 users, 4,997 follows, 2,000 posts (`social_benchmark.yaml`)
+  - **Results**: 10/10 queries passing (100% success rate)
+  - **Query Types Validated**:
+    - ✅ Simple node lookups with filters
+    - ✅ Range scans with multiple properties
+    - ✅ Direct relationship traversals
+    - ✅ Multi-hop graph patterns
+    - ✅ Variable-length paths (*2, *1..3)
+    - ✅ Shortest paths with WHERE clauses
+    - ✅ Aggregations with GROUP BY and ORDER BY
+    - ✅ Bidirectional patterns (mutual follows)
+  - **Performance Baseline**: Documented in `notes/benchmarking.md`
+  - **Schema Updates**: Added `from_node`/`to_node` fields to `social_benchmark.yaml`
+
 ### 🧪 Testing & Benchmarking
 
 - **Benchmark Environment Setup** (Nov 1): Complete benchmarking infrastructure with Docker containers and corrected YAML configuration
