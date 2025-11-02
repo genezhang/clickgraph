@@ -31,3 +31,5 @@ setup_social_*.sql
 
 # VS Code
 .vscode/
+setup_large_benchmark_data.sql
+setup_medium_benchmark_data.sql

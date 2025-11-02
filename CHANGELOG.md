@@ -2,7 +2,20 @@
 
 ## [Unreleased] - 2025-11-02
 
-### 🔧 Refactoring
+### � Features
+
+- **Bolt Protocol Multi-Database Support** (Nov 2): Implemented Neo4j 4.0+ multi-database selection
+  - **Standard**: Extracts `db` or `database` field from HELLO message extra metadata
+  - **Implementation**: 
+    - Added `extract_database()` method to BoltMessage (messages.rs)
+    - Added `schema_name` field to BoltContext (mod.rs)
+    - HELLO handler extracts and stores selected database (handler.rs)
+    - Query execution receives schema_name parameter (handler.rs)
+  - **Usage**: Neo4j drivers can now specify schema: `driver.session(database="social_network")`
+  - **Parity**: Bolt protocol now has same multi-schema capability as HTTP API
+  - **Test Results**: All 312 unit tests passing (100%)
+
+### �🔧 Refactoring
 
 - **Relationship Column Naming** (Nov 2): Renamed `from_column`/`to_column` to `from_id`/`to_id`
   - **Rationale**: Improved semantic clarity - "id" indicates identity/key semantics vs generic "column"

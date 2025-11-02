@@ -211,6 +211,24 @@ impl BoltMessage {
         None
     }
 
+    /// Extract database name from HELLO message extra metadata
+    /// Neo4j 4.0+ clients can specify database using "db" or "database" field
+    pub fn extract_database(&self) -> Option<String> {
+        if self.signature == signatures::HELLO && !self.fields.is_empty() {
+            if let Value::Object(extra_map) = &self.fields[0] {
+                // Check for "db" field (primary)
+                if let Some(Value::String(db)) = extra_map.get("db") {
+                    return Some(db.clone());
+                }
+                // Check for "database" field (alternative)
+                if let Some(Value::String(db)) = extra_map.get("database") {
+                    return Some(db.clone());
+                }
+            }
+        }
+        None
+    }
+
     /// Extract query from RUN message
     pub fn extract_query(&self) -> Option<&str> {
         if self.signature == signatures::RUN && !self.fields.is_empty() {

@@ -64,6 +64,8 @@ pub struct BoltContext {
     pub metadata: HashMap<String, String>,
     /// Current transaction ID (if in transaction)
     pub tx_id: Option<String>,
+    /// Selected graph schema/database name (defaults to "default")
+    pub schema_name: Option<String>,
 }
 
 impl Default for BoltContext {
@@ -74,6 +76,7 @@ impl Default for BoltContext {
             user: None,
             metadata: HashMap::new(),
             tx_id: None,
+            schema_name: None,
         }
     }
 }

@@ -81,6 +81,9 @@ impl BoltHandler {
         let auth_token = message.extract_auth_token()
             .unwrap_or_else(HashMap::new);
 
+        // Extract database selection (Neo4j 4.0+ multi-database support)
+        let database = message.extract_database();
+
         // Parse authentication token
         let token = AuthToken::from_hello_fields(&auth_token)?;
 
@@ -93,6 +96,14 @@ impl BoltHandler {
                 {
                     let mut context = self.context.lock().unwrap();
                     context.set_user(user.username.clone());
+                    context.schema_name = database.clone();
+                }
+
+                // Log database selection
+                if let Some(ref db) = database {
+                    log::info!("Bolt connection using database/schema: {}", db);
+                } else {
+                    log::info!("Bolt connection using default schema");
                 }
 
                 // Create success response with server information
@@ -174,10 +185,19 @@ impl BoltHandler {
         let parameters = message.extract_parameters()
             .unwrap_or_else(HashMap::new);
 
+        // Get selected schema from context
+        let schema_name = {
+            let context = self.context.lock().unwrap();
+            context.schema_name.clone()
+        };
+
         log::info!("Executing Cypher query: {}", query);
+        if let Some(ref schema) = schema_name {
+            log::debug!("Using schema: {}", schema);
+        }
 
         // Parse and execute the query
-        match self.execute_cypher_query(query, parameters).await {
+        match self.execute_cypher_query(query, parameters, schema_name).await {
             Ok(result_metadata) => {
                 // Update context to streaming state
                 {
@@ -325,7 +345,12 @@ impl BoltHandler {
         &self,
         query: &str,
         _parameters: HashMap<String, Value>,
+        schema_name: Option<String>,
     ) -> BoltResult<HashMap<String, Value>> {
+        // Log schema selection
+        let schema = schema_name.as_deref().unwrap_or("default");
+        log::debug!("Query execution using schema: {}", schema);
+
         // Parse the Cypher query using Brahmand's parser
         match open_cypher_parser::parse_query(query) {
             Ok(_parsed_query) => {
@@ -333,7 +358,7 @@ impl BoltHandler {
                 // In a full implementation, this would:
                 // 1. Transform parsed query to logical plan
                 // 2. Optimize the plan
-                // 3. Generate ClickHouse SQL
+                // 3. Generate ClickHouse SQL using selected schema
                 // 4. Execute the SQL
                 // 5. Transform results back to graph format
                 

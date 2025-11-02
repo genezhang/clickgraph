@@ -1,0 +1,41 @@
+name: test_multi_rel_schema
+version: "1.0"
+description: "Schema-only test for multiple relationship types"
+
+graph_schema:
+  nodes:
+    - label: User
+      database: test_multi_rel
+      table: users
+      id_column: user_id
+      property_mappings:
+        name: name
+
+  relationships:
+    - type: FOLLOWS
+      database: test_multi_rel
+      table: follows
+      from_id: from_user_id
+      to_id: to_user_id
+      from_node: User
+      to_node: User
+      property_mappings: {}
+
+    - type: FRIENDS_WITH
+      database: test_multi_rel
+      table: friends
+      from_id: from_user_id
+      to_id: to_user_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        since: friendship_date
+
+    - type: LIKES
+      database: test_multi_rel
+      table: likes
+      from_id: from_user_id
+      to_id: to_user_id
+      from_node: User
+      to_node: User
+      property_mappings: {}
