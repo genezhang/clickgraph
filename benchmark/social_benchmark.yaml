@@ -16,7 +16,7 @@ graph_schema:
   relationships:
     - type: FOLLOWS
       table: user_follows_bench
-      from_column: follower_id
-      to_column: followed_id
+      from_id: follower_id
+      to_id: followed_id
       properties:
         follow_date: follow_date

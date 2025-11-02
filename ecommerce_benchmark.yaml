@@ -36,8 +36,8 @@ graph_schema:
   relationships:
     - type: PURCHASED
       table: orders
-      from_column: customer_id
-      to_column: product_id
+      from_id: customer_id
+      to_id: product_id
       properties:
         order_id: order_id
         quantity: quantity

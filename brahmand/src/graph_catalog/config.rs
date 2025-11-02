@@ -34,8 +34,8 @@ use super::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, NodeIdSch
 ///     relationships:      # Relationship mappings
 ///       follows:         # Relationship type
 ///         source_table: follows    # Source table
-///         from_column: follower_id # Source node ID
-///         to_column: followed_id   # Target node ID
+///         from_id: follower_id # Source node ID
+///         to_id: followed_id   # Target node ID
 ///         type_name: FOLLOWS      # Relationship type in graph
 /// ```
 /// 
@@ -109,10 +109,10 @@ pub struct RelationshipDefinition {
     pub database: String,
     /// Source table name
     pub table: String,
-    /// From column name
-    pub from_column: String,
-    /// To column name
-    pub to_column: String,
+    /// From ID column name
+    pub from_id: String,
+    /// To ID column name
+    pub to_id: String,
     /// Node type for source (from) node - optional, defaults to first node type
     #[serde(default)]
     pub from_node: Option<String>,
@@ -227,8 +227,8 @@ impl GraphSchemaConfig {
                 column_names: rel_def.properties.values().cloned().collect(),
                 from_node,
                 to_node,
-                from_column: rel_def.from_column.clone(),
-                to_column: rel_def.to_column.clone(),
+                from_id: rel_def.from_id.clone(),
+                to_id: rel_def.to_id.clone(),
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: rel_def.properties.clone(),

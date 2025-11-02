@@ -171,8 +171,10 @@ views:
     relationships:
       follows:
         source_table: user_follows
-        from_column: follower_id
-        to_column: followed_id
+        from_node: user
+        to_node: user
+        from_id: follower_id
+        to_id: followed_id
 ```
 
 Then query with standard Cypher:

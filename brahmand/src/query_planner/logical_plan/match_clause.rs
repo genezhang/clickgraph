@@ -147,11 +147,11 @@ fn try_generate_relationship_view_scan(_alias: &str, rel_type: &str) -> Option<A
         rel_schema.table_name.clone(),  // Use actual ClickHouse table name
         None,                             // No filter condition yet
         property_mapping,                 // Empty for now
-        rel_schema.from_column.clone(),   // Use from_column as id_column for relationships
+        rel_schema.from_id.clone(),       // Use from_id as id_column for relationships
         vec!["id".to_string()],          // Output schema - relationships have "id" property
         vec![],                           // No projections yet
-        rel_schema.from_column.clone(),   // From column from schema
-        rel_schema.to_column.clone(),     // To column from schema
+        rel_schema.from_id.clone(),       // From column from schema
+        rel_schema.to_id.clone(),         // To column from schema
     );
     
     Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))))

@@ -106,10 +106,10 @@ views:
     relationships:
       FRIENDS_WITH:
         source_table: friendships
-        from_column: user1_id
-        to_column: user2_id
-        from_node_type: User
-        to_node_type: User
+        from_node: User
+        to_node: User
+        from_id: user1_id
+        to_id: user2_id
         property_mappings:
           since: since_date
 ```

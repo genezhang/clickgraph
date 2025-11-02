@@ -34,8 +34,8 @@ mod tests {
             column_names: vec!["follower_id".to_string(), "followed_id".to_string()],
             from_node: "User".to_string(),
             to_node: "User".to_string(),
-            from_column: "follower_id".to_string(),
-            to_column: "followed_id".to_string(),
+            from_id: "follower_id".to_string(),
+            to_id: "followed_id".to_string(),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
@@ -83,8 +83,8 @@ mod tests {
         // Test resolving a relationship
         let rel_schema = resolver.resolve_relationship("FOLLOWS").unwrap();
         assert_eq!(rel_schema.table_name, "follows");
-        assert_eq!(rel_schema.from_column, "follower_id");
-        assert_eq!(rel_schema.to_column, "followed_id");
+        assert_eq!(rel_schema.from_id, "follower_id");
+        assert_eq!(rel_schema.to_id, "followed_id");
     }
 
     #[test]

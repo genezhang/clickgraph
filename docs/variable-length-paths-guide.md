@@ -656,8 +656,8 @@ nodes:
 relationships:
   FOLLOWS:
     table: social.follows
-    from_column: follower_id
-    to_column: followee_id
+    from_id: follower_id
+    to_id: followee_id
     from_node: User
     to_node: User
 ```

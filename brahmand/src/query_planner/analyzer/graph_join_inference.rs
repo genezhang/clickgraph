@@ -355,11 +355,11 @@ impl GraphJoinInference {
         // Extract relationship column names from the ViewScan
         let rel_cols = extract_relationship_columns(&graph_rel.center)
             .unwrap_or(crate::render_plan::cte_extraction::RelationshipColumns {
-                from_column: "from_node_id".to_string(),
-                to_column: "to_node_id".to_string(),
+                from_id: "from_node_id".to_string(),
+                to_id: "to_node_id".to_string(),
             });
-        let rel_from_col = rel_cols.from_column;
-        let rel_to_col = rel_cols.to_column;
+        let rel_from_col = rel_cols.from_id;
+        let rel_to_col = rel_cols.to_id;
 
         // If both nodes are of the same type then check the direction to determine where are the left and right nodes present in the edgelist.
         if graph_context.left.schema.table_name == graph_context.right.schema.table_name {
@@ -860,11 +860,11 @@ impl GraphJoinInference {
         // Extract relationship column names from the ViewScan
         let rel_cols = extract_relationship_columns(&graph_rel.center)
             .unwrap_or(crate::render_plan::cte_extraction::RelationshipColumns {
-                from_column: "from_node_id".to_string(),
-                to_column: "to_node_id".to_string(),
+                from_id: "from_node_id".to_string(),
+                to_id: "to_node_id".to_string(),
             });
-        let rel_from_col = rel_cols.from_column;
-        let rel_to_col = rel_cols.to_column;
+        let rel_from_col = rel_cols.from_id;
+        let rel_to_col = rel_cols.to_id;
 
         // check if right is alredy joined.
         if joined_entities.contains(right_alias) {
@@ -1082,8 +1082,8 @@ mod tests {
                 ],
                 from_node: "Person".to_string(),
                 to_node: "Person".to_string(),
-                from_column: "from_id".to_string(),
-                to_column: "to_id".to_string(),
+                from_id: "from_id".to_string(),
+                to_id: "to_id".to_string(),
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),
@@ -1103,8 +1103,8 @@ mod tests {
                 ],
                 from_node: "Person".to_string(),
                 to_node: "Company".to_string(),
-                from_column: "from_id".to_string(),
-                to_column: "to_id".to_string(),
+                from_id: "from_id".to_string(),
+                to_id: "to_id".to_string(),
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),

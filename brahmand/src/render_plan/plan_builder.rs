@@ -329,8 +329,8 @@ fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(String, Strin
         if let Ok(schema) = schema_lock.try_read() {
             if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
                 return Some((
-                    rel_schema.from_column.clone(),  // Use column names, not node types!
-                    rel_schema.to_column.clone(),
+                    rel_schema.from_id.clone(),  // Use column names, not node types!
+                    rel_schema.to_id.clone(),
                 ));
             }
         }
@@ -347,8 +347,8 @@ fn get_relationship_columns_by_table(table_name: &str) -> Option<(String, String
             for (_key, rel_schema) in schema.get_relationships_schemas().iter() {
                 if rel_schema.table_name == table_name {
                     return Some((
-                        rel_schema.from_column.clone(),  // Use column names!
-                        rel_schema.to_column.clone(),
+                        rel_schema.from_id.clone(),  // Use column names!
+                        rel_schema.to_id.clone(),
                     ));
                 }
             }
@@ -586,11 +586,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Extract relationship columns from ViewScan (will use schema-specific names if available)
                 let rel_cols = extract_relationship_columns(&graph_rel.center)
                     .unwrap_or(RelationshipColumns {
-                        from_column: "from_node_id".to_string(),  // Generic fallback
-                        to_column: "to_node_id".to_string(),      // Generic fallback
+                        from_id: "from_node_id".to_string(),  // Generic fallback
+                        to_id: "to_node_id".to_string(),      // Generic fallback
                     });
-                let from_col = rel_cols.from_column;
-                let to_col = rel_cols.to_column;
+                let from_col = rel_cols.from_id;
+                let to_col = rel_cols.to_id;
                 
                 // Handle variable-length paths differently
                 if let Some(spec) = &graph_rel.variable_length {
@@ -924,8 +924,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 ))
             },
             LogicalPlan::ViewScan(scan) => {
-                // Check if this is a relationship ViewScan (has from_column/to_column)
-                if scan.from_column.is_some() && scan.to_column.is_some() {
+                // Check if this is a relationship ViewScan (has from_id/to_id)
+                if scan.from_id.is_some() && scan.to_id.is_some() {
                     // For relationship ViewScans, use the CTE name instead of table name
                     let cte_name = format!("rel_{}", scan.source_table.replace([' ', '-', '_'], ""));
                     Some(ViewTableRef::new_table(
@@ -947,8 +947,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 match &*graph_node.input {
                     LogicalPlan::ViewScan(scan) => {
                         println!("DEBUG: GraphNode.extract_from() - matched ViewScan, table: {}", scan.source_table);
-                        // Check if this is a relationship ViewScan (has from_column/to_column)
-                        let table_or_cte_name = if scan.from_column.is_some() && scan.to_column.is_some() {
+                        // Check if this is a relationship ViewScan (has from_id/to_id)
+                        let table_or_cte_name = if scan.from_id.is_some() && scan.to_id.is_some() {
                             // For relationship ViewScans, use the CTE name instead of table name
                             format!("rel_{}", scan.source_table.replace([' ', '-', '_'], ""))
                         } else {

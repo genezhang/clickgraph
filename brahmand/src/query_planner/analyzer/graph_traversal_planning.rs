@@ -575,12 +575,12 @@ impl GraphTRaversalPlanning {
                 vec![
                     (
                         // Use actual schema columns with table alias qualification
-                        format!("{}.{}", outgoing_alias, graph_context.rel.schema.from_column),
+                        format!("{}.{}", outgoing_alias, graph_context.rel.schema.from_id),
                         Some(ColumnAlias("from_id".to_string())),
                     ),
                     (
                         // Use actual schema columns with table alias qualification
-                        format!("{}.{}", outgoing_alias, graph_context.rel.schema.to_column),
+                        format!("{}.{}", outgoing_alias, graph_context.rel.schema.to_id),
                         Some(ColumnAlias("to_id".to_string())),
                     ),
                 ]
@@ -604,12 +604,12 @@ impl GraphTRaversalPlanning {
                     (
                         // Use actual schema columns with table alias qualification
                         // Note: for variable-length, the direction is reversed for incoming edges
-                        format!("{}.{}", incoming_alias, graph_context.rel.schema.to_column),
+                        format!("{}.{}", incoming_alias, graph_context.rel.schema.to_id),
                         Some(ColumnAlias("from_id".to_string())),
                     ),
                     (
                         // Use actual schema columns with table alias qualification
-                        format!("{}.{}", incoming_alias, graph_context.rel.schema.from_column),
+                        format!("{}.{}", incoming_alias, graph_context.rel.schema.from_id),
                         Some(ColumnAlias("to_id".to_string())),
                     ),
                 ]
@@ -644,12 +644,12 @@ impl GraphTRaversalPlanning {
                 vec![
                     (
                         // Use actual schema columns with table alias qualification
-                        format!("{}.{}", graph_context.rel.alias, graph_context.rel.schema.from_column),
+                        format!("{}.{}", graph_context.rel.alias, graph_context.rel.schema.from_id),
                         Some(ColumnAlias("from_id".to_string())),
                     ),
                     (
                         // Use actual schema columns with table alias qualification  
-                        format!("{}.{}", graph_context.rel.alias, graph_context.rel.schema.to_column),
+                        format!("{}.{}", graph_context.rel.alias, graph_context.rel.schema.to_id),
                         Some(ColumnAlias("to_id".to_string())),
                     ),
                 ]
@@ -667,9 +667,9 @@ impl GraphTRaversalPlanning {
             // The WHERE clause needs to reference the actual table columns
             let sub_in_expr_str =
                 if graph_context.rel.schema.from_node == graph_context.right.schema.table_name {
-                    graph_context.rel.schema.from_column.clone()  // Use schema column (e.g., user1_id)
+                    graph_context.rel.schema.from_id.clone()  // Use schema column (e.g., user1_id)
                 } else {
-                    graph_context.rel.schema.to_column.clone()    // Use schema column (e.g., user2_id)
+                    graph_context.rel.schema.to_id.clone()    // Use schema column (e.g., user2_id)
                 };
 
             let rel_insubquery = self.build_insubquery(

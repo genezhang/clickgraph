@@ -1,8 +1,23 @@
 # Changelog
 
+## [Unreleased] - 2025-11-02
+
+### 🔧 Refactoring
+
+- **Relationship Column Naming** (Nov 2): Renamed `from_column`/`to_column` to `from_id`/`to_id`
+  - **Rationale**: Improved semantic clarity - "id" indicates identity/key semantics vs generic "column"
+  - **Scope**: All structs (RelationshipSchema, RelationshipDefinition, RelationshipColumns, ViewScan)
+  - **Files Modified**: 27 Rust files, 10 YAML config files, 3 documentation files
+  - **Benefits**: 
+    - Maintains consistency with node schemas (`id_column`)
+    - Prepares for future composite key support
+    - No logic changes - pure field rename refactoring
+  - **Test Results**: All 312 tests passing (100%)
+  - **Breaking Change**: ⚠️ Existing YAML schemas must update `from_column` → `from_id`, `to_column` → `to_id`
+
 ## [Unreleased] - 2025-11-01
 
-### � Major Scalability Achievement
+### 🚀 Major Scalability Achievement
 
 - **Large Benchmark Success** (Nov 1): 90% success rate on 5 million users, 50 million relationships
   - **Dataset**: 5,000,000 users, 50,000,000 follows, 25,000,000 posts

@@ -26,8 +26,8 @@ graphs:
         relationships:
           FOLLOWS:
             source_table: user_follows_bench
-            from_column: follower_id
-            to_column: followed_id
+            from_id: follower_id
+            to_id: followed_id
             type_name: FOLLOWS
             from_node_type: User
             to_node_type: User
@@ -66,8 +66,8 @@ graphs:
         relationships:
           PURCHASED:
             source_table: purchases_bench
-            from_column: customer_id
-            to_column: product_id
+            from_id: customer_id
+            to_id: product_id
             type_name: PURCHASED
             from_node_type: Customer
             to_node_type: Product

@@ -28,8 +28,8 @@ views:
       # Map follows table to FOLLOWS relationships
       follows:
         source_table: user_follows
-        from_column: follower_id
-        to_column: followed_id
+        from_id: follower_id
+        to_id: followed_id
         property_mappings:
           since: follow_date
         type_name: FOLLOWS
@@ -37,8 +37,8 @@ views:
       # Map post authorship to AUTHORED relationships
       authored:
         source_table: posts
-        from_column: author_id
-        to_column: post_id
+        from_id: author_id
+        to_id: post_id
         property_mappings:
           created_at: post_date
         type_name: AUTHORED
@@ -46,8 +46,8 @@ views:
       # Map likes to LIKED relationships
       likes:
         source_table: post_likes
-        from_column: user_id
-        to_column: post_id
+        from_id: user_id
+        to_id: post_id
         property_mappings:
           created_at: like_date
         type_name: LIKED
@@ -78,8 +78,8 @@ views:
       # Map purchases to PURCHASED relationships
       purchased:
         source_table: orders
-        from_column: user_id
-        to_column: product_id
+        from_id: user_id
+        to_id: product_id
         property_mappings:
           date: order_date
           quantity: order_quantity

@@ -279,7 +279,7 @@ ORDER BY pagerank DESC
                 match rel_schema {
                     Ok(schema) => format!(
                         "SELECT {} AS from_node_id, {} AS to_node_id FROM {}",
-                        schema.from_column, schema.to_column, table
+                        schema.from_id, schema.to_id, table
                     ),
                     Err(_) => format!(
                         "SELECT from_node_id, to_node_id FROM {} -- Error: schema not found",

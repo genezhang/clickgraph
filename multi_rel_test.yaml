@@ -15,8 +15,8 @@ views:
     relationships:
       FOLLOWS:
         source_table: follows
-        from_column: from_user_id
-        to_column: to_user_id
+        from_id: from_user_id
+        to_id: to_user_id
         type_name: FOLLOWS
         from_node_type: User
         to_node_type: User
@@ -24,8 +24,8 @@ views:
 
       FRIENDS_WITH:
         source_table: friends
-        from_column: from_user_id
-        to_column: to_user_id
+        from_id: from_user_id
+        to_id: to_user_id
         type_name: FRIENDS_WITH
         from_node_type: User
         to_node_type: User

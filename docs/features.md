@@ -123,16 +123,19 @@ views:
     relationships:
       FOLLOWS:
         source_table: user_follows
-        from_column: follower_id
-        to_column: followed_id
+        from_node: User
+        to_node: User
+        from_id: follower_id
+        to_id: followed_id
         property_mappings:
           since: created_date
           
       POSTED:
         source_table: posts
-        from_column: author_id
-        to_column: post_id
-        from_node_type: User
+        from_node: User
+        to_node: Post
+        from_id: author_id
+        to_id: post_id
         to_node_type: Post
 ```
 

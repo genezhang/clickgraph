@@ -137,8 +137,8 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
 /// Relationship column information
 #[derive(Debug, Clone)]
 pub struct RelationshipColumns {
-    pub from_column: String,
-    pub to_column: String,
+    pub from_id: String,
+    pub to_id: String,
 }
 
 /// Convert a label to its corresponding table name
@@ -185,8 +185,8 @@ pub fn extract_relationship_columns_from_table(table_name: &str) -> Relationship
             for rel_schema in schema.get_relationships_schemas().values() {
                 if rel_schema.table_name == table_name {
                     return RelationshipColumns {
-                        from_column: rel_schema.from_column.clone(),
-                        to_column: rel_schema.to_column.clone(),
+                        from_id: rel_schema.from_id.clone(),
+                        to_id: rel_schema.to_id.clone(),
                     };
                 }
             }
@@ -196,8 +196,8 @@ pub fn extract_relationship_columns_from_table(table_name: &str) -> Relationship
     // No schema available or table not found - use generic defaults
     // This ensures the system works in schema-less mode but doesn't bypass user configuration
     RelationshipColumns {
-        from_column: "from_id".to_string(),
-        to_column: "to_id".to_string(),
+        from_id: "from_id".to_string(),
+        to_id: "to_id".to_string(),
     }
 }
 
@@ -209,10 +209,10 @@ pub fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipCo
         }
         LogicalPlan::ViewScan(view_scan) => {
             // Check if ViewScan already has relationship columns configured
-            if let (Some(from_col), Some(to_col)) = (&view_scan.from_column, &view_scan.to_column) {
+            if let (Some(from_col), Some(to_col)) = (&view_scan.from_id, &view_scan.to_id) {
                 Some(RelationshipColumns {
-                    from_column: from_col.clone(),
-                    to_column: to_col.clone(),
+                    from_id: from_col.clone(),
+                    to_id: to_col.clone(),
                 })
             } else {
                 // Fallback to table-based lookup
@@ -265,13 +265,13 @@ fn table_to_id_column_for_label(label: &str) -> String {
 fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(String, String)> {
     let table = rel_type_to_table_name(rel_type);
     let cols = extract_relationship_columns_from_table(&table);
-    Some((cols.from_column, cols.to_column))
+    Some((cols.from_id, cols.to_id))
 }
 
 /// Get relationship columns by table name
 fn get_relationship_columns_by_table(table_name: &str) -> Option<(String, String)> {
     let cols = extract_relationship_columns_from_table(table_name);
-    Some((cols.from_column, cols.to_column))
+    Some((cols.from_id, cols.to_id))
 }
 
 /// Get node info from schema
@@ -370,8 +370,8 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
         LogicalPlan::Empty => Ok(vec![]),
         LogicalPlan::Scan(_) => Ok(vec![]),
         LogicalPlan::ViewScan(view_scan) => {
-            // Check if this is a relationship ViewScan (has from_column/to_column)
-            if let (Some(from_col), Some(to_col)) = (&view_scan.from_column, &view_scan.to_column) {
+            // Check if this is a relationship ViewScan (has from_id/to_id)
+            if let (Some(from_col), Some(to_col)) = (&view_scan.from_id, &view_scan.to_id) {
                 // This is a relationship ViewScan - create a CTE that selects the relationship columns
                 let cte_name = format!("rel_{}", view_scan.source_table.replace([' ', '-', '_'], ""));
                 let sql = format!("SELECT {}, {} FROM {}", from_col, to_col, view_scan.source_table);
@@ -419,11 +419,11 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                 // Extract relationship columns
                 let rel_cols = extract_relationship_columns(&graph_rel.center)
                     .unwrap_or(RelationshipColumns {
-                        from_column: "from_node_id".to_string(),
-                        to_column: "to_node_id".to_string(),
+                        from_id: "from_node_id".to_string(),
+                        to_id: "to_node_id".to_string(),
                     });
-                let from_col = rel_cols.from_column;
-                let to_col = rel_cols.to_column;
+                let from_col = rel_cols.from_id;
+                let to_col = rel_cols.to_id;
 
                 // Define aliases based on traversal direction
                 // For variable-length paths, we need to know which node is the traversal start vs end

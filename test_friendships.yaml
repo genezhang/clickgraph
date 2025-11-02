@@ -16,8 +16,8 @@ views:
       FOLLOWS:
         type_name: FOLLOWS
         source_table: friendships
-        from_column: user1_id
-        to_column: user2_id
+        from_id: user1_id
+        to_id: user2_id
         from_node_type: User
         to_node_type: User
         property_mappings:

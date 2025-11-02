@@ -89,8 +89,8 @@ pub use testing::mock_clickhouse::create_test_table_schemas;
 // Added missing required fields
 RelationshipViewMapping {
     source_table: "user_follows".to_string(),
-    from_column: "follower_id".to_string(), 
-    to_column: "following_id".to_string(),
+    from_id: "follower_id".to_string(), 
+    to_id: "following_id".to_string(),
     property_mappings: HashMap::new(), // ← Added missing field
     type_name: "FOLLOWS".to_string(),
     filter_condition: None,

@@ -23,9 +23,9 @@ pub struct ViewScan {
     /// View-specific projections
     pub projections: Vec<LogicalExpr>,
     /// For relationship scans: the column containing source node ID
-    pub from_column: Option<String>,
+    pub from_id: Option<String>,
     /// For relationship scans: the column containing target node ID
-    pub to_column: Option<String>,
+    pub to_id: Option<String>,
     /// Child plan (if any)
     #[serde(skip)]
     pub input: Option<Arc<LogicalPlan>>,
@@ -48,8 +48,8 @@ impl ViewScan {
             id_column,
             output_schema,
             projections,
-            from_column: None,
-            to_column: None,
+            from_id: None,
+            to_id: None,
             input: None,
         }
     }
@@ -71,8 +71,8 @@ impl ViewScan {
             id_column,
             output_schema,
             projections,
-            from_column: None,
-            to_column: None,
+            from_id: None,
+            to_id: None,
             input: Some(input),
         }
     }
@@ -85,8 +85,8 @@ impl ViewScan {
         id_column: String,
         output_schema: Vec<String>,
         projections: Vec<LogicalExpr>,
-        from_column: String,
-        to_column: String,
+        from_id: String,
+        to_id: String,
     ) -> Self {
         ViewScan {
             source_table,
@@ -95,8 +95,8 @@ impl ViewScan {
             id_column,
             output_schema,
             projections,
-            from_column: Some(from_column),
-            to_column: Some(to_column),
+            from_id: Some(from_id),
+            to_id: Some(to_id),
             input: None,
         }
     }
@@ -109,8 +109,8 @@ impl ViewScan {
         id_column: String,
         output_schema: Vec<String>,
         projections: Vec<LogicalExpr>,
-        from_column: String,
-        to_column: String,
+        from_id: String,
+        to_id: String,
         input: Arc<LogicalPlan>,
     ) -> Self {
         ViewScan {
@@ -120,8 +120,8 @@ impl ViewScan {
             id_column,
             output_schema,
             projections,
-            from_column: Some(from_column),
-            to_column: Some(to_column),
+            from_id: Some(from_id),
+            to_id: Some(to_id),
             input: Some(input),
         }
     }
@@ -153,8 +153,8 @@ impl ViewScan {
             id_column: self.id_column.clone(),
             output_schema: self.output_schema.clone(),
             projections: self.projections.clone(),
-            from_column: self.from_column.clone(),
-            to_column: self.to_column.clone(),
+            from_id: self.from_id.clone(),
+            to_id: self.to_id.clone(),
             input: self.input.clone(),
         }
     }

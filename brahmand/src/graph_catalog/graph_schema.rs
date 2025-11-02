@@ -21,8 +21,8 @@ pub struct RelationshipSchema {
     pub column_names: Vec<String>,
     pub from_node: String,  // Node type (e.g., "User")
     pub to_node: String,    // Node type (e.g., "User")
-    pub from_column: String,  // Column name for source node ID (e.g., "user1_id")
-    pub to_column: String,    // Column name for target node ID (e.g., "user2_id")
+    pub from_id: String,  // Column name for source node ID (e.g., "user1_id")
+    pub to_id: String,    // Column name for target node ID (e.g., "user2_id")
     pub from_node_id_dtype: String,
     pub to_node_id_dtype: String,
     pub property_mappings: HashMap<String, String>,

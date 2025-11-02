@@ -141,10 +141,10 @@ views:
       friends_with:
         source_table: friendships  # ← rel_type_to_table_name() uses this
         type_name: FRIENDS_WITH   # ← Cypher uses this
-        from_column: user_id
-        to_column: friend_id
-        from_node_type: User
-        to_node_type: User
+        from_node: User
+        to_node: User
+        from_id: user_id
+        to_id: friend_id
 ```
 
 **Query**:
@@ -198,7 +198,7 @@ WHERE u.age > 25
 **Decision**: Use helper function for now
 
 **Rationale**:
-- Relationships have more complex structure (from_column, to_column, node types)
+- Relationships have more complex structure (from_id, to_id, node types)
 - Helper function is simpler and achieves the same goal
 - Can refactor to ViewRelScan later if needed
 - Current approach tested and working

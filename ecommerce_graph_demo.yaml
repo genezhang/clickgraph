@@ -67,8 +67,8 @@ views:
     relationships:
       PURCHASED:
         source_table: orders_mem
-        from_column: customer_id
-        to_column: product_id
+        from_id: customer_id
+        to_id: product_id
         type_name: PURCHASED
         from_node_type: Customer
         to_node_type: Product
@@ -82,8 +82,8 @@ views:
           
       PLACED_ORDER:
         source_table: orders_mem
-        from_column: customer_id
-        to_column: order_id
+        from_id: customer_id
+        to_id: order_id
         type_name: PLACED_ORDER
         from_node_type: Customer
         to_node_type: Order
@@ -92,8 +92,8 @@ views:
           
       ORDER_CONTAINS:
         source_table: orders_mem
-        from_column: order_id
-        to_column: product_id
+        from_id: order_id
+        to_id: product_id
         type_name: ORDER_CONTAINS
         from_node_type: Order
         to_node_type: Product
@@ -103,8 +103,8 @@ views:
           
       REVIEWED:
         source_table: reviews_mem
-        from_column: customer_id
-        to_column: product_id
+        from_id: customer_id
+        to_id: product_id
         type_name: REVIEWED
         from_node_type: Customer
         to_node_type: Product

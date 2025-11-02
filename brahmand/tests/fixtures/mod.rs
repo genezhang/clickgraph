@@ -20,8 +20,8 @@ nodes:
 relationships:
   - type: WORKS_FOR
     table: employment
-    from_column: user_id
-    to_column: company_id
+    from_id: user_id
+    to_id: company_id
     properties:
       role: job_title
 "#;

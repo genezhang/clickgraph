@@ -37,8 +37,8 @@ views:
     relationships:
       PURCHASED:
         source_table: "orders"
-        from_column: "customer_id"
-        to_column: "product_id"
+        from_id: "customer_id"
+        to_id: "product_id"
         type_name: "PURCHASED"
         property_mappings:
           order_id: "order_id"

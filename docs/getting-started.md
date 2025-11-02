@@ -164,8 +164,10 @@ views:
     relationships:
       FOLLOWS:
         source_table: user_follows
-        from_column: follower_id
-        to_column: followed_id
+        from_node: User
+        to_node: User
+        from_id: follower_id
+        to_id: followed_id
         property_mappings:
           since: created_date
 ```

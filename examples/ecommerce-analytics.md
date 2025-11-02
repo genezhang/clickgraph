@@ -262,10 +262,10 @@ views:
     relationships:
       PURCHASED:
         source_table: orders
-        from_column: customer_id
-        to_column: product_id
-        from_node_type: Customer
-        to_node_type: Product
+        from_node: Customer
+        to_node: Product
+        from_id: customer_id
+        to_id: product_id
         property_mappings:
           quantity: quantity
           amount: total_amount
@@ -276,29 +276,29 @@ views:
           
       PLACED_ORDER:
         source_table: orders
-        from_column: customer_id
-        to_column: order_id
-        from_node_type: Customer
-        to_node_type: Order
+        from_node: Customer
+        to_node: Order
+        from_id: customer_id
+        to_id: order_id
         property_mappings:
           date: order_date
           
       ORDER_CONTAINS:
         source_table: orders
-        from_column: order_id
-        to_column: product_id
-        from_node_type: Order
-        to_node_type: Product
+        from_node: Order
+        to_node: Product
+        from_id: order_id
+        to_id: product_id
         property_mappings:
           quantity: quantity
           unit_price: unit_price
           
       REVIEWED:
         source_table: reviews
-        from_column: customer_id
-        to_column: product_id
-        from_node_type: Customer
-        to_node_type: Product
+        from_node: Customer
+        to_node: Product
+        from_id: customer_id
+        to_id: product_id
         property_mappings:
           rating: rating
           review_text: review_text
@@ -307,10 +307,10 @@ views:
           
       BELONGS_TO:
         source_table: products
-        from_column: product_id
-        to_column: category
-        from_node_type: Product
-        to_node_type: Category
+        from_node: Product
+        to_node: Category
+        from_id: product_id
+        to_id: category
         property_mappings: {}
 ```
 
