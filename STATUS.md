@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: November 1, 2025*
+*Updated: November 2, 2025*
 
 ## 🚀 **Current Development Status**
 
@@ -24,7 +24,16 @@
 
 **Note**: Development build - robust for tested scenarios, not production-hardened.
 
-### Recent Achievements (November 1, 2025)
+### Recent Achievements (November 2, 2025)
+✅ **Bolt Multi-Database Support**: Neo4j 4.0+ compatibility for schema selection via Bolt protocol  
+✅ **Relationship Schema Refactoring**: from_column/to_column → from_id/to_id across 37 files  
+✅ **Multiple Relationship Types**: End-to-end validation with schema_name parameter  
+✅ **Path Variables**: Fixed 3 critical bugs (ID resolution, type mismatch, filter rewriting)  
+✅ **Documentation**: Comprehensive updates reflecting latest capabilities  
+
+See: `notes/bolt-multi-database.md` for Bolt protocol implementation details
+
+### Previous Achievements (November 1, 2025)
 ✅ **Large Benchmark**: 5M users loaded in ~5 minutes using ClickHouse native generation  
 ✅ **Medium Benchmark**: 10K users validated with performance metrics (~2s queries)  
 ✅ **Bug #1**: ChainedJoin CTE wrapper - Variable-length exact hop queries (`*2`, `*3`) fixed  
@@ -85,8 +94,16 @@ See: `notes/benchmarking.md` for detailed analysis
 
 ### Infrastructure
 - **HTTP API**: RESTful endpoints with Axum (all platforms)
-- **Bolt Protocol**: Neo4j wire protocol v4.4
-- **YAML Configuration**: View-based schema mapping
+- **Bolt Protocol**: Neo4j wire protocol v4.4 with multi-database support ✅ **[COMPLETED: Nov 2, 2025]**
+  - Full Neo4j 4.0+ compatibility for database selection
+  - Extracts `db` or `database` field from HELLO message
+  - Session-level schema selection via `driver.session(database="schema_name")`
+  - Parity with HTTP API's `schema_name` parameter
+- **Multi-Schema Support**: GLOBAL_SCHEMAS architecture for multiple graph configurations ✅ **[COMPLETED: Nov 2, 2025]**
+  - HTTP API: `{"query": "...", "schema_name": "social_network"}`
+  - Bolt Protocol: `driver.session(database="social_network")`
+  - Default schema fallback when not specified
+- **YAML Configuration**: View-based schema mapping with property definitions
 - **Schema Monitoring**: Background schema update detection with graceful error handling ✅ **[COMPLETED: Oct 25, 2025]**
   - 60-second interval checks for schema changes in ClickHouse
   - Automatic global schema refresh when changes detected
@@ -147,8 +164,11 @@ See: `notes/benchmarking.md` for detailed analysis
 - **Benchmark (Medium)**: 10/10 queries on 10K users (100% success) ✅
 - **Benchmark (Large)**: 9/10 queries on 5M users (90% success) ✅
 - **Largest Dataset**: 5,000,000 users, 50,000,000 relationships validated
-- **Last updated**: Nov 1, 2025
-- **Latest achievement**: Enterprise-scale validation (5M users!) + Three critical bug fixes
+- **Last updated**: Nov 2, 2025
+- **Latest achievements**: 
+  - Bolt multi-database support (Neo4j 4.0+ compatible)
+  - Relationship schema refactoring (from_id/to_id)
+  - Path variable bug fixes (3 critical issues resolved)
 - **Branch**: main (synchronized with origin/main)
 
 ### Benchmark Query Types Validated
@@ -189,6 +209,7 @@ See: `notes/benchmarking.md` for detailed analysis
 
 Detailed implementation notes for major features:
 
+- **[notes/bolt-multi-database.md](notes/bolt-multi-database.md)** - Bolt protocol multi-database support (Nov 2, 2025)
 - **[notes/benchmarking.md](notes/benchmarking.md)** - Comprehensive benchmark results with 100% success rate (Nov 1, 2025)
 - **[notes/error-handling-improvements.md](notes/error-handling-improvements.md)** - Systematic replacement of panic-prone unwrap() calls
 - **[notes/case-expressions.md](notes/case-expressions.md)** - CASE WHEN THEN ELSE conditional expressions
@@ -247,6 +268,49 @@ Cypher Query → Parser → Query Planner → SQL Generator → ClickHouse → J
 ---
 
 ## 📝 Recent Changes
+
+### Nov 2, 2025 - 🚀 Bolt Multi-Database Support + Schema Refactoring
+**Neo4j 4.0+ compatibility and relationship schema improvements**
+
+#### Bolt Protocol Multi-Database Support ✅
+- **Implementation**: Full Neo4j 4.0+ multi-database selection standard
+- **Features**:
+  - `extract_database()` method extracts `db` or `database` from HELLO message
+  - `BoltContext.schema_name` stores selected database for session lifetime
+  - Query execution receives schema_name parameter (defaults to "default")
+  - Session-level selection: `driver.session(database="social_network")`
+- **Parity**: Bolt protocol now matches HTTP API multi-schema capabilities
+- **Files Modified**: `messages.rs`, `mod.rs`, `handler.rs` in `bolt_protocol/`
+- **Test Results**: All 312 unit tests passing (100%)
+- **Documentation**: Complete implementation guide in `notes/bolt-multi-database.md`
+
+#### Relationship Schema Refactoring ✅
+- **Change**: Renamed `from_column`/`to_column` → `from_id`/`to_id` across codebase
+- **Rationale**: Improved semantic clarity - "id" indicates identity/key semantics
+- **Scope**: 
+  - 27 Rust files (RelationshipSchema, RelationshipDefinition, RelationshipColumns, ViewScan)
+  - 10 YAML configuration files
+  - 10 documentation files (README, docs/, examples/, notes/)
+- **Benefits**:
+  - Consistency with node schemas (`id_column`)
+  - Prepares for future composite key support
+  - Pure field rename - zero logic changes
+- **Breaking Change**: ⚠️ YAML schemas must update field names
+- **Test Results**: All 312 tests passing after refactoring
+
+#### Path Variable Bug Fixes ✅
+- **Bug #1 - ID Column Resolution**: Fixed hardcoded 'id' to use schema-defined id_column
+- **Bug #2 - Type Mismatch**: Switched from map() to tuple() for uniform typing
+- **Bug #3 - Filter Rewriting**: Added qualified column references for path functions
+- **Impact**: Path variable queries (`MATCH p = ...`) now work correctly
+- **Validation**: End-to-end testing confirms proper path construction
+
+#### Multiple Relationship Types End-to-End ✅
+- **Issue Resolved**: `[:FOLLOWS|FRIENDS_WITH]` queries failing with "Node label not found"
+- **Root Cause**: Test script not specifying `schema_name` parameter
+- **Fix**: Updated test to include `"schema_name": "test_multi_rel_schema"`
+- **Validation**: All 9 multi-relationship unit tests passing (100%)
+- **Confirmation**: Schema loading and query execution working correctly
 
 ### Nov 1, 2025 - 🎉 100% Benchmark Success + Critical Bug Fixes
 **Three critical bugs fixed, all graph queries now working**
