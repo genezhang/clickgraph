@@ -197,6 +197,83 @@ fn references_end_node_alias(condition: &OperatorApplication, connections: &[(St
     })
 }
 
+/// Rewrite path function calls (length, nodes, relationships) to CTE column references
+/// Converts: length(p) → hop_count, nodes(p) → path_nodes, relationships(p) → path_relationships
+fn rewrite_path_functions(expr: &RenderExpr, path_var_name: &str) -> RenderExpr {
+    rewrite_path_functions_with_table(expr, path_var_name, "")
+}
+
+/// Rewrite path function calls with optional table alias
+/// table_alias: if provided, generates PropertyAccessExp (table.column), otherwise Column
+fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name: &str, table_alias: &str) -> RenderExpr {
+    match expr {
+        RenderExpr::ScalarFnCall(fn_call) => {
+            // Check if this is a path function call with the path variable as argument
+            if fn_call.args.len() == 1 {
+                if let RenderExpr::TableAlias(TableAlias(alias)) = &fn_call.args[0] {
+                    if alias == path_var_name {
+                        // Convert path functions to CTE column references
+                        let column_name = match fn_call.name.as_str() {
+                            "length" => Some("hop_count"),
+                            "nodes" => Some("path_nodes"),
+                            "relationships" => Some("path_relationships"),
+                            _ => None,
+                        };
+                        
+                        if let Some(col_name) = column_name {
+                            return if table_alias.is_empty() {
+                                RenderExpr::Column(Column(col_name.to_string()))
+                            } else {
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(table_alias.to_string()),
+                                    column: Column(col_name.to_string()),
+                                })
+                            };
+                        }
+                    }
+                }
+            }
+            
+            // Recursively rewrite arguments for nested calls
+            let rewritten_args: Vec<RenderExpr> = fn_call.args.iter()
+                .map(|arg| rewrite_path_functions_with_table(arg, path_var_name, table_alias))
+                .collect();
+            
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: fn_call.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            // Recursively rewrite operands
+            let rewritten_operands: Vec<RenderExpr> = op.operands.iter()
+                .map(|operand| rewrite_path_functions_with_table(operand, path_var_name, table_alias))
+                .collect();
+            
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator.clone(),
+                operands: rewritten_operands,
+            })
+        }
+        RenderExpr::PropertyAccessExp(prop) => {
+            // Don't rewrite property access - it's handled separately
+            expr.clone()
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            // Recursively rewrite arguments for aggregate functions
+            let rewritten_args: Vec<RenderExpr> = agg.args.iter()
+                .map(|arg| rewrite_path_functions_with_table(arg, path_var_name, table_alias))
+                .collect();
+            
+            RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: agg.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        _ => expr.clone(), // For other expression types, return as-is
+    }
+}
+
 /// Helper function to get node table name for a given alias
 fn get_node_table_for_alias(alias: &str) -> String {
     // Try to get from global schema first (for production/benchmark)
@@ -726,22 +803,26 @@ impl RenderPlanBuilder for LogicalPlan {
                 let items = projection.items.iter().map(|item| {
                     let mut expr: RenderExpr = item.expression.clone().try_into()?;
                     
-                    // Check if this is a path variable that needs to be converted to map construction
+                    // Check if this is a path variable that needs to be converted to tuple construction
                     if let (Some(path_var_name), RenderExpr::TableAlias(TableAlias(alias))) = (&path_var, &expr) {
                         if alias == path_var_name {
-                            // Convert path variable to map construction
+                            // Convert path variable to named tuple construction
+                            // Use tuple(nodes, length, relationships) instead of map() to avoid type conflicts
                             expr = RenderExpr::ScalarFnCall(ScalarFnCall {
-                                name: "map".to_string(),
+                                name: "tuple".to_string(),
                                 args: vec![
-                                    RenderExpr::Literal(Literal::String("nodes".to_string())),
                                     RenderExpr::Column(Column("path_nodes".to_string())),
-                                    RenderExpr::Literal(Literal::String("length".to_string())),
                                     RenderExpr::Column(Column("hop_count".to_string())),
-                                    RenderExpr::Literal(Literal::String("relationships".to_string())),
                                     RenderExpr::Column(Column("path_relationships".to_string())),
                                 ],
                             });
                         }
+                    }
+                    
+                    // Rewrite path function calls: length(p), nodes(p), relationships(p)
+                    // Use table alias "t" to reference CTE columns
+                    if let Some(path_var_name) = &path_var {
+                        expr = rewrite_path_functions_with_table(&expr, path_var_name, "t");
                     }
                     
                     // IMPORTANT: Property mapping is already done in the analyzer phase by FilterTagging.apply_property_mapping

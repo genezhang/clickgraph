@@ -240,13 +240,20 @@ fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
 
 /// Get ID column for a table
 pub fn table_to_id_column(table: &str) -> String {
-    match table {
-        "users" => "id".to_string(),
-        "posts" => "id".to_string(),
-        "orders" => "id".to_string(),
-        "products" => "id".to_string(),
-        _ => "id".to_string(),
+    // Get the ID column from the schema
+    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
+        if let Ok(schema) = schema_lock.try_read() {
+            // Find node schema by table name
+            for node_schema in schema.get_nodes_schemas().values() {
+                if node_schema.table_name == table {
+                    return node_schema.node_id.column.clone();
+                }
+            }
+        }
     }
+    
+    // Fallback to "id" if schema not available or table not found
+    "id".to_string()
 }
 
 /// Get ID column for a label
