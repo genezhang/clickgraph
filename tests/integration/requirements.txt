@@ -1,0 +1,18 @@
+# Integration Test Dependencies
+
+# Testing framework
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-timeout>=2.1.0
+
+# ClickHouse client
+clickhouse-connect>=0.6.0
+
+# HTTP requests
+requests>=2.31.0
+
+# YAML parsing
+PyYAML>=6.0
+
+# Neo4j driver (for Bolt protocol tests)
+neo4j>=5.12.0
