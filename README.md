@@ -163,16 +163,16 @@ Transform existing relational data into graph format through YAML configuration:
 views:
   - name: social_network
     nodes:
-      user:
+      user:                    # Node label in Cypher queries
         source_table: users
         id_column: user_id
         property_mappings:
           name: full_name
     relationships:
-      follows:
+      follows:                 # Relationship type in Cypher queries
         source_table: user_follows
-        from_node: user
-        to_node: user
+        from_node: user        # Source node label
+        to_node: user          # Target node label
         from_id: follower_id
         to_id: followed_id
 ```

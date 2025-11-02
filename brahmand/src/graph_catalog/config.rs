@@ -113,10 +113,10 @@ pub struct RelationshipDefinition {
     pub from_id: String,
     /// To ID column name
     pub to_id: String,
-    /// Node type for source (from) node - optional, defaults to first node type
+    /// Node label for source (from) node - optional, defaults to first node label
     #[serde(default)]
     pub from_node: Option<String>,
-    /// Node type for target (to) node - optional, defaults to first node type
+    /// Node label for target (to) node - optional, defaults to first node label
     #[serde(default)]
     pub to_node: Option<String>,
     /// Property mappings
