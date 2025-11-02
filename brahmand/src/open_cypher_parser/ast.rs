@@ -4,6 +4,7 @@ use std::{cell::RefCell, fmt, rc::Rc};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct OpenCypherQueryAst<'a> {
+    pub use_clause: Option<UseClause<'a>>,
     pub match_clause: Option<MatchClause<'a>>,
     pub optional_match_clauses: Vec<OptionalMatchClause<'a>>,
     pub call_clause: Option<CallClause<'a>>,
@@ -19,6 +20,11 @@ pub struct OpenCypherQueryAst<'a> {
     pub order_by_clause: Option<OrderByClause<'a>>,
     pub skip_clause: Option<SkipClause>,
     pub limit_clause: Option<LimitClause>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct UseClause<'a> {
+    pub database_name: &'a str,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -458,6 +464,9 @@ impl fmt::Display for Expression<'_> {
 impl fmt::Display for OpenCypherQueryAst<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "OpenCypherQueryAst")?;
+        if let Some(ref u) = self.use_clause {
+            writeln!(f, "├── UseClause: {:#?}", u)?;
+        }
         if let Some(ref m) = self.match_clause {
             writeln!(f, "├── MatchClause: {:#?}", m)?;
         }

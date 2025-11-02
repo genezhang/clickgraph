@@ -347,18 +347,23 @@ impl BoltHandler {
         _parameters: HashMap<String, Value>,
         schema_name: Option<String>,
     ) -> BoltResult<HashMap<String, Value>> {
-        // Log schema selection
-        let schema = schema_name.as_deref().unwrap_or("default");
-        log::debug!("Query execution using schema: {}", schema);
-
         // Parse the Cypher query using Brahmand's parser
         match open_cypher_parser::parse_query(query) {
-            Ok(_parsed_query) => {
+            Ok(parsed_query) => {
+                // Determine schema_name with precedence: USE clause > session parameter > default
+                let effective_schema = if let Some(ref use_clause) = parsed_query.use_clause {
+                    use_clause.database_name
+                } else {
+                    schema_name.as_deref().unwrap_or("default")
+                };
+
+                log::debug!("Query execution using schema: {}", effective_schema);
+
                 // For now, just return success metadata
                 // In a full implementation, this would:
-                // 1. Transform parsed query to logical plan
+                // 1. Transform parsed query to logical plan using effective_schema
                 // 2. Optimize the plan
-                // 3. Generate ClickHouse SQL using selected schema
+                // 3. Generate ClickHouse SQL
                 // 4. Execute the SQL
                 // 5. Transform results back to graph format
                 

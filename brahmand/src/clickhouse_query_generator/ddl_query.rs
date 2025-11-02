@@ -900,6 +900,7 @@ mod tests {
     fn generate_query_unsupported() {
         // AST with no DDL clauses
         let ast = OpenCypherQueryAst {
+            use_clause: None,
             match_clause: None,
             optional_match_clauses: vec![],
             call_clause: None,

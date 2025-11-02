@@ -113,7 +113,19 @@ pub async fn query_handler(
 
     let output_format = payload.format.unwrap_or(OutputFormat::JSONEachRow);
     let sql_only = payload.sql_only.unwrap_or(false);
-    let schema_name = payload.schema_name.as_deref().unwrap_or("default");
+    
+    // Pre-parse to check for USE clause (minimal parse just to extract database selection)
+    let schema_name = if let Ok(ast) = open_cypher_parser::parse_query(&payload.query) {
+        if let Some(ref use_clause) = ast.use_clause {
+            use_clause.database_name
+        } else {
+            payload.schema_name.as_deref().unwrap_or("default")
+        }
+    } else {
+        payload.schema_name.as_deref().unwrap_or("default")
+    };
+    
+    log::debug!("Using schema: {}", schema_name);
 
         let (ch_sql_queries, maybe_schema_elem, is_read, query_type_str) = {
         let graph_schema = match graph_catalog::get_graph_schema_by_name(schema_name).await {
