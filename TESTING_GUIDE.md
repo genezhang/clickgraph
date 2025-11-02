@@ -1,5 +1,23 @@
 # ClickGraph Testing Guide
 
+*Updated: November 2, 2025 - Reflects new directory structure*
+
+## Quick Start
+
+**Run all tests from project root:**
+```bash
+python run_tests.py              # Run all tests
+python run_tests.py <pattern>    # Run specific tests
+```
+
+**Or run from tests directory:**
+```bash
+cd tests/python
+python run_all_tests.py          # Run all tests
+```
+
+---
+
 ## Problem: Terminal Chaos
 Multiple PowerShell windows accumulate, port conflicts occur, and it's hard to know if you're testing the latest code.
 
@@ -22,19 +40,19 @@ docker-compose up -d clickhouse-service
 ### Daily Workflow
 ```powershell
 # Start server (runs in background, single window)
-.\test_server.ps1 -Start
+.\scripts\server\test_server.ps1 -Start
 
 # Run test query
-.\test_server.ps1 -Test
+.\scripts\server\test_server.ps1 -Test
 
 # Run custom query
-.\test_server.ps1 -Test -Query "MATCH (u:User) WHERE u.age > 30 RETURN u.name"
+.\scripts\server\test_server.ps1 -Test -Query "MATCH (u:User) WHERE u.age > 30 RETURN u.name"
 
 # Stop server
-.\test_server.ps1 -Stop
+.\scripts\server\test_server.ps1 -Stop
 
 # Clean up everything (kills orphaned processes)
-.\test_server.ps1 -Clean
+.\scripts\server\test_server.ps1 -Clean
 ```
 
 **Benefits**:
@@ -48,23 +66,35 @@ docker-compose up -d clickhouse-service
 
 ## Option 2: Python Test Runner (Best for Test Suites)
 
-**Best for**: Comprehensive testing, CI/CD integration
+**Best for**: Running comprehensive test suites and CI/CD integration
 
-### Setup (One Time)
+### Quick Start from Project Root
 ```bash
-pip install requests
+# Run all tests
+python run_tests.py
+
+# Run specific test
+python run_tests.py test_optional_match
+
+# Run tests matching pattern
+python run_tests.py benchmark
 ```
 
-### Daily Workflow
+### Run from Tests Directory
 ```bash
+cd tests/python
+
 # Start server
 python test_runner.py --start
 
 # Run full test suite
 python test_runner.py --test
 
-# Run single query
-python test_runner.py --query "MATCH (u:User) RETURN u.name"
+# Run all tests
+python run_all_tests.py
+
+# Run specific test file
+python test_optional_match.py
 
 # Stop server
 python test_runner.py --stop
@@ -75,8 +105,9 @@ python test_runner.py --clean
 
 **Benefits**:
 - ✅ Cross-platform (Windows/Linux/Mac)
-- ✅ Comprehensive test suite built-in
-- ✅ Colored output for easy reading
+- ✅ Comprehensive test suite (34+ test files)
+- ✅ Run from project root or tests directory
+- ✅ Pattern matching for selective testing
 - ✅ Structured test results
 - ✅ Easy to extend with new tests
 
@@ -152,12 +183,66 @@ docker-compose -f docker-compose.test.yaml down
 
 ---
 
+## Test Directory Structure
+
+As of November 2, 2025, all tests are organized in the `tests/` directory:
+
+```
+tests/
+├── python/          # Python test scripts (34+ files)
+│   ├── run_all_tests.py          # Main test runner
+│   ├── test_runner.py            # Server management + testing
+│   ├── test_optional_match.py    # Feature tests
+│   ├── test_path_variables.py
+│   ├── test_shortest_path*.py
+│   ├── test_benchmark*.py        # Benchmark tests
+│   └── ...
+├── sql/             # SQL test files
+│   ├── test_generated.sql
+│   ├── test_manual.sql
+│   └── shortest_path_sql.txt
+├── cypher/          # Cypher query files
+│   ├── test_path_functions.cypher
+│   └── test_where_clause.cypher
+└── data/            # Test data files
+    ├── test_*.json              # JSON test data
+    ├── customers.csv
+    └── *.ipynb                  # Jupyter notebooks
+```
+
+**Running tests from new locations:**
+
+```bash
+# From project root (recommended)
+python run_tests.py                    # Convenience wrapper
+python tests/python/run_all_tests.py   # Direct invocation
+
+# From tests directory
+cd tests/python
+python run_all_tests.py                # Run all tests
+python test_optional_match.py          # Run specific test
+```
+
+**Server management scripts moved to `scripts/server/`:**
+```powershell
+.\scripts\server\test_server.ps1       # PowerShell test runner
+.\scripts\server\start_server*.ps1     # Various server start scripts
+```
+
+**Setup scripts moved to `scripts/setup/`:**
+```bash
+scripts/setup/setup_demo_data.sql      # Demo data
+scripts/setup/setup_test_data.sql      # Test data
+```
+
+---
+
 ## Troubleshooting
 
 ### "Port 8080 already in use"
 ```powershell
 # PowerShell
-.\test_server.ps1 -Clean
+.\scripts\server\test_server.ps1 -Clean
 
 # Or manually
 netstat -ano | findstr :8080
