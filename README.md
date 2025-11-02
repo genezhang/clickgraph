@@ -14,22 +14,23 @@
 
 ## 🚀 What's New (November 1, 2025)
 
-### Enterprise-Scale Validation - Production Ready! 
+### Large-Scale Testing & Bug Fixes
 
-**ClickGraph successfully validated on 5 MILLION users and 50 MILLION relationships!**
+**ClickGraph tested successfully on 5 MILLION users and 50 MILLION relationships!**
 
 | Benchmark | Dataset Size | Success Rate | Status |
 |-----------|-------------|--------------|--------|
-| **Large** | 5M users, 50M follows | 9/10 (90%) | ✅ **Enterprise Scale** |
-| **Medium** | 10K users, 50K follows | 10/10 (100%) | ✅ Production Ready |
-| **Small** | 1K users, 5K follows | 10/10 (100%) | ✅ Production Ready |
+| **Large** | 5M users, 50M follows | 9/10 (90%) | ✅ **Stress Tested** |
+| **Medium** | 10K users, 50K follows | 10/10 (100%) | ✅ Well Validated |
+| **Small** | 1K users, 5K follows | 10/10 (100%) | ✅ Fully Tested |
 
-**Key Achievements:**
-- ✅ **Direct relationships**: Flawless on 50M edges
-- ✅ **Multi-hop traversals**: Perfect on 5M node graphs  
-- ✅ **Variable-length paths**: Scaling to enterprise datasets
+**What We Learned:**
+- ✅ **Direct relationships**: Handling 50M edges successfully
+- ✅ **Multi-hop traversals**: Working on 5M node graphs  
+- ✅ **Variable-length paths**: Scaling to large datasets
 - ✅ **Aggregations**: Pattern matching across millions of rows
-- ✅ **Performance**: ~2 seconds for most queries, even at massive scale
+- ✅ **Performance**: ~2 seconds for most queries, even at large scale
+- ⚠️ **Shortest paths**: Memory limits on largest dataset (ClickHouse config dependent)
 
 **Recent Bug Fixes:**
 - 🐛 ChainedJoin CTE wrapper for exact hop variable-length paths (`*2`, `*3`)

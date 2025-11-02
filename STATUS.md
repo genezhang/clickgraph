@@ -2,25 +2,27 @@
 
 *Updated: November 1, 2025*
 
-## 🚀 **PRODUCTION-READY AT ENTERPRISE SCALE!**
+## 🚀 **Current Development Status**
 
-**90% success on 5 MILLION users, 50 MILLION relationships** - Validated at massive scale!
+**90% success on 5 MILLION users, 50 MILLION relationships** - Large-scale stress testing complete!
 
 ### Benchmark Results Summary
 
 | Dataset | Users | Follows | Posts | Success Rate | Status |
 |---------|-------|---------|-------|--------------|--------|
-| **Large** | 5,000,000 | 50,000,000 | 25,000,000 | 9/10 (90%) | ✅ **Enterprise Scale** |
-| **Medium** | 10,000 | 50,000 | 5,000 | 10/10 (100%) | ✅ Production Ready |
-| **Small** | 1,000 | 4,997 | 2,000 | 10/10 (100%) | ✅ Production Ready |
+| **Large** | 5,000,000 | 50,000,000 | 25,000,000 | 9/10 (90%) | ✅ **Stress Tested** |
+| **Medium** | 10,000 | 50,000 | 5,000 | 10/10 (100%) | ✅ Well Validated |
+| **Small** | 1,000 | 4,997 | 2,000 | 10/10 (100%) | ✅ Fully Tested |
 
 ### Key Scalability Findings (November 1, 2025)
-✅ **Direct relationships**: Working flawlessly on 50M edges  
-✅ **Multi-hop traversals**: Handling 5M node graph perfectly  
-✅ **Variable-length paths**: Scaling to enterprise datasets  
+✅ **Direct relationships**: Working successfully on 50M edges  
+✅ **Multi-hop traversals**: Handling 5M node graph  
+✅ **Variable-length paths**: Scaling to large datasets  
 ✅ **Aggregations**: Finding patterns across millions of rows (users with 31+ followers!)  
-✅ **Mutual follows**: Complex pattern matching on massive graphs  
+✅ **Mutual follows**: Complex pattern matching on large graphs  
 ⚠️ **Shortest path**: Hits memory limit (27.83 GB) on 5M dataset - ClickHouse config tuning needed
+
+**Note**: Development build - robust for tested scenarios, not production-hardened.
 
 ### Recent Achievements (November 1, 2025)
 ✅ **Large Benchmark**: 5M users loaded in ~5 minutes using ClickHouse native generation  

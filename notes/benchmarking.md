@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-ClickGraph validated at **three scale levels** - from small development datasets to enterprise-scale production workloads.
+ClickGraph tested at **three scale levels** - from small development datasets to large-scale stress testing.
 
 | Benchmark | Users | Follows | Posts | Success Rate | Performance |
 |-----------|-------|---------|-------|--------------|-------------|
@@ -17,18 +17,18 @@ ClickGraph validated at **three scale levels** - from small development datasets
 | **Small** | 1,000 | 4,997 | 2,000 | 10/10 (100%) | Fast (<1s) |
 
 **Test Script**: `test_benchmark_final.py`, `test_medium_benchmark.py`  
-**Validation**: All major Cypher query patterns working correctly across all scales
+**Status**: Development build - robust for tested scenarios, not production-hardened
 
-### Key Achievements
+### Key Results
 
-✅ **Simple Node Lookups** - Working at all scales (1K → 5M users)  
-✅ **Filtered Scans** - Efficient range queries on massive datasets  
-✅ **Direct Relationships** - Flawless on 50M edges  
+✅ **Simple Node Lookups** - Working at all tested scales (1K → 5M users)  
+✅ **Filtered Scans** - Efficient range queries on large datasets  
+✅ **Direct Relationships** - Handling 50M edges successfully  
 ✅ **Multi-Hop Traversals** - Working across 5M node graphs  
-✅ **Variable-Length Paths** - Scaling to enterprise datasets (`*2`, `*1..3`)  
-✅ **Shortest Paths** - Working with filters (note: memory limits on 5M dataset)  
+✅ **Variable-Length Paths** - Scaling to large datasets (`*2`, `*1..3`)  
+⚠️ **Shortest Paths** - Working with filters (hits memory limits on 5M dataset)  
 ✅ **Aggregations** - Pattern matching across millions of rows (GROUP BY, COUNT)  
-✅ **Bidirectional Patterns** - Complex patterns on massive graphs  
+✅ **Bidirectional Patterns** - Complex patterns on large graphs  
 
 ---
 
