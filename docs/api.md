@@ -24,9 +24,15 @@ Content-Type: application/json
 
 {
   "query": "MATCH (n) RETURN n LIMIT 10",
-  "parameters": {}
+  "parameters": {},
+  "schema_name": "my_graph"  // Optional: specify which graph schema to use (defaults to "default")
 }
 ```
+
+**Parameters:**
+- `query` (string, required): Cypher query to execute
+- `parameters` (object, optional): Query parameters (not yet implemented)
+- `schema_name` (string, optional): Graph schema/database name to use for this query. Defaults to `"default"`. Enables multi-database support for queries.
 
 **Response Format:**
 ```http
@@ -115,9 +121,28 @@ curl -X POST http://localhost:8080/query \
 ## Neo4j Bolt Protocol
 
 ### Connection Details
-- **Protocol**: Bolt v4.4
+- **Protocol**: Bolt v4.4 with Neo4j 4.0+ multi-database support
 - **Default Port**: 7687
 - **URI Format**: `bolt://localhost:7687`
+
+### Multi-Database Support
+ClickGraph supports Neo4j 4.0+ multi-database selection via the Bolt protocol:
+
+```python
+from neo4j import GraphDatabase
+
+driver = GraphDatabase.driver("bolt://localhost:7687")
+
+# Select specific graph schema/database
+with driver.session(database="social_network") as session:
+    result = session.run("MATCH (u:User) RETURN u.name")
+    
+# Use default schema
+with driver.session() as session:  # Defaults to "default" schema
+    result = session.run("MATCH (p:Product) RETURN p.name")
+```
+
+The `database` parameter in the session is sent via the Bolt HELLO message and maps to ClickGraph's `schema_name` configuration. This provides the same multi-schema capability as the HTTP API's `schema_name` parameter.
 
 ### Authentication
 - **Method**: Basic authentication (username/password)

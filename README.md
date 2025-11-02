@@ -63,6 +63,7 @@
 
 ### Neo4j Ecosystem Compatibility
 - **Bolt Protocol v4.4**: Full Neo4j driver compatibility for seamless integration
+- **Multi-Database Support**: Neo4j 4.0+ compatible database selection via Bolt HELLO message and HTTP schema_name parameter
 - **Dual Server Architecture**: HTTP REST API and Bolt protocol running simultaneously
 - **Authentication Support**: Multiple authentication schemes including basic auth
 - **Tool Compatibility**: Works with existing Neo4j drivers, browsers, and applications
