@@ -20,6 +20,8 @@ graph_schema:
       table: user_follows_bench
       from_column: follower_id
       to_column: followed_id
+      from_node: User
+      to_node: User
       property_mappings:
         follow_date: follow_date
     - type: FRIENDS_WITH
@@ -27,5 +29,7 @@ graph_schema:
       table: friendships
       from_column: user1_id
       to_column: user2_id
+      from_node: User
+      to_node: User
       property_mappings:
         since_date: since_date

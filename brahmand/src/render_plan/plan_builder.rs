@@ -1578,15 +1578,17 @@ impl RenderPlanBuilder for LogicalPlan {
             // Extract CTEs with a dummy alias and context (variable-length doesn't use the alias)
             extracted_ctes = self.extract_ctes_with_context("_", &mut context)?;
             
-            // Check if we have a variable-length CTE
+            // Check if we have a variable-length CTE (recursive or chained join)
+            // Both types use RawSql content and need special FROM clause handling
             let has_variable_length_cte = extracted_ctes.iter().any(|cte| 
-                cte.is_recursive && matches!(&cte.content, super::CteContent::RawSql(_))
+                matches!(&cte.content, super::CteContent::RawSql(_)) && 
+                (cte.cte_name.starts_with("variable_path_") || cte.cte_name.starts_with("chained_path_"))
             );
             
             if has_variable_length_cte {
                 // For variable-length paths, use the CTE itself as the FROM clause
                 let var_len_cte = extracted_ctes.iter()
-                    .find(|cte| cte.is_recursive)
+                    .find(|cte| cte.cte_name.starts_with("variable_path_") || cte.cte_name.starts_with("chained_path_"))
                     .expect("Variable-length CTE should exist");
                     
                 // Create a ViewTableRef that references the CTE by name

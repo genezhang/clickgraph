@@ -71,8 +71,29 @@ impl SchemaInference {
                         pass: Pass::SchemaInference,
                         source: e,
                     })?;
+                
+                // Get the actual table name from schema, not the label
+                let table_name = if let Some(label) = table_ctx.get_label_opt() {
+                    // Try to get the table name from schema
+                    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
+                        if let Ok(schema) = schema_lock.try_read() {
+                            if let Ok(node_schema) = schema.get_node_schema(&label) {
+                                Some(node_schema.table_name.clone())
+                            } else {
+                                Some(label)
+                            }
+                        } else {
+                            Some(label)
+                        }
+                    } else {
+                        Some(label)
+                    }
+                } else {
+                    None
+                };
+                
                 Transformed::Yes(Arc::new(LogicalPlan::Scan(Scan {
-                    table_name: table_ctx.get_label_opt(),
+                    table_name,
                     table_alias: scan.table_alias.clone(),
                 })))
             }

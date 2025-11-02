@@ -148,6 +148,27 @@ impl VariableLengthCteGenerator {
         }
     }
 
+    /// Rewrite end node filter for use in intermediate CTEs
+    /// Transforms "end_node.property" references to "end_property" column names
+    fn rewrite_end_filter_for_cte(&self, filter: &str) -> String {
+        // Replace end_node.{id_column} with end_id
+        let mut rewritten = filter.replace(
+            &format!("{}.{}", self.end_node_alias, self.end_node_id_column),
+            "end_id"
+        );
+        
+        // Replace end_node.{property} with end_{property} for each property
+        for prop in &self.properties {
+            if prop.cypher_alias == self.end_cypher_alias {
+                let pattern = format!("{}.{}", self.end_node_alias, prop.column_name);
+                let replacement = format!("end_{}", prop.alias);
+                rewritten = rewritten.replace(&pattern, &replacement);
+            }
+        }
+        
+        rewritten
+    }
+
     /// Generate the actual recursive SQL string
     fn generate_recursive_sql(&self) -> String {
         let min_hops = self.spec.effective_min_hops();
@@ -181,17 +202,24 @@ impl VariableLengthCteGenerator {
         // in the inner CTE, so we don't need separate filtering steps
         let sql = match (&self.shortest_path_mode, &self.end_node_filters) {
             (Some(ShortestPathMode::Shortest), Some(end_filters)) => {
+                // Rewrite end filter for use in intermediate CTE
+                // Replace "end_node.property" with "end_property" (column names in CTE)
+                let rewritten_filter = self.rewrite_end_filter_for_cte(end_filters);
+                
                 // Find shortest path first, then apply end filters
                 format!(
                     "{}_inner AS (\n{}\n),\n{}_shortest AS (\n    SELECT * FROM {}_inner ORDER BY hop_count ASC LIMIT 1\n),\n{}_to_target AS (\n    SELECT * FROM {}_shortest WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target\n)",
-                    self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name, self.cte_name, end_filters, self.cte_name, self.cte_name
+                    self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name, self.cte_name, rewritten_filter, self.cte_name, self.cte_name
                 )
             }
             (Some(ShortestPathMode::AllShortest), Some(end_filters)) => {
+                // Rewrite end filter for use in intermediate CTE
+                let rewritten_filter = self.rewrite_end_filter_for_cte(end_filters);
+                
                 // Find all shortest paths first, then apply end filters
                 format!(
                     "{}_inner AS (\n{}\n),\n{}_all_shortest AS (\n    SELECT * FROM {}_inner WHERE hop_count = (SELECT MIN(hop_count) FROM {}_inner)\n),\n{}_to_target AS (\n    SELECT * FROM {}_all_shortest WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target\n)",
-                    self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name, self.cte_name, self.cte_name, end_filters, self.cte_name, self.cte_name
+                    self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name, self.cte_name, self.cte_name, rewritten_filter, self.cte_name, self.cte_name
                 )
             }
             (Some(ShortestPathMode::Shortest), None) => {
@@ -478,9 +506,12 @@ impl ChainedJoinGenerator {
         let cte_name = format!("chained_path_{}", uuid::Uuid::new_v4().simple());
         let cte_sql = self.generate_query();
         
+        // Wrap the query body with CTE name, like recursive CTE does
+        let wrapped_sql = format!("{} AS (\n{}\n)", cte_name, cte_sql);
+        
         Cte {
             cte_name,
-            content: crate::render_plan::CteContent::RawSql(cte_sql),
+            content: crate::render_plan::CteContent::RawSql(wrapped_sql),
             is_recursive: false, // Chained JOINs don't need recursion
         }
     }

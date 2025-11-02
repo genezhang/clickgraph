@@ -31,10 +31,30 @@ fn generate_scan(alias: String, label: Option<String>) -> LogicalPlanResult<Arc<
             Ok(view_scan)
         } else {
             log::warn!("Schema lookup failed for node label '{}', falling back to regular Scan", label_str);
-            // Fallback to regular Scan when schema is not available (e.g., in tests)
+            
+            // Even for fallback Scan, try to get the actual table name from schema
+            // This is important for queries where ViewScan creation fails but schema is available
+            let table_name = if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
+                if let Ok(schema) = schema_lock.try_read() {
+                    if let Ok(node_schema) = schema.get_node_schema(label_str) {
+                        log::info!("✓ Fallback Scan: Using table '{}' for label '{}'", node_schema.table_name, label_str);
+                        Some(node_schema.table_name.clone())
+                    } else {
+                        log::warn!("Could not find schema for label '{}', using label as table name", label_str);
+                        Some(label_str.clone())
+                    }
+                } else {
+                    log::warn!("Could not acquire schema lock, using label as table name");
+                    Some(label_str.clone())
+                }
+            } else {
+                log::warn!("Schema not available, using label as table name");
+                Some(label_str.clone())
+            };
+            
             let scan = Scan {
                 table_alias: Some(alias),
-                table_name: Some(label_str.clone()), // Use the label as table name for backward compatibility
+                table_name,
             };
             Ok(Arc::new(LogicalPlan::Scan(scan)))
         }
