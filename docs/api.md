@@ -32,7 +32,7 @@ Content-Type: application/json
 **Parameters:**
 - `query` (string, required): Cypher query to execute
 - `parameters` (object, optional): Query parameters (not yet implemented)
-- `schema_name` (string, optional): Graph schema/database name to use for this query. Defaults to `"default"`. Enables multi-database support for queries.
+- `schema_name` (string, optional): Graph schema/database name to use for this query. Defaults to `"default"`. Enables multi-database support for queries. **Note**: The `USE` clause in the query itself takes precedence over this parameter.
 
 **Response Format:**
 ```http
@@ -143,6 +143,100 @@ with driver.session() as session:  # Defaults to "default" schema
 ```
 
 The `database` parameter in the session is sent via the Bolt HELLO message and maps to ClickGraph's `schema_name` configuration. This provides the same multi-schema capability as the HTTP API's `schema_name` parameter.
+
+**Note**: The `USE` clause in Cypher queries takes precedence over the session database parameter.
+
+## USE Clause for Database Selection
+
+ClickGraph supports the `USE` clause in Cypher queries for database/schema selection, following Neo4j 4.0+ conventions. This provides the highest-priority method for database selection.
+
+### Syntax
+
+```cypher
+USE database_name
+MATCH (n) RETURN n
+```
+
+### Database Selection Precedence
+
+ClickGraph supports three ways to select a database, with the following precedence order (highest to lowest):
+
+1. **USE clause in query** (highest priority)
+2. **Session/request parameter** (HTTP: `schema_name`, Bolt: `database`)
+3. **Default schema** ("default")
+
+### Examples
+
+#### Simple Database Selection
+
+```cypher
+USE social_network
+MATCH (u:User) RETURN u.name LIMIT 10
+```
+
+#### Qualified Database Names
+
+```cypher
+USE neo4j.social_network
+MATCH (u:User)-[:FOLLOWS]->(friend) 
+RETURN u.name, collect(friend.name) AS friends
+```
+
+#### USE with Complex Queries
+
+```cypher
+USE ecommerce
+MATCH (p:Product)-[:IN_CATEGORY]->(c:Category)
+WHERE c.name = 'Electronics'
+RETURN p.name, p.price
+ORDER BY p.price DESC
+LIMIT 20
+```
+
+#### Case Insensitivity
+
+```cypher
+-- All of these work identically
+USE social_network MATCH (u:User) RETURN count(u)
+use social_network MATCH (u:User) RETURN count(u)
+Use social_network MATCH (u:User) RETURN count(u)
+```
+
+### HTTP API with USE Clause
+
+The `USE` clause overrides the `schema_name` parameter:
+
+```bash
+# The USE clause will select 'social_network', not 'ecommerce'
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "USE social_network MATCH (u:User) RETURN u.name",
+    "schema_name": "ecommerce"
+  }'
+```
+
+### Bolt Protocol with USE Clause
+
+The `USE` clause overrides the session database parameter:
+
+```python
+from neo4j import GraphDatabase
+
+driver = GraphDatabase.driver("bolt://localhost:7687")
+
+# The USE clause will select 'social_network', not 'ecommerce'
+with driver.session(database="ecommerce") as session:
+    result = session.run("USE social_network MATCH (u:User) RETURN u.name")
+    for record in result:
+        print(record["u.name"])
+```
+
+### Best Practices
+
+- **Use `USE` clause** when you need to override database selection within a query
+- **Use session/request parameters** for consistent database selection across multiple queries
+- **Omit both** to use the default schema
 
 ### Authentication
 - **Method**: Basic authentication (username/password)

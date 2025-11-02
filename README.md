@@ -63,7 +63,10 @@
 
 ### Neo4j Ecosystem Compatibility
 - **Bolt Protocol v4.4**: Full Neo4j driver compatibility for seamless integration
-- **Multi-Database Support**: Neo4j 4.0+ compatible database selection via Bolt HELLO message and HTTP schema_name parameter
+- **Multi-Database Support**: Neo4j 4.0+ compatible database selection with three methods:
+  - **USE clause**: Cypher `USE database_name` syntax (highest priority)
+  - **Session/request parameter**: Bolt session database or HTTP `schema_name` parameter
+  - **Default schema**: Fallback to "default" schema
 - **Dual Server Architecture**: HTTP REST API and Bolt protocol running simultaneously
 - **Authentication Support**: Multiple authentication schemes including basic auth
 - **Tool Compatibility**: Works with existing Neo4j drivers, browsers, and applications
@@ -151,6 +154,18 @@ Both protocols share the same underlying query engine and ClickHouse backend.
    driver = GraphDatabase.driver("bolt://localhost:7687")
    with driver.session() as session:
        result = session.run("RETURN 1 as test")
+   ```
+
+5. **Use the USE clause for multi-database queries**:
+   ```cypher
+   -- Query specific database using Neo4j-compatible USE clause
+   USE social_network
+   MATCH (u:User)-[:FOLLOWS]->(friend)
+   RETURN u.name, collect(friend.name) AS friends
+   
+   -- USE overrides session/request parameters
+   USE ecommerce
+   MATCH (p:Product) WHERE p.price > 100 RETURN p.name
    ```
 
 📖 **[Complete Setup Guide →](docs/getting-started.md)**

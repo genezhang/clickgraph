@@ -25,13 +25,28 @@
 **Note**: Development build - robust for tested scenarios, not production-hardened.
 
 ### Recent Achievements (November 2, 2025)
+
+**USE Clause Implementation** (Evening Session)
+✅ **Cypher USE Clause**: Full Neo4j-compatible `USE database_name` syntax for query-level database selection  
+✅ **Three-Way Precedence System**: USE clause > session/request parameter > default schema  
+✅ **Parser Implementation**: nom-based parser supporting simple names (`USE social`) and qualified names (`USE neo4j.social`)  
+✅ **HTTP Handler Integration**: Pre-parse strategy to extract USE clause while maintaining Axum handler signature  
+✅ **Bolt Handler Integration**: USE clause extraction with session parameter override capability  
+✅ **Case Insensitive Syntax**: USE/use/Use all supported  
+✅ **Comprehensive Testing**: 6 parser unit tests + 6 end-to-end integration tests (318/318 total tests passing)  
+✅ **Documentation**: Full API documentation with examples for HTTP and Bolt protocols  
+📦 **Commits**: 5cbd7fe (implementation), d43dc15 (tests), 3f77a9b (docs)
+
+**Bolt Multi-Database Support** (Earlier Session)
 ✅ **Bolt Multi-Database Support**: Neo4j 4.0+ compatibility for schema selection via Bolt protocol  
 ✅ **Relationship Schema Refactoring**: from_column/to_column → from_id/to_id across 37 files  
 ✅ **Multiple Relationship Types**: End-to-end validation with schema_name parameter  
 ✅ **Path Variables**: Fixed 3 critical bugs (ID resolution, type mismatch, filter rewriting)  
 ✅ **Documentation**: Comprehensive updates reflecting latest capabilities  
 
-See: `notes/bolt-multi-database.md` for Bolt protocol implementation details
+See: 
+- `notes/bolt-multi-database.md` for Bolt protocol implementation details
+- `docs/api.md` for complete USE clause documentation and examples
 
 ### Previous Achievements (November 1, 2025)
 ✅ **Large Benchmark**: 5M users loaded in ~5 minutes using ClickHouse native generation  
