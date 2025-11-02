@@ -79,9 +79,10 @@ impl AnalyzerPass for QueryValidation {
                         })?;
 
                 let (from, to) = if graph_rel.direction == Direction::Incoming {
-                    (left_label, right_label)
-                } else {
                     (right_label, left_label)
+                } else {
+                    // Outgoing or Either: from=left, to=right
+                    (left_label, right_label)
                 };
 
                 let rel_ctx = plan_ctx.get_mut_table_ctx(&graph_rel.alias).map_err(|e| {

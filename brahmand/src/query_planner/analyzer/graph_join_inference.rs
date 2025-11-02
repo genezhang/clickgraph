@@ -1323,7 +1323,7 @@ mod tests {
 
                         // For edge list traversal, only relationship join is needed (start node in FROM)
                         let rel_join = &graph_joins.joins[0];
-                        assert_eq!(rel_join.table_name, "FOLLOWS_f1");
+                        assert_eq!(rel_join.table_name, "FOLLOWS");  // Now uses actual table name from schema
                         assert_eq!(rel_join.table_alias, "f1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         assert_eq!(rel_join.joining_on.len(), 1);
@@ -1418,7 +1418,7 @@ mod tests {
                         // (p1)-[w1:WORKS_AT]->(c1)
                         // For edge list traversal, only relationship join is needed (start node in FROM)
                         let rel_join = &graph_joins.joins[0];
-                        assert_eq!(rel_join.table_name, "WORKS_AT_w1");
+                        assert_eq!(rel_join.table_name, "WORKS_AT");  // Now uses actual table name
                         assert_eq!(rel_join.table_alias, "w1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         assert_eq!(rel_join.joining_on.len(), 1);
@@ -1522,7 +1522,7 @@ mod tests {
                         // (p1)-[f1:FOLLOWS]->(p2)
                         // For bitmap traversal, only relationship join is needed (start node in FROM)
                         let rel_join = &graph_joins.joins[0];
-                        assert_eq!(rel_join.table_name, "FOLLOWS_outgoing_f1");
+                        assert_eq!(rel_join.table_name, "FOLLOWS");  // Now uses actual table name
                         assert_eq!(rel_join.table_alias, "f1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         assert_eq!(rel_join.joining_on.len(), 1);
@@ -1613,7 +1613,7 @@ mod tests {
                         ));
 
                         let rel_join = &graph_joins.joins[0];
-                        assert_eq!(rel_join.table_name, "FOLLOWS_f2");
+                        assert_eq!(rel_join.table_name, "FOLLOWS");  // Now uses actual table name
                         assert_eq!(rel_join.table_alias, "f2");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         // Should have 2 join conditions for standalone rel
@@ -1728,7 +1728,7 @@ mod tests {
 
                         // For incoming direction edge list, only relationship join is needed (start node in FROM)
                         let rel_join = &graph_joins.joins[0];
-                        assert_eq!(rel_join.table_name, "FOLLOWS_f1");
+                        assert_eq!(rel_join.table_name, "FOLLOWS");  // Now uses actual table name
                         assert_eq!(rel_join.table_alias, "f1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         assert_eq!(rel_join.joining_on.len(), 1);
@@ -1884,7 +1884,7 @@ mod tests {
                             // Verify specific join details based on alias
                             match join.table_alias.as_str() {
                                 "w1" => {
-                                    assert_eq!(join.table_name, "WORKS_AT_w1");
+                                    assert_eq!(join.table_name, "WORKS_AT");  // Now uses actual table name
                                     assert_eq!(join.joining_on.len(), 1);
 
                                     let join_condition = &join.joining_on[0];
@@ -1911,7 +1911,7 @@ mod tests {
                                     }
                                 }
                                 "p2" => {
-                                    assert_eq!(join.table_name, "Person_p2");
+                                    assert_eq!(join.table_name, "Person");  // Now uses actual table name
                                     assert_eq!(join.joining_on.len(), 1);
 
                                     let join_condition = &join.joining_on[0];
@@ -1936,7 +1936,7 @@ mod tests {
                                     }
                                 }
                                 "f1" => {
-                                    assert_eq!(join.table_name, "FOLLOWS_f1");
+                                    assert_eq!(join.table_name, "FOLLOWS");  // Now uses actual table name
                                     assert_eq!(join.joining_on.len(), 1);
 
                                     let join_condition = &join.joining_on[0];
@@ -1961,7 +1961,7 @@ mod tests {
                                     }
                                 }
                                 "p1" => {
-                                    assert_eq!(join.table_name, "Person_p1");
+                                    assert_eq!(join.table_name, "Person");  // Now uses actual table name
                                     assert_eq!(join.joining_on.len(), 1);
 
                                     let join_condition = &join.joining_on[0];

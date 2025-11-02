@@ -164,28 +164,48 @@ impl FilterTagging {
     ) -> AnalyzerResult<LogicalExpr> {
         match expr {
             LogicalExpr::PropertyAccessExp(property_access) => {
+                println!("FilterTagging: apply_property_mapping for alias '{}', property '{}'", 
+                         property_access.table_alias.0, property_access.column.0);
                 // Get the table context for this alias
                 let table_ctx = plan_ctx.get_table_ctx(&property_access.table_alias.0)
-                    .map_err(|e| AnalyzerError::PlanCtx {
-                        pass: Pass::FilterTagging,
-                        source: e,
+                    .map_err(|e| {
+                        eprintln!("FilterTagging: ERROR - Failed to get table_ctx for alias '{}': {:?}", 
+                                 property_access.table_alias.0, e);
+                        AnalyzerError::PlanCtx {
+                            pass: Pass::FilterTagging,
+                            source: e,
+                        }
                     })?;
+                
+                println!("FilterTagging: Found table_ctx, is_relation={}, label={:?}", 
+                         table_ctx.is_relation(), table_ctx.get_label_opt());
 
                 // Get the label for this table
                 let label = table_ctx.get_label_opt()
-                    .ok_or_else(|| AnalyzerError::PropertyNotFound {
-                        entity_type: "node".to_string(),
-                        entity_name: property_access.table_alias.0.clone(),
-                        property: property_access.column.0.clone(),
+                    .ok_or_else(|| {
+                        eprintln!("FilterTagging: ERROR - No label found for alias '{}', is_relation={}", 
+                                 property_access.table_alias.0, table_ctx.is_relation());
+                        AnalyzerError::PropertyNotFound {
+                            entity_type: "node".to_string(),
+                            entity_name: property_access.table_alias.0.clone(),
+                            property: property_access.column.0.clone(),
+                        }
                     })?;
 
                 // Use view resolver to map the property
                 let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
+                println!("FilterTagging: About to call resolve_node_property, is_relation={}, label={}, property={}",
+                         table_ctx.is_relation(), label, property_access.column.0);
                 let mapped_column = if table_ctx.is_relation() {
-                    view_resolver.resolve_relationship_property(&label, &property_access.column.0)
+                    let result = view_resolver.resolve_relationship_property(&label, &property_access.column.0);
+                    println!("FilterTagging: resolve_relationship_property result: {:?}", result);
+                    result?
                 } else {
-                    view_resolver.resolve_node_property(&label, &property_access.column.0)
-                }?;
+                    let result = view_resolver.resolve_node_property(&label, &property_access.column.0);
+                    println!("FilterTagging: resolve_node_property result: {:?}", result);
+                    result?
+                };
+                println!("FilterTagging: Successfully mapped property '{}' to column '{}'", property_access.column.0, mapped_column);
 
                 Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: property_access.table_alias,

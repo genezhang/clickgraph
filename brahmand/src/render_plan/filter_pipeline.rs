@@ -242,12 +242,14 @@ pub fn render_end_filter_to_column_alias(
 
             // Map Cypher aliases to database column references
             if table_alias == end_cypher_alias {
-                let mapped_column = super::cte_generation::map_property_to_column_with_schema(column, end_node_label);
+                let mapped_column = super::cte_generation::map_property_to_column_with_schema(column, end_node_label)
+                    .unwrap_or_else(|_| column.to_string());
                 let result = format!("end_node.{}", mapped_column);
                 println!("DEBUG: Mapped to end column reference: {}", result);
                 result
             } else if table_alias == start_cypher_alias {
-                let mapped_column = super::cte_generation::map_property_to_column_with_schema(column, start_node_label);
+                let mapped_column = super::cte_generation::map_property_to_column_with_schema(column, start_node_label)
+                    .unwrap_or_else(|_| column.to_string());
                 let result = format!("start_node.{}", mapped_column);
                 println!("DEBUG: Mapped to start column reference: {}", result);
                 result

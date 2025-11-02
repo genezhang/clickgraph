@@ -18,5 +18,7 @@ graph_schema:
       table: user_follows
       from_column: follower_id
       to_column: followed_id
+      from_node: User
+      to_node: User
       property_mappings:
         since: follow_date

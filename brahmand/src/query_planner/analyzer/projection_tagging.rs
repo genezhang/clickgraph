@@ -29,6 +29,14 @@ impl AnalyzerPass for ProjectionTagging {
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Projection(projection) => {
+                // First, recursively process the input child to preserve transformations
+                // from previous analyzer passes (like FilterTagging)
+                let child_tf = self.analyze_with_graph_schema(
+                    projection.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                
                 // handler select all. e.g. -
                 //
                 // MATCH (u:User)-[c:Created]->(p:Post)
@@ -63,7 +71,7 @@ impl AnalyzerPass for ProjectionTagging {
                 }
 
                 Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
-                    input: projection.input.clone(),
+                    input: child_tf.get_plan(),  // Use transformed child instead of original
                     items: proj_items_to_mutate,
                 })))
             }
@@ -262,28 +270,39 @@ impl ProjectionTagging {
                                     source: e,
                                 }
                             })?;
-                            let table_label =
-                                table_ctx
-                                    .get_label_str()
-                                    .map_err(|e| AnalyzerError::PlanCtx {
-                                        pass: Pass::ProjectionTagging,
-                                        source: e,
+                            
+                            if table_ctx.is_relation() {
+                                // For relationships, count the relationship records
+                                // Convert count(r) to count(*) for the relationship table
+                                item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                    name: aggregate_fn_call.name.clone(),
+                                    args: vec![LogicalExpr::Star],
+                                });
+                            } else {
+                                // For nodes, count distinct node IDs
+                                let table_label =
+                                    table_ctx
+                                        .get_label_str()
+                                        .map_err(|e| AnalyzerError::PlanCtx {
+                                            pass: Pass::ProjectionTagging,
+                                            source: e,
+                                        })?;
+                                let table_schema =
+                                    graph_schema.get_node_schema(&table_label).map_err(|e| {
+                                        AnalyzerError::GraphSchema {
+                                            pass: Pass::ProjectionTagging,
+                                            source: e,
+                                        }
                                     })?;
-                            let table_schema =
-                                graph_schema.get_node_schema(&table_label).map_err(|e| {
-                                    AnalyzerError::GraphSchema {
-                                        pass: Pass::ProjectionTagging,
-                                        source: e,
-                                    }
-                                })?;
-                            let table_node_id = table_schema.node_id.column.clone();
-                            item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                name: aggregate_fn_call.name.clone(),
-                                args: vec![LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(t_alias.to_string()),
-                                    column: Column(table_node_id),
-                                })],
-                            });
+                                let table_node_id = table_schema.node_id.column.clone();
+                                item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                    name: aggregate_fn_call.name.clone(),
+                                    args: vec![LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(t_alias.to_string()),
+                                        column: Column(table_node_id),
+                                    })],
+                                });
+                            }
                         }
                     }
                 }

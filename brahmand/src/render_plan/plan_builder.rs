@@ -713,6 +713,7 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn extract_select_items(&self) -> RenderPlanBuilderResult<Vec<SelectItem>> {
+        println!("DEBUG: extract_select_items called on: {:?}", self);
         let select_items = match &self {
             LogicalPlan::Empty => vec![],
             LogicalPlan::Scan(_) => vec![],
@@ -743,8 +744,13 @@ impl RenderPlanBuilder for LogicalPlan {
                         }
                     }
                     
-                    // Apply property mapping to the expression
-                    apply_property_mapping_to_expr(&mut expr, &projection.input);
+                    // IMPORTANT: Property mapping is already done in the analyzer phase by FilterTagging.apply_property_mapping
+                    // for schema-based queries (which use ViewScan). Re-mapping here causes errors because the analyzer
+                    // has already converted Cypher property names (e.g., "name") to database column names (e.g., "full_name").
+                    // Trying to map "full_name" again fails because it's not in the property_mappings.
+                    //
+                    // DO NOT apply property mapping here for Projection nodes - it's already been done correctly.
+                    
                     let alias = item
                         .col_alias
                         .clone()
@@ -809,10 +815,23 @@ impl RenderPlanBuilder for LogicalPlan {
                     alias,
                 ))
             },
-            LogicalPlan::ViewScan(scan) => Some(ViewTableRef::new_table(
-                scan.as_ref().clone(),
-                scan.source_table.clone(),
-            )),
+            LogicalPlan::ViewScan(scan) => {
+                // Check if this is a relationship ViewScan (has from_column/to_column)
+                if scan.from_column.is_some() && scan.to_column.is_some() {
+                    // For relationship ViewScans, use the CTE name instead of table name
+                    let cte_name = format!("rel_{}", scan.source_table.replace([' ', '-', '_'], ""));
+                    Some(ViewTableRef::new_table(
+                        scan.as_ref().clone(),
+                        cte_name,
+                    ))
+                } else {
+                    // For node ViewScans, use the table name
+                    Some(ViewTableRef::new_table(
+                        scan.as_ref().clone(),
+                        scan.source_table.clone(),
+                    ))
+                }
+            },
             LogicalPlan::GraphNode(graph_node) => {
                 // For GraphNode, extract FROM from the input but use this GraphNode's alias
                 // CROSS JOINs for multiple standalone nodes are handled in extract_joins
@@ -820,10 +839,18 @@ impl RenderPlanBuilder for LogicalPlan {
                 match &*graph_node.input {
                     LogicalPlan::ViewScan(scan) => {
                         println!("DEBUG: GraphNode.extract_from() - matched ViewScan, table: {}", scan.source_table);
+                        // Check if this is a relationship ViewScan (has from_column/to_column)
+                        let table_or_cte_name = if scan.from_column.is_some() && scan.to_column.is_some() {
+                            // For relationship ViewScans, use the CTE name instead of table name
+                            format!("rel_{}", scan.source_table.replace([' ', '-', '_'], ""))
+                        } else {
+                            // For node ViewScans, use the table name
+                            scan.source_table.clone()
+                        };
                         // ViewScan already returns ViewTableRef, just update the alias
                         let mut view_ref = ViewTableRef::new_table(
                             scan.as_ref().clone(),
-                            scan.source_table.clone(),
+                            table_or_cte_name,
                         );
                         view_ref.alias = Some(graph_node.alias.clone());
                         println!("DEBUG: GraphNode.extract_from() - created ViewTableRef: {:?}", view_ref);
@@ -1015,6 +1042,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::Filter(filter) => {
+                println!("DEBUG: extract_filters - Found Filter node with predicate: {:?}", filter.predicate);
+                println!("DEBUG: extract_filters - Filter input type: {:?}", std::mem::discriminant(&*filter.input));
                 let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
                 // Apply property mapping to the filter expression
                 apply_property_mapping_to_expr(&mut expr, &filter.input);
@@ -1305,10 +1334,15 @@ impl RenderPlanBuilder for LogicalPlan {
     /// Returns Ok(plan) if successful, Err(_) if this query needs CTE-based processing
     fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
         
+        println!("DEBUG: try_build_join_based_plan called");
+        
         // For now, only handle simple relationship queries
         if self.is_simple_relationship_query() {
+            println!("DEBUG: is_simple_relationship_query returned true, calling build_simple_relationship_render_plan");
             return self.build_simple_relationship_render_plan();
         }
+        
+        println!("DEBUG: is_simple_relationship_query returned false, returning ComplexQueryRequiresCTEs");
         
         // If not a simple relationship, this query needs CTE-based processing
         Err(RenderBuildError::ComplexQueryRequiresCTEs)
@@ -1333,6 +1367,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::Limit(limit) => is_simple_graph_rel(&limit.input),
                 LogicalPlan::Skip(skip) => is_simple_graph_rel(&skip.input),
                 LogicalPlan::OrderBy(order_by) => is_simple_graph_rel(&order_by.input),
+                LogicalPlan::GroupBy(group_by) => is_simple_graph_rel(&group_by.input),
                 LogicalPlan::GraphJoins(graph_joins) => {
                     // Check if this is a simple single relationship
                     is_simple_graph_rel(&graph_joins.input)
@@ -1342,6 +1377,7 @@ impl RenderPlanBuilder for LogicalPlan {
         }
         
         let result = is_simple_graph_rel(self);
+        println!("DEBUG: is_simple_relationship_query result: {}", result);
         result
     }
     
@@ -1349,9 +1385,48 @@ impl RenderPlanBuilder for LogicalPlan {
     fn build_simple_relationship_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
         
         let final_select_items = self.extract_select_items()?;
+        println!("DEBUG: build_simple_relationship_render_plan - final_select_items: {:?}", final_select_items);
+        
+        // Validate that we have proper select items
+        if final_select_items.is_empty() {
+            return Err(RenderBuildError::InvalidRenderPlan(
+                "No select items found for relationship query. This usually indicates missing schema information or incomplete query planning.".to_string()
+            ));
+        }
+        
+        // Validate that select items are not just literals (which would indicate failed expression conversion)
+        for item in &final_select_items {
+            if let RenderExpr::Literal(_) = &item.expression {
+                return Err(RenderBuildError::InvalidRenderPlan(
+                    "Select item is a literal value, indicating failed expression conversion. Check schema mappings and query structure.".to_string()
+                ));
+            }
+        }
+        
         let final_from = self.extract_from()?;
+        println!("DEBUG: build_simple_relationship_render_plan - final_from: {:?}", final_from);
+        
+        // Validate that we have a FROM clause
+        if final_from.is_none() {
+            return Err(RenderBuildError::InvalidRenderPlan(
+                "No FROM table found for relationship query. Schema inference may have failed.".to_string()
+            ));
+        }
+        
         let final_filters = self.extract_filters()?;
+        println!("DEBUG: build_simple_relationship_render_plan - final_filters: {:?}", final_filters);
+        
+        // Validate that filters don't contain obviously invalid expressions
+        if let Some(ref filter_expr) = final_filters {
+            if is_invalid_filter_expression(filter_expr) {
+                return Err(RenderBuildError::InvalidRenderPlan(
+                    "Filter expression appears invalid (e.g., '1 = 0'). This usually indicates schema mapping issues.".to_string()
+                ));
+            }
+        }
+        
         let extracted_joins = self.extract_joins()?;
+        println!("DEBUG: build_simple_relationship_render_plan - extracted_joins: {:?}", extracted_joins);
         
         // For simple relationships, we need to ensure proper JOIN ordering
         // The extract_joins should handle this correctly
@@ -1393,10 +1468,14 @@ impl RenderPlanBuilder for LogicalPlan {
         // NEW ARCHITECTURE: Prioritize JOINs over CTEs
         // Only use CTEs for variable-length paths and complex cases
         // Try to build a simple JOIN-based plan first
+        println!("DEBUG: Trying try_build_join_based_plan");
         match self.try_build_join_based_plan() {
-            Ok(plan) => return Ok(plan),
+            Ok(plan) => {
+                println!("DEBUG: try_build_join_based_plan succeeded");
+                return Ok(plan);
+            }
             Err(_) => {
-                // Fall back to the complex CTE-based logic for variable-length paths, etc.
+                println!("DEBUG: try_build_join_based_plan failed, falling back to CTE logic");
             }
         }
         
@@ -1649,6 +1728,38 @@ impl RenderPlanBuilder for LogicalPlan {
 
         let extracted_union = self.extract_union()?;
 
+        // Validate render plan before construction (for CTE path)
+        if final_select_items.is_empty() {
+            return Err(RenderBuildError::InvalidRenderPlan(
+                "No select items found. This usually indicates missing schema information or incomplete query planning.".to_string()
+            ));
+        }
+
+        // Validate that select items are not just literals (which would indicate failed expression conversion)
+        for item in &final_select_items {
+            if let RenderExpr::Literal(_) = &item.expression {
+                return Err(RenderBuildError::InvalidRenderPlan(
+                    "Select item is a literal value, indicating failed expression conversion. Check schema mappings and query structure.".to_string()
+                ));
+            }
+        }
+
+        // Validate FROM clause exists
+        if final_from.is_none() {
+            return Err(RenderBuildError::InvalidRenderPlan(
+                "No FROM clause found. This usually indicates missing table information or incomplete query planning.".to_string()
+            ));
+        }
+
+        // Validate filters don't contain invalid expressions like "1 = 0"
+        if let Some(filter_expr) = &final_filters {
+            if is_invalid_filter_expression(filter_expr) {
+                return Err(RenderBuildError::InvalidRenderPlan(
+                    "Filter contains invalid expression (e.g., '1 = 0'). This indicates failed schema mapping or expression conversion.".to_string()
+                ));
+            }
+        }
+
         Ok(RenderPlan {
             ctes: CteItems(extracted_ctes),
             select: SelectItems(final_select_items),
@@ -1700,83 +1811,147 @@ fn plan_type_name(plan: &LogicalPlan) -> &'static str {
     }
 }
 
-fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
-    // Write debug info to a file
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-        let _ = writeln!(file, "DEBUG: apply_property_mapping_to_expr called!");
-        let _ = writeln!(file, "DEBUG: Plan structure: {}", plan_to_string(plan, 0));
-    }
-    match expr {
-        RenderExpr::PropertyAccessExp(prop) => {
-            // Get the node label for this table alias
-            if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                    let _ = writeln!(file, "DEBUG: apply_property_mapping_to_expr: Found node label '{}' for alias '{}', property '{}'",
-                        node_label, prop.table_alias.0, prop.column.0);
-                }
-                // Map the property to the correct column
-                let mapped_column = map_property_to_column_with_schema(&prop.column.0, &node_label);
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                    let _ = writeln!(file, "DEBUG: apply_property_mapping_to_expr: Mapped property '{}' to column '{}'", prop.column.0, mapped_column);
-                }
-                prop.column = super::render_expr::Column(mapped_column);
-            } else {
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                    let _ = writeln!(file, "DEBUG: apply_property_mapping_to_expr: No node label found for alias '{}'", prop.table_alias.0);
-                }
-            }
+fn plan_contains_view_scan(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::ViewScan(_) => true,
+        LogicalPlan::GraphNode(node) => plan_contains_view_scan(&node.input),
+        LogicalPlan::GraphRel(rel) => {
+            plan_contains_view_scan(&rel.left) || 
+            plan_contains_view_scan(&rel.right) ||
+            plan_contains_view_scan(&rel.center)
         }
-        RenderExpr::OperatorApplicationExp(op) => {
-            for operand in &mut op.operands {
-                apply_property_mapping_to_expr(operand, plan);
-            }
-        }
-        RenderExpr::ScalarFnCall(func) => {
-            for arg in &mut func.args {
-                apply_property_mapping_to_expr(arg, plan);
-            }
-        }
-        RenderExpr::AggregateFnCall(agg) => {
-            for arg in &mut agg.args {
-                apply_property_mapping_to_expr(arg, plan);
-            }
-        }
-        RenderExpr::List(list) => {
-            for item in list {
-                apply_property_mapping_to_expr(item, plan);
-            }
-        }
-        RenderExpr::InSubquery(subq) => {
-            apply_property_mapping_to_expr(&mut subq.expr, plan);
-        }
-        // Other expression types don't contain nested expressions
-        _ => {}
+        LogicalPlan::Filter(filter) => plan_contains_view_scan(&filter.input),
+        LogicalPlan::Projection(proj) => plan_contains_view_scan(&proj.input),
+        LogicalPlan::GraphJoins(joins) => plan_contains_view_scan(&joins.input),
+        LogicalPlan::GroupBy(group_by) => plan_contains_view_scan(&group_by.input),
+        LogicalPlan::OrderBy(order_by) => plan_contains_view_scan(&order_by.input),
+        LogicalPlan::Skip(skip) => plan_contains_view_scan(&skip.input),
+        LogicalPlan::Limit(limit) => plan_contains_view_scan(&limit.input),
+        LogicalPlan::Cte(cte) => plan_contains_view_scan(&cte.input),
+        LogicalPlan::Union(union) => union.inputs.iter().any(|i| plan_contains_view_scan(i.as_ref())),
+        _ => false,
     }
 }
 
+fn apply_property_mapping_to_expr(_expr: &mut RenderExpr, _plan: &LogicalPlan) {
+    // DISABLED: Property mapping is now handled in the FilterTagging analyzer pass
+    // The analyzer phase maps Cypher properties → database columns, so we should not
+    // attempt to re-map them here in the render phase.
+    // Re-mapping causes failures because database column names don't exist in property_mappings.
+    
+    // The LogicalExpr PropertyAccessExp nodes already have the correct database column names
+    // when they arrive here from the analyzer, so we just pass them through unchanged.
+}
+
+    /// Check if a filter expression appears to be invalid (e.g., "1 = 0")
+    fn is_invalid_filter_expression(expr: &RenderExpr) -> bool {
+        match expr {
+            RenderExpr::OperatorApplicationExp(op) => {
+                // Check for "1 = 0" pattern
+                if matches!(op.operator, Operator::Equal) && op.operands.len() == 2 {
+                    matches!(
+                        (&op.operands[0], &op.operands[1]),
+                        (RenderExpr::Literal(Literal::Integer(1)), RenderExpr::Literal(Literal::Integer(0))) |
+                        (RenderExpr::Literal(Literal::Integer(0)), RenderExpr::Literal(Literal::Integer(1)))
+                    )
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
 /// Get the node label for a given Cypher alias by searching the plan
 fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+        let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Searching for alias '{}' in plan type {:?}", alias, std::mem::discriminant(plan));
+    }
     match plan {
         LogicalPlan::GraphNode(node) if node.alias == alias => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Found GraphNode with matching alias '{}'", alias);
+            }
             extract_node_label_from_viewscan(&node.input)
         }
-        LogicalPlan::GraphNode(node) => get_node_label_for_alias(alias, &node.input),
-        LogicalPlan::GraphRel(rel) => {
-            get_node_label_for_alias(alias, &rel.left)
-                .or_else(|| get_node_label_for_alias(alias, &rel.center))
-                .or_else(|| get_node_label_for_alias(alias, &rel.right))
+        LogicalPlan::GraphNode(node) => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: GraphNode alias '{}' doesn't match '{}', recursing", node.alias, alias);
+            }
+            get_node_label_for_alias(alias, &node.input)
         }
-        LogicalPlan::Filter(filter) => get_node_label_for_alias(alias, &filter.input),
-        LogicalPlan::Projection(proj) => get_node_label_for_alias(alias, &proj.input),
-        LogicalPlan::GraphJoins(joins) => get_node_label_for_alias(alias, &joins.input),
-        LogicalPlan::OrderBy(order_by) => get_node_label_for_alias(alias, &order_by.input),
-        LogicalPlan::Skip(skip) => get_node_label_for_alias(alias, &skip.input),
-        LogicalPlan::Limit(limit) => get_node_label_for_alias(alias, &limit.input),
-        LogicalPlan::GroupBy(group_by) => get_node_label_for_alias(alias, &group_by.input),
-        LogicalPlan::Cte(cte) => get_node_label_for_alias(alias, &cte.input),
+        LogicalPlan::GraphRel(rel) => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Searching GraphRel for alias '{}'", alias);
+            }
+            get_node_label_for_alias(alias, &rel.left)
+                .or_else(|| {
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                        let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Alias '{}' not in left, trying center", alias);
+                    }
+                    get_node_label_for_alias(alias, &rel.center)
+                })
+                .or_else(|| {
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                        let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Alias '{}' not in center, trying right", alias);
+                    }
+                    get_node_label_for_alias(alias, &rel.right)
+                })
+        }
+        LogicalPlan::Filter(filter) => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through Filter for alias '{}'", alias);
+            }
+            get_node_label_for_alias(alias, &filter.input)
+        }
+        LogicalPlan::Projection(proj) => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through Projection for alias '{}'", alias);
+            }
+            get_node_label_for_alias(alias, &proj.input)
+        }
+        LogicalPlan::GraphJoins(joins) => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through GraphJoins for alias '{}'", alias);
+            }
+            get_node_label_for_alias(alias, &joins.input)
+        }
+        LogicalPlan::OrderBy(order_by) => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through OrderBy for alias '{}'", alias);
+            }
+            get_node_label_for_alias(alias, &order_by.input)
+        }
+        LogicalPlan::Skip(skip) => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through Skip for alias '{}'", alias);
+            }
+            get_node_label_for_alias(alias, &skip.input)
+        }
+        LogicalPlan::Limit(limit) => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through Limit for alias '{}'", alias);
+            }
+            get_node_label_for_alias(alias, &limit.input)
+        }
+        LogicalPlan::GroupBy(group_by) => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through GroupBy for alias '{}'", alias);
+            }
+            get_node_label_for_alias(alias, &group_by.input)
+        }
+        LogicalPlan::Cte(cte) => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through Cte for alias '{}'", alias);
+            }
+            get_node_label_for_alias(alias, &cte.input)
+        }
         LogicalPlan::Union(union) => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Searching Union for alias '{}'", alias);
+            }
             for input in &union.inputs {
                 if let Some(label) = get_node_label_for_alias(alias, input) {
                     return Some(label);
@@ -1784,7 +1959,12 @@ fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
             }
             None
         }
-        _ => None,
+        _ => {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: No match for alias '{}' in plan type {:?}", alias, std::mem::discriminant(plan));
+            }
+            None
+        }
     }
 }
 

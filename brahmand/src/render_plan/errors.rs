@@ -25,4 +25,7 @@ pub enum RenderBuildError {
 
     #[error("Could not resolve table name: {0}")]
     TableNameNotFound(String),
+
+    #[error("Invalid render plan: {0}")]
+    InvalidRenderPlan(String),
 }

@@ -127,8 +127,8 @@ fn try_generate_relationship_view_scan(_alias: &str, rel_type: &str) -> Option<A
         rel_schema.table_name.clone(),  // Use actual ClickHouse table name
         None,                             // No filter condition yet
         property_mapping,                 // Empty for now
-        "id".to_string(),                 // ID column (relationships might not have one)
-        vec!["id".to_string()],          // Basic output schema
+        rel_schema.from_column.clone(),   // Use from_column as id_column for relationships
+        vec!["id".to_string()],          // Output schema - relationships have "id" property
         vec![],                           // No projections yet
         rel_schema.from_column.clone(),   // From column from schema
         rel_schema.to_column.clone(),     // To column from schema

@@ -39,30 +39,13 @@ pub fn evaluate_read_query(
 ) -> Result<LogicalPlan, QueryPlannerError> {
     let (logical_plan, mut plan_ctx) = logical_plan::evaluate_query(query_ast)?;
 
-    // println!("\n\n PLAN Before  {} \n\n", logical_plan);
     let logical_plan =
         analyzer::initial_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
 
     let logical_plan = optimizer::initial_optimization(logical_plan, &mut plan_ctx)?;
 
-    let intermediate_analyzer_result =
-        analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, current_graph_schema);
-    // in case of intermediate analyzer, we can get error from query validation pass when there is an issue with relation direction or relation not present.
-    // in that case, return the empty match plan and exit from subsequent passes.
-    // In case of OPTIONAL MATCH, we have to handle it differently.
-    let logical_plan = match intermediate_analyzer_result {
-        Ok(plan) => Ok(plan),
-        Err(e) => match e {
-            AnalyzerError::InvalidRelationInQuery { rel } => {
-                println!("Invalid relation in query found {rel}");
-                let new_plan = LogicalPlan::get_empty_match_plan();
-                return Ok(new_plan);
-            }
-            _ => Err(e),
-        },
-    }?;
-
-    // let logical_plan = analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
+    // Validation now happens in initial_analyzing, so errors propagate cleanly
+    let logical_plan = analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
 
     let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx)?;
 

@@ -40,34 +40,33 @@ pub fn initial_analyzing(
     plan_ctx: &mut PlanCtx,
     current_graph_schema: &GraphSchema,
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
-    // println!("\n plan_ctx Before {} \n\n", plan_ctx);
-    // println!("\n\n PLAN Before  {} \n\n", plan);
-
-    println!("Initial analyzing: Starting with plan type: {:?}", std::mem::discriminant(&*plan));
-
-    // For initial schema inference, we do not propogate the error. We will try to infer schema in this initial pass. If not able to infer then it will be done in the later pass after projection and filter tagging.
+    // Step 1: Schema Inference - infer missing schema information
     let schema_inference = SchemaInference::new();
     let plan = if let Ok(transformed_plan) =
         schema_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)
     {
-        let transformed_plan_clone = transformed_plan.clone();
-        println!("Initial analyzing: After SchemaInference, plan type: {:?}", std::mem::discriminant(&*transformed_plan_clone.get_plan()));
         transformed_plan.get_plan()
     } else {
-        println!("Initial analyzing: SchemaInference failed, using original plan");
         plan
     };
 
+    // Step 2: Query Validation - VALIDATE EARLY before any transformations
+    // This prevents invalid queries from being processed further
+    let query_validation = QueryValidation::new();
+    let transformed_plan =
+        query_validation.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?;
+    let plan = transformed_plan.get_plan();
+
+    // Step 3: Property Mapping - map Cypher properties to database columns (ONCE)
     let filter_tagging = FilterTagging::new();
     let transformed_plan = filter_tagging.analyze_with_graph_schema(
         plan.clone(),
         plan_ctx,
         current_graph_schema,
     )?;
-    let transformed_plan_clone = transformed_plan.clone();
-    println!("Initial analyzing: After FilterTagging, plan type: {:?}", std::mem::discriminant(&*transformed_plan_clone.get_plan()));
     let plan = transformed_plan.get_plan();
 
+    // Step 4: Projection Tagging - tag projections into plan_ctx (NO mapping, just tagging)
     let projection_tagging = ProjectionTagging::new();
     let transformed_plan = projection_tagging.analyze_with_graph_schema(
         plan.clone(),
@@ -76,16 +75,10 @@ pub fn initial_analyzing(
     )?;
     let plan = transformed_plan.get_plan();
 
+    // Step 5: Group By Building
     let group_by_building = GroupByBuilding::new();
     let transformed_plan = group_by_building.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
-
-    // println!("\n\n PLAN After  {:#?} \n\n", plan);
-
-    // println!("\n plan_ctx After initial {} \n\n", plan_ctx);
-    // println!("\n PLAN After {} \n\n", plan);
-
-    // println!("\n DEBUG PLAN After:\n{:#?}", plan);
 
     Ok(plan)
 }
@@ -95,19 +88,9 @@ pub fn intermediate_analyzing(
     plan_ctx: &mut PlanCtx,
     current_graph_schema: &GraphSchema,
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
-    // println!("\n plan_ctx Before intermediate_analyzing {} \n\n", plan_ctx);
-    // println!("\n\n PLAN Before intermediate_analyzing {} \n\n", plan);
-
-    let schema_inference = SchemaInference::new();
-    let transformed_plan =
-        schema_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?;
-    let plan = transformed_plan.get_plan();
-
-    let query_validation = QueryValidation::new();
-    let transformed_plan =
-        query_validation.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?;
-    let plan = transformed_plan.get_plan();
-
+    // Note: SchemaInference and QueryValidation already ran in initial_analyzing
+    // This pass focuses on graph-specific planning and optimizations
+    
     let graph_traversal_planning = GraphTRaversalPlanning::new();
     let transformed_plan = graph_traversal_planning.analyze_with_graph_schema(
         plan.clone(),
@@ -130,9 +113,6 @@ pub fn intermediate_analyzing(
         current_graph_schema,
     )?;
     let plan = transformed_plan.get_plan();
-
-    // println!("\n plan_ctx After intermediate_analyzing {} \n\n", plan_ctx);
-    // println!("\n\n PLAN After intermediate_analyzing {} \n\n", plan);
 
     Ok(plan)
 }

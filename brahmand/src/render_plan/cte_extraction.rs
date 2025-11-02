@@ -281,8 +281,20 @@ fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
             // Get the node label for this table alias
             if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
                 // Map the property to the correct column
-                let mapped_column = map_property_to_column_with_schema(&prop.column.0, &node_label);
+                let mapped_column = map_property_to_column_with_schema(&prop.column.0, &node_label)
+                    .unwrap_or_else(|_| prop.column.0.clone());
                 prop.column = super::render_expr::Column(mapped_column);
+            }
+        }
+        RenderExpr::Column(col) => {
+            // Check if this column name is actually an alias
+            if let Some(node_label) = get_node_label_for_alias(&col.0, plan) {
+                // Convert Column(alias) to PropertyAccess(alias, "id")
+                let id_column = table_to_id_column(&label_to_table_name(&node_label));
+                *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: super::render_expr::TableAlias(col.0.clone()),
+                    column: super::render_expr::Column(id_column),
+                });
             }
         }
         RenderExpr::OperatorApplicationExp(op) => {
@@ -350,7 +362,24 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
     match plan {
         LogicalPlan::Empty => Ok(vec![]),
         LogicalPlan::Scan(_) => Ok(vec![]),
-        LogicalPlan::ViewScan(_) => Ok(vec![]),
+        LogicalPlan::ViewScan(view_scan) => {
+            // Check if this is a relationship ViewScan (has from_column/to_column)
+            if let (Some(from_col), Some(to_col)) = (&view_scan.from_column, &view_scan.to_column) {
+                // This is a relationship ViewScan - create a CTE that selects the relationship columns
+                let cte_name = format!("rel_{}", view_scan.source_table.replace([' ', '-', '_'], ""));
+                let sql = format!("SELECT {}, {} FROM {}", from_col, to_col, view_scan.source_table);
+                let formatted_sql = format!("{} AS (\n{}\n)", cte_name, sql);
+
+                Ok(vec![Cte {
+                    cte_name,
+                    content: super::CteContent::RawSql(formatted_sql),
+                    is_recursive: false,
+                }])
+            } else {
+                // This is a node ViewScan - no CTE needed
+                Ok(vec![])
+            }
+        },
         LogicalPlan::GraphNode(graph_node) => extract_ctes_with_context(&graph_node.input, last_node_alias, context),
         LogicalPlan::GraphRel(graph_rel) => {
             // Handle variable-length paths with context

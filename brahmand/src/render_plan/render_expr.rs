@@ -133,8 +133,12 @@ impl TryFrom<LogicalExpr> for RenderExpr {
     type Error = RenderBuildError;
 
     fn try_from(expr: LogicalExpr) -> Result<Self, Self::Error> {
+        println!("DEBUG TryFrom RenderExpr: Converting LogicalExpr discriminant={:?}", std::mem::discriminant(&expr));
         let expression = match expr {
-            LogicalExpr::Literal(lit) => RenderExpr::Literal(lit.try_into()?),
+            LogicalExpr::Literal(lit) => {
+                println!("DEBUG TryFrom: Converting Literal variant");
+                RenderExpr::Literal(lit.try_into()?)
+            },
             LogicalExpr::Raw(raw) => RenderExpr::Raw(raw),
             LogicalExpr::Star => RenderExpr::Star,
             LogicalExpr::TableAlias(alias) => RenderExpr::TableAlias(alias.try_into()?),
@@ -149,7 +153,10 @@ impl TryFrom<LogicalExpr> for RenderExpr {
             ),
             LogicalExpr::AggregateFnCall(agg) => RenderExpr::AggregateFnCall(agg.try_into()?),
             LogicalExpr::ScalarFnCall(fn_call) => RenderExpr::ScalarFnCall(fn_call.try_into()?),
-            LogicalExpr::PropertyAccessExp(pa) => RenderExpr::PropertyAccessExp(pa.try_into()?),
+            LogicalExpr::PropertyAccessExp(pa) => {
+                println!("DEBUG TryFrom: Converting PropertyAccessExp variant - alias={}, column={}", pa.table_alias.0, pa.column.0);
+                RenderExpr::PropertyAccessExp(pa.try_into()?)
+            },
             LogicalExpr::OperatorApplicationExp(op) => {
                 RenderExpr::OperatorApplicationExp(op.try_into()?)
             }
@@ -158,6 +165,7 @@ impl TryFrom<LogicalExpr> for RenderExpr {
             // PathPattern is not present in RenderExpr
             _ => unimplemented!("Conversion for this LogicalExpr variant is not implemented"),
         };
+        println!("DEBUG TryFrom RenderExpr: Successfully converted to discriminant={:?}", std::mem::discriminant(&expression));
         Ok(expression)
     }
 }
@@ -218,10 +226,13 @@ impl TryFrom<LogicalPropertyAccess> for PropertyAccess {
     type Error = RenderBuildError;
 
     fn try_from(pa: LogicalPropertyAccess) -> Result<Self, Self::Error> {
+        println!("DEBUG TryFrom PropertyAccess: Converting LogicalPropertyAccess - table_alias={}, column={}",
+                 pa.table_alias.0, pa.column.0);
         let prop_acc = PropertyAccess {
             table_alias: pa.table_alias.try_into()?,
             column: pa.column.try_into()?,
         };
+        println!("DEBUG TryFrom PropertyAccess: Successfully converted to PropertyAccess");
         Ok(prop_acc)
     }
 }

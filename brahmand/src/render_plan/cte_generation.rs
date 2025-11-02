@@ -180,7 +180,8 @@ pub(crate) fn extract_var_len_properties(
                             }
                         } else {
                             // Regular property
-                            let column_name = map_property_to_column_with_schema(property_name, node_label);
+                            let column_name = map_property_to_column_with_schema(property_name, node_label)
+                                .unwrap_or_else(|_| property_name.to_string());
                             let alias = property_name.to_string();
 
                             properties.push(NodeProperty {
@@ -250,23 +251,78 @@ fn map_property_to_column(property: &str) -> String {
 
 /// Schema-aware property mapping using GraphSchema
 /// Map a property to column with schema awareness
-pub(crate) fn map_property_to_column_with_schema(property: &str, node_label: &str) -> String {
+/// Returns an error if the schema is not available or the property mapping is not found
+pub(crate) fn map_property_to_column_with_schema(property: &str, node_label: &str) -> Result<String, String> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    
     // Try to get the schema from the global state
-    if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-        if let Ok(schemas) = schema_lock.try_read() {
-            if let Some(schema) = schemas.get("default") {
-                if let Some(node_schema) = schema.get_nodes_schemas().get(node_label) {
-                    // Check if there's a property mapping
-                    if let Some(column) = node_schema.property_mappings.get(property) {
-                        return column.clone();
-                    }
-                }
+    let schema_lock = crate::server::GLOBAL_SCHEMAS.get()
+        .ok_or_else(|| {
+            let msg = "GLOBAL_SCHEMAS not initialized".to_string();
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "ERROR: {}", msg);
             }
+            msg
+        })?;
+    
+    let schemas = schema_lock.try_read()
+        .map_err(|_| {
+            let msg = "Failed to acquire read lock on GLOBAL_SCHEMAS".to_string();
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "ERROR: {}", msg);
+            }
+            msg
+        })?;
+    
+    if schemas.is_empty() {
+        let msg = "No schemas loaded in GLOBAL_SCHEMAS".to_string();
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+            let _ = writeln!(file, "ERROR: {}", msg);
         }
+        return Err(msg);
     }
-
-    // Fallback to the hardcoded mapping
-    map_property_to_column(property)
+    
+    let schema = schemas.get("default")
+        .ok_or_else(|| {
+            let available: Vec<String> = schemas.keys().map(|s| s.clone()).collect();
+            let msg = format!("Schema 'default' not found. Available schemas: {}", available.join(", "));
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "ERROR: {}", msg);
+            }
+            msg
+        })?;
+    
+    let node_schema = schema.get_nodes_schemas().get(node_label)
+        .ok_or_else(|| {
+            let available: Vec<String> = schema.get_nodes_schemas().keys().map(|s| s.clone()).collect();
+            let msg = format!(
+                "Node label '{}' not found in schema. Available labels: {}", 
+                node_label, 
+                available.join(", ")
+            );
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "ERROR: {}", msg);
+            }
+            msg
+        })?;
+    
+    let column = node_schema.property_mappings.get(property)
+        .ok_or_else(|| {
+            let available: Vec<String> = node_schema.property_mappings.keys().map(|s| s.clone()).collect();
+            let msg = format!(
+                "Property '{}' not found for node label '{}'. Available properties: {}", 
+                property, 
+                node_label, 
+                available.join(", ")
+            );
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+                let _ = writeln!(file, "ERROR: {}", msg);
+            }
+            msg
+        })?;
+    
+    Ok(column.clone())
 }
 
 /// Get node schema by table name

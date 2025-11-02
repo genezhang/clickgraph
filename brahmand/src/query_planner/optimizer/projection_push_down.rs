@@ -42,9 +42,23 @@ impl OptimizerPass for ProjectionPushDown {
                     })?;
                 if let Some(table_ctx) = table_ctx_opt {
                     if !table_ctx.get_projections().is_empty() {
+                        let projections = table_ctx.get_projections().clone();
+                        
+                        println!("\nProjectionPushDown: Creating new Projection for Scan(alias={:?})", scan.table_alias);
+                        println!("ProjectionPushDown: Number of projection items: {}", projections.len());
+                        for (i, item) in projections.iter().enumerate() {
+                            use crate::query_planner::logical_expr::LogicalExpr;
+                            println!("ProjectionPushDown: Item {} discriminant: {:?}", i, std::mem::discriminant(&item.expression));
+                            if let LogicalExpr::PropertyAccessExp(pa) = &item.expression {
+                                println!("ProjectionPushDown: Item {} is PropertyAccessExp(alias={}, column={})", i, pa.table_alias, pa.column);
+                            } else if let LogicalExpr::Literal(_) = &item.expression {
+                                println!("ProjectionPushDown: Item {} is Literal!!!", i);
+                            }
+                        }
+                        
                         let new_proj = Arc::new(LogicalPlan::Projection(Projection {
                             input: logical_plan.clone(),
-                            items: table_ctx.get_projections().clone(),
+                            items: projections,
                         }));
                         Transformed::Yes(new_proj)
                     } else {

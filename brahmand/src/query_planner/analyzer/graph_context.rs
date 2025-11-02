@@ -129,9 +129,10 @@ pub fn get_graph_context<'a>(
     let left_node_id_column = left_schema.node_id.column.clone();
     let right_node_id_column = right_schema.node_id.column.clone();
 
-    let left_cte_name = format!("{}_{}", left_label, left_alias);
-    let rel_cte_name = format!("{}_{}", rel_label, rel_alias);
-    let right_cte_name = format!("{}_{}", right_label, right_alias);
+    // Use actual table names from schema for CTEs/JOINs
+    let left_cte_name = left_schema.table_name.clone();
+    let rel_cte_name = rel_schema.table_name.clone();  // Use table name, not label!
+    let right_cte_name = right_schema.table_name.clone();
 
     // Create the initial GraphContext with schema
     let mut graph_context = GraphContext {

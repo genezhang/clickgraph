@@ -2,13 +2,12 @@
 graph_schema:
   nodes:
     - label: User
-      database: brahmand
       table: users_bench
       id_column: user_id
-      property_mappings:
+      properties:
         user_id: user_id
-        name: full_name
-        email: email_address
+        full_name: full_name
+        email_address: email_address
         registration_date: registration_date
         is_active: is_active
         country: country
@@ -16,16 +15,8 @@ graph_schema:
 
   relationships:
     - type: FOLLOWS
-      database: brahmand
       table: user_follows_bench
       from_column: follower_id
       to_column: followed_id
-      property_mappings:
+      properties:
         follow_date: follow_date
-    - type: FRIENDS_WITH
-      database: brahmand
-      table: friendships
-      from_column: user1_id
-      to_column: user2_id
-      property_mappings:
-        since_date: since_date

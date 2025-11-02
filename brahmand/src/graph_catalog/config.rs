@@ -100,7 +100,7 @@ pub struct NodeDefinition {
 }
 
 /// Relationship definition in schema config
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RelationshipDefinition {
     /// Relationship type
     #[serde(rename = "type")]
@@ -113,6 +113,12 @@ pub struct RelationshipDefinition {
     pub from_column: String,
     /// To column name
     pub to_column: String,
+    /// Node type for source (from) node - optional, defaults to first node type
+    #[serde(default)]
+    pub from_node: Option<String>,
+    /// Node type for target (to) node - optional, defaults to first node type
+    #[serde(default)]
+    pub to_node: Option<String>,
     /// Property mappings
     #[serde(rename = "property_mappings")]
     pub properties: HashMap<String, String>,
@@ -201,12 +207,26 @@ impl GraphSchemaConfig {
 
         // Convert relationship definitions
         for rel_def in &self.graph_schema.relationships {
+            // If from_node/to_node not specified, try to infer from first node type
+            // This is a simple heuristic - for production, should be explicitly specified
+            let default_node_type = self.graph_schema.nodes
+                .first()
+                .map(|n| n.label.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+            
+            let from_node = rel_def.from_node.as_ref()
+                .unwrap_or(&default_node_type)
+                .clone();
+            let to_node = rel_def.to_node.as_ref()
+                .unwrap_or(&default_node_type)
+                .clone();
+            
             let rel_schema = RelationshipSchema {
                 database: rel_def.database.clone(),
                 table_name: rel_def.table.clone(),
                 column_names: rel_def.properties.values().cloned().collect(),
-                from_node: "Unknown".to_string(), // Could be inferred or made configurable
-                to_node: "Unknown".to_string(),   // Could be inferred or made configurable
+                from_node,
+                to_node,
                 from_column: rel_def.from_column.clone(),
                 to_column: rel_def.to_column.clone(),
                 from_node_id_dtype: "UInt64".to_string(),
