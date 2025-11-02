@@ -41,7 +41,10 @@
 - 🔧 ClickHouse-native data generation for efficient loading
 - 📈 Performance metrics collection and analysis
 
-See [CHANGELOG.md](CHANGELOG.md) for detailed technical information.
+**📖 Documentation:**
+- [Detailed Benchmark Results](notes/benchmarking.md) - Complete analysis across all scales
+- [CHANGELOG.md](CHANGELOG.md) - Technical details and bug fixes
+- [STATUS.md](STATUS.md) - Current project status
 
 ---
 
