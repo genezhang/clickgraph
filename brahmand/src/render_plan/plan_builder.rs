@@ -794,7 +794,34 @@ impl RenderPlanBuilder for LogicalPlan {
         let select_items = match &self {
             LogicalPlan::Empty => vec![],
             LogicalPlan::Scan(_) => vec![],
-            LogicalPlan::ViewScan(_) => vec![],
+            LogicalPlan::ViewScan(view_scan) => {
+                // Build select items from ViewScan's property mappings and projections
+                // This is needed for multiple relationship types where ViewScan nodes are created
+                // for start/end nodes but don't have explicit projections
+                
+                if !view_scan.projections.is_empty() {
+                    // Use explicit projections if available
+                    view_scan.projections.iter().map(|proj| {
+                        let expr: RenderExpr = proj.clone().try_into()?;
+                        Ok(SelectItem {
+                            expression: expr,
+                            col_alias: None,
+                        })
+                    }).collect::<Result<Vec<SelectItem>, RenderBuildError>>()?
+                } else if !view_scan.property_mapping.is_empty() {
+                    // Fall back to property mappings - build select items for each property
+                    view_scan.property_mapping.iter().map(|(prop_name, col_name)| {
+                        Ok(SelectItem {
+                            expression: RenderExpr::Column(Column(col_name.clone())),
+                            col_alias: Some(ColumnAlias(prop_name.clone())),
+                        })
+                    }).collect::<Result<Vec<SelectItem>, RenderBuildError>>()?
+                } else {
+                    // No projections or property mappings - this might be a relationship scan
+                    // Return empty for now (relationship CTEs are handled differently)
+                    vec![]
+                }
+            },
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_select_items()?,
             LogicalPlan::GraphRel(_) => vec![],
             LogicalPlan::Filter(filter) => filter.input.extract_select_items()?,
@@ -1593,10 +1620,10 @@ impl RenderPlanBuilder for LogicalPlan {
         let last_node_cte_opt = self.extract_last_node_cte()?;
 
         if let Some(last_node_cte) = last_node_cte_opt {
-            let last_node_alias = last_node_cte
-                .cte_name
-                .split('_')
-                .nth(1)
+            // Extract the last part after splitting by '_'
+            // This handles both "prefix_alias" and "rel_left_right" formats
+            let parts: Vec<&str> = last_node_cte.cte_name.split('_').collect();
+            let last_node_alias = parts.last()
                 .ok_or(RenderBuildError::MalformedCTEName)?;
 
             // Second pass: generate CTEs with full context
