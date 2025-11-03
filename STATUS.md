@@ -2,34 +2,49 @@
 
 *Updated: November 2, 2025*
 
-## ⚠️ **CRITICAL BUG FIX: Property Mapping Issue RESOLVED** ✅
+## ⚠️ **CRITICAL: WHERE Clause Gap for Simple MATCH Queries**
 
-**Test Infrastructure**: ✅ Complete (272 tests created)  
-**Test Pass Rate**: 🚀 **5/19 basic_queries passing (26%)** - UP from 0.4%!
+**Test Infrastructure**: ✅ Fixed and validated (schemas properly separated)  
+**Test Pass Rate**: � **5/19 basic_queries passing (26%)** - WHERE clauses broken
 
-### **ROOT CAUSE FOUND & FIXED** ✅
-🐛 **Hardcoded Property Mapping in to_sql_query.rs** ([Issue Fixed in commit 31fd862](https://github.com/genezhang/clickgraph/commit/31fd862))
-- **Location**: `clickhouse_query_generator/to_sql_query.rs` line 400
-- **Bug**: Hardcoded `("u", "name") → "full_name"` mapping actively overriding schema
-- **Impact**: Affected 95% of tests (250/272)
-- **Fix**: Removed ALL hardcoded property mappings, rely on schema only
-- **Result**: **Immediate 6.5x improvement** in test pass rate (1 → 5 passing tests)
+### **ROOT CAUSE IDENTIFIED** 🔍
+**WHERE clause support EXISTS for variable-length paths but NOT for simple MATCH queries!**
 
-**All TestBasicMatch Tests Now Passing** ✅:
-- ✅ test_match_all_nodes
-- ✅ test_match_with_label  
-- ✅ test_match_with_alias
+**What Works** ✅:
+```cypher
+MATCH (a:User)-[:FOLLOWS*]->(b:User) WHERE a.name = 'Alice' RETURN b
+-- Filter correctly applied in CTE generation (GraphRel nodes)
+```
+
+**What's Broken** ❌:
+```cypher
+MATCH (u:User) WHERE u.name = 'Alice' RETURN u
+-- Filter completely ignored! Returns all 5 rows instead of 1
+-- Uses ViewScan nodes, not GraphRel
+```
+
+**Evidence**:
+- 318 unit tests passing - all test variable-length paths with GraphRel
+- `FilterIntoGraphRel` optimizer handles Filter → GraphRel patterns
+- `FilterIntoGraphRel` **ignores** Filter → ViewScan patterns (line 239)
+- SQL generation: `SELECT u.name FROM users AS u` (no WHERE clause!)
+
+**Impact**:
+- All WHERE clause tests fail (5 tests)
+- Property access with WHERE fails (3 tests)  
+- Aggregations with WHERE fail (2 tests)
+- **Total: 10+ tests affected**
+
+**Not a Regression**: This feature was never implemented for ViewScan.
+The unit tests only cover GraphRel (variable-length) queries.
 
 **Next Steps**:
-1. Fix remaining test assertion issues (tests expect wrong column names)
-2. Expected pass rate: >60% after test fixes
-3. v0.2 release with validated test suite
+1. Add ViewScan support to FilterIntoGraphRel optimizer (30 lines of code)
+2. Test with simple query: `MATCH (u:User) WHERE u.age > 25 RETURN u`
+3. Expected result: WHERE clause appears in SQL
+4. Run full test suite - expect 15+/19 passing
 
-**Infrastructure Validated** ✅:
-- ClickGraph + ClickHouse connectivity working
-- Test data creation successful
-- Schema loading via API working
-- Property mapping now respects YAML configuration
+**Alternative**: Investigate if ViewScan should use different optimizer pass
 
 ## 🚀 **Current Development Status**
 
