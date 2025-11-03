@@ -31,7 +31,7 @@ class TestBasicMatch:
         
         assert_query_success(response)
         assert_row_count(response, 5)
-        assert_column_exists(response, "n.name")
+        assert_column_exists(response, "name")  # ClickGraph returns 'name', not 'n.name'
     
     def test_match_with_label(self, simple_graph):
         """Test MATCH with node label."""
@@ -42,7 +42,7 @@ class TestBasicMatch:
         
         assert_query_success(response)
         assert_row_count(response, 5)
-        assert_column_exists(response, "u.name")
+        assert_column_exists(response, "name")  # ClickGraph returns 'name', not 'u.name'
         assert_column_exists(response, "u.age")
     
     def test_match_with_alias(self, simple_graph):

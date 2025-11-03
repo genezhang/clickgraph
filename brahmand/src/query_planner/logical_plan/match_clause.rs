@@ -100,9 +100,13 @@ fn try_generate_view_scan(_alias: &str, label: &str) -> Option<Arc<LogicalPlan>>
     // Create property mapping from schema
     let property_mapping = node_schema.property_mappings.clone();
     
+    // Create fully qualified table name (database.table)
+    let full_table_name = format!("{}.{}", node_schema.database, node_schema.table_name);
+    log::debug!("Using fully qualified table name: {}", full_table_name);
+    
     // Create ViewScan with the actual table name from schema
     let view_scan = ViewScan::new(
-        node_schema.table_name.clone(),  // Use actual ClickHouse table name
+        full_table_name,  // Use fully qualified table name (database.table)
         None,                             // No filter condition yet
         property_mapping,                 // Property mappings from schema
         node_schema.node_id.column.clone(), // ID column from schema
@@ -142,9 +146,13 @@ fn try_generate_relationship_view_scan(_alias: &str, rel_type: &str) -> Option<A
     // Create property mapping (initially empty - will be populated during projection planning)
     let property_mapping = HashMap::new();
     
+    // Create fully qualified table name (database.table)
+    let full_table_name = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+    log::debug!("Using fully qualified relationship table name: {}", full_table_name);
+    
     // Create ViewScan for relationship with from/to columns
     let view_scan = ViewScan::new_relationship(
-        rel_schema.table_name.clone(),  // Use actual ClickHouse table name
+        full_table_name,  // Use fully qualified table name (database.table)
         None,                             // No filter condition yet
         property_mapping,                 // Empty for now
         rel_schema.from_id.clone(),       // Use from_id as id_column for relationships

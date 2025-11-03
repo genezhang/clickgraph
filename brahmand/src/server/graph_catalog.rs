@@ -73,13 +73,25 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                     .map_err(|_| "Failed to initialize global view config")?;
 
                 // Initialize multi-schema storage with default schema
+                // Register with BOTH keys: actual schema name (if provided) + "default"
                 let mut schemas = HashMap::new();
-                schemas.insert("default".to_string(), schema);
+                let mut view_configs = HashMap::new();
+                
+                // Always register as "default"
+                schemas.insert("default".to_string(), schema.clone());
+                view_configs.insert("default".to_string(), config.clone());
+                
+                // Also register with schema name if provided in YAML
+                if let Some(ref schema_name) = config.name {
+                    println!("  Registering schema with name: {}", schema_name);
+                    schemas.insert(schema_name.clone(), schema.clone());
+                    view_configs.insert(schema_name.clone(), config.clone());
+                } else {
+                    println!("  Schema name not specified in YAML, using 'default' only");
+                }
+                
                 GLOBAL_SCHEMAS.set(RwLock::new(schemas))
                     .map_err(|_| "Failed to initialize global schemas")?;
-
-                let mut view_configs = HashMap::new();
-                view_configs.insert("default".to_string(), config);
                 GLOBAL_SCHEMA_CONFIGS.set(RwLock::new(view_configs))
                     .map_err(|_| "Failed to initialize global view configs")?;
 
@@ -124,6 +136,7 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                 let mut view_configs = HashMap::new();
                 // For database mode, we don't have a view config, so create an empty one
                 let empty_config = GraphSchemaConfig {
+                    name: None,
                     graph_schema: crate::graph_catalog::config::GraphSchemaDefinition {
                         nodes: Vec::new(),
                         relationships: Vec::new(),
@@ -165,6 +178,7 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
 
                         let mut view_configs = HashMap::new();
                         let empty_config = GraphSchemaConfig {
+                            name: None,
                             graph_schema: GraphSchemaDefinition {
                                 nodes: Vec::new(),
                                 relationships: Vec::new(),
@@ -212,6 +226,7 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
 
         let mut view_configs = HashMap::new();
         let empty_config = GraphSchemaConfig {
+            name: None,
             graph_schema: GraphSchemaDefinition {
                 nodes: Vec::new(),
                 relationships: Vec::new(),
@@ -321,13 +336,31 @@ pub async fn load_schema_by_name(schema_name: &str, config_path: &str, clickhous
                 .get()
                 .ok_or("Global schemas not initialized")?;
             let mut schemas_guard = schemas_lock.write().await;
-            schemas_guard.insert(schema_name.to_string(), schema);
+            schemas_guard.insert(schema_name.to_string(), schema.clone());
 
             let configs_lock = GLOBAL_SCHEMA_CONFIGS
                 .get()
                 .ok_or("Global view configs not initialized")?;
             let mut configs_guard = configs_lock.write().await;
             configs_guard.insert(schema_name.to_string(), config);
+
+            // IMPORTANT: Only update GLOBAL_GRAPH_SCHEMA if it's uninitialized
+            // This prevents API-loaded schemas from overwriting the default schema
+            // and causing race conditions between concurrent queries
+            if let Some(global_schema_lock) = GLOBAL_GRAPH_SCHEMA.get() {
+                let current_schema = global_schema_lock.read().await;
+                let is_empty = current_schema.get_nodes_schemas().is_empty();
+                drop(current_schema);  // Release read lock before acquiring write lock
+                
+                if is_empty {
+                    let mut global_schema_guard = global_schema_lock.write().await;
+                    *global_schema_guard = schema;
+                    println!("  ✓ Set GLOBAL_GRAPH_SCHEMA (was uninitialized)");
+                } else {
+                    println!("  ℹ GLOBAL_GRAPH_SCHEMA already set from config, not overwriting");
+                    println!("    Schema '{}' available in GLOBAL_SCHEMAS for USE clause", schema_name);
+                }
+            }
 
             println!("✓ Schema '{}' loaded successfully", schema_name);
             Ok(())

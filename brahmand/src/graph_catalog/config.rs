@@ -70,6 +70,9 @@ use super::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, NodeIdSch
 /// Configuration for graph schemas loaded from YAML/JSON
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphSchemaConfig {
+    /// Optional schema name (used for multi-schema registration)
+    #[serde(default)]
+    pub name: Option<String>,
     /// Graph schema definition
     pub graph_schema: GraphSchemaDefinition,
 }

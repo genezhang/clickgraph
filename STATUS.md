@@ -26,6 +26,16 @@
 
 ### Recent Achievements (November 2, 2025)
 
+**Schema Architecture Improvements** (Late Night Session - Nov 2/3)
+✅ **Dual-Key Schema Registration**: Schemas now registered with BOTH actual name + "default" alias in GLOBAL_SCHEMAS  
+✅ **Race Condition Fix**: Eliminated global state swapping - API-loaded schemas no longer overwrite default schema  
+✅ **Schema Name Support**: Added `name` field to GraphSchemaConfig for YAML-defined schema names  
+✅ **Access Pattern Validation**: Both `USE default` and `USE test_integration` work correctly  
+✅ **Backward Compatibility**: GLOBAL_GRAPH_SCHEMA maintained for existing code  
+🔄 **Future Work**: Implement QueryContext pattern to eliminate global schema lookups during planning  
+📦 **Files Modified**: config.rs (name field), graph_catalog.rs (dual registration)  
+📝 **Documentation**: SESSION_SCHEMA_ARCHITECTURE_COMPLETE.md
+
 **USE Clause Implementation** (Evening Session)
 ✅ **Cypher USE Clause**: Full Neo4j-compatible `USE database_name` syntax for query-level database selection  
 ✅ **Three-Way Precedence System**: USE clause > session/request parameter > default schema  
@@ -45,6 +55,7 @@
 ✅ **Documentation**: Comprehensive updates reflecting latest capabilities  
 
 See: 
+- `SESSION_SCHEMA_ARCHITECTURE_COMPLETE.md` for schema architecture improvements
 - `notes/bolt-multi-database.md` for Bolt protocol implementation details
 - `docs/api.md` for complete USE clause documentation and examples
 
