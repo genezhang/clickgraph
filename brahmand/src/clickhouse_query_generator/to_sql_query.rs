@@ -395,15 +395,9 @@ impl RenderExpr {
                 table_alias,
                 column,
             }) => {
-                // Resolve property names to actual column names based on schema mappings
-                let resolved_column = match (table_alias.0.as_str(), column.0.as_str()) {
-                    // User table mappings from social_network.yaml
-                    ("u", "name") => "full_name",
-                    ("u", "email") => "email_address",
-                    // Default: use the logical name as-is
-                    _ => &column.0,
-                };
-                format!("{}.{}", table_alias.0, resolved_column)
+                // Property mapping should already be done in the analyzer phase
+                // Just use the column name as-is
+                format!("{}.{}", table_alias.0, column.0)
             }
             RenderExpr::OperatorApplicationExp(op) => {
                 fn op_str(o: Operator) -> &'static str {

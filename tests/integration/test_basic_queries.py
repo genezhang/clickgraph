@@ -43,7 +43,7 @@ class TestBasicMatch:
         assert_query_success(response)
         assert_row_count(response, 5)
         assert_column_exists(response, "name")  # ClickGraph returns 'name', not 'u.name'
-        assert_column_exists(response, "u.age")
+        assert_column_exists(response, "age")   # ClickGraph returns 'age', not 'u.age'
     
     def test_match_with_alias(self, simple_graph):
         """Test MATCH with different alias."""
@@ -54,7 +54,7 @@ class TestBasicMatch:
         
         assert_query_success(response)
         assert_row_count(response, 5)
-        assert_contains_value(response, "person.name", "Alice")
+        assert_contains_value(response, "name", "Alice")  # ClickGraph returns 'name', not 'person.name'
 
 
 class TestWhereClause:

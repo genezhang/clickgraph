@@ -239,16 +239,6 @@ fn get_variable_length_info(plan: &LogicalPlan) -> Option<(String, String, Strin
     }
 }
 
-/// Map Cypher property name to actual column name
-/// TODO: This should look up the actual schema from GraphSchema
-fn map_property_to_column(property: &str) -> String {
-    match property {
-        "name" => "full_name".to_string(),  // For users
-        "email" => "email_address".to_string(),
-        _ => property.to_string(), // fallback to property name itself
-    }
-}
-
 /// Schema-aware property mapping using GraphSchema
 /// Map a property to column with schema awareness
 /// Returns an error if the schema is not available or the property mapping is not found
