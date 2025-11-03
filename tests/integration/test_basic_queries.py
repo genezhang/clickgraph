@@ -26,7 +26,7 @@ class TestBasicMatch:
         """Test MATCH (n) RETURN n pattern."""
         response = execute_cypher(
             "MATCH (n:User) RETURN n.name",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -37,7 +37,7 @@ class TestBasicMatch:
         """Test MATCH with node label."""
         response = execute_cypher(
             "MATCH (u:User) RETURN u.name, u.age",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -49,7 +49,7 @@ class TestBasicMatch:
         """Test MATCH with different alias."""
         response = execute_cypher(
             "MATCH (person:User) RETURN person.name",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -64,7 +64,7 @@ class TestWhereClause:
         """Test WHERE with equality comparison."""
         response = execute_cypher(
             "MATCH (u:User) WHERE u.name = 'Alice' RETURN u.name, u.age",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -75,7 +75,7 @@ class TestWhereClause:
         """Test WHERE with > comparison."""
         response = execute_cypher(
             "MATCH (u:User) WHERE u.age > 30 RETURN u.name ORDER BY u.name",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -87,7 +87,7 @@ class TestWhereClause:
         """Test WHERE with < comparison."""
         response = execute_cypher(
             "MATCH (u:User) WHERE u.age < 30 RETURN u.name ORDER BY u.name",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -97,7 +97,7 @@ class TestWhereClause:
         """Test WHERE with AND logic."""
         response = execute_cypher(
             "MATCH (u:User) WHERE u.age > 25 AND u.age < 32 RETURN u.name ORDER BY u.name",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -107,7 +107,7 @@ class TestWhereClause:
         """Test WHERE with OR logic."""
         response = execute_cypher(
             "MATCH (u:User) WHERE u.name = 'Alice' OR u.name = 'Bob' RETURN u.name ORDER BY u.name",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -123,7 +123,7 @@ class TestOrderByLimit:
         """Test ORDER BY ASC."""
         response = execute_cypher(
             "MATCH (u:User) RETURN u.name ORDER BY u.age ASC",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -140,7 +140,7 @@ class TestOrderByLimit:
         """Test ORDER BY DESC."""
         response = execute_cypher(
             "MATCH (u:User) RETURN u.name ORDER BY u.age DESC",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -157,7 +157,7 @@ class TestOrderByLimit:
         """Test LIMIT clause."""
         response = execute_cypher(
             "MATCH (u:User) RETURN u.name LIMIT 3",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -167,7 +167,7 @@ class TestOrderByLimit:
         """Test ORDER BY combined with LIMIT."""
         response = execute_cypher(
             "MATCH (u:User) RETURN u.name ORDER BY u.age DESC LIMIT 2",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -184,7 +184,7 @@ class TestPropertyAccess:
         """Test accessing single property."""
         response = execute_cypher(
             "MATCH (u:User) WHERE u.name = 'Alice' RETURN u.age",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -200,7 +200,7 @@ class TestPropertyAccess:
         """Test accessing multiple properties."""
         response = execute_cypher(
             "MATCH (u:User) WHERE u.name = 'Bob' RETURN u.name, u.age",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -212,7 +212,7 @@ class TestPropertyAccess:
         """Test using same property in WHERE and RETURN."""
         response = execute_cypher(
             "MATCH (u:User) WHERE u.age > 30 RETURN u.name, u.age ORDER BY u.age",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -226,7 +226,7 @@ class TestBasicAggregation:
         """Test COUNT(*) aggregation."""
         response = execute_cypher(
             "MATCH (u:User) RETURN COUNT(*) as total",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -242,7 +242,7 @@ class TestBasicAggregation:
         """Test COUNT with WHERE clause."""
         response = execute_cypher(
             "MATCH (u:User) WHERE u.age > 30 RETURN COUNT(*) as count",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -258,7 +258,7 @@ class TestBasicAggregation:
         """Test MIN and MAX aggregations."""
         response = execute_cypher(
             "MATCH (u:User) RETURN MIN(u.age) as min_age, MAX(u.age) as max_age",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -281,7 +281,7 @@ class TestReturnDistinct:
         """Test RETURN DISTINCT on values."""
         response = execute_cypher(
             "MATCH (u:User) RETURN DISTINCT u.name ORDER BY u.name",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)

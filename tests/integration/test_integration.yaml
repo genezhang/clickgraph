@@ -1,7 +1,9 @@
 # Schema configuration for integration test database
 # This maps the test_integration database to a graph structure
+# NOTE: Schema name is intentionally different from database name
+# to ensure code doesn't confuse the two concepts
 
-name: test_integration
+name: test_graph_schema
 version: "1.0"
 description: "Integration test schema for ClickGraph test suite"
 

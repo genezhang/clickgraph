@@ -192,12 +192,13 @@ def simple_graph(clickhouse_client, test_database, clean_database):
     """)
     
     # NOTE: Schema is already loaded by server at startup via GRAPH_CONFIG_PATH
-    # No need to load via API - just use the server's default schema
-    # This simplifies testing and avoids schema loading race conditions
+    # The YAML schema name is "test_graph_schema" (intentionally different from DB name)
+    # This ensures tests don't confuse schema name with database name
     
     # Return schema configuration
     return {
-        "database": "default",  # Use server's default schema
+        "schema_name": "test_graph_schema",  # Logical schema identifier from YAML
+        "database": "test_integration",      # Physical ClickHouse database where tables exist
         "nodes": {
             "User": {
                 "table": "users",
