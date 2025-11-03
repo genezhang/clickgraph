@@ -26,7 +26,7 @@ class TestSingleHopTraversal:
         """Test (a)-[r]->(b) pattern."""
         response = execute_cypher(
             "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a.name, b.name",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -38,7 +38,7 @@ class TestSingleHopTraversal:
         """Test (a)<-[r]-(b) pattern."""
         response = execute_cypher(
             "MATCH (a:User)<-[r:FOLLOWS]-(b:User) WHERE a.name = 'Charlie' RETURN b.name ORDER BY b.name",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -50,7 +50,7 @@ class TestSingleHopTraversal:
         """Test (a)-[r]-(b) pattern (either direction)."""
         response = execute_cypher(
             "MATCH (a:User)-[r:FOLLOWS]-(b:User) WHERE a.name = 'Bob' RETURN b.name ORDER BY b.name",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -62,7 +62,7 @@ class TestSingleHopTraversal:
         """Test relationship with WHERE on source node."""
         response = execute_cypher(
             "MATCH (a:User)-[r:FOLLOWS]->(b:User) WHERE a.name = 'Alice' RETURN b.name ORDER BY b.name",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -74,7 +74,7 @@ class TestSingleHopTraversal:
         """Test relationship with WHERE on target node."""
         response = execute_cypher(
             "MATCH (a:User)-[r:FOLLOWS]->(b:User) WHERE b.name = 'Diana' RETURN a.name ORDER BY a.name",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -94,7 +94,7 @@ class TestMultiHopTraversal:
             RETURN a.name, b.name, c.name
             ORDER BY a.name, b.name, c.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -111,7 +111,7 @@ class TestMultiHopTraversal:
             MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)-[:FOLLOWS]->(d:User)
             RETURN a.name, b.name, c.name, d.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -130,7 +130,7 @@ class TestMultiHopTraversal:
             RETURN b.name, c.name
             ORDER BY b.name, c.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -150,7 +150,7 @@ class TestBidirectionalPatterns:
             MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(a)
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -164,7 +164,7 @@ class TestBidirectionalPatterns:
             MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)-[:FOLLOWS]->(a)
             RETURN a.name, b.name, c.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -184,7 +184,7 @@ class TestRelationshipProperties:
             RETURN a.name, b.name, r.since
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -200,7 +200,7 @@ class TestRelationshipProperties:
             RETURN a.name, b.name
             ORDER BY a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -223,7 +223,7 @@ class TestMultipleNodes:
             RETURN a.name, b.name, c.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -239,7 +239,7 @@ class TestMultipleNodes:
             WHERE a.name = 'Alice' AND d.name = 'Eve'
             RETURN a.name, b.name, c.name, d.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -260,7 +260,7 @@ class TestRelationshipCounting:
             RETURN a.name, COUNT(b) as following_count
             ORDER BY following_count DESC, a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -279,7 +279,7 @@ class TestRelationshipCounting:
             RETURN a.name, COUNT(b) as follower_count
             ORDER BY follower_count DESC, a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -298,7 +298,7 @@ class TestRelationshipCounting:
             RETURN a.name, COUNT(DISTINCT b) as connections
             ORDER BY connections DESC, a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -320,7 +320,7 @@ class TestComplexPatterns:
             RETURN DISTINCT fof.name
             ORDER BY fof.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -338,7 +338,7 @@ class TestComplexPatterns:
             RETURN common.name
             ORDER BY common.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)

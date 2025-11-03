@@ -1,6 +1,22 @@
 ## [Unreleased]
 
-### 🐛 Bug Fixes
+### Breaking Changes
+- **HTTP API Response Format**: Changed from bare array to object wrapper
+  - Old: `[{"name": "Alice"}]` → New: `{"results": [{"name": "Alice"}]}`
+  - Columns use simple property names (e.g., `"name"`) without alias prefixes
+  - Update client code to access `response.results` or `response["results"]`
+
+### � Features
+- **WHERE Clause Support for Simple MATCH Queries**: Implemented WHERE clause filtering for ViewScan nodes
+  - Enables filtering on simple MATCH queries: `MATCH (u:User) WHERE u.name = 'Alice' RETURN u`
+  - Previously only worked for variable-length paths (GraphRel nodes)
+  - Two-phase fix: Filter injection (optimizer) + SQL subquery generation
+  - Modified `FilterIntoGraphRel` optimizer to handle ViewScan patterns
+  - Enhanced SQL generator to wrap filtered ViewScans in subqueries
+  - Test Status: ✅ 318/318 unit tests passing (100%)
+  - See `notes/where-viewscan.md` for implementation details
+
+### �🐛 Bug Fixes
 - **CRITICAL FIX**: Removed hardcoded property mappings from `to_sql_query.rs` that were overriding schema-based property resolution
   - Fixed: `("u", "name") → "full_name"` hardcoded mapping causing 95% of test failures
   - Impact: Test pass rate improved from 0.4% (1/272) to 26% (5/19 in basic_queries)

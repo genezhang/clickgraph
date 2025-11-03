@@ -37,7 +37,7 @@ class TestSimpleCaseInReturn:
                    END as role
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -60,7 +60,7 @@ class TestSimpleCaseInReturn:
                    END as level
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -80,7 +80,7 @@ class TestSimpleCaseInReturn:
                    END as status
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -104,7 +104,7 @@ class TestSearchedCaseInReturn:
                    END as age_group
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -125,7 +125,7 @@ class TestSearchedCaseInReturn:
                    END as category
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -146,7 +146,7 @@ class TestSearchedCaseInReturn:
                    END as age_category
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -169,7 +169,7 @@ class TestCaseInWhere:
             RETURN n.name
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -191,7 +191,7 @@ class TestCaseInWhere:
             RETURN n.name, n.age
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -210,7 +210,7 @@ class TestCaseInWhere:
             RETURN n.name, n.age
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -230,7 +230,7 @@ class TestCaseInAggregation:
                 COUNT(CASE WHEN n.age < 30 THEN 1 END) as young_count,
                 COUNT(CASE WHEN n.age >= 30 THEN 1 END) as mature_count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -251,7 +251,7 @@ class TestCaseInAggregation:
                 END
             ) as weighted_sum
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -271,7 +271,7 @@ class TestCaseInAggregation:
                 COUNT(n) as count
             ORDER BY age_group
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -297,7 +297,7 @@ class TestCaseWithRelationships:
                    END as status
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -320,7 +320,7 @@ class TestCaseWithRelationships:
                    END as follow_status
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -339,7 +339,7 @@ class TestCaseWithRelationships:
                    END as relationship_age
             ORDER BY a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -364,7 +364,7 @@ class TestNestedCase:
                    END as category
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -391,7 +391,7 @@ class TestNestedCase:
                    END as role
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -414,7 +414,7 @@ class TestCaseWithNull:
                    END as followed
             ORDER BY a.name, followed
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -433,7 +433,7 @@ class TestCaseWithNull:
                    END as special_status
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -453,7 +453,7 @@ class TestCaseWithNull:
                    END as connection_status
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -475,7 +475,7 @@ class TestCaseEdgeCases:
                    END as impossible_category
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -496,7 +496,7 @@ class TestCaseEdgeCases:
                    END as result
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -516,7 +516,7 @@ class TestCaseEdgeCases:
                    END as calculated_category
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -540,7 +540,7 @@ class TestCaseInOrderBy:
                 END,
                 n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -568,7 +568,7 @@ class TestCaseInOrderBy:
                    END as age_group
             ORDER BY age_group, n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)

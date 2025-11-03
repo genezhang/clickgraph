@@ -147,20 +147,15 @@ curl -X POST http://localhost:8080/query \
 **Expected result**:
 ```json
 {
-  "records": [
-    {"u.name": "Alice", "u.age": 25, "u.city": "New York"},
-    {"u.name": "Bob", "u.age": 30, "u.city": "San Francisco"},
-    {"u.name": "Carol", "u.age": 28, "u.city": "London"}
+  "results": [
+    {"name": "Alice", "age": 25, "city": "New York"},
+    {"name": "Bob", "age": 30, "city": "San Francisco"},
+    {"name": "Carol", "age": 28, "city": "London"}
   ]
 }
 ```
 
-> **Note**: You may see schema warnings when starting ClickGraph:
-> ```
-> Warning: Failed to connect to ClickHouse, using empty schema
-> Error fetching remote schema: no rows returned by a query
-> ```
-> These are **cosmetic warnings** related to ClickGraph's internal catalog system. The core graph functionality works perfectly despite these warnings!
+> **Response Format Note**: Results are wrapped in a `"results"` array. Column names use simple property names (e.g., `"name"`, `"age"`) without alias prefixes, even though the query uses `u.name`, `u.age`.
 
 ### Test 2: Find Alice's Friends
 ```bash

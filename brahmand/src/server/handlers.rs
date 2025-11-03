@@ -521,7 +521,12 @@ async fn execute_cte_queries(
             rows.push(value);
         }
 
-        Ok(Json(rows).into_response())
+        // Wrap results in an object with "results" key for consistency with Neo4j format
+        let response_obj = serde_json::json!({
+            "results": rows
+        });
+
+        Ok(Json(response_obj).into_response())
     }
 }
 

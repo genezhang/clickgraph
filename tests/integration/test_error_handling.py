@@ -29,7 +29,7 @@ class TestMalformedQueries:
             WHERE
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should return error response
@@ -42,7 +42,7 @@ class TestMalformedQueries:
             MATCH (a:User)
             WHERE a.age > 25
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should return error
@@ -55,7 +55,7 @@ class TestMalformedQueries:
             MATCH (a:User
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert "error" in response or "errors" in response or response.get("status") == "error"
@@ -68,7 +68,7 @@ class TestMalformedQueries:
             WHERE a.age === 30
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # === is not valid Cypher (should be =)
@@ -81,7 +81,7 @@ class TestMalformedQueries:
             MATCH (a)-[:FOLLOWS
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert "error" in response or "errors" in response or response.get("status") == "error"
@@ -97,7 +97,7 @@ class TestNonExistentElements:
             MATCH (n:NonExistentLabel)
             RETURN n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should either error or return empty results
@@ -112,7 +112,7 @@ class TestNonExistentElements:
             MATCH (a:User)-[:NONEXISTENT_REL]->(b:User)
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should either error or return empty results
@@ -126,7 +126,7 @@ class TestNonExistentElements:
             MATCH (n:User)
             RETURN n.nonexistent_property
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should succeed but return NULL for non-existent properties
@@ -158,7 +158,7 @@ class TestInvalidSyntax:
             WHERE a.age > AND a.name = 'Alice'
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert "error" in response or "errors" in response or response.get("status") == "error"
@@ -170,7 +170,7 @@ class TestInvalidSyntax:
             MATCH (a:User)
             RETURN a.name AS
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert "error" in response or "errors" in response or response.get("status") == "error"
@@ -183,7 +183,7 @@ class TestInvalidSyntax:
             RETURN a.name
             ORDER BY
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert "error" in response or "errors" in response or response.get("status") == "error"
@@ -195,7 +195,7 @@ class TestInvalidSyntax:
             MATCH (a:User)
             RETURN COUNT()
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # COUNT() without argument is invalid
@@ -213,7 +213,7 @@ class TestTypeMismatches:
             WHERE a.name > 30
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # May succeed with type coercion or error
@@ -227,7 +227,7 @@ class TestTypeMismatches:
             MATCH (a:User)
             RETURN a.name + a.age
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # String + integer may error or coerce
@@ -241,7 +241,7 @@ class TestTypeMismatches:
             WHERE a.nonexistent_prop = NULL
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # = NULL is always false in Cypher (should use IS NULL)
@@ -262,7 +262,7 @@ class TestInvalidPatterns:
             WHERE a.name = 'Alice' AND b.name = 'Bob'
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Disconnected patterns are valid (Cartesian product)
@@ -275,7 +275,7 @@ class TestInvalidPatterns:
             MATCH (a:User)-[:FOLLOWS*5..2]->(b:User)
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # *5..2 is invalid (min > max)
@@ -288,7 +288,7 @@ class TestInvalidPatterns:
             MATCH (a:User)-[:FOLLOWS*-1]->(b:User)
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Negative hop count is invalid
@@ -306,7 +306,7 @@ class TestQueryComplexity:
                  -[:FOLLOWS]->(e)-[:FOLLOWS]->(f)-[:FOLLOWS]->(g)
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should succeed (even if no results) or timeout gracefully
@@ -320,7 +320,7 @@ class TestQueryComplexity:
             WHERE a.name = 'Alice'
             RETURN COUNT(b) as count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should succeed or return max recursion error
@@ -335,7 +335,7 @@ class TestQueryComplexity:
             WHERE a.name = 'Alice'
             RETURN COUNT(c) as count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Complex but valid query
@@ -353,7 +353,7 @@ class TestEmptyResults:
             WHERE a.age > 1000
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -367,7 +367,7 @@ class TestEmptyResults:
             WHERE a.age > 30 AND a.age < 25
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -381,7 +381,7 @@ class TestEmptyResults:
             WHERE a.name = 'Eve'
             RETURN b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -400,7 +400,7 @@ class TestSpecialCharacters:
             WHERE a.name = 'Alice\\'s Account'
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should handle escaped quotes
@@ -414,7 +414,7 @@ class TestSpecialCharacters:
             WHERE a.name = '测试用户'
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should handle Unicode gracefully
@@ -428,7 +428,7 @@ class TestSpecialCharacters:
             WHERE a.name CONTAINS '@#$%'
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # CONTAINS may not be implemented, but should handle gracefully
@@ -446,7 +446,7 @@ class TestLimitsAndBoundaries:
             RETURN a.name
             LIMIT 0
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -460,7 +460,7 @@ class TestLimitsAndBoundaries:
             RETURN a.name
             LIMIT -1
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Negative LIMIT is invalid
@@ -474,7 +474,7 @@ class TestLimitsAndBoundaries:
             RETURN a.name
             LIMIT 1000000
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should succeed (just returns all available rows)
@@ -488,7 +488,7 @@ class TestLimitsAndBoundaries:
             RETURN a.name
             SKIP -5
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Negative SKIP is invalid
@@ -506,7 +506,7 @@ class TestCaseInsensitivity:
             where a.age > 25
             return a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Cypher keywords are case-insensitive
@@ -520,7 +520,7 @@ class TestCaseInsensitivity:
             WhErE a.age > 25
             ReTuRn a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should work (keywords are case-insensitive)
@@ -534,7 +534,7 @@ class TestEmptyQuery:
         """Test completely empty query."""
         response = execute_cypher(
             "",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should return error
@@ -544,7 +544,7 @@ class TestEmptyQuery:
         """Test query with only whitespace."""
         response = execute_cypher(
             "   \n\t  ",
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should return error
@@ -558,7 +558,7 @@ class TestEmptyQuery:
             /* And this is
                a multi-line comment */
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         # Should return error (no actual query)

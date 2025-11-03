@@ -33,7 +33,7 @@ class TestPathVariableAssignment:
             RETURN a.name, b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -49,7 +49,7 @@ class TestPathVariableAssignment:
             RETURN a.name, c.name
             ORDER BY c.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -65,7 +65,7 @@ class TestPathVariableAssignment:
             RETURN a.name, b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -85,7 +85,7 @@ class TestLengthFunction:
             RETURN a.name, b.name, length(p) as path_length
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -108,7 +108,7 @@ class TestLengthFunction:
             RETURN a.name, c.name, length(p) as path_length
             ORDER BY c.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -130,7 +130,7 @@ class TestLengthFunction:
             RETURN DISTINCT length(p) as path_length
             ORDER BY path_length
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -146,7 +146,7 @@ class TestLengthFunction:
             RETURN a.name, b.name, length(p) as path_length
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -169,7 +169,7 @@ class TestLengthFunction:
                    MAX(length(p)) as max_length,
                    AVG(length(p)) as avg_length
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -190,7 +190,7 @@ class TestNodesFunction:
             WHERE a.name = 'Alice' AND b.name = 'Bob'
             RETURN nodes(p) as path_nodes
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -206,7 +206,7 @@ class TestNodesFunction:
             WHERE a.name = 'Alice'
             RETURN length(nodes(p)) as node_count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -228,7 +228,7 @@ class TestNodesFunction:
             RETURN a.name, b.name, length(nodes(p)) as node_count
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -253,7 +253,7 @@ class TestRelationshipsFunction:
             WHERE a.name = 'Alice' AND b.name = 'Bob'
             RETURN relationships(p) as path_rels
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -270,7 +270,7 @@ class TestRelationshipsFunction:
             RETURN a.name, b.name, length(relationships(p)) as rel_count
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -292,7 +292,7 @@ class TestRelationshipsFunction:
             RETURN length(p) as path_length, 
                    length(relationships(p)) as rel_count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -318,7 +318,7 @@ class TestPathWithShortestPath:
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN a.name, b.name, length(p) as path_length
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -340,7 +340,7 @@ class TestPathWithShortestPath:
             RETURN b.name, length(p) as distance
             ORDER BY distance, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -355,7 +355,7 @@ class TestPathWithShortestPath:
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN COUNT(*) as path_count, MIN(length(p)) as min_length
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -375,7 +375,7 @@ class TestPathFunctionsInWhere:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -391,7 +391,7 @@ class TestPathFunctionsInWhere:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -414,7 +414,7 @@ class TestPathFunctionsInReturn:
                 length(relationships(p)) as rel_count
             ORDER BY path_length
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -433,7 +433,7 @@ class TestPathFunctionsInReturn:
                 MIN(length(p)) as min_path_length,
                 MAX(length(p)) as max_path_length
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -453,7 +453,7 @@ class TestPathEdgeCases:
             WHERE a.name = 'Alice'
             RETURN a.name, b.name, length(p) as path_length
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -478,7 +478,7 @@ class TestPathEdgeCases:
             WHERE a.name = 'Eve' AND b.name = 'Alice'
             RETURN length(p) as path_length
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -494,7 +494,7 @@ class TestPathEdgeCases:
             RETURN b.name, length(p) as path_length
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)

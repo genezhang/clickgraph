@@ -69,7 +69,7 @@ class TestWhereClause:
         
         assert_query_success(response)
         assert_row_count(response, 1)
-        assert_contains_value(response, "u.name", "Alice")
+        assert_contains_value(response, "name", "Alice")
     
     def test_where_greater_than(self, simple_graph):
         """Test WHERE with > comparison."""
@@ -80,8 +80,8 @@ class TestWhereClause:
         
         assert_query_success(response)
         assert_row_count(response, 2)  # Charlie (35) and Eve (32)
-        assert_contains_value(response, "u.name", "Charlie")
-        assert_contains_value(response, "u.name", "Eve")
+        assert_contains_value(response, "name", "Charlie")
+        assert_contains_value(response, "name", "Eve")
     
     def test_where_less_than(self, simple_graph):
         """Test WHERE with < comparison."""
@@ -112,8 +112,8 @@ class TestWhereClause:
         
         assert_query_success(response)
         assert_row_count(response, 2)
-        assert_contains_value(response, "u.name", "Alice")
-        assert_contains_value(response, "u.name", "Bob")
+        assert_contains_value(response, "name", "Alice")
+        assert_contains_value(response, "name", "Bob")
 
 
 class TestOrderByLimit:
@@ -131,9 +131,9 @@ class TestOrderByLimit:
         # First should be Bob (age 25)
         results = response["results"]
         if isinstance(results[0], dict):
-            assert results[0]["u.name"] == "Bob"
+            assert results[0]["name"] == "Bob"
         else:
-            col_idx = response["columns"].index("u.name")
+            col_idx = response["columns"].index("name")
             assert results[0][col_idx] == "Bob"
     
     def test_order_by_descending(self, simple_graph):
@@ -148,9 +148,9 @@ class TestOrderByLimit:
         # First should be Charlie (age 35)
         results = response["results"]
         if isinstance(results[0], dict):
-            assert results[0]["u.name"] == "Charlie"
+            assert results[0]["name"] == "Charlie"
         else:
-            col_idx = response["columns"].index("u.name")
+            col_idx = response["columns"].index("name")
             assert results[0][col_idx] == "Charlie"
     
     def test_limit(self, simple_graph):
@@ -173,8 +173,8 @@ class TestOrderByLimit:
         assert_query_success(response)
         assert_row_count(response, 2)
         # Should get Charlie (35) and Eve (32)
-        assert_contains_value(response, "u.name", "Charlie")
-        assert_contains_value(response, "u.name", "Eve")
+        assert_contains_value(response, "name", "Charlie")
+        assert_contains_value(response, "name", "Eve")
 
 
 class TestPropertyAccess:
@@ -191,9 +191,9 @@ class TestPropertyAccess:
         assert_row_count(response, 1)
         results = response["results"]
         if isinstance(results[0], dict):
-            assert results[0]["u.age"] == 30
+            assert results[0]["age"] == 30
         else:
-            col_idx = response["columns"].index("u.age")
+            col_idx = response["columns"].index("age")
             assert results[0][col_idx] == 30
     
     def test_multiple_properties(self, simple_graph):
@@ -205,8 +205,8 @@ class TestPropertyAccess:
         
         assert_query_success(response)
         assert_row_count(response, 1)
-        assert_column_exists(response, "u.name")
-        assert_column_exists(response, "u.age")
+        assert_column_exists(response, "name")
+        assert_column_exists(response, "age")
     
     def test_property_in_where_and_return(self, simple_graph):
         """Test using same property in WHERE and RETURN."""
@@ -233,10 +233,12 @@ class TestBasicAggregation:
         assert_row_count(response, 1)
         results = response["results"]
         if isinstance(results[0], dict):
-            assert results[0]["total"] == 5
+            # ClickHouse may return COUNT as string in JSONEachRow format
+            total = results[0]["total"]
+            assert int(total) == 5
         else:
             col_idx = response["columns"].index("total")
-            assert results[0][col_idx] == 5
+            assert int(results[0][col_idx]) == 5
     
     def test_count_with_where(self, simple_graph):
         """Test COUNT with WHERE clause."""
@@ -249,10 +251,12 @@ class TestBasicAggregation:
         assert_row_count(response, 1)
         results = response["results"]
         if isinstance(results[0], dict):
-            assert results[0]["count"] == 2
+            # ClickHouse may return COUNT as string in JSONEachRow format
+            count = results[0]["count"]
+            assert int(count) == 2
         else:
             col_idx = response["columns"].index("count")
-            assert results[0][col_idx] == 2
+            assert int(results[0][col_idx]) == 2
     
     def test_min_max(self, simple_graph):
         """Test MIN and MAX aggregations."""

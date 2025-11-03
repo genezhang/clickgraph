@@ -7,7 +7,7 @@ use crate::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::{AnalyzerError, Pass},
         },
-        logical_expr::{AggregateFnCall, Column, LogicalExpr, PropertyAccess, TableAlias},
+        logical_expr::{AggregateFnCall, Column, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias},
         logical_plan::{LogicalPlan, Projection, ProjectionItem},
         plan_ctx::PlanCtx,
         transformed::Transformed,
@@ -236,6 +236,10 @@ impl ProjectionTagging {
                         source: e,
                     })?;
                 table_ctx.insert_projection(item.clone());
+                
+                // Don't set an alias - let ClickHouse return just the column name
+                // SQL will be: SELECT u.name (returns as "name" not "u.name")
+                
                 Ok(())
             }
             LogicalExpr::OperatorApplicationExp(operator_application) => {
@@ -262,7 +266,23 @@ impl ProjectionTagging {
             // For now if there is a tableAlias in agg fn args and fn name is Count then convert the table alias to node Id
             LogicalExpr::AggregateFnCall(aggregate_fn_call) => {
                 for arg in &aggregate_fn_call.args {
-                    if let LogicalExpr::TableAlias(TableAlias(t_alias)) = arg {
+                    // Handle COUNT(a) or COUNT(DISTINCT a)
+                    let table_alias_opt = match arg {
+                        LogicalExpr::TableAlias(TableAlias(t_alias)) => Some(t_alias.as_str()),
+                        LogicalExpr::OperatorApplicationExp(OperatorApplication { operator, operands })
+                            if *operator == Operator::Distinct && operands.len() == 1 =>
+                        {
+                            // Handle DISTINCT a inside COUNT(DISTINCT a)
+                            if let LogicalExpr::TableAlias(TableAlias(t_alias)) = &operands[0] {
+                                Some(t_alias.as_str())
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    if let Some(t_alias) = table_alias_opt {
                         if aggregate_fn_call.name.to_lowercase() == "count" {
                             let table_ctx = plan_ctx.get_mut_table_ctx(t_alias).map_err(|e| {
                                 AnalyzerError::PlanCtx {
@@ -273,7 +293,7 @@ impl ProjectionTagging {
                             
                             if table_ctx.is_relation() {
                                 // For relationships, count the relationship records
-                                // Convert count(r) to count(*) for the relationship table
+                                // Convert count(r) or count(distinct r) to count(*) for the relationship table
                                 item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
                                     name: aggregate_fn_call.name.clone(),
                                     args: vec![LogicalExpr::Star],
@@ -295,12 +315,26 @@ impl ProjectionTagging {
                                         }
                                     })?;
                                 let table_node_id = table_schema.node_id.column.clone();
-                                item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                    name: aggregate_fn_call.name.clone(),
-                                    args: vec![LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                
+                                // Preserve DISTINCT if it was in the original expression
+                                let new_arg = if matches!(arg, LogicalExpr::OperatorApplicationExp(OperatorApplication { operator, .. }) if *operator == Operator::Distinct) {
+                                    LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                        operator: Operator::Distinct,
+                                        operands: vec![LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(t_alias.to_string()),
+                                            column: Column(table_node_id),
+                                        })],
+                                    })
+                                } else {
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(t_alias.to_string()),
                                         column: Column(table_node_id),
-                                    })],
+                                    })
+                                };
+                                
+                                item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                    name: aggregate_fn_call.name.clone(),
+                                    args: vec![new_arg],
                                 });
                             }
                         }

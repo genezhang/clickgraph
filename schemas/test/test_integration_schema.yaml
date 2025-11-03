@@ -1,0 +1,21 @@
+name: test_graph_schema
+graph_schema:
+  nodes:
+    - label: User
+      database: test_integration
+      table: users
+      id_column: user_id
+      property_mappings:
+        name: name
+        age: age
+  
+  relationships:
+    - type: FOLLOWS
+      database: test_integration
+      table: follows
+      from_id: follower_id
+      to_id: followed_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        since: since

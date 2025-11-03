@@ -48,18 +48,20 @@ X-Query-Type: read
 X-Query-SQL-Count: 1
 
 {
-  "columns": ["n"],
-  "data": [
-    {"n": {"id": 1, "properties": {"name": "Alice"}}},
-    {"n": {"id": 2, "properties": {"name": "Bob"}}}
-  ],
-  "stats": {
-    "nodes_created": 0,
-    "relationships_created": 0,
-    "execution_time": "15ms"
-  }
+  "results": [
+    {"name": "Alice", "age": 30},
+    {"name": "Bob", "age": 25},
+    {"name": "Charlie", "age": 35}
+  ]
 }
 ```
+
+**Response Fields:**
+- `results` (array): Array of result rows, each row is an object with column names as keys
+  - Columns use simple property names (e.g., `"name"`, `"age"`) without alias prefixes
+  - Example: `RETURN u.name, u.age` returns columns as `"name"` and `"age"`
+
+**Note**: The response format changed in November 2025 to wrap results in a `{"results": [...]}` object for consistency with Neo4j format. Previously returned a bare array `[...]`.
 
 ### Performance Metrics Headers
 

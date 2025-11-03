@@ -34,7 +34,7 @@ class TestSingleOptionalMatch:
             RETURN a.name, b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -52,7 +52,7 @@ class TestSingleOptionalMatch:
             OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -76,7 +76,7 @@ class TestSingleOptionalMatch:
             OPTIONAL MATCH (b:User)-[:FOLLOWS]->(a)
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -93,7 +93,7 @@ class TestSingleOptionalMatch:
             OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User)
             RETURN a.name, COUNT(b) as connections
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -115,7 +115,7 @@ class TestMultipleOptionalMatch:
             RETURN a.name, b.name, c.name
             ORDER BY b.name, c.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -132,7 +132,7 @@ class TestMultipleOptionalMatch:
             OPTIONAL MATCH (b)-[:FOLLOWS]->(c:User)
             RETURN a.name, b.name, c.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -155,7 +155,7 @@ class TestMultipleOptionalMatch:
             RETURN a.name, b.name, c.name
             ORDER BY b.name, c.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -176,7 +176,7 @@ class TestMixedRequiredOptional:
             RETURN a.name, b.name, c.name
             ORDER BY a.name, b.name, c.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -193,7 +193,7 @@ class TestMixedRequiredOptional:
             WHERE x.name = 'Alice'
             RETURN a.name, b.name, x.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -212,7 +212,7 @@ class TestMixedRequiredOptional:
             RETURN a.name, b.name, x.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -234,7 +234,7 @@ class TestOptionalMatchWithFilters:
             RETURN a.name, b.name, b.age
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -251,7 +251,7 @@ class TestOptionalMatchWithFilters:
             WHERE r.since > 2020
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -268,7 +268,7 @@ class TestOptionalMatchWithFilters:
             RETURN a.name, COUNT(b) as filtered_follows
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -288,7 +288,7 @@ class TestOptionalMatchWithProperties:
             RETURN a.name, a.age, b.name, b.age
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -306,7 +306,7 @@ class TestOptionalMatchWithProperties:
             OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
             RETURN a.name, b.name, b.age
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -333,7 +333,7 @@ class TestOptionalMatchAggregation:
             RETURN a.name, COUNT(b) as follow_count
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -349,7 +349,7 @@ class TestOptionalMatchAggregation:
             RETURN a.name, COUNT(b) as follows, AVG(b.age) as avg_age
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -365,7 +365,7 @@ class TestOptionalMatchAggregation:
             RETURN a.name, COUNT(b) as follow_count
             ORDER BY follow_count DESC, a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -384,7 +384,7 @@ class TestOptionalMatchVariableLength:
             OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User)
             RETURN a.name, COUNT(DISTINCT b) as reachable
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -406,7 +406,7 @@ class TestOptionalMatchVariableLength:
             OPTIONAL MATCH (a)-[:FOLLOWS*1..3]->(b:User)
             RETURN a.name, COUNT(b) as reachable
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -428,7 +428,7 @@ class TestOptionalMatchVariableLength:
             RETURN a.name, COUNT(DISTINCT b) as reachable_count
             ORDER BY reachable_count DESC, a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -448,7 +448,7 @@ class TestOptionalMatchDistinct:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -465,7 +465,7 @@ class TestOptionalMatchDistinct:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -486,7 +486,7 @@ class TestOptionalMatchEdgeCases:
             OPTIONAL MATCH (b)-[:FOLLOWS]->(c:User)
             RETURN a.name, b.name, c.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -505,7 +505,7 @@ class TestOptionalMatchEdgeCases:
             OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -522,7 +522,7 @@ class TestOptionalMatchEdgeCases:
             ORDER BY a.name, b.name
             LIMIT 5
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -538,7 +538,7 @@ class TestOptionalMatchEdgeCases:
             OPTIONAL MATCH (a)-[:FOLLOWS*0..]->(a)
             RETURN a.name, COUNT(*) as paths
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)

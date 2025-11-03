@@ -308,20 +308,52 @@ def assert_row_count(response: Dict[str, Any], expected: int):
 
 
 def assert_column_exists(response: Dict[str, Any], column: str):
-    """Assert that response contains a specific column."""
+    """
+    Assert that response contains a specific column.
+    
+    Handles both prefixed (u.name) and unprefixed (name) column names.
+    ClickHouse returns simple column names, so 'u.name' in test → 'name' in results.
+    """
     assert_query_success(response)
+    
+    # Normalize column name - strip alias prefix if present (e.g., "u.name" → "name")
+    normalized_column = column.split('.')[-1] if '.' in column else column
+    
     # For list responses, columns are embedded in the result dicts
     if isinstance(response, list):
         if response and isinstance(response[0], dict):
-            assert column in response[0], f"Column '{column}' not found in results"
+            assert normalized_column in response[0], (
+                f"Column '{column}' (normalized: '{normalized_column}') not found in results. "
+                f"Available: {list(response[0].keys())}"
+            )
     else:
-        columns = response.get("columns", [])
-        assert column in columns, f"Column '{column}' not found. Available: {columns}"
+        # Check if results are embedded in dict
+        results = response.get("results", [])
+        if results and isinstance(results[0], dict):
+            assert normalized_column in results[0], (
+                f"Column '{column}' (normalized: '{normalized_column}') not found in results. "
+                f"Available: {list(results[0].keys())}"
+            )
+        else:
+            columns = response.get("columns", [])
+            assert normalized_column in columns, (
+                f"Column '{column}' (normalized: '{normalized_column}') not found. "
+                f"Available: {columns}"
+            )
 
 
 def assert_contains_value(response: Dict[str, Any], column: str, value: Any):
-    """Assert that a column contains a specific value."""
+    """
+    Assert that a column contains a specific value.
+    
+    Handles:
+    - Column name normalization (strips alias prefix)
+    - Type conversion for aggregation results (COUNT returns string, converts to int)
+    """
     assert_query_success(response)
+    
+    # Normalize column name - strip alias prefix if present (e.g., "u.name" → "name")
+    normalized_column = column.split('.')[-1] if '.' in column else column
     
     # Handle list response format
     if isinstance(response, list):
@@ -331,13 +363,94 @@ def assert_contains_value(response: Dict[str, Any], column: str, value: Any):
     
     # Handle both dict and list result formats
     if results and isinstance(results[0], dict):
-        values = [row.get(column) for row in results]
+        values = [row.get(normalized_column) for row in results]
     else:
         # List format - need column index
         if isinstance(response, dict):
-            col_idx = response["columns"].index(column)
+            col_idx = response["columns"].index(normalized_column)
         else:
             raise ValueError("Cannot find column index for list-only response")
         values = [row[col_idx] for row in results]
     
-    assert value in values, f"Value '{value}' not found in column '{column}'. Values: {values}"
+    # Type conversion: if value is int and actual values are strings, convert
+    # This handles COUNT(*) which ClickHouse JSONEachRow returns as string
+    if isinstance(value, int) and values and isinstance(values[0], str):
+        try:
+            values = [int(v) for v in values]
+        except (ValueError, TypeError):
+            pass  # Keep original values if conversion fails
+    
+    assert value in values, (
+        f"Value '{value}' not found in column '{column}' (normalized: '{normalized_column}'). "
+        f"Values: {values}"
+    )
+
+
+def get_column_values(response: Dict[str, Any], column: str, convert_to_int: bool = False) -> List[Any]:
+    """
+    Extract values from a column in the response.
+    
+    Args:
+        response: Query response
+        column: Column name (can be prefixed like "u.name" or simple like "name")
+        convert_to_int: If True, convert string values to int (useful for COUNT)
+        
+    Returns:
+        List of values from the specified column
+        
+    Handles:
+    - Column name normalization (strips alias prefix)
+    - Type conversion for aggregation results
+    """
+    assert_query_success(response)
+    
+    # Normalize column name - strip alias prefix if present (e.g., "u.name" → "name")
+    normalized_column = column.split('.')[-1] if '.' in column else column
+    
+    # Handle list response format
+    if isinstance(response, list):
+        results = response
+    else:
+        results = response.get("results", [])
+    
+    # Extract values
+    if results and isinstance(results[0], dict):
+        values = [row.get(normalized_column) for row in results]
+    else:
+        # List format - need column index
+        if isinstance(response, dict):
+            col_idx = response["columns"].index(normalized_column)
+        else:
+            raise ValueError("Cannot find column index for list-only response")
+        values = [row[col_idx] for row in results]
+    
+    # Type conversion if requested
+    if convert_to_int:
+        try:
+            values = [int(v) if v is not None else None for v in values]
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Cannot convert column '{column}' values to int: {e}. Values: {values}")
+    
+    return values
+
+
+def get_single_value(response: Dict[str, Any], column: str, convert_to_int: bool = False) -> Any:
+    """
+    Extract a single value from a single-row response.
+    
+    Args:
+        response: Query response  
+        column: Column name (can be prefixed like "u.name" or simple like "name")
+        convert_to_int: If True, convert string value to int (useful for COUNT)
+        
+    Returns:
+        The value from the specified column in the first (and presumably only) row
+        
+    Useful for aggregation queries that return a single row.
+    """
+    values = get_column_values(response, column, convert_to_int=convert_to_int)
+    if not values:
+        raise ValueError(f"No results found in response")
+    return values[0]
+
+

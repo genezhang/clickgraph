@@ -1119,7 +1119,17 @@ impl RenderPlanBuilder for LogicalPlan {
         let filters = match &self {
             LogicalPlan::Empty => None,
             LogicalPlan::Scan(_) => None,
-            LogicalPlan::ViewScan(_) => None,
+            LogicalPlan::ViewScan(scan) => {
+                // Extract view_filter if present (filters injected by optimizer)
+                if let Some(ref filter) = scan.view_filter {
+                    let mut expr: RenderExpr = filter.clone().try_into()?;
+                    // Apply property mapping to the filter expression
+                    apply_property_mapping_to_expr(&mut expr, &LogicalPlan::ViewScan(scan.clone()));
+                    Some(expr)
+                } else {
+                    None
+                }
+            },
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_filters()?,
             LogicalPlan::GraphRel(graph_rel) => {
                 log::trace!("GraphRel node detected, extracting filters from left, center, and right sub-plans");

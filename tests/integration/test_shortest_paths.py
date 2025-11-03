@@ -30,7 +30,7 @@ class TestShortestPath:
             WHERE a.name = 'Alice' AND b.name = 'Eve'
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -45,7 +45,7 @@ class TestShortestPath:
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -60,7 +60,7 @@ class TestShortestPath:
             WHERE a.name = 'Alice' AND b.name = 'Eve'
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -75,7 +75,7 @@ class TestShortestPath:
             WHERE a.name = 'Eve' AND b.name = 'Alice'
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -90,7 +90,7 @@ class TestShortestPath:
             WHERE a.name = 'Alice'
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -109,7 +109,7 @@ class TestAllShortestPaths:
             WHERE a.name = 'Charlie' AND b.name = 'Eve'
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -124,7 +124,7 @@ class TestAllShortestPaths:
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN COUNT(*) as path_count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -146,7 +146,7 @@ class TestAllShortestPaths:
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN COUNT(*) as path_count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -165,7 +165,7 @@ class TestShortestPathWithFilters:
             WHERE a.name = 'Alice' AND a.age > 25
             RETURN a.name, COUNT(b) as reachable_nodes
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -180,7 +180,7 @@ class TestShortestPathWithFilters:
             WHERE a.name = 'Alice' AND b.age > 30
             RETURN b.name, b.age
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -195,7 +195,7 @@ class TestShortestPathWithFilters:
             WHERE a.age < 30 AND b.age > 30
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -214,7 +214,7 @@ class TestShortestPathProperties:
             WHERE a.name = 'Alice' AND b.name = 'Eve'
             RETURN a.name, a.age, b.name, b.age
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -233,7 +233,7 @@ class TestShortestPathProperties:
             ORDER BY b.age DESC
             LIMIT 3
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -251,7 +251,7 @@ class TestShortestPathAggregation:
             WHERE a.name = 'Alice'
             RETURN COUNT(DISTINCT b) as reachable_count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -272,7 +272,7 @@ class TestShortestPathAggregation:
             RETURN a.name, COUNT(DISTINCT b) as reachable
             ORDER BY reachable DESC, a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -291,7 +291,7 @@ class TestShortestPathDepth:
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -307,7 +307,7 @@ class TestShortestPathDepth:
             RETURN b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -322,7 +322,7 @@ class TestShortestPathDepth:
             WHERE a.name = 'Alice' AND b.name = 'Eve'
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -341,7 +341,7 @@ class TestShortestPathEdgeCases:
             WHERE a.name = 'Bob'
             RETURN a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -356,7 +356,7 @@ class TestShortestPathEdgeCases:
             WHERE a.name = 'Eve' AND b.name = 'Alice'
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -372,7 +372,7 @@ class TestShortestPathEdgeCases:
             RETURN a.name, b.name
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -391,7 +391,7 @@ class TestShortestPathPerformance:
             WHERE a.name = 'Alice' AND b.name = 'Bob'
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -406,7 +406,7 @@ class TestShortestPathPerformance:
             RETURN a.name, b.name
             LIMIT 10
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -426,7 +426,7 @@ class TestShortestPathDistinct:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)

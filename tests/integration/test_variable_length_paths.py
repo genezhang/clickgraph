@@ -30,7 +30,7 @@ class TestFixedLengthPaths:
             RETURN a.name, b.name
             ORDER BY a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -49,7 +49,7 @@ class TestFixedLengthPaths:
             RETURN a.name, b.name
             ORDER BY a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -66,7 +66,7 @@ class TestFixedLengthPaths:
             MATCH (a:User)-[:FOLLOWS*1]->(b:User)
             RETURN COUNT(*) as count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -90,7 +90,7 @@ class TestRangePaths:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -108,7 +108,7 @@ class TestRangePaths:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -127,7 +127,7 @@ class TestRangePaths:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -145,7 +145,7 @@ class TestRangePaths:
             WHERE a.name = 'Bob'
             RETURN COUNT(*) as path_count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -172,7 +172,7 @@ class TestUnboundedPaths:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -192,7 +192,7 @@ class TestUnboundedPaths:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -211,7 +211,7 @@ class TestUnboundedPaths:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -231,7 +231,7 @@ class TestVariableLengthWithFilters:
             RETURN b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -249,7 +249,7 @@ class TestVariableLengthWithFilters:
             RETURN a.name
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -265,7 +265,7 @@ class TestVariableLengthWithFilters:
             WHERE a.name = 'Alice' AND b.name = 'Eve'
             RETURN COUNT(*) as path_count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -281,7 +281,7 @@ class TestVariableLengthWithFilters:
             RETURN b.name, b.age
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -301,7 +301,7 @@ class TestVariableLengthProperties:
             ORDER BY a.name, b.name
             LIMIT 3
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -318,7 +318,7 @@ class TestVariableLengthProperties:
             RETURN b.name, b.age
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -335,7 +335,7 @@ class TestVariableLengthProperties:
             ORDER BY b.name
             LIMIT 3
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -354,7 +354,7 @@ class TestVariableLengthBidirectional:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -371,7 +371,7 @@ class TestVariableLengthBidirectional:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -390,7 +390,7 @@ class TestVariableLengthAggregation:
             WHERE a.name = 'Alice'
             RETURN COUNT(*) as total_paths
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -405,7 +405,7 @@ class TestVariableLengthAggregation:
             RETURN b.name, COUNT(*) as path_count
             ORDER BY path_count DESC, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -420,7 +420,7 @@ class TestVariableLengthAggregation:
             WHERE a.name = 'Alice'
             RETURN MIN(b.age) as min_age, MAX(b.age) as max_age
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -440,7 +440,7 @@ class TestVariableLengthDistinct:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -456,7 +456,7 @@ class TestVariableLengthDistinct:
             RETURN DISTINCT a.name, b.name
             ORDER BY a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -475,7 +475,7 @@ class TestVariableLengthEdgeCases:
             WHERE a.name = 'Alice'
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -495,7 +495,7 @@ class TestVariableLengthEdgeCases:
             WHERE a.name = 'Diana'
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -509,7 +509,7 @@ class TestVariableLengthEdgeCases:
             MATCH (a:User)-[:FOLLOWS*1..2]->(a)
             RETURN COUNT(*) as loops
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)

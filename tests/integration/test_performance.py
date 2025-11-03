@@ -40,7 +40,7 @@ class TestSimpleQueryPerformance:
             RETURN n.name
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -60,7 +60,7 @@ class TestSimpleQueryPerformance:
             RETURN n.name
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -79,7 +79,7 @@ class TestSimpleQueryPerformance:
             RETURN a.name, b.name
             ORDER BY a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -101,7 +101,7 @@ class TestAggregationPerformance:
             MATCH (n:User)
             RETURN COUNT(n) as total
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -120,7 +120,7 @@ class TestAggregationPerformance:
             RETURN a.name, COUNT(b) as follows
             ORDER BY follows DESC, a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -141,7 +141,7 @@ class TestAggregationPerformance:
                    MIN(n.age) as min_age,
                    MAX(n.age) as max_age
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -164,7 +164,7 @@ class TestComplexQueryPerformance:
             RETURN DISTINCT c.name
             ORDER BY c.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -184,7 +184,7 @@ class TestComplexQueryPerformance:
             RETURN a.name, COUNT(b) as follows
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -208,7 +208,7 @@ class TestComplexQueryPerformance:
                    END as age_group
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -232,7 +232,7 @@ class TestVariableLengthPerformance:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -251,7 +251,7 @@ class TestVariableLengthPerformance:
             WHERE a.name = 'Alice'
             RETURN COUNT(DISTINCT b) as reachable
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -271,7 +271,7 @@ class TestVariableLengthPerformance:
             WHERE a.name = 'Alice'
             RETURN COUNT(DISTINCT b) as reachable
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -294,7 +294,7 @@ class TestShortestPathPerformance:
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN length(p) as path_length
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -313,7 +313,7 @@ class TestShortestPathPerformance:
             WHERE a.name = 'Alice'
             RETURN COUNT(*) as path_count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -336,7 +336,7 @@ class TestPerformanceComparison:
             RETURN DISTINCT a.name
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         time1 = time.time() - start1
         
@@ -348,7 +348,7 @@ class TestPerformanceComparison:
             RETURN a.name
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         time2 = time.time() - start2
         
@@ -370,7 +370,7 @@ class TestPerformanceComparison:
             WHERE a.age > 25
             RETURN b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         time1 = time.time() - start1
         
@@ -382,7 +382,7 @@ class TestPerformanceComparison:
             WHERE a.age > 25
             RETURN b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         time2 = time.time() - start2
         
@@ -410,7 +410,7 @@ class TestPerformanceBaselines:
         times = []
         for query in queries:
             start = time.time()
-            response = execute_cypher(query, schema_name=simple_graph["database"])
+            response = execute_cypher(query, schema_name=simple_graph["schema_name"])
             elapsed = time.time() - start
             times.append(elapsed)
             assert_query_success(response)
@@ -439,7 +439,7 @@ class TestPerformanceBaselines:
         times = []
         for query in queries:
             start = time.time()
-            response = execute_cypher(query, schema_name=simple_graph["database"])
+            response = execute_cypher(query, schema_name=simple_graph["schema_name"])
             elapsed = time.time() - start
             times.append(elapsed)
             assert_query_success(response)
@@ -470,7 +470,7 @@ class TestPerformanceStress:
             MATCH (a:User)-[:FOLLOWS*1..3]->(b:User)
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start
@@ -490,7 +490,7 @@ class TestPerformanceStress:
             WHERE a.name = 'Alice'
             RETURN COUNT(DISTINCT b) as reachable
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         elapsed = time.time() - start

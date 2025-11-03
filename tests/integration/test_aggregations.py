@@ -18,7 +18,9 @@ from conftest import (
     assert_query_success,
     assert_row_count,
     assert_column_exists,
-    assert_contains_value
+    assert_contains_value,
+    get_single_value,
+    get_column_values
 )
 
 
@@ -32,17 +34,12 @@ class TestBasicAggregations:
             MATCH (n:User)
             RETURN COUNT(*) as total_users
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
         assert_row_count(response, 1)
-        results = response["results"]
-        if isinstance(results[0], dict):
-            assert results[0]["total_users"] == 5
-        else:
-            col_idx = response["columns"].index("total_users")
-            assert results[0][col_idx] == 5
+        assert get_single_value(response, "total_users", convert_to_int=True) == 5
     
     def test_count_distinct_nodes(self, simple_graph):
         """Test COUNT(DISTINCT) on nodes."""
@@ -51,18 +48,13 @@ class TestBasicAggregations:
             MATCH (a:User)-[:FOLLOWS]->(b:User)
             RETURN COUNT(DISTINCT a) as unique_followers
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
         assert_row_count(response, 1)
         # Alice, Bob, Charlie, Diana follow someone
-        results = response["results"]
-        if isinstance(results[0], dict):
-            assert results[0]["unique_followers"] >= 3
-        else:
-            col_idx = response["columns"].index("unique_followers")
-            assert results[0][col_idx] >= 3
+        assert get_single_value(response, "unique_followers", convert_to_int=True) >= 3
     
     def test_sum_aggregation(self, simple_graph):
         """Test SUM aggregation on property."""
@@ -71,7 +63,7 @@ class TestBasicAggregations:
             MATCH (n:User)
             RETURN SUM(n.age) as total_age
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -85,7 +77,7 @@ class TestBasicAggregations:
             MATCH (n:User)
             RETURN AVG(n.age) as average_age
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -104,7 +96,7 @@ class TestBasicAggregations:
             MATCH (n:User)
             RETURN MIN(n.age) as youngest, MAX(n.age) as oldest
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -131,7 +123,7 @@ class TestGroupBy:
             RETURN a.name, COUNT(b) as follows_count
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -148,7 +140,7 @@ class TestGroupBy:
             RETURN a.name, COUNT(b) as follow_count, AVG(b.age) as avg_age
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -164,7 +156,7 @@ class TestGroupBy:
             RETURN a.name, b.name, COUNT(*) as connection_count
             ORDER BY a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -178,7 +170,7 @@ class TestGroupBy:
             RETURN a.name, COUNT(b) as follows
             ORDER BY follows DESC, a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -199,7 +191,7 @@ class TestHavingClause:
             RETURN a.name, follows
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -216,7 +208,7 @@ class TestHavingClause:
             RETURN a.name, avg_age
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -233,7 +225,7 @@ class TestHavingClause:
             RETURN a.name, follows, avg_age
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -252,7 +244,7 @@ class TestAggregationWithWhere:
             RETURN a.name, COUNT(b) as follows_older
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -269,7 +261,7 @@ class TestAggregationWithWhere:
             RETURN a.name, follow_count
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -284,7 +276,7 @@ class TestAggregationWithWhere:
             RETURN a.name, COUNT(b) as mature_follows
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -303,7 +295,7 @@ class TestAggregationWithLimit:
             ORDER BY follows DESC, a.name
             LIMIT 3
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -318,7 +310,7 @@ class TestAggregationWithLimit:
             ORDER BY a.name
             SKIP 1
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -335,7 +327,7 @@ class TestAggregationWithLimit:
             SKIP 1
             LIMIT 2
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -352,18 +344,13 @@ class TestRelationshipAggregations:
             MATCH ()-[r:FOLLOWS]->()
             RETURN COUNT(r) as total_follows
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
         assert_row_count(response, 1)
         # Should have 6 FOLLOWS relationships
-        results = response["results"]
-        if isinstance(results[0], dict):
-            assert results[0]["total_follows"] == 6
-        else:
-            col_idx = response["columns"].index("total_follows")
-            assert results[0][col_idx] == 6
+        assert get_single_value(response, "total_follows", convert_to_int=True) == 6
     
     def test_count_incoming_outgoing(self, simple_graph):
         """Test counting incoming and outgoing relationships."""
@@ -377,7 +364,7 @@ class TestRelationshipAggregations:
                    COUNT(DISTINCT in) as followers
             ORDER BY n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -392,7 +379,7 @@ class TestRelationshipAggregations:
             MATCH (a:User)-[r:FOLLOWS]->(b:User)
             RETURN MIN(r.since) as earliest, MAX(r.since) as latest
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -411,7 +398,7 @@ class TestDistinctInAggregations:
             RETURN a.name, COUNT(DISTINCT b) as unique_reachable
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -426,7 +413,7 @@ class TestDistinctInAggregations:
             WHERE a.name = 'Alice'
             RETURN COUNT(b) as total_paths, COUNT(DISTINCT b) as unique_nodes
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -452,7 +439,7 @@ class TestComplexAggregations:
             WITH a, COUNT(b) as follows
             RETURN AVG(follows) as avg_follows_per_user
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -468,7 +455,7 @@ class TestComplexAggregations:
                 COUNT(CASE WHEN n.age < 30 THEN 1 END) as young,
                 COUNT(CASE WHEN n.age >= 30 THEN 1 END) as mature
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -489,7 +476,7 @@ class TestComplexAggregations:
                    COUNT(DISTINCT out) + COUNT(DISTINCT in) as total_connections
             ORDER BY total_connections DESC, n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -510,17 +497,12 @@ class TestAggregationEdgeCases:
             WHERE a.name = 'NonExistent'
             RETURN COUNT(b) as count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
         assert_row_count(response, 1)
-        results = response["results"]
-        if isinstance(results[0], dict):
-            assert results[0]["count"] == 0
-        else:
-            col_idx = response["columns"].index("count")
-            assert results[0][col_idx] == 0
+        assert get_single_value(response, "count", convert_to_int=True) == 0
     
     def test_aggregation_with_null_values(self, simple_graph):
         """Test aggregation handling NULL values."""
@@ -531,7 +513,7 @@ class TestAggregationEdgeCases:
             RETURN a.name, COUNT(b) as follows
             ORDER BY a.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -545,14 +527,9 @@ class TestAggregationEdgeCases:
             MATCH (n:User)
             RETURN 'all_users' as group_key, COUNT(n) as total
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
         assert_row_count(response, 1)
-        results = response["results"]
-        if isinstance(results[0], dict):
-            assert results[0]["total"] == 5
-        else:
-            col_idx = response["columns"].index("total")
-            assert results[0][col_idx] == 5
+        assert get_single_value(response, "total", convert_to_int=True) == 5

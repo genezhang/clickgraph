@@ -29,7 +29,7 @@ class TestSchemaNameParameter:
             MATCH (n:User)
             RETURN COUNT(n) as user_count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -51,7 +51,7 @@ class TestSchemaNameParameter:
             WHERE n.name = 'Alice'
             RETURN n.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -278,7 +278,7 @@ class TestComplexDatabaseQueries:
             ORDER BY follows DESC, a.name
             LIMIT 3
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -294,7 +294,7 @@ class TestComplexDatabaseQueries:
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -309,7 +309,7 @@ class TestComplexDatabaseQueries:
             OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
             RETURN a.name, b.name
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         
         assert_query_success(response)
@@ -431,7 +431,7 @@ class TestDatabaseValidation:
             MATCH (n:User)
             RETURN COUNT(n) as count
             """,
-            schema_name=simple_graph["database"]
+            schema_name=simple_graph["schema_name"]
         )
         assert_query_success(verify)
     
