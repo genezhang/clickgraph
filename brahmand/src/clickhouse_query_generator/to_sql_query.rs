@@ -12,6 +12,9 @@ use crate::{
     },
 };
 
+// Import ToSql trait from to_sql module so LogicalExpr.to_sql() works
+use super::to_sql::ToSql as LogicalToSql;
+
 /// Generate SQL from RenderPlan with configurable CTE depth limit
 pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     let mut sql = String::new();
@@ -84,6 +87,8 @@ impl ToSql for FromTableItem {
             sql.push_str("FROM ");
 
             // For all references, use the name directly
+            // Note: WHERE clause filtering is handled in WhereClause generation,
+            // not as a subquery in FROM clause
             sql.push_str(&view_ref.name);
             
             // Extract the alias - prefer the explicit alias from ViewTableRef, 

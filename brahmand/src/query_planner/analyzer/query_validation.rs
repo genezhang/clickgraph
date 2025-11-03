@@ -51,18 +51,24 @@ impl AnalyzerPass for QueryValidation {
                 let left_alias = &graph_rel.left_connection;
                 let right_alias = &graph_rel.right_connection;
 
-                let left_ctx = plan_ctx.get_node_table_ctx(left_alias).map_err(|e| {
-                    AnalyzerError::PlanCtx {
-                        pass: Pass::QueryValidation,
-                        source: e,
-                    }
-                })?;
-                let right_ctx = plan_ctx.get_node_table_ctx(right_alias).map_err(|e| {
-                    AnalyzerError::PlanCtx {
-                        pass: Pass::QueryValidation,
-                        source: e,
-                    }
-                })?;
+                // Try to get node contexts - if they don't exist (anonymous nodes), skip validation
+                let left_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone()));
+                let right_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
+
+                // If either node is anonymous (no context), skip schema validation
+                // This allows queries like MATCH ()-[r:FOLLOWS]->() RETURN COUNT(r)
+                if left_ctx_opt.is_err() || right_ctx_opt.is_err() {
+                    return Ok(Transformed::No(logical_plan));
+                }
+
+                let left_ctx = left_ctx_opt.unwrap();
+                let right_ctx = right_ctx_opt.unwrap();
+
+                // If either node has no label (anonymous pattern), skip validation
+                // This handles cases where nodes have auto-generated aliases but no explicit labels
+                if left_ctx.get_label_opt().is_none() || right_ctx.get_label_opt().is_none() {
+                    return Ok(Transformed::No(logical_plan));
+                }
 
                 let left_label = left_ctx
                     .get_label_str()

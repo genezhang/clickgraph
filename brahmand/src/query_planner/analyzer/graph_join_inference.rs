@@ -262,6 +262,25 @@ impl GraphJoinInference {
             return Ok(());
         }
 
+        // Check if nodes have labels - skip for anonymous nodes like ()-[r]->()
+        let left_alias = &graph_rel.left_connection;
+        let right_alias = &graph_rel.right_connection;
+        
+        let left_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone()));
+        let right_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
+        
+        // Skip if either node is anonymous (no context or no label)
+        if left_ctx_opt.is_err() || right_ctx_opt.is_err() {
+            return Ok(());
+        }
+        
+        let left_has_label = left_ctx_opt.as_ref().unwrap().get_label_opt().is_some();
+        let right_has_label = right_ctx_opt.as_ref().unwrap().get_label_opt().is_some();
+        
+        if !left_has_label || !right_has_label {
+            return Ok(());
+        }
+
         // Determine if this is a simple relationship (single relationship type)
         // For simple relationships, we want to skip creating node JOINs in the analysis phase
         // because GraphJoins will create proper node JOINs during SQL generation

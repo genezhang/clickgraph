@@ -164,19 +164,24 @@ impl SchemaInference {
                 let left_alias = &graph_rel.left_connection;
                 let right_alias = &graph_rel.right_connection;
 
-                let left_table_ctx = plan_ctx.get_node_table_ctx(left_alias).map_err(|e| {
-                    AnalyzerError::PlanCtx {
-                        pass: Pass::SchemaInference,
-                        source: e,
-                    }
-                })?;
+                // Try to get node contexts - skip schema inference for anonymous nodes
+                let left_table_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone()));
+                let right_table_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
+
+                // Skip schema inference if either node is anonymous (no context or no label)
+                if left_table_ctx_opt.is_err() || right_table_ctx_opt.is_err() {
+                    return Ok(());
+                }
+                
+                let left_table_ctx = left_table_ctx_opt.unwrap();
+                let right_table_ctx = right_table_ctx_opt.unwrap();
+
+                // Skip if nodes have no labels (anonymous patterns like `()-[r]->()`)
+                if left_table_ctx.get_label_opt().is_none() || right_table_ctx.get_label_opt().is_none() {
+                    return Ok(());
+                }
+
                 let rel_table_ctx = plan_ctx.get_rel_table_ctx(&graph_rel.alias).map_err(|e| {
-                    AnalyzerError::PlanCtx {
-                        pass: Pass::SchemaInference,
-                        source: e,
-                    }
-                })?;
-                let right_table_ctx = plan_ctx.get_node_table_ctx(right_alias).map_err(|e| {
                     AnalyzerError::PlanCtx {
                         pass: Pass::SchemaInference,
                         source: e,

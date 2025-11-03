@@ -1,0 +1,29 @@
+
+ClickGraph v0.0.1 (fork of Brahmand)
+
+DEBUG: run_with_config called!
+
+ CLICKHOUSE_URL http://localhost:8123
+
+Initializing ClickGraph schema...
+Found GRAPH_CONFIG_PATH: C:\Users\GenZ\clickgraph\schemas\test\test_integration_schema.yaml
+✓ Successfully loaded schema from YAML config: C:\Users\GenZ\clickgraph\schemas\test\test_integration_schema.yaml
+  Registering schema with name: test_graph_schema
+✓ Schema initialization complete (single schema mode)
+GLOBAL_GRAPH_SCHEMA initialized: true
+Schema monitoring disabled: Schema loaded from YAML (static configuration)
+Starting HTTP server on 0.0.0.0:8080
+DEBUG: Routes registered:
+  - /health
+  - /test
+  - /query
+  - /test-schemas
+  - /api/schemas/load
+DEBUG: Router created with routes registered
+✓ Successfully bound HTTP listener to 0.0.0.0:8080
+Starting Bolt server on 0.0.0.0:7687
+Successfully bound Bolt listener to 0.0.0.0:7687
+ClickGraph server is running
+  HTTP API: http://0.0.0.0:8080
+  Bolt Protocol: bolt://0.0.0.0:7687
+Bolt server loop starting, listening for connections...

@@ -111,7 +111,13 @@ impl ToSql for LogicalPlan {
     fn to_sql(&self) -> Result<String, ClickhouseQueryGeneratorError> {
         match self {
             LogicalPlan::ViewScan(scan) => {
-                Ok(format!("SELECT * FROM {}", scan.source_table))
+                let mut sql = format!("SELECT * FROM {}", scan.source_table);
+                // Add WHERE clause if view_filter is present
+                if let Some(ref filter) = scan.view_filter {
+                    sql.push_str(" WHERE ");
+                    sql.push_str(&filter.to_sql()?);
+                }
+                Ok(sql)
             },
             LogicalPlan::Projection(proj) => {
                 let mut sql = String::new();

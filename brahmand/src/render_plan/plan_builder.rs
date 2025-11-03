@@ -977,7 +977,26 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             },
             LogicalPlan::GraphRel(graph_rel) => {
-                // For GraphRel, we need to include the start node in the FROM clause
+                // Check if both nodes are anonymous (edge-driven query)
+                let left_table_name = extract_table_name(&graph_rel.left);
+                let right_table_name = extract_table_name(&graph_rel.right);
+                
+                // If both nodes are anonymous, use the relationship table as FROM
+                if left_table_name.is_none() && right_table_name.is_none() {
+                    // Edge-driven query: use relationship table directly (not as CTE)
+                    // Extract table name from the relationship ViewScan
+                    if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+                        // Use actual table name, not CTE name
+                        return Ok(Some(FromTable::new(Some(ViewTableRef::new_table(
+                            scan.as_ref().clone(),
+                            scan.source_table.clone(),
+                        )))));
+                    }
+                    // Fallback to normal extraction if not a ViewScan
+                    return Ok(None);
+                }
+                
+                // For GraphRel with labeled nodes, we need to include the start node in the FROM clause
                 // This handles simple relationship queries where the start node should be FROM
 
                 // For simple relationships, use the start node as FROM
