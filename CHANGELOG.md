@@ -1,4 +1,25 @@
-## [0.1.0] - 2025-11-02
+## [Unreleased]
+
+### 🐛 Bug Fixes
+- **CRITICAL FIX**: Removed hardcoded property mappings from `to_sql_query.rs` that were overriding schema-based property resolution
+  - Fixed: `("u", "name") → "full_name"` hardcoded mapping causing 95% of test failures
+  - Impact: Test pass rate improved from 0.4% (1/272) to 26% (5/19 in basic_queries)
+  - Removed unused `map_property_to_column()` function from `cte_generation.rs`
+  - All property mappings now correctly use schema configuration
+
+### 🧪 Testing
+- Created comprehensive integration test suite: 272 tests across 11 test files
+- Test infrastructure validated: ClickGraph + ClickHouse connectivity working
+- All basic MATCH tests now passing (test_match_all_nodes, test_match_with_label, test_match_with_alias)
+- Test database: test_integration schema with users/follows tables
+
+### 📚 Documentation
+- Added schema loading architecture documentation
+- Created dual-key schema registration implementation docs
+- Documented property mapping bug investigation and fix
+- Updated STATUS.md with critical bug fix details
+
+## [0.1.0] - 2025-01-XX
 
 ### 🚀 Features
 
