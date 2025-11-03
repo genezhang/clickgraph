@@ -164,22 +164,42 @@ impl SchemaInference {
                 let left_alias = &graph_rel.left_connection;
                 let right_alias = &graph_rel.right_connection;
 
-                // Try to get node contexts - skip schema inference for anonymous nodes
+                // Check if nodes actually have table names - skip for anonymous patterns
+                // For patterns like ()-[r:FOLLOWS]->(), nodes are Empty Scans with table_name: None
+                let left_has_table = match graph_rel.left.as_ref() {
+                    LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
+                        LogicalPlan::Scan(scan) => scan.table_name.is_some(),
+                        LogicalPlan::ViewScan(_) => true,
+                        _ => true,
+                    },
+                    _ => true,
+                };
+                
+                let right_has_table = match graph_rel.right.as_ref() {
+                    LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
+                        LogicalPlan::Scan(scan) => scan.table_name.is_some(),
+                        LogicalPlan::ViewScan(_) => true,
+                        _ => true,
+                    },
+                    _ => true,
+                };
+                
+                // Skip schema inference if BOTH nodes are anonymous (no table names)
+                if !left_has_table && !right_has_table {
+                    return Ok(());
+                }
+
+                // Try to get table contexts - may not exist yet
                 let left_table_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone()));
                 let right_table_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
 
-                // Skip schema inference if either node is anonymous (no context or no label)
+                // If contexts don't exist yet, skip (will be handled in later passes)
                 if left_table_ctx_opt.is_err() || right_table_ctx_opt.is_err() {
                     return Ok(());
                 }
-                
+
                 let left_table_ctx = left_table_ctx_opt.unwrap();
                 let right_table_ctx = right_table_ctx_opt.unwrap();
-
-                // Skip if nodes have no labels (anonymous patterns like `()-[r]->()`)
-                if left_table_ctx.get_label_opt().is_none() || right_table_ctx.get_label_opt().is_none() {
-                    return Ok(());
-                }
 
                 let rel_table_ctx = plan_ctx.get_rel_table_ctx(&graph_rel.alias).map_err(|e| {
                     AnalyzerError::PlanCtx {

@@ -534,6 +534,14 @@ impl GraphTRaversalPlanning {
             .iter()
             .any(|item| item.expression == LogicalExpr::Star);
 
+        // Extract the fully qualified table name from the ViewScan
+        let rel_table_name = if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+            scan.source_table.clone()
+        } else {
+            // Fallback to fully qualified schema table name if not a ViewScan
+            format!("{}.{}", graph_context.rel.schema.database, graph_context.rel.schema.table_name)
+        };
+
         // if direction == Direction::Either and both nodes are of same types then use UNION of both.
         // TODO - currently Either direction on anchor relation is not supported. FIX this
         if graph_rel.direction == Direction::Either
@@ -554,11 +562,11 @@ impl GraphTRaversalPlanning {
                 inputs: vec![
                     Arc::new(LogicalPlan::Scan(Scan {
                         table_alias: Some(outgoing_alias.clone()),
-                        table_name: Some(graph_context.rel.label.clone()),
+                        table_name: Some(rel_table_name.clone()),
                     })),
                     Arc::new(LogicalPlan::Scan(Scan {
                         table_alias: Some(incoming_alias.clone()),
-                        table_name: Some(graph_context.rel.label.clone()),
+                        table_name: Some(rel_table_name.clone()),
                     })),
                 ],
                 union_type: UnionType::Distinct,
@@ -710,6 +718,14 @@ impl GraphTRaversalPlanning {
         ];
         let rel_projections = self.build_projections(rel_proj_input);
 
+        // Extract the fully qualified table name from the ViewScan
+        let rel_table_name = if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+            scan.source_table.clone()
+        } else {
+            // Fallback to fully qualified schema table name if not a ViewScan
+            format!("{}.{}", graph_context.rel.schema.database, graph_context.rel.schema.table_name)
+        };
+
         // if direction == Direction::Either and both nodes are of same types then use UNION of both.
         if graph_rel.direction == Direction::Either
             && graph_context.left.label == graph_context.right.label
@@ -728,11 +744,11 @@ impl GraphTRaversalPlanning {
                 inputs: vec![
                     Arc::new(LogicalPlan::Scan(Scan {
                         table_alias: Some(outgoing_alias.clone()),
-                        table_name: Some(outgoing_label.clone()),
+                        table_name: Some(rel_table_name.clone()),
                     })),
                     Arc::new(LogicalPlan::Scan(Scan {
                         table_alias: Some(incoming_alias.clone()),
-                        table_name: Some(incoming_label.clone()),
+                        table_name: Some(rel_table_name.clone()),
                     })),
                 ],
                 union_type: UnionType::Distinct,

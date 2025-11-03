@@ -281,10 +281,32 @@ impl GraphJoinInference {
             return Ok(());
         }
 
-        // Determine if this is a simple relationship (single relationship type)
-        // For simple relationships, we want to skip creating node JOINs in the analysis phase
-        // because GraphJoins will create proper node JOINs during SQL generation
-        let is_simple_relationship = graph_rel.labels.as_ref().map(|labels| labels.len() == 1).unwrap_or(true);
+        // Check if nodes actually have table names - skip join creation for anonymous nodes
+        // For patterns like ()-[r:FOLLOWS]->(), nodes are Empty Scans with table_name: None
+        let left_has_table = match graph_rel.left.as_ref() {
+            LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
+                LogicalPlan::Scan(scan) => scan.table_name.is_some(),
+                LogicalPlan::ViewScan(_) => true,
+                _ => true,
+            },
+            _ => true,
+        };
+        
+        let right_has_table = match graph_rel.right.as_ref() {
+            LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
+                LogicalPlan::Scan(scan) => scan.table_name.is_some(),
+                LogicalPlan::ViewScan(_) => true,
+                _ => true,
+            },
+            _ => true,
+        };
+        
+        // Skip join inference if BOTH nodes are anonymous (no table names)
+        // This handles edge-driven queries like ()-[r:FOLLOWS]->()
+        // Only the relationship table should be queried, without node joins
+        if !left_has_table && !right_has_table {
+            return Ok(());
+        }
 
         // Clone the optional_aliases set before calling get_graph_context
         // to avoid borrow checker issues
@@ -329,7 +351,6 @@ impl GraphJoinInference {
                 right_is_optional,
                 collected_graph_joins,
                 joined_entities,
-                is_simple_relationship,
             )
         } else {
             self.handle_bitmap_traversal(
@@ -343,7 +364,6 @@ impl GraphJoinInference {
                 right_is_optional,
                 collected_graph_joins,
                 joined_entities,
-                is_simple_relationship,
             )
         }
     }
@@ -361,7 +381,6 @@ impl GraphJoinInference {
         right_is_optional: bool,
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
-        is_simple_relationship: bool,
     ) -> AnalyzerResult<()> {
         let left_alias = graph_context.left.alias;
         let rel_alias = graph_context.rel.alias;
@@ -452,13 +471,8 @@ impl GraphJoinInference {
 
                 // push the relation first
                 collected_graph_joins.push(rel_graph_join);
-                joined_entities.insert(rel_alias.to_string());
-
-                // For simple relationships, skip node JOINs - GraphJoins will create them properly
-                if !is_simple_relationship {
-                    joined_entities.insert(left_alias.to_string());
+                joined_entities.insert(rel_alias.to_string());                    joined_entities.insert(left_alias.to_string());
                     collected_graph_joins.push(left_graph_join);
-                }
                 Ok(())
             } else {
                 // When left is already joined or start of the join
@@ -535,13 +549,8 @@ impl GraphJoinInference {
 
                 // push the relation first
                 collected_graph_joins.push(rel_graph_join);
-                joined_entities.insert(rel_alias.to_string());
-
-                // For simple relationships, skip node JOINs - GraphJoins will create them properly
-                if !is_simple_relationship {
-                    joined_entities.insert(right_alias.to_string());
+                joined_entities.insert(rel_alias.to_string());                    joined_entities.insert(right_alias.to_string());
                     collected_graph_joins.push(right_graph_join);
-                }
                 Ok(())
             }
         } else
@@ -614,13 +623,8 @@ impl GraphJoinInference {
 
                 // push the relation first
                 collected_graph_joins.push(rel_graph_join);
-                joined_entities.insert(rel_alias.to_string());
-
-                // For simple relationships, skip node JOINs - GraphJoins will create them properly
-                if !is_simple_relationship {
-                    joined_entities.insert(left_alias.to_string());
+                joined_entities.insert(rel_alias.to_string());                    joined_entities.insert(left_alias.to_string());
                     collected_graph_joins.push(left_graph_join);
-                }
                 Ok(())
             } else {
                 // When left is already joined or start of the join
@@ -689,13 +693,8 @@ impl GraphJoinInference {
 
                 // push the relation first
                 collected_graph_joins.push(rel_graph_join);
-                joined_entities.insert(rel_alias.to_string());
-
-                // For simple relationships, skip node JOINs - GraphJoins will create them properly
-                if !is_simple_relationship {
-                    joined_entities.insert(right_alias.to_string());
+                joined_entities.insert(rel_alias.to_string());                    joined_entities.insert(right_alias.to_string());
                     collected_graph_joins.push(right_graph_join);
-                }
                 Ok(())
             }
         } else {
@@ -766,13 +765,8 @@ impl GraphJoinInference {
 
                 // push the relation first
                 collected_graph_joins.push(rel_graph_join);
-                joined_entities.insert(rel_alias.to_string());
-
-                // For simple relationships, skip node JOINs - GraphJoins will create them properly
-                if !is_simple_relationship {
-                    joined_entities.insert(left_alias.to_string());
+                joined_entities.insert(rel_alias.to_string());                    joined_entities.insert(left_alias.to_string());
                     collected_graph_joins.push(left_graph_join);
-                }
                 Ok(())
             } else {
                 // When left is already joined or start of the join
@@ -841,13 +835,8 @@ impl GraphJoinInference {
 
                 // push the relation first
                 collected_graph_joins.push(rel_graph_join);
-                joined_entities.insert(rel_alias.to_string());
-
-                // For simple relationships, skip node JOINs - GraphJoins will create them properly
-                if !is_simple_relationship {
-                    joined_entities.insert(right_alias.to_string());
+                joined_entities.insert(rel_alias.to_string());                    joined_entities.insert(right_alias.to_string());
                     collected_graph_joins.push(right_graph_join);
-                }
                 Ok(())
             }
         }
@@ -865,7 +854,6 @@ impl GraphJoinInference {
         right_is_optional: bool,
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
-        is_simple_relationship: bool,
     ) -> AnalyzerResult<()> {
         let left_alias = graph_context.left.alias;
         let rel_alias = graph_context.rel.alias;
@@ -950,13 +938,8 @@ impl GraphJoinInference {
 
             // push the relation first
             collected_graph_joins.push(rel_graph_join);
-            joined_entities.insert(rel_alias.to_string());
-
-            // For simple relationships, skip node JOINs - GraphJoins will create them properly
-            if !is_simple_relationship {
-                joined_entities.insert(left_alias.to_string());
+            joined_entities.insert(rel_alias.to_string());                joined_entities.insert(left_alias.to_string());
                 collected_graph_joins.push(left_graph_join);
-            }
             Ok(())
         } else {
             // When left is already joined or start of the join
@@ -1025,13 +1008,8 @@ impl GraphJoinInference {
 
             // push the relation first
             collected_graph_joins.push(rel_graph_join);
-            joined_entities.insert(rel_alias.to_string());
-
-            // For simple relationships, skip node JOINs - GraphJoins will create them properly
-            if !is_simple_relationship {
-                joined_entities.insert(right_alias.to_string());
+            joined_entities.insert(rel_alias.to_string());                joined_entities.insert(right_alias.to_string());
                 collected_graph_joins.push(right_graph_join);
-            }
             Ok(())
         }
     }
