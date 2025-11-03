@@ -61,16 +61,40 @@ Many example YAMLs map `name → full_name`:
 
 ## Hypothesis
 
-**Theory**: Schema mixing or caching issue
-1. Server starts with test_integration.yaml → registers as "default" + "test_integration"
-2. Test fixture calls API to load schema again
-3. Possible schema merge/overwrite causing partial corruption
-4. Some properties resolve correctly (`age`), some incorrectly (`name`)
+**✅ CONFIRMED ROOT CAUSE: Schema Loading Confusion**
 
-**Alternative Theory**: Different schema being used for different projection items
-- First projection item uses one schema resolution path
-- Second projection item uses different path
-- Explains why `age` works but `name` doesn't
+The integration tests are **mixing two schema loading mechanisms**:
+
+1. **Server Startup**: Loads `test_integration.yaml` via `GRAPH_CONFIG_PATH`
+   - Registers schema with TWO keys: "default" + "test_integration"
+   - Uses dual-key registration (recent feature)
+
+2. **Test Fixture**: `simple_graph` ALSO calls `/api/schemas/load` 
+   - Tries to load same YAML again via API
+   - API loader registers with ONE key: "test_integration" (no "default")
+   - Creates duplicate/conflicting schema registrations
+
+**The Problem**:
+- Tests query with `schema_name="test_integration"` 
+- Which "test_integration" schema gets used? Startup or API-loaded?
+- Schema may be partially merged/overwritten
+- Results in mixed property mappings (some correct, some wrong)
+
+**Why `u.age` works but `u.name` doesn't**:
+- Likely schema state is inconsistent/corrupted from duplicate loading
+- Or API schema load partially overwrites startup schema
+- Results in HashMap with some properties from one schema, some from another
+
+**The Fix**: 
+✅ **Simplified schema strategy** - use ONLY server's startup schema
+- Remove API schema loading from `simple_graph` fixture
+- Tests use `schema_name="default"` 
+- ONE schema, ONE loading mechanism, NO confusion
+- Multi-schema tests isolated to dedicated test file
+
+**Files Modified**:
+- `conftest.py`: Removed `/api/schemas/load` call from `simple_graph` fixture
+- Tests now use server's default schema directly
 
 ## Suspect Code Locations
 

@@ -3,34 +3,49 @@
 **Date**: November 2, 2025  
 **Status**: Ready for rapid fix
 
-## 🎯 Goal: Fix Property Mapping Bug & Release v0.2
+## 🎯 Goal: Simplify Schema Strategy & Fix Tests
 
+**Root Cause Identified**: Schema confusion from mixing startup + API loading  
+**Solution**: Use ONLY server's default schema for basic tests  
 **Current**: 1/272 tests passing (0.4%)  
-**Target**: >220/272 tests passing (>80%) after fix  
-**Timeline**: 1-2 hour fix session
+**Target**: >220/272 tests passing (>80%) after simplification  
+**Timeline**: 30 minutes to 1 hour
+
+## Schema Strategy Change (CRITICAL INSIGHT!)
+
+**OLD (Problematic)**:
+- Server loads `test_integration.yaml` at startup → registers as "default" + "test_integration"
+- Tests ALSO load via API → creates duplicate/conflicting registrations
+- Result: Schema confusion, race conditions, wrong property mappings
+
+**NEW (Simplified)**:
+- Server loads `test_integration.yaml` at startup → ONE schema registered as "default"
+- Tests use `schema_name="default"` (or omit parameter to use default)
+- NO API loading in basic tests
+- Multi-schema tests isolated to `test_multi_database.py` only
+
+**Change Made**: Modified `conftest.py` to NOT call `/api/schemas/load`
 
 ## Quick Start Commands
 
-### 1. Start Debug Session (5 min)
+### 1. Test the Fix (5 min)
 ```powershell
-# Terminal 1: Start ClickHouse (if not running)
-docker start clickhouse
-
-# Terminal 2: Start server with debug logging
+# Terminal 1: Start server (if not running)
 cd c:\Users\GenZ\clickgraph
 $env:CLICKHOUSE_URL="http://localhost:8123"
 $env:CLICKHOUSE_USER="test_user"
 $env:CLICKHOUSE_PASSWORD="test_pass"
 $env:CLICKHOUSE_DATABASE="default"
 $env:GRAPH_CONFIG_PATH="tests/integration/test_integration.yaml"
-$env:RUST_LOG="debug"
 cargo run --bin clickgraph
 
-# Terminal 3: Run failing test
+# Terminal 2: Run tests with simplified schema
 cd tests\integration
 $env:CLICKHOUSE_USER="test_user"
 $env:CLICKHOUSE_PASSWORD="test_pass"
-python -m pytest -v -s test_basic_queries.py::TestBasicMatch::test_match_with_label
+python -m pytest -v test_basic_queries.py::TestBasicMatch
+
+# Should see 3/3 passing if fix works!
 ```
 
 ### 2. Add Debug Logging (10 min)

@@ -191,25 +191,13 @@ def simple_graph(clickhouse_client, test_database, clean_database):
             (2, 4, '2023-03-15')
     """)
     
-    # Load schema into ClickGraph
-    import os
-    schema_path = os.path.join(os.path.dirname(__file__), "test_integration.yaml")
-    load_response = requests.post(
-        f"{CLICKGRAPH_URL}/api/schemas/load",
-        json={
-            "schema_name": test_database,
-            "config_path": schema_path,
-            "validate_schema": False
-        },
-        headers={"Content-Type": "application/json"},
-        timeout=10
-    )
-    if load_response.status_code != 200:
-        pytest.fail(f"Failed to load schema: {load_response.text}")
+    # NOTE: Schema is already loaded by server at startup via GRAPH_CONFIG_PATH
+    # No need to load via API - just use the server's default schema
+    # This simplifies testing and avoids schema loading race conditions
     
     # Return schema configuration
     return {
-        "database": test_database,
+        "database": "default",  # Use server's default schema
         "nodes": {
             "User": {
                 "table": "users",
