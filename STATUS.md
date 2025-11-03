@@ -2,6 +2,31 @@
 
 *Updated: November 2, 2025*
 
+## ⚠️ **CRITICAL: Integration Test Suite - Initial Run**
+
+**Test Infrastructure**: ✅ Complete (272 tests created)  
+**Test Pass Rate**: ⚠️ **1/272 passing (0.4%)** - Property mapping bug blocking 95% of tests
+
+### Issue Summary
+🐛 **Property Mapping Bug** ([PROPERTY_MAPPING_BUG_INVESTIGATION.md](PROPERTY_MAPPING_BUG_INVESTIGATION.md))
+- **Symptom**: Queries request `u.name` but SQL generates `u.full_name`
+- **Impact**: 250+ tests failing with UNKNOWN_IDENTIFIER errors
+- **Status**: Under investigation - schema YAML is correct, bug in runtime resolution
+- **Pattern**: Partial corruption (`u.age` works, `u.name` doesn't)
+- **Next**: Add debug logging to trace actual property_mappings HashMap
+
+**Infrastructure Validated** ✅:
+- ClickGraph + ClickHouse connectivity working
+- Test data creation successful
+- Schema loading via API working
+- First test (`test_match_all_nodes`) proves basic functionality works
+
+**Action Plan**:
+1. Fix property mapping resolution bug (HIGH PRIORITY)
+2. Re-run full test suite
+3. Expected pass rate: >80% after fix
+4. Follow-on release with test validation
+
 ## 🚀 **Current Development Status**
 
 **90% success on 5 MILLION users, 50 MILLION relationships** - Large-scale stress testing complete!
