@@ -312,7 +312,7 @@ def assert_column_exists(response: Dict[str, Any], column: str):
     Assert that response contains a specific column.
     
     Handles both prefixed (u.name) and unprefixed (name) column names.
-    ClickHouse returns simple column names, so 'u.name' in test → 'name' in results.
+    Checks both the original column name AND the normalized (unprefixed) version.
     """
     assert_query_success(response)
     
@@ -322,7 +322,8 @@ def assert_column_exists(response: Dict[str, Any], column: str):
     # For list responses, columns are embedded in the result dicts
     if isinstance(response, list):
         if response and isinstance(response[0], dict):
-            assert normalized_column in response[0], (
+            # Check both original and normalized column names
+            assert column in response[0] or normalized_column in response[0], (
                 f"Column '{column}' (normalized: '{normalized_column}') not found in results. "
                 f"Available: {list(response[0].keys())}"
             )
@@ -330,13 +331,14 @@ def assert_column_exists(response: Dict[str, Any], column: str):
         # Check if results are embedded in dict
         results = response.get("results", [])
         if results and isinstance(results[0], dict):
-            assert normalized_column in results[0], (
+            # Check both original and normalized column names
+            assert column in results[0] or normalized_column in results[0], (
                 f"Column '{column}' (normalized: '{normalized_column}') not found in results. "
                 f"Available: {list(results[0].keys())}"
             )
         else:
             columns = response.get("columns", [])
-            assert normalized_column in columns, (
+            assert column in columns or normalized_column in columns, (
                 f"Column '{column}' (normalized: '{normalized_column}') not found. "
                 f"Available: {columns}"
             )
@@ -347,7 +349,7 @@ def assert_contains_value(response: Dict[str, Any], column: str, value: Any):
     Assert that a column contains a specific value.
     
     Handles:
-    - Column name normalization (strips alias prefix)
+    - Column name normalization (checks both prefixed and unprefixed)
     - Type conversion for aggregation results (COUNT returns string, converts to int)
     """
     assert_query_success(response)
@@ -363,11 +365,19 @@ def assert_contains_value(response: Dict[str, Any], column: str, value: Any):
     
     # Handle both dict and list result formats
     if results and isinstance(results[0], dict):
-        values = [row.get(normalized_column) for row in results]
+        # Try both original and normalized column names
+        if column in results[0]:
+            values = [row.get(column) for row in results]
+        else:
+            values = [row.get(normalized_column) for row in results]
     else:
         # List format - need column index
         if isinstance(response, dict):
-            col_idx = response["columns"].index(normalized_column)
+            # Try both names
+            try:
+                col_idx = response["columns"].index(column)
+            except ValueError:
+                col_idx = response["columns"].index(normalized_column)
         else:
             raise ValueError("Cannot find column index for list-only response")
         values = [row[col_idx] for row in results]
@@ -399,7 +409,7 @@ def get_column_values(response: Dict[str, Any], column: str, convert_to_int: boo
         List of values from the specified column
         
     Handles:
-    - Column name normalization (strips alias prefix)
+    - Column name normalization (checks both prefixed and unprefixed)
     - Type conversion for aggregation results
     """
     assert_query_success(response)
@@ -415,7 +425,11 @@ def get_column_values(response: Dict[str, Any], column: str, convert_to_int: boo
     
     # Extract values
     if results and isinstance(results[0], dict):
-        values = [row.get(normalized_column) for row in results]
+        # Try both original and normalized column names
+        if column in results[0]:
+            values = [row.get(column) for row in results]
+        else:
+            values = [row.get(normalized_column) for row in results]
     else:
         # List format - need column index
         if isinstance(response, dict):
