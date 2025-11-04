@@ -307,10 +307,12 @@ impl FilterTagging {
             // }
 
             if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&table_alias) {
-                let converted_filters = Self::convert_prop_acc_to_column(
+                // FIXED: Keep PropertyAccessExp with table_alias instead of converting to Column
+                // The table_alias is needed for correct SQL generation (e.g., a.name not just name)
+                // Property mapping was already done above, so column names are correct
+                table_ctx.insert_filter(
                     LogicalExpr::OperatorApplicationExp(extracted_filter),
                 );
-                table_ctx.insert_filter(converted_filters);
 
                 if table_ctx.is_relation() {
                     table_ctx.set_use_edge_list(true);
@@ -767,13 +769,16 @@ mod tests {
         let user_ctx = plan_ctx.get_table_ctx("user").unwrap();
         assert_eq!(user_ctx.get_filters().len(), 1);
 
-        // Filter should be converted from PropertyAccess to Column
+        // Filter should keep PropertyAccessExp with table_alias (not converted to Column)
         match &user_ctx.get_filters()[0] {
             LogicalExpr::OperatorApplicationExp(op_app) => {
                 assert_eq!(op_app.operator, Operator::Equal);
                 match &op_app.operands[0] {
-                    LogicalExpr::Column(col) => assert_eq!(col.0, "age"),
-                    _ => panic!("Expected Column after PropertyAccess conversion"),
+                    LogicalExpr::PropertyAccessExp(prop_acc) => {
+                        assert_eq!(prop_acc.table_alias.0, "user");
+                        assert_eq!(prop_acc.column.0, "age");
+                    }
+                    _ => panic!("Expected PropertyAccessExp (not Column) to preserve table_alias"),
                 }
                 match &op_app.operands[1] {
                     LogicalExpr::Literal(Literal::Integer(val)) => assert_eq!(*val, 25),
@@ -994,10 +999,13 @@ mod tests {
                 match &op_app.operands[0] {
                     LogicalExpr::ScalarFnCall(fc) => {
                         assert_eq!(fc.name, "length");
-                        // Function arg should be converted from PropertyAccess to Column
+                        // Function arg should keep PropertyAccessExp to preserve table_alias
                         match &fc.args[0] {
-                            LogicalExpr::Column(col) => assert_eq!(col.0, "name"),
-                            _ => panic!("Expected Column after conversion"),
+                            LogicalExpr::PropertyAccessExp(prop_acc) => {
+                                assert_eq!(prop_acc.table_alias.0, "user");
+                                assert_eq!(prop_acc.column.0, "name");
+                            }
+                            _ => panic!("Expected PropertyAccessExp to preserve table_alias"),
                         }
                     }
                     _ => panic!("Expected ScalarFnCall"),

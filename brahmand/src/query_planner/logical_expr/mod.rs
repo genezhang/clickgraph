@@ -253,9 +253,12 @@ impl From<open_cypher_parser::ast::Operator> for Operator {
 
 impl<'a> From<open_cypher_parser::ast::PropertyAccess<'a>> for PropertyAccess {
     fn from(value: open_cypher_parser::ast::PropertyAccess<'a>) -> Self {
+        let alias = value.base.to_string();
+        let column = value.key.to_string();
+        println!("PropertyAccess::from AST: alias='{}', column='{}'", alias, column);
         PropertyAccess {
-            table_alias: TableAlias(value.base.to_string()),
-            column: Column(value.key.to_string()),
+            table_alias: TableAlias(alias),
+            column: Column(column),
         }
     }
 }

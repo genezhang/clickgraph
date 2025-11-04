@@ -143,15 +143,21 @@ def verify_clickgraph_running():
 @pytest.fixture
 def simple_graph(clickhouse_client, test_database, clean_database):
     """
-    Create a simple graph with users and follows relationships.
+    Create a complete test graph matching test_integration.yaml schema.
     
     Schema:
         - users: user_id, name, age
         - follows: follower_id, followed_id, since
+        - products: product_id, name, price, category
+        - purchases: user_id, product_id, purchase_date, quantity
+        - friendships: user_id_1, user_id_2, since
         
     Data:
         - 5 users (Alice, Bob, Charlie, Diana, Eve)
         - 6 follow relationships forming a small social network
+        - 3 products (Laptop, Mouse, Keyboard)
+        - 5 purchase relationships
+        - 3 friendship relationships
     """
     # Create users table
     clickhouse_client.command(f"""
@@ -171,7 +177,36 @@ def simple_graph(clickhouse_client, test_database, clean_database):
         ) ENGINE = Memory
     """)
     
-    # Insert test data
+    # Create products table
+    clickhouse_client.command(f"""
+        CREATE TABLE {test_database}.products (
+            product_id UInt32,
+            name String,
+            price Float32,
+            category String
+        ) ENGINE = Memory
+    """)
+    
+    # Create purchases table
+    clickhouse_client.command(f"""
+        CREATE TABLE {test_database}.purchases (
+            user_id UInt32,
+            product_id UInt32,
+            purchase_date String,
+            quantity UInt32
+        ) ENGINE = Memory
+    """)
+    
+    # Create friendships table
+    clickhouse_client.command(f"""
+        CREATE TABLE {test_database}.friendships (
+            user_id_1 UInt32,
+            user_id_2 UInt32,
+            since String
+        ) ENGINE = Memory
+    """)
+    
+    # Insert users
     clickhouse_client.command(f"""
         INSERT INTO {test_database}.users VALUES
             (1, 'Alice', 30),
@@ -181,6 +216,7 @@ def simple_graph(clickhouse_client, test_database, clean_database):
             (5, 'Eve', 32)
     """)
     
+    # Insert follows relationships
     clickhouse_client.command(f"""
         INSERT INTO {test_database}.follows VALUES
             (1, 2, '2023-01-01'),
@@ -191,11 +227,37 @@ def simple_graph(clickhouse_client, test_database, clean_database):
             (2, 4, '2023-03-15')
     """)
     
+    # Insert products
+    clickhouse_client.command(f"""
+        INSERT INTO {test_database}.products VALUES
+            (101, 'Laptop', 999.99, 'Electronics'),
+            (102, 'Mouse', 29.99, 'Electronics'),
+            (103, 'Keyboard', 79.99, 'Electronics')
+    """)
+    
+    # Insert purchases
+    clickhouse_client.command(f"""
+        INSERT INTO {test_database}.purchases VALUES
+            (1, 101, '2024-01-15', 1),
+            (2, 102, '2024-01-20', 2),
+            (3, 101, '2024-02-01', 1),
+            (4, 103, '2024-02-10', 1),
+            (1, 102, '2024-02-15', 3)
+    """)
+    
+    # Insert friendships
+    clickhouse_client.command(f"""
+        INSERT INTO {test_database}.friendships VALUES
+            (1, 2, '2022-05-10'),
+            (3, 4, '2022-08-15'),
+            (2, 5, '2023-01-20')
+    """)
+    
     # NOTE: Schema is already loaded by server at startup via GRAPH_CONFIG_PATH
     # The YAML schema name is "test_graph_schema" (intentionally different from DB name)
     # This ensures tests don't confuse schema name with database name
     
-    # Return schema configuration
+    # Return complete schema configuration matching test_integration.yaml
     return {
         "schema_name": "test_graph_schema",  # Logical schema identifier from YAML
         "database": "test_integration",      # Physical ClickHouse database where tables exist
@@ -204,6 +266,11 @@ def simple_graph(clickhouse_client, test_database, clean_database):
                 "table": "users",
                 "id_column": "user_id",
                 "properties": ["name", "age"]
+            },
+            "Product": {
+                "table": "products",
+                "id_column": "product_id",
+                "properties": ["name", "price", "category"]
             }
         },
         "relationships": {
@@ -211,6 +278,24 @@ def simple_graph(clickhouse_client, test_database, clean_database):
                 "table": "follows",
                 "from_id": "follower_id",
                 "to_id": "followed_id",
+                "from_node": "User",
+                "to_node": "User",
+                "properties": ["since"]
+            },
+            "PURCHASED": {
+                "table": "purchases",
+                "from_id": "user_id",
+                "to_id": "product_id",
+                "from_node": "User",
+                "to_node": "Product",
+                "properties": ["purchase_date", "quantity"]
+            },
+            "FRIENDS_WITH": {
+                "table": "friendships",
+                "from_id": "user_id_1",
+                "to_id": "user_id_2",
+                "from_node": "User",
+                "to_node": "User",
                 "properties": ["since"]
             }
         }

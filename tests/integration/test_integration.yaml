@@ -1,7 +1,5 @@
 # Schema configuration for integration test database
 # This maps the test_integration database to a graph structure
-# NOTE: Schema name is intentionally different from database name
-# to ensure code doesn't confuse the two concepts
 
 name: test_graph_schema
 version: "1.0"
@@ -17,12 +15,42 @@ graph_schema:
         name: name
         age: age
 
+    - label: Product
+      database: test_integration
+      table: products
+      id_column: product_id
+      property_mappings:
+        name: name
+        price: price
+        category: category
+
   relationships:
     - type: FOLLOWS
       database: test_integration
       table: follows
       from_id: follower_id
       to_id: followed_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        since: since
+
+    - type: PURCHASED
+      database: test_integration
+      table: purchases
+      from_id: user_id
+      to_id: product_id
+      from_node: User
+      to_node: Product
+      property_mappings:
+        purchase_date: purchase_date
+        quantity: quantity
+
+    - type: FRIENDS_WITH
+      database: test_integration
+      table: friendships
+      from_id: user_id_1
+      to_id: user_id_2
       from_node: User
       to_node: User
       property_mappings:
