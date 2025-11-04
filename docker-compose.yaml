@@ -33,12 +33,12 @@ services:
       CLICKHOUSE_URL: "http://clickhouse-service:8123"
       CLICKHOUSE_USER: "test_user"
       CLICKHOUSE_PASSWORD: "test_pass"
-      CLICKHOUSE_DATABASE: "brahmand"
-      GRAPH_CONFIG_PATH: "/app/social_benchmark.yaml"
+      CLICKHOUSE_DATABASE: "test_integration"
+      GRAPH_CONFIG_PATH: "/app/test_integration.yaml"
     ports:
       - "8080:8080"
     volumes:
-      - ./social_benchmark.yaml:/app/social_benchmark.yaml:ro
+      - ./tests/integration/test_integration.yaml:/app/test_integration.yaml:ro
 
 volumes:
   clickhouse_data:
