@@ -90,6 +90,133 @@ Content-Type: application/json
 }
 ```
 
+#### GET /schemas
+List all available graph schemas.
+
+**Request Format:**
+```http
+GET /schemas
+```
+
+**Response Format:**
+```http
+200 OK
+Content-Type: application/json
+
+{
+  "schemas": [
+    {
+      "name": "default",
+      "node_count": 3,
+      "relationship_count": 2
+    },
+    {
+      "name": "social_network",
+      "node_count": 5,
+      "relationship_count": 4
+    }
+  ]
+}
+```
+
+**Response Fields:**
+- `schemas` (array): List of available schemas
+  - `name` (string): Schema identifier used in queries
+  - `node_count` (integer): Number of node types defined in this schema
+  - `relationship_count` (integer): Number of relationship types defined in this schema
+
+**Example:**
+```bash
+curl http://localhost:8080/schemas
+```
+
+#### POST /schemas/load
+Load a new graph schema from a YAML configuration file at runtime.
+
+**Request Format:**
+```http
+POST /schemas/load
+Content-Type: application/json
+
+{
+  "schema_name": "social_network",
+  "config_path": "/path/to/social_network.yaml",
+  "validate_schema": true
+}
+```
+
+**Parameters:**
+- `schema_name` (string, required): Name to register the schema under. This name will be used in `USE` clauses and `schema_name` query parameters.
+- `config_path` (string, required): Absolute or relative path to the YAML schema configuration file.
+- `validate_schema` (boolean, optional): Whether to validate that tables and columns exist in ClickHouse. Defaults to `false`.
+
+**Response Format:**
+```http
+200 OK
+Content-Type: application/json
+
+{
+  "message": "Schema 'social_network' loaded successfully",
+  "schema_name": "social_network"
+}
+```
+
+**Error Response:**
+```http
+500 Internal Server Error
+Content-Type: application/json
+
+{
+  "error": "Failed to load schema: File not found: /path/to/social_network.yaml"
+}
+```
+
+**Notes:**
+- Loaded schemas are available immediately for queries
+- The schema name in the YAML file is **ignored**; the `schema_name` parameter determines the registration name
+- Loading a schema does not affect the "default" schema (set at startup via `GRAPH_CONFIG_PATH`)
+- Multiple schemas can coexist and be queried using `USE <schema_name>` or the `schema_name` parameter
+- Schema validation (`validate_schema: true`) checks that referenced tables and columns exist in ClickHouse
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/schemas/load \
+  -H "Content-Type: application/json" \
+  -d '{
+    "schema_name": "ecommerce",
+    "config_path": "schemas/ecommerce.yaml",
+    "validate_schema": true
+  }'
+```
+
+**PowerShell Example (Windows):**
+```powershell
+Invoke-RestMethod -Method POST -Uri "http://localhost:8080/schemas/load" `
+  -ContentType "application/json" `
+  -Body '{"schema_name": "ecommerce", "config_path": "schemas/ecommerce.yaml", "validate_schema": true}'
+```
+
+#### GET /health
+Health check endpoint for monitoring.
+
+**Request Format:**
+```http
+GET /health
+```
+
+**Response Format:**
+```http
+200 OK
+Content-Type: text/plain
+
+OK
+```
+
+**Example:**
+```bash
+curl http://localhost:8080/health
+```
+
 ### Examples
 
 #### Basic Node Query

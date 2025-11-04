@@ -100,7 +100,7 @@ USE test_integration MATCH (n:User) RETURN n  # by name
 GRAPH_CONFIG_PATH=test_integration.yaml  # name: test_integration
 
 # Then via API:
-POST /api/schemas/load
+POST /schemas/load
 {
     "schema_name": "social_network",
     "config_path": "social_network.yaml"
@@ -124,9 +124,9 @@ USE test_integration MATCH (n:User) RETURN n   # uses test_integration
 # Server started with minimal/empty schema
 
 # Then via API:
-POST /api/schemas/load {"schema_name": "ecommerce", ...}
-POST /api/schemas/load {"schema_name": "social", ...}
-POST /api/schemas/load {"schema_name": "analytics", ...}
+POST /schemas/load {"schema_name": "ecommerce", ...}
+POST /schemas/load {"schema_name": "social", ...}
+POST /schemas/load {"schema_name": "analytics", ...}
 
 # Result:
 GLOBAL_SCHEMAS = {
@@ -219,15 +219,15 @@ graph_schema: ...
 
 ### Possible (if needed):
 1. **API endpoint to change default schema**
-   - `POST /api/schemas/set-default {"schema_name": "social_network"}`
+   - `POST /schemas/set-default {"schema_name": "social_network"}`
    - Would update `GLOBAL_SCHEMAS["default"]` to point to different instance
 
 2. **Schema aliasing**
    - Allow multiple names to point to same schema
-   - `POST /api/schemas/alias {"from": "social", "to": "social_network"}`
+   - `POST /schemas/alias {"from": "social", "to": "social_network"}`
 
 3. **Schema unloading**
-   - `DELETE /api/schemas/{schema_name}`
+   - `DELETE /schemas/{schema_name}`
    - Remove from `GLOBAL_SCHEMAS` (except "default")
 
 ### Not Recommended:
