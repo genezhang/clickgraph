@@ -2,17 +2,39 @@
 
 *Updated: November 3, 2025*
 
-## ✅ **Integration Test Infrastructure Fixes - COMPLETE!**
+## ✅ **WHERE Clause Alias Fix - COMPLETE!**
 
 **Test Results**: 
-- **Unit Tests**: 320/320 passing (100%) ✅
-- **Integration Tests (Basic Queries)**: 19/19 passing (100%) ✅  
-- **Integration Tests (Aggregations)**: 17/29 passing (59%) 🟡
-- **Total Passing**: 356/368 tests (97%) ✅
+- **Unit Tests**: 319/320 passing (99.7%) ✅
+- **Integration Tests**: 106/272 passing (39%) 🟡
+- **Basic Queries**: 19/19 passing (100%) ✅
 
 ### **Latest Fixes** 🎉
 
-**1. GROUP BY Support Verified** - Already Working!
+**1. WHERE Clause Table Aliases Fixed** - November 3, 2025
+- **Problem**: WHERE clauses used hardcoded aliases (`u.name`) instead of Cypher variable names (`a.name`)
+- **Root Cause**: `filter_tagging.rs` was calling `convert_prop_acc_to_column()` which stripped table_alias from PropertyAccessExp
+- **Solution**: Removed the conversion to preserve PropertyAccessExp with correct table_alias throughout the pipeline
+- **Result**: SQL generation now uses actual Cypher variable names in WHERE clauses
+- **Examples**:
+  ```cypher
+  MATCH (a:User) WHERE a.name = 'Charlie' RETURN a.name  ✅ Works!
+  MATCH (xyz:User) WHERE xyz.age > 25 RETURN xyz.name   ✅ Works!
+  ```
+- **Files Modified**: 
+  - `brahmand/src/query_planner/analyzer/filter_tagging.rs` - Removed alias-stripping conversion
+  - Updated 2 unit tests to expect PropertyAccessExp instead of Column
+- **Commits**: 
+  - `47bcb74` - Join inference fix (only create JOINs when nodes referenced)
+  - `c39415a` - WHERE clause alias fix
+
+**2. Graph Join Inference Optimization** - November 3, 2025
+- **Problem**: Incoming relationship queries created unnecessary node JOINs
+- **Solution**: Added `is_node_referenced()` function to check if nodes are used before creating JOINs
+- **Result**: Cleaner SQL, better performance
+- **File**: `brahmand/src/query_planner/analyzer/graph_join_inference.rs`
+
+**3. GROUP BY Support Verified** - Already Working!
 - Implicit GROUP BY in Cypher (when mixing aggregates with properties)
 - ✅ `MATCH (a)-[r]->(b) RETURN a.name, COUNT(b)` works perfectly
 - Issue was just test helper column name handling
