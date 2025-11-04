@@ -16,7 +16,7 @@ print(f'✓ Data in ClickHouse: {result.result_rows}')
 
 # Load schema into ClickGraph
 schema_resp = requests.post(
-    'http://localhost:8080/api/schemas/load', 
+    'http://localhost:8080/schemas/load', 
     json={
         'schema_name': 'test_integration',
         'config_path': 'C:/Users/GenZ/clickgraph/tests/integration/test_integration.yaml',

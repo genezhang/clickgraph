@@ -8,7 +8,7 @@ import time
 # Load social_network schema
 print("Loading social_network schema...")
 load_response = requests.post(
-    "http://localhost:8080/api/schemas/load",
+    "http://localhost:8080/schemas/load",
     json={
         "schema_name": "social_network",
         "config_path": "social_network.yaml",

@@ -122,19 +122,16 @@ pub async fn run_with_config(config: ServerConfig) {
     
     let app = Router::new()
         .route("/health", get(health_check))
-        .route("/test", get(health_check))  // TEMP: Use health_check instead of simple_test_handler
         .route("/query", post(query_handler))
-        // Schema management endpoints - NEW
-        .route("/test-schemas", get(list_schemas_handler))
-        .route("/api/schemas/load", post(load_schema_handler))
+        .route("/schemas", get(list_schemas_handler))
+        .route("/schemas/load", post(load_schema_handler))
         .with_state(Arc::new(app_state));
     
     println!("DEBUG: Routes registered:");
     println!("  - /health");
-    println!("  - /test"); 
     println!("  - /query");
-    println!("  - /test-schemas");
-    println!("  - /api/schemas/load");
+    println!("  - /schemas");
+    println!("  - /schemas/load");
     println!("DEBUG: Router created with routes registered");
 
     let http_listener = match TcpListener::bind(&http_bind_address).await {

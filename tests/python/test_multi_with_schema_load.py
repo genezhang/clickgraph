@@ -9,7 +9,7 @@ import time
 print("Loading schema...")
 
 load_response = requests.post(
-    "http://localhost:8080/api/schemas/load",
+    "http://localhost:8080/schemas/load",
     json={
         "schema_name": "test_multi_rel_schema",
         "config_path": "test_multi_rel_schema.yaml",

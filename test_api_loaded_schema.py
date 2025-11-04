@@ -11,7 +11,7 @@ IMPORTANT ARCHITECTURAL DISTINCTION:
    - Example: GLOBAL_SCHEMAS["default"] = schema
              GLOBAL_SCHEMAS["test_integration"] = schema  (same instance)
    
-2. API-LOADED SCHEMAS (via /api/schemas/load endpoint):
+2. API-LOADED SCHEMAS (via /schemas/load endpoint):
    - Loaded by load_schema_by_name()
    - Registered with ONLY the schema_name from API request
    - Example: GLOBAL_SCHEMAS["custom_schema"] = schema
@@ -84,7 +84,7 @@ def test_api_loaded_schema_dual_registration():
         
         # Load schema via API
         load_response = requests.post(
-            f"{CLICKGRAPH_URL}/api/schemas/load",
+            f"{CLICKGRAPH_URL}/schemas/load",
             json={
                 "schema_name": schema_name,
                 "config_path": yaml_path,
@@ -160,7 +160,7 @@ def test_api_loaded_schema_dual_registration():
         
         # Test 4: List available schemas
         print(f"\n5. Listing available schemas...")
-        list_response = requests.get(f"{CLICKGRAPH_URL}/api/schemas")
+        list_response = requests.get(f"{CLICKGRAPH_URL}/schemas")
         
         if list_response.status_code == 200:
             schemas = list_response.json()
