@@ -1,17 +1,30 @@
 # ClickGraph Status
 
-*Updated: November 3, 2025*
+*Updated: November 4, 2025*
 
-## ✅ **WHERE Clause Alias Fix - COMPLETE!**
+## ✅ **WHERE Clause Extraction Fix - COMPLETE!**
 
 **Test Results**: 
 - **Unit Tests**: 319/320 passing (99.7%) ✅
-- **Integration Tests**: 106/272 passing (39%) 🟡
+- **Integration Tests**: 108/272 passing (40%) 🟡
 - **Basic Queries**: 19/19 passing (100%) ✅
 
 ### **Latest Fixes** 🎉
 
-**1. WHERE Clause Table Aliases Fixed** - November 3, 2025
+**1. WHERE Predicate Extraction from GraphRel** - November 4, 2025
+- **Problem**: WHERE clauses were being completely dropped from relationship queries!
+- **Root Cause**: `extract_filters()` for GraphRel was ignoring the `where_predicate` field that FilterIntoGraphRel had populated
+- **Solution**: Modified `extract_filters()` to include `where_predicate` when building final filters
+- **Impact**: Fixed 2+ integration tests, relationship queries now work correctly with WHERE clauses
+- **Example**:
+  ```cypher
+  MATCH (a:User)<-[:FOLLOWS]-(b:User) WHERE a.name = 'Charlie' RETURN b.name
+  -- Now correctly returns 2 rows (Alice, Bob) instead of 6
+  ```
+- **File**: `brahmand/src/render_plan/plan_builder.rs`
+- **Commit**: `1385ec3`
+
+**2. WHERE Clause Table Aliases Fixed** - November 3, 2025
 - **Problem**: WHERE clauses used hardcoded aliases (`u.name`) instead of Cypher variable names (`a.name`)
 - **Root Cause**: `filter_tagging.rs` was calling `convert_prop_acc_to_column()` which stripped table_alias from PropertyAccessExp
 - **Solution**: Removed the conversion to preserve PropertyAccessExp with correct table_alias throughout the pipeline
@@ -28,13 +41,13 @@
   - `47bcb74` - Join inference fix (only create JOINs when nodes referenced)
   - `c39415a` - WHERE clause alias fix
 
-**2. Graph Join Inference Optimization** - November 3, 2025
+**3. Graph Join Inference Optimization** - November 3, 2025
 - **Problem**: Incoming relationship queries created unnecessary node JOINs
 - **Solution**: Added `is_node_referenced()` function to check if nodes are used before creating JOINs
 - **Result**: Cleaner SQL, better performance
 - **File**: `brahmand/src/query_planner/analyzer/graph_join_inference.rs`
 
-**3. GROUP BY Support Verified** - Already Working!
+**4. GROUP BY Support Verified** - Already Working!
 - Implicit GROUP BY in Cypher (when mixing aggregates with properties)
 - ✅ `MATCH (a)-[r]->(b) RETURN a.name, COUNT(b)` works perfectly
 - Issue was just test helper column name handling
