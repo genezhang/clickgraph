@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::query_planner::{
     logical_plan::LogicalPlan,
     optimizer::{
-        anchor_node_selection::AnchorNodeSelection,
+        // anchor_node_selection::AnchorNodeSelection,  // Disabled - ClickHouse handles JOIN reordering
         filter_into_graph_rel::FilterIntoGraphRel,
         filter_push_down::FilterPushDown,
         optimizer_pass::{OptimizerPass, OptimizerResult},
@@ -63,9 +63,12 @@ pub fn initial_optimization(
     let transformed_plan = filter_into_graph_rel.optimize(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
 
-    let anchor_node_selection = AnchorNodeSelection::new();
-    let transformed_plan = anchor_node_selection.optimize(plan.clone(), plan_ctx)?;
-    let plan = transformed_plan.get_plan();
+    // Anchor node optimization disabled - ClickHouse handles JOIN reordering automatically
+    // The optimization was swapping nodes and reversing directions, breaking simple queries
+    // Modern ClickHouse query optimizer can determine optimal JOIN order better than manual rotation
+    // let anchor_node_selection = AnchorNodeSelection::new();
+    // let transformed_plan = anchor_node_selection.optimize(plan.clone(), plan_ctx)?;
+    // let plan = transformed_plan.get_plan();
 
     Ok(plan)
 }
