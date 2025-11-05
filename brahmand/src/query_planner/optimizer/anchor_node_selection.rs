@@ -137,6 +137,17 @@ impl AnchorNodeSelection {
                     return Ok(Transformed::No(logical_plan));
                 }
 
+                // Skip anchor optimization for simple relationship queries
+                // The rotation breaks simple (a)-[r]->(b) queries by swapping nodes and reversing direction
+                // This optimization is beneficial for complex multi-hop queries but harmful for simple ones
+                // A simple query has: GraphNode(left) - Relationship(center) - GraphNode(right)
+                let is_simple_relationship = matches!(graph_rel.left.as_ref(), LogicalPlan::GraphNode(_))
+                    && matches!(graph_rel.right.as_ref(), LogicalPlan::GraphNode(_));
+                
+                if is_simple_relationship {
+                    return Ok(Transformed::No(logical_plan));
+                }
+
                 // If found at left then we need to create a new plan and rotate the right side.
                 if graph_rel.left_connection == anchor_node_alias {
                     let new_anchor_plan = Arc::new(LogicalPlan::GraphRel(GraphRel {

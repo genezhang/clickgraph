@@ -537,9 +537,11 @@ impl GraphJoinInference {
 
                 let (rel_conn_with_left_node, right_conn_with_rel) =
                     if graph_rel.direction == Direction::Incoming {
-                        (rel_from_col.clone(), rel_to_col.clone())
-                    } else {
+                        // Incoming: (a)<-[r]-(b) means b->a, so b connects via from_col, a via to_col
                         (rel_to_col.clone(), rel_from_col.clone())
+                    } else {
+                        // Outgoing: (a)-[r]->(b) means a->b, so a connects via from_col, b via to_col
+                        (rel_from_col.clone(), rel_to_col.clone())
                     };
 
                 let mut rel_graph_join = Join {

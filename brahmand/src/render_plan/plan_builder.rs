@@ -1008,44 +1008,51 @@ impl RenderPlanBuilder for LogicalPlan {
                     from_table_to_view_ref(Some(from_table))
                 } else {
                     // If left node doesn't have FROM (e.g., it's Empty due to anchor node rotation),
-                    // check if the right contains a nested GraphRel with the actual nodes
-                    if let LogicalPlan::GraphRel(nested_graph_rel) = graph_rel.right.as_ref() {
-                        // Extract FROM from the nested GraphRel's left node
-                        let nested_left_from = nested_graph_rel.left.extract_from();
-                        println!("DEBUG: nested_graph_rel.left = {:?}", nested_graph_rel.left);
-                        println!("DEBUG: nested_left_from = {:?}", nested_left_from);
+                    // use the right node as the FROM (it contains the anchor node after rotation)
+                    let right_from = graph_rel.right.extract_from();
+                    println!("DEBUG: graph_rel.right = {:?}", graph_rel.right);
+                    println!("DEBUG: right_from = {:?}", right_from);
 
-                        if let Ok(Some(nested_from_table)) = nested_left_from {
-                            from_table_to_view_ref(Some(nested_from_table))
+                    if let Ok(Some(from_table)) = right_from {
+                        from_table_to_view_ref(Some(from_table))
+                    } else {
+                        // If right also doesn't have FROM, check if right contains a nested GraphRel
+                        if let LogicalPlan::GraphRel(nested_graph_rel) = graph_rel.right.as_ref() {
+                            // Extract FROM from the nested GraphRel's left node
+                            let nested_left_from = nested_graph_rel.left.extract_from();
+                            println!("DEBUG: nested_graph_rel.left = {:?}", nested_graph_rel.left);
+                            println!("DEBUG: nested_left_from = {:?}", nested_left_from);
+
+                            if let Ok(Some(nested_from_table)) = nested_left_from {
+                                from_table_to_view_ref(Some(nested_from_table))
+                            } else {
+                                // If nested left also doesn't have FROM, create one from the right_connection alias
+                                let table_name = extract_table_name(&nested_graph_rel.left)
+                                    .ok_or_else(|| super::errors::RenderBuildError::TableNameNotFound(format!(
+                                        "Could not resolve table name for alias '{}', plan: {:?}",
+                                        graph_rel.right_connection, nested_graph_rel.left
+                                    )))?;
+
+                                Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(LogicalPlan::Empty),
+                                    name: table_name,
+                                    alias: Some(graph_rel.right_connection.clone()),
+                                })
+                            }
                         } else {
-                            // If nested left also doesn't have FROM, create one from the left_connection alias
-                            let table_name = extract_table_name(&nested_graph_rel.left)
+                            // If right doesn't have FROM, create one from the right_connection alias
+                            let table_name = extract_table_name(&graph_rel.right)
                                 .ok_or_else(|| super::errors::RenderBuildError::TableNameNotFound(format!(
                                     "Could not resolve table name for alias '{}', plan: {:?}",
-                                    graph_rel.left_connection, nested_graph_rel.left
+                                    graph_rel.right_connection, graph_rel.right
                                 )))?;
 
                             Some(super::ViewTableRef {
                                 source: std::sync::Arc::new(LogicalPlan::Empty),
                                 name: table_name,
-                                alias: Some(graph_rel.left_connection.clone()),
+                                alias: Some(graph_rel.right_connection.clone()),
                             })
                         }
-                    } else {
-                        // If left node doesn't have FROM, create one from the left_connection alias
-                        // Extract table name from the left node
-                        // If we cannot extract a table name, propagate an error instead of using 'unknown_table'
-                        let table_name = extract_table_name(&graph_rel.left)
-                            .ok_or_else(|| super::errors::RenderBuildError::TableNameNotFound(format!(
-                                "Could not resolve table name for alias '{}', plan: {:?}",
-                                graph_rel.left_connection, graph_rel.left
-                            )))?;
-
-                        Some(super::ViewTableRef {
-                            source: std::sync::Arc::new(LogicalPlan::Empty),
-                            name: table_name,
-                            alias: Some(graph_rel.left_connection.clone()),
-                        })
                     }
                 }
             },
