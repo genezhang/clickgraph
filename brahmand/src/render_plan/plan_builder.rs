@@ -822,7 +822,41 @@ impl RenderPlanBuilder for LogicalPlan {
                     vec![]
                 }
             },
-            LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_select_items()?,
+            LogicalPlan::GraphNode(graph_node) => {
+                // FIX: GraphNode must generate PropertyAccessExp with its own alias, 
+                // not delegate to ViewScan which doesn't know the alias.
+                // This fixes the bug where "a.name" becomes "u.name" in OPTIONAL MATCH queries.
+                
+                match graph_node.input.as_ref() {
+                    LogicalPlan::ViewScan(view_scan) => {
+                        if !view_scan.projections.is_empty() {
+                            // Use explicit projections if available
+                            view_scan.projections.iter().map(|proj| {
+                                let expr: RenderExpr = proj.clone().try_into()?;
+                                Ok(SelectItem {
+                                    expression: expr,
+                                    col_alias: None,
+                                })
+                            }).collect::<Result<Vec<SelectItem>, RenderBuildError>>()?
+                        } else if !view_scan.property_mapping.is_empty() {
+                            // Build PropertyAccessExp using GraphNode's alias (e.g., "a")
+                            // instead of bare Column which defaults to heuristic "u"
+                            view_scan.property_mapping.iter().map(|(prop_name, col_name)| {
+                                Ok(SelectItem {
+                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(graph_node.alias.clone()),
+                                        column: Column(col_name.clone()),
+                                    }),
+                                    col_alias: Some(ColumnAlias(prop_name.clone())),
+                                })
+                            }).collect::<Result<Vec<SelectItem>, RenderBuildError>>()?
+                        } else {
+                            vec![]
+                        }
+                    },
+                    _ => graph_node.input.extract_select_items()?
+                }
+            },
             LogicalPlan::GraphRel(_) => vec![],
             LogicalPlan::Filter(filter) => filter.input.extract_select_items()?,
             LogicalPlan::Projection(projection) => {
