@@ -1158,11 +1158,18 @@ impl RenderPlanBuilder for LogicalPlan {
                 let center_filters = graph_rel.center.extract_filters()?;
                 let right_filters = graph_rel.right.extract_filters()?;
                 
-                log::trace!("Extracted filters - left: {:?}, center: {:?}, right: {:?}", 
-                    left_filters, center_filters, right_filters);
+                // IMPORTANT: Also extract the where_predicate that was injected by FilterIntoGraphRel
+                let where_predicate_filter = if let Some(ref predicate) = graph_rel.where_predicate {
+                    Some(predicate.clone().try_into()?)
+                } else {
+                    None
+                };
+                
+                log::trace!("Extracted filters - left: {:?}, center: {:?}, right: {:?}, where_predicate: {:?}", 
+                    left_filters, center_filters, right_filters, where_predicate_filter);
                 
                 // Combine all filters with AND
-                let all_filters: Vec<RenderExpr> = vec![left_filters, center_filters, right_filters]
+                let all_filters: Vec<RenderExpr> = vec![left_filters, center_filters, right_filters, where_predicate_filter]
                     .into_iter()
                     .flatten()
                     .collect();
