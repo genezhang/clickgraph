@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./logo.svg" height="200">
+  <img src="./cglogo.png" height="200">
 </div>
 
 # ClickGraph
