@@ -28,6 +28,8 @@ impl AnalyzerPass for GraphJoinInference {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
+        println!("DEBUG GraphJoinInference: analyze_with_graph_schema called, plan type: {:?}", std::mem::discriminant(&*logical_plan));
+        
         let mut collected_graph_joins: Vec<Join> = vec![];
         let mut joined_entities: HashSet<String> = HashSet::new();
         self.collect_graph_joins(
@@ -37,9 +39,13 @@ impl AnalyzerPass for GraphJoinInference {
             &mut collected_graph_joins,
             &mut joined_entities,
         )?;
+        
+        println!("DEBUG GraphJoinInference: collected_graph_joins.len() = {}", collected_graph_joins.len());
+        
         if !collected_graph_joins.is_empty() {
             Self::build_graph_joins(logical_plan, &mut collected_graph_joins)
         } else {
+            println!("DEBUG GraphJoinInference: No joins collected, returning original plan");
             Ok(Transformed::No(logical_plan.clone()))
         }
     }
@@ -1433,6 +1439,7 @@ mod tests {
             path_variable: None,
             where_predicate: None, // Will be populated by filter pushdown
             labels: None,
+        is_optional: None,
         }))
     }
 

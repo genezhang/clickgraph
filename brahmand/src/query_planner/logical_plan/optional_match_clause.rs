@@ -27,12 +27,17 @@ pub fn evaluate_optional_match_clause<'a>(
     input_plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
+    log::debug!("OPTIONAL_MATCH: evaluate_optional_match_clause called with {} path patterns", 
+        optional_match_clause.path_patterns.len());
+    
     // Track which aliases exist before processing optional patterns
     let aliases_before: Vec<String> = plan_ctx
         .get_alias_table_ctx_map()
         .keys()
         .cloned()
         .collect();
+    
+    log::debug!("OPTIONAL_MATCH: aliases_before = {:?}", aliases_before);
 
     // Create a temporary MatchClause from the OptionalMatchClause
     // This allows us to reuse the existing match clause logic
@@ -43,6 +48,8 @@ pub fn evaluate_optional_match_clause<'a>(
 
     // Process the patterns using the regular match clause evaluator
     let mut plan = evaluate_match_clause(&temp_match_clause, input_plan, plan_ctx)?;
+    
+    println!("DEBUG OPTIONAL_MATCH: After evaluate_match_clause, plan type: {:?}", std::mem::discriminant(&*plan));
 
     // Mark new aliases as optional (for LEFT JOIN generation)
     let aliases_after: Vec<String> = plan_ctx

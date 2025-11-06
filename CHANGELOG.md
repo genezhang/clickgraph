@@ -1,5 +1,50 @@
 ## [Unreleased]
 
+### 🚀 Features
+- **OPTIONAL MATCH Complete** - Production-ready LEFT JOIN generation (Nov 4-5, 2025)
+  - **Parser Fix**: Reordered clause parsing to recognize OPTIONAL MATCH clauses correctly
+  - **SQL Generation**: Generates proper LEFT JOINs for optional graph patterns
+  - **Clean Output**: No WHERE duplication, proper table prefixes on all tables
+  - Test Status: ✅ 11/11 OPTIONAL MATCH parser tests (100%), ✅ 301/319 unit tests (94.4%)
+  - Example: `MATCH (a) WHERE a.name='Alice' OPTIONAL MATCH (a)-[:FOLLOWS]->(b) RETURN a.name, b.name`
+    ```sql
+    SELECT a.name, b.name 
+    FROM test_integration.users AS a 
+    LEFT JOIN test_integration.follows AS r ON r.follower_id = a.user_id 
+    LEFT JOIN test_integration.users AS b ON b.user_id = r.followed_id 
+    WHERE a.name = 'Alice'
+    ```
+
+### 🐛 Bug Fixes
+- **WHERE Clause Duplication Fix** (Nov 5, 2025)
+  - Fixed: `WHERE (a.name = 'Alice') AND (a.name = 'Alice')` duplication
+  - Root cause: GraphRel.extract_filters over-collecting from left/center/right filters AND where_predicate
+  - Solution: Only extract from where_predicate; node filters stay in ViewScans
+  - File: `brahmand/src/render_plan/plan_builder.rs` (lines 1205-1220)
+
+- **Missing Table Prefix Fix** (Nov 5, 2025)
+  - Fixed: `FROM users` → `FROM test_integration.users` (full qualified names)
+  - Root cause: SchemaInference only used table_name, ignored database field
+  - Solution: Use `format!("{}.{}", node_schema.database, node_schema.table_name)`
+  - File: `brahmand/src/query_planner/analyzer/schema_inference.rs` (lines 75-92)
+
+- **OPTIONAL MATCH Parser Fix** (Nov 4, 2025)
+  - Fixed: Parser wasn't recognizing OPTIONAL MATCH clauses at all (optional_match_clauses.len() = 0)
+  - Root cause: Parser tried OPTIONAL MATCH before WHERE, but queries have WHERE between MATCH and OPTIONAL MATCH
+  - Solution: Reordered parser: MATCH → WHERE → OPTIONAL MATCH → RETURN
+  - File: `brahmand/src/open_cypher_parser/mod.rs`
+
+- **DuplicateScansRemoving Fix** (Nov 4, 2025)
+  - Fixed: Analyzer removing GraphRel nodes needed for OPTIONAL MATCH LEFT JOINs
+  - Solution: Check `plan_ctx.is_optional(alias)` before removing duplicate scans
+  - File: `brahmand/src/query_planner/analyzer/duplicate_scans_removing.rs`
+
+### 🧪 Testing
+- **Integration Test Data Setup**: Added setup script for test_integration database
+  - Script: `scripts/setup/setup_integration_test_data.sql`
+  - Creates: users, follows, products, purchases, friendships tables (Memory engine for Windows)
+  - Run: `Get-Content scripts\setup\setup_integration_test_data.sql | docker exec -i clickhouse clickhouse-client --user test_user --password test_pass --multiquery`
+
 ### Breaking Changes
 - **HTTP API Response Format**: Changed from bare array to object wrapper
   - Old: `[{"name": "Alice"}]` → New: `{"results": [{"name": "Alice"}]}`

@@ -361,6 +361,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization
                 labels: rel_labels.clone(),
+                is_optional: None, // Will be set by OPTIONAL MATCH processing
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -427,6 +428,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization
                 labels: rel_labels.clone(),
+                is_optional: None, // Will be set by OPTIONAL MATCH processing
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -529,6 +531,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization
                 labels: rel_labels.clone(),
+                is_optional: None, // Will be set by OPTIONAL MATCH processing
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),

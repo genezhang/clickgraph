@@ -57,7 +57,12 @@ pub fn parse_query_with_nom(
     let (input, match_clause): (&str, Option<MatchClause>) =
         opt(match_clause::parse_match_clause).parse(input)?;
     
-    // Parse zero or more OPTIONAL MATCH clauses
+    // Parse WHERE clause (can come before OPTIONAL MATCH in queries like:
+    // MATCH (a) WHERE a.name='Alice' OPTIONAL MATCH (a)-[:FOLLOWS]->(b))
+    let (input, where_clause): (&str, Option<WhereClause>) =
+        opt(where_clause::parse_where_clause).parse(input)?;
+    
+    // Parse zero or more OPTIONAL MATCH clauses (must come after WHERE if present)
     let (input, optional_match_clauses): (&str, Vec<OptionalMatchClause>) =
         many0(optional_match_clause::parse_optional_match_clause).parse(input)?;
     
@@ -66,8 +71,6 @@ pub fn parse_query_with_nom(
     
     let (input, with_clause): (&str, Option<WithClause>) =
         opt(with_clause::parse_with_clause).parse(input)?;
-    let (input, where_clause): (&str, Option<WhereClause>) =
-        opt(where_clause::parse_where_clause).parse(input)?;
     let (input, create_node_table_clause): (&str, Option<CreateNodeTableClause>) =
         opt(create_node_table_clause::parse_create_node_table_clause).parse(input)?;
     let (input, create_rel_table_clause): (&str, Option<CreateRelTableClause>) =

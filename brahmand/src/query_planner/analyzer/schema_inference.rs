@@ -78,7 +78,9 @@ impl SchemaInference {
                     if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
                         if let Ok(schema) = schema_lock.try_read() {
                             if let Ok(node_schema) = schema.get_node_schema(&label) {
-                                Some(node_schema.table_name.clone())
+                                // Use fully qualified table name: database.table_name
+                                let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
+                                Some(fully_qualified)
                             } else {
                                 Some(label)
                             }

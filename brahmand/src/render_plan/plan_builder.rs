@@ -480,8 +480,6 @@ pub(crate) trait RenderPlanBuilder {
 
     fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan>;
 
-    fn is_simple_relationship_query(&self) -> bool;
-
     fn build_simple_relationship_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan>;
 
     fn to_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan>;
@@ -857,7 +855,19 @@ impl RenderPlanBuilder for LogicalPlan {
                     _ => graph_node.input.extract_select_items()?
                 }
             },
-            LogicalPlan::GraphRel(_) => vec![],
+            LogicalPlan::GraphRel(graph_rel) => {
+                // FIX: GraphRel must generate SELECT items for both left and right nodes
+                // This fixes OPTIONAL MATCH queries where the right node (b) was being ignored
+                let mut items = vec![];
+                
+                // Get SELECT items from left node
+                items.extend(graph_rel.left.extract_select_items()?);
+                
+                // Get SELECT items from right node (for OPTIONAL MATCH, this is the optional part)
+                items.extend(graph_rel.right.extract_select_items()?);
+                
+                items
+            },
             LogicalPlan::Filter(filter) => filter.input.extract_select_items()?,
             LogicalPlan::Projection(projection) => {
                 let path_var = get_path_variable(&projection.input);
@@ -1192,38 +1202,22 @@ impl RenderPlanBuilder for LogicalPlan {
             },
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_filters()?,
             LogicalPlan::GraphRel(graph_rel) => {
-                log::trace!("GraphRel node detected, extracting filters from left, center, and right sub-plans");
+                log::trace!("GraphRel node detected, extracting filters from where_predicate only");
                 
-                // Try extracting from each sub-plan and combine
-                let left_filters = graph_rel.left.extract_filters()?;
-                let center_filters = graph_rel.center.extract_filters()?;
-                let right_filters = graph_rel.right.extract_filters()?;
-                
-                // IMPORTANT: Also extract the where_predicate that was injected by FilterIntoGraphRel
-                let where_predicate_filter = if let Some(ref predicate) = graph_rel.where_predicate {
-                    Some(predicate.clone().try_into()?)
+                // For GraphRel, we ONLY use the where_predicate field
+                // The left/center/right filters should be applied as:
+                // - left filters: Already in ViewScan.view_filter (pushed down)
+                // - center filters: Relationship table filters (applied in JOIN ON clause)
+                // - right filters: Already in ViewScan.view_filter for end node
+                // 
+                // Only where_predicate contains predicates that should go in final WHERE clause
+                if let Some(ref predicate) = graph_rel.where_predicate {
+                    let filter_expr: RenderExpr = predicate.clone().try_into()?;
+                    log::trace!("GraphRel where_predicate filter: {:?}", filter_expr);
+                    Some(filter_expr)
                 } else {
+                    log::trace!("GraphRel has no where_predicate");
                     None
-                };
-                
-                log::trace!("Extracted filters - left: {:?}, center: {:?}, right: {:?}, where_predicate: {:?}", 
-                    left_filters, center_filters, right_filters, where_predicate_filter);
-                
-                // Combine all filters with AND
-                let all_filters: Vec<RenderExpr> = vec![left_filters, center_filters, right_filters, where_predicate_filter]
-                    .into_iter()
-                    .flatten()
-                    .collect();
-                
-                if all_filters.is_empty() {
-                    None
-                } else if all_filters.len() == 1 {
-                    Some(all_filters.into_iter().next().ok_or(RenderBuildError::ExpectedSingleFilterButNoneFound)?)
-                } else {
-                    Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::And,
-                        operands: all_filters,
-                    }))
                 }
             }
             LogicalPlan::Filter(filter) => {
@@ -1439,6 +1433,93 @@ impl RenderPlanBuilder for LogicalPlan {
                     joins
                 }
             }
+            LogicalPlan::GraphRel(graph_rel) => {
+                // FIX: GraphRel must generate JOINs for the relationship traversal
+                // This fixes OPTIONAL MATCH queries by creating proper JOIN clauses
+                
+                // First, check if the plan_ctx marks this relationship as optional
+                // This is set by OPTIONAL MATCH clause processing
+                let is_optional = graph_rel.is_optional.unwrap_or(false);
+                let join_type = if is_optional { JoinType::Left } else { JoinType::Inner };
+                
+                // Extract table names and columns
+                let start_label = extract_node_label_from_viewscan(&graph_rel.left)
+                    .unwrap_or_else(|| "User".to_string());
+                let end_label = extract_node_label_from_viewscan(&graph_rel.right)
+                    .unwrap_or_else(|| "User".to_string());
+                let start_table = label_to_table_name(&start_label);
+                let end_table = label_to_table_name(&end_label);
+                
+                // Get relationship table
+                let rel_table = if let Some(labels) = &graph_rel.labels {
+                    if !labels.is_empty() {
+                        rel_type_to_table_name(&labels[0])
+                    } else {
+                        extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
+                    }
+                } else {
+                    extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
+                };
+                
+                // Get ID columns
+                let start_id_col = extract_id_column(&graph_rel.left)
+                    .unwrap_or_else(|| table_to_id_column(&start_table));
+                let end_id_col = extract_id_column(&graph_rel.right)
+                    .unwrap_or_else(|| table_to_id_column(&end_table));
+                
+                // Get relationship columns
+                let rel_cols = extract_relationship_columns(&graph_rel.center)
+                    .unwrap_or(RelationshipColumns {
+                        from_id: "from_node_id".to_string(),
+                        to_id: "to_node_id".to_string(),
+                    });
+                
+                let mut joins = vec![];
+                
+                // JOIN 1: Start node -> Relationship table
+                //   e.g., INNER JOIN follows AS r ON r.from_node_id = a.user_id
+                joins.push(Join {
+                    table_name: rel_table.clone(),
+                    table_alias: graph_rel.alias.clone(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(graph_rel.alias.clone()),
+                                column: Column(rel_cols.from_id.clone()),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(graph_rel.left_connection.clone()),
+                                column: Column(start_id_col),
+                            }),
+                        ],
+                    }],
+                    join_type: join_type.clone(),
+                });
+                
+                // JOIN 2: Relationship table -> End node
+                //   e.g., LEFT JOIN users AS b ON b.user_id = r.to_node_id
+                joins.push(Join {
+                    table_name: end_table,
+                    table_alias: graph_rel.right_connection.clone(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(graph_rel.right_connection.clone()),
+                                column: Column(end_id_col),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(graph_rel.alias.clone()),
+                                column: Column(rel_cols.to_id),
+                            }),
+                        ],
+                    }],
+                    join_type,
+                });
+                
+                joins
+            }
             _ => vec![],
         };
         Ok(joins)
@@ -1521,49 +1602,17 @@ impl RenderPlanBuilder for LogicalPlan {
         
         println!("DEBUG: try_build_join_based_plan called");
         
-        // For now, only handle simple relationship queries
-        if self.is_simple_relationship_query() {
-            println!("DEBUG: is_simple_relationship_query returned true, calling build_simple_relationship_render_plan");
-            return self.build_simple_relationship_render_plan();
-        }
+        // Try to build with JOINs - this will work for:
+        // - Simple MATCH queries with relationships
+        // - OPTIONAL MATCH queries (via GraphRel.extract_joins)
+        // - Multiple MATCH clauses (via GraphRel.extract_joins)
+        // It will fail (return Err) for:
+        // - Variable-length paths (need recursive CTEs)
+        // - Complex nested queries
+        // - Queries that don't have extractable JOINs
         
-        println!("DEBUG: is_simple_relationship_query returned false, returning ComplexQueryRequiresCTEs");
-        
-        // If not a simple relationship, this query needs CTE-based processing
-        Err(RenderBuildError::ComplexQueryRequiresCTEs)
-    }
-
-    /// Check if this is a simple relationship query that should use direct JOINs
-    /// instead of CTE-based processing
-    fn is_simple_relationship_query(&self) -> bool {
-        // A simple relationship query has:
-        // 1. A single GraphRel (not variable-length, not multiple relationships)
-        // 2. No complex nesting
-        
-        fn is_simple_graph_rel(plan: &LogicalPlan) -> bool {
-            match plan {
-                LogicalPlan::GraphRel(graph_rel) => {
-                    // Not variable-length and not multiple relationship types
-                    graph_rel.variable_length.is_none() && 
-                        graph_rel.labels.as_ref().map_or(true, |labels| labels.len() == 1)
-                }
-                LogicalPlan::Projection(proj) => is_simple_graph_rel(&proj.input),
-                LogicalPlan::Filter(filter) => is_simple_graph_rel(&filter.input),
-                LogicalPlan::Limit(limit) => is_simple_graph_rel(&limit.input),
-                LogicalPlan::Skip(skip) => is_simple_graph_rel(&skip.input),
-                LogicalPlan::OrderBy(order_by) => is_simple_graph_rel(&order_by.input),
-                LogicalPlan::GroupBy(group_by) => is_simple_graph_rel(&group_by.input),
-                LogicalPlan::GraphJoins(graph_joins) => {
-                    // Check if this is a simple single relationship
-                    is_simple_graph_rel(&graph_joins.input)
-                }
-                _ => false,
-            }
-        }
-        
-        let result = is_simple_graph_rel(self);
-        println!("DEBUG: is_simple_relationship_query result: {}", result);
-        result
+        println!("DEBUG: Calling build_simple_relationship_render_plan");
+        self.build_simple_relationship_render_plan()
     }
     
     /// Build render plan for simple relationship queries using direct JOINs
@@ -1631,6 +1680,8 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn to_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
+        
+        println!("DEBUG: to_render_plan called for plan type: {:?}", std::mem::discriminant(self));
         
         // Special case for PageRank - it generates complete SQL directly
         if let LogicalPlan::PageRank(_pagerank) = self {

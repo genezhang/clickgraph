@@ -18,6 +18,9 @@ pub fn build_logical_plan(
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
     let mut logical_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Empty);
     let mut plan_ctx = PlanCtx::default();
+    
+    log::debug!("build_logical_plan: Processing query with {} optional_match_clauses", 
+        query_ast.optional_match_clauses.len());
 
     if let Some(match_clause) = &query_ast.match_clause {
         logical_plan =
@@ -25,7 +28,10 @@ pub fn build_logical_plan(
     }
 
     // Process OPTIONAL MATCH clauses after regular MATCH
-    for optional_match in &query_ast.optional_match_clauses {
+    log::debug!("build_logical_plan: About to process {} OPTIONAL MATCH clauses", 
+        query_ast.optional_match_clauses.len());
+    for (idx, optional_match) in query_ast.optional_match_clauses.iter().enumerate() {
+        log::debug!("build_logical_plan: Processing OPTIONAL MATCH clause {}", idx);
         logical_plan = optional_match_clause::evaluate_optional_match_clause(
             optional_match,
             logical_plan,

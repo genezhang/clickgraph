@@ -165,6 +165,7 @@ impl AnchorNodeSelection {
                         path_variable: graph_rel.path_variable.clone(),
                         where_predicate: graph_rel.where_predicate.clone(),
                         labels: graph_rel.labels.clone(),
+                    is_optional: None,
                     }));
                     let rotated_plan = Self::rotate_plan(new_anchor_plan, graph_rel.right.clone())?;
 
@@ -187,6 +188,7 @@ impl AnchorNodeSelection {
                         path_variable: graph_rel.path_variable.clone(),
                         where_predicate: graph_rel.where_predicate.clone(),
                         labels: graph_rel.labels.clone(),
+                    is_optional: None,
                     }));
                     let rotated_plan = Self::rotate_plan(new_anchor_plan, graph_rel.right.clone())?;
 
@@ -209,6 +211,7 @@ impl AnchorNodeSelection {
                         path_variable: graph_rel.path_variable.clone(),
                         where_predicate: graph_rel.where_predicate.clone(),
                         labels: graph_rel.labels.clone(),
+                    is_optional: None,
                     }));
                     let rotated_plan = Self::rotate_plan(new_anchor_plan, graph_rel.right.clone())?;
 
@@ -296,6 +299,7 @@ impl AnchorNodeSelection {
                         path_variable: prev_graph_rel.path_variable.clone(),
                         where_predicate: prev_graph_rel.where_predicate.clone(),
                         labels: prev_graph_rel.labels.clone(),
+                    is_optional: None,
                     }));
                     return Ok(new_constructed_plan);
                 }
@@ -329,6 +333,7 @@ impl AnchorNodeSelection {
                             path_variable: prev_graph_rel.path_variable.clone(),
                             where_predicate: prev_graph_rel.where_predicate.clone(),
                             labels: prev_graph_rel.labels.clone(),
+                        is_optional: None,
                         })),
                         alias: graph_rel.alias.clone(),
                         direction: graph_rel.direction.clone(), //.reverse(),
@@ -342,6 +347,7 @@ impl AnchorNodeSelection {
                         path_variable: graph_rel.path_variable.clone(),
                         where_predicate: graph_rel.where_predicate.clone(),
                         labels: graph_rel.labels.clone(),
+                    is_optional: None,
                     }));
 
                     return Self::rotate_plan(new_constructed_plan, new_remaining);
