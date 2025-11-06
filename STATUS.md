@@ -1,17 +1,31 @@
 # ClickGraph Status
 
-*Updated: November 5, 2025*
+*Updated: November 5, 2025 (End of Night)*
 
-## 🎉 **OPTIONAL MATCH Complete - Production-Ready SQL!**
+## 🎉 **Highly Productive Session - +11 Tests, 3 High-Impact Fixes!**
 
 **Test Results**: 
 - **Unit Tests**: 301/319 passing (94.4%) ✅
-- **Integration Tests**: 24/35 passing (68.6%) ✅ **+11 from data/schema fixes**
+- **Integration Tests**: **24/35 passing (68.6%)** ✅ **← Up from 13/35 (37.1%)!**
 - **Basic Queries**: 3/3 passing (100%) ✅
 - **OPTIONAL MATCH Parser**: 11/11 passing (100%) ✅
 - **OPTIONAL MATCH SQL**: Clean LEFT JOINs with proper prefixes ✅ **COMPLETE!**
 
+**Tonight's Improvements**: **+11 integration tests** (37% → 69%)
+
 ### **Latest Fixes - November 5, 2025** 🚀
+
+**5. ID Column Lookup Fix** (~5 min)
+- **Problem**: After adding schema prefixes, `table_to_id_column()` couldn't find schemas because it compared "users" vs "test_integration.users"
+- **Symptom**: Fallback to generic `.id` instead of schema's `.user_id`
+- **Solution**: Modified `cte_extraction.rs` (line 250) to check both `table_name` and `database.table_name`
+- **Result**: Queries now use correct ID columns from schema ✅
+
+**4. JOIN Table Prefix Fix** (~10 min)
+- **Problem**: `label_to_table_name()` and `rel_type_to_table_name()` returned only `table_name` ("follows") without database prefix
+- **Symptom**: JOINs used `INNER JOIN follows` instead of `INNER JOIN test_integration.follows`
+- **Solution**: Modified `cte_extraction.rs` (lines 150, 166) to return `format!("{}.{}", database, table_name)`
+- **Result**: All JOINs now use fully qualified table names ✅
 
 **3. Missing ID Column in Schema** (~5 min) **← High-Impact Fix**
 - **Problem**: Queries using `WHERE u.user_id = 1` failed with "Property 'user_id' not found on node 'User'"
@@ -42,7 +56,19 @@
   ```rust
   let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
   ```
-- **Result**: All tables now have proper schema.table format ✅
+- **Result**: All FROM clauses now have proper schema.table format ✅
+
+**Session Timeline**:
+- Started with OPTIONAL MATCH working but two cosmetic issues (WHERE dup, missing prefix)
+- Fixed both in ~25 minutes
+- Discovered test data missing → Loaded integration DB (+10 tests!)
+- Found schema missing ID columns → Added user_id/product_id (+1 test!)
+- Found JOIN tables missing prefixes → Fixed label_to_table_name
+- Found ID column lookup broken → Fixed table_to_id_column
+
+**Total Session Time**: ~50 minutes  
+**Total Commits**: 5 clean commits  
+**Test Improvement**: **+11 tests** (37% → 69%)
 
 **Final OPTIONAL MATCH SQL** (November 5, 2025):
 ```cypher
