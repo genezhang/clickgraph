@@ -1545,12 +1545,14 @@ mod tests {
                         ) {
                             (
                                 LogicalExpr::PropertyAccessExp(rel_prop),
-                                LogicalExpr::PropertyAccessExp(right_prop),
+                                LogicalExpr::PropertyAccessExp(left_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.0, "to_id");
-                                assert_eq!(right_prop.table_alias.0, "p2");
-                                assert_eq!(right_prop.column.0, "id");
+                                // For outgoing relationship (p2)-[:FOLLOWS]->(p1),
+                                // p2 is the source (left), so it connects to from_id
+                                assert_eq!(rel_prop.column.0, "from_id");
+                                assert_eq!(left_prop.table_alias.0, "p2");
+                                assert_eq!(left_prop.column.0, "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
@@ -1825,7 +1827,7 @@ mod tests {
                         // Should have 2 join conditions for standalone rel
                         assert_eq!(rel_join.joining_on.len(), 2);
 
-                        // Assert the first joining condition (connection to right node)
+                        // Assert the first joining condition (connection to left node)
                         let first_join_condition = &rel_join.joining_on[0];
                         assert_eq!(first_join_condition.operator, Operator::Equal);
                         assert_eq!(first_join_condition.operands.len(), 2);
@@ -1839,14 +1841,16 @@ mod tests {
                                 LogicalExpr::PropertyAccessExp(left_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "f2");
-                                assert_eq!(rel_prop.column.0, "to_id");
+                                // For outgoing relationship (p1)-[:FOLLOWS]->(p3),
+                                // p1 is the source (left_connection), so it connects to from_id
+                                assert_eq!(rel_prop.column.0, "from_id");
                                 assert_eq!(left_prop.table_alias.0, "p1");
                                 assert_eq!(left_prop.column.0, "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
 
-                        // Assert the second joining condition (connection to left node - standalone relationship)
+                        // Assert the second joining condition (connection to right node - standalone relationship)
                         let second_join_condition = &rel_join.joining_on[1];
                         assert_eq!(second_join_condition.operator, Operator::Equal);
                         assert_eq!(second_join_condition.operands.len(), 2);
@@ -1860,7 +1864,9 @@ mod tests {
                                 LogicalExpr::PropertyAccessExp(right_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "f2");
-                                assert_eq!(rel_prop.column.0, "from_id");
+                                // For outgoing relationship (p1)-[:FOLLOWS]->(p3),
+                                // p3 is the target (right_connection), so it connects to to_id
+                                assert_eq!(rel_prop.column.0, "to_id");
                                 assert_eq!(right_prop.table_alias.0, "p3");
                                 assert_eq!(right_prop.column.0, "id");
                             }
@@ -2099,7 +2105,9 @@ mod tests {
 
                                     println!("Join condition: {:?}", join_condition);
 
-                                    // Verify the join condition connects w1 with c1 (c1 is the left side) and w1.to_id connects to p2
+                                    // Verify the join condition connects w1 with c1 
+                                    // For (c1)-[w1:WORKS_AT]->(p2) with Direction::Outgoing,
+                                    // c1 is the source, so it connects to from_id
                                     match (&join_condition.operands[0], &join_condition.operands[1])
                                     {
                                         (
@@ -2107,7 +2115,7 @@ mod tests {
                                             LogicalExpr::PropertyAccessExp(left_prop),
                                         ) => {
                                             assert_eq!(rel_prop.table_alias.0, "w1");
-                                            assert_eq!(rel_prop.column.0, "to_id");
+                                            assert_eq!(rel_prop.column.0, "from_id");
                                             assert_eq!(left_prop.table_alias.0, "c1");
                                             assert_eq!(left_prop.column.0, "id");
                                         }
@@ -2124,7 +2132,9 @@ mod tests {
                                     assert_eq!(join_condition.operator, Operator::Equal);
                                     assert_eq!(join_condition.operands.len(), 2);
 
-                                    // Verify the join condition connects p2 with f1
+                                    // Verify the join condition connects p2 with w1
+                                    // For (c1)-[w1:WORKS_AT]->(p2) with Direction::Outgoing,
+                                    // p2 is the target, so it connects to to_id
                                     match (&join_condition.operands[0], &join_condition.operands[1])
                                     {
                                         (
@@ -2134,7 +2144,7 @@ mod tests {
                                             assert_eq!(left_prop.table_alias.0, "p2");
                                             assert_eq!(left_prop.column.0, "id");
                                             assert_eq!(rel_prop.table_alias.0, "w1");
-                                            assert_eq!(rel_prop.column.0, "from_id");
+                                            assert_eq!(rel_prop.column.0, "to_id");
                                         }
                                         _ => panic!(
                                             "Expected PropertyAccessExp operands for p2 join"
@@ -2149,7 +2159,7 @@ mod tests {
                                     assert_eq!(join_condition.operator, Operator::Equal);
                                     assert_eq!(join_condition.operands.len(), 2);
 
-                                    // Verify the join condition connects f1 with p1
+                                    // Verify the join condition connects f1 with p2
                                     match (&join_condition.operands[0], &join_condition.operands[1])
                                     {
                                         (
@@ -2157,7 +2167,9 @@ mod tests {
                                             LogicalExpr::PropertyAccessExp(left_prop),
                                         ) => {
                                             assert_eq!(rel_prop.table_alias.0, "f1");
-                                            assert_eq!(rel_prop.column.0, "to_id");
+                                            // For (p2)-[f1:FOLLOWS]->(p1) with Direction::Outgoing,
+                                            // p2 is the source, so it connects to from_id
+                                            assert_eq!(rel_prop.column.0, "from_id");
                                             assert_eq!(left_prop.table_alias.0, "p2");
                                             assert_eq!(left_prop.column.0, "id");
                                         }
@@ -2184,7 +2196,9 @@ mod tests {
                                             assert_eq!(left_prop.table_alias.0, "p1");
                                             assert_eq!(left_prop.column.0, "id");
                                             assert_eq!(rel_prop.table_alias.0, "f1");
-                                            assert_eq!(rel_prop.column.0, "from_id");
+                                            // For (p2)-[f1:FOLLOWS]->(p1) with Direction::Outgoing,
+                                            // p1 is the target, so it connects to to_id
+                                            assert_eq!(rel_prop.column.0, "to_id");
                                         }
                                         _ => panic!(
                                             "Expected PropertyAccessExp operands for p1 join"
