@@ -246,8 +246,10 @@ pub fn table_to_id_column(table: &str) -> String {
     if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
         if let Ok(schema) = schema_lock.try_read() {
             // Find node schema by table name
+            // Handle both fully qualified (database.table) and simple (table) names
             for node_schema in schema.get_nodes_schemas().values() {
-                if node_schema.table_name == table {
+                let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
+                if node_schema.table_name == table || fully_qualified == table {
                     return node_schema.node_id.column.clone();
                 }
             }
