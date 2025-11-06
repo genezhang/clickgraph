@@ -1602,14 +1602,25 @@ impl RenderPlanBuilder for LogicalPlan {
         
         println!("DEBUG: try_build_join_based_plan called");
         
-        // Check if this is a variable-length path query - those need CTEs
+        // Check if this query needs CTE-based processing
         if let LogicalPlan::Projection(proj) = self {
             if let LogicalPlan::GraphRel(graph_rel) = proj.input.as_ref() {
+                // Variable-length paths need recursive CTEs
                 if graph_rel.variable_length.is_some() {
                     println!("DEBUG: Variable-length path detected, returning Err to use CTE path");
                     return Err(RenderBuildError::InvalidRenderPlan(
                         "Variable-length paths require CTE-based processing".to_string()
                     ));
+                }
+                
+                // Multiple relationship types need UNION CTEs
+                if let Some(labels) = &graph_rel.labels {
+                    if labels.len() > 1 {
+                        println!("DEBUG: Multiple relationship types detected ({}), returning Err to use CTE path", labels.len());
+                        return Err(RenderBuildError::InvalidRenderPlan(
+                            "Multiple relationship types require CTE-based processing with UNION".to_string()
+                        ));
+                    }
                 }
             }
         }
@@ -1620,6 +1631,7 @@ impl RenderPlanBuilder for LogicalPlan {
         // - Multiple MATCH clauses (via GraphRel.extract_joins)
         // It will fail (return Err) for:
         // - Variable-length paths (need recursive CTEs)
+        // - Multiple relationship types (need UNION CTEs)
         // - Complex nested queries
         // - Queries that don't have extractable JOINs
         
