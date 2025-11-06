@@ -6,12 +6,26 @@
 
 **Test Results**: 
 - **Unit Tests**: 301/319 passing (94.4%) ✅
-- **Integration Tests**: 13/35 passing (37%) ✅ (with test data loaded)
+- **Integration Tests**: 24/35 passing (68.6%) ✅ **+11 from data/schema fixes**
 - **Basic Queries**: 3/3 passing (100%) ✅
 - **OPTIONAL MATCH Parser**: 11/11 passing (100%) ✅
 - **OPTIONAL MATCH SQL**: Clean LEFT JOINs with proper prefixes ✅ **COMPLETE!**
 
 ### **Latest Fixes - November 5, 2025** 🚀
+
+**3. Missing ID Column in Schema** (~5 min) **← High-Impact Fix**
+- **Problem**: Queries using `WHERE u.user_id = 1` failed with "Property 'user_id' not found on node 'User'"
+- **Root Cause**: Schema YAML only listed `name` and `age` in property_mappings, missing the ID column itself
+- **Solution**: Added `user_id: user_id` and `product_id: product_id` to property_mappings in test schema
+- **Files**: `tests/integration/test_integration.yaml`, `schemas/test/test_integration_schema.yaml`
+- **Impact**: +1 integration test, enables all queries using ID-based filters ✅
+- **Result**: **24/35 integration tests passing (68.6%)** ← up from 23/35!
+
+**2. Test Data Setup** (~5 min)
+- **Problem**: `test_integration` database was empty, causing all queries to return HTTP 500
+- **Solution**: Loaded integration test data with setup script
+- **Command**: `Get-Content scripts\setup\setup_integration_test_data.sql | docker exec -i clickhouse clickhouse-client --user test_user --password test_pass --multiquery`
+- **Impact**: **+10 integration tests** (from 13/35 to 23/35) ✅
 
 **1. WHERE Clause Duplication Fix** (~10 min)
 - **Problem**: `WHERE (a.name = 'Alice') AND (a.name = 'Alice')` - filter appeared twice
@@ -21,7 +35,7 @@
 - **Solution**: Modified `brahmand/src/render_plan/plan_builder.rs` (lines 1205-1220) to ONLY extract from `where_predicate`, not from left/center/right node filters
 - **Result**: Clean single WHERE clause ✅
 
-**2. Missing Table Prefix Fix** (~15 min)
+**0. Missing Table Prefix Fix** (~15 min)
 - **Problem**: `FROM users AS a` instead of `FROM test_integration.users AS a`
 - **Root Cause**: `SchemaInference` in schema_inference.rs only used `node_schema.table_name` (just "users"), ignoring the `database` field
 - **Solution**: Modified `brahmand/src/query_planner/analyzer/schema_inference.rs` (lines 75-92) to use:

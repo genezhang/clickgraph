@@ -16,6 +16,13 @@
     ```
 
 ### 🐛 Bug Fixes
+- **Missing ID Column in Schema** (Nov 5, 2025) **← High-Impact Fix**
+  - Fixed: `WHERE u.user_id = 1` failing with "Property 'user_id' not found on node 'User'"
+  - Root cause: Schema property_mappings missing ID columns (user_id, product_id)
+  - Solution: Added `user_id: user_id` and `product_id: product_id` to test schema
+  - Files: `tests/integration/test_integration.yaml`, `schemas/test/test_integration_schema.yaml`
+  - Impact: +1 integration test (24/35 → 68.6%), enables all ID-based WHERE filters
+
 - **WHERE Clause Duplication Fix** (Nov 5, 2025)
   - Fixed: `WHERE (a.name = 'Alice') AND (a.name = 'Alice')` duplication
   - Root cause: GraphRel.extract_filters over-collecting from left/center/right filters AND where_predicate
