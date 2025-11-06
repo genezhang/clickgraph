@@ -6,6 +6,7 @@ graph_schema:
       table: users
       id_column: user_id
       property_mappings:
+        user_id: user_id
         name: name
         age: age
   

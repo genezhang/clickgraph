@@ -12,6 +12,7 @@ graph_schema:
       table: users
       id_column: user_id
       property_mappings:
+        user_id: user_id
         name: name
         age: age
 
@@ -20,6 +21,7 @@ graph_schema:
       table: products
       id_column: product_id
       property_mappings:
+        product_id: product_id
         name: name
         price: price
         category: category
