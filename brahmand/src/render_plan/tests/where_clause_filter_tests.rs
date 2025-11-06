@@ -49,6 +49,9 @@ fn cypher_to_sql(cypher: &str) -> String {
     let logical_plan = optimizer::initial_optimization(logical_plan, &mut plan_ctx).unwrap();
     let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx).unwrap();
 
+    // Debug: Print final logical plan to see if GraphRel is still there
+    println!("Final logical plan after optimizer: {:?}", logical_plan);
+
     let render_plan = logical_plan.to_render_plan()
         .expect("Failed to build render plan");
 

@@ -528,24 +528,13 @@ impl SchemaInference {
                 ));
             } else {
                 // assign default left and right from rel schema.
-                let left_table_name = &graph_schema
-                    .get_node_schema(&relation_schema.from_node)
-                    .map_err(|e| AnalyzerError::GraphSchema {
-                        pass: Pass::SchemaInference,
-                        source: e,
-                    })?
-                    .table_name;
-                let right_table_name = &graph_schema
-                    .get_node_schema(&relation_schema.to_node)
-                    .map_err(|e| AnalyzerError::GraphSchema {
-                        pass: Pass::SchemaInference,
-                        source: e,
-                    })?
-                    .table_name;
+                // Use the node labels (from_node, to_node) directly, not their table names
+                let left_label = &relation_schema.from_node;
+                let right_label = &relation_schema.to_node;
                 return Ok((
-                    left_table_name.to_string(),
+                    left_label.to_string(),
                     rel_table_name.to_string(),
-                    right_table_name.to_string(),
+                    right_label.to_string(),
                 ));
             }
         }

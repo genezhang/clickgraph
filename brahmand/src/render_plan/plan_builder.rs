@@ -1602,6 +1602,18 @@ impl RenderPlanBuilder for LogicalPlan {
         
         println!("DEBUG: try_build_join_based_plan called");
         
+        // Check if this is a variable-length path query - those need CTEs
+        if let LogicalPlan::Projection(proj) = self {
+            if let LogicalPlan::GraphRel(graph_rel) = proj.input.as_ref() {
+                if graph_rel.variable_length.is_some() {
+                    println!("DEBUG: Variable-length path detected, returning Err to use CTE path");
+                    return Err(RenderBuildError::InvalidRenderPlan(
+                        "Variable-length paths require CTE-based processing".to_string()
+                    ));
+                }
+            }
+        }
+        
         // Try to build with JOINs - this will work for:
         // - Simple MATCH queries with relationships
         // - OPTIONAL MATCH queries (via GraphRel.extract_joins)
