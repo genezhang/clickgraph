@@ -147,7 +147,8 @@ pub fn label_to_table_name(label: &str) -> String {
     if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
         if let Ok(schema) = schema_lock.try_read() {
             if let Ok(node_schema) = schema.get_node_schema(label) {
-                return node_schema.table_name.clone();
+                // Use fully qualified table name: database.table_name
+                return format!("{}.{}", node_schema.database, node_schema.table_name);
             }
         }
     }
@@ -162,7 +163,8 @@ pub fn rel_type_to_table_name(rel_type: &str) -> String {
     if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
         if let Ok(schema) = schema_lock.try_read() {
             if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-                return rel_schema.table_name.clone();
+                // Use fully qualified table name: database.table_name
+                return format!("{}.{}", rel_schema.database, rel_schema.table_name);
             }
         }
     }
