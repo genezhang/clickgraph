@@ -71,6 +71,17 @@ pub fn parse_query_with_nom(
     
     let (input, with_clause): (&str, Option<WithClause>) =
         opt(with_clause::parse_with_clause).parse(input)?;
+    
+    // Parse WHERE clause again after WITH (can filter WITH results)
+    // If present, this will override any earlier WHERE clause
+    let (input, where_clause_after_with): (&str, Option<WhereClause>) =
+        opt(where_clause::parse_where_clause).parse(input)?;
+    let where_clause = if where_clause_after_with.is_some() {
+        where_clause_after_with
+    } else {
+        where_clause
+    };
+    
     let (input, create_node_table_clause): (&str, Option<CreateNodeTableClause>) =
         opt(create_node_table_clause::parse_create_node_table_clause).parse(input)?;
     let (input, create_rel_table_clause): (&str, Option<CreateRelTableClause>) =

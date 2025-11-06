@@ -648,6 +648,8 @@ impl GraphJoinInference {
             // check if right is already joined
             if joined_entities.contains(right_alias) {
                 // join the rel with right first and then join the left with rel
+                // For Direction::Outgoing: LEFT is source, RIGHT is target
+                // So LEFT connects to from_id, RIGHT connects to to_id
                 let mut rel_graph_join = Join {
                     table_name: rel_cte_name,
                     table_alias: rel_alias.to_string(),
@@ -656,7 +658,7 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_from_col.clone()),
+                                column: Column(rel_to_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
@@ -730,7 +732,7 @@ impl GraphJoinInference {
                                 }),
                                 LogicalExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(rel_alias.to_string()),
-                                    column: Column(rel_to_col.clone()),
+                                    column: Column(rel_from_col.clone()),
                                 }),
                             ],
                         }],
@@ -748,6 +750,8 @@ impl GraphJoinInference {
 
                 // join the relation with left side first and then
                 // the join the right side with relation
+                // For Direction::Outgoing: LEFT is source, RIGHT is target
+                // So LEFT connects to from_id, RIGHT connects to to_id
                 let mut rel_graph_join = Join {
                     table_name: rel_cte_name,
                     table_alias: rel_alias.to_string(),
@@ -756,7 +760,7 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_to_col.clone()),
+                                column: Column(rel_from_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
@@ -793,7 +797,7 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_from_col.clone()),
+                                column: Column(rel_to_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
@@ -830,7 +834,7 @@ impl GraphJoinInference {
                                 }),
                                 LogicalExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(rel_alias.to_string()),
-                                    column: Column(rel_from_col.clone()),
+                                    column: Column(rel_to_col.clone()),
                                 }),
                             ],
                         }],
@@ -1591,8 +1595,8 @@ mod tests {
             c1_node,
             "w1",
             Direction::Outgoing,
-            "c1",
-            "p1",
+            "p1",  // left_connection (p1 is the LEFT node)
+            "c1",  // right_connection (c1 is the RIGHT node)
         );
 
         let input_logical_plan = Arc::new(LogicalPlan::Projection(Projection {
@@ -1636,18 +1640,20 @@ mod tests {
                         assert_eq!(rel_join_condition.operands.len(), 2);
 
                         // Check operands are PropertyAccessExp with correct table aliases and columns
+                        // For pattern (p1)-[w1:WORKS_AT]->(c1) with Direction::Outgoing,
+                        // p1 is the source (LEFT), so it connects to from_id
                         match (
                             &rel_join_condition.operands[0],
                             &rel_join_condition.operands[1],
                         ) {
                             (
                                 LogicalExpr::PropertyAccessExp(rel_prop),
-                                LogicalExpr::PropertyAccessExp(right_prop),
+                                LogicalExpr::PropertyAccessExp(left_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "w1");
-                                assert_eq!(rel_prop.column.0, "to_id");
-                                assert_eq!(right_prop.table_alias.0, "c1");
-                                assert_eq!(right_prop.column.0, "id");
+                                assert_eq!(rel_prop.column.0, "from_id");
+                                assert_eq!(left_prop.table_alias.0, "p1");
+                                assert_eq!(left_prop.column.0, "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
