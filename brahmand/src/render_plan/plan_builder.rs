@@ -39,6 +39,35 @@ fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
     }
 }
 
+
+/// Helper function to find the table name for a given alias by recursively searching the plan tree
+/// Used to find the anchor node's table in multi-hop queries
+fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            if node.alias == target_alias {
+                // Found the matching GraphNode, extract table name from its input
+                match &*node.input {
+                    LogicalPlan::ViewScan(scan) => Some(scan.source_table.clone()),
+                    _ => None,
+                }
+            } else {
+                // Not a match, recurse into input
+                find_table_name_for_alias(&node.input, target_alias)
+            }
+        },
+        LogicalPlan::GraphRel(rel) => {
+            // Search in both left and right branches
+            find_table_name_for_alias(&rel.left, target_alias)
+                .or_else(|| find_table_name_for_alias(&rel.right, target_alias))
+        },
+        LogicalPlan::Projection(proj) => find_table_name_for_alias(&proj.input, target_alias),
+        LogicalPlan::Filter(filter) => find_table_name_for_alias(&filter.input, target_alias),
+        LogicalPlan::OrderBy(order) => find_table_name_for_alias(&order.input, target_alias),
+        LogicalPlan::GraphJoins(joins) => find_table_name_for_alias(&joins.input, target_alias),
+        _ => None,
+    }
+}
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
 fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> String {
     match expr {
@@ -167,6 +196,9 @@ fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(String, String, 
                     graph_rel.right_connection.clone(),
                     graph_rel.alias.clone(),
                 ));
+                // Recurse into nested GraphRels (multi-hop chains)
+                collect_connections(&graph_rel.left, connections);
+                collect_connections(&graph_rel.right, connections);
             }
             LogicalPlan::Projection(proj) => collect_connections(&proj.input, connections),
             LogicalPlan::Filter(filter) => collect_connections(&filter.input, connections),
@@ -180,6 +212,31 @@ fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(String, String, 
     connections
 }
 
+/// Helper function to find the anchor/first node in a multi-hop pattern
+/// The anchor is the node that appears as left_connection but never as right_connection
+/// For (a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c): a is left but never right → anchor!
+fn find_anchor_node(connections: &[(String, String, String)]) -> Option<String> {
+    if connections.is_empty() {
+        return None;
+    }
+    
+    // Collect all right_connections (these are intermediate/end nodes)
+    let right_nodes: std::collections::HashSet<_> = connections.iter()
+        .map(|(_, right, _)| right.clone())
+        .collect();
+    
+    // Find a left_connection that is NOT in right_nodes
+    // This is the anchor/first node
+    for (left, _, _) in connections {
+        if !right_nodes.contains(left) {
+            return Some(left.clone());
+        }
+    }
+    
+    // Fallback: use the first left_connection
+    connections.first().map(|(left, _, _)| left.clone())
+}
+
 /// Helper function to check if a condition references an end node alias
 fn references_end_node_alias(condition: &OperatorApplication, connections: &[(String, String, String)]) -> bool {
     let end_aliases: std::collections::HashSet<String> = connections.iter()
@@ -191,6 +248,18 @@ fn references_end_node_alias(condition: &OperatorApplication, connections: &[(St
         match operand {
             RenderExpr::PropertyAccessExp(prop) => {
                 end_aliases.contains(&prop.table_alias.0)
+            }
+            _ => false,
+        }
+    })
+}
+
+/// Check if a condition references a specific node alias
+fn references_node_alias(condition: &OperatorApplication, node_alias: &str) -> bool {
+    condition.operands.iter().any(|operand| {
+        match operand {
+            RenderExpr::PropertyAccessExp(prop) => {
+                prop.table_alias.0 == node_alias
             }
             _ => false,
         }
@@ -1114,14 +1183,36 @@ impl RenderPlanBuilder for LogicalPlan {
                             // Return the end node - start node will be added as CROSS JOIN
                             from_table_to_view_ref(end_from)
                         } else {
-                            // Single relationship type: normal processing
-                            // First try to extract FROM from the input
-                            let input_from = graph_joins.input.extract_from()?;
-                            if input_from.is_some() {
-                                from_table_to_view_ref(input_from)
+                            // Single relationship type: Use anchor node logic for multi-hop
+                            // FIX: For multi-hop queries, find the anchor node
+                            // Collect all relationship connections to find which node is the anchor
+                            let all_connections = get_all_relationship_connections(&graph_joins.input);
+                            
+                            if let Some(anchor_alias) = find_anchor_node(&all_connections) {
+                                println!("DEBUG: GraphJoins.extract_from() - found anchor node: {}", anchor_alias);
+                                // Get the table name for the anchor node by recursively finding the GraphNode with matching alias
+                                if let Some(table_name) = find_table_name_for_alias(&graph_joins.input, &anchor_alias) {
+                                    println!("DEBUG: GraphJoins.extract_from() - found table_name for anchor '{}': {}", anchor_alias, table_name);
+                                    Some(super::ViewTableRef {
+                                        source: std::sync::Arc::new(LogicalPlan::Empty),
+                                        name: table_name,
+                                        alias: Some(anchor_alias),
+                                    })
+                                } else {
+                                    println!("DEBUG: GraphJoins.extract_from() - could not find table_name for anchor '{}', falling back to first join", anchor_alias);
+                                    // Fallback to first join
+                                    if let Some(first_join) = graph_joins.joins.first() {
+                                        Some(super::ViewTableRef {
+                                            source: std::sync::Arc::new(LogicalPlan::Empty),
+                                            name: first_join.table_name.clone(),
+                                            alias: Some(first_join.table_alias.clone()),
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                }
                             } else {
-                                // If input has no FROM clause but we have joins, use the first join as FROM
-                                // This handles the case of simple relationships where GraphRel returns None
+                                // No connections found, use first join
                                 if let Some(first_join) = graph_joins.joins.first() {
                                     Some(super::ViewTableRef {
                                         source: std::sync::Arc::new(LogicalPlan::Empty),
@@ -1134,14 +1225,31 @@ impl RenderPlanBuilder for LogicalPlan {
                             }
                         }
                     } else {
-                        // No labels: normal processing
-                        // First try to extract FROM from the input
-                        let input_from = graph_joins.input.extract_from()?;
-                        if input_from.is_some() {
-                            from_table_to_view_ref(input_from)
+                        // No labels: Use anchor node logic for multi-hop
+                        // FIX: Same logic - find anchor node for multi-hop
+                        let all_connections = get_all_relationship_connections(&graph_joins.input);
+                        
+                        if let Some(anchor_alias) = find_anchor_node(&all_connections) {
+                            // Get the table name for the anchor node
+                            if let Some(table_name) = find_table_name_for_alias(&graph_joins.input, &anchor_alias) {
+                                Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(LogicalPlan::Empty),
+                                    name: table_name,
+                                    alias: Some(anchor_alias),
+                                })
+                            } else {
+                                if let Some(first_join) = graph_joins.joins.first() {
+                                    Some(super::ViewTableRef {
+                                        source: std::sync::Arc::new(LogicalPlan::Empty),
+                                        name: first_join.table_name.clone(),
+                                        alias: Some(first_join.table_alias.clone()),
+                                    })
+                                } else {
+                                    None
+                                }
+                            }
                         } else {
-                            // If input has no FROM clause but we have joins, use the first join as FROM
-                            // This handles the case of simple relationships where GraphRel returns None
+                            // Not a GraphRel input: fallback to first join
                             if let Some(first_join) = graph_joins.joins.first() {
                                 Some(super::ViewTableRef {
                                     source: std::sync::Arc::new(LogicalPlan::Empty),
@@ -1315,6 +1423,12 @@ impl RenderPlanBuilder for LogicalPlan {
             },
             LogicalPlan::GraphJoins(graph_joins) => {
                 // Check if this GraphJoins contains multiple relationships anywhere in the tree
+                eprintln!("📊 extract_joins for GraphJoins");
+                eprintln!("   graph_joins.joins.len() = {}", graph_joins.joins.len());
+                for (i, join) in graph_joins.joins.iter().enumerate() {
+                    eprintln!("   [{}]: alias={}, joining_on.len()={}", i, join.table_alias, join.joining_on.len());
+                }
+                
                 if has_multiple_relationships(&graph_joins.input) {
                     // Multiple relationships: generate JOINs that use the CTE instead of relationship tables
                     let mut joins = vec![];
@@ -1383,16 +1497,17 @@ impl RenderPlanBuilder for LogicalPlan {
                     // conditions that reference end nodes, and add separate end node JOINs
                     let connections = get_all_relationship_connections(&graph_joins.input);
                     
-                    // Modify relationship JOINs to only connect to start nodes
+                    // Modify relationship JOINs to only connect to start nodes (left nodes of the relationship)
                     for join in &mut joins {
-                        if let Some(rel_alias) = connections.iter().find(|(_, _, rel_alias)| *rel_alias == join.table_alias).cloned() {
-                            let (_left_alias, _right_alias, _rel_alias) = rel_alias;
-                            
-                            // Filter the joining conditions to only keep those that connect to start nodes
-                            // Remove conditions that reference end node aliases
+                        if let Some((left_alias, _right_alias, _rel_alias)) = connections.iter()
+                            .find(|(_, _, rel_alias)| *rel_alias == join.table_alias)
+                            .cloned() 
+                        {
+                            // Filter the joining conditions to only keep those that connect to the LEFT node
+                            // Remove conditions that reference other nodes (we'll add separate joins for those)
                             join.joining_on.retain(|condition| {
-                                // Keep conditions that don't reference end node aliases
-                                !references_end_node_alias(condition, &connections)
+                                // Keep conditions that reference the left (start) node of THIS relationship
+                                references_node_alias(condition, &left_alias)
                             });
                         }
                     }
@@ -2286,3 +2401,4 @@ fn update_operand_for_union_cte(operand: &mut RenderExpr, table_alias: &str) {
         _ => {} // Other expression types don't need updating
     }
 }
+

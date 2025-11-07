@@ -277,6 +277,19 @@ impl ToSql for JoinItems {
 
 impl ToSql for Join {
     fn to_sql(&self) -> String {
+        eprintln!("🔍 Join::to_sql");
+        eprintln!("  table_alias: {}", self.table_alias);
+        eprintln!("  table_name: {}", self.table_name);
+        eprintln!("  joining_on.len(): {}", self.joining_on.len());
+        if !self.joining_on.is_empty() {
+            eprintln!("  joining_on conditions:");
+            for (idx, cond) in self.joining_on.iter().enumerate() {
+                eprintln!("    [{}]: {:?}", idx, cond);
+            }
+        } else {
+            eprintln!("  ⚠️  WARNING: joining_on is EMPTY!");
+        }
+        
         let join_type_str = match self.join_type {
             JoinType::Join => {
                 if self.joining_on.is_empty() {

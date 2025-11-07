@@ -258,7 +258,15 @@ fn traverse_connected_pattern_with_mode<'a>(
     shortest_path_mode: Option<ShortestPathMode>,
     path_variable: Option<&str>,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
-    for connected_pattern in connected_patterns {
+    eprintln!("\n╔════════════════════════════════════════");
+    eprintln!("║ traverse_connected_pattern_with_mode");
+    eprintln!("║ connected_patterns.len() = {}", connected_patterns.len());
+    eprintln!("║ Current plan type: {:?}", std::mem::discriminant(&*plan));
+    eprintln!("╚════════════════════════════════════════\n");
+    
+    for (pattern_idx, connected_pattern) in connected_patterns.iter().enumerate() {
+        eprintln!("┌─ Processing connected_pattern #{}", pattern_idx);
+        
         let start_node_ref = connected_pattern.start_node.borrow();
         let start_node_label = start_node_ref.label.map(|val| val.to_string());
         let start_node_alias = if let Some(alias) = start_node_ref.name {
@@ -266,6 +274,9 @@ fn traverse_connected_pattern_with_mode<'a>(
         } else {
             generate_id()
         };
+        
+        eprintln!("│ Start node: alias='{}', label={:?}", start_node_alias, start_node_label);
+        
         let start_node_props = start_node_ref
             .properties
             .clone()
@@ -279,6 +290,10 @@ fn traverse_connected_pattern_with_mode<'a>(
             generate_id()
         };
         let rel_labels = rel.labels.as_ref().map(|labels| labels.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        
+        eprintln!("│ Relationship: alias='{}', labels={:?}, direction={:?}", 
+                 rel_alias, rel_labels, rel.direction);
+        
         log::debug!("Parsed relationship labels: {:?}", rel_labels);
         let rel_properties = rel
             .properties
@@ -293,6 +308,9 @@ fn traverse_connected_pattern_with_mode<'a>(
             generate_id()
         };
         let end_node_label = end_node_ref.label.map(|val| val.to_string());
+        
+        eprintln!("│ End node: alias='{}', label={:?}", end_node_alias, end_node_label);
+        
         let end_node_props = end_node_ref
             .properties
             .clone()
@@ -308,18 +326,11 @@ fn traverse_connected_pattern_with_mode<'a>(
                 table_ctx.append_properties(start_node_props);
             }
 
-            // Clone aliases and labels to avoid move errors in match arms
-            let start_node_alias1 = start_node_alias.clone();
-            let start_node_alias2 = start_node_alias.clone();
-            let end_node_alias1 = end_node_alias.clone();
-            let end_node_alias2 = end_node_alias.clone();
-            let start_node_label1 = start_node_label.clone();
-            let end_node_label1 = end_node_label.clone();
             plan_ctx.insert_table_ctx(
                 end_node_alias.clone(),
                 TableCtx::build(
                     end_node_alias.clone(),
-                    end_node_label.map(|l| vec![l]),
+                    end_node_label.clone().map(|l| vec![l]),
                     end_node_props,
                     false,
                     end_node_ref.name.is_some(),
@@ -327,24 +338,44 @@ fn traverse_connected_pattern_with_mode<'a>(
             );
 
             let (left_conn, right_conn) = match rel.direction {
-                ast::Direction::Outgoing => (start_node_alias, end_node_alias),
-                ast::Direction::Incoming => (end_node_alias, start_node_alias),
-                ast::Direction::Either => (start_node_alias, end_node_alias),
+                ast::Direction::Outgoing => (start_node_alias.clone(), end_node_alias.clone()),
+                ast::Direction::Incoming => (end_node_alias.clone(), start_node_alias.clone()),
+                ast::Direction::Either => (start_node_alias.clone(), end_node_alias.clone()),
             };
 
+            // FIX: For multi-hop patterns, use the existing plan as LEFT to create nested structure
+            // This ensures (a)-[r1]->(b)-[r2]->(c) becomes GraphRel { left: GraphRel(a-r1-b), center: r2, right: c }
             let (left_node, right_node) = match rel.direction {
-                ast::Direction::Outgoing => (
-                    Arc::new(LogicalPlan::GraphNode(GraphNode { input: generate_scan(start_node_alias1, start_node_label1)?, alias: start_node_alias2 })),
-                    Arc::new(LogicalPlan::GraphNode(GraphNode { input: generate_scan(end_node_alias1, end_node_label1)?, alias: end_node_alias2 })),
-                ),
-                ast::Direction::Incoming => (
-                    Arc::new(LogicalPlan::GraphNode(GraphNode { input: generate_scan(end_node_alias1, end_node_label1)?, alias: end_node_alias2 })),
-                    Arc::new(LogicalPlan::GraphNode(GraphNode { input: generate_scan(start_node_alias1, start_node_label1)?, alias: start_node_alias2 })),
-                ),
-                ast::Direction::Either => (
-                    Arc::new(LogicalPlan::GraphNode(GraphNode { input: generate_scan(start_node_alias1, start_node_label1)?, alias: start_node_alias2 })),
-                    Arc::new(LogicalPlan::GraphNode(GraphNode { input: generate_scan(end_node_alias1, end_node_label1)?, alias: end_node_alias2 })),
-                ),
+                ast::Direction::Outgoing => {
+                    // (a)-[:r1]->(b)-[:r2]->(c): existing plan (a-r1-b) on left, new node (c) on right
+                    (
+                        plan.clone(),
+                        Arc::new(LogicalPlan::GraphNode(GraphNode { 
+                            input: generate_scan(end_node_alias.clone(), end_node_label.clone())?, 
+                            alias: end_node_alias.clone()
+                        }))
+                    )
+                },
+                ast::Direction::Incoming => {
+                    // (c)<-[:r2]-(b)<-[:r1]-(a): new node (c) on left, existing plan (b-r1-a) on right
+                    (
+                        Arc::new(LogicalPlan::GraphNode(GraphNode { 
+                            input: generate_scan(end_node_alias.clone(), end_node_label.clone())?, 
+                            alias: end_node_alias.clone()
+                        })),
+                        plan.clone()
+                    )
+                },
+                ast::Direction::Either => {
+                    // Either direction: existing plan on left, new node on right
+                    (
+                        plan.clone(),
+                        Arc::new(LogicalPlan::GraphNode(GraphNode { 
+                            input: generate_scan(end_node_alias.clone(), end_node_label.clone())?, 
+                            alias: end_node_alias.clone()
+                        }))
+                    )
+                },
             };
 
             let graph_rel_node = GraphRel {
@@ -389,6 +420,10 @@ fn traverse_connected_pattern_with_mode<'a>(
             }
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
+            
+            eprintln!("│ ✓ Created GraphRel (start node already in context)");
+            eprintln!("│   Plan is now: GraphRel");
+            eprintln!("└─ Pattern #{} complete\n", pattern_idx);
         }
         // if end alias already present in ctx map, it means the current nested connected pattern's end node will be connecting at right side plan and start node will be at the left
         else if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
@@ -456,6 +491,10 @@ fn traverse_connected_pattern_with_mode<'a>(
             }
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
+            
+            eprintln!("│ ✓ Created GraphRel (end node already in context)");
+            eprintln!("│   Plan is now: GraphRel");
+            eprintln!("└─ Pattern #{} complete\n", pattern_idx);
         }
         // not connected with existing nodes
         else {
@@ -559,8 +598,17 @@ fn traverse_connected_pattern_with_mode<'a>(
             }
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
+            
+            eprintln!("│ ✓ Created GraphRel (first pattern - disconnected)");
+            eprintln!("│   Plan is now: GraphRel");
+            eprintln!("└─ Pattern #{} complete\n", pattern_idx);
         }
     }
+    
+    eprintln!("╔════════════════════════════════════════");
+    eprintln!("║ traverse_connected_pattern_with_mode COMPLETE");
+    eprintln!("║ Final plan type: {:?}", std::mem::discriminant(&*plan));
+    eprintln!("╚════════════════════════════════════════\n");
 
     Ok(plan)
 }
