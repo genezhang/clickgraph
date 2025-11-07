@@ -110,12 +110,19 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 
 ### Development Workflow
 
-**Adding New Cypher Features**
-- Extend AST in `open_cypher_parser/ast.rs`
-- Add parsing rules in relevant `open_cypher_parser/*.rs` files
-- Implement logical planning in `query_planner/logical_plan/`
-- Add SQL generation in `clickhouse_query_generator/`
-- Include optimization passes in `query_planner/optimizer/`
+**📋 See `DEVELOPMENT_PROCESS.md` for the complete 5-phase iterative development process.**
+
+**Adding New Cypher Features** (Quick Reference):
+- **Phase 1 - Design**: Understand OpenCypher spec, sketch Cypher→SQL examples, identify components
+- **Phase 2 - Implement**:
+  - Extend AST in `open_cypher_parser/ast.rs`
+  - Add parsing rules in relevant `open_cypher_parser/*.rs` files
+  - Implement logical planning in `query_planner/logical_plan/`
+  - Add SQL generation in `clickhouse_query_generator/`
+  - Include optimization passes in `query_planner/optimizer/`
+- **Phase 3 - Test**: Manual smoke test → Unit tests → Integration tests
+- **Phase 4 - Debug**: Add debug output, use `sql_only`, check server logs
+- **Phase 5 - Document**: Update STATUS.md, create feature note, update CHANGELOG.md
 
 **Bolt Protocol Enhancements**
 - Protocol extensions go in `server/bolt_protocol/`
@@ -208,30 +215,29 @@ cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 
 **Core Read Query Features** (Priority Order):
 
-1. **Fix Multiple Relationship End-to-End Issue** (Next Priority)
-   - **Issue**: `[:FOLLOWS|FRIENDS_WITH]` returns 2/4 expected relationships
-   - **Root Cause**: Schema resolution difference between unit test and execution paths
-   - **Impact**: Complete the multiple relationship feature for full functionality
-   - **Estimated**: 2-4 hours
+1. **Integration Test Coverage** (Next Priority)
+   - Currently at 24/35 (68.6%)
+   - 11 remaining failures to investigate and fix
+   - **Estimated**: 1-2 days
 
-2. **Path Variables**
-   - Path variables: `p = (a)-[r]->(b)`
-   - Path functions: `nodes(p)`, `relationships(p)`, `length(p)`
-   - **Estimated**: 4-6 hours
-
-3. **Shortest Path Algorithms**
-   - ✅ **shortestPath() and allShortestPaths()** - COMPLETED Oct 20, 2025
-   - Leverage existing recursive CTE infrastructure
-   - Add path weight/cost calculations
+3. **Additional Graph Algorithms**
+   - ✅ **PageRank** - COMPLETED Oct 23, 2025
+   - Centrality measures (betweenness, closeness, degree)
+   - Community detection
+   - Connected components
+   - **Estimated**: 1-2 weeks per algorithm
 
 4. **Pattern Extensions**
-   - ✅ **Alternate relationship types**: `[:TYPE1|TYPE2]` - COMPLETED Oct 21, 2025
    - Path comprehensions: `[(a)-[]->(b) | b.name]`
+   - **Estimated**: 3-5 days
 
-5. **Graph Algorithms**
-   - PageRank, centrality measures
-   - Community detection
-   - Path finding utilities
+**Completed Features**:
+- ✅ **Path Variables & Functions**: `p = (a)-[*]->(b)`, `length(p)`, `nodes(p)`, `relationships(p)` - Oct 21, 2025
+- ✅ **Shortest Path**: `shortestPath()` and `allShortestPaths()` - Oct 20, 2025
+- ✅ **Alternate Relationship Types**: `[:TYPE1|TYPE2]` - Oct 21, 2025
+- ✅ **PageRank Algorithm**: `CALL pagerank(...)` - Oct 23, 2025
+- ✅ **Variable-Length Paths**: `*`, `*2`, `*1..3` patterns - Oct 18, 2025
+- ✅ **OPTIONAL MATCH**: LEFT JOIN semantics - Oct 17, 2025
 
 **Out of Scope** (Read-Only Engine):
 - ❌ Write operations: `CREATE`, `SET`, `DELETE`, `MERGE`
@@ -304,14 +310,16 @@ cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 ### Documentation Structure
 ```
 clickgraph/
-├── STATUS.md              # Current state (THE source of truth)
-├── CHANGELOG.md           # Release history
-├── KNOWN_ISSUES.md        # Active issues
-├── README.md              # Project overview
-├── DEV_ENVIRONMENT_CHECKLIST.md
-├── NEXT_STEPS.md
+├── STATUS.md                    # Current state (THE source of truth)
+├── CHANGELOG.md                 # Release history
+├── DEVELOPMENT_PROCESS.md       # ⭐ 5-phase feature development workflow
+├── KNOWN_ISSUES.md              # Active issues
+├── README.md                    # Project overview
+├── DEV_ENVIRONMENT_CHECKLIST.md # Pre-session setup
+├── NEXT_STEPS.md                # Immediate roadmap
+├── TESTING_GUIDE.md             # Testing strategies
 ├── notes/
-│   ├── viewscan.md       # Feature implementation details
+│   ├── viewscan.md             # Feature implementation details
 │   ├── optional-match.md
 │   └── variable-paths.md
 └── archive/
@@ -319,3 +327,5 @@ clickgraph/
 ```
 
 **Key Principle**: Keep it simple. One source of truth (STATUS.md), one note per feature, archive everything else.
+
+**Development Workflow**: Follow `DEVELOPMENT_PROCESS.md` for systematic feature development (Design → Implement → Test → Debug → Document).

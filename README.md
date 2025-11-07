@@ -305,6 +305,14 @@ cargo run --bin clickgraph -- --daemon --http-port 8080
 - **[Test Infrastructure](docs/test-infrastructure-redesign.md)** - Testing framework and validation
 - **[Development Guide](.github/copilot-instructions.md)** - Development workflow and architecture
 
+### For Contributors
+- **[Development Process](DEVELOPMENT_PROCESS.md)** - ⭐ **5-phase feature development workflow** (START HERE!)
+- **[Quick Reference](QUICK_REFERENCE.md)** - Cheat sheet for common development tasks
+- **[Environment Setup](DEV_ENVIRONMENT_CHECKLIST.md)** - Pre-session checklist for developers
+- **[Testing Guide](TESTING_GUIDE.md)** - Comprehensive testing strategies
+- **[Current Status](STATUS.md)** - What works now, what's in progress
+- **[Known Issues](KNOWN_ISSUES.md)** - Active bugs and limitations
+
 ### Reference
 - **[Original Brahmand Docs](https://www.brahmanddb.com/introduction/intro)** - Original project documentation
 - **[Neo4j Cypher Manual](https://neo4j.com/docs/cypher-manual/)** - Cypher query language reference

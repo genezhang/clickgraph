@@ -514,35 +514,40 @@ RETURN paths
 
 ---
 
-### 3. Path Variables
+### 3. Pattern Extensions
 
-**Feature**:
-```cypher
-MATCH p = (a:User)-[:FOLLOWS*1..3]->(b:User)
-RETURN p, nodes(p), relationships(p), length(p)
-```
+**Features**:
+- Path comprehensions: `[(a)-[]->(b) | b.name]`
+- List comprehensions with filtering
+- Pattern predicates
 
 **Implementation**:
-- Store path information in CTEs
-- Implement `nodes()`, `relationships()`, `length()` functions
-- Array aggregation in ClickHouse for path components
+- Extend parser for comprehension syntax
+- Transform to subquery with aggregation
+- ClickHouse array manipulation
 
-**Estimated Effort**: 1 day
+**Estimated Effort**: 3-5 days
 
 ---
 
-### 4. Graph Algorithms
+### 4. Additional Graph Algorithms
 
-**Features**:
-- PageRank
+**Completed**:
+- ✅ **PageRank** (Oct 23, 2025) - `CALL pagerank(maxIterations: 10, dampingFactor: 0.85)`
+  - See `notes/pagerank.md` for details
+  - Multi-graph support with node/relationship filtering
+  - 2/2 tests passing
+
+**Future Algorithms**:
 - Centrality measures (betweenness, closeness, degree)
-- Community detection
+- Community detection (Louvain, label propagation)
 - Connected components
+- Clustering coefficients
 
 **Approach**: 
-- May require ClickHouse UDFs or complex CTEs
-- Consider integration with external graph libraries
-- Performance testing critical
+- Leverage existing CTE infrastructure (similar to PageRank)
+- ClickHouse UDFs for complex computations
+- Performance testing critical for large graphs
 
 **Estimated Effort**: 1-2 weeks per algorithm
 
