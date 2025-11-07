@@ -1,9 +1,10 @@
 name: Docker Publish
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:  # Manual trigger only - not ready for automatic publishing
+  # push:
+  #   tags:
+  #     - 'v*'
 
 permissions:
   contents: read   
