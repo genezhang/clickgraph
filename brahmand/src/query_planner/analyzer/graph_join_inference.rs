@@ -34,6 +34,7 @@ impl AnalyzerPass for GraphJoinInference {
         let mut joined_entities: HashSet<String> = HashSet::new();
         self.collect_graph_joins(
             logical_plan.clone(),
+            logical_plan.clone(), // Pass root plan for reference checking
             plan_ctx,
             graph_schema,
             &mut collected_graph_joins,
@@ -69,18 +70,148 @@ impl GraphJoinInference {
 
     /// Check if a node is actually referenced in the query (SELECT, WHERE, ORDER BY, etc.)
     /// Returns true if the node has any projections or filters, meaning it must be joined.
-    fn is_node_referenced(alias: &str, plan_ctx: &PlanCtx) -> bool {
-        if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
-            // Check if node has any projections (used in SELECT/RETURN)
-            if !table_ctx.get_projections().is_empty() {
-                return true;
-            }
-            // Check if node has any filters (used in WHERE)
-            if !table_ctx.get_filters().is_empty() {
-                return true;
+    fn is_node_referenced(alias: &str, plan_ctx: &PlanCtx, logical_plan: &LogicalPlan) -> bool {
+        eprintln!("        DEBUG: is_node_referenced('{}') called", alias);
+        
+        // Search the logical plan tree for any Projection nodes
+        if Self::plan_references_alias(logical_plan, alias) {
+            eprintln!("        DEBUG: '{}' IS referenced in logical plan", alias);
+            return true;
+        }
+        
+        // Also check filters in plan_ctx
+        for (_ctx_alias, table_ctx) in plan_ctx.get_alias_table_ctx_map().iter() {
+            for filter in table_ctx.get_filters() {
+                if Self::expr_references_alias(filter, alias) {
+                    eprintln!("        DEBUG: '{}' IS referenced in filters", alias);
+                    return true;
+                }
             }
         }
+        
+        eprintln!("        DEBUG: '{}' is NOT referenced", alias);
         false
+    }
+    
+    /// Recursively search a logical plan tree for references to an alias
+    fn plan_references_alias(plan: &LogicalPlan, alias: &str) -> bool {
+        match plan {
+            LogicalPlan::Projection(proj) => {
+                // Check projection items
+                for item in &proj.items {
+                    if Self::expr_references_alias(&item.expression, alias) {
+                        return true;
+                    }
+                }
+                // Recurse into input
+                Self::plan_references_alias(&proj.input, alias)
+            }
+            LogicalPlan::GroupBy(group_by) => {
+                // Check group expressions
+                for expr in &group_by.expressions {
+                    if Self::expr_references_alias(expr, alias) {
+                        return true;
+                    }
+                }
+                // Recurse into input
+                Self::plan_references_alias(&group_by.input, alias)
+            }
+            LogicalPlan::Filter(filter) => {
+                // Check filter expression
+                if Self::expr_references_alias(&filter.predicate, alias) {
+                    return true;
+                }
+                // Recurse into input
+                Self::plan_references_alias(&filter.input, alias)
+            }
+            LogicalPlan::GraphRel(graph_rel) => {
+                // Don't recurse into graph structure - just because a node appears in MATCH 
+                // doesn't mean it's referenced in SELECT/WHERE/etc.
+                // Only check if there are filters on the relationship itself
+                if let Some(where_pred) = &graph_rel.where_predicate {
+                    if Self::expr_references_alias(where_pred, alias) {
+                        return true;
+                    }
+                }
+                false
+            }
+            LogicalPlan::GraphNode(graph_node) => {
+                // Don't recurse into graph structure nodes
+                // These represent the MATCH pattern, not actual data references
+                false
+            }
+            LogicalPlan::GraphJoins(graph_joins) => {
+                Self::plan_references_alias(&graph_joins.input, alias)
+            }
+            LogicalPlan::Cte(cte) => {
+                Self::plan_references_alias(&cte.input, alias)
+            }
+            LogicalPlan::OrderBy(order_by) => {
+                // Check order expressions
+                for sort_expr in &order_by.items {
+                    if Self::expr_references_alias(&sort_expr.expression, alias) {
+                        return true;
+                    }
+                }
+                // Recurse into input
+                Self::plan_references_alias(&order_by.input, alias)
+            }
+            LogicalPlan::Skip(skip) => {
+                // Skip doesn't have expressions, just recurse
+                Self::plan_references_alias(&skip.input, alias)
+            }
+            LogicalPlan::Limit(limit) => {
+                // Limit doesn't have expressions, just recurse
+                Self::plan_references_alias(&limit.input, alias)
+            }
+            _ => false, // ViewScan, Scan, Empty, etc.
+        }
+    }
+    
+    /// Recursively check if an expression references a given alias
+    /// This handles cases like COUNT(b) where 'b' is inside an aggregation function
+    fn expr_references_alias(expr: &LogicalExpr, alias: &str) -> bool {
+        match expr {
+            LogicalExpr::TableAlias(table_alias) => table_alias.0 == alias,
+            LogicalExpr::PropertyAccessExp(prop) => prop.table_alias.0 == alias,
+            LogicalExpr::AggregateFnCall(agg) => {
+                // Check arguments of aggregation functions (e.g., COUNT(b))
+                agg.args.iter().any(|arg| Self::expr_references_alias(arg, alias))
+            }
+            LogicalExpr::ScalarFnCall(fn_call) => {
+                // Check arguments of scalar functions
+                fn_call.args.iter().any(|arg| Self::expr_references_alias(arg, alias))
+            }
+            LogicalExpr::OperatorApplicationExp(op) => {
+                // Check operands of operators
+                op.operands.iter().any(|operand| Self::expr_references_alias(operand, alias))
+            }
+            LogicalExpr::List(list) => {
+                // Check elements in lists
+                list.iter().any(|item| Self::expr_references_alias(item, alias))
+            }
+            LogicalExpr::Case(case) => {
+                // Check CASE expressions
+                if let Some(expr) = &case.expr {
+                    if Self::expr_references_alias(expr, alias) {
+                        return true;
+                    }
+                }
+                for (when_expr, then_expr) in &case.when_then {
+                    if Self::expr_references_alias(when_expr, alias) || Self::expr_references_alias(then_expr, alias) {
+                        return true;
+                    }
+                }
+                if let Some(else_expr) = &case.else_expr {
+                    if Self::expr_references_alias(else_expr, alias) {
+                        return true;
+                    }
+                }
+                false
+            }
+            // Literals, columns, parameters, etc. don't reference table aliases
+            _ => false,
+        }
     }
 
     fn build_graph_joins(
@@ -162,6 +293,7 @@ impl GraphJoinInference {
     fn collect_graph_joins(
         &self,
         logical_plan: Arc<LogicalPlan>,
+        root_plan: Arc<LogicalPlan>, // Root plan for reference checking
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
         collected_graph_joins: &mut Vec<Join>,
@@ -176,6 +308,7 @@ impl GraphJoinInference {
                 eprintln!("│ → Projection, recursing into input");
                 self.collect_graph_joins(
                     projection.input.clone(),
+                    root_plan.clone(),
                     plan_ctx,
                     graph_schema,
                     collected_graph_joins,
@@ -186,6 +319,7 @@ impl GraphJoinInference {
                 eprintln!("│ → GraphNode({}), recursing into input", graph_node.alias);
                 self.collect_graph_joins(
                     graph_node.input.clone(),
+                    root_plan.clone(),
                     plan_ctx,
                     graph_schema,
                     collected_graph_joins,
@@ -207,6 +341,7 @@ impl GraphJoinInference {
                 eprintln!("│   ↓ Processing LEFT branch...");
                 self.collect_graph_joins(
                     graph_rel.left.clone(),
+                    root_plan.clone(),
                     plan_ctx,
                     graph_schema,
                     collected_graph_joins,
@@ -218,6 +353,7 @@ impl GraphJoinInference {
                 eprintln!("│   ⚙ Processing CURRENT relationship...");
                 self.infer_graph_join(
                     graph_rel,
+                    root_plan.clone(),
                     plan_ctx,
                     graph_schema,
                     collected_graph_joins,
@@ -229,6 +365,7 @@ impl GraphJoinInference {
                 eprintln!("│   ↓ Processing RIGHT branch...");
                 let result = self.collect_graph_joins(
                     graph_rel.right.clone(),
+                    root_plan.clone(),
                     plan_ctx,
                     graph_schema,
                     collected_graph_joins,
@@ -241,6 +378,7 @@ impl GraphJoinInference {
                 eprintln!("│ → Cte, recursing into input");
                 self.collect_graph_joins(
                     cte.input.clone(),
+                    root_plan.clone(),
                     plan_ctx,
                     graph_schema,
                     collected_graph_joins,
@@ -259,6 +397,7 @@ impl GraphJoinInference {
                 eprintln!("│ → GraphJoins, recursing into input");
                 self.collect_graph_joins(
                     graph_joins.input.clone(),
+                    root_plan.clone(),
                     plan_ctx,
                     graph_schema,
                     collected_graph_joins,
@@ -269,6 +408,7 @@ impl GraphJoinInference {
                 eprintln!("│ → Filter, recursing into input");
                 self.collect_graph_joins(
                     filter.input.clone(),
+                    root_plan.clone(),
                     plan_ctx,
                     graph_schema,
                     collected_graph_joins,
@@ -279,6 +419,7 @@ impl GraphJoinInference {
                 eprintln!("│ → GroupBy, recursing into input");
                 self.collect_graph_joins(
                     group_by.input.clone(),
+                    root_plan.clone(),
                     plan_ctx,
                     graph_schema,
                     collected_graph_joins,
@@ -289,6 +430,7 @@ impl GraphJoinInference {
                 eprintln!("│ → OrderBy, recursing into input");
                 self.collect_graph_joins(
                     order_by.input.clone(),
+                    root_plan.clone(),
                     plan_ctx,
                     graph_schema,
                     collected_graph_joins,
@@ -299,6 +441,7 @@ impl GraphJoinInference {
                 eprintln!("│ → Skip, recursing into input");
                 self.collect_graph_joins(
                     skip.input.clone(),
+                    root_plan.clone(),
                     plan_ctx,
                     graph_schema,
                     collected_graph_joins,
@@ -309,6 +452,7 @@ impl GraphJoinInference {
                 eprintln!("│ → Limit, recursing into input");
                 self.collect_graph_joins(
                     limit.input.clone(),
+                    root_plan.clone(),
                     plan_ctx,
                     graph_schema,
                     collected_graph_joins,
@@ -320,6 +464,7 @@ impl GraphJoinInference {
                 for input_plan in union.inputs.iter() {
                     self.collect_graph_joins(
                         input_plan.clone(),
+                        root_plan.clone(),
                         plan_ctx,
                         graph_schema,
                         collected_graph_joins,
@@ -343,6 +488,7 @@ impl GraphJoinInference {
     fn infer_graph_join(
         &self,
         graph_rel: &GraphRel,
+        root_plan: Arc<LogicalPlan>,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
         collected_graph_joins: &mut Vec<Join>,
@@ -416,8 +562,8 @@ impl GraphJoinInference {
 
         // Check if nodes are actually referenced in the query BEFORE calling get_graph_context
         // to avoid borrow checker issues (get_graph_context takes &mut plan_ctx)
-        let left_is_referenced = Self::is_node_referenced(&graph_rel.left_connection, plan_ctx);
-        let right_is_referenced = Self::is_node_referenced(&graph_rel.right_connection, plan_ctx);
+        let left_is_referenced = Self::is_node_referenced(&graph_rel.left_connection, plan_ctx, &root_plan);
+        let right_is_referenced = Self::is_node_referenced(&graph_rel.right_connection, plan_ctx, &root_plan);
 
         let graph_context = graph_context::get_graph_context(
             graph_rel,
@@ -720,8 +866,12 @@ impl GraphJoinInference {
                 // Left is already joined (see condition above)
                 joined_entities.insert(left_alias.to_string());
                 
+                eprintln!("    │ 🎯 Checking if RIGHT node ({}) should be joined...", right_alias);
+                eprintln!("    │ 🎯 right_is_referenced: {}", right_is_referenced);
+                
                 // Only join the right node if it's actually referenced in the query
                 if right_is_referenced {
+                    eprintln!("    │ ✅ RIGHT is referenced, creating JOIN for '{}'", right_alias);
                     let right_graph_join = Join {
                         table_name: right_cte_name.clone(),
                         table_alias: right_alias.to_string(),
@@ -743,6 +893,7 @@ impl GraphJoinInference {
                     collected_graph_joins.push(right_graph_join);
                     joined_entities.insert(right_alias.to_string());
                 } else {
+                    eprintln!("    │ ❌ RIGHT is NOT referenced, skipping JOIN for '{}'", right_alias);
                     // Mark as joined even though we didn't create a JOIN (node is in base Scan)
                     joined_entities.insert(right_alias.to_string());
                 }
@@ -1618,6 +1769,7 @@ mod tests {
                 }),
                 col_alias: None,
             }],
+            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
         }));
 
         let result = analyzer
@@ -1632,13 +1784,15 @@ mod tests {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        assert_eq!(graph_joins.joins.len(), 1); // Simple relationship: only relationship join, start node is in FROM
+                        // With improved reference checking, we now correctly identify that p1 is referenced (RETURN p1.name)
+                        // So we create 2 joins: relationship (f1) + referenced node (p1)
+                        assert_eq!(graph_joins.joins.len(), 2);
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
 
-                        // For edge list traversal, only relationship join is needed (start node in FROM)
+                        // First join: relationship (f1)
                         let rel_join = &graph_joins.joins[0];
                         assert_eq!(rel_join.table_name, "default.FOLLOWS");  // Table name includes database prefix
                         assert_eq!(rel_join.table_alias, "f1");
@@ -1667,6 +1821,31 @@ mod tests {
                                 assert_eq!(left_prop.column.0, "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
+                        }
+
+                        // Second join: referenced node (p1) - since RETURN uses p1.name
+                        let p1_join = &graph_joins.joins[1];
+                        assert_eq!(p1_join.table_name, "default.Person");
+                        assert_eq!(p1_join.table_alias, "p1");
+                        assert_eq!(p1_join.join_type, JoinType::Inner);
+                        assert_eq!(p1_join.joining_on.len(), 1);
+
+                        let p1_join_condition = &p1_join.joining_on[0];
+                        assert_eq!(p1_join_condition.operator, Operator::Equal);
+                        match (
+                            &p1_join_condition.operands[0],
+                            &p1_join_condition.operands[1],
+                        ) {
+                            (
+                                LogicalExpr::PropertyAccessExp(p1_prop),
+                                LogicalExpr::PropertyAccessExp(rel_prop),
+                            ) => {
+                                assert_eq!(p1_prop.table_alias.0, "p1");
+                                assert_eq!(p1_prop.column.0, "id");
+                                assert_eq!(rel_prop.table_alias.0, "f1");
+                                assert_eq!(rel_prop.column.0, "to_id");
+                            }
+                            _ => panic!("Expected PropertyAccessExp operands for p1 join"),
                         }
                     }
                     _ => panic!("Expected GraphJoins node"),
@@ -1716,6 +1895,7 @@ mod tests {
                 }),
                 col_alias: None,
             }],
+            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
         }));
 
         let result = analyzer
@@ -1823,6 +2003,7 @@ mod tests {
                 }),
                 col_alias: None,
             }],
+            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
         }));
 
         let result = analyzer
@@ -1916,6 +2097,7 @@ mod tests {
                 }),
                 col_alias: None,
             }],
+            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
         }));
 
         let result = analyzer
@@ -2034,6 +2216,7 @@ mod tests {
                 }),
                 col_alias: None,
             }],
+            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
         }));
 
         let result = analyzer
@@ -2046,13 +2229,15 @@ mod tests {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        assert_eq!(graph_joins.joins.len(), 1); // Simple relationship: only relationship join, start node is in FROM
+                        // With improved reference checking, we correctly identify referenced nodes
+                        // Creating 2 joins: relationship + referenced node
+                        assert_eq!(graph_joins.joins.len(), 2);
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
 
-                        // For incoming direction edge list, only relationship join is needed (start node in FROM)
+                        // First join: relationship (f1)
                         let rel_join = &graph_joins.joins[0];
                         assert_eq!(rel_join.table_name, "default.FOLLOWS");  // Table name includes database prefix
                         assert_eq!(rel_join.table_alias, "f1");
@@ -2079,6 +2264,31 @@ mod tests {
                                 assert_eq!(right_prop.column.0, "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
+                        }
+
+                        // Second join: referenced node (p1) - since RETURN uses p1.name
+                        let p1_join = &graph_joins.joins[1];
+                        assert_eq!(p1_join.table_name, "default.Person");
+                        assert_eq!(p1_join.table_alias, "p1");
+                        assert_eq!(p1_join.join_type, JoinType::Inner);
+                        assert_eq!(p1_join.joining_on.len(), 1);
+
+                        let p1_join_condition = &p1_join.joining_on[0];
+                        assert_eq!(p1_join_condition.operator, Operator::Equal);
+                        match (
+                            &p1_join_condition.operands[0],
+                            &p1_join_condition.operands[1],
+                        ) {
+                            (
+                                LogicalExpr::PropertyAccessExp(p1_prop),
+                                LogicalExpr::PropertyAccessExp(rel_prop),
+                            ) => {
+                                assert_eq!(p1_prop.table_alias.0, "p1");
+                                assert_eq!(p1_prop.column.0, "id");
+                                assert_eq!(rel_prop.table_alias.0, "f1");
+                                assert_eq!(rel_prop.column.0, "to_id");
+                            }
+                            _ => panic!("Expected PropertyAccessExp operands for p1 join"),
                         }
                     }
                     _ => panic!("Expected GraphJoins node"),
@@ -2149,6 +2359,7 @@ mod tests {
                 }),
                 col_alias: None,
             }],
+            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
         }));
 
         let result = analyzer
@@ -2185,11 +2396,12 @@ mod tests {
                         );
 
                         // Should have joins for both relationships in the chain: (p1)-[f1:FOLLOWS]->(p2)-[w1:WORKS_AT]->(c1)
+                        // Plus the referenced node (p1) since RETURN uses p1.name
                         println!("Actual joins len: {}", graph_joins.joins.len());
                         let join_aliases: Vec<&String> =
                             graph_joins.joins.iter().map(|j| &j.table_alias).collect();
                         println!("Join aliases: {:?}", join_aliases);
-                        assert!(graph_joins.joins.len() == 2); // 2 relationship joins for two relationships (node joins handled by GraphJoins)
+                        assert!(graph_joins.joins.len() == 3); // 2 relationship joins + 1 referenced node (p1)
 
                         // Verify we have the expected join aliases for the new structure: (p1)-[f1:FOLLOWS]->(p2)-[w1:WORKS_AT]->(c1)
                         let join_aliases: Vec<&String> =
@@ -2198,7 +2410,7 @@ mod tests {
                         println!("Join aliases found: {:?}", join_aliases);
                         assert!(join_aliases.contains(&&"w1".to_string()));
                         assert!(join_aliases.contains(&&"f1".to_string()));
-                        // Only relationship joins are created for complex patterns (node joins handled by GraphJoins)
+                        assert!(join_aliases.contains(&&"p1".to_string())); // p1 is referenced in RETURN
 
                         // Verify each join has the correct structure
                         for join in &graph_joins.joins {
@@ -2293,7 +2505,7 @@ mod tests {
                                     }
                                 }
                                 "p1" => {
-                                    assert_eq!(join.table_name, "Person");  // Now uses actual table name
+                                    assert_eq!(join.table_name, "default.Person");  // Table name includes database prefix
                                     assert_eq!(join.joining_on.len(), 1);
 
                                     let join_condition = &join.joining_on[0];

@@ -881,6 +881,7 @@ impl GraphTRaversalPlanning {
                 expression: LogicalExpr::Column(Column(format!("{}.{}", table_alias, table_column))),
                 col_alias: None,
             }],
+            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
         }))
     }
 }

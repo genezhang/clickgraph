@@ -24,6 +24,14 @@ pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     sql.push_str(&plan.joins.to_sql());
     sql.push_str(&plan.filters.to_sql());
     sql.push_str(&plan.group_by.to_sql());
+    
+    // Add HAVING clause if present (after GROUP BY, before ORDER BY)
+    if let Some(having_expr) = &plan.having_clause {
+        sql.push_str("HAVING ");
+        sql.push_str(&having_expr.to_sql());
+        sql.push('\n');
+    }
+    
     sql.push_str(&plan.order_by.to_sql());
     sql.push_str(&plan.union.to_sql());
 
@@ -230,6 +238,14 @@ impl ToSql for Cte {
                 cte_body.push_str(&plan.joins.to_sql());
                 cte_body.push_str(&plan.filters.to_sql());
                 cte_body.push_str(&plan.group_by.to_sql());
+                
+                // Add HAVING clause if present (after GROUP BY)
+                if let Some(having_expr) = &plan.having_clause {
+                    cte_body.push_str("HAVING ");
+                    cte_body.push_str(&having_expr.to_sql());
+                    cte_body.push('\n');
+                }
+                
                 cte_body.push_str(&plan.order_by.to_sql());
                 cte_body.push_str(&plan.union.to_sql());
                 

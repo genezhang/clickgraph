@@ -5,7 +5,7 @@ use crate::{
     query_planner::{
         logical_plan::{
             LogicalPlan, errors::LogicalPlanError, match_clause, optional_match_clause,
-            order_by_clause, return_clause, skip_n_limit_clause, where_clause,
+            order_by_clause, return_clause, skip_n_limit_clause, where_clause, with_clause,
         },
         plan_ctx::PlanCtx,
     },
@@ -39,6 +39,16 @@ pub fn build_logical_plan(
         )?;
     }
 
+    // Process WITH clause before WHERE to create intermediate projections
+    // WITH creates a projection that can be referenced by subsequent clauses (including WHERE)
+    if let Some(with_clause_ast) = &query_ast.with_clause {
+        log::debug!("build_logical_plan: Processing WITH clause with {} items", 
+            with_clause_ast.with_items.len());
+        logical_plan = with_clause::evaluate_with_clause(with_clause_ast, logical_plan);
+    }
+
+    // Process WHERE clause after WITH so it can reference WITH projection aliases
+    // For "WITH a, COUNT(b) as follows WHERE follows > 1", the WHERE can now reference "follows"
     if let Some(where_clause) = &query_ast.where_clause {
         logical_plan = where_clause::evaluate_where_clause(where_clause, logical_plan);
     }

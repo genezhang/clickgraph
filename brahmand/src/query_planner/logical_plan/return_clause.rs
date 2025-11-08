@@ -1,6 +1,6 @@
 use crate::{
     open_cypher_parser::ast::ReturnClause,
-    query_planner::logical_plan::{LogicalPlan, Projection, ProjectionItem},
+    query_planner::logical_plan::{LogicalPlan, Projection, ProjectionItem, ProjectionKind},
 };
 use std::sync::Arc;
 
@@ -16,5 +16,6 @@ pub fn evaluate_return_clause<'a>(
     Arc::new(LogicalPlan::Projection(Projection {
         input: plan,
         items: projection_items,
+        kind: ProjectionKind::Return,
     }))
 }

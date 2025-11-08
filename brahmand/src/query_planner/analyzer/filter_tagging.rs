@@ -8,9 +8,9 @@ use crate::{
             errors::{AnalyzerError, Pass},
         },
         logical_expr::{
-            AggregateFnCall, LogicalExpr, Operator, OperatorApplication, PropertyAccess, ScalarFnCall, Column,
+            AggregateFnCall, LogicalExpr, Operator, OperatorApplication, PropertyAccess, ScalarFnCall, Column, TableAlias,
         },
-        logical_plan::{Filter, LogicalPlan, ProjectionItem},
+        logical_plan::{Filter, GroupBy, LogicalPlan, ProjectionItem},
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
@@ -75,17 +75,39 @@ impl AnalyzerPass for FilterTagging {
                 // Apply property mapping to the filter predicate
                 let mapped_predicate = self.apply_property_mapping(filter.predicate.clone(), plan_ctx, graph_schema)?;
                 println!("FilterTagging: Mapped predicate: {:?}", mapped_predicate);
+                
+                // Check if this filter references projection aliases (HAVING clause)
+                if Self::references_projection_alias(&mapped_predicate, plan_ctx) {
+                    println!("FilterTagging: Filter references projection alias - converting to HAVING clause");
+                    // This filter should become a HAVING clause on the child GroupBy
+                    match &child_tf {
+                        Transformed::Yes(plan) | Transformed::No(plan) => {
+                            if let LogicalPlan::GroupBy(group_by) = plan.as_ref() {
+                                println!("FilterTagging: Child is GroupBy, attaching filter as HAVING clause");
+                                let new_group_by = LogicalPlan::GroupBy(GroupBy {
+                                    input: group_by.input.clone(),
+                                    expressions: group_by.expressions.clone(),
+                                    having_clause: Some(mapped_predicate.clone()),
+                                });
+                                return Ok(Transformed::Yes(Arc::new(new_group_by)));
+                            } else {
+                                println!("FilterTagging: WARNING - projection alias reference but child is not GroupBy!");
+                            }
+                        }
+                    }
+                }
+                
                 // call filter tagging and get new filter
                 let final_filter_opt = self.extract_filters(mapped_predicate, plan_ctx)?;
                 println!("FilterTagging: Final filter option: {:?}", final_filter_opt);
                 // if final filter has some predicate left then create new filter else remove the filter node and return the child input
                 if let Some(final_filter) = final_filter_opt {
                     Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
-                        input: child_tf.get_plan(),
+                        input: child_tf.get_plan().clone(),
                         predicate: final_filter,
                     })))
                 } else {
-                    Transformed::Yes(child_tf.get_plan())
+                    Transformed::Yes(child_tf.get_plan().clone())
                 }
             }
             LogicalPlan::Projection(projection) => {
@@ -100,13 +122,22 @@ impl AnalyzerPass for FilterTagging {
                 for item in &projection.items {
                     let mapped_expr = self.apply_property_mapping(item.expression.clone(), plan_ctx, graph_schema)?;
                     mapped_items.push(ProjectionItem {
-                        expression: mapped_expr,
+                        expression: mapped_expr.clone(),
                         col_alias: item.col_alias.clone(),
                     });
+                    
+                    // Register projection aliases for HAVING clause support
+                    // If this projection item has an alias (e.g., COUNT(b) as follows),
+                    // register it so filters can reference it
+                    if let Some(col_alias) = &item.col_alias {
+                        println!("FilterTagging: Registering projection alias: {} -> {:?}", col_alias.0, mapped_expr);
+                        plan_ctx.register_projection_alias(col_alias.0.clone(), mapped_expr);
+                    }
                 }
                 Transformed::Yes(Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
                     input: child_tf.get_plan(),
                     items: mapped_items,
+                    kind: projection.kind.clone(),
                 })))
             }
             LogicalPlan::GroupBy(group_by) => {
@@ -621,6 +652,29 @@ impl FilterTagging {
                 found_table_alias_opt
             }
             _ => None,
+        }
+    }
+
+    /// Check if an expression references any projection aliases
+    /// Used to determine if a filter should become a HAVING clause
+    fn references_projection_alias(expr: &LogicalExpr, plan_ctx: &PlanCtx) -> bool {
+        match expr {
+            LogicalExpr::TableAlias(TableAlias(alias)) => {
+                plan_ctx.is_projection_alias(alias)
+            }
+            LogicalExpr::OperatorApplicationExp(op_app) => {
+                op_app.operands.iter().any(|operand| Self::references_projection_alias(operand, plan_ctx))
+            }
+            LogicalExpr::ScalarFnCall(fn_call) => {
+                fn_call.args.iter().any(|arg| Self::references_projection_alias(arg, plan_ctx))
+            }
+            LogicalExpr::AggregateFnCall(agg_call) => {
+                agg_call.args.iter().any(|arg| Self::references_projection_alias(arg, plan_ctx))
+            }
+            LogicalExpr::List(exprs) => {
+                exprs.iter().any(|e| Self::references_projection_alias(e, plan_ctx))
+            }
+            _ => false,
         }
     }
 }

@@ -223,6 +223,7 @@ mod tests {
                 expression: LogicalExpr::Literal(Literal::String("test".to_string())),
                 col_alias: None,
             }],
+            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
         }));
 
         let result = analyzer.analyze(projection, &mut plan_ctx).unwrap();

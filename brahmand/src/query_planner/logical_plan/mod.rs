@@ -9,7 +9,7 @@ mod serde_arc_vec;
 
 use crate::open_cypher_parser::ast::{
     Expression as CypherExpression, OrderByItem as CypherOrderByItem,
-    OrerByOrder as CypherOrerByOrder, ReturnItem as CypherReturnItem,
+    OrerByOrder as CypherOrerByOrder, ReturnItem as CypherReturnItem, WithItem,
 };
 use crate::query_planner::{
     logical_expr::{ColumnAlias, Direction, Literal, LogicalExpr, Operator, OperatorApplication},
@@ -34,6 +34,7 @@ pub mod plan_builder;
 mod return_clause;
 mod skip_n_limit_clause;
 mod where_clause;
+mod with_clause;
 mod view_scan;
 mod filter_view;
 mod projection_view;
@@ -286,11 +287,24 @@ pub struct Filter {
     pub predicate: LogicalExpr,
 }
 
+/// Distinguishes between WITH and RETURN projections.
+/// Both use the same <return statement body> in OpenCypher grammar,
+/// but differ in position: WITH is intermediate, RETURN is terminal.
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub enum ProjectionKind {
+    /// Created by WITH clause - intermediate projection
+    With,
+    /// Created by RETURN clause - final projection
+    Return,
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Projection {
     #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub items: Vec<ProjectionItem>,
+    /// Indicates whether this projection comes from WITH or RETURN clause
+    pub kind: ProjectionKind,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -298,6 +312,9 @@ pub struct GroupBy {
     #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub expressions: Vec<LogicalExpr>,
+    /// HAVING clause for post-aggregation filtering
+    /// Filters that reference projection aliases (aggregation results) go here
+    pub having_clause: Option<LogicalExpr>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -369,6 +386,7 @@ impl Projection {
                 let new_node = LogicalPlan::Projection(Projection {
                     input: new_input.clone(),
                     items: self.items.clone(),
+                    kind: self.kind.clone(),
                 });
                 Transformed::Yes(Arc::new(new_node))
             }
@@ -388,6 +406,7 @@ impl GroupBy {
                 let new_node = LogicalPlan::GroupBy(GroupBy {
                     input: new_input.clone(),
                     expressions: self.expressions.clone(),
+                    having_clause: self.having_clause.clone(),
                 });
                 Transformed::Yes(Arc::new(new_node))
             }
@@ -594,6 +613,15 @@ impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
     }
 }
 
+impl<'a> From<WithItem<'a>> for ProjectionItem {
+    fn from(value: WithItem<'a>) -> Self {
+        ProjectionItem {
+            expression: value.expression.into(),
+            col_alias: value.alias.map(|alias| ColumnAlias(alias.to_string())),
+        }
+    }
+}
+
 impl<'a> From<CypherOrderByItem<'a>> for OrderByItem {
     fn from(value: CypherOrderByItem<'a>) -> Self {
         OrderByItem {
@@ -633,6 +661,7 @@ impl LogicalPlan {
                 expression: LogicalExpr::Literal(Literal::Integer(1)),
                 col_alias: None,
             }],
+            kind: ProjectionKind::Return,
         })
     }
 }
@@ -856,6 +885,7 @@ mod tests {
         let projection = Projection {
             input: original_input.clone(),
             items: projection_items.clone(),
+            kind: ProjectionKind::Return,
         };
 
         let old_plan = Arc::new(LogicalPlan::Projection(projection.clone()));
@@ -1065,6 +1095,7 @@ mod tests {
                     col_alias: None,
                 },
             ],
+            kind: ProjectionKind::Return,
         });
 
         // Verify the structure

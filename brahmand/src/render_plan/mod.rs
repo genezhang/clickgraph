@@ -49,6 +49,7 @@ pub struct RenderPlan {
     pub joins: JoinItems,
     pub filters: FilterItems,
     pub group_by: GroupByExpressions,
+    pub having_clause: Option<RenderExpr>,  // HAVING clause for post-aggregation filtering
     pub order_by: OrderByItems,
     pub skip: SkipItem,
     pub limit: LimitItem,
@@ -234,6 +235,7 @@ impl fmt::Display for RenderPlan {
         writeln!(f, "\nJOINS: {:?}", self.joins)?;
         writeln!(f, "\nFILTERS: {:?}", self.filters)?;
         writeln!(f, "\nGROUP BY: {:?}", self.group_by)?;
+        writeln!(f, "\nHAVING: {:?}", self.having_clause)?;
         writeln!(f, "\nORDER BY: {:?}", self.order_by)?;
         writeln!(f, "\nLIMIT: {:?}", self.limit)?;
         writeln!(f, "\nSKIP: {:?}", self.skip)?;

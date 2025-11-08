@@ -59,6 +59,7 @@ impl OptimizerPass for ProjectionPushDown {
                         let new_proj = Arc::new(LogicalPlan::Projection(Projection {
                             input: logical_plan.clone(),
                             items: projections,
+                            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
                         }));
                         Transformed::Yes(new_proj)
                     } else {

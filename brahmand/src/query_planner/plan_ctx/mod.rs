@@ -131,6 +131,9 @@ pub struct PlanCtx {
     alias_table_ctx_map: HashMap<String, TableCtx>,
     /// Track which table aliases came from OPTIONAL MATCH for LEFT JOIN generation
     optional_aliases: HashSet<String>,
+    /// Track projection aliases from WITH/aggregation clauses (alias_name -> original_expression)
+    /// Used to identify when filters reference projection results (HAVING clause)
+    projection_aliases: HashMap<String, LogicalExpr>,
 }
 
 impl PlanCtx {
@@ -141,6 +144,21 @@ impl PlanCtx {
     /// Mark a table alias as coming from an OPTIONAL MATCH clause
     pub fn mark_as_optional(&mut self, alias: String) {
         self.optional_aliases.insert(alias);
+    }
+
+    /// Register a projection alias (e.g., `follows` from `COUNT(b) as follows`)
+    pub fn register_projection_alias(&mut self, alias: String, expression: LogicalExpr) {
+        self.projection_aliases.insert(alias, expression);
+    }
+
+    /// Check if an alias is a projection alias
+    pub fn is_projection_alias(&self, alias: &str) -> bool {
+        self.projection_aliases.contains_key(alias)
+    }
+
+    /// Get the original expression for a projection alias
+    pub fn get_projection_alias_expr(&self, alias: &str) -> Option<&LogicalExpr> {
+        self.projection_aliases.get(alias)
     }
 
     /// Check if a table alias came from an OPTIONAL MATCH clause
@@ -241,6 +259,7 @@ impl PlanCtx {
         PlanCtx {
             alias_table_ctx_map: HashMap::new(),
             optional_aliases: HashSet::new(),
+            projection_aliases: HashMap::new(),
         }
     }
 }

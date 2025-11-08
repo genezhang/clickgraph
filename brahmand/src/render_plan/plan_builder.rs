@@ -528,6 +528,9 @@ pub(crate) trait RenderPlanBuilder {
     fn extract_ctes(&self, last_node_alias: &str) -> RenderPlanBuilderResult<Vec<Cte>>;
     
     fn extract_ctes_with_context(&self, last_node_alias: &str, context: &mut CteGenerationContext) -> RenderPlanBuilderResult<Vec<Cte>>;
+    
+    /// Find the ID column for a given table alias by traversing the logical plan
+    fn find_id_column_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<String>;
 
     fn extract_select_items(&self) -> RenderPlanBuilderResult<Vec<SelectItem>>;
 
@@ -538,6 +541,8 @@ pub(crate) trait RenderPlanBuilder {
     fn extract_joins(&self) -> RenderPlanBuilderResult<Vec<Join>>;
 
     fn extract_group_by(&self) -> RenderPlanBuilderResult<Vec<RenderExpr>>;
+
+    fn extract_having(&self) -> RenderPlanBuilderResult<Option<RenderExpr>>;
 
     fn extract_order_by(&self) -> RenderPlanBuilderResult<Vec<OrderByItem>>;
 
@@ -555,6 +560,52 @@ pub(crate) trait RenderPlanBuilder {
 }
 
 impl RenderPlanBuilder for LogicalPlan {
+    fn find_id_column_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<String> {
+        // Traverse the plan tree to find a GraphNode or ViewScan with matching alias
+        match self {
+            LogicalPlan::GraphNode(node) if node.alias == alias => {
+                // Found the matching node - extract ID column from its ViewScan
+                if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                    return Ok(scan.id_column.clone());
+                }
+            }
+            LogicalPlan::GraphRel(rel) => {
+                // Check both left and right branches
+                if let Ok(id) = rel.left.find_id_column_for_alias(alias) {
+                    return Ok(id);
+                }
+                if let Ok(id) = rel.right.find_id_column_for_alias(alias) {
+                    return Ok(id);
+                }
+            }
+            LogicalPlan::Projection(proj) => {
+                return proj.input.find_id_column_for_alias(alias);
+            }
+            LogicalPlan::Filter(filter) => {
+                return filter.input.find_id_column_for_alias(alias);
+            }
+            LogicalPlan::GroupBy(gb) => {
+                return gb.input.find_id_column_for_alias(alias);
+            }
+            LogicalPlan::GraphJoins(joins) => {
+                return joins.input.find_id_column_for_alias(alias);
+            }
+            LogicalPlan::OrderBy(order) => {
+                return order.input.find_id_column_for_alias(alias);
+            }
+            LogicalPlan::Skip(skip) => {
+                return skip.input.find_id_column_for_alias(alias);
+            }
+            LogicalPlan::Limit(limit) => {
+                return limit.input.find_id_column_for_alias(alias);
+            }
+            _ => {}
+        }
+        Err(RenderBuildError::InvalidRenderPlan(
+            format!("Cannot find ID column for alias '{}'", alias)
+        ))
+    }
+    
     fn extract_last_node_cte(&self) -> RenderPlanBuilderResult<Option<Cte>> {
         let last_node_cte = match &self {
             LogicalPlan::Empty => None,
@@ -1661,6 +1712,27 @@ impl RenderPlanBuilder for LogicalPlan {
         Ok(group_by)
     }
 
+    fn extract_having(&self) -> RenderPlanBuilderResult<Option<RenderExpr>> {
+        let having_clause = match &self {
+            LogicalPlan::Limit(limit) => limit.input.extract_having()?,
+            LogicalPlan::Skip(skip) => skip.input.extract_having()?,
+            LogicalPlan::OrderBy(order_by) => order_by.input.extract_having()?,
+            LogicalPlan::Projection(projection) => projection.input.extract_having()?,
+            LogicalPlan::GroupBy(group_by) => {
+                if let Some(having) = &group_by.having_clause {
+                    let mut render_expr: RenderExpr = having.clone().try_into()?;
+                    // Apply property mapping to the HAVING expression
+                    apply_property_mapping_to_expr(&mut render_expr, &group_by.input);
+                    Some(render_expr)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        Ok(having_clause)
+    }
+
     fn extract_order_by(&self) -> RenderPlanBuilderResult<Vec<OrderByItem>> {
         let order_by = match &self {
             LogicalPlan::Limit(limit) => limit.input.extract_order_by()?,
@@ -1717,6 +1789,21 @@ impl RenderPlanBuilder for LogicalPlan {
         
         println!("DEBUG: try_build_join_based_plan called");
         
+        // Check for GraphJoins wrapping Projection(Return) -> GroupBy pattern
+        if let LogicalPlan::GraphJoins(graph_joins) = self {
+            if let LogicalPlan::Projection(proj) = graph_joins.input.as_ref() {
+                if matches!(proj.kind, crate::query_planner::logical_plan::ProjectionKind::Return) {
+                    if let LogicalPlan::GroupBy(group_by) = proj.input.as_ref() {
+                        if group_by.having_clause.is_some() || !group_by.expressions.is_empty() {
+                            println!("DEBUG: GraphJoins wrapping Projection(Return)->GroupBy detected, delegating to child");
+                            // Delegate to the inner Projection -> GroupBy for CTE-based processing
+                            return graph_joins.input.try_build_join_based_plan();
+                        }
+                    }
+                }
+            }
+        }
+        
         // Check if this query needs CTE-based processing
         if let LogicalPlan::Projection(proj) = self {
             if let LogicalPlan::GraphRel(graph_rel) = proj.input.as_ref() {
@@ -1756,6 +1843,208 @@ impl RenderPlanBuilder for LogicalPlan {
     
     /// Build render plan for simple relationship queries using direct JOINs
     fn build_simple_relationship_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
+        
+        // Special case: Detect Projection(kind=Return) over GroupBy
+        // CTE is needed when RETURN items require data not available from WITH output
+        // Specifically: when RETURN contains node references (expanding to wildcards) or properties
+        // that aren't in the GROUP BY output
+        if let LogicalPlan::Projection(outer_proj) = self {
+            if matches!(outer_proj.kind, crate::query_planner::logical_plan::ProjectionKind::Return) {
+                if let LogicalPlan::GroupBy(group_by) = outer_proj.input.as_ref() {
+                    // Check if RETURN items need data beyond what WITH provides
+                    let needs_cte = outer_proj.items.iter().any(|item| {
+                        match &item.expression {
+                            crate::query_planner::logical_expr::LogicalExpr::TableAlias(_) => true,
+                            crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop) 
+                                if prop.column.0 == "*" => true,
+                            _ => false
+                        }
+                    });
+                    
+                    if needs_cte {
+                        println!("DEBUG: Detected Projection(Return) over GroupBy where RETURN needs data beyond WITH output - using CTE pattern");
+                        
+                        // Build the GROUP BY subquery as a CTE
+                        // Step 1: Build inner query (GROUP BY + HAVING) as a RenderPlan
+                        let inner_render_plan = group_by.input.to_render_plan()?;
+                        
+                        // Step 2: Extract GROUP BY expressions and HAVING clause
+                        // Fix wildcard grouping: a.* -> a.user_id (use ID column from schema)
+                        let group_by_exprs: Vec<RenderExpr> = group_by.expressions
+                            .iter()
+                            .cloned()
+                            .map(|expr| {
+                                // Check if this is a wildcard (PropertyAccess with column="*" or TableAlias)
+                                let fixed_expr = match &expr {
+                                    crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop) if prop.column.0 == "*" => {
+                                        // Replace a.* with a.{id_column}
+                                        // Extract ID column from the schema
+                                        let id_column = self.find_id_column_for_alias(&prop.table_alias.0)?;
+                                        crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
+                                            crate::query_planner::logical_expr::PropertyAccess {
+                                                table_alias: prop.table_alias.clone(),
+                                                column: crate::query_planner::logical_expr::Column(id_column),
+                                            }
+                                        )
+                                    }
+                                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
+                                        // Replace table alias with table_alias.id_column
+                                        let id_column = self.find_id_column_for_alias(&alias.0)?;
+                                        crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
+                                            crate::query_planner::logical_expr::PropertyAccess {
+                                                table_alias: alias.clone(),
+                                                column: crate::query_planner::logical_expr::Column(id_column),
+                                            }
+                                        )
+                                    }
+                                    _ => expr.clone()
+                                };
+                                fixed_expr.try_into()
+                            })
+                            .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?;
+                        
+                        let having_expr: Option<RenderExpr> = if let Some(having) = &group_by.having_clause {
+                            Some(having.clone().try_into()?)
+                        } else {
+                            None
+                        };
+                        
+                        // Step 2.5: Build SELECT list for CTE (only grouping keys + aggregates, not wildcards)
+                        // Extract from the inner Projection (child of GroupBy)
+                        let cte_select_items = if let LogicalPlan::Projection(inner_proj) = group_by.input.as_ref() {
+                            inner_proj.items
+                                .iter()
+                                .map(|item| {
+                                    // For each projection item, check if it's an aggregate or grouping key
+                                    let render_expr: RenderExpr = item.expression.clone().try_into()?;
+                                    
+                                    // Replace wildcard expressions with the specific ID column
+                                    let (fixed_expr, auto_alias) = match &render_expr {
+                                        RenderExpr::PropertyAccessExp(prop) if prop.column.0 == "*" => {
+                                            // Find the ID column for this alias
+                                            let id_col = self.find_id_column_for_alias(&prop.table_alias.0)?;
+                                            let expr = RenderExpr::PropertyAccessExp(super::render_expr::PropertyAccess {
+                                                table_alias: prop.table_alias.clone(),
+                                                column: super::render_expr::Column(id_col.clone()),
+                                            });
+                                            // Add alias so it can be referenced as grouped_data.user_id
+                                            (expr, Some(super::render_expr::ColumnAlias(id_col)))
+                                        }
+                                        _ => (render_expr, None)
+                                    };
+                                    
+                                    // Use existing alias if present, otherwise use auto-generated alias for grouping keys
+                                    let col_alias = item.col_alias.as_ref()
+                                        .map(|a| super::render_expr::ColumnAlias(a.0.clone()))
+                                        .or(auto_alias);
+                                    
+                                    Ok(super::SelectItem {
+                                        expression: fixed_expr,
+                                        col_alias,
+                                    })
+                                })
+                                .collect::<Result<Vec<super::SelectItem>, RenderBuildError>>()?
+                        } else {
+                            // Fallback to original select items
+                            inner_render_plan.select.0.clone()
+                        };
+                        
+                        // Step 3: Create CTE with GROUP BY + HAVING
+                        let cte_name = "grouped_data".to_string();
+                        let cte = Cte {
+                            cte_name: cte_name.clone(),
+                            content: super::CteContent::Structured(RenderPlan {
+                                ctes: CteItems(vec![]),
+                                select: SelectItems(cte_select_items),
+                                from: inner_render_plan.from.clone(),
+                                joins: inner_render_plan.joins.clone(),
+                                filters: inner_render_plan.filters.clone(),
+                                group_by: GroupByExpressions(group_by_exprs.clone()), // Clone to preserve for later use
+                                having_clause: having_expr,
+                                order_by: OrderByItems(vec![]),
+                                skip: SkipItem(None),
+                                limit: LimitItem(None),
+                                union: UnionItems(None),
+                            }),
+                            is_recursive: false,
+                        };
+                        
+                        // Step 4: Build outer query that joins to CTE
+                        // Extract the grouping key to use for join (use the FIXED expression with ID column)
+                        let grouping_key_render = if let Some(first_expr) = group_by_exprs.first() {
+                            first_expr.clone()
+                        } else {
+                            return Err(RenderBuildError::InvalidRenderPlan(
+                                "GroupBy has no grouping expressions after fixing wildcards".to_string()
+                            ));
+                        };
+                        
+                        // Extract table alias and column name from the fixed grouping key
+                        let (table_alias, key_column) = match &grouping_key_render {
+                            RenderExpr::PropertyAccessExp(prop_access) => {
+                                (prop_access.table_alias.0.clone(), prop_access.column.0.clone())
+                            }
+                            _ => {
+                                return Err(RenderBuildError::InvalidRenderPlan(
+                                    "Grouping expression is not a property access after fixing".to_string()
+                                ));
+                            }
+                        };
+                        
+                        // Build outer SELECT items from outer_proj
+                        let outer_select_items = outer_proj.items
+                            .iter()
+                            .map(|item| {
+                                let expr: RenderExpr = item.expression.clone().try_into()?;
+                                Ok(super::SelectItem {
+                                    expression: expr,
+                                    col_alias: item.col_alias.as_ref().map(|alias| super::render_expr::ColumnAlias(alias.0.clone())),
+                                })
+                            })
+                            .collect::<Result<Vec<super::SelectItem>, RenderBuildError>>()?;
+                        
+                        // Extract FROM table for the outer query (from the original table)
+                        let outer_from = inner_render_plan.from.clone();
+                        
+                        // Create JOIN condition: a.user_id = grouped_data.user_id
+                        let cte_key_expr = RenderExpr::PropertyAccessExp(super::render_expr::PropertyAccess {
+                            table_alias: super::render_expr::TableAlias(cte_name.clone()),
+                            column: super::render_expr::Column(key_column.clone()),
+                        });
+                        
+                        let join_condition = super::render_expr::OperatorApplication {
+                            operator: super::render_expr::Operator::Equal,
+                            operands: vec![grouping_key_render, cte_key_expr],
+                        };
+                        
+                        // Create a join to the CTE
+                        let cte_join = super::Join {
+                            table_name: cte_name.clone(),
+                            table_alias: cte_name.clone(),
+                            joining_on: vec![join_condition],
+                            join_type: super::JoinType::Inner,
+                        };
+                        
+                        println!("DEBUG: Created GroupBy CTE pattern with table_alias={}, key_column={}", table_alias, key_column);
+                        
+                        // Return the CTE-based plan with proper JOIN
+                        return Ok(RenderPlan {
+                            ctes: CteItems(vec![cte]),
+                            select: SelectItems(outer_select_items),
+                            from: outer_from,
+                            joins: JoinItems(vec![cte_join]),
+                            filters: FilterItems(None),
+                            group_by: GroupByExpressions(vec![]),
+                            having_clause: None,
+                            order_by: OrderByItems(vec![]),
+                            skip: SkipItem(None),
+                            limit: LimitItem(None),
+                            union: UnionItems(None),
+                        });
+                    }
+                }
+            }
+        }
         
         let final_select_items = self.extract_select_items()?;
         println!("DEBUG: build_simple_relationship_render_plan - final_select_items: {:?}", final_select_items);
@@ -1811,6 +2100,7 @@ impl RenderPlanBuilder for LogicalPlan {
             joins: JoinItems(extracted_joins),
             filters: FilterItems(final_filters),
             group_by: GroupByExpressions(self.extract_group_by()?),
+            having_clause: self.extract_having()?,
             order_by: OrderByItems(self.extract_order_by()?),
             skip: SkipItem(self.extract_skip()),
             limit: LimitItem(self.extract_limit()),
@@ -1833,6 +2123,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 joins: JoinItems(vec![]),
                 filters: FilterItems(None),
                 group_by: GroupByExpressions(vec![]),
+                having_clause: None,
                 order_by: OrderByItems(vec![]),
                 skip: SkipItem(None),
                 limit: LimitItem(None),
@@ -2144,6 +2435,7 @@ impl RenderPlanBuilder for LogicalPlan {
             joins: JoinItems(extracted_joins),
             filters: FilterItems(final_filters),
             group_by: GroupByExpressions(extracted_group_by_exprs),
+            having_clause: self.extract_having()?,
             order_by: OrderByItems(extracted_order_by),
             skip: SkipItem(extracted_skip_item),
             limit: LimitItem(extracted_limit_item),

@@ -93,6 +93,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                         let new_proj = Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
                             input: new_graph_rel,
                             items: proj.items.clone(),
+                            kind: proj.kind.clone(),
                         }));
                         
                         return Ok(Transformed::Yes(new_proj));
@@ -165,6 +166,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                         let new_proj = Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
                             input: new_view_scan,
                             items: proj.items.clone(),
+                            kind: proj.kind.clone(),
                         }));
                         
                         log::debug!("FilterIntoGraphRel: Pushed filter into ViewScan.view_filter");
@@ -233,6 +235,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                         return Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
                             input: child_plan.clone(),
                             items: proj.items.clone(),
+                            kind: proj.kind.clone(),
                         }))));
                     }
                     
@@ -338,6 +341,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             let new_proj = Arc::new(LogicalPlan::Projection(Projection {
                                 input: new_view_scan,
                                 items: proj.items.clone(),
+                                kind: proj.kind.clone(),
                             }));
                             
                             println!("FilterIntoGraphRel: Successfully created Projection with filtered ViewScan");
@@ -354,6 +358,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                         Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
                             input: new_input,
                             items: proj.items.clone(),
+                            kind: proj.kind.clone(),
                         })))
                     }
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),

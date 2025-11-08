@@ -73,6 +73,7 @@ impl AnalyzerPass for ProjectionTagging {
                 Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
                     input: child_tf.get_plan(),  // Use transformed child instead of original
                     items: proj_items_to_mutate,
+                    kind: projection.kind.clone(),
                 })))
             }
             LogicalPlan::GraphNode(graph_node) => {
@@ -187,6 +188,13 @@ impl ProjectionTagging {
     ) -> AnalyzerResult<()> {
         match item.expression.clone() {
             LogicalExpr::TableAlias(table_alias) => {
+                // Check if this is a projection alias (from WITH clause) rather than a table alias
+                if plan_ctx.is_projection_alias(&table_alias.0) {
+                    // This is a projection alias (e.g., "follows" from "COUNT(b) as follows")
+                    // Keep it as-is - it will be resolved during query execution
+                    return Ok(());
+                }
+                
                 // if just table alias i.e MATCH (p:Post) Return p; then For final overall projection keep p.* and for p's projection keep *.
 
                 let table_ctx = plan_ctx.get_mut_table_ctx(&table_alias.0).map_err(|e| {
