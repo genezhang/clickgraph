@@ -28,12 +28,12 @@ fn test_path_variable_sql_generation() {
     // Verify the SQL contains the path object construction
     println!("Generated SQL:\n{}", sql);
     
-    // Check that the SQL contains map() function for path construction
-    assert!(sql.contains("map("), "SQL should contain map() function for path object");
-    assert!(sql.contains("'nodes'"), "SQL should include 'nodes' key");
-    assert!(sql.contains("'length'"), "SQL should include 'length' key");
+    // Check that the SQL contains tuple() function for path construction
+    // Note: We use tuple() instead of map() to avoid ClickHouse type conflicts
+    assert!(sql.contains("tuple("), "SQL should contain tuple() function for path object");
     assert!(sql.contains("path_nodes"), "SQL should reference path_nodes column");
     assert!(sql.contains("hop_count"), "SQL should reference hop_count column");
+    assert!(sql.contains("path_relationships"), "SQL should reference path_relationships column");
 }
 
 #[test]
@@ -59,8 +59,8 @@ fn test_path_variable_with_properties() {
     // Verify the SQL
     println!("Generated SQL:\n{}", sql);
     
-    // Should have both path object and node property
-    assert!(sql.contains("map("), "SQL should contain map() for path");
+    // Should have both path object (as tuple) and node property
+    assert!(sql.contains("tuple("), "SQL should contain tuple() for path");
     assert!(sql.contains("end_name") || sql.contains("a.name"), "SQL should include the returned node name property");
 }
 
