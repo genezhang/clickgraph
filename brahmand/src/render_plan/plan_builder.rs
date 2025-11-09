@@ -226,22 +226,24 @@ fn find_anchor_node(connections: &[(String, String, String)], optional_aliases: 
         return None;
     }
     
-    // Collect all unique node aliases from both left and right connections
-    let mut all_nodes: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for (left, right, _) in connections {
-        all_nodes.insert(left.clone());
-        all_nodes.insert(right.clone());
-    }
-    
-    // Strategy 1: Look for ANY required (non-optional) node first
-    for node in &all_nodes {
-        if !optional_aliases.contains(node) {
-            log::info!("✓ Found REQUIRED anchor node: {} (not in optional_aliases)", node);
-            return Some(node.clone());
+    // Strategy 1: Prefer LEFT connections that are required (not optional)
+    // Check LEFT nodes first since they should be the anchor in (a)-[]->(b) patterns
+    for (left, _, _) in connections {
+        if !optional_aliases.contains(left) {
+            log::info!("✓ Found REQUIRED LEFT anchor node: {} (not in optional_aliases)", left);
+            return Some(left.clone());
         }
     }
     
-    // Strategy 2: All nodes are optional - use traditional anchor pattern
+    // Strategy 2: If all LEFT nodes are optional, check RIGHT nodes that are required
+    for (_, right, _) in connections {
+        if !optional_aliases.contains(right) {
+            log::info!("✓ Found REQUIRED RIGHT anchor node: {} (not in optional_aliases)", right);
+            return Some(right.clone());
+        }
+    }
+    
+    // Strategy 3: All nodes are optional - use traditional anchor pattern
     // (left_connection that is NOT in right_nodes)
     let right_nodes: std::collections::HashSet<_> = connections.iter()
         .map(|(_, right, _)| right.clone())
@@ -254,7 +256,7 @@ fn find_anchor_node(connections: &[(String, String, String)], optional_aliases: 
         }
     }
     
-    // Strategy 3: Fallback to first left_connection
+    // Strategy 4: Fallback to first left_connection
     let fallback = connections.first().map(|(left, _, _)| left.clone());
     if let Some(ref alias) = fallback {
         log::warn!("⚠️ Using fallback anchor: {}", alias);
