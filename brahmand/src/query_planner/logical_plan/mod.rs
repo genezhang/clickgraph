@@ -261,6 +261,11 @@ pub struct PageRank {
 pub struct GraphJoins {
     #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
+    
+    /// DEPRECATED: These pre-computed joins are incorrect for multi-hop patterns.
+    /// Only used as fallback for extract_from(). The correct approach is to call
+    /// input.extract_joins() which handles nested GraphRel recursively.
+    /// TODO: Remove this field in future refactor after validating all tests pass.
     pub joins: Vec<Join>,
 }
 

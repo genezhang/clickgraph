@@ -256,15 +256,19 @@ mod multiple_relationship_tests {
         assert!(sql.contains("user_follows"), "Expected user_follows table for FOLLOWS relationships: {}", sql);
 
         // Most important: Each JOIN must have an ON clause (this was the bug)
-        // Count JOIN keywords
-        let join_count = sql.matches("INNER JOIN").count() + sql.matches("LEFT JOIN").count() + sql.matches("JOIN").count();
+        // Count JOIN keywords (don't double-count "INNER JOIN" which contains "JOIN")
+        let join_count = sql.matches("INNER JOIN").count() + sql.matches("LEFT JOIN").count();
         // Count ON clauses
         let on_count = sql.matches(" ON ").count();
         
         // CRITICAL FIX VERIFICATION: All JOINs must have ON clauses
-        // The bug was that the second relationship JOIN had no ON clause
+        // For multi-hop (a)->(b)->(c): expect 4 JOINs with 4 ON clauses
+        // - JOIN 1: a -> follows (rel1)
+        // - JOIN 2: follows (rel1) -> b
+        // - JOIN 3: b -> follows (rel2)
+        // - JOIN 4: follows (rel2) -> c
         assert!(
-            on_count > 0 && on_count >= (join_count.saturating_sub(2)), // Allow some flexibility for optimization
+            on_count > 0 && on_count == join_count,
             "Missing ON clauses for multi-hop query: {} JOINs but only {} ON clauses.\nSQL: {}", 
             join_count, on_count, sql
         );
