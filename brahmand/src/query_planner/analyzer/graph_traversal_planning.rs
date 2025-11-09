@@ -273,23 +273,14 @@ impl GraphTRaversalPlanning {
             vec![]
         };
 
-        if graph_context.rel.table_ctx.should_use_edge_list() {
-            self.handle_edge_list_traversal(
-                graph_rel,
-                graph_context,
-                left_projections,
-                right_projections,
-                is_anchor_traversal,
-            )
-        } else {
-            self.handle_bitmap_traversal(
-                graph_rel,
-                graph_context,
-                left_projections,
-                right_projections,
-                is_anchor_traversal,
-            )
-        }
+        // ClickGraph always uses EDGE LIST traversal (relationship as explicit table)
+        self.handle_edge_list_traversal(
+            graph_rel,
+            graph_context,
+            left_projections,
+            right_projections,
+            is_anchor_traversal,
+        )
     }
 
     fn handle_edge_list_traversal(
@@ -439,85 +430,7 @@ impl GraphTRaversalPlanning {
         }
     }
 
-    fn handle_bitmap_traversal(
-        &self,
-        graph_rel: &GraphRel,
-        graph_context: GraphContext,
-        left_projections: Vec<ProjectionItem>,
-        right_projections: Vec<ProjectionItem>,
-        is_anchor_traversal: bool,
-    ) -> AnalyzerResult<(GraphRel, Vec<CtxToUpdate>)> {
-        let mut ctxs_to_update: Vec<CtxToUpdate> = vec![];
-
-        let (rel_cte_name, rel_plan, mut rel_ctxs_to_update) = self.get_rel_ctx_for_bitmaps(
-            graph_rel,
-            &graph_context,
-            graph_context.right.cte_name.clone(),
-            graph_context.right.id_column.clone(),
-        );
-
-        ctxs_to_update.append(&mut rel_ctxs_to_update);
-
-        let left_insubquery = self.build_insubquery(
-            graph_context.left.id_column,
-            rel_cte_name.clone(),
-            "to_id".to_string(),
-            graph_context.left.alias.to_string(),  // Pass node alias
-        );
-        let left_ctx_to_update = CtxToUpdate {
-            alias: graph_context.left.alias.to_string(),
-            label: graph_context.left.label,
-            projections: left_projections,
-            insubquery: Some(left_insubquery),
-            override_projections: false,
-            is_rel: false,
-        };
-        ctxs_to_update.push(left_ctx_to_update);
-
-        if is_anchor_traversal {
-            let right_ctx_to_update = CtxToUpdate {
-                alias: graph_context.right.alias.to_string(),
-                label: graph_context.right.label,
-                projections: right_projections,
-                insubquery: None,
-                override_projections: false,
-                is_rel: false,
-            };
-            ctxs_to_update.push(right_ctx_to_update);
-
-            let new_graph_rel = GraphRel {
-                left: Arc::new(LogicalPlan::Cte(Cte {
-                    input: graph_rel.left.clone(),
-                    name: graph_context.left.cte_name,
-                })),
-                center: Arc::new(LogicalPlan::Cte(Cte {
-                    input: rel_plan,
-                    name: rel_cte_name,
-                })),
-                right: Arc::new(LogicalPlan::Cte(Cte {
-                    input: graph_rel.right.clone(),
-                    name: graph_context.right.cte_name,
-                })),
-                ..graph_rel.clone()
-            };
-
-            Ok((new_graph_rel, ctxs_to_update))
-        } else {
-            let new_graph_rel = GraphRel {
-                left: Arc::new(LogicalPlan::Cte(Cte {
-                    input: graph_rel.left.clone(),
-                    name: graph_context.left.cte_name,
-                })),
-                center: Arc::new(LogicalPlan::Cte(Cte {
-                    input: rel_plan,
-                    name: rel_cte_name,
-                })),
-                right: graph_rel.right.clone(),
-                ..graph_rel.clone()
-            };
-            Ok((new_graph_rel, ctxs_to_update))
-        }
-    }
+    // BITMAP traversal removed - ClickGraph only supports EDGE LIST (relationships as explicit tables)
 
     fn get_rel_ctx_for_edge_list(
         &self,
@@ -702,146 +615,7 @@ impl GraphTRaversalPlanning {
         }
     }
 
-    fn get_rel_ctx_for_bitmaps(
-        &self,
-        graph_rel: &GraphRel,
-        graph_context: &GraphContext,
-        connected_node_cte_name: String,
-        connected_node_id_column: String,
-    ) -> (String, Arc<LogicalPlan>, Vec<CtxToUpdate>) {
-        let rel_proj_input: Vec<(String, Option<ColumnAlias>)> = vec![
-            ("from_id".to_string(), None),
-            (
-                "arrayJoin(bitmapToArray(to_id))".to_string(),
-                Some(ColumnAlias("to_id".to_string())),
-            ),
-        ];
-        let rel_projections = self.build_projections(rel_proj_input);
-
-        // Extract the fully qualified table name from the ViewScan
-        let rel_table_name = if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
-            scan.source_table.clone()
-        } else {
-            // Fallback to fully qualified schema table name if not a ViewScan
-            format!("{}.{}", graph_context.rel.schema.database, graph_context.rel.schema.table_name)
-        };
-
-        // if direction == Direction::Either and both nodes are of same types then use UNION of both.
-        if graph_rel.direction == Direction::Either
-            && graph_context.left.label == graph_context.right.label
-        {
-            let new_rel_label = format!("{}_{}", graph_context.rel.label, Direction::Either); //"Direction::Either);
-
-            let rel_cte_name = format!("{}_{}", new_rel_label, graph_context.rel.alias);
-
-            let outgoing_alias = logical_plan::generate_id();
-            let incoming_alias = logical_plan::generate_id();
-
-            let outgoing_label = format!("{}_{}", graph_context.rel.label, Direction::Outgoing);
-            let incoming_label = format!("{}_{}", graph_context.rel.label, Direction::Incoming);
-
-            let rel_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Union(Union {
-                inputs: vec![
-                    Arc::new(LogicalPlan::Scan(Scan {
-                        table_alias: Some(outgoing_alias.clone()),
-                        table_name: Some(rel_table_name.clone()),
-                    })),
-                    Arc::new(LogicalPlan::Scan(Scan {
-                        table_alias: Some(incoming_alias.clone()),
-                        table_name: Some(rel_table_name.clone()),
-                    })),
-                ],
-                union_type: UnionType::Distinct,
-            }));
-
-            let rel_insubquery = self.build_insubquery(
-                "from_id".to_string(),
-                connected_node_cte_name,
-                connected_node_id_column,
-                outgoing_alias.clone(),  // Pass relationship alias
-            );
-
-            let outgoing_ctx_to_update = CtxToUpdate {
-                alias: outgoing_alias.clone(),
-                label: outgoing_label,
-                projections: rel_projections.clone(),
-                insubquery: Some(rel_insubquery.clone()),
-                override_projections: false,
-                is_rel: true,
-            };
-
-            let incoming_ctx_to_update = CtxToUpdate {
-                alias: incoming_alias.clone(),
-                label: incoming_label,
-                projections: rel_projections.clone(),
-                insubquery: Some(rel_insubquery),
-                override_projections: false,
-                is_rel: true,
-            };
-
-            let existing_rel_ctx_to_update = CtxToUpdate {
-                alias: graph_context.rel.alias.to_string(),
-                label: new_rel_label, // just update the label so that in graph join inference we can derive the cte name
-                projections: vec![],
-                insubquery: None,
-                override_projections: false,
-                is_rel: true,
-            };
-
-            (
-                rel_cte_name,
-                rel_plan,
-                vec![
-                    existing_rel_ctx_to_update,
-                    outgoing_ctx_to_update,
-                    incoming_ctx_to_update,
-                ],
-            )
-        } else {
-            let index_direction = if graph_rel.direction == Direction::Either
-                && graph_context.rel.schema.from_node == graph_context.right.schema.table_name
-            {
-                Direction::Outgoing
-            } else if graph_rel.direction == Direction::Either
-                && graph_context.rel.schema.to_node == graph_context.right.schema.table_name
-            {
-                Direction::Incoming
-            } else {
-                graph_rel.direction.clone()
-            };
-
-            // let index_direction  = if graph_context.left.label == graph_context.right.label {
-            //     graph_rel.direction.clone()
-            // }  else if graph_context.rel.schema.from_node == graph_context.right.schema.table_name {
-            //     Direction::Outgoing
-            // } else {
-            //     Direction::Incoming
-            // };
-            let new_rel_label = format!("{}_{}", graph_context.rel.label, index_direction);
-
-            let rel_cte_name = format!("{}_{}", new_rel_label, graph_context.rel.alias);
-
-            let rel_insubquery = self.build_insubquery(
-                "from_id".to_string(),
-                connected_node_cte_name,
-                connected_node_id_column,
-                graph_context.rel.alias.to_string(),  // Pass relationship alias
-            );
-
-            let rel_plan = graph_rel.center.clone();
-
-            let ctx_to_update = CtxToUpdate {
-                alias: graph_context.rel.alias.to_string(),
-                label: new_rel_label,
-                projections: rel_projections,
-                insubquery: Some(rel_insubquery.clone()),
-                override_projections: false,
-                is_rel: true,
-            };
-
-            (rel_cte_name, rel_plan, vec![ctx_to_update])
-        }
-    }
+    // get_rel_ctx_for_bitmaps function removed - ClickGraph only supports EDGE LIST
 
     fn build_projections(&self, items: Vec<(String, Option<ColumnAlias>)>) -> Vec<ProjectionItem> {
         items

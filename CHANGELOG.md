@@ -1,3 +1,40 @@
+## [0.2.1] - 2025-11-08
+
+### 🎉 Major Achievement
+
+- **WITH CLAUSE 100% COMPLETE** - All 12/12 integration tests passing!
+
+### 🐛 Bug Fixes
+
+- **Multi-hop pattern JOIN extraction**: Fixed recursive GraphRel handling for patterns like `(a)-[]->(b)-[]->(c)`
+  - GraphJoins now delegates to input.extract_joins() instead of using pre-computed joins
+  - GraphRel recursively processes nested GraphRel structures
+  - Fixed ID column lookup for intermediate nodes (use table-based lookup instead of extract_id_column)
+  - Now correctly generates all 4 JOINs for two-hop patterns
+- **ORDER BY + LIMIT with CTE**: Fixed CTE generation when ORDER BY/LIMIT present
+  - Unwrap ORDER BY/LIMIT/SKIP nodes BEFORE pattern detection
+  - Preserve them after CTE delegation
+  - Rewrite ORDER BY expressions for CTE context (alias → grouped_data.alias)
+- **WITH alias resolution**: Fixed non-aggregation WITH aliases in RETURN clause
+  - Collect alias mappings from inner Projection (handles analyzer's kind conversion)
+  - Resolve TableAlias references BEFORE converting to RenderExpr
+  - Look through GraphJoins wrapper for nested WITH projections
+
+### 💼 Technical Debt
+
+- Deprecated GraphJoins.joins field (incorrect for multi-hop patterns)
+  - Only used as fallback for extract_from() now
+  - Added clear deprecation comment with migration path
+  - TODO: Remove pre-computed join generation from analyzer in future refactor
+
+### 🧪 Testing
+
+- Fixed test_two_hop_traversal_has_all_on_clauses JOIN counting logic
+  - Was double-counting "INNER JOIN" as both "INNER JOIN" and "JOIN"
+  - Now correctly counts: INNER JOIN + LEFT JOIN only
+- All 325/325 unit tests passing (100%)
+- All 12/12 WITH clause integration tests passing (100%)
+
 ## [0.2.0] - 2025-11-06
 
 ### 🚀 Features

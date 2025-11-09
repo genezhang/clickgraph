@@ -1,5 +1,102 @@
 # Known Issues
 
+## 🔧 ACTIVE: OPTIONAL MATCH Architectural Limitations
+
+**Status**: 🔧 **IN PROGRESS** (November 8, 2025)  
+**Severity**: Medium - Core functionality partially working  
+**Historical**: 12/27 tests passing (44%) on Nov 7, 2025  
+**Current**: 19/27 tests passing (70.4%) - **+26% improvement**  
+**Report**: See `OPTIONAL_MATCH_INVESTIGATION_NOV8.md` for full analysis
+
+### Summary
+OPTIONAL MATCH basic functionality works (LEFT JOIN generation, NULL handling with join_use_nulls), but 8 tests fail due to two architectural gaps.
+
+**Note**: These tests were added as aspirational tests and were never all passing. We've improved from 12/27 to 19/27 through optimizer fixes and ClickHouse configuration.
+
+### Issue 1: Required MATCH Context Not Tracked (3 failures)
+**Problem**: Query planner doesn't distinguish between nodes from required MATCH vs OPTIONAL MATCH clauses.
+
+**Impact**: SQL starts FROM optional node instead of required node, causing queries to return 0 rows instead of rows with NULLs.
+
+**Example**:
+```cypher
+MATCH (a:User) WHERE a.name = 'Alice'
+OPTIONAL MATCH (b:User)-[:FOLLOWS]->(a)
+RETURN a.name, b.name
+```
+
+**Current SQL** (Wrong):
+```sql
+FROM users AS b              -- ❌ Starts from OPTIONAL node
+LEFT JOIN follows AS rel ON ...
+LEFT JOIN users AS a ON ...  -- Required node in LEFT JOIN!
+WHERE a.name = 'Alice'       -- Filter happens after JOIN
+```
+
+**Expected SQL**:
+```sql
+FROM users AS a              -- ✅ Starts from REQUIRED node
+WHERE a.name = 'Alice'
+LEFT JOIN follows AS rel ON ...
+LEFT JOIN users AS b ON ...  -- Optional node in LEFT JOIN
+```
+
+**Failing Tests**:
+- `test_optional_match_incoming_relationship`
+- `test_optional_then_required`
+- `test_interleaved_required_optional`
+
+### Issue 2: Chained OPTIONAL NULL Propagation (3 failures)
+**Problem**: When first OPTIONAL MATCH returns NULL, second OPTIONAL MATCH still tries to match, creating Cartesian product.
+
+**Example**:
+```cypher
+MATCH (a:User) WHERE a.name = 'Eve'
+OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+OPTIONAL MATCH (b)-[:FOLLOWS]->(c:User)
+RETURN a.name, b.name, c.name
+```
+
+**Expected**: 1 row `(Eve, NULL, NULL)` - Eve doesn't follow anyone, so b is NULL, and (b)-[:FOLLOWS]->(c) should also be NULL.
+
+**Current**: 8 rows with Cartesian product - Second OPTIONAL generates matches even though b is NULL.
+
+**Failing Tests**:
+- `test_optional_match_all_nulls`
+- `test_two_optional_matches_one_missing`
+- `test_optional_match_self_reference`
+
+### Issue 3: Variable-Length OPTIONAL (2 failures)
+**Problem**: Variable-length paths combined with OPTIONAL MATCH.
+
+**Status**: Likely related to Issues 1 & 2, needs separate testing.
+
+**Failing Tests**:
+- `test_optional_variable_length_exists`
+- `test_optional_variable_length_no_path`
+
+### Fixes Applied So Far ✅
+1. **Optimizer is_optional preservation**: Fixed `filter_into_graph_rel.rs` to preserve is_optional flag
+2. **ClickHouse join_use_nulls**: Added `.with_option("join_use_nulls", "1")` for proper NULL handling
+3. **Anchor node selection removal**: Cleaned up disabled optimizer code
+
+### Next Actions
+1. **Priority 1**: Add required/optional context tracking to query planner (Est: 2-3 hours)
+   - Track node origin (required vs optional) in `plan_ctx`
+   - Use this info to select correct FROM table
+2. **Priority 2**: Implement NULL propagation for chained OPTIONAL (Est: 3-4 hours)
+   - Detect variable dependencies between OPTIONAL clauses
+   - Generate SQL that prevents matching when dependent variable is NULL
+3. **Priority 3**: Test variable-length OPTIONAL integration (Est: 1-2 hours)
+
+### Workarounds
+- Simple OPTIONAL MATCH with outgoing relationships works fine
+- Single OPTIONAL MATCH per query works reliably
+- Avoid chaining OPTIONAL MATCH clauses where later clauses depend on earlier optional variables
+- Avoid mixing required and optional patterns with incoming relationships
+
+---
+
 ## ✅ RESOLVED: Windows Native Server Crash
 
 **Status**: ✅ **FIXED** (October 17, 2025)  

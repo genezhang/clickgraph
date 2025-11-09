@@ -1,8 +1,185 @@
 # ClickGraph Status
 
-*Updated: November 5, 2025 (End of Night)*
+*Updated: November 9, 2025*
 
-## 🎉 **Highly Productive Session - +11 Tests, 3 High-Impact Fixes!**
+## 🎉 **BITMAP Code Removed - Simplified to EDGE LIST Only**
+
+**Test Results**: 
+- **Unit Tests**: 325/325 passing (100%) ✅ 
+- **WITH Clause Integration Tests**: 12/12 passing (100%) ✅
+- **OPTIONAL MATCH Integration Tests**: **23/27 passing (85.2%)** ✅ **← +4 TESTS FIXED!**
+- **Integration Tests**: 24/35 passing (68.6%) ✅
+- **OPTIONAL MATCH Parser**: 11/11 passing (100%) ✅
+
+### **Latest Fixes - November 9, 2025** 🚀
+
+**Code Cleanup**: Removed ~300 lines of unused BITMAP traversal code (legacy from upstream Brahmand)
+**Direction Bug Fixed**: Removed schema-based direction checks, always use LEFT→from_id, RIGHT→to_id  
+**Test Improvement**: +4 tests fixed (19/27 → 23/27, 70.4% → 85.2%)
+
+## 🔧 **OPTIONAL MATCH Progress - 85% Working (+15% improvement)**
+
+## 🔧 **OPTIONAL MATCH Progress - 85% Working (+15% improvement)**
+
+**Previous**: 19/27 tests passing (70.4%) - Nov 8, 2025  
+**Current**: **23/27 tests passing (85.2%)** - Nov 9, 2025  
+**Improvement**: +4 tests fixed by removing BITMAP code and fixing direction handling ✅
+
+**What Changed**: 
+- Removed entire BITMAP traversal code path (~180 lines in graph_join_inference.rs, ~180 lines in graph_traversal_planning.rs)
+- Fixed direction handling: LEFT/RIGHT are pre-adjusted by match_clause.rs, so always connect LEFT→from_id, RIGHT→to_id
+- Simplified traversal logic to always use EDGE LIST (relationships as explicit tables)
+
+**Remaining Issues** (4 tests, pre-existing):
+- 3 tests in `TestMixedRequiredOptional`: Multiple MATCH clause handling needs work
+- 1 test in `TestOptionalMatchEdgeCases`: Self-reference pattern validation issue
+
+**Next Steps**: Fix multiple MATCH clause coordination (architectural work needed)
+
+---
+
+## Historical Session Notes
+
+### **November 8, 2025 - Optimizer Cleanup**
+
+#### **1. Anchor Node Selection Optimizer Removal** ✅
+- **Action**: Deleted disabled optimizer completely (362 lines)
+- **Files**: `anchor_node_selection.rs` deleted, references cleaned in `mod.rs` and `errors.rs`
+- **Reason**: Was disabled because it broke queries; ClickHouse handles JOIN reordering better
+- **Impact**: Cleaner codebase, no functionality lost
+
+#### **2. Optimizer is_optional Flag Preservation** ✅
+- **Problem**: `FilterIntoGraphRel` optimizer was destroying `is_optional` flag when pushing filters
+- **Fix**: Changed 3 GraphRel creation sites to preserve flag: `is_optional: graph_rel.is_optional`
+- **File**: `brahmand/src/query_planner/optimizer/filter_into_graph_rel.rs` (lines 89, 130, 437)
+- **Impact**: LEFT JOIN generation now preserved through optimizer passes
+
+#### **3. ClickHouse join_use_nulls Configuration** ✅ **← KEY FIX**
+- **Problem**: ClickHouse returns empty strings instead of NULL for unmatched LEFT JOIN columns
+- **User Insight**: "there is a setting for ClickHouse that return NULL instead of empty string"
+- **Fix**: Added `.with_option("join_use_nulls", "1")` to ClickHouse client
+- **File**: `brahmand/src/server/clickhouse_client.rs` (line 21)
+- **Impact**: Fixed 2 tests expecting NULL values (17/27 → 19/27)
+
+**Remaining Issues (8 failures - Architectural)**:
+
+**Issue 1: Required MATCH Context Not Tracked** (3 failures)
+- Problem: Query starts FROM optional node instead of required node
+- Example: `MATCH (a) WHERE a.name='Alice' OPTIONAL MATCH (b)-[]->(a)` generates SQL starting FROM b (wrong!)
+- Root Cause: Query planner doesn't track which nodes are required vs optional
+- Impact: Returns 0 rows instead of 1 row with NULLs
+- Failing tests: incoming_relationship, optional_then_required, interleaved_required_optional
+
+**Issue 2: Chained OPTIONAL NULL Propagation** (3 failures)
+- Problem: When first OPTIONAL returns NULL, second OPTIONAL still generates rows (Cartesian product)
+- Example: `MATCH (a) OPTIONAL MATCH (a)-[]->(b) OPTIONAL MATCH (b)-[]->(c)` returns 8 rows instead of 1
+- Root Cause: Second OPTIONAL treated independently, doesn't check if b is NULL
+- Impact: Cartesian product instead of NULL propagation
+- Failing tests: all_nulls, two_optional_matches_one_missing, self_reference
+
+**Issue 3: Variable-Length OPTIONAL** (2 failures)
+- Problem: Variable-length paths with OPTIONAL MATCH
+- Status: Likely related to Issues 1 & 2
+- Failing tests: optional_variable_length_exists, optional_variable_length_no_path
+
+**📋 Next Actions** (see `OPTIONAL_MATCH_INVESTIGATION_NOV8.md` for details):
+1. **Priority 1**: Add required/optional context tracking to query planner (2-3 hours)
+2. **Priority 2**: Implement NULL propagation for chained OPTIONAL MATCH (3-4 hours)
+3. **Priority 3**: Test variable-length OPTIONAL integration (1-2 hours)
+
+---
+
+### **Previous: WITH CLAUSE Complete - November 8, 2025**
+
+**Session Achievement**: **Fixed 3 critical WITH clause bugs in 2 hours!**
+
+## 🎯 **WITH Clause Complete - 100% Success Rate!**
+
+**Session Goal**: Fix remaining WITH clause test failures (was 9/12 = 75%)  
+**Result**: **12/12 tests passing (100%)** ✅
+
+**Three Critical Fixes**:
+
+#### **1. Multi-hop Pattern Recursive JOIN Extraction** (~60 min) **← BIGGEST FIX**
+- **Problem**: `(a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)` generated wrong SQL with only 2 JOINs instead of 4
+- **Symptoms**:
+  ```sql
+  -- WRONG (missing first relationship):
+  INNER JOIN follows AS rel2 ON rel2.follower_id = b.follower_id  -- b undefined!
+  
+  -- CORRECT (all 4 JOINs):
+  INNER JOIN follows AS rel1 ON rel1.follower_id = a.user_id
+  INNER JOIN users AS b ON b.user_id = rel1.followed_id
+  INNER JOIN follows AS rel2 ON rel2.follower_id = b.user_id
+  INNER JOIN users AS c ON c.user_id = rel2.followed_id
+  ```
+- **Root Causes**:
+  1. `GraphJoins.extract_joins()` used pre-computed joins (incorrect for multi-hop)
+  2. `GraphRel.extract_joins()` didn't recurse into nested GraphRel structures
+  3. ID column lookup failed for intermediate nodes (returned relationship ID instead of node ID)
+- **Solutions**:
+  1. **Changed GraphJoins delegation**: `graph_joins.input.extract_joins()` instead of using `graph_joins.joins`
+  2. **Added recursive handling in GraphRel**: Check if `graph_rel.left` is another GraphRel, recursively extract its joins first
+  3. **Fixed ID column lookup**: Use table-based lookup for multi-hop instead of `extract_id_column()`
+- **Technical Debt**: Deprecated `GraphJoins.joins` field (only used as fallback for `extract_from()` now)
+- **Files Modified**: 
+  - `brahmand/src/render_plan/plan_builder.rs` (lines 1588-1720)
+  - `brahmand/src/query_planner/logical_plan/mod.rs` (deprecation comment)
+- **Impact**: **Test 10 now passing** ✅ - Multi-hop WITH clauses work perfectly!
+
+#### **2. ORDER BY + LIMIT Preservation with CTE** (~30 min)
+- **Problem**: `WITH ... RETURN ... ORDER BY ... LIMIT` didn't generate CTE
+- **Root Cause**: `try_build_join_based_plan()` handled ORDER BY/LIMIT before checking GraphJoins pattern
+- **Solution**: 
+  1. Unwrap ORDER BY/LIMIT/SKIP nodes BEFORE checking GraphJoins wrapper
+  2. Preserve them after CTE delegation
+  3. Rewrite ORDER BY expressions for CTE context (`alias` → `grouped_data.alias`)
+- **Files Modified**: `brahmand/src/render_plan/plan_builder.rs` (lines 1831-1895)
+- **Impact**: **Test 5 now passing** ✅ - CTE with ORDER BY + LIMIT working!
+
+#### **3. WITH Alias Resolution for Non-aggregation** (~30 min)
+- **Problem**: `WITH a, b.name as friend_name RETURN a.name, friend_name` → `friend_name` undefined
+- **Root Cause**: Non-aggregation WITH creates aliases that weren't resolved in RETURN
+- **Solution**:
+  1. Collect alias mappings from inner Projection (was WITH, may be changed to Return by analyzer)
+  2. Resolve TableAlias references BEFORE converting to RenderExpr
+  3. Handle case where analyzer changes `kind: With` to `kind: Return`
+  4. Look through GraphJoins wrapper for nested WITH projections
+- **Files Modified**: `brahmand/src/render_plan/plan_builder.rs` (lines 1041-1087)
+- **Impact**: **Test 3 now passing** ✅ - Non-aggregation WITH aliases resolved!
+
+**Test Suite Results**:
+```
+Test 1  ✅ Basic WITH with aggregation + HAVING
+Test 2  ✅ WITH → MATCH pattern
+Test 3  ✅ WITH simple projection (no aggregation)        ← FIXED!
+Test 4  ✅ WITH multiple aggregations
+Test 5  ✅ WITH + ORDER BY + LIMIT                        ← FIXED!
+Test 6  ✅ WITH with relationship data
+Test 7  ✅ WITH filter → MATCH with WHERE
+Test 8  ✅ WITH collecting node IDs
+Test 9  ✅ Multiple WITH clauses chained
+Test 10 ✅ WITH after multi-hop pattern                   ← FIXED!
+Test 11 ✅ WITH computed expressions
+Test 12 ✅ WITH → MATCH → aggregation in RETURN
+
+Result: 12/12 passed (100%)
+```
+
+**Unit Test Fix**:
+- Fixed `test_two_hop_traversal_has_all_on_clauses` JOIN counting logic
+- Was double-counting "INNER JOIN" (counted both "INNER JOIN" and "JOIN")
+- Now correctly counts: `INNER JOIN` + `LEFT JOIN` only
+- **Files Modified**: `brahmand/src/render_plan/tests/multiple_relationship_tests.rs` (lines 258-270)
+- **Result**: 325/325 unit tests passing (100%) ✅
+
+**Commit**: `0e4a8cd` - "� Fix WITH clause multi-hop patterns and ORDER BY/LIMIT handling"
+
+---
+
+## 📋 **Previous Session - November 5, 2025**
+
+### **Highly Productive Session - +11 Tests, 3 High-Impact Fixes!**
 
 **Test Results**: 
 - **Unit Tests**: 301/319 passing (94.4%) ✅
@@ -11,7 +188,7 @@
 - **OPTIONAL MATCH Parser**: 11/11 passing (100%) ✅
 - **OPTIONAL MATCH SQL**: Clean LEFT JOINs with proper prefixes ✅ **COMPLETE!**
 
-**Tonight's Improvements**: **+11 integration tests** (37% → 69%)
+**Night's Improvements**: **+11 integration tests** (37% → 69%)
 
 ### **Latest Fixes - November 5, 2025** 🚀
 
