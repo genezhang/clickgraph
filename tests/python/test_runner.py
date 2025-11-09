@@ -28,14 +28,14 @@ def log(msg, color=Colors.RESET):
 
 def start_server():
     """Start the ClickGraph server in background"""
-    log("🚀 Starting ClickGraph server...", Colors.CYAN)
+    log("[START] Starting ClickGraph server...", Colors.CYAN)
     
     # Check if already running
     if PID_FILE.exists():
         pid = int(PID_FILE.read_text().strip())
         try:
             os.kill(pid, 0)  # Check if process exists
-            log(f"⚠️  Server already running (PID: {pid})", Colors.YELLOW)
+            log(f"[WARN]  Server already running (PID: {pid})", Colors.YELLOW)
             return True
         except OSError:
             PID_FILE.unlink()
@@ -62,7 +62,7 @@ def start_server():
     PID_FILE.write_text(str(process.pid))
     
     # Wait for server to start
-    log("⏳ Waiting for server to start...", Colors.YELLOW)
+    log("[WAIT] Waiting for server to start...", Colors.YELLOW)
     for attempt in range(30):
         time.sleep(1)
         try:
@@ -79,7 +79,7 @@ def start_server():
 
 def stop_server():
     """Stop the ClickGraph server"""
-    log("🛑 Stopping ClickGraph server...", Colors.CYAN)
+    log("[STOP] Stopping ClickGraph server...", Colors.CYAN)
     
     if PID_FILE.exists():
         pid = int(PID_FILE.read_text().strip())
@@ -89,10 +89,10 @@ def stop_server():
             os.kill(pid, 9)   # SIGKILL if still running
             log(f"[OK] Server stopped (PID: {pid})", Colors.GREEN)
         except OSError:
-            log("⚠️  No running process found", Colors.YELLOW)
+            log("[WARN]  No running process found", Colors.YELLOW)
         PID_FILE.unlink(missing_ok=True)
     else:
-        log("⚠️  No PID file found", Colors.YELLOW)
+        log("[WARN]  No PID file found", Colors.YELLOW)
 
 def run_query(query, description=""):
     """Execute a Cypher query and return results"""

@@ -145,7 +145,7 @@ def test_pagerank_parameters():
             print("[OK] Expected result")
             results.append(True)
         else:
-            print("✗ Unexpected result")
+            print("[FAIL] Unexpected result")
             results.append(False)
 
     # Summary
@@ -155,10 +155,10 @@ def test_pagerank_parameters():
     print(f"Test Results: {passed}/{total} passed")
 
     if passed == total:
-        print("🎉 All tests passed!")
+        print("[SUCCESS] All tests passed!")
         return True
     else:
-        print("⚠️  Some tests failed")
+        print("[WARN]  Some tests failed")
         return False
 
 if __name__ == "__main__":

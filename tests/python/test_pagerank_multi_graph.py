@@ -25,10 +25,10 @@ def test_pagerank_multi_graph():
             print("[OK] Default graph PageRank successful")
             print(f"  Result keys: {list(result.keys())}")
         else:
-            print(f"✗ Default graph PageRank failed: {response.status_code}")
+            print(f"[FAIL] Default graph PageRank failed: {response.status_code}")
             print(response.text)
     except Exception as e:
-        print(f"✗ Default graph PageRank error: {e}")
+        print(f"[FAIL] Default graph PageRank error: {e}")
 
     # Test 2: PageRank with explicit graph parameter
     print("\nTest 2: PageRank with explicit graph parameter")
@@ -43,10 +43,10 @@ def test_pagerank_multi_graph():
             print("[OK] Explicit graph PageRank successful")
             print(f"  Result keys: {list(result.keys())}")
         else:
-            print(f"✗ Explicit graph PageRank failed: {response.status_code}")
+            print(f"[FAIL] Explicit graph PageRank failed: {response.status_code}")
             print(response.text)
     except Exception as e:
-        print(f"✗ Explicit graph PageRank error: {e}")
+        print(f"[FAIL] Explicit graph PageRank error: {e}")
 
     # Test 3: PageRank with node labels and relationship types
     print("\nTest 3: PageRank with node labels and relationship types")
@@ -61,10 +61,10 @@ def test_pagerank_multi_graph():
             print("[OK] Filtered PageRank successful")
             print(f"  Result keys: {list(result.keys())}")
         else:
-            print(f"✗ Filtered PageRank failed: {response.status_code}")
+            print(f"[FAIL] Filtered PageRank failed: {response.status_code}")
             print(response.text)
     except Exception as e:
-        print(f"✗ Filtered PageRank error: {e}")
+        print(f"[FAIL] Filtered PageRank error: {e}")
 
     # Test 4: PageRank with non-existent graph (should fail gracefully)
     print("\nTest 4: PageRank with non-existent graph")
@@ -97,10 +97,10 @@ def test_pagerank_multi_graph():
             print("[OK] Legacy parameter names work")
             print(f"  Result keys: {list(result.keys())}")
         else:
-            print(f"✗ Legacy parameter names failed: {response.status_code}")
+            print(f"[FAIL] Legacy parameter names failed: {response.status_code}")
             print(response.text)
     except Exception as e:
-        print(f"✗ Legacy parameter names error: {e}")
+        print(f"[FAIL] Legacy parameter names error: {e}")
 
 if __name__ == "__main__":
     print("Testing PageRank multi-graph support...")

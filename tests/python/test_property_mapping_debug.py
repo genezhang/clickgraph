@@ -34,11 +34,11 @@ def test_property_mapping():
             print("[OK] Query executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
-            print(f"✗ Query failed with status {response.status_code}")
+            print(f"[FAIL] Query failed with status {response.status_code}")
             print(f"Error: {response.text}")
 
     except Exception as e:
-        print(f"✗ Request failed: {e}")
+        print(f"[FAIL] Request failed: {e}")
 
     print()
 
@@ -66,11 +66,11 @@ def test_property_mapping():
             print("[OK] Query A executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
-            print(f"✗ Query A failed with status {response.status_code}")
+            print(f"[FAIL] Query A failed with status {response.status_code}")
             print(f"Error: {response.text}")
 
     except Exception as e:
-        print(f"✗ Query A failed: {e}")
+        print(f"[FAIL] Query A failed: {e}")
 
     print()
 
@@ -95,11 +95,11 @@ def test_property_mapping():
             print("[OK] Query B executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
-            print(f"✗ Query B failed with status {response.status_code}")
+            print(f"[FAIL] Query B failed with status {response.status_code}")
             print(f"Error: {response.text}")
 
     except Exception as e:
-        print(f"✗ Query B failed: {e}")
+        print(f"[FAIL] Query B failed: {e}")
 
 if __name__ == "__main__":
     test_property_mapping()

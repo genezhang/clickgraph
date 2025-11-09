@@ -159,14 +159,14 @@ def run_optional_match_tests():
                 if pattern in sql or pattern in str(result):
                     print(f"   [OK] Contains '{pattern}'")
                 else:
-                    print(f"   ⚠️  Missing '{pattern}' (might be in different format)")
+                    print(f"   [WARN]  Missing '{pattern}' (might be in different format)")
                     success = False
             
             if success:
                 print(f"\n[OK] Test {i} PASSED")
                 passed += 1
             else:
-                print(f"\n⚠️  Test {i} PASSED with warnings")
+                print(f"\n[WARN]  Test {i} PASSED with warnings")
                 passed += 1
         else:
             print(f"\n[OK] Query executed successfully")
@@ -203,7 +203,7 @@ def main():
     
     print("\n" + "="*70)
     if success:
-        print("🎉 ALL TESTS PASSED!")
+        print("[SUCCESS] ALL TESTS PASSED!")
         print("="*70)
         print("\nOPTIONAL MATCH is working correctly with:")
         print("  [OK] LEFT JOIN SQL generation")
@@ -211,7 +211,7 @@ def main():
         print("  [OK] Multiple OPTIONAL MATCH clauses")
         print("  [OK] WHERE clause filtering")
     else:
-        print("⚠️  SOME TESTS HAD ISSUES")
+        print("[WARN]  SOME TESTS HAD ISSUES")
         print("="*70)
     
     return success

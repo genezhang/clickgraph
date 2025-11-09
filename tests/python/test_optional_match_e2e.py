@@ -59,7 +59,7 @@ def test_simple_optional_match():
                 print(f"\n[OK] SUCCESS: SQL contains LEFT JOIN!")
                 print(f"Generated SQL:\n{sql}")
             else:
-                print(f"\n⚠️ WARNING: SQL does not contain LEFT JOIN")
+                print(f"\n[WARN] WARNING: SQL does not contain LEFT JOIN")
                 print(f"Generated SQL:\n{sql}")
         return result
     return None
@@ -150,7 +150,7 @@ def test_optional_match_with_where():
                 print(f"\n[OK] SUCCESS: OPTIONAL MATCH with WHERE generates LEFT JOIN")
                 print(f"Generated SQL:\n{sql}")
             else:
-                print(f"\n⚠️ WARNING: Expected LEFT JOIN not found")
+                print(f"\n[WARN] WARNING: Expected LEFT JOIN not found")
         return result
     return None
 
@@ -193,9 +193,9 @@ def main():
     print(f"\n[OK] Passed: {passed}/{total}")
     
     if passed == total:
-        print("\n🎉 All tests passed! OPTIONAL MATCH is working correctly!")
+        print("\n[SUCCESS] All tests passed! OPTIONAL MATCH is working correctly!")
     else:
-        print(f"\n⚠️  {total - passed} test(s) failed")
+        print(f"\n[WARN]  {total - passed} test(s) failed")
     
     return passed == total
 

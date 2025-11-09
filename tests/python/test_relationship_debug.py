@@ -41,7 +41,7 @@ def main():
         # Wait for Ctrl+C
         process.wait()
     except KeyboardInterrupt:
-        print("\n\n🛑 Stopping server...")
+        print("\n\n[STOP] Stopping server...")
         process.terminate()
         process.wait()
         print("[OK] Server stopped")

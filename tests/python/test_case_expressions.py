@@ -92,7 +92,7 @@ def test_case_expressions():
             print("[OK] Simple CASE expression executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
-            print(f"✗ Simple CASE expression failed: {response.text}")
+            print(f"[FAIL] Simple CASE expression failed: {response.text}")
             return False
 
         # Test searched CASE expression
@@ -109,7 +109,7 @@ def test_case_expressions():
             print("[OK] Searched CASE expression executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
-            print(f"✗ Searched CASE expression failed: {response.text}")
+            print(f"[FAIL] Searched CASE expression failed: {response.text}")
             return False
 
         # Test CASE in WHERE clause
@@ -126,7 +126,7 @@ def test_case_expressions():
             print("[OK] CASE in WHERE clause executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
-            print(f"✗ CASE in WHERE clause failed: {response.text}")
+            print(f"[FAIL] CASE in WHERE clause failed: {response.text}")
             return False
 
         # Test CASE inside a function
@@ -143,7 +143,7 @@ def test_case_expressions():
             print("[OK] CASE inside function executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
-            print(f"✗ CASE inside function failed: {response.text}")
+            print(f"[FAIL] CASE inside function failed: {response.text}")
             return False
 
         # Test CASE in complex expression
@@ -160,7 +160,7 @@ def test_case_expressions():
             print("[OK] CASE in complex expression executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
-            print(f"✗ CASE in complex expression failed: {response.text}")
+            print(f"[FAIL] CASE in complex expression failed: {response.text}")
             return False
 
         print("\n" + "=" * 50)
@@ -168,11 +168,11 @@ def test_case_expressions():
         return True
 
     except requests.exceptions.ConnectionError:
-        print("✗ Could not connect to ClickGraph server. Is it running?")
+        print("[FAIL] Could not connect to ClickGraph server. Is it running?")
         print("Start the server with: .\start_server_background.ps1")
         return False
     except Exception as e:
-        print(f"✗ Test failed with error: {e}")
+        print(f"[FAIL] Test failed with error: {e}")
         return False
 
 if __name__ == "__main__":

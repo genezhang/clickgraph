@@ -108,7 +108,7 @@ def test_bolt_database_selection():
             print("[OK] HELLO succeeded")
             print("[OK] Database selection accepted by server")
         else:
-            print(f"✗ HELLO failed: {response_data.hex()}")
+            print(f"[FAIL] HELLO failed: {response_data.hex()}")
         
         # Close connection
         sock.close()
@@ -118,12 +118,12 @@ def test_bolt_database_selection():
         print("  'Bolt connection using database/schema: social_network'")
         
     except socket.timeout:
-        print("✗ Connection timeout - is Bolt server running?")
+        print("[FAIL] Connection timeout - is Bolt server running?")
     except ConnectionRefusedError:
-        print("✗ Connection refused - is ClickGraph server running with Bolt enabled?")
+        print("[FAIL] Connection refused - is ClickGraph server running with Bolt enabled?")
         print("  Start server with: cargo run --bin clickgraph")
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[FAIL] Error: {e}")
 
 
 if __name__ == "__main__":

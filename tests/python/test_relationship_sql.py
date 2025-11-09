@@ -55,22 +55,22 @@ def test_query(test_case):
             if "user_follows" in sql:
                 print("[OK] PASS: Uses correct table 'user_follows'")
             else:
-                print("✗ FAIL: Does not use 'user_follows' table")
+                print("[FAIL] FAIL: Does not use 'user_follows' table")
             
             # Check if SQL contains invalid patterns
             if "FOLLOWS_r" in sql or "FOLLOWS_" in sql.replace("user_follows", ""):
-                print("✗ FAIL: Contains invalid 'FOLLOWS_*' pattern")
+                print("[FAIL] FAIL: Contains invalid 'FOLLOWS_*' pattern")
             else:
                 print("[OK] PASS: No invalid patterns")
             
             print(f"\nGenerated SQL:")
             print(sql)
         else:
-            print(f"✗ ERROR: HTTP {response.status_code}")
+            print(f"[FAIL] ERROR: HTTP {response.status_code}")
             print(response.text)
     
     except Exception as e:
-        print(f"✗ EXCEPTION: {e}")
+        print(f"[FAIL] EXCEPTION: {e}")
 
 def main():
     """Run all tests."""
@@ -85,7 +85,7 @@ def main():
             test_query(test_case)
             passed += 1
         except Exception as e:
-            print(f"✗ Test failed with exception: {e}")
+            print(f"[FAIL] Test failed with exception: {e}")
             failed += 1
     
     print(f"\n{'='*70}")

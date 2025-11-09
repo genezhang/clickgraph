@@ -135,16 +135,16 @@ if __name__ == "__main__":
     print("[TEST] Testing Multiple Relationship Types SQL Generation")
     print("=" * 60)
 
-    print("\n1️⃣ Testing 3 relationship types (FOLLOWS|FRIENDS_WITH|LIKES):")
+    print("\n1. Testing 3 relationship types (FOLLOWS|FRIENDS_WITH|LIKES):")
     test1_result = test_three_relationships()
 
-    print("\n2️⃣ Testing 4 relationship types (FOLLOWS|FRIENDS_WITH|LIKES|PURCHASED):")
+    print("\n2. Testing 4 relationship types (FOLLOWS|FRIENDS_WITH|LIKES|PURCHASED):")
     test2_result = test_multiple_relationships()
 
     print("\n" + "=" * 60)
     if test1_result and test2_result:
-        print("🎉 ALL TESTS PASSED: Multiple relationship types work correctly!")
+        print("[SUCCESS] ALL TESTS PASSED: Multiple relationship types work correctly!")
         sys.exit(0)
     else:
-        print("💥 SOME TESTS FAILED: Check the output above")
+        print("[ERROR] SOME TESTS FAILED: Check the output above")
         sys.exit(1)

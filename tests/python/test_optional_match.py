@@ -94,9 +94,9 @@ def main():
     print(f"\nTotal: {passed}/{total} tests passed")
     
     if passed == total:
-        print("\n🎉 All OPTIONAL MATCH tests passed!")
+        print("\n[SUCCESS] All OPTIONAL MATCH tests passed!")
     else:
-        print(f"\n⚠️  {total - passed} test(s) failed")
+        print(f"\n[WARN]  {total - passed} test(s) failed")
 
 if __name__ == "__main__":
     main()

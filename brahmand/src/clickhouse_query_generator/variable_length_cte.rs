@@ -102,7 +102,13 @@ impl VariableLengthCteGenerator {
     }
     
     /// Helper to format table name with optional database prefix
+    /// If table already contains a dot (already qualified), return as-is
     fn format_table_name(&self, table: &str) -> String {
+        // If table is already qualified (contains a dot), don't add prefix again
+        if table.contains('.') {
+            return table.to_string();
+        }
+        
         if let Some(db) = &self.database {
             format!("{}.{}", db, table)
         } else {
@@ -517,6 +523,11 @@ impl ChainedJoinGenerator {
     }
 
     fn format_table_name(&self, table: &str) -> String {
+        // If table is already qualified (contains a dot), don't add prefix again
+        if table.contains('.') {
+            return table.to_string();
+        }
+        
         if let Some(db) = &self.database {
             format!("{}.{}", db, table)
         } else {
