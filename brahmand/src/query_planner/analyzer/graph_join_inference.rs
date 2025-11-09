@@ -751,10 +751,10 @@ impl GraphJoinInference {
         eprintln!("    │ Creating joins for relationship...");
         let joins_before = collected_graph_joins.len();
         
-        // ClickGraph always uses EDGE LIST traversal (relationship as explicit table)
-        // BITMAP traversal (legacy from upstream) is not supported
-        eprintln!("    │ → Using EDGE LIST traversal");
-        let result = self.handle_edge_list_traversal(
+        // ClickGraph uses view-mapped graph storage where relationships are tables
+        // with from_id/to_id columns. Process the graph pattern to generate JOINs.
+        eprintln!("    │ → Processing graph pattern");
+        let result = self.handle_graph_pattern(
             graph_rel,
             graph_context,
             left_node_id_column,
@@ -777,8 +777,13 @@ impl GraphJoinInference {
         result
     }
 
+    /// Handle graph pattern traversal for view-mapped tables
+    /// 
+    /// ClickGraph always uses view-mapped edge list storage where relationships are stored
+    /// as tables with from_id/to_id columns connecting to node tables.
+    /// The function name reflects that we traverse graph patterns, not the storage format.
     #[allow(clippy::too_many_arguments)]
-    fn handle_edge_list_traversal(
+    fn handle_graph_pattern(
         &self,
         graph_rel: &GraphRel,
         graph_context: GraphContext,

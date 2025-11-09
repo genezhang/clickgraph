@@ -1,17 +1,25 @@
 # ClickGraph Status
 
-*Updated: November 9, 2025*
+*Updated: November 10, 2025*
 
-## 🎉 **BITMAP Code Removed - Simplified to EDGE LIST Only**
+## 🎉 **Code Terminology Cleanup - Removed "edge_list" References**
 
 **Test Results**: 
-- **Unit Tests**: 325/325 passing (100%) ✅ 
+- **Unit Tests**: 323/325 passing (99.4%) ✅ 
 - **WITH Clause Integration Tests**: 12/12 passing (100%) ✅
 - **OPTIONAL MATCH Integration Tests**: **23/27 passing (85.2%)** ✅ **← +4 TESTS FIXED!**
 - **Integration Tests**: 24/35 passing (68.6%) ✅
 - **OPTIONAL MATCH Parser**: 11/11 passing (100%) ✅
 
-### **Latest Fixes - November 9, 2025** 🚀
+### **Latest Fixes - November 10, 2025** 🧹
+
+**Terminology Cleanup**: Renamed `handle_edge_list_traversal` → `handle_graph_pattern`
+- **Rationale**: ClickGraph always uses view-mapped edge list storage (relationships stored as tables)
+- **Impact**: Terminology change only - no logic changes, preserves all ~500 lines of complex JOIN generation
+- **Files**: `graph_join_inference.rs` - function renamed, comments updated
+- **Test Status**: Back to baseline (323/325 unit tests, same 2 failures as original)
+
+### **Previous Fixes - November 9, 2025** 🚀
 
 **Code Cleanup**: Removed ~300 lines of unused BITMAP traversal code (legacy from upstream Brahmand)
 **Direction Bug Fixed**: Removed schema-based direction checks, always use LEFT→from_id, RIGHT→to_id  
