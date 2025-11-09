@@ -1,82 +1,188 @@
-# Next Session Priorities# Next Session Priorities# NEXT_SESSION_PRIORITIES.md
+# NEXT_SESSION_PRIORITIES.md
 
+**Date**: November 8, 2025  
+**Current Status**: WITH CLAUSE 100% COMPLETE! 🎉
+**Latest Success**: 12/12 WITH clause tests passing (100%)
 
+---
 
-**Date**: November 5, 2025  **Priority**: Fix property mapping bug for v0.2 release  
+## 🎯 IMMEDIATE PRIORITY: Complete Integration Test Coverage
 
-**Current Session**: OPTIONAL MATCH cleanup + multi-hop patterns planning
+**Goal**: Fix remaining 11 integration test failures (24/35 → 35/35 = 100%)
 
-**Date**: November 5, 2025  **Date**: November 2, 2025  
+**Status**: Ready for systematic debugging
 
-## Quick Wins Tonight (15-30 minutes)
+**Estimated Time**: 1-2 hours
 
-**Previous Session**: OPTIONAL MATCH Parser Fix (BREAKTHROUGH!)**Status**: Ready for rapid fix
+### Why This Matters
+- Many tests likely trivial fixes (similar to today's success)
+- Validates all core functionality end-to-end
+- Prepares for production benchmarking
+- Quick momentum after today's victory
 
-### 1. Fix WHERE Clause Duplication (10 min) ⚡
+### Approach
+1. Run full integration test suite: `python run_tests.py`
+2. Identify failing tests and categorize issues
+3. Fix systematically (like today's WITH clause fixes)
+4. Validate no regressions (ensure 325/325 unit tests still pass)
 
-- **Issue**: `WHERE (a.name = 'Alice') AND (a.name = 'Alice')`
+### Expected Issues (Based on Past Patterns)
+- Property mapping bugs
+- Table prefix inconsistencies
+- WHERE clause edge cases
+- Relationship traversal corner cases
 
-- **Cause**: WHERE applied both as Filter and as GraphRel.where_predicate
+**Target**: 35/35 integration tests (100%) by end of next session
 
-- **Fix**: Remove duplicate filter application in FilterIntoGraphRel## 🎉 MAJOR WIN: OPTIONAL MATCH NOW WORKS!## 🎯 Goal: Simplify Schema Strategy & Fix Tests
+---
 
-- **Impact**: Clean SQL output
+## 🏃 SHORT-TERM: Documentation & Performance
 
+### 1. Production Benchmarking Suite (2-3 hours)
+**What**: Establish performance baseline with realistic workloads
 
+**Why**: Need baseline before adding new features
 
-### 2. Fix Missing Table Prefix (5 min) ⚡
+**Tasks**:
+- Create realistic test data (1M nodes, 10M relationships)
+- Benchmark all query patterns (scans, traversals, aggregations, WITH clauses)
+- Document baseline metrics
+- Set up automated regression testing
 
-- **Issue**: First table shows as `users` instead of `test_integration.users`Parser fix complete - OPTIONAL MATCH now generates LEFT JOINs correctly!**Root Cause Identified**: Schema confusion from mixing startup + API loading  
+**Deliverable**: `notes/benchmarking.md` with baseline metrics
 
-- **Fix**: Ensure Scan/ViewScan propagates schema prefix
+### 2. Hot Reload for YAML Configs (2-3 hours)
+**What**: Watch for schema YAML changes and reload automatically
 
-- **Impact**: Consistent table naming**Solution**: Use ONLY server's default schema for basic tests  
+**Why**: Developer productivity (no server restarts during schema iteration)
 
+**Estimated Complexity**: Medium (file watching + atomic reload)
 
+---
 
-### 3. Run Full Test Suite (5 min)## Quick Wins (15-30 minutes total)**Current**: 1/272 tests passing (0.4%)  
+## 🚀 MEDIUM-TERM: Graph Algorithms & Pattern Extensions
 
-```powershell
+### 1. Additional Graph Algorithms (1-2 weeks per algorithm)
+**Completed**: PageRank ✅
 
-cargo test --lib**Target**: >220/272 tests passing (>80%) after simplification  
+**Next Algorithms** (using PageRank infrastructure):
+- Betweenness centrality
+- Closeness centrality  
+- Degree centrality
+- Community detection (label propagation)
+- Connected components
 
-python run_tests.py
+### 2. Pattern Comprehensions (3-5 days)
+**What**: `[(a)-[]->(b) | b.name]` syntax
 
-```### 1. Fix WHERE Clause Duplication (10 min) ⚡**Timeline**: 30 minutes to 1 hour
+**Why**: More expressive queries, common in Neo4j
 
+**Estimated Complexity**: Medium (AST extension + list handling)
 
+---
 
-## Future: Multi-Hop Relationship Patterns 🔗- **Issue**: `WHERE (a.name = 'Alice') AND (a.name = 'Alice')`
+## 📋 Completed Priorities (Reference)
 
+### ✅ November 8, 2025: WITH CLAUSE 100% COMPLETE
+- Fixed multi-hop pattern JOIN extraction (recursive GraphRel)
+- Fixed ORDER BY + LIMIT with CTE
+- Fixed WITH alias resolution for non-aggregation
+- Result: 12/12 tests (100%), up from 9/12 (75%)
+- Duration: ~2.5 hours
+- Documentation: `notes/with-clause-complete.md`
 
+### ✅ November 5, 2025: OPTIONAL MATCH Complete
+- 11/11 parser tests passing
+- Clean LEFT JOIN SQL generation
+- Full documentation
+- Integration test coverage: 24/35 (68.6%)
 
-**Priority**: Medium (after basic OPTIONAL MATCH stabilized)  - **Cause**: WHERE applied both as Filter and as GraphRel.where_predicate## Schema Strategy Change (CRITICAL INSIGHT!)
+### ✅ November 1, 2025: Critical Bug Fixes
+- ChainedJoin CTE wrapper
+- Shortest path filter rewriting
+- Aggregation table names
+- Benchmark: 10/10 queries (100%)
 
-**Estimated**: 1-2 hours for comprehensive test suite  
+### ✅ October 25, 2025: Query Performance Metrics
+- Phase-by-phase timing
+- HTTP response headers
+- Structured logging
 
-**Suggested by**: User (Nov 5, 2025)- **Fix**: Remove duplicate filter application
+### ✅ October 21, 2025: Variable-Length Paths & PageRank
+- Complete `*`, `*2`, `*1..3` patterns
+- PageRank algorithm implementation
+- Path variables and functions
 
+---
 
+## 🎯 Session Planning Template
 
-### Patterns to Add Test Coverage For- **Impact**: Clean SQL output**OLD (Problematic)**:
+**For Next Session**:
+1. **Warm-up** (5 min): Review STATUS.md, run test suite
+2. **Main Task** (60-90 min): Fix integration test failures
+3. **Validation** (15 min): Run full test suite, check for regressions
+4. **Document** (15 min): Update STATUS.md, CHANGELOG.md if needed
 
+**Success Criteria**:
+- All integration tests passing (35/35 = 100%)
+- No unit test regressions (maintain 325/325)
+- Clean commit with descriptive message
+- Updated documentation
 
+---
 
-```cypher- Server loads `test_integration.yaml` at startup → registers as "default" + "test_integration"
+## 💡 Development Philosophy
 
-# 1. Diamond pattern (fan-out then fan-in)
+**Lessons from Today's Success**:
+1. **Quick wins over big refactors** ("I want to success quickly!")
+2. **Systematic debugging** (isolate each test failure)
+3. **Surgical fixes** (minimal code changes, maximum impact)
+4. **Document technical debt** (deprecation comments, TODO notes)
+5. **Celebrate victories** (100% success rates deserve recognition!)
 
-MATCH (a)-[r1]->()<-[r2]-(b) ### 2. Fix Missing Table Prefix (5 min) ⚡- Tests ALSO load via API → creates duplicate/conflicting registrations
+**What Works**:
+- Focus on test coverage (validates all functionality)
+- Fix bugs as they're found (don't let them accumulate)
+- Document immediately (while fresh in memory)
+- Quick iteration (2-3 hour sessions with clear goals)
 
-RETURN a, b
+**Avoid**:
+- Big refactors when quick fixes work
+- Premature optimization (establish baseline first)
+- Feature creep (finish current work before starting new)
+- Skipping documentation (future self will thank you)
 
-# SQL: FROM a JOIN node1 ON ... JOIN b ON ...- **Issue**: First table shows as `users` instead of `test_integration.users`- Result: Schema confusion, race conditions, wrong property mappings
+---
 
+## 📊 Current Project Health
 
+**Test Coverage**:
+- Unit Tests: 325/325 (100%) ✅
+- WITH Clause: 12/12 (100%) ✅
+- Integration Tests: 24/35 (68.6%) ← **NEXT TARGET**
+- OPTIONAL MATCH: 11/11 (100%) ✅
 
-# 2. Chain pattern (sequential hops)- **Fix**: Ensure Scan/ViewScan propagates schema prefix
+**Core Features Status**:
+- ✅ Basic MATCH queries
+- ✅ WHERE clause filters
+- ✅ OPTIONAL MATCH (LEFT JOINs)
+- ✅ Variable-length paths (`*`, `*2`, `*1..3`)
+- ✅ Shortest path algorithms
+- ✅ Multiple relationship types (`[:TYPE1|TYPE2]`)
+- ✅ WITH clauses (all patterns)
+- ✅ Path variables and functions
+- ✅ ORDER BY, LIMIT, SKIP
+- ✅ Aggregations (COUNT, SUM, AVG, etc.)
+- ✅ PageRank algorithm
 
-MATCH (a)-[r1]->()-[r2]->(b) 
+**Known Limitations**:
+- Write operations (out of scope - read-only engine)
+- Some edge cases in integration tests (to be fixed)
+- Performance baseline not yet established
+- Schema hot reload not implemented
+
+**Momentum**: 🚀 **STRONG** - Three major victories in past week!
+ 
 
 RETURN a, b- **Impact**: Consistent table naming**NEW (Simplified)**:
 

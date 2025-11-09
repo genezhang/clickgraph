@@ -1,13 +1,90 @@
 # Next Steps - Development Roadmap
 
-**Last Updated**: November 1, 2025
-**Current Status**: Critical bug fixes completed - 100% benchmark success
+**Last Updated**: November 8, 2025
+**Current Status**: WITH CLAUSE 100% COMPLETE - All 12/12 tests passing! 🎉
 **Branch**: `main`
-**Latest Commit**: db6c914 - Three critical bug fixes for graph query execution
+**Latest Commit**: 0e4a8cd - WITH clause multi-hop patterns and ORDER BY/LIMIT handling
 
 ---
 
-## 🎉 Just Completed (November 1, 2025)
+## 🎉 Just Completed (November 8, 2025)
+
+### WITH CLAUSE 100% SUCCESS - Three Critical Fixes ✅
+**What**: Fixed all remaining WITH clause test failures, achieved perfect 12/12 (100%) test pass rate
+
+**Fix #1**: Multi-hop Pattern Recursive JOIN Extraction (~60 min)
+- Issue: `(a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)` generated wrong SQL with only 2 JOINs instead of 4
+- Root Causes:
+  - GraphJoins used pre-computed joins (incorrect for multi-hop)
+  - GraphRel didn't recurse into nested GraphRel structures
+  - ID column lookup failed for intermediate nodes
+- Solutions:
+  - GraphJoins delegates to input.extract_joins() instead of using pre-computed joins
+  - GraphRel recursively processes nested GraphRel structures
+  - Fixed ID column lookup (use table-based lookup for multi-hop)
+- Impact: Multi-hop WITH clauses now generate all JOINs correctly
+- Files: `plan_builder.rs` (lines 1588-1748), `logical_plan/mod.rs` (deprecation comment)
+
+**Fix #2**: ORDER BY + LIMIT Preservation with CTE (~30 min)
+- Issue: `WITH ... RETURN ... ORDER BY ... LIMIT` didn't generate CTE
+- Root Cause: ORDER BY/LIMIT wrapper processed before GraphJoins pattern detection
+- Solution:
+  - Unwrap ORDER BY/LIMIT/SKIP nodes BEFORE checking GraphJoins pattern
+  - Preserve them after CTE delegation
+  - Rewrite ORDER BY expressions for CTE context (alias → grouped_data.alias)
+- Impact: CTE queries can now use ORDER BY and LIMIT
+- Files: `plan_builder.rs` (lines 1831-1895)
+
+**Fix #3**: WITH Alias Resolution for Non-aggregation (~30 min)
+- Issue: `WITH a, b.name as friend_name RETURN a.name, friend_name` → friend_name undefined
+- Root Cause: Non-aggregation WITH creates aliases but analyzer changes kind, aliases not resolved
+- Solution:
+  - Collect alias mappings from inner Projection regardless of kind field
+  - Resolve TableAlias references BEFORE converting to RenderExpr
+  - Look through GraphJoins wrapper for nested WITH projections
+- Impact: Non-aggregation WITH clauses work correctly
+- Files: `plan_builder.rs` (lines 1041-1087)
+
+**Technical Debt Documented**:
+- Deprecated GraphJoins.joins field (incorrect for multi-hop patterns)
+- Added clear deprecation comment with migration path
+- TODO: Remove pre-computed join generation from analyzer in future refactor
+
+**Test Results**:
+- ✅ **Unit Tests**: 325/325 passing (100%)
+- ✅ **WITH Clause Integration**: **12/12 passing (100%)** ← Up from 9/12 (75%)!
+- ✅ Fixed test_two_hop_traversal_has_all_on_clauses JOIN counting logic
+- ✅ All 12 WITH clause patterns working:
+  1. Basic aggregation + HAVING
+  2. WITH → MATCH
+  3. Non-aggregation projection
+  4. Multiple aggregations
+  5. ORDER BY + LIMIT
+  6. Relationship data
+  7. Filter → MATCH with WHERE
+  8. Collecting node IDs
+  9. Multiple WITH chained
+  10. Multi-hop pattern (MOST COMPLEX!)
+  11. Computed expressions
+  12. WITH → MATCH → aggregation
+
+**Files Modified**:
+- `brahmand/src/render_plan/plan_builder.rs` - Three fixes (ORDER BY, aliases, multi-hop)
+- `brahmand/src/query_planner/logical_plan/mod.rs` - Deprecation comment
+- `brahmand/src/render_plan/tests/multiple_relationship_tests.rs` - Fixed JOIN counting
+- `tests/integration/test_with_clause.py` - Comprehensive test suite (new file)
+
+**Documentation**:
+- `notes/with-clause-complete.md` - Complete implementation details
+- `STATUS.md` - Updated with November 8 session
+- `CHANGELOG.md` - v0.2.1 entry
+
+**Session Duration**: ~2.5 hours
+**Key Achievement**: Clean, surgical fixes with no regressions!
+
+---
+
+## 🎉 Previously Completed (November 1, 2025)
 
 ### Bug Fix Session - All Graph Queries Working ✅
 **What**: Fixed three critical bugs blocking production benchmarking

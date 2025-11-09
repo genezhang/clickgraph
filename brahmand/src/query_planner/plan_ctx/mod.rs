@@ -134,16 +134,37 @@ pub struct PlanCtx {
     /// Track projection aliases from WITH/aggregation clauses (alias_name -> original_expression)
     /// Used to identify when filters reference projection results (HAVING clause)
     projection_aliases: HashMap<String, LogicalExpr>,
+    /// Flag to indicate we're currently processing an OPTIONAL MATCH clause
+    /// All new aliases created during this mode should be marked as optional
+    in_optional_match_mode: bool,
 }
 
 impl PlanCtx {
     pub fn insert_table_ctx(&mut self, alias: String, table_ctx: TableCtx) {
-        self.alias_table_ctx_map.insert(alias, table_ctx);
+        eprintln!("DEBUG PlanCtx::insert_table_ctx: alias='{}', in_optional_match_mode={}", alias, self.in_optional_match_mode);
+        self.alias_table_ctx_map.insert(alias.clone(), table_ctx);
+        
+        // Auto-mark as optional if we're in OPTIONAL MATCH mode
+        if self.in_optional_match_mode {
+            eprintln!("DEBUG PlanCtx: Auto-marking '{}' as optional", alias);
+            self.optional_aliases.insert(alias);
+        }
     }
 
     /// Mark a table alias as coming from an OPTIONAL MATCH clause
     pub fn mark_as_optional(&mut self, alias: String) {
         self.optional_aliases.insert(alias);
+    }
+
+    /// Set the OPTIONAL MATCH processing mode
+    /// When true, all new aliases will be automatically marked as optional
+    pub fn set_optional_match_mode(&mut self, enabled: bool) {
+        self.in_optional_match_mode = enabled;
+    }
+
+    /// Check if we're currently processing an OPTIONAL MATCH clause
+    pub fn is_optional_match_mode(&self) -> bool {
+        self.in_optional_match_mode
     }
 
     /// Register a projection alias (e.g., `follows` from `COUNT(b) as follows`)
@@ -260,6 +281,7 @@ impl PlanCtx {
             alias_table_ctx_map: HashMap::new(),
             optional_aliases: HashSet::new(),
             projection_aliases: HashMap::new(),
+            in_optional_match_mode: false,
         }
     }
 }

@@ -1,0 +1,43 @@
+[2025-11-09T06:53:56Z DEBUG clickgraph::server] === SERVER STARTING (debug log test) ===
+[2025-11-09T06:53:56Z INFO  clickgraph::server] Server configuration: http=0.0.0.0:8080, bolt=0.0.0.0:7687
+[2025-11-09T06:53:56Z DEBUG hyper_util::client::legacy::connect::dns] resolve; host=localhost
+[2025-11-09T06:53:56Z DEBUG hyper_util::client::legacy::connect::http] connecting to [::1]:8123
+[2025-11-09T06:53:56Z DEBUG hyper_util::client::legacy::connect::http] connected to [::1]:8123
+[2025-11-09T06:53:56Z DEBUG hyper_util::client::legacy::pool] pooling idle connection for ("http", localhost:8123)
+✗ Failed to load schema from database: Clickhouse Error: no rows returned by a query that expected to return at least one row
+[2025-11-09T06:53:56Z DEBUG hyper_util::client::legacy::pool] reuse idle connection for ("http", localhost:8123)
+[2025-11-09T06:53:56Z INFO  clickgraph::server] Successfully bound HTTP listener to 0.0.0.0:8080
+[2025-11-09T06:53:56Z DEBUG hyper_util::client::legacy::connect::dns] resolve; host=localhost
+[2025-11-09T06:53:56Z DEBUG hyper_util::client::legacy::connect::http] connecting to [::1]:8123
+[2025-11-09T06:53:56Z DEBUG hyper_util::client::legacy::connect::http] connected to [::1]:8123
+[2025-11-09T06:53:56Z DEBUG hyper_util::client::legacy::pool] pooling idle connection for ("http", localhost:8123)
+Schema monitor: Error fetching remote schema: Clickhouse Error: no rows returned by a query that expected to return at least one row
+[2025-11-09T06:54:13Z DEBUG clickgraph::server::handlers] Query handler called with query: 
+                MATCH (a:User)
+                WHERE a.name = 'Alice'
+                OPTIONAL MATCH (b:User)-[:FOLLOWS]->(a)
+                RETURN a.name, b.name
+                
+[2025-11-09T06:54:13Z DEBUG clickgraph::server::handlers] Using schema: test_graph_schema
+[2025-11-09T06:54:56Z DEBUG hyper_util::client::legacy::connect::dns] resolve; host=localhost
+[2025-11-09T06:54:56Z DEBUG hyper_util::client::legacy::connect::http] connecting to [::1]:8123
+[2025-11-09T06:54:56Z DEBUG hyper_util::client::legacy::connect::http] connected to [::1]:8123
+[2025-11-09T06:54:56Z DEBUG hyper_util::client::legacy::pool] pooling idle connection for ("http", localhost:8123)
+Schema monitor: Error fetching remote schema: Clickhouse Error: no rows returned by a query that expected to return at least one row
+[2025-11-09T06:55:56Z DEBUG hyper_util::client::legacy::connect::dns] resolve; host=localhost
+[2025-11-09T06:55:56Z DEBUG hyper_util::client::legacy::connect::http] connecting to [::1]:8123
+[2025-11-09T06:55:56Z DEBUG hyper_util::client::legacy::connect::http] connected to [::1]:8123
+[2025-11-09T06:55:56Z DEBUG hyper_util::client::legacy::pool] pooling idle connection for ("http", localhost:8123)
+Schema monitor: Error fetching remote schema: Clickhouse Error: no rows returned by a query that expected to return at least one row
+[2025-11-09T06:56:14Z DEBUG clickgraph::server::handlers] Query handler called with query: 
+                MATCH (a:User)
+                WHERE a.name = 'Alice'
+                OPTIONAL MATCH (b:User)-[:FOLLOWS]->(a)
+                RETURN a.name, b.name
+                
+[2025-11-09T06:56:14Z DEBUG clickgraph::server::handlers] Using schema: test_graph_schema
+[2025-11-09T06:56:56Z DEBUG hyper_util::client::legacy::connect::dns] resolve; host=localhost
+[2025-11-09T06:56:56Z DEBUG hyper_util::client::legacy::connect::http] connecting to [::1]:8123
+[2025-11-09T06:56:56Z DEBUG hyper_util::client::legacy::connect::http] connected to [::1]:8123
+[2025-11-09T06:56:56Z DEBUG hyper_util::client::legacy::pool] pooling idle connection for ("http", localhost:8123)
+Schema monitor: Error fetching remote schema: Clickhouse Error: no rows returned by a query that expected to return at least one row

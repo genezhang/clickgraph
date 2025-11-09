@@ -136,13 +136,13 @@ class TestMultipleOptionalMatch:
         )
         
         assert_query_success(response)
-        # Eve follows no one, so b and c should be NULL
+        # Eve follows nobody, so both b and c should be NULL
         assert_row_count(response, 1)
         results = response["results"]
         if isinstance(results[0], dict):
             assert results[0]["a.name"] == "Eve"
-            assert results[0]["b.name"] is None
-            assert results[0]["c.name"] is None
+            assert results[0]["b.name"] is None, "Expected NULL since Eve follows nobody"
+            assert results[0]["c.name"] is None, "Expected NULL since b is NULL"
     
     def test_chained_optional_matches(self, simple_graph):
         """Test chained OPTIONAL MATCH patterns."""

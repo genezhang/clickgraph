@@ -247,7 +247,7 @@ fn traverse_connected_pattern<'a>(
     plan_ctx: &mut PlanCtx,
     path_pattern_idx: usize,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
-    traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, path_pattern_idx, None, None)
+    traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, path_pattern_idx, None, None, false)
 }
 
 fn traverse_connected_pattern_with_mode<'a>(
@@ -257,6 +257,7 @@ fn traverse_connected_pattern_with_mode<'a>(
     path_pattern_idx: usize,
     shortest_path_mode: Option<ShortestPathMode>,
     path_variable: Option<&str>,
+    is_optional: bool,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
     eprintln!("\n╔════════════════════════════════════════");
     eprintln!("║ traverse_connected_pattern_with_mode");
@@ -392,7 +393,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization
                 labels: rel_labels.clone(),
-                is_optional: None, // Will be set by OPTIONAL MATCH processing
+                is_optional: if is_optional { Some(true) } else { None },
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -463,7 +464,13 @@ fn traverse_connected_pattern_with_mode<'a>(
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization
                 labels: rel_labels.clone(),
-                is_optional: None, // Will be set by OPTIONAL MATCH processing
+                is_optional: if plan_ctx.is_optional_match_mode() { 
+                    log::warn!("CREATING GraphRel with is_optional=Some(true), mode={}", plan_ctx.is_optional_match_mode());
+                    Some(true) 
+                } else { 
+                    log::warn!("CREATING GraphRel with is_optional=None, mode={}", plan_ctx.is_optional_match_mode());
+                    None 
+                },
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -570,7 +577,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization
                 labels: rel_labels.clone(),
-                is_optional: None, // Will be set by OPTIONAL MATCH processing
+                is_optional: if is_optional { Some(true) } else { None },
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -665,13 +672,23 @@ pub fn evaluate_match_clause<'a>(
     mut plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
+    evaluate_match_clause_with_optional(match_clause, plan, plan_ctx, false)
+}
+
+/// Internal function that supports optional mode
+pub fn evaluate_match_clause_with_optional<'a>(
+    match_clause: &ast::MatchClause<'a>,
+    mut plan: Arc<LogicalPlan>,
+    plan_ctx: &mut PlanCtx,
+    is_optional: bool,
+) -> LogicalPlanResult<Arc<LogicalPlan>> {
     for (idx, path_pattern) in match_clause.path_patterns.iter().enumerate() {
         match path_pattern {
             ast::PathPattern::Node(node_pattern) => {
                 plan = traverse_node_pattern(node_pattern, plan, plan_ctx)?;
             }
             ast::PathPattern::ConnectedPattern(connected_patterns) => {
-                plan = traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, idx, None, match_clause.path_variable)?;
+                plan = traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, idx, None, match_clause.path_variable, is_optional)?;
             }
             ast::PathPattern::ShortestPath(inner_pattern) => {
                 // Process inner pattern with shortest path mode enabled
@@ -716,7 +733,7 @@ fn evaluate_single_path_pattern_with_mode<'a>(
             traverse_node_pattern(node_pattern, plan, plan_ctx)
         }
         ast::PathPattern::ConnectedPattern(connected_patterns) => {
-            traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, idx, shortest_path_mode, path_variable)
+            traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, idx, shortest_path_mode, path_variable, false)
         }
         ast::PathPattern::ShortestPath(inner) => {
             // Recursively unwrap with shortest path mode

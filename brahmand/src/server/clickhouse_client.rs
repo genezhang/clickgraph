@@ -18,6 +18,7 @@ pub fn try_get_client() -> Option<Client> {
         .with_user(user)
         .with_password(password)
         .with_database(database)
+        .with_option("join_use_nulls", "1")  // Return NULL for unmatched LEFT JOIN columns
         .with_option("allow_experimental_json_type", "1")
         .with_option("input_format_binary_read_json_as_string", "1")
         .with_option("output_format_binary_write_json_as_string", "1"))

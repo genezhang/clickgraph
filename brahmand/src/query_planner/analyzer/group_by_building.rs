@@ -39,6 +39,24 @@ impl GroupByBuilding {
             _ => false,
         }
     }
+
+    /// Check if an expression contains any aggregate function calls (recursively).
+    /// This is needed to detect computed aggregates like COUNT(b) * 10.
+    fn contains_aggregate(expr: &LogicalExpr) -> bool {
+        match expr {
+            LogicalExpr::AggregateFnCall(_) => true,
+            LogicalExpr::OperatorApplicationExp(op) => {
+                op.operands.iter().any(|operand| Self::contains_aggregate(operand))
+            }
+            LogicalExpr::ScalarFnCall(func) => {
+                func.args.iter().any(|arg| Self::contains_aggregate(arg))
+            }
+            LogicalExpr::List(list) => {
+                list.iter().any(|item| Self::contains_aggregate(item))
+            }
+            _ => false,
+        }
+    }
 }
 
 // In the final projections, if there is an aggregate fn then add other projections in group by clause
@@ -66,10 +84,11 @@ impl AnalyzerPass for GroupByBuilding {
                     if has_aggregations {
                         // WITH contains aggregations - convert to GroupBy
                         // Non-aggregated items become GROUP BY expressions
+                        // IMPORTANT: Exclude any computed expressions that contain aggregates (e.g., COUNT(b) * 10)
                         let non_agg_items: Vec<ProjectionItem> = projection
                             .items
                             .iter()
-                            .filter(|item| !matches!(item.expression, LogicalExpr::AggregateFnCall(_)))
+                            .filter(|item| !Self::contains_aggregate(&item.expression))
                             .cloned()
                             .collect();
                         
@@ -106,10 +125,11 @@ impl AnalyzerPass for GroupByBuilding {
                     // This is a RETURN projection - check for aggregations
                     println!("GroupByBuilding: Processing Projection(kind=Return) with {} items", projection.items.len());
                     
+                    // Use contains_aggregate to properly detect aggregates including computed expressions
                     let non_agg_projections: Vec<ProjectionItem> = projection
                         .items
                         .iter()
-                        .filter(|item| !matches!(item.expression, LogicalExpr::AggregateFnCall(_)))
+                        .filter(|item| !Self::contains_aggregate(&item.expression))
                         .cloned()
                         .collect();
                     

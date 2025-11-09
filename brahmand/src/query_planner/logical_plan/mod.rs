@@ -267,6 +267,9 @@ pub struct GraphJoins {
     /// input.extract_joins() which handles nested GraphRel recursively.
     /// TODO: Remove this field in future refactor after validating all tests pass.
     pub joins: Vec<Join>,
+    
+    /// Aliases that came from OPTIONAL MATCH clauses (for correct FROM table selection)
+    pub optional_aliases: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -570,6 +573,7 @@ impl GraphJoins {
                 let new_graph_joins = LogicalPlan::GraphJoins(GraphJoins {
                     input: new_input.clone(),
                     joins: self.joins.clone(),
+                    optional_aliases: self.optional_aliases.clone(),
                 });
                 Transformed::Yes(Arc::new(new_graph_joins))
             }

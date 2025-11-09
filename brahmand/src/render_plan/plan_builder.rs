@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use crate::query_planner::logical_plan::LogicalPlan;
+use crate::query_planner::logical_plan::{LogicalPlan, GraphRel};
 use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::plan_ctx::PlanCtx;
 use crate::clickhouse_query_generator::variable_length_cte::{VariableLengthCteGenerator, ChainedJoinGenerator};
@@ -213,28 +213,53 @@ fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(String, String, 
 }
 
 /// Helper function to find the anchor/first node in a multi-hop pattern
-/// The anchor is the node that appears as left_connection but never as right_connection
-/// For (a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c): a is left but never right → anchor!
-fn find_anchor_node(connections: &[(String, String, String)]) -> Option<String> {
+/// The anchor is the node that should be in the FROM clause
+/// Strategy: Prefer required (non-optional) nodes over optional nodes
+/// When mixing MATCH and OPTIONAL MATCH, the required node should be the anchor (FROM table)
+/// 
+/// Algorithm:
+/// 1. Collect all unique nodes (from both left and right connections)
+/// 2. Prefer nodes that are NOT in optional_aliases (required nodes)
+/// 3. Fall back to traditional anchor pattern (left-but-not-right) if no required nodes found
+fn find_anchor_node(connections: &[(String, String, String)], optional_aliases: &std::collections::HashSet<String>) -> Option<String> {
     if connections.is_empty() {
         return None;
     }
     
-    // Collect all right_connections (these are intermediate/end nodes)
+    // Collect all unique node aliases from both left and right connections
+    let mut all_nodes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (left, right, _) in connections {
+        all_nodes.insert(left.clone());
+        all_nodes.insert(right.clone());
+    }
+    
+    // Strategy 1: Look for ANY required (non-optional) node first
+    for node in &all_nodes {
+        if !optional_aliases.contains(node) {
+            log::info!("✓ Found REQUIRED anchor node: {} (not in optional_aliases)", node);
+            return Some(node.clone());
+        }
+    }
+    
+    // Strategy 2: All nodes are optional - use traditional anchor pattern
+    // (left_connection that is NOT in right_nodes)
     let right_nodes: std::collections::HashSet<_> = connections.iter()
         .map(|(_, right, _)| right.clone())
         .collect();
     
-    // Find a left_connection that is NOT in right_nodes
-    // This is the anchor/first node
     for (left, _, _) in connections {
         if !right_nodes.contains(left) {
+            log::warn!("⚠️ All nodes are optional, using anchor pattern: {}", left);
             return Some(left.clone());
         }
     }
     
-    // Fallback: use the first left_connection
-    connections.first().map(|(left, _, _)| left.clone())
+    // Strategy 3: Fallback to first left_connection
+    let fallback = connections.first().map(|(left, _, _)| left.clone());
+    if let Some(ref alias) = fallback {
+        log::warn!("⚠️ Using fallback anchor: {}", alias);
+    }
+    fallback
 }
 
 /// Helper function to check if a condition references an end node alias
@@ -1275,19 +1300,31 @@ impl RenderPlanBuilder for LogicalPlan {
                 
                 // For GraphRel with labeled nodes, we need to include the start node in the FROM clause
                 // This handles simple relationship queries where the start node should be FROM
+                
+                // For OPTIONAL MATCH, prefer the required (non-optional) node as FROM
+                // Check if this is an optional relationship (left node optional, right node required)
+                let prefer_right_as_from = graph_rel.is_optional == Some(true);
+                
+                println!("DEBUG: graph_rel.is_optional = {:?}, prefer_right_as_from = {}", 
+                         graph_rel.is_optional, prefer_right_as_from);
 
-                // For simple relationships, use the start node as FROM
-                let left_from = graph_rel.left.extract_from();
-                println!("DEBUG: graph_rel.left = {:?}", graph_rel.left);
-                println!("DEBUG: left_from = {:?}", left_from);
+                let (primary_from, fallback_from) = if prefer_right_as_from {
+                    // For optional relationships, use right (required) node as FROM
+                    (graph_rel.right.extract_from(), graph_rel.left.extract_from())
+                } else {
+                    // For required relationships, use left (start) node as FROM
+                    (graph_rel.left.extract_from(), graph_rel.right.extract_from())
+                };
+                
+                println!("DEBUG: primary_from = {:?}", primary_from);
+                println!("DEBUG: fallback_from = {:?}", fallback_from);
 
-                if let Ok(Some(from_table)) = left_from {
+                if let Ok(Some(from_table)) = primary_from {
                     from_table_to_view_ref(Some(from_table))
                 } else {
-                    // If left node doesn't have FROM (e.g., it's Empty due to anchor node rotation),
-                    // use the right node as the FROM (it contains the anchor node after rotation)
-                    let right_from = graph_rel.right.extract_from();
-                    println!("DEBUG: graph_rel.right = {:?}", graph_rel.right);
+                    // If primary node doesn't have FROM, try fallback
+                    let right_from = fallback_from;
+                    println!("DEBUG: Using fallback FROM");
                     println!("DEBUG: right_from = {:?}", right_from);
 
                     if let Ok(Some(from_table)) = right_from {
@@ -1336,8 +1373,18 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Filter(filter) => from_table_to_view_ref(filter.input.extract_from()?),
             LogicalPlan::Projection(projection) => from_table_to_view_ref(projection.input.extract_from()?),
             LogicalPlan::GraphJoins(graph_joins) => {
-                // Check if this is a multiple relationship query that should use a CTE
-                if let LogicalPlan::GraphRel(graph_rel) = graph_joins.input.as_ref() {
+                // Helper function to unwrap Projection/Filter layers to find GraphRel
+                fn find_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
+                    match plan {
+                        LogicalPlan::GraphRel(gr) => Some(gr),
+                        LogicalPlan::Projection(proj) => find_graph_rel(&proj.input),
+                        LogicalPlan::Filter(filter) => find_graph_rel(&filter.input),
+                        _ => None,
+                    }
+                }
+                
+                // Try to find GraphRel through any Projection/Filter wrappers
+                if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
                     if let Some(labels) = &graph_rel.labels {
                         if labels.len() > 1 {
                             // Multiple relationship types: need both start and end nodes in FROM
@@ -1352,7 +1399,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             // Collect all relationship connections to find which node is the anchor
                             let all_connections = get_all_relationship_connections(&graph_joins.input);
                             
-                            if let Some(anchor_alias) = find_anchor_node(&all_connections) {
+                            if let Some(anchor_alias) = find_anchor_node(&all_connections, &graph_joins.optional_aliases) {
                                 println!("DEBUG: GraphJoins.extract_from() - found anchor node: {}", anchor_alias);
                                 // Get the table name for the anchor node by recursively finding the GraphNode with matching alias
                                 if let Some(table_name) = find_table_name_for_alias(&graph_joins.input, &anchor_alias) {
@@ -1393,7 +1440,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         // FIX: Same logic - find anchor node for multi-hop
                         let all_connections = get_all_relationship_connections(&graph_joins.input);
                         
-                        if let Some(anchor_alias) = find_anchor_node(&all_connections) {
+                        if let Some(anchor_alias) = find_anchor_node(&all_connections, &graph_joins.optional_aliases) {
                             // Get the table name for the anchor node
                             if let Some(table_name) = find_table_name_for_alias(&graph_joins.input, &anchor_alias) {
                                 Some(super::ViewTableRef {
@@ -1476,20 +1523,22 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GraphRel(graph_rel) => {
                 log::trace!("GraphRel node detected, extracting filters from where_predicate only");
                 
-                // For GraphRel, we ONLY use the where_predicate field
-                // The left/center/right filters should be applied as:
-                // - left filters: Already in ViewScan.view_filter (pushed down)
-                // - center filters: Relationship table filters (applied in JOIN ON clause)
-                // - right filters: Already in ViewScan.view_filter for end node
-                // 
-                // Only where_predicate contains predicates that should go in final WHERE clause
+                // For GraphRel, check where_predicate first
+                // If present, use it (these are predicates that should go in final WHERE clause)
                 if let Some(ref predicate) = graph_rel.where_predicate {
                     let filter_expr: RenderExpr = predicate.clone().try_into()?;
                     log::trace!("GraphRel where_predicate filter: {:?}", filter_expr);
                     Some(filter_expr)
                 } else {
-                    log::trace!("GraphRel has no where_predicate");
-                    None
+                    // If no where_predicate, recursively check children for Filter nodes
+                    // This handles cases where Filter is nested under GraphRel
+                    // (e.g., multiple OPTIONAL MATCH wrapping a WHERE clause)
+                    log::trace!("GraphRel has no where_predicate, checking children");
+                    
+                    // Try left, center, right in order
+                    graph_rel.left.extract_filters()?
+                        .or_else(|| graph_rel.center.extract_filters().ok().flatten())
+                        .or_else(|| graph_rel.right.extract_filters().ok().flatten())
                 }
             }
             LogicalPlan::Filter(filter) => {
@@ -1586,72 +1635,16 @@ impl RenderPlanBuilder for LogicalPlan {
                 joins
             },
             LogicalPlan::GraphJoins(graph_joins) => {
-                // MULTI-HOP FIX: For GraphJoins, delegate to the underlying input (GraphRel)
-                // instead of using pre-computed joins, which are incorrect for multi-hop patterns
-                println!("DEBUG: GraphJoins extract_joins - delegating to input");
+                // Use the pre-computed joins from GraphJoinInference analyzer
+                // These were carefully constructed to handle OPTIONAL MATCH, multi-hop, etc.
+                println!("DEBUG: GraphJoins extract_joins - using pre-computed joins from analyzer");
+                println!("DEBUG: graph_joins.joins.len() = {}", graph_joins.joins.len());
                 
-                if has_multiple_relationships(&graph_joins.input) {
-                    // Multiple relationships: generate JOINs that use the CTE instead of relationship tables
-                    let mut joins = vec![];
-
-                    // For multiple relationships, we need:
-                    // 1. JOIN from start node to CTE
-                    // 2. JOIN from CTE to end node
-
-                    // Get the relationship info from the GraphRel
-                    if let Some((start_alias, end_alias, cte_name)) = get_multiple_rel_info(&graph_joins.input) {
-                        // Get table names for nodes
-                        let end_table = get_node_table_for_alias(&end_alias);
-
-                        // JOIN: start_node -> CTE
-                        joins.push(Join {
-                            table_name: cte_name.clone(),
-                            table_alias: cte_name.clone(),
-                            joining_on: vec![OperatorApplication {
-                                operator: Operator::Equal,
-                                operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(cte_name.clone()),
-                                        column: Column("from_node_id".to_string()),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(start_alias.clone()),
-                                        column: Column("user_id".to_string()),
-                                    }),
-                                ],
-                            }],
-                            join_type: JoinType::Inner,
-                        });
-
-                        // JOIN: CTE -> end_node
-                        joins.push(Join {
-                            table_name: end_table,
-                            table_alias: end_alias.clone(),
-                            joining_on: vec![OperatorApplication {
-                                operator: Operator::Equal,
-                                operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(end_alias.clone()),
-                                        column: Column("user_id".to_string()),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(cte_name.clone()),
-                                        column: Column("to_node_id".to_string()),
-                                    }),
-                                ],
-                            }],
-                            join_type: JoinType::Inner,
-                        });
-                    }
-
-                    joins
-                } else {
-                    // Not multiple relationships: delegate to the underlying GraphRel
-                    // which will handle multi-hop patterns recursively
-                    println!("DEBUG: Delegating to graph_joins.input.extract_joins()");
-                    graph_joins.input.extract_joins()?
-                }
-            }
+                // Convert from logical_plan::Join to render_plan::Join
+                graph_joins.joins.iter()
+                    .map(|j| j.clone().try_into())
+                    .collect::<Result<Vec<Join>, RenderBuildError>>()?
+            },
             LogicalPlan::GraphRel(graph_rel) => {
                 // FIX: GraphRel must generate JOINs for the relationship traversal
                 // This fixes OPTIONAL MATCH queries by creating proper JOIN clauses
@@ -1712,47 +1705,118 @@ impl RenderPlanBuilder for LogicalPlan {
                         to_id: "to_node_id".to_string(),
                     });
                 
-                // JOIN 1: Start node -> Relationship table
-                //   e.g., INNER JOIN follows AS r ON r.from_node_id = a.user_id
-                joins.push(Join {
-                    table_name: rel_table.clone(),
-                    table_alias: graph_rel.alias.clone(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(graph_rel.alias.clone()),
-                                column: Column(rel_cols.from_id.clone()),
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(graph_rel.left_connection.clone()),
-                                column: Column(start_id_col),
-                            }),
-                        ],
-                    }],
-                    join_type: join_type.clone(),
-                });
+                // OPTIONAL MATCH FIX: For incoming optional relationships like (b:User)-[:FOLLOWS]->(a)
+                // where 'a' is required and 'b' is optional, we need to reverse the JOIN order:
+                // 1. JOIN b first (optional node)
+                // 2. Then JOIN relationship (can reference both a and b)
+                //
+                // Detect this case: is_optional=true AND FROM clause is right node
+                // (The FROM clause selection logic prefers right node when is_optional=true)
+                let reverse_join_order = is_optional;
                 
-                // JOIN 2: Relationship table -> End node
-                //   e.g., LEFT JOIN users AS b ON b.user_id = r.to_node_id
-                joins.push(Join {
-                    table_name: end_table,
-                    table_alias: graph_rel.right_connection.clone(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(graph_rel.right_connection.clone()),
-                                column: Column(end_id_col),
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(graph_rel.alias.clone()),
-                                column: Column(rel_cols.to_id),
-                            }),
+                if reverse_join_order {
+                    println!("DEBUG: Reversing JOIN order for optional relationship (b)-[:FOLLOWS]->(a) where a is FROM");
+                    
+                    // JOIN 1: End node (optional left node 'b')
+                    //   e.g., LEFT JOIN users AS b ON b.user_id = r.to_node_id
+                    joins.push(Join {
+                        table_name: start_table.clone(),
+                        table_alias: graph_rel.left_connection.clone(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(graph_rel.left_connection.clone()),
+                                    column: Column(start_id_col.clone()),
+                                }),
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(graph_rel.alias.clone()),
+                                    column: Column(rel_cols.from_id.clone()),
+                                }),
+                            ],
+                        }],
+                        join_type: join_type.clone(),
+                    });
+                    
+                    // JOIN 2: Relationship table (can now reference both nodes)
+                    //   e.g., LEFT JOIN follows AS r ON r.follower_id = b.user_id AND r.followed_id = a.user_id
+                    joins.push(Join {
+                        table_name: rel_table.clone(),
+                        table_alias: graph_rel.alias.clone(),
+                        joining_on: vec![
+                            OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(graph_rel.alias.clone()),
+                                        column: Column(rel_cols.from_id.clone()),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(graph_rel.left_connection.clone()),
+                                        column: Column(start_id_col),
+                                    }),
+                                ],
+                            },
+                            OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(graph_rel.alias.clone()),
+                                        column: Column(rel_cols.to_id.clone()),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(graph_rel.right_connection.clone()),
+                                        column: Column(end_id_col.clone()),
+                                    }),
+                                ],
+                            },
                         ],
-                    }],
-                    join_type,
-                });
+                        join_type: join_type.clone(),
+                    });
+                } else {
+                    // Normal order: relationship first, then end node
+                    // JOIN 1: Start node -> Relationship table
+                    //   e.g., INNER JOIN follows AS r ON r.from_node_id = a.user_id
+                    joins.push(Join {
+                        table_name: rel_table.clone(),
+                        table_alias: graph_rel.alias.clone(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(graph_rel.alias.clone()),
+                                    column: Column(rel_cols.from_id.clone()),
+                                }),
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(graph_rel.left_connection.clone()),
+                                    column: Column(start_id_col),
+                                }),
+                            ],
+                        }],
+                        join_type: join_type.clone(),
+                    });
+                    
+                    // JOIN 2: Relationship table -> End node
+                    //   e.g., LEFT JOIN users AS b ON b.user_id = r.to_node_id
+                    joins.push(Join {
+                        table_name: end_table,
+                        table_alias: graph_rel.right_connection.clone(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(graph_rel.right_connection.clone()),
+                                    column: Column(end_id_col),
+                                }),
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(graph_rel.alias.clone()),
+                                    column: Column(rel_cols.to_id),
+                                }),
+                            ],
+                        }],
+                        join_type,
+                    });
+                }
                 
                 joins
             }
@@ -2212,6 +2276,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             .collect::<Result<Vec<super::SelectItem>, RenderBuildError>>()?;
                         
                         // Extract FROM table for the outer query (from the original table)
+                        // NOTE: ClickHouse CTE scoping - we need to be careful about table references
                         let outer_from = inner_render_plan.from.clone();
                         
                         // Create JOIN condition: a.user_id = grouped_data.user_id
@@ -2338,6 +2403,27 @@ impl RenderPlanBuilder for LogicalPlan {
         let extracted_joins = self.extract_joins()?;
         println!("DEBUG: build_simple_relationship_render_plan - extracted_joins: {:?}", extracted_joins);
         
+        // Filter out JOINs that duplicate the FROM table
+        // If we're starting FROM node 'a', we shouldn't also have it in the JOINs list
+        let from_alias = final_from.as_ref()
+            .and_then(|ft| ft.table.as_ref())
+            .and_then(|vt| vt.alias.clone());
+        let filtered_joins: Vec<Join> = if let Some(ref anchor_alias) = from_alias {
+            extracted_joins.into_iter()
+                .filter(|join| {
+                    if &join.table_alias == anchor_alias {
+                        println!("DEBUG: Filtering out JOIN for '{}' because it's already in FROM clause", anchor_alias);
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect()
+        } else {
+            extracted_joins
+        };
+        println!("DEBUG: build_simple_relationship_render_plan - filtered_joins: {:?}", filtered_joins);
+        
         // For simple relationships, we need to ensure proper JOIN ordering
         // The extract_joins should handle this correctly
         
@@ -2345,7 +2431,7 @@ impl RenderPlanBuilder for LogicalPlan {
             ctes: CteItems(vec![]),
             select: SelectItems(final_select_items),
             from: FromTableItem(from_table_to_view_ref(final_from)),
-            joins: JoinItems(extracted_joins),
+            joins: JoinItems(filtered_joins),
             filters: FilterItems(final_filters),
             group_by: GroupByExpressions(self.extract_group_by()?),
             having_clause: self.extract_having()?,

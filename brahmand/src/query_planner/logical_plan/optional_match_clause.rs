@@ -19,9 +19,10 @@ use crate::{
 /// with NULL values for unmatched optional patterns.
 /// 
 /// Strategy:
-/// 1. Process patterns similar to regular MATCH
-/// 2. Convert generated INNER JOINs to LEFT JOINs
-/// 3. Preserve null values for unmatched patterns
+/// 1. Set the optional match mode flag in PlanCtx
+/// 2. Process patterns using regular MATCH logic (which now auto-marks aliases as optional)
+/// 3. GraphJoinInference will generate LEFT JOINs for optional aliases
+/// 4. Restore normal mode after processing
 pub fn evaluate_optional_match_clause<'a>(
     optional_match_clause: &ast::OptionalMatchClause<'a>,
     input_plan: Arc<LogicalPlan>,
@@ -30,14 +31,11 @@ pub fn evaluate_optional_match_clause<'a>(
     log::debug!("OPTIONAL_MATCH: evaluate_optional_match_clause called with {} path patterns", 
         optional_match_clause.path_patterns.len());
     
-    // Track which aliases exist before processing optional patterns
-    let aliases_before: Vec<String> = plan_ctx
-        .get_alias_table_ctx_map()
-        .keys()
-        .cloned()
-        .collect();
+    // SIMPLE FIX: Set the optional match mode flag BEFORE processing patterns
+    // This will automatically mark all new aliases as optional during planning
+    plan_ctx.set_optional_match_mode(true);
     
-    log::debug!("OPTIONAL_MATCH: aliases_before = {:?}", aliases_before);
+    eprintln!("🔔 DEBUG OPTIONAL_MATCH: Enabled optional match mode");
 
     // Create a temporary MatchClause from the OptionalMatchClause
     // This allows us to reuse the existing match clause logic
@@ -46,23 +44,15 @@ pub fn evaluate_optional_match_clause<'a>(
         path_variable: None,  // OPTIONAL MATCH doesn't support path variables
     };
 
-    // Process the patterns using the regular match clause evaluator
-    let mut plan = evaluate_match_clause(&temp_match_clause, input_plan, plan_ctx)?;
+    // Process the patterns using the _with_optional variant and pass is_optional=true
+    // This ensures GraphRel structures are created with is_optional=Some(true)
+    use crate::query_planner::logical_plan::match_clause::evaluate_match_clause_with_optional;
+    let mut plan = evaluate_match_clause_with_optional(&temp_match_clause, input_plan, plan_ctx, true)?;
     
-    println!("DEBUG OPTIONAL_MATCH: After evaluate_match_clause, plan type: {:?}", std::mem::discriminant(&*plan));
-
-    // Mark new aliases as optional (for LEFT JOIN generation)
-    let aliases_after: Vec<String> = plan_ctx
-        .get_alias_table_ctx_map()
-        .keys()
-        .cloned()
-        .collect();
+    // Restore normal mode
+    plan_ctx.set_optional_match_mode(false);
     
-    for alias in aliases_after {
-        if !aliases_before.contains(&alias) {
-            plan_ctx.mark_as_optional(alias);
-        }
-    }
+    eprintln!("🔕 DEBUG OPTIONAL_MATCH: Disabled optional match mode, plan type: {:?}", std::mem::discriminant(&*plan));
 
     // If there's a WHERE clause specific to this OPTIONAL MATCH,
     // it should be applied as part of the JOIN condition, not as a final filter

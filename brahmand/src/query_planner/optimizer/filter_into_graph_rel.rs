@@ -86,7 +86,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 filter.predicate.clone()
                             }),
                             labels: graph_rel.labels.clone(),
-                        is_optional: None,
+                            is_optional: graph_rel.is_optional,  // Preserve optional flag
                         }));
                         
                         // Rebuild projection with new GraphRel, and return without Filter wrapper
@@ -127,7 +127,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             filter.predicate.clone()
                         }),
                         labels: graph_rel.labels.clone(),
-                    is_optional: None,
+                        is_optional: graph_rel.is_optional,  // Preserve optional flag
                     }));
                     
                     // Return the GraphRel directly, removing the Filter wrapper
@@ -434,7 +434,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             path_variable: graph_rel.path_variable.clone(),
                             where_predicate: Some(predicate),
                             labels: graph_rel.labels.clone(),
-                        is_optional: None,
+                            is_optional: graph_rel.is_optional,  // Preserve optional flag
                         }));
                         
                         return Ok(Transformed::Yes(new_graph_rel));

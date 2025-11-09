@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   clickhouse-test:
-    image: clickhouse/clickhouse-server:25.5.1
+    image: clickhouse/clickhouse-server:25.8.11
     container_name: clickhouse-test
     ports:
       - "8123:8123"

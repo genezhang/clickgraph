@@ -1,3 +1,0 @@
-[2025-11-03T06:32:16Z DEBUG clickgraph::server] === SERVER STARTING (debug log test) ===
-[2025-11-03T06:32:16Z INFO  clickgraph::server] Server configuration: http=0.0.0.0:8080, bolt=0.0.0.0:7687
-[2025-11-03T06:32:16Z INFO  clickgraph::server] Successfully bound HTTP listener to 0.0.0.0:8080
