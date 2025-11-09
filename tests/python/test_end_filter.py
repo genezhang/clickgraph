@@ -26,15 +26,15 @@ try:
 
                 # Check if end_node.name appears in the SQL
                 if 'end_node.name' in sql:
-                    print('✅ CORRECT: Found end_node.name in SQL')
+                    print('[OK] CORRECT: Found end_node.name in SQL')
                 else:
-                    print('❌ INCORRECT: end_node.name NOT found in SQL')
+                    print('[FAIL] INCORRECT: end_node.name NOT found in SQL')
 
                 # Check if start_node.name appears (it shouldn't for end filter)
                 if 'start_node.name' in sql and 'David Lee' in sql:
-                    print('❌ INCORRECT: Found start_node.name with David Lee (should be end_node.name)')
+                    print('[FAIL] INCORRECT: Found start_node.name with David Lee (should be end_node.name)')
                 else:
-                    print('✅ CORRECT: No incorrect start_node.name mapping')
+                    print('[OK] CORRECT: No incorrect start_node.name mapping')
             else:
                 print('No SQL found in response')
 

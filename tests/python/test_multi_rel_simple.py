@@ -29,7 +29,7 @@ try:
     if response.status_code == 200:
         result = response.json()
         if isinstance(result, list):
-            print(f"✅ SUCCESS! Returned {len(result)} results")
+            print(f"[OK] SUCCESS! Returned {len(result)} results")
             if len(result) > 0:
                 print(f"Sample result: {json.dumps(result[0], indent=2)}")
         else:
@@ -37,10 +37,10 @@ try:
             print(f"Result: {json.dumps(result, indent=2)[:500]}")
     else:
         error = response.json() if response.headers.get('content-type') == 'application/json' else response.text
-        print(f"❌ FAILED")
+        print(f"[FAIL] FAILED")
         print(f"Error: {error}")
         
 except Exception as e:
-    print(f"❌ EXCEPTION: {str(e)}")
+    print(f"[FAIL] EXCEPTION: {str(e)}")
     import traceback
     traceback.print_exc()

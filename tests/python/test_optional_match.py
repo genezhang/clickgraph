@@ -9,7 +9,7 @@ import json
 def test_query(query, description):
     """Execute a query and display results."""
     print(f"\n{'='*70}")
-    print(f"🧪 Test: {description}")
+    print(f"[TEST] Test: {description}")
     print(f"{'='*70}")
     print(f"Query: {query}\n")
     
@@ -25,21 +25,21 @@ def test_query(query, description):
         
         if response.status_code == 200:
             result = response.json()
-            print(f"✅ SUCCESS!\n")
+            print(f"[OK] SUCCESS!\n")
             print(f"Response:")
             print(json.dumps(result, indent=2))
             return True
         else:
-            print(f"❌ ERROR: HTTP {response.status_code}\n")
+            print(f"[FAIL] ERROR: HTTP {response.status_code}\n")
             print(f"Response: {response.text}")
             return False
             
     except requests.exceptions.ConnectionError:
-        print(f"❌ FAILED: Could not connect to ClickGraph server at http://localhost:8080")
+        print(f"[FAIL] FAILED: Could not connect to ClickGraph server at http://localhost:8080")
         print(f"   Make sure the server is running with: .\\start_server_new_window.bat")
         return False
     except Exception as e:
-        print(f"❌ FAILED: {type(e).__name__}: {str(e)}")
+        print(f"[FAIL] FAILED: {type(e).__name__}: {str(e)}")
         return False
 
 def main():
@@ -88,7 +88,7 @@ def main():
     total = len(results)
     
     for i, result in enumerate(results, 1):
-        status = "✅ PASS" if result["success"] else "❌ FAIL"
+        status = "[OK] PASS" if result["success"] else "[FAIL] FAIL"
         print(f"{i}. {status} - {result['description']}")
     
     print(f"\nTotal: {passed}/{total} tests passed")

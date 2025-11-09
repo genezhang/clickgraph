@@ -57,7 +57,7 @@ def main():
     failed = 0
 
     for name, success in results:
-        status = "✅ PASS" if success else "❌ FAIL"
+        status = "[OK] PASS" if success else "[FAIL] FAIL"
         print(f"{status}: {name}")
         if success:
             passed += 1

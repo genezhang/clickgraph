@@ -29,7 +29,7 @@ def send_query(cypher_query):
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        print(f"❌ Error sending query: {e}")
+        print(f"[FAIL] Error sending query: {e}")
         return None
 
 def test_simple_optional_match():
@@ -49,14 +49,14 @@ def test_simple_optional_match():
     
     result = send_query(query)
     if result:
-        print(f"\n✅ Query executed successfully")
+        print(f"\n[OK] Query executed successfully")
         print(f"Response: {json.dumps(result, indent=2)}")
         
         # Check if SQL contains LEFT JOIN
         if 'sql' in result:
             sql = result['sql']
             if 'LEFT JOIN' in sql:
-                print(f"\n✅ SUCCESS: SQL contains LEFT JOIN!")
+                print(f"\n[OK] SUCCESS: SQL contains LEFT JOIN!")
                 print(f"Generated SQL:\n{sql}")
             else:
                 print(f"\n⚠️ WARNING: SQL does not contain LEFT JOIN")
@@ -81,13 +81,13 @@ def test_multiple_optional_match():
     
     result = send_query(query)
     if result:
-        print(f"\n✅ Query executed successfully")
+        print(f"\n[OK] Query executed successfully")
         print(f"Response: {json.dumps(result, indent=2)}")
         
         if 'sql' in result:
             sql = result['sql']
             left_join_count = sql.count('LEFT JOIN')
-            print(f"\n✅ SUCCESS: Found {left_join_count} LEFT JOIN(s) in SQL")
+            print(f"\n[OK] SUCCESS: Found {left_join_count} LEFT JOIN(s) in SQL")
             print(f"Generated SQL:\n{sql}")
         return result
     return None
@@ -110,7 +110,7 @@ def test_mixed_match_and_optional():
     
     result = send_query(query)
     if result:
-        print(f"\n✅ Query executed successfully")
+        print(f"\n[OK] Query executed successfully")
         print(f"Response: {json.dumps(result, indent=2)}")
         
         if 'sql' in result:
@@ -118,7 +118,7 @@ def test_mixed_match_and_optional():
             # Should have INNER JOIN for User table, LEFT JOIN for optional relationship
             inner_joins = sql.count('INNER JOIN') + sql.count('JOIN') - sql.count('LEFT JOIN')
             left_joins = sql.count('LEFT JOIN')
-            print(f"\n✅ SUCCESS: Found {inner_joins} INNER JOIN(s) and {left_joins} LEFT JOIN(s)")
+            print(f"\n[OK] SUCCESS: Found {inner_joins} INNER JOIN(s) and {left_joins} LEFT JOIN(s)")
             print(f"Generated SQL:\n{sql}")
         return result
     return None
@@ -141,13 +141,13 @@ def test_optional_match_with_where():
     
     result = send_query(query)
     if result:
-        print(f"\n✅ Query executed successfully")
+        print(f"\n[OK] Query executed successfully")
         print(f"Response: {json.dumps(result, indent=2)}")
         
         if 'sql' in result:
             sql = result['sql']
             if 'LEFT JOIN' in sql:
-                print(f"\n✅ SUCCESS: OPTIONAL MATCH with WHERE generates LEFT JOIN")
+                print(f"\n[OK] SUCCESS: OPTIONAL MATCH with WHERE generates LEFT JOIN")
                 print(f"Generated SQL:\n{sql}")
             else:
                 print(f"\n⚠️ WARNING: Expected LEFT JOIN not found")
@@ -164,9 +164,9 @@ def main():
     # Check if server is running
     try:
         response = requests.get(f"{SERVER_URL}/health", timeout=5)
-        print(f"\n✅ Server is running at {SERVER_URL}")
+        print(f"\n[OK] Server is running at {SERVER_URL}")
     except requests.exceptions.RequestException:
-        print(f"\n❌ Server is not running at {SERVER_URL}")
+        print(f"\n[FAIL] Server is not running at {SERVER_URL}")
         print("Please start the server with:")
         print("  cargo run --bin brahmand -- --http-port 8080")
         sys.exit(1)
@@ -190,7 +190,7 @@ def main():
     print("="*70)
     passed = sum(results)
     total = len(results)
-    print(f"\n✅ Passed: {passed}/{total}")
+    print(f"\n[OK] Passed: {passed}/{total}")
     
     if passed == total:
         print("\n🎉 All tests passed! OPTIONAL MATCH is working correctly!")

@@ -72,7 +72,7 @@ def test_bolt_database_selection():
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(5.0)
         sock.connect(("localhost", 7687))
-        print("✓ Connected to Bolt server on port 7687")
+        print("[OK] Connected to Bolt server on port 7687")
         
         # Send Bolt handshake
         handshake = struct.pack('>I', 0x6060B017)  # Bolt magic
@@ -85,7 +85,7 @@ def test_bolt_database_selection():
         # Receive negotiated version
         version_response = sock.recv(4)
         version = struct.unpack('>I', version_response)[0]
-        print(f"✓ Negotiated Bolt version: {version:08x}")
+        print(f"[OK] Negotiated Bolt version: {version:08x}")
         
         # Test 1: HELLO with database selection
         print("\nTest 1: HELLO with database='social_network'")
@@ -105,8 +105,8 @@ def test_bolt_database_selection():
         end_marker = struct.unpack('>H', sock.recv(2))[0]
         
         if response_data[0] == 0x70:  # SUCCESS
-            print("✓ HELLO succeeded")
-            print("✓ Database selection accepted by server")
+            print("[OK] HELLO succeeded")
+            print("[OK] Database selection accepted by server")
         else:
             print(f"✗ HELLO failed: {response_data.hex()}")
         

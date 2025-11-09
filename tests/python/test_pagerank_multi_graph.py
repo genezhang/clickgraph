@@ -22,7 +22,7 @@ def test_pagerank_multi_graph():
         response = requests.post(f"{base_url}/query", json=query1)
         if response.status_code == 200:
             result = response.json()
-            print("✓ Default graph PageRank successful")
+            print("[OK] Default graph PageRank successful")
             print(f"  Result keys: {list(result.keys())}")
         else:
             print(f"✗ Default graph PageRank failed: {response.status_code}")
@@ -40,7 +40,7 @@ def test_pagerank_multi_graph():
         response = requests.post(f"{base_url}/query", json=query2)
         if response.status_code == 200:
             result = response.json()
-            print("✓ Explicit graph PageRank successful")
+            print("[OK] Explicit graph PageRank successful")
             print(f"  Result keys: {list(result.keys())}")
         else:
             print(f"✗ Explicit graph PageRank failed: {response.status_code}")
@@ -58,7 +58,7 @@ def test_pagerank_multi_graph():
         response = requests.post(f"{base_url}/query", json=query3)
         if response.status_code == 200:
             result = response.json()
-            print("✓ Filtered PageRank successful")
+            print("[OK] Filtered PageRank successful")
             print(f"  Result keys: {list(result.keys())}")
         else:
             print(f"✗ Filtered PageRank failed: {response.status_code}")
@@ -76,13 +76,13 @@ def test_pagerank_multi_graph():
         response = requests.post(f"{base_url}/query", json=query4)
         if response.status_code == 200:
             result = response.json()
-            print("✓ Non-existent graph handled gracefully")
+            print("[OK] Non-existent graph handled gracefully")
             print(f"  Result keys: {list(result.keys())}")
         else:
-            print(f"✓ Non-existent graph failed as expected: {response.status_code}")
+            print(f"[OK] Non-existent graph failed as expected: {response.status_code}")
             print(response.text)
     except Exception as e:
-        print(f"✓ Non-existent graph error handled: {e}")
+        print(f"[OK] Non-existent graph error handled: {e}")
 
     # Test 5: PageRank with legacy parameter names (backward compatibility)
     print("\nTest 5: PageRank with legacy parameter names")
@@ -94,7 +94,7 @@ def test_pagerank_multi_graph():
         response = requests.post(f"{base_url}/query", json=query5)
         if response.status_code == 200:
             result = response.json()
-            print("✓ Legacy parameter names work")
+            print("[OK] Legacy parameter names work")
             print(f"  Result keys: {list(result.keys())}")
         else:
             print(f"✗ Legacy parameter names failed: {response.status_code}")

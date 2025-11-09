@@ -70,12 +70,12 @@ def test_query(query_obj):
             print(response.text)
             
     except requests.exceptions.ConnectionError:
-        print("❌ Error: Could not connect to server on http://localhost:8080")
+        print("[FAIL] Error: Could not connect to server on http://localhost:8080")
         print("   Make sure the ClickGraph server is running:")
         print("   cargo run --bin brahmand")
         sys.exit(1)
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"[FAIL] Error: {e}")
 
 def main():
     print("Testing Path Variable SQL Generation")

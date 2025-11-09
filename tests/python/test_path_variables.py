@@ -31,16 +31,16 @@ def test_path_variables():
 
         if response.status_code == 200:
             result = response.json()
-            print("✅ Path Variables test PASSED")
+            print("[OK] Path Variables test PASSED")
             print(f"Response: {json.dumps(result, indent=2)}")
             return True
         else:
-            print(f"❌ Path Variables test FAILED - Status: {response.status_code}")
+            print(f"[FAIL] Path Variables test FAILED - Status: {response.status_code}")
             print(f"Response: {response.text}")
             return False
 
     except Exception as e:
-        print(f"❌ Path Variables test FAILED - Exception: {e}")
+        print(f"[FAIL] Path Variables test FAILED - Exception: {e}")
         return False
 
 if __name__ == "__main__":

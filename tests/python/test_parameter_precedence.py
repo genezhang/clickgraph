@@ -32,7 +32,7 @@ def test_parameter_precedence():
 
             # Check if it's an error response (dictionary with 'error' key)
             if isinstance(result, dict) and 'error' in result:
-                print(f"❌ Error: {result['error']}")
+                print(f"[FAIL] Error: {result['error']}")
                 return False
             else:
                 # Response is a list of results
@@ -41,7 +41,7 @@ def test_parameter_precedence():
                 else:
                     data = result.get('data', [])
 
-                print(f"✅ Success: Returned {len(data)} rows")
+                print(f"[OK] Success: Returned {len(data)} rows")
 
                 # Check if the results look like Post nodes (should have different IDs than User nodes)
                 if data:
@@ -51,20 +51,20 @@ def test_parameter_precedence():
                     # If nodeLabels takes precedence, we should get Post nodes
                     # Post nodes typically have higher IDs than User nodes in test data
                     if isinstance(first_node, int) and first_node > 100:  # Assuming Post IDs are > 100
-                        print("✓ nodeLabels appears to take precedence (got Post-like IDs)")
+                        print("[OK] nodeLabels appears to take precedence (got Post-like IDs)")
                         return True
                     else:
                         print("? Cannot determine precedence from data, but query succeeded")
                         return True
                 else:
-                    print("✓ Query succeeded but returned no data")
+                    print("[OK] Query succeeded but returned no data")
                     return True
         else:
-            print(f"❌ HTTP Error: {response.status_code} - {response.text}")
+            print(f"[FAIL] HTTP Error: {response.status_code} - {response.text}")
             return False
 
     except requests.exceptions.RequestException as e:
-        print(f"❌ Request error: {e}")
+        print(f"[FAIL] Request error: {e}")
         return False
 
 if __name__ == "__main__":

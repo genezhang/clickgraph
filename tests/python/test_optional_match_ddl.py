@@ -37,11 +37,11 @@ def test_server():
     try:
         response = requests.get(f"{SERVER_URL}/health", timeout=2)
         if response.status_code == 200:
-            print("✅ Server is running at", SERVER_URL)
+            print("[OK] Server is running at", SERVER_URL)
             return True
     except:
         pass
-    print("❌ Server is not running at", SERVER_URL)
+    print("[FAIL] Server is not running at", SERVER_URL)
     return False
 
 def register_schema():
@@ -63,9 +63,9 @@ def register_schema():
         ON CLICKHOUSE TABLE users
     """)
     if "error" in result:
-        print(f"   ❌ Error: {result['error']}")
+        print(f"   [FAIL] Error: {result['error']}")
         return False
-    print("   ✅ User nodes registered")
+    print("   [OK] User nodes registered")
     
     # Register FRIENDS_WITH relationships
     print("\n2. Registering FRIENDS_WITH relationships...")
@@ -79,9 +79,9 @@ def register_schema():
         ON CLICKHOUSE TABLE friendships
     """)
     if "error" in result:
-        print(f"   ❌ Error: {result['error']}")
+        print(f"   [FAIL] Error: {result['error']}")
         return False
-    print("   ✅ FRIENDS_WITH relationships registered")
+    print("   [OK] FRIENDS_WITH relationships registered")
     
     return True
 
@@ -142,14 +142,14 @@ def run_optional_match_tests():
         result = send_query(test['query'])
         
         if "error" in result:
-            print(f"\n❌ Error: {result['error']}")
+            print(f"\n[FAIL] Error: {result['error']}")
             failed += 1
             continue
         
         # Check if SQL contains expected patterns
         sql = result.get("sql", "")
         if sql:
-            print(f"\n✅ Generated SQL (excerpt):")
+            print(f"\n[OK] Generated SQL (excerpt):")
             # Show first 200 chars of SQL
             print(f"   {sql[:200]}...")
             
@@ -157,28 +157,28 @@ def run_optional_match_tests():
             success = True
             for pattern in test["should_contain"]:
                 if pattern in sql or pattern in str(result):
-                    print(f"   ✅ Contains '{pattern}'")
+                    print(f"   [OK] Contains '{pattern}'")
                 else:
                     print(f"   ⚠️  Missing '{pattern}' (might be in different format)")
                     success = False
             
             if success:
-                print(f"\n✅ Test {i} PASSED")
+                print(f"\n[OK] Test {i} PASSED")
                 passed += 1
             else:
                 print(f"\n⚠️  Test {i} PASSED with warnings")
                 passed += 1
         else:
-            print(f"\n✅ Query executed successfully")
+            print(f"\n[OK] Query executed successfully")
             print(f"   Result: {json.dumps(result, indent=2)[:300]}...")
             passed += 1
     
     print(f"\n{'='*70}")
     print("TEST SUMMARY")
     print(f"{'='*70}")
-    print(f"\n✅ Passed: {passed}/{len(tests)}")
+    print(f"\n[OK] Passed: {passed}/{len(tests)}")
     if failed > 0:
-        print(f"❌ Failed: {failed}/{len(tests)}")
+        print(f"[FAIL] Failed: {failed}/{len(tests)}")
     
     return passed == len(tests)
 
@@ -189,13 +189,13 @@ def main():
     
     # Check server
     if not test_server():
-        print("\n❌ Please start ClickGraph server first:")
+        print("\n[FAIL] Please start ClickGraph server first:")
         print("   cargo run --bin brahmand")
         return False
     
     # Register schema via DDL
     if not register_schema():
-        print("\n❌ Schema registration failed. Check server logs.")
+        print("\n[FAIL] Schema registration failed. Check server logs.")
         return False
     
     # Run tests
@@ -206,10 +206,10 @@ def main():
         print("🎉 ALL TESTS PASSED!")
         print("="*70)
         print("\nOPTIONAL MATCH is working correctly with:")
-        print("  ✅ LEFT JOIN SQL generation")
-        print("  ✅ NULL handling for optional patterns")
-        print("  ✅ Multiple OPTIONAL MATCH clauses")
-        print("  ✅ WHERE clause filtering")
+        print("  [OK] LEFT JOIN SQL generation")
+        print("  [OK] NULL handling for optional patterns")
+        print("  [OK] Multiple OPTIONAL MATCH clauses")
+        print("  [OK] WHERE clause filtering")
     else:
         print("⚠️  SOME TESTS HAD ISSUES")
         print("="*70)

@@ -89,7 +89,7 @@ def test_case_expressions():
 
         if response.status_code == 200:
             result = response.json()
-            print("✓ Simple CASE expression executed successfully")
+            print("[OK] Simple CASE expression executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
             print(f"✗ Simple CASE expression failed: {response.text}")
@@ -106,7 +106,7 @@ def test_case_expressions():
 
         if response.status_code == 200:
             result = response.json()
-            print("✓ Searched CASE expression executed successfully")
+            print("[OK] Searched CASE expression executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
             print(f"✗ Searched CASE expression failed: {response.text}")
@@ -123,7 +123,7 @@ def test_case_expressions():
 
         if response.status_code == 200:
             result = response.json()
-            print("✓ CASE in WHERE clause executed successfully")
+            print("[OK] CASE in WHERE clause executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
             print(f"✗ CASE in WHERE clause failed: {response.text}")
@@ -140,7 +140,7 @@ def test_case_expressions():
 
         if response.status_code == 200:
             result = response.json()
-            print("✓ CASE inside function executed successfully")
+            print("[OK] CASE inside function executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
             print(f"✗ CASE inside function failed: {response.text}")
@@ -157,14 +157,14 @@ def test_case_expressions():
 
         if response.status_code == 200:
             result = response.json()
-            print("✓ CASE in complex expression executed successfully")
+            print("[OK] CASE in complex expression executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
             print(f"✗ CASE in complex expression failed: {response.text}")
             return False
 
         print("\n" + "=" * 50)
-        print("✓ All CASE expression tests passed!")
+        print("[OK] All CASE expression tests passed!")
         return True
 
     except requests.exceptions.ConnectionError:

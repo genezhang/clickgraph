@@ -122,7 +122,7 @@ def test_pagerank_parameters():
                 if 'error' in result:
                     success = False
                     error_msg = result['error']
-                    print(f"❌ FAILED: {error_msg}")
+                    print(f"[FAIL] FAILED: {error_msg}")
                 else:
                     success = True
                     # Response is a list of results
@@ -131,18 +131,18 @@ def test_pagerank_parameters():
                     else:
                         data = result.get('data', [])
                     data_count = len(data)
-                    print(f"✅ SUCCESS: Returned {data_count} rows")
+                    print(f"[OK] SUCCESS: Returned {data_count} rows")
             else:
                 success = False
-                print(f"❌ FAILED: HTTP {response.status_code} - {response.text}")
+                print(f"[FAIL] FAILED: HTTP {response.status_code} - {response.text}")
 
         except requests.exceptions.RequestException as e:
             success = False
-            print(f"❌ FAILED: Request error - {e}")
+            print(f"[FAIL] FAILED: Request error - {e}")
 
         # Check if result matches expectation
         if success == test_case['expected_success']:
-            print("✓ Expected result")
+            print("[OK] Expected result")
             results.append(True)
         else:
             print("✗ Unexpected result")

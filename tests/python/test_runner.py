@@ -68,12 +68,12 @@ def start_server():
         try:
             response = requests.get(f"{SERVER_URL}/health", timeout=1)
             if response.status_code == 200:
-                log(f"✅ Server started successfully (PID: {process.pid})", Colors.GREEN)
+                log(f"[OK] Server started successfully (PID: {process.pid})", Colors.GREEN)
                 return True
         except requests.exceptions.RequestException:
             print(".", end="", flush=True)
     
-    log("\n❌ Server failed to start within 30 seconds", Colors.RED)
+    log("\n[FAIL] Server failed to start within 30 seconds", Colors.RED)
     stop_server()
     return False
 
@@ -87,7 +87,7 @@ def stop_server():
             os.kill(pid, 15)  # SIGTERM
             time.sleep(2)
             os.kill(pid, 9)   # SIGKILL if still running
-            log(f"✅ Server stopped (PID: {pid})", Colors.GREEN)
+            log(f"[OK] Server stopped (PID: {pid})", Colors.GREEN)
         except OSError:
             log("⚠️  No running process found", Colors.YELLOW)
         PID_FILE.unlink(missing_ok=True)
@@ -97,7 +97,7 @@ def stop_server():
 def run_query(query, description=""):
     """Execute a Cypher query and return results"""
     if description:
-        log(f"🧪 {description}", Colors.CYAN)
+        log(f"[TEST] {description}", Colors.CYAN)
     
     try:
         response = requests.post(
@@ -108,22 +108,22 @@ def run_query(query, description=""):
         )
         
         if response.status_code == 200:
-            log("✅ Query succeeded!", Colors.GREEN)
+            log("[OK] Query succeeded!", Colors.GREEN)
             result = response.json()
             print(json.dumps(result, indent=2))
             return True, result
         else:
-            log(f"❌ Query failed with status {response.status_code}", Colors.RED)
+            log(f"[FAIL] Query failed with status {response.status_code}", Colors.RED)
             print(response.text)
             return False, None
             
     except Exception as e:
-        log(f"❌ Query failed: {e}", Colors.RED)
+        log(f"[FAIL] Query failed: {e}", Colors.RED)
         return False, None
 
 def run_tests():
     """Run comprehensive test suite"""
-    log("🧪 Running ClickGraph Test Suite", Colors.CYAN)
+    log("[TEST] Running ClickGraph Test Suite", Colors.CYAN)
     log("=" * 60, Colors.CYAN)
     
     tests_passed = 0
@@ -183,7 +183,7 @@ def main():
     
     if args.clean:
         stop_server()
-        log("✅ Environment cleaned", Colors.GREEN)
+        log("[OK] Environment cleaned", Colors.GREEN)
     elif args.start:
         if start_server():
             sys.exit(0)

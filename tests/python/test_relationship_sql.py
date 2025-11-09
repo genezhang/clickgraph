@@ -53,7 +53,7 @@ def test_query(test_case):
             
             # Check if SQL contains correct table name
             if "user_follows" in sql:
-                print("✓ PASS: Uses correct table 'user_follows'")
+                print("[OK] PASS: Uses correct table 'user_follows'")
             else:
                 print("✗ FAIL: Does not use 'user_follows' table")
             
@@ -61,7 +61,7 @@ def test_query(test_case):
             if "FOLLOWS_r" in sql or "FOLLOWS_" in sql.replace("user_follows", ""):
                 print("✗ FAIL: Contains invalid 'FOLLOWS_*' pattern")
             else:
-                print("✓ PASS: No invalid patterns")
+                print("[OK] PASS: No invalid patterns")
             
             print(f"\nGenerated SQL:")
             print(sql)

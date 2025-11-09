@@ -44,23 +44,23 @@ for i, test in enumerate(test_queries, 1):
             result = response.json()
             if isinstance(result, list):
                 # Server returned array of results directly
-                print(f"   ✅ SUCCESS! Got {len(result)} results")
+                print(f"   [OK] SUCCESS! Got {len(result)} results")
                 if len(result) > 0:
                     print(f"   Sample result: {result[0]}")
             elif isinstance(result, dict) and result.get("data"):
-                print(f"   ✅ SUCCESS! Got {len(result['data'])} results")
+                print(f"   [OK] SUCCESS! Got {len(result['data'])} results")
                 if len(result['data']) > 0:
                     print(f"   Sample result: {result['data'][0]}")
             else:
                 error = result.get("error", str(result))
                 if len(error) > 200:
                     error = error[:200] + "..."
-                print(f"   ❌ FAILED: {error}")
+                print(f"   [FAIL] FAILED: {error}")
         else:
             error_text = response.text[:200] if len(response.text) > 200 else response.text
-            print(f"   ❌ FAILED (HTTP {response.status_code}): {error_text}")
+            print(f"   [FAIL] FAILED (HTTP {response.status_code}): {error_text}")
     except Exception as e:
-        print(f"   ❌ EXCEPTION: {str(e)}")
+        print(f"   [FAIL] EXCEPTION: {str(e)}")
 
 print("\n" + "=" * 80)
 print("Test Summary Complete")

@@ -12,7 +12,7 @@ import sys
 SERVER_PORT = 8080
 
 def main():
-    print("🔍 Starting server with visible logs to see full SQL...\n")
+    print("[INFO] Starting server with visible logs to see full SQL...\n")
     
     # Set environment
     env = os.environ.copy()
@@ -44,7 +44,7 @@ def main():
         print("\n\n🛑 Stopping server...")
         process.terminate()
         process.wait()
-        print("✅ Server stopped")
+        print("[OK] Server stopped")
 
 if __name__ == '__main__':
     main()

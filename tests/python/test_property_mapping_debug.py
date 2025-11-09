@@ -31,7 +31,7 @@ def test_property_mapping():
 
         if response.status_code == 200:
             result = response.json()
-            print("✓ Query executed successfully")
+            print("[OK] Query executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
             print(f"✗ Query failed with status {response.status_code}")
@@ -63,7 +63,7 @@ def test_property_mapping():
 
         if response.status_code == 200:
             result = response.json()
-            print("✓ Query A executed successfully")
+            print("[OK] Query A executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
             print(f"✗ Query A failed with status {response.status_code}")
@@ -92,7 +92,7 @@ def test_property_mapping():
 
         if response.status_code == 200:
             result = response.json()
-            print("✓ Query B executed successfully")
+            print("[OK] Query B executed successfully")
             print(f"Results: {json.dumps(result, indent=2)}")
         else:
             print(f"✗ Query B failed with status {response.status_code}")

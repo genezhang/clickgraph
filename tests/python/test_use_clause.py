@@ -30,7 +30,7 @@ def test_use_clause_override_parameter():
     
     # Should succeed if social_network schema exists and has User nodes
     assert response.status_code == 200
-    print("   ✓ USE clause successfully overrides schema_name parameter")
+    print("   [OK] USE clause successfully overrides schema_name parameter")
 
 
 def test_use_clause_without_parameter():
@@ -46,7 +46,7 @@ def test_use_clause_without_parameter():
     print(f"   Response: {response.json()}")
     
     assert response.status_code == 200
-    print("   ✓ USE clause works independently")
+    print("   [OK] USE clause works independently")
 
 
 def test_parameter_without_use_clause():
@@ -63,7 +63,7 @@ def test_parameter_without_use_clause():
     print(f"   Response: {response.json()}")
     
     assert response.status_code == 200
-    print("   ✓ schema_name parameter works without USE clause")
+    print("   [OK] schema_name parameter works without USE clause")
 
 
 def test_use_clause_with_qualified_name():
@@ -83,9 +83,9 @@ def test_use_clause_with_qualified_name():
     # Just verify it was parsed correctly (schema error is OK)
     if response.status_code != 200:
         assert "Schema error" in response.text or "schema" in response.text.lower()
-        print("   ✓ Qualified name parsed correctly (schema not found, as expected)")
+        print("   [OK] Qualified name parsed correctly (schema not found, as expected)")
     else:
-        print("   ✓ Qualified name works")
+        print("   [OK] Qualified name works")
 
 
 def test_use_clause_case_insensitive():
@@ -102,9 +102,9 @@ def test_use_clause_case_insensitive():
         query = {"query": query_str}
         response = requests.post(f"{BASE_URL}/query", json=query)
         assert response.status_code == 200
-        print(f"   ✓ '{query_str[:20]}...' works")
+        print(f"   [OK] '{query_str[:20]}...' works")
     
-    print("   ✓ USE clause is case-insensitive")
+    print("   [OK] USE clause is case-insensitive")
 
 
 def test_precedence_order():
@@ -127,7 +127,7 @@ def test_precedence_order():
     print(f"\n6. Precedence order verification:")
     print(f"   USE > parameter: {r1.status_code == 200}")
     print(f"   parameter > default: {r2.status_code == 200}")
-    print("   ✓ Precedence order: USE clause > schema_name parameter > default")
+    print("   [OK] Precedence order: USE clause > schema_name parameter > default")
 
 
 if __name__ == "__main__":
@@ -139,10 +139,10 @@ if __name__ == "__main__":
         # Check if server is running
         health = requests.get(f"{BASE_URL}/health")
         if health.status_code != 200:
-            print("❌ Server is not running. Start with: cargo run --bin clickgraph")
+            print("[FAIL] Server is not running. Start with: cargo run --bin clickgraph")
             exit(1)
         
-        print("✓ Server is running\n")
+        print("[OK] Server is running\n")
         
         # Run tests
         test_use_clause_override_parameter()
@@ -153,14 +153,14 @@ if __name__ == "__main__":
         test_precedence_order()
         
         print("\n" + "=" * 60)
-        print("✅ All USE clause tests passed!")
+        print("[OK] All USE clause tests passed!")
         print("=" * 60)
         
     except requests.exceptions.ConnectionError:
-        print("❌ Cannot connect to server. Start with: cargo run --bin clickgraph")
+        print("[FAIL] Cannot connect to server. Start with: cargo run --bin clickgraph")
         exit(1)
     except Exception as e:
-        print(f"\n❌ Test failed: {e}")
+        print(f"\n[FAIL] Test failed: {e}")
         import traceback
         traceback.print_exc()
         exit(1)

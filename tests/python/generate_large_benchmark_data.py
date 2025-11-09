@@ -198,13 +198,13 @@ def main():
     
     # Generate all tables
     generate_users_sql()
-    log_progress("✓ Users generation complete")
+    log_progress("[OK] Users generation complete")
     
     generate_follows_sql()
-    log_progress("✓ Follows generation complete")
+    log_progress("[OK] Follows generation complete")
     
     generate_posts_sql()
-    log_progress("✓ Posts generation complete")
+    log_progress("[OK] Posts generation complete")
     
     # Verification queries
     print("-- Verification Queries")

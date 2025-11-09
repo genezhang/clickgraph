@@ -33,14 +33,14 @@ def test_multiple_relationships():
         )
 
         if response.status_code != 200:
-            print(f"❌ HTTP Error {response.status_code}: {response.text}")
+            print(f"[FAIL] HTTP Error {response.status_code}: {response.text}")
             return False
 
         result = response.json()
 
         # Check if we got a successful response
         if isinstance(result, dict) and "error" in result:
-            print(f"❌ Query Error: {result['error']}")
+            print(f"[FAIL] Query Error: {result['error']}")
             return False
 
         # Print the generated SQL (if available in debug mode)
@@ -56,22 +56,22 @@ def test_multiple_relationships():
             sql = str(result)  # fallback
         union_count = sql.count("UNION ALL")
 
-        print(f"🔍 Analysis:")
+        print(f"[INFO] Analysis:")
         print(f"   - UNION ALL occurrences: {union_count}")
         print(f"   - Expected for 2 relationship types: 1 UNION ALL clause")
 
         if union_count == 1:
-            print("✅ SUCCESS: Correct number of UNION ALL clauses for 2 relationship types")
+            print("[OK] SUCCESS: Correct number of UNION ALL clauses for 2 relationship types")
             return True
         else:
-            print(f"❌ FAILURE: Expected 1 UNION ALL clause, got {union_count}")
+            print(f"[FAIL] FAILURE: Expected 1 UNION ALL clause, got {union_count}")
             return False
 
     except requests.exceptions.ConnectionError:
-        print("❌ Connection Error: Is ClickGraph server running on localhost:8080?")
+        print("[FAIL] Connection Error: Is ClickGraph server running on localhost:8080?")
         return False
     except Exception as e:
-        print(f"❌ Unexpected Error: {e}")
+        print(f"[FAIL] Unexpected Error: {e}")
         return False
 
 def test_three_relationships():
@@ -98,13 +98,13 @@ def test_three_relationships():
         )
 
         if response.status_code != 200:
-            print(f"❌ HTTP Error {response.status_code}: {response.text}")
+            print(f"[FAIL] HTTP Error {response.status_code}: {response.text}")
             return False
 
         result = response.json()
 
         if isinstance(result, dict) and "error" in result:
-            print(f"❌ Query Error: {result['error']}")
+            print(f"[FAIL] Query Error: {result['error']}")
             return False
 
         if isinstance(result, dict):
@@ -113,26 +113,26 @@ def test_three_relationships():
             sql = str(result)  # fallback
         union_count = sql.count("UNION ALL")
 
-        print(f"🔍 Analysis for 3 relationships:")
+        print(f"[INFO] Analysis for 3 relationships:")
         print(f"   - UNION ALL occurrences: {union_count}")
         print(f"   - Expected: 1 UNION ALL clause (for 2 relationships)")
 
         if union_count == 1:
-            print("✅ SUCCESS: Correct number of UNION ALL clauses for 2 relationship types")
+            print("[OK] SUCCESS: Correct number of UNION ALL clauses for 2 relationship types")
             return True
         else:
-            print(f"❌ FAILURE: Expected 1 UNION ALL clause, got {union_count}")
+            print(f"[FAIL] FAILURE: Expected 1 UNION ALL clause, got {union_count}")
             return False
 
     except requests.exceptions.ConnectionError:
-        print("❌ Connection Error: Is ClickGraph server running on localhost:8080?")
+        print("[FAIL] Connection Error: Is ClickGraph server running on localhost:8080?")
         return False
     except Exception as e:
-        print(f"❌ Unexpected Error: {e}")
+        print(f"[FAIL] Unexpected Error: {e}")
         return False
 
 if __name__ == "__main__":
-    print("🧪 Testing Multiple Relationship Types SQL Generation")
+    print("[TEST] Testing Multiple Relationship Types SQL Generation")
     print("=" * 60)
 
     print("\n1️⃣ Testing 3 relationship types (FOLLOWS|FRIENDS_WITH|LIKES):")
