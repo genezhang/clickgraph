@@ -1342,32 +1342,58 @@ impl RenderPlanBuilder for LogicalPlan {
                             if let Ok(Some(nested_from_table)) = nested_left_from {
                                 from_table_to_view_ref(Some(nested_from_table))
                             } else {
-                                // If nested left also doesn't have FROM, create one from the right_connection alias
+                                // If nested left also doesn't have FROM, create one from the nested left_connection alias
                                 let table_name = extract_table_name(&nested_graph_rel.left)
                                     .ok_or_else(|| super::errors::RenderBuildError::TableNameNotFound(format!(
                                         "Could not resolve table name for alias '{}', plan: {:?}",
-                                        graph_rel.right_connection, nested_graph_rel.left
+                                        nested_graph_rel.left_connection, nested_graph_rel.left
                                     )))?;
 
                                 Some(super::ViewTableRef {
                                     source: std::sync::Arc::new(LogicalPlan::Empty),
                                     name: table_name,
-                                    alias: Some(graph_rel.right_connection.clone()),
+                                    alias: Some(nested_graph_rel.left_connection.clone()),
                                 })
                             }
                         } else {
-                            // If right doesn't have FROM, create one from the right_connection alias
-                            let table_name = extract_table_name(&graph_rel.right)
-                                .ok_or_else(|| super::errors::RenderBuildError::TableNameNotFound(format!(
-                                    "Could not resolve table name for alias '{}', plan: {:?}",
-                                    graph_rel.right_connection, graph_rel.right
-                                )))?;
+                            // If right doesn't have FROM, we need to determine which node should be the anchor
+                            // Use find_anchor_node logic to choose the correct anchor
+                            let all_connections = get_all_relationship_connections(&self);
+                            let optional_aliases = std::collections::HashSet::new();
+                            
+                            if let Some(anchor_alias) = find_anchor_node(&all_connections, &optional_aliases) {
+                                // Determine which node (left or right) the anchor corresponds to
+                                let (table_plan, connection_alias) = if anchor_alias == graph_rel.left_connection {
+                                    (&graph_rel.left, &graph_rel.left_connection)
+                                } else {
+                                    (&graph_rel.right, &graph_rel.right_connection)
+                                };
+                                
+                                let table_name = extract_table_name(table_plan)
+                                    .ok_or_else(|| super::errors::RenderBuildError::TableNameNotFound(format!(
+                                        "Could not resolve table name for anchor alias '{}', plan: {:?}",
+                                        connection_alias, table_plan
+                                    )))?;
 
-                            Some(super::ViewTableRef {
-                                source: std::sync::Arc::new(LogicalPlan::Empty),
-                                name: table_name,
-                                alias: Some(graph_rel.right_connection.clone()),
-                            })
+                                Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(LogicalPlan::Empty),
+                                    name: table_name,
+                                    alias: Some(connection_alias.clone()),
+                                })
+                            } else {
+                                // Fallback: use left_connection as anchor (traditional behavior)
+                                let table_name = extract_table_name(&graph_rel.left)
+                                    .ok_or_else(|| super::errors::RenderBuildError::TableNameNotFound(format!(
+                                        "Could not resolve table name for alias '{}', plan: {:?}",
+                                        graph_rel.left_connection, graph_rel.left
+                                    )))?;
+
+                                Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(LogicalPlan::Empty),
+                                    name: table_name,
+                                    alias: Some(graph_rel.left_connection.clone()),
+                                })
+                            }
                         }
                     }
                 }
