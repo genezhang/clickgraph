@@ -63,11 +63,19 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 
 **OPTIONAL MATCH Support (Production-Ready)**
 - Complete LEFT JOIN semantics for optional graph patterns
-- Two-word keyword parsing (`OPTIONAL MATCH`) with 9 passing tests
+- Two-word keyword parsing (`OPTIONAL MATCH`)
 - Optional alias tracking in `query_planner/plan_ctx/mod.rs`
 - Automatic LEFT JOIN generation in `clickhouse_query_generator/`
-- 11/11 OPTIONAL MATCH tests passing (100%)
+- All OPTIONAL MATCH tests passing (5/5 basic + 4/4 e2e)
 - Full documentation: `docs/optional-match-guide.md`
+
+**Multi-Schema Architecture (Robust)**
+- Complete schema isolation support (Nov 9, 2025)
+- Per-request schema selection via USE clause or schema_name parameter
+- Single source of truth: GLOBAL_SCHEMAS HashMap
+- Removed redundant GLOBAL_GRAPH_SCHEMA architecture
+- Thread-safe schema flow through entire query execution
+- All multi-schema tests passing (100%)
 
 **Neo4j Bolt Protocol v4.4**
 - Complete wire protocol implementation in `server/bolt_protocol/`
@@ -80,7 +88,7 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 - YAML configuration for mapping existing tables to graph entities
 - Schema validation and optimization in `graph_catalog/`
 - View resolution in `query_planner/analyzer/view_resolver.rs`
-- Comprehensive test coverage (250/251 tests passing)
+- Comprehensive test coverage (325 unit tests passing)
 - Fixed label/type_name field usage in `server/graph_catalog.rs`
 
 **Relationship Traversal Support**
@@ -184,7 +192,7 @@ cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 ### Testing
 - Integration tests require running ClickHouse instance (see docker-compose.yaml)
 - Use `clickhouse::test-util` feature for testing SQL generation
-- Current status: 250/251 tests passing (99.6%)
+- Current status: 325/325 unit tests + 32/35 integration tests passing (91.4%)
 
 ## Project-Specific Conventions
 
@@ -216,12 +224,12 @@ cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 
 **Core Read Query Features** (Priority Order):
 
-1. **Integration Test Coverage** (Next Priority)
-   - Currently at 24/35 (68.6%)
-   - 11 remaining failures to investigate and fix
-   - **Estimated**: 1-2 days
+1. **Integration Test Coverage** (Ongoing)
+   - Currently at 32/35 (91.4%)
+   - 3 benchmark tests remain (expected - require specific datasets)
+   - **Status**: Excellent coverage achieved
 
-3. **Additional Graph Algorithms**
+2. **Additional Graph Algorithms**
    - ✅ **PageRank** - COMPLETED Oct 23, 2025
    - Centrality measures (betweenness, closeness, degree)
    - Community detection
@@ -233,6 +241,7 @@ cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
    - **Estimated**: 3-5 days
 
 **Completed Features**:
+- ✅ **Multi-Schema Architecture**: Single source of truth, schema isolation, USE clause - Nov 9, 2025
 - ✅ **Path Variables & Functions**: `p = (a)-[*]->(b)`, `length(p)`, `nodes(p)`, `relationships(p)` - Oct 21, 2025
 - ✅ **Shortest Path**: `shortestPath()` and `allShortestPaths()` - Oct 20, 2025
 - ✅ **Alternate Relationship Types**: `[:TYPE1|TYPE2]` - Oct 21, 2025

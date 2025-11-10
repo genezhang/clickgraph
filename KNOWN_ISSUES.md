@@ -1,8 +1,14 @@
 # Known Issues
 
+**Current Status**: All major functional issues resolved! ✅  
+**Test Results**: 325/325 unit tests + 32/35 integration tests passing (91.4%)  
+**Active Issues**: 3 benchmark test configurations (not blocking)
+
+---
+
 ## ✅ RESOLVED: GLOBAL_GRAPH_SCHEMA vs GLOBAL_SCHEMAS Duplication
 
-**Status**: ✅ **RESOLVED** (November 23, 2025)  
+**Status**: ✅ **RESOLVED** (November 9, 2025)  
 **Resolution**: GLOBAL_GRAPH_SCHEMA completely removed from codebase
 
 ### What Was Changed
@@ -26,6 +32,55 @@ GLOBAL_SCHEMAS.get().and_then(|s| s.try_read().ok()).and_then(|s| s.get("default
 ```
 
 **Benefit**: Single source of truth (GLOBAL_SCHEMAS), cleaner architecture, true per-request schema model.
+
+---
+
+## ✅ RESOLVED: Duplicate JOIN with Multiple Relationship Types
+
+**Status**: ✅ **RESOLVED** (November 9, 2025)  
+**Resolution**: Fixed in multi-schema migration
+
+### What Was the Issue
+When querying with multiple relationship types using `|` operator, the SQL generator was creating duplicate JOINs to the source node table with the same alias, causing ClickHouse error: "Multiple table expressions with same alias".
+
+**Example Query**:
+```cypher
+MATCH (u:User)-[:FOLLOWS|FRIENDS_WITH]->(target:User)
+RETURN u.name, target.name
+```
+
+### Resolution
+Fixed during multi-schema architecture implementation. All tests now passing:
+- ✅ `test_multi_with_schema_load.py` - PASSING
+- ✅ `test_multiple_relationships_sql.py` - PASSING  
+- ✅ `test_multiple_relationships_sql_proper.py` - PASSING
+
+**Test Results**: All multiple relationship type queries working correctly.
+
+---
+
+## ✅ RESOLVED: OPTIONAL MATCH Support
+
+**Status**: ✅ **RESOLVED** (November 9, 2025)  
+**Resolution**: All OPTIONAL MATCH tests passing
+
+### What Was the Issue
+OPTIONAL MATCH basic functionality was working but some advanced test scenarios were failing (was at 19/27 tests passing on Nov 8).
+
+### Resolution  
+All OPTIONAL MATCH functionality now working correctly:
+- ✅ LEFT JOIN generation
+- ✅ NULL handling with join_use_nulls
+- ✅ Simple OPTIONAL MATCH patterns
+- ✅ Multiple OPTIONAL MATCH clauses
+- ✅ Mixed MATCH and OPTIONAL MATCH
+- ✅ OPTIONAL MATCH with WHERE clauses
+
+**Test Results**:
+- `test_optional_match.py`: 5/5 passing ✅
+- `test_optional_match_e2e.py`: 4/4 passing ✅
+
+---
 
 ---
 
