@@ -469,6 +469,30 @@ fn get_node_info_from_schema(node_label: &str) -> Option<(String, String)> {
     None
 }
 
+/// Check if a logical plan contains any GraphRel with multiple relationship types
+fn has_multiple_relationship_types(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            if let Some(labels) = &graph_rel.labels {
+                if labels.len() > 1 {
+                    return true;
+                }
+            }
+            // Check child plans
+            has_multiple_relationship_types(&graph_rel.left) || has_multiple_relationship_types(&graph_rel.right)
+        }
+        LogicalPlan::GraphJoins(joins) => has_multiple_relationship_types(&joins.input),
+        LogicalPlan::Projection(proj) => has_multiple_relationship_types(&proj.input),
+        LogicalPlan::Filter(filter) => has_multiple_relationship_types(&filter.input),
+        LogicalPlan::GraphNode(node) => has_multiple_relationship_types(&node.input),
+        LogicalPlan::GroupBy(gb) => has_multiple_relationship_types(&gb.input),
+        LogicalPlan::OrderBy(ob) => has_multiple_relationship_types(&ob.input),
+        LogicalPlan::Limit(limit) => has_multiple_relationship_types(&limit.input),
+        LogicalPlan::Skip(skip) => has_multiple_relationship_types(&skip.input),
+        _ => false,
+    }
+}
+
 /// Convert RenderExpr to SQL string with node alias mapping for CTE generation
 /// Maps Cypher aliases (e.g., "a", "b") to SQL table aliases (e.g., "start_node", "end_node")
 fn render_expr_to_sql_for_cte(
@@ -1972,6 +1996,14 @@ impl RenderPlanBuilder for LogicalPlan {
         
         // Check for GraphJoins wrapping Projection(Return) -> GroupBy pattern
         if let LogicalPlan::GraphJoins(graph_joins) = core_plan {
+            // Check if there's a multiple-relationship GraphRel anywhere in the tree
+            if has_multiple_relationship_types(&graph_joins.input) {
+                println!("DEBUG: Multiple relationship types detected in GraphJoins tree, returning Err to use CTE path");
+                return Err(RenderBuildError::InvalidRenderPlan(
+                    "Multiple relationship types require CTE-based processing with UNION".to_string()
+                ));
+            }
+            
             if let LogicalPlan::Projection(proj) = graph_joins.input.as_ref() {
                 if matches!(proj.kind, crate::query_planner::logical_plan::ProjectionKind::Return) {
                     if let LogicalPlan::GroupBy(group_by) = proj.input.as_ref() {

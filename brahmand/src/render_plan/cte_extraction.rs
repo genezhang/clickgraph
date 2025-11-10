@@ -536,11 +536,11 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
             let mut relationship_ctes = vec![];
 
             if let Some(labels) = &graph_rel.labels {
-                log::debug!("GraphRel labels: {:?}", labels);
+                eprintln!("DEBUG cte_extraction: GraphRel labels: {:?} (len={})", labels, labels.len());
                 if labels.len() > 1 {
                     // Multiple relationship types: create a UNION CTE
                     let rel_tables = rel_types_to_table_names(labels);
-                    log::debug!("Resolved tables for labels {:?}: {:?}", labels, rel_tables);
+                    eprintln!("DEBUG cte_extraction: Resolved tables for labels {:?}: {:?}", labels, rel_tables);
 
                     // Create a UNION CTE
                     let union_queries: Vec<String> = rel_tables.iter().map(|table| {
@@ -555,13 +555,19 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
 
                     // Format as proper CTE: cte_name AS (union_sql)
                     let formatted_union_sql = format!("{} AS (\n{}\n)", cte_name, union_sql);
+                    
+                    eprintln!("DEBUG cte_extraction: Generated UNION CTE: {}", cte_name);
 
                     relationship_ctes.push(Cte {
                         cte_name: cte_name.clone(),
                         content: super::CteContent::RawSql(formatted_union_sql),
                         is_recursive: false,
                     });
+                } else {
+                    eprintln!("DEBUG cte_extraction: Single relationship type, no UNION needed");
                 }
+            } else {
+                eprintln!("DEBUG cte_extraction: No labels on GraphRel!");
             }
 
             // Normal path - for simple relationships, don't create CTEs
