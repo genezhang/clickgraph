@@ -713,8 +713,13 @@ impl GraphJoinInference {
 
         // Check if nodes are actually referenced in the query BEFORE calling get_graph_context
         // to avoid borrow checker issues (get_graph_context takes &mut plan_ctx)
+        eprintln!("    │ Checking if LEFT '{}' is referenced...", graph_rel.left_connection);
         let left_is_referenced = Self::is_node_referenced(&graph_rel.left_connection, plan_ctx, &root_plan);
+        eprintln!("    │ LEFT '{}' referenced: {}", graph_rel.left_connection, left_is_referenced);
+        
+        eprintln!("    │ Checking if RIGHT '{}' is referenced...", graph_rel.right_connection);
         let right_is_referenced = Self::is_node_referenced(&graph_rel.right_connection, plan_ctx, &root_plan);
+        eprintln!("    │ RIGHT '{}' referenced: {}", graph_rel.right_connection, right_is_referenced);
 
         let graph_context = graph_context::get_graph_context(
             graph_rel,
@@ -1132,8 +1137,16 @@ impl GraphJoinInference {
                 
                 // Only join the right node if it's actually referenced in the query
                 if right_is_referenced {
-                    // Check if RIGHT is the anchor node (first relationship AND right is required)
-                    let is_anchor = is_first_relationship && !right_is_optional;
+                    // Check if RIGHT is the anchor node
+                    // RIGHT can only be anchor if:
+                    // 1. It's the first relationship (is_first_relationship)
+                    // 2. RIGHT is required (!right_is_optional)
+                    // 3. LEFT is either optional OR was not chosen as anchor
+                    //
+                    // The key insight: if LEFT was already marked as anchor (joined_entities contains it
+                    // but we didn't create a JOIN for it above), then RIGHT cannot also be an anchor
+                    let left_is_anchor = is_first_relationship && !left_is_optional;
+                    let is_anchor = is_first_relationship && !right_is_optional && !left_is_anchor;
                     
                     if is_anchor {
                         // This is the anchor node - it should go in FROM clause, not as a JOIN
