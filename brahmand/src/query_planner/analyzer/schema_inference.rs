@@ -74,13 +74,17 @@ impl SchemaInference {
                 
                 // Get the actual table name from schema, not the label
                 let table_name = if let Some(label) = table_ctx.get_label_opt() {
-                    // Try to get the table name from schema
-                    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-                        if let Ok(schema) = schema_lock.try_read() {
-                            if let Ok(node_schema) = schema.get_node_schema(&label) {
-                                // Use fully qualified table name: database.table_name
-                                let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
-                                Some(fully_qualified)
+                    // Try to get the table name from default schema in GLOBAL_SCHEMAS
+                    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                        if let Ok(schemas) = schemas_lock.try_read() {
+                            if let Some(schema) = schemas.get("default") {
+                                if let Ok(node_schema) = schema.get_node_schema(&label) {
+                                    // Use fully qualified table name: database.table_name
+                                    let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
+                                    Some(fully_qualified)
+                                } else {
+                                    Some(label)
+                                }
                             } else {
                                 Some(label)
                             }

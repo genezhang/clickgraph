@@ -8,7 +8,7 @@ use crate::{
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
-    server::GLOBAL_GRAPH_SCHEMA,
+    server::GLOBAL_SCHEMAS,
 };
 
 /// Helper function to qualify Column expressions with a table alias
@@ -245,14 +245,15 @@ impl OptimizerPass for FilterIntoGraphRel {
                     
                     let mut filters_to_apply: Vec<LogicalExpr> = Vec::new();
                     
-                    // Try to get schema for label-to-table mapping
-                    let schema_opt = GLOBAL_GRAPH_SCHEMA.get()
-                        .and_then(|s| s.try_read().ok());
+                    // Try to get default schema from GLOBAL_SCHEMAS for label-to-table mapping
+                    let schema_opt = GLOBAL_SCHEMAS.get()
+                        .and_then(|schemas_lock| schemas_lock.try_read().ok())
+                        .and_then(|schemas| schemas.get("default").cloned());
                     
                     if schema_opt.is_some() {
-                        println!("FilterIntoGraphRel: Successfully got GLOBAL_GRAPH_SCHEMA");
+                        println!("FilterIntoGraphRel: Successfully got default schema from GLOBAL_SCHEMAS");
                     } else {
-                        println!("FilterIntoGraphRel: WARNING - GLOBAL_GRAPH_SCHEMA not available!");
+                        println!("FilterIntoGraphRel: WARNING - default schema not available in GLOBAL_SCHEMAS!");
                     }
                     
                     // Iterate through all table contexts to find filters that match this ViewScan

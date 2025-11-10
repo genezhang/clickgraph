@@ -69,18 +69,27 @@ fn generate_scan(alias: String, label: Option<String>) -> LogicalPlanResult<Arc<
     }
 }/// Try to generate a ViewScan by looking up the label in the global schema
 /// 
-/// This function accesses GLOBAL_GRAPH_SCHEMA to translate Cypher labels
+/// This function accesses GLOBAL_SCHEMAS["default"] to translate Cypher labels
 /// (e.g., "User") to actual ClickHouse table names (e.g., "users").
 /// Returns None if schema is not available or label not found.
 fn try_generate_view_scan(_alias: &str, label: &str) -> Option<Arc<LogicalPlan>> {
-    // Access the global schema
-    let schema_lock = crate::server::GLOBAL_GRAPH_SCHEMA.get()?;
+    // Access the global schemas map
+    let schemas_lock = crate::server::GLOBAL_SCHEMAS.get()?;
     
-    // Try to read the schema - this might fail if another thread is writing
-    let schema = match schema_lock.try_read() {
+    // Try to read the schemas map - this might fail if another thread is writing
+    let schemas = match schemas_lock.try_read() {
         Ok(s) => s,
         Err(_) => {
-            log::warn!("Could not acquire read lock on GLOBAL_GRAPH_SCHEMA for label '{}'", label);
+            log::warn!("Could not acquire read lock on GLOBAL_SCHEMAS for label '{}'", label);
+            return None;
+        }
+    };
+    
+    // Look up the default schema
+    let schema = match schemas.get("default") {
+        Some(s) => s,
+        None => {
+            log::warn!("Default schema not found in GLOBAL_SCHEMAS");
             return None;
         }
     };
@@ -119,14 +128,23 @@ fn try_generate_view_scan(_alias: &str, label: &str) -> Option<Arc<LogicalPlan>>
 
 /// Try to generate a ViewScan for a relationship by looking up the relationship type in the global schema
 fn try_generate_relationship_view_scan(_alias: &str, rel_type: &str) -> Option<Arc<LogicalPlan>> {
-    // Access the global schema
-    let schema_lock = crate::server::GLOBAL_GRAPH_SCHEMA.get()?;
+    // Access the global schemas map
+    let schemas_lock = crate::server::GLOBAL_SCHEMAS.get()?;
     
-    // Try to read the schema - this might fail if another thread is writing
-    let schema = match schema_lock.try_read() {
+    // Try to read the schemas map - this might fail if another thread is writing
+    let schemas = match schemas_lock.try_read() {
         Ok(s) => s,
         Err(_) => {
-            log::warn!("Could not acquire read lock on GLOBAL_GRAPH_SCHEMA for relationship type '{}'", rel_type);
+            log::warn!("Could not acquire read lock on GLOBAL_SCHEMAS for relationship type '{}'", rel_type);
+            return None;
+        }
+    };
+    
+    // Look up the default schema
+    let schema = match schemas.get("default") {
+        Some(s) => s,
+        None => {
+            log::warn!("Default schema not found in GLOBAL_SCHEMAS");
             return None;
         }
     };
