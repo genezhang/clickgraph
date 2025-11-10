@@ -196,26 +196,38 @@ pub fn rel_types_to_table_names(rel_types: &[String]) -> Vec<String> {
     rel_types.iter().map(|rt| rel_type_to_table_name(rt)).collect()
 }
 
+/// Extract relationship columns from a table name using provided schema
+pub fn extract_relationship_columns_from_table_with_schema(table_name: &str, schema: &crate::graph_catalog::graph_schema::GraphSchema) -> RelationshipColumns {
+    // Extract just the table name without database prefix for matching
+    let table_only = table_name.split('.').last().unwrap_or(table_name);
+    
+    // Find relationship schema by table name
+    for rel_schema in schema.get_relationships_schemas().values() {
+        // Match both with full name (db.table) or just table name
+        if rel_schema.table_name == table_name 
+            || rel_schema.table_name == table_only 
+            || table_name.ends_with(&format!(".{}", rel_schema.table_name)) {
+            return RelationshipColumns {
+                from_id: rel_schema.from_id.clone(),
+                to_id: rel_schema.to_id.clone(),
+            };
+        }
+    }
+    
+    // Fallback to hardcoded defaults
+    RelationshipColumns {
+        from_id: "from_id".to_string(),
+        to_id: "to_id".to_string(),
+    }
+}
+
 /// Extract relationship columns from a table name
+/// DEPRECATED: Use extract_relationship_columns_from_table_with_schema instead
 pub fn extract_relationship_columns_from_table(table_name: &str) -> RelationshipColumns {
     // Get columns from schema - this should be the single source of truth
     if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
         if let Ok(schema) = schema_lock.try_read() {
-            // Extract just the table name without database prefix for matching
-            let table_only = table_name.split('.').last().unwrap_or(table_name);
-            
-            // Find relationship schema by table name
-            for rel_schema in schema.get_relationships_schemas().values() {
-                // Match both with full name (db.table) or just table name
-                if rel_schema.table_name == table_name 
-                    || rel_schema.table_name == table_only 
-                    || table_name.ends_with(&format!(".{}", rel_schema.table_name)) {
-                    return RelationshipColumns {
-                        from_id: rel_schema.from_id.clone(),
-                        to_id: rel_schema.to_id.clone(),
-                    };
-                }
-            }
+            return extract_relationship_columns_from_table_with_schema(table_name, &schema);
         }
     }
     
@@ -264,19 +276,28 @@ fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
     }
 }
 
+/// Get ID column for a table using provided schema
+pub fn table_to_id_column_with_schema(table: &str, schema: &crate::graph_catalog::graph_schema::GraphSchema) -> String {
+    // Find node schema by table name
+    // Handle both fully qualified (database.table) and simple (table) names
+    for node_schema in schema.get_nodes_schemas().values() {
+        let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
+        if node_schema.table_name == table || fully_qualified == table {
+            return node_schema.node_id.column.clone();
+        }
+    }
+    
+    // Fallback to "id" if not found
+    "id".to_string()
+}
+
 /// Get ID column for a table
+/// DEPRECATED: Use table_to_id_column_with_schema instead
 pub fn table_to_id_column(table: &str) -> String {
     // Get the ID column from the schema
     if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
         if let Ok(schema) = schema_lock.try_read() {
-            // Find node schema by table name
-            // Handle both fully qualified (database.table) and simple (table) names
-            for node_schema in schema.get_nodes_schemas().values() {
-                let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
-                if node_schema.table_name == table || fully_qualified == table {
-                    return node_schema.node_id.column.clone();
-                }
-            }
+            return table_to_id_column_with_schema(table, &schema);
         }
     }
     
