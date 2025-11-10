@@ -1,6 +1,173 @@
 # Known Issues
 
-## 🔧 ACTIVE: OPTIONAL MATCH Architectural Limitations
+## ⚠️ ARCHITECTURAL: GLOBAL_GRAPH_SCHEMA vs GLOBAL_SCHEMAS Duplication
+
+**Status**: ⚠️ **TECHNICAL DEBT** (Documented November 9, 2025)  
+**Severity**: Medium - Code duplication, limits multi-schema support  
+**Impact**: Planning layer uses GLOBAL_SCHEMAS, but SQL generation layer uses GLOBAL_GRAPH_SCHEMA
+
+### Summary
+We have two parallel schema storage systems:
+1. **`GLOBAL_GRAPH_SCHEMA`** - Single schema (the "default")
+2. **`GLOBAL_SCHEMAS`** - HashMap of schemas by name (including "default")
+
+Currently both point to the same schema object for "default", but this creates maintenance burden and limits true multi-schema support.
+
+### Current State
+**Planning Layer (Multi-Schema Ready)** ✅:
+- `query_planner/logical_plan/match_clause.rs` - Uses `GLOBAL_SCHEMAS.get("default")`
+- `query_planner/optimizer/filter_into_graph_rel.rs` - Uses `GLOBAL_SCHEMAS.get("default")`
+- `query_planner/analyzer/schema_inference.rs` - Uses `GLOBAL_SCHEMAS.get("default")`
+
+**SQL Generation Layer (Single Schema Only)** ❌:
+- `render_plan/plan_builder.rs` - Uses `GLOBAL_GRAPH_SCHEMA` (lines 376, 400, 424, 440, 459)
+- `render_plan/cte_extraction.rs` - Uses `GLOBAL_GRAPH_SCHEMA` (lines 147, 163, 184, 246, 680, 692)
+- `render_plan/cte_generation.rs` - Uses `GLOBAL_GRAPH_SCHEMA` (lines 91, 102)
+- `server/graph_catalog.rs` - DDL operations use `GLOBAL_GRAPH_SCHEMA`
+
+### Problem
+Even if planning generates ViewScans with correct schema-specific table names, the SQL generation layer might override them or fail to handle multiple schemas properly.
+
+### Future Work
+**Option 1: Remove GLOBAL_GRAPH_SCHEMA** (Clean but complex)
+- Update all render_plan code to accept schema parameter
+- Thread schema through entire SQL generation chain
+- Update tests to use GLOBAL_SCHEMAS
+- **Estimated**: 1-2 days of refactoring
+
+**Option 2: Keep Both, Document Limitation** (Current approach)
+- GLOBAL_GRAPH_SCHEMA = convenience accessor for default schema
+- Accept that multi-schema queries need more work in SQL generation layer
+- **Pro**: Less risky, maintains backward compatibility
+- **Con**: Technical debt, confusing for developers
+
+**Recommended**: Option 1 during next major refactoring cycle.
+
+---
+
+## ⚠️ LIMITATION: Multi-Schema ViewScan Creation Uses "default"
+
+**Status**: ⚠️ **ARCHITECTURAL LIMITATION** (Clarified November 9, 2025)  
+**Severity**: Medium - Multi-schema support partially implemented  
+**Impact**: USE clause and schema_name parameter work, but ViewScans always use "default" schema mappings
+
+### What Works ✅
+1. ✅ **USE Clause Parsing** - `USE database_name; MATCH ...` correctly parsed in AST
+2. ✅ **Schema Loading** - `/schemas/load` API loads named schemas into GLOBAL_SCHEMAS
+3. ✅ **Schema Selection** - Handler extracts schema name from USE clause or schema_name parameter
+4. ✅ **Schema Passing** - Selected schema passed to analyzer passes
+
+### What Doesn't Work ❌
+5. ❌ **ViewScan Creation** - `try_generate_view_scan()` hardcoded to use "default" schema
+6. ❌ **Timing Issue** - ViewScans created in `evaluate_query()` BEFORE schema parameter available
+
+### Technical Details
+**Query Planning Flow**:
+```rust
+// handler.rs line 131 - Schema extracted correctly
+let graph_schema = get_graph_schema_by_name(schema_name).await; // ✅ Correct schema!
+
+// mod.rs line 40 - Initial plan building WITHOUT schema
+let (logical_plan, mut plan_ctx) = logical_plan::evaluate_query(query_ast)?; // ❌ No schema parameter
+
+// mod.rs line 44 - Analyzer gets schema BUT ViewScans already created
+let logical_plan = analyzer::initial_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
+```
+
+**Problem Location** (`match_clause.rs` line 75-89):
+```rust
+fn try_generate_view_scan(_alias: &str, label: &str) -> Option<Arc<LogicalPlan>> {
+    let schemas_lock = crate::server::GLOBAL_SCHEMAS.get()?;
+    let schemas = schemas_lock.try_read()?;
+    let schema = schemas.get("default")?;  // ❌ HARDCODED "default"
+    // ... create ViewScan using default schema's table mappings
+}
+```
+
+### Example of the Problem
+```python
+# Load social_network schema (maps User → brahmand.social_users)
+POST /schemas/load {"schema_name": "social_network", "config_content": "..."}
+
+# Query with USE clause
+POST /query {"query": "USE social_network; MATCH (u:User) RETURN u"}
+
+# What happens:
+# ✅ USE clause parsed → schema_name = "social_network"  
+# ✅ Schema loaded → get_graph_schema_by_name("social_network")
+# ❌ ViewScan created → uses "default" schema mapping (User → test_integration.users)
+# ❌ Generated SQL queries wrong table!
+```
+
+### Fix Required
+**Root Cause**: Schema parameter not available during initial plan building
+
+**Solution Options**:
+1. **Thread schema through evaluate_query()** (Cleanest)
+   - Change signature: `evaluate_query(ast, schema: &GraphSchema)`
+   - Pass to `generate_scan()` → `try_generate_view_scan(alias, label, schema)`
+   - **Estimated**: 4-6 hours
+
+2. **Defer ViewScan creation to analyzer phase** (Complex)
+   - Create placeholder Scan nodes in evaluate_query()
+   - Replace with ViewScans in analyzer using schema parameter
+   - **Estimated**: 1-2 days (more invasive)
+
+3. **Global schema context during planning** (Hacky)
+   - Set thread-local or global "current schema" before evaluate_query()
+   - try_generate_view_scan() reads from context
+   - **Estimated**: 2-3 hours (not recommended, brittle)
+
+**Recommended**: Option 1 - Thread schema through evaluate_query()
+
+### Workaround
+Only use "default" schema. USE clause and named schemas load correctly but queries will use default schema's table mappings.
+
+---
+
+## 🐛 BUG: Duplicate JOIN with Multiple Relationship Types
+
+**Status**: 🐛 **BUG** (Discovered November 9, 2025)  
+**Severity**: Medium - Specific query pattern fails  
+**Impact**: Queries with `[:TYPE1|TYPE2]` pattern generate duplicate FROM/JOIN with same alias
+
+### Summary
+When querying with multiple relationship types using `|` operator, the SQL generator creates a duplicate JOIN to the source node table with the same alias, causing ClickHouse error: "Multiple table expressions with same alias".
+
+**Example Query**:
+```cypher
+MATCH (u:User)-[:FOLLOWS|FRIENDS_WITH]->(target:User)
+RETURN u.name, target.name
+```
+
+**Generated SQL** (Incorrect):
+```sql
+WITH rel_u_target AS (
+  SELECT from_id as from_node_id, to_id as to_node_id FROM follows
+  UNION ALL
+  SELECT from_id as from_node_id, to_id as to_node_id FROM friendships
+)
+SELECT u.name, target.name
+FROM users AS u                              -- ✅ Correct
+INNER JOIN users AS u ON u.user_id = abc.from_node_id  -- ❌ DUPLICATE!
+INNER JOIN rel_u_target AS abc ON abc.from_node_id = u.user_id
+INNER JOIN users AS target ON target.user_id = abc.to_node_id
+```
+
+**Expected SQL**:
+```sql
+FROM users AS u
+INNER JOIN rel_u_target AS abc ON abc.from_node_id = u.user_id  -- ✅ No duplicate
+INNER JOIN users AS target ON target.user_id = abc.to_node_id
+```
+
+**Affected Test**: `test_multi_with_schema_load.py`
+
+**Fix Required**: SQL generator creating extra JOIN when CTE is used for multiple relationship types. Likely in `clickhouse_query_generator` JOIN assembly logic.
+
+---
+
+## �🔧 ACTIVE: OPTIONAL MATCH Architectural Limitations
 
 **Status**: 🔧 **IN PROGRESS** (November 8, 2025)  
 **Severity**: Medium - Core functionality partially working  
