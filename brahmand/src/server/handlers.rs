@@ -690,7 +690,7 @@ pub async fn ddl_handler(
 #[derive(Deserialize)]
 pub struct LoadSchemaRequest {
     pub schema_name: String,
-    pub config_path: String,
+    pub config_content: String,  // YAML content as string
     pub validate_schema: Option<bool>,
 }
 
@@ -732,9 +732,9 @@ pub async fn load_schema_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let validate_schema = payload.validate_schema.unwrap_or(false);
 
-    match graph_catalog::load_schema_by_name(
+    match graph_catalog::load_schema_from_content(
         &payload.schema_name,
-        &payload.config_path,
+        &payload.config_content,
         Some(app_state.clickhouse_client.clone()),
         validate_schema,
     ).await {

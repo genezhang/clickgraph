@@ -39,6 +39,7 @@ services:
       - "8080:8080"
     volumes:
       - ./tests/integration/test_integration.yaml:/app/test_integration.yaml:ro
+      - ./schemas:/app/schemas:ro
 
 volumes:
   clickhouse_data:

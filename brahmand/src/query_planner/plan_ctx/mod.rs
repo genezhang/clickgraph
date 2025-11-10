@@ -1,11 +1,14 @@
 pub mod errors;
 
-use std::{collections::{HashMap, HashSet}, fmt};
+use std::{collections::{HashMap, HashSet}, fmt, sync::Arc};
 
-use crate::query_planner::{
-    logical_expr::{LogicalExpr, Property},
-    logical_plan::ProjectionItem,
-    plan_ctx::errors::PlanCtxError,
+use crate::{
+    graph_catalog::graph_schema::GraphSchema,
+    query_planner::{
+        logical_expr::{LogicalExpr, Property},
+        logical_plan::ProjectionItem,
+        plan_ctx::errors::PlanCtxError,
+    },
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -137,6 +140,8 @@ pub struct PlanCtx {
     /// Flag to indicate we're currently processing an OPTIONAL MATCH clause
     /// All new aliases created during this mode should be marked as optional
     in_optional_match_mode: bool,
+    /// Graph schema for this query (enables multi-schema support)
+    schema: Arc<GraphSchema>,
 }
 
 impl PlanCtx {
@@ -198,6 +203,11 @@ impl PlanCtx {
 
     pub fn get_mut_alias_table_ctx_map(&mut self) -> &mut HashMap<String, TableCtx> {
         &mut self.alias_table_ctx_map
+    }
+
+    /// Get the graph schema for this query
+    pub fn schema(&self) -> &GraphSchema {
+        &self.schema
     }
 
     pub fn get_table_ctx(&self, alias: &str) -> Result<&TableCtx, PlanCtxError> {
@@ -276,12 +286,33 @@ impl PlanCtx {
 }
 
 impl PlanCtx {
-    pub fn default() -> Self {
+    /// Create a new PlanCtx with the given schema
+    pub fn new(schema: Arc<GraphSchema>) -> Self {
         PlanCtx {
             alias_table_ctx_map: HashMap::new(),
             optional_aliases: HashSet::new(),
             projection_aliases: HashMap::new(),
             in_optional_match_mode: false,
+            schema,
+        }
+    }
+
+    /// Create an empty PlanCtx with an empty schema (for tests only)
+    pub fn default() -> Self {
+        use crate::graph_catalog::graph_schema::GraphSchema;
+        let empty_schema = GraphSchema::build(
+            1,
+            "test".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        PlanCtx {
+            alias_table_ctx_map: HashMap::new(),
+            optional_aliases: HashSet::new(),
+            projection_aliases: HashMap::new(),
+            in_optional_match_mode: false,
+            schema: Arc::new(empty_schema),
         }
     }
 }

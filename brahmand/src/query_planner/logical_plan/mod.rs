@@ -7,13 +7,16 @@ mod serde_arc;
 #[path = "../../utils/serde_arc_vec.rs"] 
 mod serde_arc_vec;
 
-use crate::open_cypher_parser::ast::{
-    Expression as CypherExpression, OrderByItem as CypherOrderByItem,
-    OrerByOrder as CypherOrerByOrder, ReturnItem as CypherReturnItem, WithItem,
-};
-use crate::query_planner::{
-    logical_expr::{ColumnAlias, Direction, Literal, LogicalExpr, Operator, OperatorApplication},
-    transformed::Transformed,
+use crate::{
+    graph_catalog::graph_schema::GraphSchema,
+    open_cypher_parser::ast::{
+        Expression as CypherExpression, OrderByItem as CypherOrderByItem,
+        OrerByOrder as CypherOrerByOrder, ReturnItem as CypherReturnItem, WithItem,
+    },
+    query_planner::{
+        logical_expr::{ColumnAlias, Direction, Literal, LogicalExpr, Operator, OperatorApplication},
+        transformed::Transformed,
+    },
 };
 
 use uuid::Uuid;
@@ -43,8 +46,9 @@ pub use view_scan::ViewScan;
 
 pub fn evaluate_query(
     query_ast: OpenCypherQueryAst<'_>,
+    schema: &GraphSchema,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
-    plan_builder::build_logical_plan(&query_ast)
+    plan_builder::build_logical_plan(&query_ast, schema)
 }
 
 

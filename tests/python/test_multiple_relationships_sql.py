@@ -45,7 +45,7 @@ def test_multiple_relationships():
 
         # Print the generated SQL (if available in debug mode)
         if isinstance(result, dict) and "generated_sql" in result:
-            print("📄 Generated SQL:")
+            print("Generated SQL:")
             print(result["generated_sql"])
             print()
 

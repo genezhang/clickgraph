@@ -37,7 +37,7 @@ pub fn evaluate_read_query(
     query_ast: OpenCypherQueryAst,
     current_graph_schema: &GraphSchema,
 ) -> Result<LogicalPlan, QueryPlannerError> {
-    let (logical_plan, mut plan_ctx) = logical_plan::evaluate_query(query_ast)?;
+    let (logical_plan, mut plan_ctx) = logical_plan::evaluate_query(query_ast, current_graph_schema)?;
 
     let logical_plan =
         analyzer::initial_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;

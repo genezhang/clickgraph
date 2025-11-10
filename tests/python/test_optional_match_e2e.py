@@ -100,9 +100,9 @@ def test_mixed_match_and_optional():
     
     query = """
     MATCH (u:User)
-    WHERE u.city = 'NYC'
+    WHERE u.age > 25
     OPTIONAL MATCH (u)-[f:FRIENDS_WITH]->(friend:User)
-    RETURN u.name, u.city, friend.name
+    RETURN u.name, u.age, friend.name
     LIMIT 5
     """
     

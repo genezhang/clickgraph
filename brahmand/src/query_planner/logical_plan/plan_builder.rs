@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
+    graph_catalog::graph_schema::GraphSchema,
     open_cypher_parser::ast::OpenCypherQueryAst,
     query_planner::{
         logical_plan::{
@@ -15,9 +16,10 @@ pub type LogicalPlanResult<T> = Result<T, LogicalPlanError>;
 
 pub fn build_logical_plan(
     query_ast: &OpenCypherQueryAst,
+    schema: &GraphSchema,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
     let mut logical_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Empty);
-    let mut plan_ctx = PlanCtx::default();
+    let mut plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
     
     log::debug!("build_logical_plan: Processing query with {} optional_match_clauses", 
         query_ast.optional_match_clauses.len());
