@@ -1,6 +1,44 @@
 # ClickGraph Status
 
-*Updated: November 9, 2025*
+*Updated: November 23, 2025*
+
+## 🎯 **Major Architectural Improvement - GLOBAL_GRAPH_SCHEMA Removed**
+
+**Change**: Complete removal of redundant `GLOBAL_GRAPH_SCHEMA` global variable
+**Date**: November 23, 2025
+**Impact**: Cleaner architecture, single source of truth for schema management
+**Tests**: All 325 tests passing ✅
+
+### Architecture Before/After
+
+**Before** (Technical Debt):
+```rust
+// Two parallel schema storage systems:
+GLOBAL_GRAPH_SCHEMA: OnceCell<RwLock<GraphSchema>>  // Single schema
+GLOBAL_SCHEMAS: OnceCell<RwLock<HashMap<String, GraphSchema>>>  // Multi-schema registry
+```
+
+**After** (Clean):
+```rust
+// Single source of truth:
+GLOBAL_SCHEMAS: OnceCell<RwLock<HashMap<String, GraphSchema>>>  // All schemas, including "default"
+```
+
+**Benefits**:
+- ✅ No duplicate schema storage
+- ✅ Schema passed through entire execution path (handlers → planning → rendering)
+- ✅ Helper functions use `GLOBAL_SCHEMAS["default"]` as fallback
+- ✅ True per-request schema model
+
+**Files Modified**:
+- `server/mod.rs` - Removed GLOBAL_GRAPH_SCHEMA declaration
+- `render_plan/cte_extraction.rs` - 6 functions updated
+- `render_plan/cte_generation.rs` - 1 function updated
+- `render_plan/plan_builder.rs` - 5 functions updated
+- `server/graph_catalog.rs` - All registration/access functions updated
+- `render_plan/tests/multiple_relationship_tests.rs` - Test setup updated
+
+---
 
 ## 🎯 **Integration Test Progress - 94.1% Passing, 100% Non-Benchmark**
 

@@ -1,47 +1,31 @@
 # Known Issues
 
-## ⚠️ ARCHITECTURAL: GLOBAL_GRAPH_SCHEMA vs GLOBAL_SCHEMAS Duplication
+## ✅ RESOLVED: GLOBAL_GRAPH_SCHEMA vs GLOBAL_SCHEMAS Duplication
 
-**Status**: ⚠️ **TECHNICAL DEBT** (Documented November 9, 2025)  
-**Severity**: Medium - Code duplication, limits multi-schema support  
-**Impact**: Planning layer uses GLOBAL_SCHEMAS, but SQL generation layer uses GLOBAL_GRAPH_SCHEMA
+**Status**: ✅ **RESOLVED** (November 23, 2025)  
+**Resolution**: GLOBAL_GRAPH_SCHEMA completely removed from codebase
 
-### Summary
-We have two parallel schema storage systems:
-1. **`GLOBAL_GRAPH_SCHEMA`** - Single schema (the "default")
-2. **`GLOBAL_SCHEMAS`** - HashMap of schemas by name (including "default")
+### What Was Changed
+- **Removed**: `GLOBAL_GRAPH_SCHEMA` declaration from `server/mod.rs`
+- **Updated**: All helper functions in `render_plan/` to use `GLOBAL_SCHEMAS["default"]`
+- **Fixed**: `graph_catalog.rs` functions (refresh, add_to_schema, schema monitor)
+- **Tests**: All 325 tests passing ✅
 
-Currently both point to the same schema object for "default", but this creates maintenance burden and limits true multi-schema support.
+### New Architecture
+Schema now flows through entire query execution path:
+```rust
+// handlers.rs:
+let graph_schema = graph_catalog::get_graph_schema_by_name(schema_name).await?;
+let logical_plan = query_planner::evaluate_read_query(cypher_ast, &graph_schema)?;
+let render_plan = logical_plan.to_render_plan(&graph_schema)?;
+```
 
-### Current State
-**Planning Layer (Multi-Schema Ready)** ✅:
-- `query_planner/logical_plan/match_clause.rs` - Uses `GLOBAL_SCHEMAS.get("default")`
-- `query_planner/optimizer/filter_into_graph_rel.rs` - Uses `GLOBAL_SCHEMAS.get("default")`
-- `query_planner/analyzer/schema_inference.rs` - Uses `GLOBAL_SCHEMAS.get("default")`
+Helper functions (for contexts without direct schema access) use:
+```rust
+GLOBAL_SCHEMAS.get().and_then(|s| s.try_read().ok()).and_then(|s| s.get("default"))
+```
 
-**SQL Generation Layer (Single Schema Only)** ❌:
-- `render_plan/plan_builder.rs` - Uses `GLOBAL_GRAPH_SCHEMA` (lines 376, 400, 424, 440, 459)
-- `render_plan/cte_extraction.rs` - Uses `GLOBAL_GRAPH_SCHEMA` (lines 147, 163, 184, 246, 680, 692)
-- `render_plan/cte_generation.rs` - Uses `GLOBAL_GRAPH_SCHEMA` (lines 91, 102)
-- `server/graph_catalog.rs` - DDL operations use `GLOBAL_GRAPH_SCHEMA`
-
-### Problem
-Even if planning generates ViewScans with correct schema-specific table names, the SQL generation layer might override them or fail to handle multiple schemas properly.
-
-### Future Work
-**Option 1: Remove GLOBAL_GRAPH_SCHEMA** (Clean but complex)
-- Update all render_plan code to accept schema parameter
-- Thread schema through entire SQL generation chain
-- Update tests to use GLOBAL_SCHEMAS
-- **Estimated**: 1-2 days of refactoring
-
-**Option 2: Keep Both, Document Limitation** (Current approach)
-- GLOBAL_GRAPH_SCHEMA = convenience accessor for default schema
-- Accept that multi-schema queries need more work in SQL generation layer
-- **Pro**: Less risky, maintains backward compatibility
-- **Con**: Technical debt, confusing for developers
-
-**Recommended**: Option 1 during next major refactoring cycle.
+**Benefit**: Single source of truth (GLOBAL_SCHEMAS), cleaner architecture, true per-request schema model.
 
 ---
 
