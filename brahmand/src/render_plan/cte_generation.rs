@@ -118,10 +118,12 @@ fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::ViewScan(view_scan) => {
             // Try to get the label from the schema using the table name
-            if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-                if let Ok(schema) = schema_lock.try_read() {
-                    if let Some((label, _)) = get_node_schema_by_table(&schema, &view_scan.source_table) {
-                        return Some(label.to_string());
+            if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                if let Ok(schemas) = schemas_lock.try_read() {
+                    if let Some(schema) = schemas.get("default") {
+                        if let Some((label, _)) = get_node_schema_by_table(schema, &view_scan.source_table) {
+                            return Some(label.to_string());
+                        }
                     }
                 }
             }
@@ -129,11 +131,13 @@ fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
         }
         LogicalPlan::Scan(scan) => {
             // For regular scans, try to infer from table name
-            if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-                if let Ok(schema) = schema_lock.try_read() {
-                    if let Some(table_name) = &scan.table_name {
-                        if let Some((label, _)) = get_node_schema_by_table(&schema, table_name) {
-                            return Some(label.to_string());
+            if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                if let Ok(schemas) = schemas_lock.try_read() {
+                    if let Some(schema) = schemas.get("default") {
+                        if let Some(table_name) = &scan.table_name {
+                            if let Some((label, _)) = get_node_schema_by_table(schema, table_name) {
+                                return Some(label.to_string());
+                            }
                         }
                     }
                 }

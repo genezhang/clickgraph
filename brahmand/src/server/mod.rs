@@ -35,27 +35,17 @@ pub struct AppState {
 }
 
 // ==================================================================================
-// SCHEMA STORAGE: GLOBAL_GRAPH_SCHEMA vs GLOBAL_SCHEMAS
+// SCHEMA STORAGE
 // ==================================================================================
-// TECHNICAL DEBT WARNING: We have two parallel schema storage systems:
+// Multi-schema registry stores all schemas by name (including "default")
+// Schemas are selected via USE clause and passed through the query execution path:
+//   1. handlers.rs: get_graph_schema_by_name(schema_name)
+//   2. Planning: evaluate_read_query(ast, &graph_schema)
+//   3. Rendering: to_render_plan(&graph_schema)
 //
-// 1. GLOBAL_GRAPH_SCHEMA - Single schema (always points to "default")
-//    - Used by: render_plan/, DDL operations, schema monitor, tests
-//    - Reason: Legacy code, simpler access pattern
-//
-// 2. GLOBAL_SCHEMAS - HashMap<String, GraphSchema> (includes "default" + named schemas)
-//    - Used by: Planning layer (match_clause, analyzers, optimizers)
-//    - Reason: Enables multi-schema support, schema selection via USE clause
-//
-// CURRENT STATE: Both point to the same schema object for "default"
-// LIMITATION: SQL generation layer only works with default schema
-// TODO: Eliminate GLOBAL_GRAPH_SCHEMA and use GLOBAL_SCHEMAS["default"] everywhere
-//       See KNOWN_ISSUES.md for full analysis and migration plan
+// Helper functions in render layer use GLOBAL_SCHEMAS["default"] as fallback
+// for contexts where schema isn't directly available.
 // ==================================================================================
-
-// DEPRECATED: Use GLOBAL_SCHEMAS.get("default") instead
-// Kept temporarily for backward compatibility during migration
-pub static GLOBAL_GRAPH_SCHEMA: OnceCell<RwLock<GraphSchema>> = OnceCell::const_new();
 
 // Legacy single-schema config support (DEPRECATED - use GLOBAL_SCHEMA_CONFIGS)
 pub static GLOBAL_SCHEMA_CONFIG: OnceCell<RwLock<crate::graph_catalog::config::GraphSchemaConfig>> = OnceCell::const_new();

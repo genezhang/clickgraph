@@ -677,7 +677,6 @@ pub async fn ddl_handler(
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
 
-    // println!("IN DDL HANDLER GLOBAL_GRAPH_SCHEMA {:?}",GLOBAL_GRAPH_SCHEMA.get());
     Ok(response)
 }
 

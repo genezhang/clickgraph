@@ -156,9 +156,11 @@ pub fn label_to_table_name_with_schema(label: &str, schema: &crate::graph_catalo
 /// DEPRECATED: Use label_to_table_name_with_schema instead
 pub fn label_to_table_name(label: &str) -> String {
     // Get the table name from the schema
-    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-        if let Ok(schema) = schema_lock.try_read() {
-            return label_to_table_name_with_schema(label, &schema);
+    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schemas_lock.try_read() {
+            if let Some(schema) = schemas.get("default") {
+                return label_to_table_name_with_schema(label, schema);
+            }
         }
     }
     
@@ -181,9 +183,11 @@ pub fn rel_type_to_table_name_with_schema(rel_type: &str, schema: &crate::graph_
 /// DEPRECATED: Use rel_type_to_table_name_with_schema instead
 pub fn rel_type_to_table_name(rel_type: &str) -> String {
     // Get the table name from the schema
-    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-        if let Ok(schema) = schema_lock.try_read() {
-            return rel_type_to_table_name_with_schema(rel_type, &schema);
+    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schemas_lock.try_read() {
+            if let Some(schema) = schemas.get("default") {
+                return rel_type_to_table_name_with_schema(rel_type, schema);
+            }
         }
     }
     
@@ -225,9 +229,11 @@ pub fn extract_relationship_columns_from_table_with_schema(table_name: &str, sch
 /// DEPRECATED: Use extract_relationship_columns_from_table_with_schema instead
 pub fn extract_relationship_columns_from_table(table_name: &str) -> RelationshipColumns {
     // Get columns from schema - this should be the single source of truth
-    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-        if let Ok(schema) = schema_lock.try_read() {
-            return extract_relationship_columns_from_table_with_schema(table_name, &schema);
+    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schemas_lock.try_read() {
+            if let Some(schema) = schemas.get("default") {
+                return extract_relationship_columns_from_table_with_schema(table_name, schema);
+            }
         }
     }
     
@@ -295,9 +301,11 @@ pub fn table_to_id_column_with_schema(table: &str, schema: &crate::graph_catalog
 /// DEPRECATED: Use table_to_id_column_with_schema instead
 pub fn table_to_id_column(table: &str) -> String {
     // Get the ID column from the schema
-    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-        if let Ok(schema) = schema_lock.try_read() {
-            return table_to_id_column_with_schema(table, &schema);
+    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schemas_lock.try_read() {
+            if let Some(schema) = schemas.get("default") {
+                return table_to_id_column_with_schema(table, schema);
+            }
         }
     }
     
@@ -727,10 +735,12 @@ pub fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::ViewScan(view_scan) => {
             // Try to get the label from the schema using the table name
-            if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-                if let Ok(schema) = schema_lock.try_read() {
-                    if let Some((label, _)) = get_node_schema_by_table(&schema, &view_scan.source_table) {
-                        return Some(label.to_string());
+            if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                if let Ok(schemas) = schemas_lock.try_read() {
+                    if let Some(schema) = schemas.get("default") {
+                        if let Some((label, _)) = get_node_schema_by_table(schema, &view_scan.source_table) {
+                            return Some(label.to_string());
+                        }
                     }
                 }
             }
@@ -739,10 +749,12 @@ pub fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::Scan(scan) => {
             // For Scan nodes, try to get from table name
             scan.table_name.as_ref().and_then(|table| {
-                if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-                    if let Ok(schema) = schema_lock.try_read() {
-                        if let Some((label, _)) = get_node_schema_by_table(&schema, table) {
-                            return Some(label.to_string());
+                if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                    if let Ok(schemas) = schemas_lock.try_read() {
+                        if let Some(schema) = schemas.get("default") {
+                            if let Some((label, _)) = get_node_schema_by_table(schema, table) {
+                                return Some(label.to_string());
+                            }
                         }
                     }
                 }

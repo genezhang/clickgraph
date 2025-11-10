@@ -374,13 +374,15 @@ fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name: &str, tab
 /// Helper function to get node table name for a given alias
 fn get_node_table_for_alias(alias: &str) -> String {
     // Try to get from global schema first (for production/benchmark)
-    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-        if let Ok(schema) = schema_lock.try_read() {
-            // Look up the node type from the alias - this is a simplified lookup
-            // In a real implementation, we'd need to track node types per alias
-            // For now, assume "User" type for common cases
-            if let Some(user_node) = schema.get_node_schema_opt("User") {
-                return user_node.table_name.clone();
+    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schemas_lock.try_read() {
+            if let Some(schema) = schemas.get("default") {
+                // Look up the node type from the alias - this is a simplified lookup
+                // In a real implementation, we'd need to track node types per alias
+                // For now, assume "User" type for common cases
+                if let Some(user_node) = schema.get_node_schema_opt("User") {
+                    return user_node.table_name.clone();
+                }
             }
         }
     }
@@ -398,11 +400,13 @@ fn get_node_table_for_alias(alias: &str) -> String {
 /// Helper function to get node ID column for a given alias
 fn get_node_id_column_for_alias(alias: &str) -> String {
     // Try to get from global schema first (for production/benchmark)
-    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-        if let Ok(schema) = schema_lock.try_read() {
-            // Look up the node type from the alias - this is a simplified lookup
-            if let Some(user_node) = schema.get_node_schema_opt("User") {
-                return user_node.node_id.column.clone();
+    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schemas_lock.try_read() {
+            if let Some(schema) = schemas.get("default") {
+                // Look up the node type from the alias - this is a simplified lookup
+                if let Some(user_node) = schema.get_node_schema_opt("User") {
+                    return user_node.node_id.column.clone();
+                }
             }
         }
     }
@@ -422,13 +426,15 @@ use super::CteGenerationContext;
 /// Get relationship columns from schema by relationship type
 /// Returns (from_column, to_column) for a given relationship type
 fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(String, String)> {
-    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-        if let Ok(schema) = schema_lock.try_read() {
-            if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-                return Some((
-                    rel_schema.from_id.clone(),  // Use column names, not node types!
-                    rel_schema.to_id.clone(),
-                ));
+    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schemas_lock.try_read() {
+            if let Some(schema) = schemas.get("default") {
+                if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
+                    return Some((
+                        rel_schema.from_id.clone(),  // Use column names, not node types!
+                        rel_schema.to_id.clone(),
+                    ));
+                }
             }
         }
     }
@@ -438,15 +444,17 @@ fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(String, Strin
 /// Get relationship columns from schema by table name
 /// Searches all relationship schemas to find one with matching table name
 fn get_relationship_columns_by_table(table_name: &str) -> Option<(String, String)> {
-    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-        if let Ok(schema) = schema_lock.try_read() {
-            // Search through all relationship schemas for one with matching table name
-            for (_key, rel_schema) in schema.get_relationships_schemas().iter() {
-                if rel_schema.table_name == table_name {
-                    return Some((
-                        rel_schema.from_id.clone(),  // Use column names!
-                        rel_schema.to_id.clone(),
-                    ));
+    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schemas_lock.try_read() {
+            if let Some(schema) = schemas.get("default") {
+                // Search through all relationship schemas for one with matching table name
+                for (_key, rel_schema) in schema.get_relationships_schemas().iter() {
+                    if rel_schema.table_name == table_name {
+                        return Some((
+                            rel_schema.from_id.clone(),  // Use column names!
+                            rel_schema.to_id.clone(),
+                        ));
+                    }
                 }
             }
         }
@@ -457,13 +465,15 @@ fn get_relationship_columns_by_table(table_name: &str) -> Option<(String, String
 /// Get node table name and ID column from schema
 /// Returns (table_name, id_column) for a given node label
 fn get_node_info_from_schema(node_label: &str) -> Option<(String, String)> {
-    if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
-        if let Ok(schema) = schema_lock.try_read() {
-            if let Ok(node_schema) = schema.get_node_schema(node_label) {
-                return Some((
-                    node_schema.table_name.clone(),
-                    node_schema.node_id.column.clone(),
-                ));
+    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schemas_lock.try_read() {
+            if let Some(schema) = schemas.get("default") {
+                if let Ok(node_schema) = schema.get_node_schema(node_label) {
+                    return Some((
+                        node_schema.table_name.clone(),
+                        node_schema.node_id.column.clone(),
+                    ));
+                }
             }
         }
     }

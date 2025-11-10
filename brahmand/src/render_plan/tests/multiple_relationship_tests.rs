@@ -26,11 +26,15 @@ fn empty_test_schema() -> GraphSchema {
 // Test schema setup for multiple relationship tests
 fn setup_test_schema() {
     use crate::graph_catalog::graph_schema::{GraphSchema, RelationshipSchema};
-    use crate::server::GLOBAL_GRAPH_SCHEMA;
+    use crate::server::GLOBAL_SCHEMAS;
 
     // Check if already set
-    if GLOBAL_GRAPH_SCHEMA.get().is_some() {
-        return;
+    if let Some(schemas_lock) = GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schemas_lock.try_read() {
+            if schemas.contains_key("default") {
+                return;
+            }
+        }
     }
 
     // Create test relationship schemas
@@ -112,8 +116,17 @@ fn setup_test_schema() {
 
     let schema = GraphSchema::build(1, "test_db".to_string(), nodes, relationships, relationships_indexes);
     
-    // Try to set the global schema, ignore if already set
-    let _ = GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema));
+    // Try to set the schema in registry, ignore if already set
+    if let Some(schemas_lock) = GLOBAL_SCHEMAS.get() {
+        if let Ok(mut schemas) = schemas_lock.try_write() {
+            schemas.insert("default".to_string(), schema);
+        }
+    } else {
+        // Initialize the registry if not set
+        let mut schemas_map = HashMap::new();
+        schemas_map.insert("default".to_string(), schema);
+        let _ = GLOBAL_SCHEMAS.set(RwLock::new(schemas_map));
+    }
 }
 
 #[cfg(test)]

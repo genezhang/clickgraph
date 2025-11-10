@@ -16,7 +16,7 @@ pub enum SchemaSource {
     Database,
 }
 
-use super::{GLOBAL_GRAPH_SCHEMA, GLOBAL_SCHEMA_CONFIG, GLOBAL_SCHEMAS, GLOBAL_SCHEMA_CONFIGS, models::GraphCatalog};
+use super::{GLOBAL_SCHEMA_CONFIG, GLOBAL_SCHEMAS, GLOBAL_SCHEMA_CONFIGS, models::GraphCatalog};
 
 /// Test basic ClickHouse connectivity
 async fn test_clickhouse_connection(client: Client) -> Result<(), String> {
@@ -103,11 +103,6 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                     .map_err(|_| "Failed to initialize global schemas")?;
                 GLOBAL_SCHEMA_CONFIGS.set(RwLock::new(view_configs))
                     .map_err(|_| "Failed to initialize global view configs")?;
-                
-                // DEPRECATED: Set GLOBAL_GRAPH_SCHEMA for backward compatibility
-                // This points to the same schema as GLOBAL_SCHEMAS["default"]
-                GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema.clone()))
-                    .map_err(|_| "Failed to initialize global graph schema")?;
 
                 println!("✓ Schema initialization complete (YAML mode, default schema registered)");
                 return Ok(SchemaSource::Yaml);
@@ -143,10 +138,6 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                 schemas.insert("default".to_string(), schema.clone());
                 GLOBAL_SCHEMAS.set(RwLock::new(schemas))
                     .map_err(|_| "Failed to initialize global schemas")?;
-
-                // DEPRECATED: Set GLOBAL_GRAPH_SCHEMA for backward compatibility
-                GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema.clone()))
-                    .map_err(|_| "Failed to initialize global graph schema")?;
 
                 let mut view_configs = HashMap::new();
                 // For database mode, we don't have a view config, so create an empty one
@@ -187,10 +178,6 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                         schemas.insert("default".to_string(), empty_schema.clone());
                         GLOBAL_SCHEMAS.set(RwLock::new(schemas))
                             .map_err(|_| "Failed to initialize global schemas")?;
-
-                        // DEPRECATED: Set GLOBAL_GRAPH_SCHEMA for backward compatibility
-                        GLOBAL_GRAPH_SCHEMA.set(RwLock::new(empty_schema.clone()))
-                            .map_err(|_| "Failed to initialize global graph schema")?;
 
                         let mut view_configs = HashMap::new();
                         let empty_config = GraphSchemaConfig {
@@ -237,10 +224,6 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
         GLOBAL_SCHEMAS.set(RwLock::new(schemas))
             .map_err(|_| "Failed to initialize global schemas")?;
 
-        // DEPRECATED: Set GLOBAL_GRAPH_SCHEMA for backward compatibility
-        GLOBAL_GRAPH_SCHEMA.set(RwLock::new(empty_schema.clone()))
-            .map_err(|_| "Failed to initialize global graph schema")?;
-
         let mut view_configs = HashMap::new();
         let empty_config = GraphSchemaConfig {
             name: None,
@@ -260,23 +243,25 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
 
 pub async fn refresh_global_schema(clickhouse_client: Client) -> Result<(), String> {
     let new_schema = get_graph_catalog(clickhouse_client).await?;
-    // Acquire a write lock asynchronously.
-    let global_schema_lock = GLOBAL_GRAPH_SCHEMA
+    // Acquire a write lock asynchronously and update the default schema
+    let global_schemas_lock = GLOBAL_SCHEMAS
         .get()
-        .ok_or("Global schema not initialized")?;
-    let mut schema_guard = global_schema_lock.write().await;
-    *schema_guard = new_schema;
+        .ok_or("Global schemas not initialized")?;
+    let mut schemas_guard = global_schemas_lock.write().await;
+    schemas_guard.insert("default".to_string(), new_schema);
     println!("Global schema refreshed");
     Ok(())
 }
 
 pub async fn get_graph_schema() -> GraphSchema {
-    let schema_guard = GLOBAL_GRAPH_SCHEMA
+    let schemas_guard = GLOBAL_SCHEMAS
         .get()
-        .expect("Global schema not initialized")
+        .expect("Global schemas not initialized")
         .read()
         .await;
-    schema_guard.clone()
+    schemas_guard.get("default")
+        .expect("Default schema not found")
+        .clone()
 }
 
 pub async fn get_view_config() -> Option<GraphSchemaConfig> {
@@ -486,11 +471,15 @@ pub async fn validate_schema(graph_schema_element: &Vec<GraphSchemaElement>) -> 
         if let GraphSchemaElement::Rel(relationship_schema) = element {
             // here check if both from_node and to_node tables are present or not in the schema
 
-            let graph_schema_lock = GLOBAL_GRAPH_SCHEMA
+            let schemas_lock = GLOBAL_SCHEMAS
                 .get()
-                .expect("Schema not initialized")
+                .expect("Schema registry not initialized")
                 .read()
                 .await;
+            
+            let graph_schema_lock = schemas_lock
+                .get("default")
+                .expect("Default schema not found");
 
             if !graph_schema_lock
                 .get_nodes_schemas()
@@ -511,9 +500,10 @@ pub async fn add_to_schema(
     clickhouse_client: Client,
     graph_schema_elements: Vec<GraphSchemaElement>,
 ) -> Result<(), String> {
-    // Use GLOBAL_GRAPH_SCHEMA which is kept in sync with GLOBAL_SCHEMAS["default"]
-    let global_schema = GLOBAL_GRAPH_SCHEMA.get().ok_or_else(|| "Global graph schema not initialized".to_string())?;
-    let mut graph_schema = global_schema.write().await;
+    // Get "default" schema from GLOBAL_SCHEMAS registry
+    let schemas_lock = GLOBAL_SCHEMAS.get().ok_or_else(|| "Schema registry not initialized".to_string())?;
+    let mut schemas = schemas_lock.write().await;
+    let graph_schema = schemas.get_mut("default").ok_or_else(|| "Default schema not found".to_string())?;
 
     for element in graph_schema_elements {
         match element {
@@ -567,19 +557,26 @@ pub async fn monitor_schema_updates(ch_client: Client) {
     loop {
         ticker.tick().await;
 
-        // Check if global schema is initialized before proceeding
-        let global_schema = match GLOBAL_GRAPH_SCHEMA.get() {
-            Some(schema) => schema,
+        // Check if global schema registry is initialized before proceeding
+        let global_schemas = match GLOBAL_SCHEMAS.get() {
+            Some(schemas) => schemas,
             None => {
-                eprintln!("Schema monitor: Global schema not initialized, skipping check");
+                eprintln!("Schema monitor: Schema registry not initialized, skipping check");
                 continue;
             }
         };
 
         // Get current in-memory schema version
         let mem_version = {
-            let in_mem_schema_guard = global_schema.read().await;
-            in_mem_schema_guard.get_version()
+            let schemas_guard = global_schemas.read().await;
+            let in_mem_schema = match schemas_guard.get("default") {
+                Some(schema) => schema,
+                None => {
+                    eprintln!("Schema monitor: Default schema not found, skipping check");
+                    continue;
+                }
+            };
+            in_mem_schema.get_version()
         };
 
         // Fetch the schema from ClickHouse
@@ -593,14 +590,16 @@ pub async fn monitor_schema_updates(ch_client: Client) {
 
         // Compare versions and update if needed
         if remote_schema.get_version() != mem_version {
-            let mut schema_guard = global_schema.write().await;
-            *schema_guard = remote_schema.clone();
+            let mut schemas_guard = global_schemas.write().await;
+            if let Some(schema) = schemas_guard.get_mut("default") {
+                *schema = remote_schema.clone();
 
-            println!(
-                "✓ Schema monitor: Global schema updated from version {} to {}",
-                mem_version,
-                remote_schema.get_version()
-            );
+                println!(
+                    "✓ Schema monitor: Default schema updated from version {} to {}",
+                    mem_version,
+                    remote_schema.get_version()
+                );
+            }
         }
     }
 }
