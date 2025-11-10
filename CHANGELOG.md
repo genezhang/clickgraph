@@ -1,3 +1,54 @@
+# Changelog
+
+All notable changes to ClickGraph will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+## [0.2.0] - 2025-11-23
+
+### 🚀 Major Architectural Improvements
+
+**Complete Multi-Schema Support**
+- ✅ **Full schema isolation**: Different schemas can map same labels to different ClickHouse tables
+- ✅ **Per-request schema selection**: USE clause, schema_name parameter, or default schema
+- ✅ **Schema threading**: Schema flows through entire query execution path (handlers → planning → rendering)
+- ✅ **End-to-end tested**: Comprehensive test suite verifies schema isolation and USE clause override
+
+**Architecture Cleanup**
+- 🧹 **Removed GLOBAL_GRAPH_SCHEMA**: Eliminated redundant schema storage system
+  - Updated 12 helper functions across render_plan layer to use GLOBAL_SCHEMAS["default"]
+  - Single source of truth for schema management
+  - Cleaner, more maintainable codebase
+- 🔧 **Thread-safe design**: Schema passed as parameter through entire execution chain
+
+### 📁 Repository Organization
+
+**Root Directory Cleanup**
+- Moved debug/test scripts to `scripts/debug/`
+- Moved development helpers to `scripts/dev/`
+- Moved SQL setup files to `scripts/sql/`
+- Moved session notes and investigations to `archive/`
+- Moved internal docs to `docs/`
+- Deleted backup and log files
+- Result: Professional, organized structure for public users
+
+### 📚 Documentation
+
+- Updated README with latest architectural improvements
+- Cleaned up KNOWN_ISSUES.md (moved resolved items)
+- Updated STATUS.md with current state
+- Added comprehensive multi-schema end-to-end test
+
+### 🧪 Testing
+
+- **All tests passing**: 325 unit tests + 32 integration tests (100% non-benchmark)
+- **Multi-schema verification**: 4/4 tests passing
+  - Schema isolation works correctly
+  - USE clause overrides parameter
+  - Different schemas map to different tables
+
+---
+
 ## [0.2.1] - 2025-11-08
 
 ### 🎉 Major Achievement
