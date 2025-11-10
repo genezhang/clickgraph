@@ -45,7 +45,8 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 **Development Reminder**: These constraints have been encountered multiple times. Always check for these patterns when:
 - Writing SQL setup scripts → Use `ENGINE = Memory`
 - Testing HTTP APIs → Use `Invoke-RestMethod` or Python
-- Creating documentation examples → Show both PowerShell and cross-platform alternatives. Use Mermaid diagrams for architecture explanations where possible
+- Creating documentation examples → Show both PowerShell and cross-platform alternatives.
+- Use Mermaid diagrams for architecture explanations where possible
 
 ## Current Implementation Status
 

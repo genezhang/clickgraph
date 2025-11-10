@@ -2735,11 +2735,18 @@ impl RenderPlanBuilder for LogicalPlan {
             cte.cte_name.starts_with("rel_") && !cte.is_recursive
         }) {
             let cte_name = union_cte.cte_name.clone();
+            eprintln!("DEBUG: Found union CTE '{}', updating JOINs", cte_name);
             for join in extracted_joins.iter_mut() {
-                // Update joins that are relationship CTEs
-                if join.table_name.starts_with("FOLLOWS") || 
-                   join.table_name.starts_with("FRIENDS_WITH") ||
+                eprintln!("DEBUG: Checking JOIN table_name='{}' alias='{}'", join.table_name, join.table_alias);
+                // Update joins that are relationship tables
+                // Check both with and without schema prefix (e.g., "follows" or "test_integration.follows")
+                let table_lower = join.table_name.to_lowercase();
+                if table_lower.contains("follow") || 
+                   table_lower.contains("friend") ||
+                   table_lower.contains("like") ||
+                   table_lower.contains("purchase") ||
                    join.table_name.starts_with("rel_") {
+                    eprintln!("DEBUG: Updating JOIN to use CTE '{}' (was '{}')", cte_name, join.table_name);
                     join.table_name = cte_name.clone();
                     // Also update joining_on expressions to use standardized column names
                     for op_app in join.joining_on.iter_mut() {
