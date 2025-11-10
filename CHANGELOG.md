@@ -1,91 +1,54 @@
-# Changelog
+## [0.3.0] - 2025-11-10
 
-All notable changes to ClickGraph will be documented in this file.
+### 🚀 Features
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
-
-## [0.3.0] - 2025-11-23
-
-### 🚀 Major Architectural Improvements
-
-**Complete Multi-Schema Support**
-- ✅ **Full schema isolation**: Different schemas can map same labels to different ClickHouse tables
-- ✅ **Per-request schema selection**: USE clause, schema_name parameter, or default schema
-- ✅ **Schema threading**: Schema flows through entire query execution path (handlers → planning → rendering)
-- ✅ **End-to-end tested**: Comprehensive test suite verifies schema isolation and USE clause override
-
-**Architecture Cleanup**
-- 🧹 **Removed GLOBAL_GRAPH_SCHEMA**: Eliminated redundant schema storage system
-  - Updated 12 helper functions across render_plan layer to use GLOBAL_SCHEMAS["default"]
-  - Single source of truth for schema management
-  - Cleaner, more maintainable codebase
-- 🔧 **Thread-safe design**: Schema passed as parameter through entire execution chain
-
-### 📁 Repository Organization
-
-**Root Directory Cleanup**
-- Moved debug/test scripts to `scripts/debug/`
-- Moved development helpers to `scripts/dev/`
-- Moved SQL setup files to `scripts/sql/`
-- Moved session notes and investigations to `archive/`
-- Moved internal docs to `docs/`
-- Deleted backup and log files
-- Result: Professional, organized structure for public users
-
-### 📚 Documentation
-
-- Updated README with latest architectural improvements
-- Cleaned up KNOWN_ISSUES.md (moved resolved items)
-- Updated STATUS.md with current state
-- Added comprehensive multi-schema end-to-end test
-
-### 🧪 Testing
-
-- **All tests passing**: 325 unit tests + 32 integration tests (100% non-benchmark)
-- **Multi-schema verification**: 4/4 tests passing
-  - Schema isolation works correctly
-  - USE clause overrides parameter
-  - Different schemas map to different tables
-
----
-
-## [0.2.1] - 2025-11-08
-
-### 🎉 Major Achievement
-
-- **WITH CLAUSE 100% COMPLETE** - All 12/12 integration tests passing!
+- Complete WITH clause with GROUP BY, HAVING, and CTE support
+- Enable per-request schema support for thread-safe multi-tenant architecture
+- Add schema-aware helper functions in render layer
 
 ### 🐛 Bug Fixes
 
-- **Multi-hop pattern JOIN extraction**: Fixed recursive GraphRel handling for patterns like `(a)-[]->(b)-[]->(c)`
-  - GraphJoins now delegates to input.extract_joins() instead of using pre-computed joins
-  - GraphRel recursively processes nested GraphRel structures
-  - Fixed ID column lookup for intermediate nodes (use table-based lookup instead of extract_id_column)
-  - Now correctly generates all 4 JOINs for two-hop patterns
-- **ORDER BY + LIMIT with CTE**: Fixed CTE generation when ORDER BY/LIMIT present
-  - Unwrap ORDER BY/LIMIT/SKIP nodes BEFORE pattern detection
-  - Preserve them after CTE delegation
-  - Rewrite ORDER BY expressions for CTE context (alias → grouped_data.alias)
-- **WITH alias resolution**: Fixed non-aggregation WITH aliases in RETURN clause
-  - Collect alias mappings from inner Projection (handles analyzer's kind conversion)
-  - Resolve TableAlias references BEFORE converting to RenderExpr
-  - Look through GraphJoins wrapper for nested WITH projections
+- Multi-hop graph query planning and join generation
+- Update path variable tests to match tuple() implementation
+- Improve anchor node selection to prefer LEFT nodes first
+- Prevent double schema prefix in CTE table names
+- Use correct node alias for FROM clause in GraphRel fallback
+- Prevent both LEFT and RIGHT nodes from being marked as anchor
+- Remove duplicate JOINs for path variable queries
+- Detect multiple relationship types in GraphJoins tree
+- Update JOINs to use UNION CTE for multiple relationship types
+- Correct release date in README (November 9, not 23)
 
-### 💼 Technical Debt
+### 💼 Other
 
-- Deprecated GraphJoins.joins field (incorrect for multi-hop patterns)
-  - Only used as fallback for extract_from() now
-  - Added clear deprecation comment with migration path
-  - TODO: Remove pre-computed join generation from analyzer in future refactor
+- Add schema to PlanCtx (Phases 1-3 complete)
+
+### 🚜 Refactor
+
+- Remove BITMAP traversal code and fix relationship direction handling
+- Rename handle_edge_list_traversal to handle_graph_pattern
+- Remove redundant GLOBAL_GRAPH_SCHEMA
+
+### 📚 Documentation
+
+- Prepare for next session and organize repository
+- Python integration test status report (36.4% passing)
+- Update STATUS and KNOWN_ISSUES for GLOBAL_GRAPH_SCHEMA removal
+- Clean up outdated KNOWN_ISSUES and update README
 
 ### 🧪 Testing
 
-- Fixed test_two_hop_traversal_has_all_on_clauses JOIN counting logic
-  - Was double-counting "INNER JOIN" as both "INNER JOIN" and "JOIN"
-  - Now correctly counts: INNER JOIN + LEFT JOIN only
-- All 325/325 unit tests passing (100%)
-- All 12/12 WITH clause integration tests passing (100%)
+- Add debugging utilities for anchor node and JOIN issues
 
+### ⚙️ Miscellaneous Tasks
+
+- Update CHANGELOG.md [skip ci]
+- Disable automatic docker publish
+- Clean up test debris and remove deleted optimizer
+- Replace emoji characters with text equivalents in test files
+- Organize root directory for public repo
+- Bump version to 0.2.0
+- Bump version to 0.3.0
 ## [0.2.0] - 2025-11-06
 
 ### 🚀 Features
