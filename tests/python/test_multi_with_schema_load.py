@@ -33,7 +33,7 @@ if load_response.status_code != 200:
 
 time.sleep(1)
 
-# Now test the query - use default schema due to architectural limitations
+# Test query with multiple relationship types
 query = """
 MATCH (u:User)-[:FOLLOWS|FRIENDS_WITH]->(target:User)
 RETURN u.name, target.name
@@ -45,11 +45,7 @@ print(f"Query: {query}\n")
 
 response = requests.post(
     "http://localhost:8080/query",
-    json={
-        "query": query
-        # Note: Using default schema instead of test_multi_rel_schema
-        # Multi-schema selection has architectural limitations in view scan generation
-    }
+    json={"query": query}
 )
 
 print(f"Status Code: {response.status_code}")

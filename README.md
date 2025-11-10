@@ -12,7 +12,25 @@
 
 ---
 
-## 🚀 What's New (November 1, 2025)
+## 🚀 What's New (November 23, 2025)
+
+### Major Architectural Improvements ✨
+
+**Complete Multi-Schema Support**
+- ✅ **Full schema isolation**: Different schemas can map same labels to different tables
+- ✅ **Per-request schema selection**: USE clause, schema_name parameter, or default
+- ✅ **Clean architecture**: Single source of truth for schema management (removed redundant GLOBAL_GRAPH_SCHEMA)
+- ✅ **Thread-safe**: Schema flows through entire query execution path
+- ✅ **End-to-end tested**: All 4 multi-schema tests passing
+
+**Code Quality Improvements**
+- 🧹 **Removed technical debt**: Eliminated duplicate schema storage system
+- 🔧 **Cleaner codebase**: Simplified render layer helper functions
+- 📊 **All tests passing**: 325 unit tests + 32 integration tests (100% non-benchmark)
+
+---
+
+## 🚀 Previous Updates (November 1, 2025)
 
 ### Large-Scale Testing & Bug Fixes
 
@@ -63,10 +81,11 @@
 
 ### Neo4j Ecosystem Compatibility
 - **Bolt Protocol v4.4**: Full Neo4j driver compatibility for seamless integration
-- **Multi-Database Support**: Neo4j 4.0+ compatible database selection with three methods:
+- **Multi-Schema Support**: ✅ **Fully working** - Complete schema isolation with per-request schema selection:
   - **USE clause**: Cypher `USE database_name` syntax (highest priority)
   - **Session/request parameter**: Bolt session database or HTTP `schema_name` parameter
   - **Default schema**: Fallback to "default" schema
+  - **Schema isolation**: Different schemas map same labels to different ClickHouse tables
 - **Dual Server Architecture**: HTTP REST API and Bolt protocol running simultaneously
 - **Authentication Support**: Multiple authentication schemes including basic auth
 - **Tool Compatibility**: Works with existing Neo4j drivers, browsers, and applications

@@ -33,8 +33,7 @@ if load_response.status_code != 200:
 
 time.sleep(1)
 
-# Test query with relationship type from default schema
-# Note: Using default schema since multi-schema support has architectural limitations
+# Test query with FOLLOWS relationship
 query = """
 MATCH (u:User)-[:FOLLOWS]->(target:User)
 RETURN u.name, target.name
@@ -45,7 +44,7 @@ print(f"\nTesting query: {query}\n")
 
 response = requests.post(
     "http://localhost:8080/query",
-    json={"query": query}  # Uses default schema
+    json={"query": query}
 )
 
 print(f"Status Code: {response.status_code}")
