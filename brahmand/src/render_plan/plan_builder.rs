@@ -2646,6 +2646,12 @@ impl RenderPlanBuilder for LogicalPlan {
         
         // For variable-length paths, add joins to get full user data
         if let Some((start_alias, end_alias)) = has_variable_length_rel(self) {
+            // IMPORTANT: Remove any joins that were extracted from the GraphRel itself
+            // The CTE already handles the path traversal, so we only want to join the 
+            // endpoint nodes to the CTE result. Keeping the GraphRel joins causes 
+            // "Multiple table expressions with same alias" errors.
+            extracted_joins.clear();
+            
             // Get the actual table names and ID columns from the schema
             let start_table = get_node_table_for_alias(&start_alias);
             let end_table = get_node_table_for_alias(&end_alias);
