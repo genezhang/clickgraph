@@ -40,3 +40,13 @@ graph_schema:
       to_node: User
       property_mappings:
         amount: amount
+
+    - type: LIKED
+      database: test_integration
+      table: likes
+      from_id: from_id
+      to_id: to_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        timestamp: timestamp

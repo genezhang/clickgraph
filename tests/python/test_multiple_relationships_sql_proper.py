@@ -13,13 +13,12 @@ def test_three_relationships():
     """Test SQL generation for exactly 3 relationship types"""
 
     query = """
-    MATCH (c:Customer)-[:PURCHASED|PLACED_ORDER|ORDER_CONTAINS]->(p:Product)
-    RETURN c.customer_id, p.product_id
+    MATCH (u:User)-[:FOLLOWS|FRIENDS_WITH|PURCHASED]->(target:User)
+    RETURN u.user_id, target.user_id
     """
 
     payload = {
         "query": query.strip(),
-        "view": "ecommerce_graph",
         "sql_only": True
     }
 
@@ -68,13 +67,12 @@ def test_four_relationships():
     """Test SQL generation for exactly 4 relationship types"""
 
     query = """
-    MATCH (c:Customer)-[:PURCHASED|PLACED_ORDER|ORDER_CONTAINS|REVIEWED]->(p:Product)
-    RETURN c.customer_id, p.product_id
+    MATCH (u:User)-[:FOLLOWS|FRIENDS_WITH|PURCHASED|LIKED]->(target:User)
+    RETURN u.user_id, target.user_id
     """
 
     payload = {
         "query": query.strip(),
-        "view": "ecommerce_graph",
         "sql_only": True
     }
 
@@ -101,7 +99,7 @@ def test_four_relationships():
             sql = str(result)
         union_count = sql.count("UNION ALL")
 
-        print(f"📄 Generated SQL:")
+        print(f"Generated SQL:")
         print(sql)
         print()
 
