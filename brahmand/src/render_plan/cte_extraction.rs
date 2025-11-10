@@ -141,15 +141,24 @@ pub struct RelationshipColumns {
     pub to_id: String,
 }
 
+/// Convert a label to its corresponding table name using provided schema
+pub fn label_to_table_name_with_schema(label: &str, schema: &crate::graph_catalog::graph_schema::GraphSchema) -> String {
+    if let Ok(node_schema) = schema.get_node_schema(label) {
+        // Use fully qualified table name: database.table_name
+        return format!("{}.{}", node_schema.database, node_schema.table_name);
+    }
+    
+    // Fallback to label as table name (not ideal but better than wrong hardcoded values)
+    label.to_lowercase()
+}
+
 /// Convert a label to its corresponding table name
+/// DEPRECATED: Use label_to_table_name_with_schema instead
 pub fn label_to_table_name(label: &str) -> String {
     // Get the table name from the schema
     if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
         if let Ok(schema) = schema_lock.try_read() {
-            if let Ok(node_schema) = schema.get_node_schema(label) {
-                // Use fully qualified table name: database.table_name
-                return format!("{}.{}", node_schema.database, node_schema.table_name);
-            }
+            return label_to_table_name_with_schema(label, &schema);
         }
     }
     
@@ -157,15 +166,24 @@ pub fn label_to_table_name(label: &str) -> String {
     label.to_lowercase()
 }
 
+/// Convert a relationship type to its corresponding table name using provided schema
+pub fn rel_type_to_table_name_with_schema(rel_type: &str, schema: &crate::graph_catalog::graph_schema::GraphSchema) -> String {
+    if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
+        // Use fully qualified table name: database.table_name
+        return format!("{}.{}", rel_schema.database, rel_schema.table_name);
+    }
+    
+    // Fallback to rel_type as table name
+    rel_type.to_lowercase()
+}
+
 /// Convert a relationship type to its corresponding table name
+/// DEPRECATED: Use rel_type_to_table_name_with_schema instead
 pub fn rel_type_to_table_name(rel_type: &str) -> String {
     // Get the table name from the schema
     if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
         if let Ok(schema) = schema_lock.try_read() {
-            if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-                // Use fully qualified table name: database.table_name
-                return format!("{}.{}", rel_schema.database, rel_schema.table_name);
-            }
+            return rel_type_to_table_name_with_schema(rel_type, &schema);
         }
     }
     
@@ -622,9 +640,14 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
         LogicalPlan::Skip(skip) => extract_ctes_with_context(&skip.input, last_node_alias, context),
         LogicalPlan::Limit(limit) => extract_ctes_with_context(&limit.input, last_node_alias, context),
         LogicalPlan::Cte(logical_cte) => {
+            // Use schema from context if available, otherwise create empty schema for tests
+            let schema = context.schema().cloned().unwrap_or_else(|| {
+                use crate::graph_catalog::graph_schema::GraphSchema;
+                GraphSchema::build(1, "test".to_string(), std::collections::HashMap::new(), std::collections::HashMap::new(), std::collections::HashMap::new())
+            });
             Ok(vec![Cte {
                 cte_name: logical_cte.name.clone(),
-                content: super::CteContent::Structured(logical_cte.input.to_render_plan()?),
+                content: super::CteContent::Structured(logical_cte.input.to_render_plan(&schema)?),
                 is_recursive: false,
             }])
         }

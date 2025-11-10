@@ -24,7 +24,16 @@ fn cypher_to_sql(cypher: &str) -> String {
     let ast = open_cypher_parser::parse_query(cypher)
         .expect("Failed to parse Cypher query");
 
-    let (logical_plan, mut plan_ctx) = build_logical_plan(&ast)
+    // Create empty schema for test
+    let empty_schema = GraphSchema::build(
+        1,
+        "test".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+
+    let (logical_plan, mut plan_ctx) = build_logical_plan(&ast, &empty_schema)
         .expect("Failed to build logical plan");
 
     // Debug: Print logical plan before analyzer passes
@@ -33,7 +42,6 @@ fn cypher_to_sql(cypher: &str) -> String {
     // Run analyzer passes to extract filters from Filter nodes
     use crate::query_planner::analyzer;
     use crate::query_planner::optimizer;
-    use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, NodeIdSchema};
 
     // Create a proper graph schema for testing with property mappings
     let graph_schema = setup_test_graph_schema();
@@ -52,7 +60,7 @@ fn cypher_to_sql(cypher: &str) -> String {
     // Debug: Print final logical plan to see if GraphRel is still there
     println!("Final logical plan after optimizer: {:?}", logical_plan);
 
-    let render_plan = logical_plan.to_render_plan()
+    let render_plan = logical_plan.to_render_plan(&graph_schema)
         .expect("Failed to build render plan");
 
     clickhouse_query_generator::generate_sql(render_plan, 100)

@@ -129,7 +129,7 @@ impl TableCtx {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
 pub struct PlanCtx {
     alias_table_ctx_map: HashMap<String, TableCtx>,
     /// Track which table aliases came from OPTIONAL MATCH for LEFT JOIN generation

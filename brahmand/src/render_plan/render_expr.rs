@@ -174,7 +174,17 @@ impl TryFrom<LogicalInSubquery> for InSubquery {
     type Error = RenderBuildError;
 
     fn try_from(value: LogicalInSubquery) -> Result<Self, Self::Error> {
-        let sub_plan = value.subplan.clone().to_render_plan()?;
+        // InSubquery needs schema but TryFrom doesn't provide it
+        // Use empty schema as fallback (this is rarely used feature)
+        use crate::graph_catalog::graph_schema::GraphSchema;
+        let empty_schema = GraphSchema::build(
+            1,
+            "default".to_string(),
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+        );
+        let sub_plan = value.subplan.clone().to_render_plan(&empty_schema)?;
         let in_sub_query = InSubquery {
             expr: Box::new((value.expr.as_ref().clone()).try_into()?),
             subplan: Box::new(sub_plan),

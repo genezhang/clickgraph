@@ -7,7 +7,7 @@ use crate::render_plan::render_expr::RenderExpr;
 use crate::graph_catalog::graph_schema::GraphSchema;
 
 /// Context for CTE generation - holds property requirements and other metadata
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CteGenerationContext {
     /// Properties needed for variable-length paths, keyed by "left_alias-right_alias"
     variable_length_properties: HashMap<String, Vec<NodeProperty>>,
@@ -18,11 +18,41 @@ pub struct CteGenerationContext {
     /// Cypher aliases for start and end nodes (for filter rewriting)
     start_cypher_alias: Option<String>,
     end_cypher_alias: Option<String>,
+    /// Graph schema for this query (enables multi-schema support)
+    schema: Option<GraphSchema>,
+}
+
+impl Default for CteGenerationContext {
+    fn default() -> Self {
+        Self {
+            variable_length_properties: HashMap::new(),
+            filter_expr: None,
+            end_filters_for_outer_query: None,
+            start_cypher_alias: None,
+            end_cypher_alias: None,
+            schema: None,
+        }
+    }
 }
 
 impl CteGenerationContext {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn with_schema(schema: GraphSchema) -> Self {
+        Self {
+            variable_length_properties: HashMap::new(),
+            filter_expr: None,
+            end_filters_for_outer_query: None,
+            start_cypher_alias: None,
+            end_cypher_alias: None,
+            schema: Some(schema),
+        }
+    }
+
+    pub(crate) fn schema(&self) -> Option<&GraphSchema> {
+        self.schema.as_ref()
     }
 
     pub(crate) fn get_properties(&self, left_alias: &str, right_alias: &str) -> Vec<NodeProperty> {
@@ -117,8 +147,8 @@ fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
 }
 
 /// Analyze the plan to determine what properties are needed for variable-length CTEs
-pub(crate) fn analyze_property_requirements(plan: &LogicalPlan) -> CteGenerationContext {
-    let mut context = CteGenerationContext::new();
+pub(crate) fn analyze_property_requirements(plan: &LogicalPlan, schema: &GraphSchema) -> CteGenerationContext {
+    let mut context = CteGenerationContext::with_schema(schema.clone());
 
     // Find variable-length relationships and their required properties
     if let Some((left_alias, right_alias, left_label, right_label, _rel_type)) = get_variable_length_info(plan) {

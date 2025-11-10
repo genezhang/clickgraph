@@ -8,7 +8,6 @@ use crate::{
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
-    server::GLOBAL_SCHEMAS,
 };
 
 /// Helper function to qualify Column expressions with a table alias
@@ -245,16 +244,9 @@ impl OptimizerPass for FilterIntoGraphRel {
                     
                     let mut filters_to_apply: Vec<LogicalExpr> = Vec::new();
                     
-                    // Try to get default schema from GLOBAL_SCHEMAS for label-to-table mapping
-                    let schema_opt = GLOBAL_SCHEMAS.get()
-                        .and_then(|schemas_lock| schemas_lock.try_read().ok())
-                        .and_then(|schemas| schemas.get("default").cloned());
-                    
-                    if schema_opt.is_some() {
-                        println!("FilterIntoGraphRel: Successfully got default schema from GLOBAL_SCHEMAS");
-                    } else {
-                        println!("FilterIntoGraphRel: WARNING - default schema not available in GLOBAL_SCHEMAS!");
-                    }
+                    // Get schema from plan_ctx for label-to-table mapping
+                    let schema = plan_ctx.schema();
+                    println!("FilterIntoGraphRel: Successfully got schema from plan_ctx");
                     
                     // Iterate through all table contexts to find filters that match this ViewScan
                     for (alias, table_ctx) in plan_ctx.get_alias_table_ctx_map() {
@@ -268,27 +260,22 @@ impl OptimizerPass for FilterIntoGraphRel {
                         
                         // Check if this alias's label maps to the ViewScan's source_table
                         let matches_viewscan = if let Some(label) = table_ctx.get_label_opt() {
-                            if let Some(ref schema) = schema_opt {
-                                // Look up the table name for this label
-                                let table_name = if table_ctx.is_relation() {
-                                    schema.get_relationships_schema_opt(&label)
-                                        .map(|rel_schema| rel_schema.table_name.as_str())
-                                } else {
-                                    schema.get_node_schema_opt(&label)
-                                        .map(|node_schema| node_schema.table_name.as_str())
-                                };
-                                
-                                if let Some(table) = table_name {
-                                    let matches = table == view_scan.source_table.as_str();
-                                    println!("FilterIntoGraphRel: Label '{}' maps to table '{}', ViewScan table is '{}', match={}",
-                                            label, table, view_scan.source_table, matches);
-                                    matches
-                                } else {
-                                    println!("FilterIntoGraphRel: No schema found for label '{}'", label);
-                                    false
-                                }
+                            // Look up the table name for this label using schema from plan_ctx
+                            let table_name = if table_ctx.is_relation() {
+                                schema.get_relationships_schema_opt(&label)
+                                    .map(|rel_schema| rel_schema.table_name.as_str())
                             } else {
-                                println!("FilterIntoGraphRel: No global schema available, skipping schema lookup");
+                                schema.get_node_schema_opt(&label)
+                                    .map(|node_schema| node_schema.table_name.as_str())
+                            };
+                            
+                            if let Some(table) = table_name {
+                                let matches = table == view_scan.source_table.as_str();
+                                println!("FilterIntoGraphRel: Label '{}' maps to table '{}', ViewScan table is '{}', match={}",
+                                        label, table, view_scan.source_table, matches);
+                                matches
+                            } else {
+                                println!("FilterIntoGraphRel: No schema found for label '{}'", label);
                                 false
                             }
                         } else {

@@ -7,9 +7,21 @@ use crate::{
     open_cypher_parser,
     query_planner::logical_plan::plan_builder::build_logical_plan,
     render_plan::plan_builder::RenderPlanBuilder,
+    graph_catalog::graph_schema::GraphSchema,
 };
 use std::collections::HashMap;
 use tokio::sync::RwLock;
+
+// Helper to create empty schema for tests
+fn empty_test_schema() -> GraphSchema {
+    GraphSchema::build(
+        1,
+        "test".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    )
+}
 
 // Test schema setup for multiple relationship tests
 fn setup_test_schema() {
@@ -119,10 +131,11 @@ mod multiple_relationship_tests {
         assert!(parse_result.is_ok(), "Failed to parse multiple relationship types: {:?}", parse_result.err());
 
         let query = parse_result.unwrap();
-        let (logical_plan, _plan_ctx) = build_logical_plan(&query)
+        let schema = empty_test_schema();
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan();
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(render_plan.is_ok(), "Failed to create render plan: {:?}", render_plan.err());
 
         let render_plan = render_plan.unwrap();
@@ -158,10 +171,11 @@ mod multiple_relationship_tests {
         assert!(parse_result.is_ok(), "Failed to parse three relationship types: {:?}", parse_result.err());
 
         let query = parse_result.unwrap();
-        let (logical_plan, _plan_ctx) = build_logical_plan(&query)
+        let schema = empty_test_schema();
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan();
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(render_plan.is_ok(), "Failed to create render plan: {:?}", render_plan.err());
 
         let render_plan = render_plan.unwrap();
@@ -207,10 +221,11 @@ mod multiple_relationship_tests {
         assert!(parse_result.is_ok(), "Failed to parse single relationship type: {:?}", parse_result.err());
 
         let query = parse_result.unwrap();
-        let (logical_plan, _plan_ctx) = build_logical_plan(&query)
+        let schema = empty_test_schema();
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan();
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(render_plan.is_ok(), "Failed to create render plan: {:?}", render_plan.err());
 
         let render_plan = render_plan.unwrap();
@@ -239,10 +254,11 @@ mod multiple_relationship_tests {
         assert!(parse_result.is_ok(), "Failed to parse two-hop query: {:?}", parse_result.err());
 
         let query = parse_result.unwrap();
-        let (logical_plan, _plan_ctx) = build_logical_plan(&query)
+        let schema = empty_test_schema();
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan();
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(render_plan.is_ok(), "Failed to create render plan: {:?}", render_plan.err());
 
         let render_plan = render_plan.unwrap();
@@ -305,10 +321,11 @@ mod multiple_relationship_tests {
         assert!(parse_result.is_ok(), "Failed to parse three-hop query: {:?}", parse_result.err());
 
         let query = parse_result.unwrap();
-        let (logical_plan, _plan_ctx) = build_logical_plan(&query)
+        let schema = empty_test_schema();
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan();
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(render_plan.is_ok(), "Failed to create render plan: {:?}", render_plan.err());
 
         let render_plan = render_plan.unwrap();
@@ -351,10 +368,11 @@ mod multiple_relationship_tests {
         assert!(parse_result.is_ok(), "Failed to parse query: {:?}", parse_result.err());
 
         let query = parse_result.unwrap();
-        let (logical_plan, _plan_ctx) = build_logical_plan(&query)
+        let schema = empty_test_schema();
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan();
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(render_plan.is_ok(), "Failed to create render plan: {:?}", render_plan.err());
 
         let render_plan = render_plan.unwrap();
@@ -388,10 +406,11 @@ mod multiple_relationship_tests {
         assert!(parse_result.is_ok(), "Failed to parse mixed-direction query: {:?}", parse_result.err());
 
         let query = parse_result.unwrap();
-        let (logical_plan, _plan_ctx) = build_logical_plan(&query)
+        let schema = empty_test_schema();
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan();
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(render_plan.is_ok(), "Failed to create render plan: {:?}", render_plan.err());
 
         let render_plan = render_plan.unwrap();
@@ -422,10 +441,11 @@ mod multiple_relationship_tests {
         assert!(parse_result.is_ok(), "Failed to parse query with WHERE: {:?}", parse_result.err());
 
         let query = parse_result.unwrap();
-        let (logical_plan, _plan_ctx) = build_logical_plan(&query)
+        let schema = empty_test_schema();
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan();
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(render_plan.is_ok(), "Failed to create render plan: {:?}", render_plan.err());
 
         let render_plan = render_plan.unwrap();
@@ -460,10 +480,11 @@ mod multiple_relationship_tests {
         assert!(parse_result.is_ok(), "Failed to parse multi-type query: {:?}", parse_result.err());
 
         let query = parse_result.unwrap();
-        let (logical_plan, _plan_ctx) = build_logical_plan(&query)
+        let schema = empty_test_schema();
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan();
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(render_plan.is_ok(), "Failed to create render plan: {:?}", render_plan.err());
 
         let render_plan = render_plan.unwrap();

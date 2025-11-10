@@ -74,23 +74,13 @@ impl SchemaInference {
                 
                 // Get the actual table name from schema, not the label
                 let table_name = if let Some(label) = table_ctx.get_label_opt() {
-                    // Try to get the table name from default schema in GLOBAL_SCHEMAS
-                    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                        if let Ok(schemas) = schemas_lock.try_read() {
-                            if let Some(schema) = schemas.get("default") {
-                                if let Ok(node_schema) = schema.get_node_schema(&label) {
-                                    // Use fully qualified table name: database.table_name
-                                    let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
-                                    Some(fully_qualified)
-                                } else {
-                                    Some(label)
-                                }
-                            } else {
-                                Some(label)
-                            }
-                        } else {
-                            Some(label)
-                        }
+                    // Use the graph_schema parameter that was passed to analyze_with_graph_schema
+                    // Note: We're in push_inferred_table_names_to_scan which doesn't have graph_schema,
+                    // but we can get it from plan_ctx
+                    if let Ok(node_schema) = plan_ctx.schema().get_node_schema(&label) {
+                        // Use fully qualified table name: database.table_name
+                        let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
+                        Some(fully_qualified)
                     } else {
                         Some(label)
                     }

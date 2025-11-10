@@ -290,7 +290,7 @@ pub async fn query_handler(
 
             // Phase 3: Render plan generation
             let render_start = Instant::now();
-            let render_plan = match logical_plan.to_render_plan() {
+            let render_plan = match logical_plan.to_render_plan(&graph_schema) {
                 Ok(plan) => plan,
                 Err(e) => {
                     metrics.render_time = render_start.elapsed().as_secs_f64();

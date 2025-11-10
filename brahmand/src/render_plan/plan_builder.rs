@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_plan::{LogicalPlan, GraphRel};
 use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::plan_ctx::PlanCtx;
@@ -611,7 +612,7 @@ pub(crate) trait RenderPlanBuilder {
 
     fn build_simple_relationship_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan>;
 
-    fn to_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan>;
+    fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan>;
 }
 
 impl RenderPlanBuilder for LogicalPlan {
@@ -729,9 +730,12 @@ impl RenderPlanBuilder for LogicalPlan {
                 // let filters = logical_cte.input.extract_filters()?;
                 // let select_items = logical_cte.input.extract_select_items()?;
                 // let from_table = logical_cte.input.extract_from()?;
+                use crate::graph_catalog::graph_schema::GraphSchema;
+                use std::collections::HashMap;
+                let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
                 let render_cte = Cte {
                     cte_name: logical_cte.name.clone(),
-                    content: super::CteContent::Structured(logical_cte.input.to_render_plan()?),
+                    content: super::CteContent::Structured(logical_cte.input.to_render_plan(&empty_schema)?),
                     is_recursive: false,
                     // select: SelectItems(select_items),
                     // from: from_table,
@@ -977,9 +981,12 @@ impl RenderPlanBuilder for LogicalPlan {
                 // let mut from_table = logical_cte.input.extract_from()?;
                 // from_table.table_alias = None;
                 // let filters = logical_cte.input.extract_filters()?;
+                use crate::graph_catalog::graph_schema::GraphSchema;
+                use std::collections::HashMap;
+                let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
                 Ok(vec![Cte {
                     cte_name: logical_cte.name.clone(),
-                    content: super::CteContent::Structured(logical_cte.input.to_render_plan()?),
+                    content: super::CteContent::Structured(logical_cte.input.to_render_plan(&empty_schema)?),
                     is_recursive: false,
                     // select: SelectItems(select_items),
                     // from: from_table,
@@ -1955,12 +1962,16 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn extract_union(&self) -> RenderPlanBuilderResult<Option<Union>> {
+        use crate::graph_catalog::graph_schema::GraphSchema;
+        use std::collections::HashMap;
+        let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+        
         let union_opt = match &self {
             LogicalPlan::Union(union) => Some(Union {
                 input: union
                     .inputs
                     .iter()
-                    .map(|input| input.to_render_plan())
+                    .map(|input| input.to_render_plan(&empty_schema))
                     .collect::<Result<Vec<RenderPlan>, RenderBuildError>>()?,
                 union_type: union.union_type.clone().try_into()?,
             }),
@@ -2176,7 +2187,10 @@ impl RenderPlanBuilder for LogicalPlan {
                         
                         // Build the GROUP BY subquery as a CTE
                         // Step 1: Build inner query (GROUP BY + HAVING) as a RenderPlan
-                        let inner_render_plan = group_by.input.to_render_plan()?;
+                        use crate::graph_catalog::graph_schema::GraphSchema;
+                        use std::collections::HashMap;
+                        let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+                        let inner_render_plan = group_by.input.to_render_plan(&empty_schema)?;
                         
                         // Step 2: Extract GROUP BY expressions and HAVING clause
                         // Fix wildcard grouping: a.* -> a.user_id (use ID column from schema)
@@ -2502,7 +2516,7 @@ impl RenderPlanBuilder for LogicalPlan {
         })
     }
 
-    fn to_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
+    fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
         
         println!("DEBUG: to_render_plan called for plan type: {:?}", std::mem::discriminant(self));
         
@@ -2563,7 +2577,7 @@ impl RenderPlanBuilder for LogicalPlan {
         });
         
         // First pass: analyze what properties are needed
-        let mut context = analyze_property_requirements(self);
+        let mut context = analyze_property_requirements(self, schema);
         
         let extracted_ctes: Vec<Cte>;
         let final_from: Option<FromTable>;

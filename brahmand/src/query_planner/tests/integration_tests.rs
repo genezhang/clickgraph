@@ -2,7 +2,7 @@
 
 use crate::{
     clickhouse_query_generator::generate_sql,
-    graph_catalog::{GraphViewDefinition, NodeViewMapping, RelationshipViewMapping},
+    graph_catalog::{GraphViewDefinition, NodeViewMapping, RelationshipViewMapping, graph_schema::GraphSchema},
     open_cypher_parser::ast::OpenCypherQueryAst,
     query_planner::{
         analyzer::{graph_context::GraphContext, view_resolver::ViewResolver},
@@ -10,6 +10,7 @@ use crate::{
     },
     server::clickhouse_client::ClickHouseClient,
 };
+use std::collections::HashMap;
 
 /// Test helper to set up a social network view
 fn create_social_network_view() -> GraphViewDefinition {
@@ -142,10 +143,11 @@ async fn test_view_based_query() -> anyhow::Result<()> {
 
     // Parse and plan query
     let ast = OpenCypherQueryAst::parse(cypher)?;
-    let (logical_plan, plan_ctx) = evaluate_query(ast)?;
+    let empty_schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let (logical_plan, plan_ctx) = evaluate_query(ast, &empty_schema)?;
     
     // Generate SQL
-    let render_plan = logical_plan.to_render_plan()?;
+    let render_plan = logical_plan.to_render_plan(&empty_schema)?;
     let sql = generate_sql(render_plan);
 
     // Execute query
@@ -174,8 +176,9 @@ async fn test_filtered_view_query() -> anyhow::Result<()> {
     let cypher = "MATCH (u:User) RETURN u.name";
     
     let ast = OpenCypherQueryAst::parse(cypher)?;
-    let (logical_plan, plan_ctx) = evaluate_query(ast)?;
-    let render_plan = logical_plan.to_render_plan()?;
+    let empty_schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let (logical_plan, plan_ctx) = evaluate_query(ast, &empty_schema)?;
+    let render_plan = logical_plan.to_render_plan(&empty_schema)?;
     let sql = generate_sql(render_plan);
 
     let result = client.query(&sql).await?;
