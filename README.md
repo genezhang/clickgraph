@@ -12,7 +12,7 @@
 
 ---
 
-## 🚀 What's New (November 23, 2025)
+## 🚀 What's New (November 9, 2025)
 
 ### Major Architectural Improvements ✨
 
