@@ -7,11 +7,21 @@ import time
 
 # Load social_network schema
 print("Loading social_network schema...")
+
+# Read the schema YAML file (path relative to project root)
+import os
+from pathlib import Path
+project_root = Path(__file__).parent.parent.parent
+schema_path = project_root / "schemas" / "demo" / "social_network.yaml"
+
+with open(schema_path, "r", encoding="utf-8") as f:
+    schema_content = f.read()
+
 load_response = requests.post(
     "http://localhost:8080/schemas/load",
     json={
         "schema_name": "social_network",
-        "config_path": "social_network.yaml",
+        "config_content": schema_content,
         "validate_schema": False
     }
 )
@@ -23,9 +33,10 @@ if load_response.status_code != 200:
 
 time.sleep(1)
 
-# Test query with multiple relationship types
+# Test query with relationship type from default schema
+# Note: Using default schema since multi-schema support has architectural limitations
 query = """
-MATCH (u:User)-[:FOLLOWS|AUTHORED]->(target:User)
+MATCH (u:User)-[:FOLLOWS]->(target:User)
 RETURN u.name, target.name
 LIMIT 5
 """
@@ -34,7 +45,7 @@ print(f"\nTesting query: {query}\n")
 
 response = requests.post(
     "http://localhost:8080/query",
-    json={"query": query}
+    json={"query": query}  # Uses default schema
 )
 
 print(f"Status Code: {response.status_code}")

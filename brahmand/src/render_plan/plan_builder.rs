@@ -2728,15 +2728,83 @@ impl RenderPlanBuilder for LogicalPlan {
             });
         }
         
-        // PATCH: For multi-relationship queries, ensure relationship joins use rel_table (CTE name) if present
-        // This applies to both variable-length and regular multi-relationship queries
-        // Find any non-recursive CTE named rel_*_* and update joins that reference it
+        // For multiple relationship types (UNION CTE), add joins to connect nodes
+        // Similar to variable-length paths, we need to clear and rebuild joins
         if let Some(union_cte) = extracted_ctes.iter().find(|cte| {
             cte.cte_name.starts_with("rel_") && !cte.is_recursive
         }) {
-            let cte_name = union_cte.cte_name.clone();
-            eprintln!("DEBUG: Found union CTE '{}', updating JOINs", cte_name);
-            for join in extracted_joins.iter_mut() {
+            // Check if this is actually a multi-relationship query (has UNION in plan)
+            if has_multiple_relationship_types(self) {
+                eprintln!("DEBUG: Multi-relationship query detected! Clearing extracted joins and rebuilding...");
+                eprintln!("DEBUG: Before clear: {} joins", extracted_joins.len());
+                
+                // Clear extracted joins like we do for variable-length paths
+                // The GraphRel joins include duplicate source node joins which cause
+                // "Multiple table expressions with same alias" errors
+                extracted_joins.clear();
+                
+                // Extract the node aliases from the CTE name (e.g., "rel_u_target" → "u", "target")
+                let cte_name = union_cte.cte_name.clone();
+                let parts: Vec<&str> = cte_name.strip_prefix("rel_").unwrap_or(&cte_name).split('_').collect();
+                
+                if parts.len() >= 2 {
+                    let source_alias = parts[0].to_string();
+                    let target_alias = parts[parts.len() - 1].to_string();
+                    
+                    // Get table names and ID columns from schema
+                    let source_table = get_node_table_for_alias(&source_alias);
+                    let target_table = get_node_table_for_alias(&target_alias);
+                    let source_id_col = get_node_id_column_for_alias(&source_alias);
+                    let target_id_col = get_node_id_column_for_alias(&target_alias);
+                    
+                    // Generate a random alias for the CTE JOIN
+                    let cte_alias = crate::query_planner::logical_plan::generate_id();
+                    
+                    // Add JOIN from CTE to source node (using CTE's from_node_id)
+                    extracted_joins.push(Join {
+                        table_name: cte_name.clone(),
+                        table_alias: cte_alias.clone(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(cte_alias.clone()),
+                                    column: Column("from_node_id".to_string()),
+                                }),
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(source_alias.clone()),
+                                    column: Column(source_id_col.clone()),
+                                }),
+                            ],
+                        }],
+                        join_type: JoinType::Join,
+                    });
+                    
+                    // Add JOIN from CTE to target node (using CTE's to_node_id)
+                    extracted_joins.push(Join {
+                        table_name: target_table,
+                        table_alias: target_alias.clone(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(cte_alias.clone()),
+                                    column: Column("to_node_id".to_string()),
+                                }),
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(target_alias.clone()),
+                                    column: Column(target_id_col),
+                                }),
+                            ],
+                        }],
+                        join_type: JoinType::Join,
+                    });
+                }
+            } else {
+                // Old PATCH code for non-UNION multi-rel (keep for backward compat)
+                let cte_name = union_cte.cte_name.clone();
+                eprintln!("DEBUG: Found union CTE '{}', updating JOINs", cte_name);
+                for join in extracted_joins.iter_mut() {
                 eprintln!("DEBUG: Checking JOIN table_name='{}' alias='{}'", join.table_name, join.table_alias);
                 // Update joins that are relationship tables
                 // Check both with and without schema prefix (e.g., "follows" or "test_integration.follows")
@@ -2759,6 +2827,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         update_join_expression_for_union_cte(op_app, &cte_name);
                     }
                 }
+            }
             }
         }
         // For variable-length (recursive) CTEs, keep previous logic

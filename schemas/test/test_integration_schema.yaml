@@ -12,11 +12,31 @@ graph_schema:
   
   relationships:
     - type: FOLLOWS
-      database: test_integration
+      database: test_multi_rel
       table: follows
-      from_id: follower_id
-      to_id: followed_id
+      from_id: from_user_id
+      to_id: to_user_id
       from_node: User
       to_node: User
       property_mappings:
         since: since
+
+    - type: FRIENDS_WITH
+      database: test_multi_rel
+      table: friends
+      from_id: from_user_id
+      to_id: to_user_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        since: since
+
+    - type: PURCHASED
+      database: test_integration
+      table: purchases
+      from_id: from_id
+      to_id: to_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        amount: amount

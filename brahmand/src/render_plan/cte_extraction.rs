@@ -183,9 +183,15 @@ pub fn extract_relationship_columns_from_table(table_name: &str) -> Relationship
     // Get columns from schema - this should be the single source of truth
     if let Some(schema_lock) = crate::server::GLOBAL_GRAPH_SCHEMA.get() {
         if let Ok(schema) = schema_lock.try_read() {
+            // Extract just the table name without database prefix for matching
+            let table_only = table_name.split('.').last().unwrap_or(table_name);
+            
             // Find relationship schema by table name
             for rel_schema in schema.get_relationships_schemas().values() {
-                if rel_schema.table_name == table_name {
+                // Match both with full name (db.table) or just table name
+                if rel_schema.table_name == table_name 
+                    || rel_schema.table_name == table_only 
+                    || table_name.ends_with(&format!(".{}", rel_schema.table_name)) {
                     return RelationshipColumns {
                         from_id: rel_schema.from_id.clone(),
                         to_id: rel_schema.to_id.clone(),
