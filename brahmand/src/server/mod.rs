@@ -34,10 +34,33 @@ pub struct AppState {
     pub config: ServerConfig,
 }
 
+// ==================================================================================
+// SCHEMA STORAGE: GLOBAL_GRAPH_SCHEMA vs GLOBAL_SCHEMAS
+// ==================================================================================
+// TECHNICAL DEBT WARNING: We have two parallel schema storage systems:
+//
+// 1. GLOBAL_GRAPH_SCHEMA - Single schema (always points to "default")
+//    - Used by: render_plan/, DDL operations, schema monitor, tests
+//    - Reason: Legacy code, simpler access pattern
+//
+// 2. GLOBAL_SCHEMAS - HashMap<String, GraphSchema> (includes "default" + named schemas)
+//    - Used by: Planning layer (match_clause, analyzers, optimizers)
+//    - Reason: Enables multi-schema support, schema selection via USE clause
+//
+// CURRENT STATE: Both point to the same schema object for "default"
+// LIMITATION: SQL generation layer only works with default schema
+// TODO: Eliminate GLOBAL_GRAPH_SCHEMA and use GLOBAL_SCHEMAS["default"] everywhere
+//       See KNOWN_ISSUES.md for full analysis and migration plan
+// ==================================================================================
+
+// DEPRECATED: Use GLOBAL_SCHEMAS.get("default") instead
+// Kept temporarily for backward compatibility during migration
 pub static GLOBAL_GRAPH_SCHEMA: OnceCell<RwLock<GraphSchema>> = OnceCell::const_new();
+
+// Legacy single-schema config support (DEPRECATED - use GLOBAL_SCHEMA_CONFIGS)
 pub static GLOBAL_SCHEMA_CONFIG: OnceCell<RwLock<crate::graph_catalog::config::GraphSchemaConfig>> = OnceCell::const_new();
 
-// Multi-schema support - NEW
+// Multi-schema support - all schemas stored by name (including "default")
 pub static GLOBAL_SCHEMAS: OnceCell<RwLock<HashMap<String, GraphSchema>>> = OnceCell::const_new();
 pub static GLOBAL_SCHEMA_CONFIGS: OnceCell<RwLock<HashMap<String, crate::graph_catalog::config::GraphSchemaConfig>>> = OnceCell::const_new();
 
@@ -97,7 +120,7 @@ pub async fn run_with_config(config: ServerConfig) {
         }
     };
 
-    println!("GLOBAL_GRAPH_SCHEMA initialized: {:?}", GLOBAL_GRAPH_SCHEMA.get().is_some());
+    println!("GLOBAL_SCHEMAS initialized: {:?}", GLOBAL_SCHEMAS.get().is_some());
 
     // Start background schema monitoring (only for database-loaded schemas)
     if let Some(schema_client) = client_opt {

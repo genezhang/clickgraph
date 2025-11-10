@@ -38,6 +38,17 @@ async fn load_schema_and_config_from_yaml(config_path: &str) -> Result<(GraphSch
     Ok((schema, config))
 }
 
+/// Load schema and config from YAML content string
+async fn load_schema_and_config_from_yaml_content(yaml_content: &str) -> Result<(GraphSchema, GraphSchemaConfig), String> {
+    let config: GraphSchemaConfig = serde_yaml::from_str(yaml_content)
+        .map_err(|e| format!("Failed to parse YAML config: {}", e))?;
+    
+    let schema = config.to_graph_schema()
+        .map_err(|e| format!("Failed to create schema from config: {}", e))?;
+    Ok((schema, config))
+}
+
+
 pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validate_schema: bool) -> Result<SchemaSource, String> {
     println!("Initializing ClickGraph schema...");
     
@@ -66,9 +77,7 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                     }
                 }
                 
-                // Set global state - these should not fail in normal circumstances
-                GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema.clone()))
-                    .map_err(|_| "Failed to initialize global graph schema")?;
+                // Set global state
                 GLOBAL_SCHEMA_CONFIG.set(RwLock::new(config.clone()))
                     .map_err(|_| "Failed to initialize global view config")?;
 
@@ -94,8 +103,13 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                     .map_err(|_| "Failed to initialize global schemas")?;
                 GLOBAL_SCHEMA_CONFIGS.set(RwLock::new(view_configs))
                     .map_err(|_| "Failed to initialize global view configs")?;
+                
+                // DEPRECATED: Set GLOBAL_GRAPH_SCHEMA for backward compatibility
+                // This points to the same schema as GLOBAL_SCHEMAS["default"]
+                GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema.clone()))
+                    .map_err(|_| "Failed to initialize global graph schema")?;
 
-                println!("✓ Schema initialization complete (single schema mode)");
+                println!("✓ Schema initialization complete (YAML mode, default schema registered)");
                 return Ok(SchemaSource::Yaml);
             }
             Err(e) => {
@@ -123,15 +137,16 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                     println!("  - Loaded {} node types from database", nodes_map.len());
                     println!("  - Loaded {} relationship types from database", rels_map.len());
                 }
-                
-                GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema.clone()))
-                    .map_err(|_| "Failed to initialize global graph schema")?;
 
                 // Initialize multi-schema storage with default schema
                 let mut schemas = HashMap::new();
-                schemas.insert("default".to_string(), schema);
+                schemas.insert("default".to_string(), schema.clone());
                 GLOBAL_SCHEMAS.set(RwLock::new(schemas))
                     .map_err(|_| "Failed to initialize global schemas")?;
+
+                // DEPRECATED: Set GLOBAL_GRAPH_SCHEMA for backward compatibility
+                GLOBAL_GRAPH_SCHEMA.set(RwLock::new(schema.clone()))
+                    .map_err(|_| "Failed to initialize global graph schema")?;
 
                 let mut view_configs = HashMap::new();
                 // For database mode, we don't have a view config, so create an empty one
@@ -166,15 +181,16 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                             std::collections::HashMap::new(),
                             std::collections::HashMap::new(),
                         );
-                        
-                        GLOBAL_GRAPH_SCHEMA.set(RwLock::new(empty_schema.clone()))
-                            .map_err(|_| "Failed to initialize global graph schema")?;
 
                         // Initialize multi-schema storage with empty default schema
                         let mut schemas = HashMap::new();
-                        schemas.insert("default".to_string(), empty_schema);
+                        schemas.insert("default".to_string(), empty_schema.clone());
                         GLOBAL_SCHEMAS.set(RwLock::new(schemas))
                             .map_err(|_| "Failed to initialize global schemas")?;
+
+                        // DEPRECATED: Set GLOBAL_GRAPH_SCHEMA for backward compatibility
+                        GLOBAL_GRAPH_SCHEMA.set(RwLock::new(empty_schema.clone()))
+                            .map_err(|_| "Failed to initialize global graph schema")?;
 
                         let mut view_configs = HashMap::new();
                         let empty_config = GraphSchemaConfig {
@@ -215,14 +231,15 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
             std::collections::HashMap::new(),
         );
 
-        GLOBAL_GRAPH_SCHEMA.set(RwLock::new(empty_schema.clone()))
-            .map_err(|_| "Failed to initialize global graph schema")?;
-
         // Initialize multi-schema storage with empty default schema
         let mut schemas = HashMap::new();
-        schemas.insert("default".to_string(), empty_schema);
+        schemas.insert("default".to_string(), empty_schema.clone());
         GLOBAL_SCHEMAS.set(RwLock::new(schemas))
             .map_err(|_| "Failed to initialize global schemas")?;
+
+        // DEPRECATED: Set GLOBAL_GRAPH_SCHEMA for backward compatibility
+        GLOBAL_GRAPH_SCHEMA.set(RwLock::new(empty_schema.clone()))
+            .map_err(|_| "Failed to initialize global graph schema")?;
 
         let mut view_configs = HashMap::new();
         let empty_config = GraphSchemaConfig {
@@ -344,25 +361,7 @@ pub async fn load_schema_by_name(schema_name: &str, config_path: &str, clickhous
             let mut configs_guard = configs_lock.write().await;
             configs_guard.insert(schema_name.to_string(), config);
 
-            // IMPORTANT: Only update GLOBAL_GRAPH_SCHEMA if it's uninitialized
-            // This prevents API-loaded schemas from overwriting the default schema
-            // and causing race conditions between concurrent queries
-            if let Some(global_schema_lock) = GLOBAL_GRAPH_SCHEMA.get() {
-                let current_schema = global_schema_lock.read().await;
-                let is_empty = current_schema.get_nodes_schemas().is_empty();
-                drop(current_schema);  // Release read lock before acquiring write lock
-                
-                if is_empty {
-                    let mut global_schema_guard = global_schema_lock.write().await;
-                    *global_schema_guard = schema;
-                    println!("  ✓ Set GLOBAL_GRAPH_SCHEMA (was uninitialized)");
-                } else {
-                    println!("  ℹ GLOBAL_GRAPH_SCHEMA already set from config, not overwriting");
-                    println!("    Schema '{}' available in GLOBAL_SCHEMAS for USE clause", schema_name);
-                }
-            }
-
-            println!("✓ Schema '{}' loaded successfully", schema_name);
+            println!("✓ Schema '{}' loaded successfully and registered in GLOBAL_SCHEMAS", schema_name);
             Ok(())
         }
         Err(e) => {
@@ -370,6 +369,53 @@ pub async fn load_schema_by_name(schema_name: &str, config_path: &str, clickhous
         }
     }
 }
+
+pub async fn load_schema_from_content(schema_name: &str, yaml_content: &str, clickhouse_client: Option<Client>, validate_schema: bool) -> Result<(), String> {
+    println!("Loading schema '{}' from YAML content", schema_name);
+
+    match load_schema_and_config_from_yaml_content(yaml_content).await {
+        Ok((schema, config)) => {
+            println!("✓ Successfully loaded schema '{}' from YAML content", schema_name);
+
+            // Validate schema against ClickHouse if requested
+            if validate_schema {
+                if let Some(client) = clickhouse_client.as_ref() {
+                    println!("  Validating schema '{}' against ClickHouse...", schema_name);
+                    match config.validate_schema(&mut crate::graph_catalog::SchemaValidator::new(client.clone())).await {
+                        Ok(_) => println!("  ✓ Schema validation passed"),
+                        Err(e) => {
+                            eprintln!("  ✗ Schema validation failed: {}", e);
+                            return Err(format!("Schema validation failed: {}", e));
+                        }
+                    }
+                } else {
+                    eprintln!("  ⚠ Schema validation requested but no ClickHouse client available");
+                    eprintln!("    Skipping validation - some queries may fail at runtime");
+                }
+            }
+
+            // Add to multi-schema storage
+            let schemas_lock = GLOBAL_SCHEMAS
+                .get()
+                .ok_or("Global schemas not initialized")?;
+            let mut schemas_guard = schemas_lock.write().await;
+            schemas_guard.insert(schema_name.to_string(), schema.clone());
+
+            let configs_lock = GLOBAL_SCHEMA_CONFIGS
+                .get()
+                .ok_or("Global view configs not initialized")?;
+            let mut configs_guard = configs_lock.write().await;
+            configs_guard.insert(schema_name.to_string(), config);
+
+            println!("✓ Schema '{}' loaded successfully and registered in GLOBAL_SCHEMAS", schema_name);
+            Ok(())
+        }
+        Err(e) => {
+            Err(format!("Failed to load schema '{}': {}", schema_name, e))
+        }
+    }
+}
+
 
 pub async fn get_graph_catalog(clickhouse_client: Client) -> Result<GraphSchema, String> {
     let graph_catalog_query = "SELECT id, schema_json FROM graph_catalog FINAL";
@@ -465,6 +511,7 @@ pub async fn add_to_schema(
     clickhouse_client: Client,
     graph_schema_elements: Vec<GraphSchemaElement>,
 ) -> Result<(), String> {
+    // Use GLOBAL_GRAPH_SCHEMA which is kept in sync with GLOBAL_SCHEMAS["default"]
     let global_schema = GLOBAL_GRAPH_SCHEMA.get().ok_or_else(|| "Global graph schema not initialized".to_string())?;
     let mut graph_schema = global_schema.write().await;
 
