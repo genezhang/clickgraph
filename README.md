@@ -14,30 +14,45 @@
 
 ## 🚀 What's New (November 10, 2025)
 
-### Query Cache - 10-100x Performance Boost! 🚀
+### Query Cache & Parameter Support - 10-100x Performance Boost! 🚀
 
-**Production-ready query caching with LRU eviction**
+**Production-ready query caching with parameterized queries**
 - ✅ **Massive speedup**: 10-100x faster for repeated queries (10-50ms → 0.1-0.5ms)
-- ✅ **Smart caching**: Parameterized queries with SQL template reuse
+- ✅ **Parameter support**: Neo4j-compatible parameterized queries for security and performance
+- ✅ **Smart caching**: SQL template reuse with parameter substitution
 - ✅ **Neo4j compatible**: CYPHER replan options (default/force/skip)
 - ✅ **LRU eviction**: Dual limits (1000 entries, 100 MB memory)
 - ✅ **Schema-aware**: Automatic cache invalidation on schema reload
 - ✅ **Thread-safe**: Arc<Mutex<HashMap>> for concurrent access
 - ✅ **100% tested**: 6/6 unit tests + 5/5 e2e tests passing
 
-**Configuration**:
+**Parameterized Query Support**:
+```bash
+# Use parameters for values (prevents SQL injection, enables caching)
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User) WHERE u.age > $minAge AND u.email = $email RETURN u.name",
+    "parameters": {
+      "minAge": 25,
+      "email": "alice@example.com"
+    }
+  }'
+```
+
+**Cache Configuration**:
 ```bash
 export CLICKGRAPH_QUERY_CACHE_ENABLED=true       # Default: true
 export CLICKGRAPH_QUERY_CACHE_MAX_ENTRIES=1000   # Default: 1000
 export CLICKGRAPH_QUERY_CACHE_MAX_SIZE_MB=100    # Default: 100 MB
 ```
 
-**Usage**:
+**Advanced Usage**:
 ```bash
-# Normal query (uses cache)
+# Cache hit on repeated query with different parameter values
 curl -X POST http://localhost:8080/query \
-  -d '{"query":"MATCH (u:User) WHERE u.age > $minAge RETURN u.name", "parameters":{"minAge":25}}'
-# Response header: X-Query-Cache-Status: MISS (first time) or HIT (cached)
+  -d '{"query":"MATCH (u:User) WHERE u.age > $minAge RETURN u.name", "parameters":{"minAge":30}}'
+# Response header: X-Query-Cache-Status: HIT (uses cached SQL template)
 
 # Force recompilation (bypass cache)
 curl -X POST http://localhost:8080/query \
@@ -45,7 +60,9 @@ curl -X POST http://localhost:8080/query \
 # Response header: X-Query-Cache-Status: BYPASS
 ```
 
-**📖 Documentation**: See [notes/query-cache.md](notes/query-cache.md) for implementation details
+**📖 Documentation**: 
+- [Query Cache Guide](notes/query-cache.md) - Caching implementation details
+- [Parameter Support](notes/parameter-support.md) - Where parameters can/cannot be used
 
 ---
 
@@ -111,7 +128,8 @@ curl -X POST http://localhost:8080/query \
 - **ClickHouse-native**: Extends ClickHouse with native graph modeling, merging OLAP speed with graph-analysis power
 - **Stateless Architecture**: Offloads all storage and query execution to ClickHouse—no extra datastore required
 - **Cypher Query Language**: Industry-standard Cypher read syntax for intuitive, expressive property-graph querying
-- **Query Cache**: Production-ready LRU caching with 10-100x speedup for repeated queries, parameterized query support, and Neo4j-compatible CYPHER replan options
+- **Parameterized Queries**: Neo4j-compatible parameter support (`$param` syntax) for SQL injection prevention and query plan caching
+- **Query Cache**: Production-ready LRU caching with 10-100x speedup for repeated queries, SQL template reuse with parameter substitution, and Neo4j-compatible CYPHER replan options
 - **Variable-Length Paths**: Recursive traversals with `*1..3` syntax using ClickHouse WITH RECURSIVE CTEs
 - **Path Variables & Functions**: Capture and analyze path data with `length(p)`, `nodes(p)`, `relationships(p)` functions
 - **Analytical-scale Performance**: Optimized for very large datasets and complex multi-hop traversals

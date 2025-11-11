@@ -112,6 +112,166 @@ MATCH (u:User) RETURN u.name, $queryTimestamp AS timestamp
 
 ---
 
+## Where Parameters Can and Cannot Be Used
+
+**Official Reference**: OpenCypher 9 BNF Grammar Specification
+
+### ✅ Parameters ARE Allowed (Value Positions)
+
+According to the OpenCypher grammar, parameters (`<general parameter reference>`) are allowed anywhere a `<value expression>` is expected:
+
+1. **Property Values in Patterns**
+   ```cypher
+   MATCH (u:User {email: $email, age: $age}) RETURN u
+   ```
+   - Grammar: `<property key value pair> ::= <property name> <colon> <value expression>`
+   - Property VALUE can be a parameter ✅
+
+2. **WHERE Clause Comparisons**
+   ```cypher
+   MATCH (u:User) WHERE u.email = $email AND u.age > $minAge RETURN u
+   ```
+   - Grammar: `<comparison predicate>` uses `<value expression>` ✅
+
+3. **IN Clause**
+   ```cypher
+   MATCH (u:User) WHERE u.id IN $userIds RETURN u
+   ```
+   - List parameters work in predicates ✅
+
+4. **RETURN Clause Expressions**
+   ```cypher
+   MATCH (u:User) RETURN u.name, $currentTime AS timestamp
+   ```
+   - Grammar: `<return item> ::= <value expression> ...` ✅
+
+5. **LIMIT and SKIP**
+   ```cypher
+   MATCH (u:User) RETURN u LIMIT $pageSize SKIP $offset
+   ```
+   - Grammar: `<limit clause> ::= LIMIT <value expression>` ✅
+   - Grammar: `<offset clause> ::= <offset synonym> <value expression>` ✅
+
+6. **ORDER BY**
+   ```cypher
+   MATCH (u:User) RETURN u ORDER BY u.created < $cutoffDate
+   ```
+   - Grammar: `<sort key> ::= <value expression>` ✅
+
+7. **SET Operations (Write)**
+   ```cypher
+   MATCH (u:User) SET u.lastLogin = $timestamp
+   ```
+   - Grammar: `<set property item> ::= ... <equals operator> <value expression>` ✅
+
+8. **CREATE with Property Values**
+   ```cypher
+   CREATE (u:User {name: $name, email: $email})
+   ```
+   - Grammar: `<create element property specification>` can be `<general parameter reference>` ✅
+
+### ❌ Parameters are NOT Allowed (Structural Positions)
+
+Parameters cannot be used for query **structure** - only for **values**. The grammar defines these as `<identifier>`, not `<value expression>`:
+
+1. **Variable Names / Aliases**
+   ```cypher
+   ❌ MATCH ($varName:User) RETURN $varName
+   ✅ MATCH (u:User) RETURN u
+   ```
+   - Grammar: `<binding variable> ::= <identifier>` (NOT a value expression) ❌
+   - **Why**: Variable names are part of the query structure, known at parse time
+
+2. **Node Labels**
+   ```cypher
+   ❌ MATCH (u:$labelName) RETURN u
+   ✅ MATCH (u:User) RETURN u
+   ```
+   - Grammar: `<label name> ::= <identifier>` (NOT a value expression) ❌
+   - **Why**: Labels determine schema lookups and index selection at plan time
+
+3. **Relationship Types**
+   ```cypher
+   ❌ MATCH (u)-[:$relType]->(v) RETURN u
+   ✅ MATCH (u)-[:FOLLOWS]->(v) RETURN u
+   ```
+   - Grammar: `<label name> ::= <identifier>` (used for relationship types) ❌
+   - **Why**: Relationship types determine join strategy at plan time
+
+4. **Property Names (Keys)**
+   ```cypher
+   ❌ MATCH (u:User {$propName: "value"}) RETURN u
+   ❌ WHERE u.$propName = "value"
+   ✅ MATCH (u:User {email: $propValue}) RETURN u
+   ✅ WHERE u.email = $propValue
+   ```
+   - Grammar: `<property name> ::= <identifier>` (NOT a value expression) ❌
+   - **Why**: Property names determine column lookups at plan time
+   - **Our Implementation**: Explicitly rejects with `LogicalPlanError::FoundParamInProperties`
+
+5. **Function Names**
+   ```cypher
+   ❌ RETURN $funcName(u.age)
+   ✅ RETURN abs($value)
+   ```
+   - Grammar: `<function name> ::= <identifier>` ❌
+   - **Why**: Function names determine which function to call at plan time
+
+6. **Procedure Names**
+   ```cypher
+   ❌ CALL $procName()
+   ✅ CALL db.labels()
+   ```
+   - Grammar: `<procedure name> ::= <identifier>` ❌
+
+### 📖 Grammar References
+
+From `openCypher grammar.bnf`:
+
+**Parameters allowed in values:**
+```bnf
+<non-parenthesized value expression primary> ::= 
+    <general parameter reference>    ← Parameters allowed here
+  | <case expression>
+  | ...
+
+<general parameter reference> ::= 
+  <dollar sign> <parameter name>
+```
+
+**Identifiers required (no parameters):**
+```bnf
+<property name> ::= <identifier>        ← Must be literal
+<label name> ::= <identifier>           ← Must be literal
+<binding variable> ::= <identifier>     ← Must be literal
+<parameter name> ::= <separated identifier>
+```
+
+**Property key-value pair:**
+```bnf
+<property key value pair> ::= 
+  <property name> <colon> <value expression>
+  ^^^ identifier ^^^       ^^^ can be param ^^^
+```
+
+### Why This Restriction?
+
+**Query Structure vs Query Data**:
+- **Structure** (labels, property names, variable names): Determined at **parse/plan time**
+  - Used for schema validation
+  - Used for index selection
+  - Used for query optimization
+  - Must be known before execution
+  
+- **Data** (property values, filter values): Provided at **execution time**
+  - Used for filtering rows
+  - Used for computing results
+  - Can vary between executions with same query plan
+
+**Performance Benefit**: This allows query plan caching - the same query structure with different parameter values can reuse the same compiled plan.
+
+---
+
 ## ClickHouse Parameterized Query Support
 
 ### ✅ VERIFIED (Nov 10, 2025)
@@ -688,13 +848,12 @@ def test_sql_injection_prevented():
 
 **Action**: Create a test script to verify ClickHouse parameter binding:
 
-```rust
 ### ✅ Verification Test Script
 
 **Script Created**: `brahmand/examples/test_clickhouse_params.rs`
 
 **Test Results** (Nov 10, 2025):
-```
+
 === Summary ===
 ClickHouse Rust client uses POSITIONAL parameters with ? placeholders.
 The .bind() method takes a single value (not key-value pairs).
