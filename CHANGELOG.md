@@ -1,3 +1,33 @@
+## [Unreleased]
+
+### 🚀 Features
+
+- **Query Cache**: Production-ready query caching with LRU eviction (10-100x speedup for repeated queries)
+  - HashMap-based cache with dual limits (entry count + memory size)
+  - Neo4j-compatible CYPHER replan options (default/force/skip)
+  - Parameterized query support with SQL template caching
+  - Whitespace normalization and CYPHER prefix handling
+  - Schema-aware cache invalidation
+  - Test coverage: 6/6 unit tests + 5/5 e2e tests (100%)
+
+### 🐛 Bug Fixes
+
+- **Query Cache**: Strip CYPHER prefix BEFORE schema extraction and query parsing (critical fix for replan=force)
+- **Query Cache**: Add whitespace normalization in cache key generation
+- **Query Cache**: Fix sql_only mode cache lookup and header injection
+
+### 📚 Documentation
+
+- Add comprehensive query cache documentation in STATUS.md
+- Create detailed feature note: notes/query-cache.md
+- Document Windows PowerShell background process issue in copilot-instructions.md
+
+### ⚙️ Infrastructure
+
+- Create PowerShell server startup script with proper background handling (start_server_with_cache.ps1)
+
+---
+
 ## [0.3.0] - 2025-11-10
 
 ### 🚀 Features

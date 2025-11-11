@@ -7,9 +7,40 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 
 ## Windows Environment Constraints
 
-**⚠️ IMPORTANT: Known Windows-Specific Issues**
+**⚠️ CRITICAL: Known Windows-Specific Issues - CHECK THESE FIRST!**
 
-### 1. ClickHouse Docker Volume Write Permission Problem
+### 1. PowerShell Background Process Handling ⚠️ **[FREQUENT ISSUE - WASTES TIME]**
+- **Issue**: Running Rust servers directly in PowerShell (`cargo run`) exits immediately when script ends
+- **Problem**: Server terminates as soon as PowerShell script finishes, even if marked as background
+- **Solution**: **ALWAYS use `Start-Job` for background server processes in PowerShell scripts**
+- **Example**:
+  ```powershell
+  # ❌ DO NOT USE (server exits immediately when script ends)
+  cargo run --release --bin clickgraph
+  
+  # ❌ ALSO WRONG (still exits when script ends)
+  Start-Process powershell -ArgumentList "cargo run --release --bin clickgraph"
+  
+  # ✅ USE THIS INSTEAD (properly backgrounds the job)
+  $job = Start-Job -ScriptBlock {
+      param($env_vars...)
+      # Set environment variables in job context
+      $env:CLICKHOUSE_URL = $url
+      Set-Location $using:PWD
+      cargo run --release --bin clickgraph
+  } -ArgumentList $env:CLICKHOUSE_URL, ...
+  
+  # Check output: Receive-Job -Id $job.Id -Keep
+  # Stop server: Stop-Job -Id $job.Id; Remove-Job -Id $job.Id
+  ```
+- **Impact**: **Server appears to start but exits silently, causing confusion and wasted debugging time**
+- **When to Remember**: 
+  - **ANY PowerShell script that starts the ClickGraph server**
+  - Creating new server startup scripts
+  - Testing or debugging server behavior
+  - **This has wasted time MULTIPLE times - always check this first!**
+
+### 2. ClickHouse Docker Volume Write Permission Problem
 - **Issue**: ClickHouse container on Windows cannot write to mounted volumes due to permission restrictions
 - **Solution**: **Always create tables using `ENGINE = Memory` instead of persistent engines**
 - **Example**:
@@ -23,7 +54,7 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 - **Impact**: Data is not persisted between container restarts, but this is acceptable for development/testing
 - **When to Remember**: Any SQL script creating tables (`setup_demo_data.sql`, test data creation, etc.)
 
-### 2. curl Command Not Available in PowerShell
+### 3. curl Command Not Available in PowerShell
 - **Issue**: `curl` is not available or behaves differently in Windows PowerShell environment
 - **Solution**: **Use `Invoke-RestMethod` or `Invoke-WebRequest` PowerShell cmdlets instead**
 - **Examples**:

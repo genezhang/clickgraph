@@ -24,6 +24,9 @@ chrono = { version = "0.4", features = ["serde"] }
 log = "0.4"
 env_logger = "0.11"
 validator = { version = "0.18", features = ["derive"] }
+# Query cache dependencies
+hex = "0.4"
+lru = "0.12"
 
 [dev-dependencies]
 clickhouse = { version = "0.13.2", features = ["test-util"] }

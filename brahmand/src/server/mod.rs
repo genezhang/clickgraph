@@ -27,6 +27,7 @@ pub mod graph_catalog;
 pub mod handlers;
 mod models;
 mod parameter_substitution;
+mod query_cache;
 
 // #[derive(Clone)]
 #[derive(Clone)]
@@ -54,6 +55,9 @@ pub static GLOBAL_SCHEMA_CONFIG: OnceCell<RwLock<crate::graph_catalog::config::G
 // Multi-schema support - all schemas stored by name (including "default")
 pub static GLOBAL_SCHEMAS: OnceCell<RwLock<HashMap<String, GraphSchema>>> = OnceCell::const_new();
 pub static GLOBAL_SCHEMA_CONFIGS: OnceCell<RwLock<HashMap<String, crate::graph_catalog::config::GraphSchemaConfig>>> = OnceCell::const_new();
+
+// Query cache for SQL templates
+pub static GLOBAL_QUERY_CACHE: OnceCell<query_cache::QueryCache> = OnceCell::const_new();
 
 pub async fn run() {
     dotenv().ok();
@@ -112,6 +116,14 @@ pub async fn run_with_config(config: ServerConfig) {
     };
 
     println!("GLOBAL_SCHEMAS initialized: {:?}", GLOBAL_SCHEMAS.get().is_some());
+
+    // Initialize query cache
+    let cache_config = query_cache::QueryCacheConfig::from_env();
+    log::info!("Initializing query cache: enabled={}, max_entries={}, max_size_mb={}", 
+        cache_config.enabled, 
+        cache_config.max_entries, 
+        cache_config.max_size_bytes / (1024 * 1024));
+    let _ = GLOBAL_QUERY_CACHE.set(query_cache::QueryCache::new(cache_config));
 
     // Start background schema monitoring (only for database-loaded schemas)
     if let Some(schema_client) = client_opt {

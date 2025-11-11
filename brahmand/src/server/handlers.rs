@@ -23,6 +23,7 @@ use super::{
     AppState, graph_catalog,
     models::{OutputFormat, QueryRequest, SqlOnlyResponse},
     parameter_substitution,
+    query_cache, GLOBAL_QUERY_CACHE,
 };
 
 /// Performance metrics for query execution
@@ -115,8 +116,15 @@ pub async fn query_handler(
     let output_format = payload.format.unwrap_or(OutputFormat::JSONEachRow);
     let sql_only = payload.sql_only.unwrap_or(false);
     
+    // Query cache integration - Strip CYPHER prefix FIRST
+    // Extract replan option and clean query
+    let replan_option = query_cache::ReplanOption::from_query_prefix(&payload.query)
+        .unwrap_or(query_cache::ReplanOption::Default);
+    let clean_query = query_cache::ReplanOption::strip_prefix(&payload.query);
+    
     // Pre-parse to check for USE clause (minimal parse just to extract database selection)
-    let schema_name = if let Ok(ast) = open_cypher_parser::parse_query(&payload.query) {
+    // IMPORTANT: Parse the CLEAN query without CYPHER prefix
+    let schema_name = if let Ok(ast) = open_cypher_parser::parse_query(clean_query) {
         if let Some(ref use_clause) = ast.use_clause {
             use_clause.database_name
         } else {
@@ -127,6 +135,92 @@ pub async fn query_handler(
     };
     
     log::debug!("Using schema: {}", schema_name);
+    
+    // Generate cache key
+    let cache_key = query_cache::QueryCacheKey::new(clean_query, schema_name);
+    let mut cache_status = "MISS";
+    
+    // Try cache lookup (unless replan=force)
+    let cached_sql = if replan_option != query_cache::ReplanOption::Force {
+        if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
+            if let Some(sql) = cache.get(&cache_key) {
+                log::debug!("Cache HIT for query");
+                cache_status = "HIT";
+                Some(sql)
+            } else {
+                log::debug!("Cache MISS for query");
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        if replan_option == query_cache::ReplanOption::Force {
+            log::debug!("Cache BYPASS (replan=force)");
+            cache_status = "BYPASS";
+        }
+        None
+    };
+    
+    // If cache hit, substitute parameters and return early
+    if let Some(sql_template) = cached_sql {
+        log::info!("Using cached SQL template");
+        
+        // Substitute parameters if provided
+        let final_sql = if let Some(params) = &payload.parameters {
+            match parameter_substitution::substitute_parameters(&sql_template, params) {
+                Ok(sql) => sql,
+                Err(e) => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!("Parameter substitution error: {}", e),
+                    ));
+                }
+            }
+        } else {
+            sql_template
+        };
+        
+        // If SQL-only mode, return SQL without executing
+        if sql_only {
+            let sql_response = Json(SqlOnlyResponse {
+                cypher_query: payload.query.clone(),
+                generated_sql: final_sql.clone(),
+                execution_mode: "sql_only".to_string(),
+            });
+            
+            let mut response = sql_response.into_response();
+            if let Ok(cache_header) = axum::http::HeaderValue::try_from(cache_status) {
+                response.headers_mut().insert("X-Query-Cache-Status", cache_header);
+            }
+            return Ok(response);
+        }
+        
+        // Execute query and return
+        let ch_sql_queries = vec![final_sql];
+        let execution_start = Instant::now();
+        let response = execute_cte_queries(app_state, ch_sql_queries, output_format, payload.parameters).await;
+        metrics.execution_time = execution_start.elapsed().as_secs_f64();
+        
+        let elapsed = start_time.elapsed();
+        metrics.total_time = elapsed.as_secs_f64();
+        
+        match response {
+            Ok(mut resp) => {
+                log::info!("✓ Query succeeded (cached) in {:.2}ms", elapsed.as_millis());
+                
+                // Add cache status header to response
+                let headers = resp.headers_mut();
+                headers.insert(
+                    "X-Query-Cache-Status",
+                    HeaderValue::from_static("HIT")
+                );
+                
+                return Ok(resp);
+            }
+            Err(e) => return Err(e),
+        }
+    }
 
         let (ch_sql_queries, maybe_schema_elem, is_read, query_type_str) = {
         let graph_schema = match graph_catalog::get_graph_schema_by_name(schema_name).await {
@@ -140,8 +234,9 @@ pub async fn query_handler(
         };
 
         // Phase 1: Parse query
+        // IMPORTANT: Parse the CLEAN query without CYPHER prefix
         let parse_start = Instant::now();
-        let cypher_ast = match open_cypher_parser::parse_query(&payload.query) {
+        let cypher_ast = match open_cypher_parser::parse_query(clean_query) {
             Ok(ast) => ast,
             Err(e) => {
                 metrics.parse_time = parse_start.elapsed().as_secs_f64();
@@ -318,14 +413,26 @@ pub async fn query_handler(
             metrics.sql_generation_time = sql_generation_start.elapsed().as_secs_f64();
             println!("\n ch_query \n {} \n", ch_query);
             
+            // Store in cache (even in sql_only mode for future use)
+            if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
+                cache.insert(cache_key.clone(), ch_query.clone());
+                log::debug!("Stored SQL template in cache");
+            }
+            
             // If SQL-only mode, return the SQL without executing
             if sql_only {
-                let sql_response = SqlOnlyResponse {
+                let mut sql_response = Json(SqlOnlyResponse {
                     cypher_query: payload.query.clone(),
                     generated_sql: ch_query.clone(),
                     execution_mode: "sql_only".to_string(),
-                };
-                return Ok(Json(sql_response).into_response());
+                });
+                
+                // Add cache status header
+                let mut response = sql_response.into_response();
+                if let Ok(cache_header) = axum::http::HeaderValue::try_from(cache_status) {
+                    response.headers_mut().insert("X-Query-Cache-Status", cache_header);
+                }
+                return Ok(response);
             }
             
             (vec![ch_query], None, true, query_type_str)
@@ -385,6 +492,12 @@ pub async fn query_handler(
                     resp.headers_mut().insert(header_name, header_value);
                 }
             }
+            
+            // Add cache status header
+            if let Ok(cache_header) = axum::http::HeaderValue::try_from(cache_status) {
+                resp.headers_mut().insert("X-Query-Cache-Status", cache_header);
+            }
+            
             Ok(resp)
         }
         Err(e) => Err(e),
@@ -755,10 +868,18 @@ pub async fn load_schema_handler(
         Some(app_state.clickhouse_client.clone()),
         validate_schema,
     ).await {
-        Ok(_) => Ok(Json(serde_json::json!({
-            "message": format!("Schema '{}' loaded successfully", payload.schema_name),
-            "schema_name": payload.schema_name
-        }))),
+        Ok(_) => {
+            // Invalidate cache entries for this schema
+            if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
+                cache.invalidate_schema(&payload.schema_name);
+                log::info!("Cache invalidated for schema: {}", payload.schema_name);
+            }
+            
+            Ok(Json(serde_json::json!({
+                "message": format!("Schema '{}' loaded successfully", payload.schema_name),
+                "schema_name": payload.schema_name
+            })))
+        },
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
