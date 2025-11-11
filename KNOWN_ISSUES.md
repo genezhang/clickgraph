@@ -1,8 +1,119 @@
 # Known Issues
 
-**Current Status**: All major functional issues resolved! ✅  
-**Test Results**: 325/325 unit tests + 32/35 integration tests passing (91.4%)  
-**Active Issues**: 3 benchmark test configurations (not blocking)
+**Current Status**: Major functionality working, 1 critical limitation discovered  
+**Test Results**: 340 unit tests + 3 integration tests passing (100%)  
+**Active Issues**: 1 critical (Bolt protocol query execution not implemented)
+
+---
+
+## 🚨 CRITICAL: Bolt Protocol Query Execution Not Implemented
+
+**Status**: 🚨 **CRITICAL LIMITATION** (Discovered November 10, 2025)  
+**Severity**: High - Core functionality missing  
+**Impact**: Bolt protocol clients can connect but cannot execute queries
+
+### Summary
+The Bolt protocol v4.4 implementation provides **wire protocol compatibility** (handshake, authentication, multi-database support) but **query execution is not implemented**. The `execute_cypher_query()` function in the Bolt handler returns dummy success metadata instead of actually executing queries.
+
+**What Works** ✅:
+- Bolt wire protocol parsing and message handling
+- Authentication (basic auth, no auth)
+- Multi-database/schema selection
+- Connection state management
+- Parameter extraction from RUN messages
+
+**What Does NOT Work** ❌:
+- Actual query execution through Bolt protocol
+- Returning real query results
+- Any data retrieval via Neo4j drivers
+- Jupyter notebooks with Neo4j driver
+
+### Technical Details
+
+**File**: `brahmand/src/server/bolt_protocol/handler.rs` (line 343-375)
+
+```rust
+async fn execute_cypher_query(
+    &self,
+    query: &str,
+    _parameters: HashMap<String, Value>,  // ❌ Parameters ignored
+    schema_name: Option<String>,
+) -> BoltResult<HashMap<String, Value>> {
+    match open_cypher_parser::parse_query(query) {
+        Ok(parsed_query) => {
+            // ❌ Just returns dummy metadata, no actual execution
+            let mut metadata = HashMap::new();
+            metadata.insert("fields".to_string(), Value::Array(vec![]));
+            metadata.insert("t_first".to_string(), Value::Number(0.into()));
+            Ok(metadata)
+        }
+        // ...
+    }
+}
+```
+
+**Comment in code** (line 360-365):
+```rust
+// For now, just return success metadata
+// In a full implementation, this would:
+// 1. Transform parsed query to logical plan using effective_schema
+// 2. Optimize the plan
+// 3. Generate ClickHouse SQL
+// 4. Execute the SQL
+// 5. Transform results back to graph format
+```
+
+### Why This Happened
+The Bolt protocol was implemented as a **protocol compatibility layer** to demonstrate Neo4j ecosystem integration, but the query execution pipeline was never connected. The HTTP API handler properly executes queries, but the Bolt handler was left as a stub.
+
+### Impact on Documentation
+Multiple documents incorrectly claim "full Neo4j driver compatibility":
+- ❌ README.md: "Full Neo4j driver compatibility for seamless integration"
+- ❌ README.md: "Cypher queries are processed through the same query engine as HTTP"
+- ❌ STATUS.md: "Bolt Protocol v4.4" marked as complete
+- ❌ Examples: Jupyter notebooks claim Bolt compatibility but only test HTTP
+
+### Workaround
+**Use HTTP API instead of Bolt protocol**:
+- ✅ HTTP REST API fully functional with complete query execution
+- ✅ Parameters, aggregations, relationships all working via HTTP
+- ✅ All examples and tests use HTTP successfully
+
+### Remediation Plan
+**Phase 1: Document Current State** (Immediate) ✅
+- ✅ Add to KNOWN_ISSUES.md (this document)
+- Update README.md to clarify Bolt is protocol-compatible but query execution pending
+- Update STATUS.md to mark Bolt query execution as TODO
+- Add note to API documentation
+
+**Phase 2: Implement Bolt Query Execution** (Future - Estimated 1-2 days)
+Required changes to `brahmand/src/server/bolt_protocol/handler.rs`:
+1. Import HTTP handler's query execution logic
+2. Wire up logical plan generation from parsed query
+3. Generate ClickHouse SQL and execute
+4. Transform results to Bolt protocol format (RECORD messages)
+5. Handle streaming with PULL message
+6. Pass parameters to query executor (currently ignored)
+
+**Dependencies**: Same query pipeline as HTTP (already working)
+
+### Testing Verification Needed
+Once implemented, verify with:
+```python
+# Python with neo4j driver
+from neo4j import GraphDatabase
+
+driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "password"))
+with driver.session(database="social_network_demo") as session:
+    result = session.run("MATCH (u:User) WHERE u.name = $name RETURN u", name="Alice")
+    for record in result:
+        print(record["u"])
+```
+
+**Related Files**:
+- `brahmand/src/server/bolt_protocol/handler.rs` - Query execution stub
+- `brahmand/src/server/handlers.rs` - Working HTTP query execution (reference implementation)
+- `brahmand/src/server/bolt_protocol/messages.rs` - Parameter extraction (already working)
 
 ---
 

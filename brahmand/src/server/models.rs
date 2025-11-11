@@ -1,5 +1,7 @@
 use clickhouse::Row;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 pub struct QueryRequest {
@@ -9,6 +11,8 @@ pub struct QueryRequest {
     pub sql_only: Option<bool>,
     /// Name of the schema to use for this query (defaults to "default")
     pub schema_name: Option<String>,
+    /// Parameters for the query (e.g., {"email": "alice@example.com", "minAge": 25})
+    pub parameters: Option<HashMap<String, Value>>,
 }
 
 // #[derive(Debug, Serialize)]

@@ -9,8 +9,9 @@ graph_schema:
       table: users
       id_column: user_id
       property_mappings:
-        name: full_name
-        email: email_address
+        name: name
+        age: age
+        city: city
 
   relationships:
     - type: FOLLOWS

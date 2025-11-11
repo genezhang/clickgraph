@@ -1,6 +1,10 @@
 # ClickGraph API Documentation
 
-ClickGraph provides two API interfaces for executing Cypher queries: HTTP REST API and Neo4j Bolt Protocol.
+ClickGraph provides two API interfaces: 
+- **HTTP REST API** ✅ **Fully functional** - Recommended for production use
+- **Neo4j Bolt Protocol** ⏳ Wire protocol complete, query execution pending
+
+> **📌 Recommendation**: Use HTTP API for production queries. Bolt protocol wire protocol is implemented (connection, authentication), but query execution is not yet available. See [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) for details.
 
 ## HTTP REST API
 
@@ -31,7 +35,10 @@ Content-Type: application/json
 
 **Parameters:**
 - `query` (string, required): Cypher query to execute
-- `parameters` (object, optional): Query parameters (not yet implemented)
+- `parameters` (object, optional): Query parameters for parameterized queries ✅ **[COMPLETED: Nov 10, 2025]**
+  - Supports all JSON data types: String, Int, Float, Bool, Array, Null
+  - Use `$paramName` syntax in queries (e.g., `WHERE n.age >= $minAge`)
+  - SQL injection prevention built-in
 - `schema_name` (string, optional): Graph schema/database name to use for this query. Defaults to `"default"`. Enables multi-database support for queries. **Note**: The `USE` clause in the query itself takes precedence over this parameter.
 
 **Response Format:**
@@ -247,26 +254,102 @@ curl -X POST http://localhost:8080/query \
   }'
 ```
 
+### Parameterized Queries
+
+✅ **Fully supported** (Nov 10, 2025) - Parameter substitution with SQL injection prevention
+
+#### All Parameter Types
+
+**String parameters:**
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User) WHERE u.name = $userName RETURN u",
+    "parameters": {"userName": "Alice"}
+  }'
+```
+
+**Numeric parameters:**
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User) WHERE u.age >= $minAge RETURN u.name, u.age",
+    "parameters": {"minAge": 25}
+  }'
+```
+
+**Multiple parameters:**
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User) WHERE u.age >= $minAge AND u.age <= $maxAge RETURN u.name, u.age",
+    "parameters": {"minAge": 25, "maxAge": 40}
+  }'
+```
+
+**Array parameters:**
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User) WHERE u.city IN $cities RETURN u.name, u.city",
+    "parameters": {"cities": ["New York", "San Francisco", "Seattle"]}
+  }'
+```
+
+**Boolean parameters:**
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User) WHERE u.is_active = $active RETURN u.name",
+    "parameters": {"active": true}
+  }'
+```
+
+**PowerShell example:**
+```powershell
+$query = @{
+  query = "MATCH (u:User) WHERE u.age >= `$minAge RETURN u.name, u.age"
+  parameters = @{
+    minAge = 25
+  }
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query" `
+  -ContentType "application/json" `
+  -Body $query
+```
+
+**Security**: All parameters are properly escaped to prevent SQL injection attacks.
+
 ## Neo4j Bolt Protocol
 
+⚠️ **Important Note**: Bolt protocol wire protocol is implemented (handshake, authentication, message parsing, multi-database support), but query execution is pending. **Use HTTP API for production queries**. See [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) for details and roadmap.
+
 ### Connection Details
-- **Protocol**: Bolt v4.4 with Neo4j 4.0+ multi-database support
+- **Protocol**: Bolt v4.4 wire protocol
 - **Default Port**: 7687
 - **URI Format**: `bolt://localhost:7687`
+- **Status**: Wire protocol complete ✅, Query execution pending ⏳
 
-### Multi-Database Support
-ClickGraph supports Neo4j 4.0+ multi-database selection via the Bolt protocol:
+### Multi-Database Support (Wire Protocol Only)
+ClickGraph supports Neo4j 4.0+ multi-database selection via the Bolt protocol wire protocol:
 
 ```python
 from neo4j import GraphDatabase
 
 driver = GraphDatabase.driver("bolt://localhost:7687")
 
-# Select specific graph schema/database
+# Connection and authentication work, but queries return empty results
 with driver.session(database="social_network") as session:
     result = session.run("MATCH (u:User) RETURN u.name")
+    # Currently returns empty results - query execution pending
     
-# Use default schema
+# Use default schema (same limitation)
 with driver.session() as session:  # Defaults to "default" schema
     result = session.run("MATCH (p:Product) RETURN p.name")
 ```

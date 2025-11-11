@@ -37,12 +37,14 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 
 | Priority | Feature | Effort | Impact | Rationale |
 |----------|---------|--------|--------|-----------|
-| 1️⃣ | **#9 Parameter Support & Query Cache** | 2-3 weeks | 🔥 Critical | **Dependency**: Required for all query features. Enables security, performance, and Neo4j compatibility. Foundation for multi-tenant (#1) and RBAC (#5). |
-| 2️⃣ | **#2 Neo4j Functions** (Phase 1: Core) | 1-2 weeks | 🔥 High | **Quick Win**: Time, string, math functions. Unlocks real-world queries immediately. No dependencies. |
-| 3️⃣ | **Benchmark Suite** (Small/Medium) | 1 week | 🔥 High | **Validation**: Measure current performance baseline. Guides optimization efforts. No dependencies. |
+| 1️⃣ | **#9 Parameter Support & Query Cache** | 2-3 weeks | 🔥 Critical | **Dependency**: Required for all query features. Enables security, performance, and Neo4j compatibility. Foundation for multi-tenant (#1) and RBAC (#5). **Note**: Parameter support via HTTP API ✅ complete (Nov 10, 2025). Bolt protocol pending. |
+| 2️⃣ | **Bolt Protocol Query Execution** | 1-2 days | 🔥 High | **Complete Bolt**: Wire protocol ✅ done. Query execution missing. Enables Neo4j Browser, official drivers, ecosystem tools. See KNOWN_ISSUES.md. |
+| 3️⃣ | **#2 Neo4j Functions** (Phase 1: Core) | 1-2 weeks | 🔥 High | **Quick Win**: Time, string, math functions. Unlocks real-world queries immediately. No dependencies. |
+| 4️⃣ | **Benchmark Suite** (Small/Medium) | 1 week | 🔥 High | **Validation**: Measure current performance baseline. Guides optimization efforts. No dependencies. |
 
 **Deliverables**:
-- ✅ Parameters working in HTTP & Bolt protocols
+- ✅ Parameters working in HTTP API (Nov 10, 2025)
+- ⏳ Bolt protocol query execution (1-2 days work)
 - ✅ Query plan cache reducing latency by 10-100x
 - ✅ 20+ Neo4j functions supported (datetime, string, math)
 - ✅ Reproducible benchmarks for 1K-10K scale
@@ -63,18 +65,21 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 | 1️⃣ | **#5 RBAC & Row-Level Security** | 3-4 weeks | 🔥 Critical | **Enterprise Blocker**: Required for production deployments. Builds on parameter support (#9). |
 | 2️⃣ | **#1 Multi-Tenant Support** | 2-3 weeks | 🔥 Critical | **SaaS Requirement**: Depends on parameters (#9) and RLS (#5). Enables commercial deployments. |
 | 3️⃣ | **#6 ReplacingMergeTree & FINAL** | 1-2 weeks | 🌟 Medium-High | **Real-World Data**: Mutable data patterns common in production. Low complexity. |
-| 4️⃣ | **v0.5.0 Wiki Documentation** | 3-4 weeks | 🔥 High | **Adoption Blocker**: Comprehensive docs critical for users. Can be done in parallel. |
+| 4️⃣ | **Auto-Schema Discovery** | 1-2 weeks | 🌟 Medium | **Developer UX**: Query ClickHouse metadata to auto-discover columns/types. Reduces YAML maintenance for wide tables. |
+| 5️⃣ | **v0.5.0 Wiki Documentation** | 3-4 weeks | 🔥 High | **Adoption Blocker**: Comprehensive docs critical for users. Can be done in parallel. |
 
 **Deliverables**:
 - ✅ Complete RBAC system with role definitions
 - ✅ Row-level security with policy engine
 - ✅ Multi-tenant query isolation working
 - ✅ ReplacingMergeTree support with FINAL
+- ✅ Auto-schema from ClickHouse `DESCRIBE TABLE` with caching
 - ✅ Comprehensive GitHub Wiki live
 
 **v0.5.0 Release Goals**:
 - Enterprise security features complete
 - Multi-tenant SaaS deployments enabled
+- Schema evolution without YAML updates
 - Production documentation available
 
 ---
@@ -452,7 +457,108 @@ SELECT name FROM users FINAL WHERE status = 'active'
 
 ---
 
-#### 7. **Vector Similarity Search for AI Applications** 🤖
+#### 7. **Auto-Schema Discovery from ClickHouse** 🔍
+**Status**: Tier 2 implemented (identity fallback), Tier 3 planned  
+**Estimated Effort**: 1-2 weeks  
+**Impact**: Medium - Improves DX for wide tables  
+**Priority**: 🌟 Medium
+
+**Background**:
+Schema YAML files require explicit `property_mappings` for each column. For wide tables (100+ columns), this creates significant YAML maintenance burden and prevents schema evolution.
+
+**Progressive Schema Evolution Tiers**:
+
+**✅ Tier 1: Manual/Explicit (CURRENT - Fully Working)**
+- User explicitly maps properties in YAML
+- Example: `property_mappings: { name: full_name, email: email_address }`
+- **Status**: Production-ready ✅
+
+**✅ Tier 2: Identity Fallback (COMPLETED - Nov 10, 2025)**
+- Unmapped properties pass through using identity mapping (property name = column name)
+- No ClickHouse lookup, just assume matching names
+- Fast, simple, works immediately
+- **Status**: Implemented in `view_resolver.rs` ✅
+- **Benefit**: Wide table support without hundreds of YAML mappings
+
+**⏳ Tier 3: Auto-Schema from ClickHouse (FUTURE)**
+- Query ClickHouse metadata: `DESCRIBE TABLE users`
+- Discover all columns and data types automatically
+- Cache schema information for performance
+- Full schema evolution support without YAML updates
+- **Status**: Planned for Phase 2 (v0.5.0)
+
+**Implementation Approach (Tier 3)**:
+```rust
+// On schema load or refresh:
+let columns = clickhouse_client
+    .query("DESCRIBE TABLE ?")
+    .bind(table_name)
+    .fetch_all::<ColumnInfo>()
+    .await?;
+
+// Cache in schema:
+node_schema.discovered_columns = columns;
+
+// Property resolution becomes:
+fn resolve_property(property: &str) -> Result<String> {
+    // 1. Try explicit mapping
+    if let Some(mapped) = property_mappings.get(property) {
+        return Ok(mapped.clone());
+    }
+    
+    // 2. Check discovered columns
+    if discovered_columns.contains(property) {
+        return Ok(property.to_string());
+    }
+    
+    // 3. Error if not found
+    Err(PropertyNotFound)
+}
+```
+
+**Requirements**:
+- [ ] Add `ColumnInfo` struct with name, data_type, default_value
+- [ ] Query `DESCRIBE TABLE` or `system.columns` on schema load
+- [ ] Cache discovered columns in `NodeSchema`/`RelationshipSchema`
+- [ ] LRU cache with TTL for performance (default 5 minutes)
+- [ ] Configuration option: `auto_discover_schema: true` in YAML
+- [ ] Handle ClickHouse connection errors gracefully (fallback to YAML only)
+
+**Schema YAML Evolution**:
+```yaml
+nodes:
+  - label: User
+    table: users
+    id_column: user_id
+    auto_discover: true  # Enable auto-discovery for this table
+    property_mappings:
+      # Only map the few that differ from column names
+      name: full_name
+      email: email_address
+      # All other 198 columns automatically discovered from ClickHouse
+```
+
+**Performance Considerations**:
+- Cache `DESCRIBE TABLE` results (TTL: 5 minutes default)
+- Lazy loading: Only query ClickHouse when property accessed first time
+- Option to pre-warm cache on server startup
+- Configurable cache size and TTL
+
+**Use Cases**:
+- **Wide tables**: Analytics tables with 100+ columns
+- **Schema evolution**: Add columns without updating YAML
+- **Rapid prototyping**: Quick schema setup without manual mapping
+- **Data warehouse integration**: Existing tables with many columns
+
+**Alternative: Schema Registry Pattern**:
+- External schema registry (e.g., Confluent Schema Registry)
+- Centralized schema management across services
+- Version control for schema evolution
+- Considered for future enterprise features
+
+---
+
+#### 8. **Vector Similarity Search for AI Applications** 🤖
 **Status**: Not started  
 **Estimated Effort**: 2-3 weeks  
 **Impact**: High - Critical for AI/ML workloads  

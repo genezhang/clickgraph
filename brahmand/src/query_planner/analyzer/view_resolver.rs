@@ -51,13 +51,12 @@ impl<'a> ViewResolver<'a> {
         let node_schema = self.schema.get_node_schema(label)
             .map_err(|_| AnalyzerError::NodeLabelNotFound(label.to_string()))?;
 
-        node_schema.property_mappings.get(property)
+        // Try explicit mapping first, fallback to identity mapping (property name = column name)
+        // This supports wide tables without requiring hundreds of explicit mappings
+        Ok(node_schema.property_mappings
+            .get(property)
             .cloned()
-            .ok_or_else(|| AnalyzerError::PropertyNotFound {
-                entity_type: "node".to_string(),
-                entity_name: label.to_string(),
-                property: property.to_string(),
-            })
+            .unwrap_or_else(|| property.to_string()))
     }
 
     /// Resolve a relationship property to its underlying column
@@ -66,12 +65,11 @@ impl<'a> ViewResolver<'a> {
         let rel_schema = self.schema.get_rel_schema(type_name)
             .map_err(|_| AnalyzerError::RelationshipTypeNotFound(type_name.to_string()))?;
 
-        rel_schema.property_mappings.get(property)
+        // Try explicit mapping first, fallback to identity mapping (property name = column name)
+        // This supports wide tables without requiring hundreds of explicit mappings
+        Ok(rel_schema.property_mappings
+            .get(property)
             .cloned()
-            .ok_or_else(|| AnalyzerError::PropertyNotFound {
-                entity_type: "relationship".to_string(),
-                entity_name: type_name.to_string(),
-                property: property.to_string(),
-            })
+            .unwrap_or_else(|| property.to_string()))
     }
 }

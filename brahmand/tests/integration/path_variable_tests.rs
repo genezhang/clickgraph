@@ -3,7 +3,9 @@ use clickgraph::{
     open_cypher_parser::parse_query,
     query_planner::logical_plan::plan_builder::build_logical_plan,
     render_plan::{logical_plan_to_render_plan, ToSql},
+    graph_catalog::graph_schema::GraphSchema,
 };
+use std::collections::HashMap;
 
 #[test]
 fn test_path_variable_sql_generation() {
@@ -14,12 +16,15 @@ fn test_path_variable_sql_generation() {
     let ast = parse_query(cypher)
         .expect("Failed to parse Cypher query");
     
+    // Create empty schema (test doesn't need actual schema)
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    
     // Build logical plan
-    let (logical_plan, _plan_ctx) = build_logical_plan(&ast)
+    let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema)
         .expect("Failed to build logical plan");
     
     // Build render plan
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone())
+    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
         .expect("Failed to build render plan");
     
     // Convert to SQL
@@ -45,12 +50,15 @@ fn test_path_variable_with_properties() {
     let ast = parse_query(cypher)
         .expect("Failed to parse Cypher query");
     
+    // Create empty schema
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    
     // Build logical plan
-    let (logical_plan, _plan_ctx) = build_logical_plan(&ast)
+    let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema)
         .expect("Failed to build logical plan");
     
     // Build render plan
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone())
+    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
         .expect("Failed to build render plan");
     
     // Convert to SQL
@@ -73,12 +81,15 @@ fn test_non_path_variable_unchanged() {
     let ast = parse_query(cypher)
         .expect("Failed to parse Cypher query");
     
+    // Create empty schema
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    
     // Build logical plan
-    let (logical_plan, _plan_ctx) = build_logical_plan(&ast)
+    let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema)
         .expect("Failed to build logical plan");
     
     // Build render plan
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone())
+    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
         .expect("Failed to build render plan");
     
     // Convert to SQL

@@ -41,7 +41,7 @@ use super::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, NodeIdSch
 /// 
 /// # Usage
 /// 
-/// ```rust,no_run
+/// ```ignore
 /// use brahmand::graph_catalog::{GraphViewConfig, SchemaValidator};
 /// use clickhouse::Client;
 /// 

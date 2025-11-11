@@ -356,7 +356,7 @@ impl RenderExpr {
                 Literal::String(s) => format!("'{}'", s), //format!("'{}'", s.replace('\'', "''")),
                 Literal::Null => "NULL".into(),
             },
-            RenderExpr::Parameter(name) => name.clone(),
+            RenderExpr::Parameter(name) => format!("${}", name),
             RenderExpr::Raw(raw) => raw.clone(),
             RenderExpr::Star => "*".into(),
             RenderExpr::TableAlias(TableAlias(a))

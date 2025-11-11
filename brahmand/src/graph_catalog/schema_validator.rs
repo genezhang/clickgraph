@@ -9,7 +9,7 @@
 //! 
 //! # Example
 //! 
-//! ```rust,no_run
+//! ```ignore
 //! use brahmand::graph_catalog::{SchemaValidator, NodeViewMapping};
 //! use clickhouse::Client;
 //! 

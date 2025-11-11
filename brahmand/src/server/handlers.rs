@@ -22,6 +22,7 @@ use crate::{
 use super::{
     AppState, graph_catalog,
     models::{OutputFormat, QueryRequest, SqlOnlyResponse},
+    parameter_substitution,
 };
 
 /// Performance metrics for query execution
@@ -346,7 +347,7 @@ pub async fn query_handler(
     let execution_start = Instant::now();
     let sql_queries_count = ch_sql_queries.len();
     let response = if is_read {
-        execute_cte_queries(app_state, ch_sql_queries, output_format).await
+        execute_cte_queries(app_state, ch_sql_queries, output_format, payload.parameters).await
     } else {
         ddl_handler(
             app_state.clickhouse_client.clone(),
@@ -448,11 +449,28 @@ async fn execute_cte_queries(
     app_state: Arc<AppState>,
     ch_sql_queries: Vec<String>,
     output_format: OutputFormat,
+    parameters: Option<std::collections::HashMap<String, Value>>,
 ) -> Result<Response, (StatusCode, String)> {
     let ch_query_string = ch_sql_queries.join(" ");
     
+    // Substitute parameters if provided
+    let final_sql = if let Some(params) = parameters {
+        match parameter_substitution::substitute_parameters(&ch_query_string, &params) {
+            Ok(sql) => sql,
+            Err(e) => {
+                log::error!("Parameter substitution failed: {}", e);
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("Parameter substitution error: {}", e),
+                ));
+            }
+        }
+    } else {
+        ch_query_string.clone()
+    };
+    
     // Log full SQL for debugging (especially helpful when ClickHouse truncates errors)
-    log::debug!("Executing SQL:\n{}", ch_query_string);
+    log::debug!("Executing SQL:\n{}", final_sql);
 
     if output_format == OutputFormat::Pretty
         || output_format == OutputFormat::PrettyCompact
@@ -462,11 +480,11 @@ async fn execute_cte_queries(
         let mut lines = app_state
             .clickhouse_client
             .clone()
-            .query(&ch_query_string)
+            .query(&final_sql)
             .fetch_bytes(output_format)
             .map_err(|e| {
                 // Log full SQL on error for debugging
-                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", ch_query_string, e);
+                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", final_sql, e);
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Clickhouse Error: {}", e),
@@ -496,11 +514,11 @@ async fn execute_cte_queries(
         let mut lines = app_state
             .clickhouse_client
             .clone()
-            .query(&ch_query_string)
+            .query(&final_sql)
             .fetch_bytes("JSONEachRow")
             .map_err(|e| {
                 // Log full SQL on error for debugging
-                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", ch_query_string, e);
+                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", final_sql, e);
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Clickhouse Error: {}", e),
@@ -511,7 +529,7 @@ async fn execute_cte_queries(
         let mut rows: Vec<Value> = vec![];
         while let Some(line) = lines.next_line().await.map_err(|e| {
                 // Log full SQL on error for debugging
-                log::error!("ClickHouse response parsing failed. SQL was:\n{}\nError: {}", ch_query_string, e);
+                log::error!("ClickHouse response parsing failed. SQL was:\n{}\nError: {}", final_sql, e);
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Clickhouse Error: {}", e),

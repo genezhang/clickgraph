@@ -616,15 +616,16 @@ See: `notes/benchmarking.md` for detailed analysis
 - **Ordering & Limits**: `ORDER BY`, `SKIP`, `LIMIT` ✅
 
 ### Infrastructure
-- **HTTP API**: RESTful endpoints with Axum (all platforms)
-- **Bolt Protocol**: Neo4j wire protocol v4.4 with multi-database support ✅ **[COMPLETED: Nov 2, 2025]**
-  - Full Neo4j 4.0+ compatibility for database selection
-  - Extracts `db` or `database` field from HELLO message
-  - Session-level schema selection via `driver.session(database="schema_name")`
-  - Parity with HTTP API's `schema_name` parameter
+- **HTTP API**: RESTful endpoints with Axum (all platforms) ✅ **[FULLY FUNCTIONAL]**
+  - Complete query execution with parameters, aggregations, all Cypher features
+  - Parameter support: String, Int, Float, Bool, Array, Null types ✅ **[COMPLETED: Nov 10, 2025]**
+- **Bolt Protocol**: Neo4j wire protocol v4.4 ⏳ **[WIRE PROTOCOL COMPLETE, QUERY EXECUTION PENDING]**
+  - ✅ Wire protocol: Handshake, authentication, message parsing, multi-database support
+  - ⏳ Query execution: Not yet implemented (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md))
+  - Use HTTP API for production queries
 - **Multi-Schema Support**: GLOBAL_SCHEMAS architecture for multiple graph configurations ✅ **[COMPLETED: Nov 2, 2025]**
   - HTTP API: `{"query": "...", "schema_name": "social_network"}`
-  - Bolt Protocol: `driver.session(database="social_network")`
+  - Bolt Protocol: `driver.session(database="social_network")` (wire protocol only, query execution pending)
   - Default schema fallback when not specified
 - **YAML Configuration**: View-based schema mapping with property definitions
 - **Schema Monitoring**: Background schema update detection with graceful error handling ✅ **[COMPLETED: Oct 25, 2025]**

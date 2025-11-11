@@ -399,7 +399,6 @@ match value {
     }
 }
 ```
-```
 
 **Action Item**: Test this with our current ClickHouse setup.
 
@@ -706,7 +705,6 @@ Conclusion:
 - ✅ Rust client has .bind() API
 - ❌ Named parameters like {name:String} are NOT supported
 - ✅ Must use ? placeholder with positional binding
-```
 
 **Impact**: We must convert Neo4j's named parameters to positional parameters.
 

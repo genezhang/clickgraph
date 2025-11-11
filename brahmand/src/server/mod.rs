@@ -26,6 +26,7 @@ mod clickhouse_client;
 pub mod graph_catalog;
 pub mod handlers;
 mod models;
+mod parameter_substitution;
 
 // #[derive(Clone)]
 #[derive(Clone)]

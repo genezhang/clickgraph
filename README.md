@@ -80,15 +80,15 @@
 - **Query Performance Metrics**: Phase-by-phase timing with HTTP headers and structured logging for monitoring and optimization
 
 ### Neo4j Ecosystem Compatibility
-- **Bolt Protocol v4.4**: Full Neo4j driver compatibility for seamless integration
+- **Bolt Protocol v4.4**: Wire protocol compatibility (handshake, authentication, multi-database support). ⚠️ **Query execution pending** - see [KNOWN_ISSUES.md](KNOWN_ISSUES.md)
+- **HTTP REST API**: ✅ **Fully functional** - Complete query execution with parameters, aggregations, and all Cypher features
 - **Multi-Schema Support**: ✅ **Fully working** - Complete schema isolation with per-request schema selection:
   - **USE clause**: Cypher `USE database_name` syntax (highest priority)
   - **Session/request parameter**: Bolt session database or HTTP `schema_name` parameter
   - **Default schema**: Fallback to "default" schema
   - **Schema isolation**: Different schemas map same labels to different ClickHouse tables
-- **Dual Server Architecture**: HTTP REST API and Bolt protocol running simultaneously
+- **Dual Server Architecture**: HTTP and Bolt servers running simultaneously (HTTP recommended for production use)
 - **Authentication Support**: Multiple authentication schemes including basic auth
-- **Tool Compatibility**: Works with existing Neo4j drivers, browsers, and applications
 
 ### View-Based Graph Model
 - **Zero Migration**: Transform existing relational data into graph format through YAML configuration
@@ -159,20 +159,29 @@ Both protocols share the same underlying query engine and ClickHouse backend.
    cargo run --bin clickgraph
    ```
 
-3. **Test with HTTP API**:
+3. **Test with HTTP API (Recommended)**:
    ```bash
+   # Simple query
    curl -X POST http://localhost:8080/query \
      -H "Content-Type: application/json" \
      -d '{"query": "RETURN 1 as test"}'
+   
+   # Query with parameters
+   curl -X POST http://localhost:8080/query \
+     -H "Content-Type: application/json" \
+     -d '{"query": "MATCH (u:User) WHERE u.age >= $minAge RETURN u.full_name, u.age", "parameters": {"minAge": 25}}'
    ```
 
-4. **Test with Neo4j driver**:
+4. **Bolt Protocol (Wire Protocol Only)**:
+   ⚠️ **Note**: Bolt protocol wire protocol is implemented, but query execution is pending. Use HTTP API for production queries. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
    ```python
    from neo4j import GraphDatabase
    
+   # Will connect and authenticate, but queries return empty results
    driver = GraphDatabase.driver("bolt://localhost:7687")
    with driver.session() as session:
        result = session.run("RETURN 1 as test")
+       # Currently returns empty results - query execution pending
    ```
 
 5. **Use the USE clause for multi-database queries**:
