@@ -7,6 +7,8 @@ use crate::{
 mod common;
 mod ddl_query;
 mod errors;
+mod function_registry;
+mod function_translator;
 pub mod pagerank;
 mod to_sql;
 mod to_sql_query;
@@ -18,6 +20,7 @@ mod where_clause_tests;
 
 pub use errors::ClickhouseQueryGeneratorError;
 pub use variable_length_cte::{VariableLengthCteGenerator, NodeProperty};
+pub use function_translator::{translate_scalar_function, is_function_supported, get_supported_functions};
 
 
 // pub fn generate_sql(plan: RenderPlan) -> String{

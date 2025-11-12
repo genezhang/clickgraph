@@ -28,6 +28,8 @@ validator = { version = "0.18", features = ["derive"] }
 # Query cache dependencies
 hex = "0.4"
 lru = "0.12"
+# Function registry
+lazy_static = "1.5"
 
 [dev-dependencies]
 clickhouse = { version = "0.13.2", features = ["test-util"] }

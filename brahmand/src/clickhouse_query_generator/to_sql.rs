@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use super::errors::ClickhouseQueryGeneratorError;
+use super::function_translator::translate_scalar_function;
 use crate::query_planner::logical_expr::{LogicalExpr, Literal, Operator, OperatorApplication, AggregateFnCall, ScalarFnCall, PropertyAccess, LogicalCase, InSubquery};
 use crate::query_planner::logical_plan::LogicalPlan;
 
@@ -41,8 +42,8 @@ impl ToSql for LogicalExpr {
                 Ok(format!("{}({})", fn_call.name, args_sql?.join(", ")))
             },
             LogicalExpr::ScalarFnCall(fn_call) => {
-                let args_sql: Result<Vec<String>, _> = fn_call.args.iter().map(|e| e.to_sql()).collect();
-                Ok(format!("{}({})", fn_call.name, args_sql?.join(", ")))
+                // Use function translator for Neo4j -> ClickHouse mapping
+                translate_scalar_function(fn_call)
             },
             LogicalExpr::PropertyAccessExp(prop) => {
                 Ok(format!("{}.{}", prop.table_alias.0, prop.column.0))

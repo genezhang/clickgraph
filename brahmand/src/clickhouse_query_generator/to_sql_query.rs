@@ -15,6 +15,9 @@ use crate::{
 // Import ToSql trait from to_sql module so LogicalExpr.to_sql() works
 use super::to_sql::ToSql as LogicalToSql;
 
+// Import function translator for Neo4j -> ClickHouse function mappings
+use super::function_registry::get_function_mapping;
+
 /// Generate SQL from RenderPlan with configurable CTE depth limit
 pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     let mut sql = String::new();
@@ -408,13 +411,36 @@ impl RenderExpr {
                 format!("({})", inner)
             }
             RenderExpr::ScalarFnCall(fn_call) => {
-                let args = fn_call
-                    .args
-                    .iter()
-                    .map(|e| e.to_sql())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{}({})", fn_call.name, args)
+                // Check if we have a Neo4j -> ClickHouse mapping
+                let fn_name_lower = fn_call.name.to_lowercase();
+                match get_function_mapping(&fn_name_lower) {
+                    Some(mapping) => {
+                        // Convert arguments to SQL
+                        let args_sql: Vec<String> = fn_call.args
+                            .iter()
+                            .map(|e| e.to_sql())
+                            .collect();
+                        
+                        // Apply transformation if provided
+                        let transformed_args = if let Some(transform_fn) = mapping.arg_transform {
+                            transform_fn(&args_sql)
+                        } else {
+                            args_sql
+                        };
+                        
+                        // Return ClickHouse function with transformed args
+                        format!("{}({})", mapping.clickhouse_name, transformed_args.join(", "))
+                    }
+                    None => {
+                        // No mapping found - use original function name (passthrough)
+                        let args = fn_call.args
+                            .iter()
+                            .map(|e| e.to_sql())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{}({})", fn_call.name, args)
+                    }
+                }
             }
             RenderExpr::AggregateFnCall(agg) => {
                 let args = agg
