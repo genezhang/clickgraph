@@ -43,11 +43,53 @@ def run_sql(sql):
         return False
     return True
 
-def create_tables():
-    """Create benchmark tables"""
-    log("Creating tables...")
+def create_tables(engine='Memory'):
+    """Create benchmark tables with specified engine"""
+    log(f"Creating tables with ENGINE = {engine}...")
     
-    create_sql = """
+    if engine == 'MergeTree':
+        create_sql = """
+DROP TABLE IF EXISTS user_follows_bench;
+DROP TABLE IF EXISTS posts_bench;
+DROP TABLE IF EXISTS post_likes_bench;
+DROP TABLE IF EXISTS users_bench;
+
+CREATE TABLE users_bench (
+    user_id UInt32,
+    full_name String,
+    email_address String,
+    registration_date Date,
+    is_active UInt8,
+    country String,
+    city String
+) ENGINE = MergeTree()
+ORDER BY user_id;
+
+CREATE TABLE user_follows_bench (
+    follower_id UInt32,
+    followed_id UInt32,
+    follow_date Date
+) ENGINE = MergeTree()
+ORDER BY (follower_id, followed_id);
+
+CREATE TABLE posts_bench (
+    post_id UInt32,
+    author_id UInt32,
+    post_title String,
+    post_content String,
+    post_date DateTime
+) ENGINE = MergeTree()
+ORDER BY (author_id, post_id);
+
+CREATE TABLE post_likes_bench (
+    user_id UInt32,
+    post_id UInt32,
+    like_date DateTime
+) ENGINE = MergeTree()
+ORDER BY (post_id, user_id);
+"""
+    else:  # Memory engine
+        create_sql = """
 DROP TABLE IF EXISTS user_follows_bench;
 DROP TABLE IF EXISTS posts_bench;
 DROP TABLE IF EXISTS post_likes_bench;
@@ -182,8 +224,8 @@ WHERE follower_id != followed_id;
 def generate_posts(scale_factor, chunk_size=1_000_000):
     """Generate posts using ClickHouse native functions"""
     num_users = scale_factor * 1000
-    num_posts = scale_factor * 50000  # 50x multiplier (realistic content production)
-    log(f"Generating {num_posts:,} posts (~50 per user avg)...")
+    num_posts = scale_factor * 20000  # 20x multiplier (realistic ~6 months activity)
+    log(f"Generating {num_posts:,} posts (~20 per user avg)...")
     
     # For small datasets, generate all at once
     if num_posts <= chunk_size:
@@ -277,6 +319,9 @@ Scale Factor Examples:
                        help='Scale factor (default: 1 = 1K users)')
     parser.add_argument('--chunk-size', type=int, default=100_000,
                        help='Chunk size for batch inserts (default: 100K)')
+    parser.add_argument('--engine', type=str, default='Memory',
+                       choices=['Memory', 'MergeTree'],
+                       help='Table engine: Memory (fast, non-persistent) or MergeTree (persistent, production-ready)')
     
     args = parser.parse_args()
     
@@ -288,6 +333,7 @@ Scale Factor Examples:
     log("Unified Benchmark Data Generator")
     log("=" * 70)
     log(f"Scale Factor: {args.scale}")
+    log(f"Table Engine: {args.engine}")
     log(f"Target Data Size:")
     log(f"  - Users:   {num_users:,}")
     log(f"  - Follows: {num_follows:,}")
@@ -297,7 +343,7 @@ Scale Factor Examples:
     start_time = time.time()
     
     # Create tables
-    if not create_tables():
+    if not create_tables(args.engine):
         log("FAILED: Could not create tables")
         sys.exit(1)
     

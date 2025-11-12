@@ -19,35 +19,40 @@ All benchmark scales now use:
 
 ### 1. Data Generation: `setup_benchmark_unified.py`
 
-**Single script for all scales** using ClickHouse native functions with **realistic ratios (1:100:50)**:
+**Single script for all scales** using ClickHouse native functions with **realistic ratios (1:100:20)**:
 
 ```bash
-# Small (1K users, 100K follows, 50K posts)
+# Small (1K users, 100K follows, 20K posts) - Memory engine (fast)
 python tests/python/setup_benchmark_unified.py --scale 1
 
-# Medium (10K users, 1M follows, 500K posts)
+# Medium (10K users, 1M follows, 200K posts) - Memory engine
 python tests/python/setup_benchmark_unified.py --scale 10
 
-# Large (100K users, 10M follows, 5M posts)
-python tests/python/setup_benchmark_unified.py --scale 100
+# Large (100K users, 10M follows, 2M posts) - Memory or MergeTree
+python tests/python/setup_benchmark_unified.py --scale 100 --engine MergeTree
 
-# XLarge (1M users, 100M follows, 50M posts)
-python tests/python/setup_benchmark_unified.py --scale 1000
+# XLarge (1M users, 100M follows, 20M posts) - MergeTree (persistent)
+python tests/python/setup_benchmark_unified.py --scale 1000 --engine MergeTree
 
-# XXLarge (5M users, 500M follows, 250M posts)
-python tests/python/setup_benchmark_unified.py --scale 5000
+# XXLarge (5M users, 500M follows, 100M posts) - MergeTree required
+python tests/python/setup_benchmark_unified.py --scale 5000 --engine MergeTree
 
-# Ultra (10M users, 1B follows, 500M posts) - Your target!
-python tests/python/setup_benchmark_unified.py --scale 10000
+# Ultra (10M users, 1B follows, 200M posts) - MergeTree required
+python tests/python/setup_benchmark_unified.py --scale 10000 --engine MergeTree
 
-# Custom scale (e.g., 50K users, 5M follows, 2.5M posts)
-python tests/python/setup_benchmark_unified.py --scale 50
+# Custom scale with MergeTree for persistence
+python tests/python/setup_benchmark_unified.py --scale 50 --engine MergeTree
 ```
+
+**Engine Selection**:
+- `--engine Memory` (default): Fast, non-persistent, recommended for scale ≤ 100
+- `--engine MergeTree`: Persistent, compressed, indexed, **required for scale ≥ 1000**
 
 **Ratios based on real social networks**:
 - 100 follows per user (Twitter/Instagram median active users)
-- 50 posts per user (~1 year of activity, ~4 posts/month)
-- 71% of benchmark queries use FOLLOWS relationships heavily
+- 20 posts per user (~6 months of activity, ~3-4 posts/month)
+- 62.5% of benchmark queries use FOLLOWS relationships heavily
+- 12.5% of queries test Post patterns (user activity, content creators)
 
 **Key Features**:
 - Uses `FROM numbers()` with ClickHouse functions (`rand()`, `randomPrintableASCII()`, etc.)
@@ -86,7 +91,7 @@ python tests/python/test_benchmark_suite.py --scale 10 --category param_function
 
 ---
 
-## Standard Query Set (14 Queries)
+## Standard Query Set (16 Queries)
 
 All scales run these same queries:
 
@@ -103,12 +108,17 @@ All scales run these same queries:
 9. **aggregation_follower_count** - COUNT with ORDER BY
 10. **mutual_follows** - Bidirectional pattern
 
-### New Patterns (4)
+### Parameter + Function Patterns (4)
 
 11. **param_filter_function** - Parameter in WHERE + toUpper()
 12. **function_aggregation_param** - Function in aggregation with parameter
 13. **math_function_param** - Math function (abs) with parameters
 14. **param_variable_path** - Parameter in variable-length path
+
+### Post/Content Patterns (2)
+
+15. **user_post_count** - Count posts per user, find most active content creators
+16. **active_users_followers** - Find users with >3x avg posts, show their followers (power users)
 
 ---
 
@@ -116,18 +126,18 @@ All scales run these same queries:
 
 | Scale | Users | Follows | Posts | Use Case |
 |-------|-------|---------|-------|----------|
-| 1 | 1K | 100K | 50K | Dev testing, quick validation |
-| 10 | 10K | 1M | 500K | Integration testing |
-| 50 | 50K | 5M | 2.5M | Moderate stress test |
-| 100 | 100K | 10M | 5M | Large dataset testing |
-| 500 | 500K | 50M | 25M | Production-like scale |
-| 1000 | 1M | 100M | 50M | Production scale |
-| 5000 | 5M | 500M | 250M | Enterprise scale |
-| 10000 | 10M | 1B | 500M | Ultra-large (your target!) |
+| 1 | 1K | 100K | 20K | Dev testing, quick validation |
+| 10 | 10K | 1M | 200K | Integration testing |
+| 50 | 50K | 5M | 1M | Moderate stress test |
+| 100 | 100K | 10M | 2M | Large dataset testing |
+| 500 | 500K | 50M | 10M | Production-like scale |
+| 1000 | 1M | 100M | 20M | Production scale |
+| 5000 | 5M | 500M | 100M | Enterprise scale |
+| 10000 | 10M | 1B | 200M | Ultra-large (1.2B rows!) |
 
 **Recommendation**: Use scales 1, 10, 100, 1000 for standard benchmarking (4 scales).
 
-**Ratios**: 1:100:50 (users:follows:posts) based on real social network statistics
+**Ratios**: 1:100:20 (users:follows:posts) based on real social network statistics
 
 ---
 

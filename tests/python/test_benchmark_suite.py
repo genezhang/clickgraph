@@ -119,6 +119,18 @@ BENCHMARK_QUERIES = [
         "query": "MATCH (u1:User)-[:FOLLOWS*1..2]->(u2:User) WHERE u1.user_id = $startId RETURN u2.name, u2.user_id LIMIT 10",
         "parameters": {"startId": 1},
         "category": "param_function"
+    },
+    
+    # Post Queries (15-16): Test Post node and AUTHORED relationship
+    {
+        "name": "user_post_count",
+        "query": "MATCH (u:User)-[:AUTHORED]->(p:Post) RETURN u.name, u.user_id, COUNT(p) as post_count ORDER BY post_count DESC LIMIT 10",
+        "category": "posts"
+    },
+    {
+        "name": "active_users_followers",
+        "query": "MATCH (u:User)-[:AUTHORED]->(p:Post) WITH u, COUNT(p) as posts WITH AVG(posts) as avg_posts MATCH (u2:User)-[:AUTHORED]->(p2:Post) WITH u2, COUNT(p2) as user_posts, avg_posts WHERE user_posts > avg_posts * 3 MATCH (u2)<-[:FOLLOWS]-(f) RETURN u2.name, user_posts, COUNT(f) as followers ORDER BY followers DESC LIMIT 10",
+        "category": "posts"
     }
 ]
 

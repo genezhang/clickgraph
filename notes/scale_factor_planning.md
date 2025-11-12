@@ -12,19 +12,19 @@ The unified benchmark uses these exact formulas based on **realistic social netw
 ```python
 num_users   = scale_factor * 1000
 num_follows = scale_factor * 100000   # 100 follows per user (realistic median)
-num_posts   = scale_factor * 50000    # 50 posts per user (active user ~1 year)
+num_posts   = scale_factor * 20000    # 20 posts per user (~6 months activity)
 ```
 
 **Rationale**:
 - **100 follows/user**: Matches Twitter/Instagram median active users (~100-150)
-- **50 posts/user**: Represents ~1 year of activity for moderately active users (~4 posts/month)
+- **20 posts/user**: Represents ~6 months of activity for active users (~3-4 posts/month)
 - Based on public social network statistics (Twitter, Instagram, LinkedIn)
 
 **Why these ratios?**:
 - 71% of benchmark queries (10/14) use FOLLOWS relationships heavily
-- 0% of current queries use Posts (but realistic ratio for future queries)
+- 2 new queries (12.5%) use Posts to test content patterns
 - Multi-hop and variable-length path queries need sufficient graph density
-- These ratios create realistic stress test for graph traversal algorithms
+- Lower post ratio (20 vs 50) reduces data volume while remaining realistic
 
 ---
 
@@ -32,20 +32,100 @@ num_posts   = scale_factor * 50000    # 50 posts per user (active user ~1 year)
 
 | Scale Factor | Users | Follows | Posts | Total Rows | Use Case | Est. Time |
 |--------------|-------|---------|-------|------------|----------|-----------|
-| **1** | 1,000 | 100,000 | 50,000 | 151,000 | Dev testing, quick validation | ~2 sec |
-| **5** | 5,000 | 500,000 | 250,000 | 755,000 | Small integration tests | ~10 sec |
-| **10** | 10,000 | 1,000,000 | 500,000 | 1,510,000 | Medium integration | ~20 sec |
-| **20** | 20,000 | 2,000,000 | 1,000,000 | 3,020,000 | Larger integration | ~40 sec |
-| **50** | 50,000 | 5,000,000 | 2,500,000 | 7,550,000 | Moderate stress test | ~1.5 min |
-| **100** | 100,000 | 10,000,000 | 5,000,000 | 15,100,000 | Large dataset | ~3 min |
-| **200** | 200,000 | 20,000,000 | 10,000,000 | 30,200,000 | Large stress test | ~6 min |
-| **500** | 500,000 | 50,000,000 | 25,000,000 | 75,500,000 | Production-like | ~15 min |
-| **1000** | 1,000,000 | 100,000,000 | 50,000,000 | 151,000,000 | Production scale | ~30 min |
-| **2000** | 2,000,000 | 200,000,000 | 100,000,000 | 302,000,000 | Large production | ~1 hour |
-| **5000** | 5,000,000 | 500,000,000 | 250,000,000 | 755,000,000 | Enterprise scale | ~2.5 hours |
-| **10000** | 10,000,000 | 1,000,000,000 | 500,000,000 | 1,510,000,000 | Ultra-large | ~5 hours |
+| **1** | 1,000 | 100,000 | 20,000 | 121,000 | Dev testing, quick validation | ~2 sec |
+| **5** | 5,000 | 500,000 | 100,000 | 605,000 | Small integration tests | ~10 sec |
+| **10** | 10,000 | 1,000,000 | 200,000 | 1,210,000 | Medium integration | ~20 sec |
+| **20** | 20,000 | 2,000,000 | 400,000 | 2,420,000 | Larger integration | ~40 sec |
+| **50** | 50,000 | 5,000,000 | 1,000,000 | 6,050,000 | Moderate stress test | ~1.5 min |
+| **100** | 100,000 | 10,000,000 | 2,000,000 | 12,100,000 | Large dataset | ~3 min |
+| **200** | 200,000 | 20,000,000 | 4,000,000 | 24,200,000 | Large stress test | ~6 min |
+| **500** | 500,000 | 50,000,000 | 10,000,000 | 60,500,000 | Production-like | ~15 min |
+| **1000** | 1,000,000 | 100,000,000 | 20,000,000 | 121,000,000 | Production scale | ~30 min |
+| **2000** | 2,000,000 | 200,000,000 | 40,000,000 | 242,000,000 | Large production | ~1 hour |
+| **5000** | 5,000,000 | 500,000,000 | 100,000,000 | 605,000,000 | Enterprise scale | ~2.5 hours |
+| **10000** | 10,000,000 | 1,000,000,000 | 200,000,000 | 1,210,000,000 | Ultra-large (1B+ rows!) | ~5 hours |
 
-**Note**: With 100:50 ratios, scale=10000 gives you exactly **10M users, 1B follows, 500M posts** (close to your 1B posts target!)
+**Note**: With 100:20 ratios, scale=10000 gives **10M users, 1B follows, 200M posts** - over 1.2 billion total rows!
+
+---
+
+## Table Engine Selection
+
+The benchmark supports two ClickHouse table engines:
+
+### Memory Engine (Default for scale ≤ 100)
+
+```bash
+python setup_benchmark_unified.py --scale 10 --engine Memory
+```
+
+**Pros**:
+- ✅ **Fastest** - No disk I/O, pure memory operations
+- ✅ **Simple** - No configuration needed
+- ✅ **Works on Windows Docker** - No volume permission issues
+
+**Cons**:
+- ❌ **Non-persistent** - Data lost on server restart
+- ❌ **RAM limited** - All data in memory (scale=100 = ~1.2GB, scale=1000 = ~12GB)
+- ❌ **No compression** - Wastes memory
+- ❌ **No indexing** - Can't optimize queries with PRIMARY KEY
+- ❌ **Not production-like** - Nobody runs production on Memory engine
+
+**Recommended for**: scale 1-100 (dev/integration testing, quick validation)
+
+### MergeTree Engine (Recommended for scale ≥ 100)
+
+```bash
+python setup_benchmark_unified.py --scale 1000 --engine MergeTree
+```
+
+**Pros**:
+- ✅ **Persistent** - Survives server restarts
+- ✅ **Compressed** - LZ4 compression reduces disk usage 5-10x
+- ✅ **Indexed** - ORDER BY creates sorting key for fast lookups
+- ✅ **Scalable** - Handles billions of rows efficiently
+- ✅ **Production-ready** - Same engine used in real deployments
+- ✅ **Better performance** - Indexing accelerates WHERE clauses and JOINs
+
+**Cons**:
+- ⚠️ **Disk I/O** - Slightly slower inserts than Memory
+- ⚠️ **Windows Docker caveat** - May require volume mount permissions (see workaround below)
+
+**Recommended for**: scale 100+ (stress testing, production-scale validation)
+
+### Windows Docker Workaround for MergeTree
+
+If you encounter permission errors on Windows with MergeTree:
+
+```bash
+# Option 1: Run ClickHouse with elevated permissions
+docker exec -it --user root clickhouse chmod 777 /var/lib/clickhouse
+
+# Option 2: Use named volume instead of bind mount
+docker volume create clickhouse_data
+# Update docker-compose.yaml to use named volume
+
+# Option 3: Stick with Memory engine for testing
+python setup_benchmark_unified.py --scale 100 --engine Memory
+```
+
+---
+
+## Engine Recommendation by Scale
+
+| Scale | Total Rows | RAM (Memory) | Disk (MergeTree) | Recommended Engine | Reason |
+|-------|------------|--------------|------------------|-------------------|--------|
+| 1 | 121K | ~12 MB | ~2 MB | **Memory** | Instant, negligible RAM |
+| 10 | 1.2M | ~120 MB | ~20 MB | **Memory** | Fast, acceptable RAM |
+| 100 | 12M | ~1.2 GB | ~200 MB | **Memory or MergeTree** | Borderline - Memory if enough RAM |
+| 1000 | 121M | ~12 GB | ~2 GB | **MergeTree** | Large RAM footprint |
+| 5000 | 605M | ~60 GB | ~10 GB | **MergeTree** | Exceeds typical RAM |
+| 10000 | 1.2B | ~120 GB | ~20 GB | **MergeTree** | Far exceeds typical RAM |
+
+**Rule of thumb**: 
+- Scale ≤ 100: Use Memory (fast, simple)
+- Scale 100-1000: Use MergeTree if testing persistence/compression, Memory if RAM available
+- Scale ≥ 1000: **Must use MergeTree** (Memory engine impractical)
 
 ---
 
@@ -56,40 +136,40 @@ For consistent benchmarking, we recommend these **4 standard scales**:
 ### 1. Small (scale=1)
 - **Users**: 1,000
 - **Follows**: 100,000 (100 follows per user avg)
-- **Posts**: 50,000 (50 posts per user avg)
-- **Total**: 151,000 rows
+- **Posts**: 20,000 (20 posts per user avg)
+- **Total**: 121,000 rows
 - **Purpose**: Quick validation, dev testing, CI/CD
 - **Time**: ~2 seconds
 
 ### 2. Medium (scale=10)
 - **Users**: 10,000
 - **Follows**: 1,000,000 (100 follows per user avg)
-- **Posts**: 500,000 (50 posts per user avg)
-- **Total**: 1,510,000 rows
+- **Posts**: 200,000 (20 posts per user avg)
+- **Total**: 1,210,000 rows
 - **Purpose**: Integration testing, feature validation
 - **Time**: ~20 seconds
 
 ### 3. Large (scale=100)
 - **Users**: 100,000
 - **Follows**: 10,000,000 (100 follows per user avg)
-- **Posts**: 5,000,000 (50 posts per user avg)
-- **Total**: 15,100,000 rows
+- **Posts**: 2,000,000 (20 posts per user avg)
+- **Total**: 12,100,000 rows
 - **Purpose**: Stress testing, performance regression detection
 - **Time**: ~3 minutes
 
 ### 4. XLarge (scale=1000)
 - **Users**: 1,000,000
 - **Follows**: 100,000,000 (100 follows per user avg)
-- **Posts**: 50,000,000 (50 posts per user avg)
-- **Total**: 151,000,000 rows
+- **Posts**: 20,000,000 (20 posts per user avg)
+- **Total**: 121,000,000 rows
 - **Purpose**: Production-scale validation, capacity planning
 - **Time**: ~30 minutes
 
 ### Optional: XXLarge (scale=5000)
 - **Users**: 5,000,000
 - **Follows**: 500,000,000 (100 follows per user avg)
-- **Posts**: 250,000,000 (50 posts per user avg)
-- **Total**: 755,000,000 rows
+- **Posts**: 100,000,000 (20 posts per user avg)
+- **Total**: 605,000,000 rows
 - **Purpose**: Enterprise-scale testing, maximum capacity
 - **Time**: ~2.5 hours
 
@@ -97,7 +177,7 @@ For consistent benchmarking, we recommend these **4 standard scales**:
 
 ## Real-World Social Network Statistics
 
-Our ratios (1:100:50) are based on public statistics from major social networks:
+Our ratios (1\:100\:50) are based on public statistics from major social networks:
 
 ### Average Follows/Followers per User
 
@@ -119,11 +199,11 @@ Our ratios (1:100:50) are based on public statistics from major social networks:
 | **LinkedIn** | ~2-4 | ~24-48 | Professional updates |
 | **Facebook** | ~10-15 | ~120-180 | Mixed content |
 
-**Our choice: 50** - Represents ~1 year of moderately active user (~4 posts/month)
+**Our choice: 20** - Represents ~6 months of activity for active users (~3-4 posts/month)
 
 ### Benchmark Query Usage Analysis
 
-**Queries using FOLLOWS**: **10 out of 14** (71%)
+**Queries using FOLLOWS**: **10 out of 16** (62.5%)
 - direct_relationships
 - multi_hop_2  
 - friends_of_friends
@@ -135,11 +215,14 @@ Our ratios (1:100:50) are based on public statistics from major social networks:
 - param_filter_function (indirectly)
 - param_variable_path
 
-**Queries using Posts**: **0 out of 14** (0%)
-- Posts table generated but not used in current benchmark queries
-- Future queries could add: post count per user, posts in time range, etc.
+**Queries using Posts**: **2 out of 16** (12.5%)
+- user_post_count: Count posts per user, rank by activity
+- active_users_followers: Find users with >3x avg posts, show their follower count
 
-**Conclusion**: FOLLOWS relationships are the primary stress test for graph traversal, so higher density (100:1) is critical for realistic benchmarking.
+**Conclusion**: 
+- FOLLOWS relationships remain the primary stress test (62.5% of queries)
+- Post queries added to test content patterns and mixed aggregations
+- Lower post ratio (20 vs 50) reduces data volume by 60% while remaining realistic
 
 ---
 
