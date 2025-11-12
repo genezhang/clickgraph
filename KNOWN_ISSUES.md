@@ -412,6 +412,60 @@ RETURN a.name, b.name, c.name
 
 ---
 
+## ✅ RESOLVED: Windows Docker MergeTree Permission Issue
+
+**Status**: ✅ **FIXED** (November 14, 2025)  
+**Severity**: High - Blocked large-scale benchmarking on Windows  
+**Impact**: MergeTree tables couldn't be created with bind mounts on Windows Docker
+
+### Description
+ClickHouse MergeTree tables failed with "Permission denied" errors when using bind mounts (`./clickhouse_data:/var/lib/clickhouse`) on Windows Docker. This prevented using persistent, compressed tables for large-scale benchmarking (scale=1000+).
+
+### Root Cause
+Windows NTFS file permissions don't map correctly to Linux container permissions. MergeTree requires specific Linux permissions (chmod/chown) that bind mounts from Windows can't provide.
+
+### Solution Applied
+Changed `docker-compose.yaml` from **bind mount** to **Docker named volume**:
+
+```yaml
+# Before (bind mount - fails on Windows)
+volumes:
+  - ./clickhouse_data:/var/lib/clickhouse
+
+# After (named volume - works everywhere)
+volumes:
+  - clickhouse_data:/var/lib/clickhouse  # Named volume
+
+volumes:
+  clickhouse_data:  # Docker-managed
+```
+
+### Benefits
+- ✅ No permission issues on Windows
+- ✅ Better I/O performance (no Windows filesystem overhead)
+- ✅ Proper Linux permissions maintained
+- ✅ Data persists between container restarts
+- ✅ Enables large-scale benchmarking (scale=10000 = 1.2B rows)
+
+### Alternative Solutions
+See `notes/windows_mergetree_fix.md` for 4 complete solutions:
+1. **Named volume** (recommended) - used in main docker-compose.yaml
+2. **Root user** - quick fix, less secure
+3. **Manual chmod** - temporary workaround
+4. **WSL2** - best dev experience
+
+### Verification
+Run `scripts/test_windows_mergetree_fix.ps1` to validate:
+- MergeTree table creation
+- Data insertion and persistence
+- Benchmark data generation (scale=1 to 10000)
+
+### Documentation
+- Complete guide: `notes/windows_mergetree_fix.md`
+- Test script: `scripts/test_windows_mergetree_fix.ps1`
+
+---
+
 ## ✅ RESOLVED: Windows Native Server Crash
 
 **Status**: ✅ **FIXED** (October 17, 2025)  
