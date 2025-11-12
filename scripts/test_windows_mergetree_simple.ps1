@@ -105,9 +105,9 @@ docker exec clickhouse clickhouse-client --query "DROP TABLE IF EXISTS brahmand.
 
 # Run benchmark setup with MergeTree
 Write-Host "`n[10/11] Testing benchmark data generation with MergeTree..." -ForegroundColor Yellow
-Write-Host "  Running: python tests/python/setup_benchmark_unified.py --scale 1 --engine MergeTree" -ForegroundColor Gray
+Write-Host "  Running: python benchmarks/data/setup_unified.py --scale 1 --engine MergeTree" -ForegroundColor Gray
 
-python tests/python/setup_benchmark_unified.py --scale 1 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 1 --engine MergeTree
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Benchmark setup failed" -ForegroundColor Red
@@ -151,7 +151,7 @@ Write-Host "  [OK] All benchmark tables verified" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 
 Write-Host "`nYou can now run large-scale benchmarks with MergeTree!" -ForegroundColor Cyan
-Write-Host "  Example: python tests/python/setup_benchmark_unified.py --scale 1000 --engine MergeTree" -ForegroundColor Gray
+Write-Host "  Example: python benchmarks/data/setup_unified.py --scale 1000 --engine MergeTree" -ForegroundColor Gray
 
 Write-Host "`nVolume information:" -ForegroundColor Yellow
 docker volume inspect clickhouse_data --format '{{.Mountpoint}}'

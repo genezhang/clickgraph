@@ -23,25 +23,25 @@ All benchmark scales now use:
 
 ```bash
 # Small (1K users, 100K follows, 20K posts) - Memory engine (fast)
-python tests/python/setup_benchmark_unified.py --scale 1
+python benchmarks/data/setup_unified.py --scale 1
 
 # Medium (10K users, 1M follows, 200K posts) - Memory engine
-python tests/python/setup_benchmark_unified.py --scale 10
+python benchmarks/data/setup_unified.py --scale 10
 
 # Large (100K users, 10M follows, 2M posts) - Memory or MergeTree
-python tests/python/setup_benchmark_unified.py --scale 100 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 100 --engine MergeTree
 
 # XLarge (1M users, 100M follows, 20M posts) - MergeTree (persistent)
-python tests/python/setup_benchmark_unified.py --scale 1000 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 1000 --engine MergeTree
 
 # XXLarge (5M users, 500M follows, 100M posts) - MergeTree required
-python tests/python/setup_benchmark_unified.py --scale 5000 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 5000 --engine MergeTree
 
 # Ultra (10M users, 1B follows, 200M posts) - MergeTree required
-python tests/python/setup_benchmark_unified.py --scale 10000 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 10000 --engine MergeTree
 
 # Custom scale with MergeTree for persistence
-python tests/python/setup_benchmark_unified.py --scale 50 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 50 --engine MergeTree
 ```
 
 **Engine Selection**:
@@ -67,19 +67,19 @@ python tests/python/setup_benchmark_unified.py --scale 50 --engine MergeTree
 
 ```bash
 # Quick validation (1 iteration)
-python tests/python/test_benchmark_suite.py --scale 1
+python benchmarks/queries/suite.py --scale 1
 
 # Performance testing (5 iterations with statistics)
-python tests/python/test_benchmark_suite.py --scale 10 --iterations 5
+python benchmarks/queries/suite.py --scale 10 --iterations 5
 
 # Large scale stress test
-python tests/python/test_benchmark_suite.py --scale 1000 --iterations 3
+python benchmarks/queries/suite.py --scale 1000 --iterations 3
 
 # Save results to JSON
-python tests/python/test_benchmark_suite.py --scale 100 --output results_100.json
+python benchmarks/queries/suite.py --scale 100 --output results_100.json
 
 # Test specific category
-python tests/python/test_benchmark_suite.py --scale 10 --category param_function
+python benchmarks/queries/suite.py --scale 10 --category param_function
 ```
 
 **Features**:
@@ -163,7 +163,7 @@ All scales run these same queries:
 
 ```bash
 # Choose your scale (1, 10, 100, 1000, 5000)
-python tests/python/setup_benchmark_unified.py --scale 10
+python benchmarks/data/setup_unified.py --scale 10
 ```
 
 ### 2. Load Schema
@@ -178,10 +178,10 @@ curl -X POST http://localhost:8080/schemas/load \
 
 ```bash
 # Quick validation
-python tests/python/test_benchmark_suite.py --scale 10
+python benchmarks/queries/suite.py --scale 10
 
 # Performance analysis (5 iterations)
-python tests/python/test_benchmark_suite.py --scale 10 --iterations 5 --output results_10.json
+python benchmarks/queries/suite.py --scale 10 --iterations 5 --output results_10.json
 ```
 
 ### 4. Compare Across Scales
@@ -190,8 +190,8 @@ python tests/python/test_benchmark_suite.py --scale 10 --iterations 5 --output r
 # Run all 4 standard scales
 for scale in 1 10 100 1000; do
     echo "Running scale $scale..."
-    python tests/python/setup_benchmark_unified.py --scale $scale
-    python tests/python/test_benchmark_suite.py --scale $scale --iterations 3 --output results_${scale}.json
+    python benchmarks/data/setup_unified.py --scale $scale
+    python benchmarks/queries/suite.py --scale $scale --iterations 3 --output results_${scale}.json
 done
 
 # Analyze results

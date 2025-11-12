@@ -48,7 +48,7 @@ docker-compose down -v
 docker-compose up -d
 
 # Test MergeTree tables
-python tests/python/setup_benchmark_unified.py --scale 10 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 10 --engine MergeTree
 ```
 
 ---
@@ -83,7 +83,7 @@ services:
 ```bash
 docker-compose down
 docker-compose up -d
-python tests/python/setup_benchmark_unified.py --scale 10 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 10 --engine MergeTree
 ```
 
 ---
@@ -103,7 +103,7 @@ docker exec --user root clickhouse chmod -R 777 /var/lib/clickhouse
 docker exec --user root clickhouse chown -R clickhouse:clickhouse /var/lib/clickhouse
 
 # Now MergeTree works
-python tests/python/setup_benchmark_unified.py --scale 10 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 10 --engine MergeTree
 ```
 
 **Pros**:
@@ -223,7 +223,7 @@ docker-compose up -d
 Start-Sleep -Seconds 10
 
 # Test MergeTree tables work!
-python tests/python/setup_benchmark_unified.py --scale 10 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 10 --engine MergeTree
 ```
 
 ---

@@ -121,7 +121,7 @@ docker-compose down -v
 docker-compose up -d
 
 # 2. Create MergeTree benchmark data
-python tests/python/setup_benchmark_unified.py --scale 10 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 10 --engine MergeTree
 
 # 3. Verify engine type
 docker exec clickhouse clickhouse-client --query "SELECT engine FROM system.tables WHERE name='users_bench'"
@@ -182,17 +182,17 @@ With MergeTree working on Windows, users can now:
 ### Recommended Workflow
 ```powershell
 # Small scale (validation) - Memory is fine
-python tests/python/setup_benchmark_unified.py --scale 1 --engine Memory
+python benchmarks/data/setup_unified.py --scale 1 --engine Memory
 
 # Medium scale (testing) - Memory is fine
-python tests/python/setup_benchmark_unified.py --scale 10 --engine Memory
+python benchmarks/data/setup_unified.py --scale 10 --engine Memory
 
 # Large scale (production simulation) - Use MergeTree
-python tests/python/setup_benchmark_unified.py --scale 100 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 100 --engine MergeTree
 
 # Production scale (billion rows) - MergeTree required
-python tests/python/setup_benchmark_unified.py --scale 1000 --engine MergeTree
-python tests/python/setup_benchmark_unified.py --scale 10000 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 1000 --engine MergeTree
+python benchmarks/data/setup_unified.py --scale 10000 --engine MergeTree
 ```
 
 ---
@@ -246,5 +246,5 @@ This fix was implemented as part of the **unified benchmark architecture** work:
 See also:
 - `notes/unified_benchmark_architecture.md` - Architecture overview
 - `notes/scale_factor_planning.md` - Scale factor calculations
-- `tests/python/setup_benchmark_unified.py` - Data generation
-- `tests/python/test_benchmark_suite.py` - Query benchmarks
+- `benchmarks/data/setup_unified.py` - Data generation
+- `benchmarks/queries/suite.py` - Query benchmarks
