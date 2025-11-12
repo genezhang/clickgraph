@@ -1,12 +1,26 @@
 # ClickGraph Benchmarking Results
 
-**Last Updated**: November 1, 2025  
-**Version**: Post Bug Fixes (Commit db6c914) + Enterprise Scale Validation (Commit 74345ef)  
+**Last Updated**: November 12, 2025  
+**Version**: Unified Benchmark Architecture (Commit TBD)  
 **Test Environment**: Windows, ClickHouse 25.5.1, Social Network Dataset  
+
+⚠️ **NOTE**: This document contains historical benchmark results. See `unified_benchmark_architecture.md` for the current unified approach.
 
 ---
 
 ## Executive Summary
+
+**New Unified Approach** (November 12, 2025):
+- Single data generator: `setup_benchmark_unified.py` with scale factor parameter
+- Single test runner: `test_benchmark_suite.py` with 14 consistent queries
+- All scales use ClickHouse native data generation (fast, memory-efficient)
+- Recommended scales: 1, 10, 100, 1000 (1K → 1M users)
+
+See: `notes/unified_benchmark_architecture.md`
+
+---
+
+## Historical Results (Legacy Architecture)
 
 ClickGraph tested at **three scale levels** - from small development datasets to large-scale stress testing.
 
@@ -527,15 +541,17 @@ FOLLOWS:
 
 ### Benchmark Scripts
 
-1. **test_benchmark_final.py** - Standard 10-query validation suite
+1. **test_benchmark_final.py** - Standard query validation suite (14 queries)
    - Simple pass/fail results
    - Sample output for each query
    - Works on any dataset size (configurable YAML)
+   - **New**: 4 parameter + function queries (filter, aggregation, math, variable-path)
 
-2. **test_medium_benchmark.py** - Performance analysis tool
+2. **test_medium_benchmark.py** - Performance analysis tool (12 queries)
    - Multiple iterations (default: 5 runs per query)
    - Statistical analysis (mean, median, min, max, stdev)
    - Performance comparison across queries
+   - **New**: 2 parameter + function queries (filter, aggregation)
 
 3. **load_large_benchmark.py** - Enterprise-scale data generator
    - Uses ClickHouse native functions (no Python memory issues)

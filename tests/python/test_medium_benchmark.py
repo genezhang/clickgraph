@@ -50,10 +50,21 @@ BENCHMARK_QUERIES = [
     {
         "name": "mutual_follows",
         "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u1) RETURN u1.name, u2.name, u1.user_id, u2.user_id LIMIT 10"
+    },
+    # Parameter + Function queries (performance validation)
+    {
+        "name": "param_filter_function",
+        "query": "MATCH (u:User) WHERE u.user_id < $maxId RETURN toUpper(u.name) AS name, u.user_id LIMIT 10",
+        "parameters": {"maxId": 500}
+    },
+    {
+        "name": "function_aggregation_param",
+        "query": "MATCH (u:User)<-[:FOLLOWS]-(f) WHERE u.user_id < $threshold RETURN toUpper(u.name) AS name, COUNT(f) AS count ORDER BY count DESC LIMIT 10",
+        "parameters": {"threshold": 5000}
     }
 ]
 
-def run_query(query, iterations=5):
+def run_query(query, parameters=None, iterations=5):
     """Run a query multiple times and collect timing statistics"""
     times = []
     result_counts = []
@@ -61,9 +72,13 @@ def run_query(query, iterations=5):
     for _ in range(iterations):
         start = time.time()
         try:
+            payload = {"query": query}
+            if parameters:
+                payload["parameters"] = parameters
+                
             response = requests.post(
                 SERVER_URL,
-                json={"query": query},
+                json=payload,
                 headers={"Content-Type": "application/json"},
                 timeout=60
             )
@@ -108,11 +123,14 @@ def main():
     for i, test in enumerate(BENCHMARK_QUERIES, 1):
         name = test["name"]
         query = test["query"]
+        parameters = test.get("parameters")
         
         print(f"{i}. {name}")
         print(f"   Query: {query[:70]}...")
+        if parameters:
+            print(f"   Parameters: {parameters}")
         
-        stats, error = run_query(query, iterations=5)
+        stats, error = run_query(query, parameters, iterations=5)
         
         if stats:
             print(f"   [PASS] {stats['iterations']} runs")

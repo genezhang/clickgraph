@@ -48,15 +48,40 @@ BENCHMARK_QUERIES = [
     {
         "name": "mutual_follows",
         "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u1) RETURN u1.name, u2.name, u1.user_id, u2.user_id LIMIT 5"
+    },
+    # Parameter + Function queries (lightweight addition for feature validation)
+    {
+        "name": "param_filter_with_function",
+        "query": "MATCH (u:User) WHERE u.user_id < $maxId RETURN toUpper(u.name) AS name, u.user_id LIMIT 5",
+        "parameters": {"maxId": 100}
+    },
+    {
+        "name": "function_in_aggregation",
+        "query": "MATCH (u:User)<-[:FOLLOWS]-(follower) WHERE u.user_id < $threshold RETURN toUpper(u.name) AS name, COUNT(follower) AS count ORDER BY count DESC LIMIT 5",
+        "parameters": {"threshold": 1000}
+    },
+    {
+        "name": "math_function_with_param",
+        "query": "MATCH (u:User) WHERE abs(u.user_id - $targetId) < $tolerance RETURN u.name, u.user_id, abs(u.user_id - $targetId) AS distance LIMIT 5",
+        "parameters": {"targetId": 500, "tolerance": 10}
+    },
+    {
+        "name": "param_in_variable_path",
+        "query": "MATCH (u1:User)-[:FOLLOWS*1..2]->(u2:User) WHERE u1.user_id = $startId RETURN u2.name, u2.user_id LIMIT 10",
+        "parameters": {"startId": 1}
     }
 ]
 
-def test_query(query_name, cypher_query):
+def test_query(query_name, cypher_query, parameters=None):
     """Test a single query"""
     try:
+        payload = {"query": cypher_query}
+        if parameters:
+            payload["parameters"] = parameters
+            
         response = requests.post(
             f"{SERVER_URL}/query",
-            json={"query": cypher_query},
+            json=payload,
             headers={"Content-Type": "application/json"},
             timeout=30
         )
@@ -87,11 +112,14 @@ def main():
     for i, test in enumerate(BENCHMARK_QUERIES, 1):
         name = test["name"]
         query = test["query"]
+        parameters = test.get("parameters")
         
         print(f"{i}. {name}")
         print(f"   Query: {query[:60]}..." if len(query) > 60 else f"   Query: {query}")
+        if parameters:
+            print(f"   Parameters: {parameters}")
         
-        success, info, sample = test_query(name, query)
+        success, info, sample = test_query(name, query, parameters)
         
         if success:
             print(f"   [PASS] Returned {info} rows")
