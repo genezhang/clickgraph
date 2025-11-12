@@ -88,7 +88,7 @@ pub fn get_supported_functions() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query_planner::logical_expr::Literal;
+    use crate::query_planner::logical_expr::{Literal, LogicalExpr};
     
     #[test]
     fn test_translate_simple_function() {
@@ -107,7 +107,7 @@ mod tests {
         // abs(-5) -> abs(-5)
         let fn_call = ScalarFnCall {
             name: "abs".to_string(),
-            args: vec![LogicalExpr::Literal(Literal::Int(-5))],
+            args: vec![LogicalExpr::Literal(Literal::Integer(-5))],
         };
         
         let result = translate_scalar_function(&fn_call).unwrap();
@@ -121,7 +121,7 @@ mod tests {
             name: "left".to_string(),
             args: vec![
                 LogicalExpr::Literal(Literal::String("hello".to_string())),
-                LogicalExpr::Literal(Literal::Int(3)),
+                LogicalExpr::Literal(Literal::Integer(3)),
             ],
         };
         
@@ -134,7 +134,7 @@ mod tests {
         // unknownFunc(arg) -> unknownFunc(arg) with warning
         let fn_call = ScalarFnCall {
             name: "unknownFunc".to_string(),
-            args: vec![LogicalExpr::Literal(Literal::Int(42))],
+            args: vec![LogicalExpr::Literal(Literal::Integer(42))],
         };
         
         let result = translate_scalar_function(&fn_call).unwrap();

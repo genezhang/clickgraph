@@ -1,0 +1,60 @@
+name: test_param_func_schema
+version: "1.0"
+description: "Schema for parameter + function E2E tests"
+
+graph_schema:
+  nodes:
+    - label: User
+      database: test_param_func
+      table: users
+      id_column: id
+      property_mappings:
+        id: id
+        name: name
+        email: email
+        age: age
+        status: status
+        created_at: created_at
+
+    - label: Product
+      database: test_param_func
+      table: products
+      id_column: id
+      property_mappings:
+        id: id
+        name: name
+        price: price
+        category: category
+        in_stock: in_stock
+
+    - label: Order
+      database: test_param_func
+      table: orders
+      id_column: id
+      property_mappings:
+        id: id
+        user_id: user_id
+        product_id: product_id
+        quantity: quantity
+        total: total
+        order_date: order_date
+
+  relationships:
+    - type: PLACED
+      from_node: User
+      to_node: Order
+      database: test_param_func
+      table: orders
+      from_id: user_id
+      to_id: id
+      property_mappings: {}
+
+    - type: CONTAINS
+      from_node: Order
+      to_node: Product
+      database: test_param_func
+      table: orders
+      from_id: id
+      to_id: product_id
+      property_mappings:
+        quantity: quantity

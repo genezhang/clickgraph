@@ -537,35 +537,18 @@ impl FilterTagging {
                 Some(LogicalExpr::OperatorApplicationExp(op_app))
             }
 
-            // If we have a function call, process each argument.
+            // If we have a function call, DO NOT process arguments recursively
+            // Function arguments should remain intact - they're part of the function expression
+            // Previously, this was extracting property access expressions from inside function arguments
+            // which broke functions like abs(u.age - $param) by extracting the subtraction as a filter
             LogicalExpr::ScalarFnCall(fc) => {
-                let mut new_args = Vec::new();
-                for arg in fc.args {
-                    if let Some(new_arg) =
-                        Self::process_expr(arg, extracted_filters, extracted_projections, in_or)
-                    {
-                        new_args.push(new_arg);
-                    }
-                }
-                Some(LogicalExpr::ScalarFnCall(ScalarFnCall {
-                    name: fc.name,
-                    args: new_args,
-                }))
+                // Return function call unchanged - don't recurse into arguments
+                Some(LogicalExpr::ScalarFnCall(fc))
             }
 
             LogicalExpr::AggregateFnCall(fc) => {
-                let mut new_args = Vec::new();
-                for arg in fc.args {
-                    if let Some(new_arg) =
-                        Self::process_expr(arg, extracted_filters, extracted_projections, in_or)
-                    {
-                        new_args.push(new_arg);
-                    }
-                }
-                Some(LogicalExpr::AggregateFnCall(AggregateFnCall {
-                    name: fc.name,
-                    args: new_args,
-                }))
+                // Return function call unchanged - don't recurse into arguments
+                Some(LogicalExpr::AggregateFnCall(fc))
             }
 
             // For a list, process each element.

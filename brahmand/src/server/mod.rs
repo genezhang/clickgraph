@@ -125,22 +125,26 @@ pub async fn run_with_config(config: ServerConfig) {
         cache_config.max_size_bytes / (1024 * 1024));
     let _ = GLOBAL_QUERY_CACHE.set(query_cache::QueryCache::new(cache_config));
 
-    // Start background schema monitoring (only for database-loaded schemas)
-    if let Some(schema_client) = client_opt {
-        match schema_source {
-            SchemaSource::Database => {
-                tokio::spawn(async move {
-                    println!("Starting background schema monitoring (checks every 60 seconds)");
-                    graph_catalog::monitor_schema_updates(schema_client).await;
-                });
-            }
-            SchemaSource::Yaml => {
-                println!("Schema monitoring disabled: Schema loaded from YAML (static configuration)");
-            }
-        }
-    } else {
-        println!("Schema monitoring disabled: No ClickHouse client available");
-    }
+    // Schema monitoring disabled - our YAML-based schema format differs from upstream Brahmand
+    // Re-enable when we implement proper schema versioning in ClickHouse tables
+    println!("Schema monitoring disabled: Using in-memory schema management");
+    
+    // // Start background schema monitoring (only for database-loaded schemas)
+    // if let Some(schema_client) = client_opt {
+    //     match schema_source {
+    //         SchemaSource::Database => {
+    //             tokio::spawn(async move {
+    //                 println!("Starting background schema monitoring (checks every 60 seconds)");
+    //                 graph_catalog::monitor_schema_updates(schema_client).await;
+    //             });
+    //         }
+    //         SchemaSource::Yaml => {
+    //             println!("Schema monitoring disabled: Schema loaded from YAML (static configuration)");
+    //         }
+    //     }
+    // } else {
+    //     println!("Schema monitoring disabled: No ClickHouse client available");
+    // }
 
     // Start HTTP server
     let http_bind_address = format!("{}:{}", config.http_host, config.http_port);

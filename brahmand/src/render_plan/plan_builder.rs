@@ -184,6 +184,42 @@ fn get_multiple_rel_info(plan: &LogicalPlan) -> Option<(String, String, String)>
     }
 }
 
+/// Helper function to check if an expression is standalone (doesn't reference any table columns)
+/// Returns true for literals, parameters, and functions that only use standalone expressions
+fn is_standalone_expression(expr: &RenderExpr) -> bool {
+    match expr {
+        RenderExpr::Literal(_) | RenderExpr::Parameter(_) | RenderExpr::Star => true,
+        RenderExpr::ScalarFnCall(fn_call) => {
+            // Function is standalone if all its arguments are standalone
+            fn_call.args.iter().all(is_standalone_expression)
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            // Operator application is standalone if all operands are standalone
+            op.operands.iter().all(is_standalone_expression)
+        }
+        RenderExpr::Case(case_expr) => {
+            // CASE is standalone if all branches are standalone
+            let when_then_standalone = case_expr.when_then.iter().all(|(cond, result)| {
+                is_standalone_expression(cond) && is_standalone_expression(result)
+            });
+            let else_standalone = case_expr.else_expr.as_ref().map_or(true, |e| is_standalone_expression(e));
+            when_then_standalone && else_standalone
+        }
+        RenderExpr::List(list) => {
+            // List is standalone if all elements are standalone
+            list.iter().all(is_standalone_expression)
+        }
+        // Any reference to columns, properties, or aliases means it's not standalone
+        RenderExpr::Column(_) | 
+        RenderExpr::PropertyAccessExp(_) | 
+        RenderExpr::TableAlias(_) | 
+        RenderExpr::ColumnAlias(_) |
+        RenderExpr::AggregateFnCall(_) |
+        RenderExpr::InSubquery(_) => false,
+        RenderExpr::Raw(_) => false, // Be conservative with raw SQL
+    }
+}
+
 /// Helper function to extract all relationship connections from a plan tree
 /// Returns a vector of (left_connection, right_connection, relationship_alias) tuples
 fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(String, String, String)> {
@@ -2462,7 +2498,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
         
-        let final_from = self.extract_from()?;
+        let mut final_from = self.extract_from()?;
         println!("DEBUG: build_simple_relationship_render_plan - final_from: {:?}", final_from);
         
         // Validate that we have a FROM clause
@@ -2590,7 +2626,7 @@ impl RenderPlanBuilder for LogicalPlan {
         let mut context = analyze_property_requirements(self, schema);
         
         let extracted_ctes: Vec<Cte>;
-        let final_from: Option<FromTable>;
+        let mut final_from: Option<FromTable>;
         let final_filters: Option<RenderExpr>;
 
         let last_node_cte_opt = self.extract_last_node_cte()?;
@@ -2903,16 +2939,27 @@ impl RenderPlanBuilder for LogicalPlan {
             ));
         }
 
-        // Validate that select items are not just literals (which would indicate failed expression conversion)
-        for item in &final_select_items {
-            if let RenderExpr::Literal(_) = &item.expression {
-                return Err(RenderBuildError::InvalidRenderPlan(
-                    "Select item is a literal value, indicating failed expression conversion. Check schema mappings and query structure.".to_string()
-                ));
-            }
+        // Check if this is a standalone RETURN query (no MATCH, only literals/parameters/functions)
+        let is_standalone_return = final_from.is_none() && 
+            final_select_items.iter().all(|item| {
+                is_standalone_expression(&item.expression)
+            });
+
+        if is_standalone_return {
+            // For standalone RETURN queries (e.g., "RETURN 1 + 1", "RETURN toUpper($name)"),
+            // use ClickHouse's system.one table as a dummy FROM clause
+            log::debug!("Detected standalone RETURN query, using system.one as FROM clause");
+            
+            // Create a ViewTableRef that references system.one
+            // Use an Empty LogicalPlan since we don't need actual view resolution for system tables
+            final_from = Some(FromTable::new(Some(ViewTableRef {
+                source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
+                name: "system.one".to_string(),
+                alias: None,
+            })));
         }
 
-        // Validate FROM clause exists
+        // Validate FROM clause exists (after potentially adding system.one for standalone queries)
         if final_from.is_none() {
             return Err(RenderBuildError::InvalidRenderPlan(
                 "No FROM clause found. This usually indicates missing table information or incomplete query planning.".to_string()
