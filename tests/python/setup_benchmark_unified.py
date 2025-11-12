@@ -89,6 +89,7 @@ def generate_users(scale_factor, chunk_size=100_000):
     """Generate users using ClickHouse native functions"""
     num_users = scale_factor * 1000
     log(f"Generating {num_users:,} users (scale_factor={scale_factor})...")
+    log(f"  Target ratios: 1 user : 100 follows : 50 posts (realistic social network)")
     
     # For small datasets, generate all at once
     if num_users <= chunk_size:
@@ -137,8 +138,8 @@ FROM numbers({chunk_count});
 def generate_follows(scale_factor, chunk_size=1_000_000):
     """Generate follows using ClickHouse native functions"""
     num_users = scale_factor * 1000
-    num_follows = scale_factor * 5000  # 5x multiplier
-    log(f"Generating {num_follows:,} follows...")
+    num_follows = scale_factor * 100000  # 100x multiplier (realistic social network)
+    log(f"Generating {num_follows:,} follows (~100 per user avg)...")
     
     # For small datasets, generate all at once
     if num_follows <= chunk_size:
@@ -181,8 +182,8 @@ WHERE follower_id != followed_id;
 def generate_posts(scale_factor, chunk_size=1_000_000):
     """Generate posts using ClickHouse native functions"""
     num_users = scale_factor * 1000
-    num_posts = scale_factor * 2000  # 2x multiplier
-    log(f"Generating {num_posts:,} posts...")
+    num_posts = scale_factor * 50000  # 50x multiplier (realistic content production)
+    log(f"Generating {num_posts:,} posts (~50 per user avg)...")
     
     # For small datasets, generate all at once
     if num_posts <= chunk_size:

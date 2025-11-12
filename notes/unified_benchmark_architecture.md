@@ -19,27 +19,35 @@ All benchmark scales now use:
 
 ### 1. Data Generation: `setup_benchmark_unified.py`
 
-**Single script for all scales** using ClickHouse native functions:
+**Single script for all scales** using ClickHouse native functions with **realistic ratios (1:100:50)**:
 
 ```bash
-# Small (1K users, 5K follows, 2K posts)
+# Small (1K users, 100K follows, 50K posts)
 python tests/python/setup_benchmark_unified.py --scale 1
 
-# Medium (10K users, 50K follows, 5K posts)
+# Medium (10K users, 1M follows, 500K posts)
 python tests/python/setup_benchmark_unified.py --scale 10
 
-# Large (100K users, 500K follows, 50K posts)
+# Large (100K users, 10M follows, 5M posts)
 python tests/python/setup_benchmark_unified.py --scale 100
 
-# XLarge (1M users, 5M follows, 500K posts)
+# XLarge (1M users, 100M follows, 50M posts)
 python tests/python/setup_benchmark_unified.py --scale 1000
 
-# XXLarge (5M users, 50M follows, 25M posts)
+# XXLarge (5M users, 500M follows, 250M posts)
 python tests/python/setup_benchmark_unified.py --scale 5000
 
-# Custom scale (e.g., 50K users)
+# Ultra (10M users, 1B follows, 500M posts) - Your target!
+python tests/python/setup_benchmark_unified.py --scale 10000
+
+# Custom scale (e.g., 50K users, 5M follows, 2.5M posts)
 python tests/python/setup_benchmark_unified.py --scale 50
 ```
+
+**Ratios based on real social networks**:
+- 100 follows per user (Twitter/Instagram median active users)
+- 50 posts per user (~1 year of activity, ~4 posts/month)
+- 71% of benchmark queries use FOLLOWS relationships heavily
 
 **Key Features**:
 - Uses `FROM numbers()` with ClickHouse functions (`rand()`, `randomPrintableASCII()`, etc.)
@@ -108,15 +116,18 @@ All scales run these same queries:
 
 | Scale | Users | Follows | Posts | Use Case |
 |-------|-------|---------|-------|----------|
-| 1 | 1K | 5K | 2K | Dev testing, quick validation |
-| 10 | 10K | 50K | 5K | Integration testing |
-| 50 | 50K | 250K | 25K | Moderate stress test |
-| 100 | 100K | 500K | 50K | Large dataset testing |
-| 500 | 500K | 2.5M | 250K | Production-like scale |
-| 1000 | 1M | 5M | 500K | Production scale |
-| 5000 | 5M | 50M | 25M | Enterprise scale |
+| 1 | 1K | 100K | 50K | Dev testing, quick validation |
+| 10 | 10K | 1M | 500K | Integration testing |
+| 50 | 50K | 5M | 2.5M | Moderate stress test |
+| 100 | 100K | 10M | 5M | Large dataset testing |
+| 500 | 500K | 50M | 25M | Production-like scale |
+| 1000 | 1M | 100M | 50M | Production scale |
+| 5000 | 5M | 500M | 250M | Enterprise scale |
+| 10000 | 10M | 1B | 500M | Ultra-large (your target!) |
 
 **Recommendation**: Use scales 1, 10, 100, 1000 for standard benchmarking (4 scales).
+
+**Ratios**: 1:100:50 (users:follows:posts) based on real social network statistics
 
 ---
 
