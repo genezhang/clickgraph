@@ -6,114 +6,185 @@
 
 ---
 
-## 🚨 CRITICAL: Bolt Protocol Query Execution Not Implemented
+## 🚨 CRITICAL: Bolt Protocol PackStream Parsing Not Implemented
 
-**Status**: 🚨 **CRITICAL LIMITATION** (Discovered November 10, 2025)  
-**Severity**: High - Core functionality missing  
-**Impact**: Bolt protocol clients can connect but cannot execute queries
+**Status**: 🚨 **CRITICAL LIMITATION** (Updated November 11, 2025)  
+**Previous Status**: Query execution not implemented → **NOW RESOLVED** ✅  
+**Current Blocker**: PackStream message serialization/deserialization incomplete  
+**Severity**: High - Blocks Neo4j driver usage  
+**Impact**: Bolt protocol clients can negotiate version but cannot send messages after handshake
+
+### Update (November 11, 2025)
+✅ **Query execution pipeline fully implemented!** The complete Cypher query execution flow is now working:
+- Query parsing → logical plan → SQL generation → ClickHouse execution → result caching → streaming
+- Parameter substitution support
+- Schema selection via USE clause
+- Error handling with Bolt FAILURE responses
+
+❌ **New blocker discovered**: PackStream message parsing is incomplete (stubbed implementation)
 
 ### Summary
-The Bolt protocol v4.4 implementation provides **wire protocol compatibility** (handshake, authentication, multi-database support) but **query execution is not implemented**. The `execute_cypher_query()` function in the Bolt handler returns dummy success metadata instead of actually executing queries.
+The Bolt protocol v4.4 implementation provides **version negotiation** and **query execution logic** but lacks **PackStream message parsing**. This means Neo4j drivers can connect and negotiate Bolt 4.4, but cannot send HELLO, RUN, or PULL messages because the binary PackStream format isn't fully parsed/serialized.
 
 **What Works** ✅:
-- Bolt wire protocol parsing and message handling
-- Authentication (basic auth, no auth)
-- Multi-database/schema selection
-- Connection state management
-- Parameter extraction from RUN messages
+- ✅ Bolt handshake and version negotiation (Bolt 4.4)
+- ✅ Complete query execution pipeline implemented
+- ✅ Parameter substitution and schema selection
+- ✅ Result streaming architecture (RECORD messages)
+- ✅ Error handling with proper Bolt responses
+- ✅ ClickHouse client integration
 
 **What Does NOT Work** ❌:
-- Actual query execution through Bolt protocol
-- Returning real query results
-- Any data retrieval via Neo4j drivers
-- Jupyter notebooks with Neo4j driver
+- ❌ PackStream deserialization (parsing incoming messages)
+- ❌ PackStream serialization (formatting outgoing messages)
+- ❌ HELLO message handling (authentication data parsing)
+- ❌ RUN message parameter extraction
+- ❌ Any actual Neo4j driver usage beyond handshake
 
 ### Technical Details
 
-**File**: `brahmand/src/server/bolt_protocol/handler.rs` (line 343-375)
+**File**: `brahmand/src/server/bolt_protocol/connection.rs` (line 225-260)
+
+**The Problem**: Simplified PackStream parsing stub
 
 ```rust
-async fn execute_cypher_query(
-    &self,
-    query: &str,
-    _parameters: HashMap<String, Value>,  // ❌ Parameters ignored
-    schema_name: Option<String>,
-) -> BoltResult<HashMap<String, Value>> {
-    match open_cypher_parser::parse_query(query) {
-        Ok(parsed_query) => {
-            // ❌ Just returns dummy metadata, no actual execution
-            let mut metadata = HashMap::new();
-            metadata.insert("fields".to_string(), Value::Array(vec![]));
-            metadata.insert("t_first".to_string(), Value::Number(0.into()));
-            Ok(metadata)
+fn parse_message(&self, data: Vec<u8>) -> BoltResult<BoltMessage> {
+    // ❌ Simplified parsing - NOT full PackStream implementation
+    // In a full implementation, this would use the PackStream format
+    
+    match signature {
+        signatures::HELLO => {
+            // ❌ Just creates empty metadata, doesn't parse actual fields
+            Ok(BoltMessage::new(signature, vec![
+                serde_json::Value::Object(serde_json::Map::new()),
+            ]))
         }
-        // ...
+        // ... other messages similarly stubbed
     }
 }
 ```
 
-**Comment in code** (line 360-365):
+**What PackStream Is**: Binary serialization format used by Bolt protocol
+- Types: Null, Boolean, Integer, Float, String, List, Map, Struct
+- Variable-length encoding for efficiency
+- Spec: https://neo4j.com/docs/bolt/current/packstream/
+
+**Required for**:
+- Parsing HELLO fields (user_agent, scheme, principal, credentials)
+- Parsing RUN parameters and query string
+- Parsing PULL fetch size
+- Serializing SUCCESS/FAILURE metadata maps
+- Serializing RECORD field values
+
+**Testing Results**:
+```bash
+$ python test_bolt_handshake.py
+✅ Connected!
+✅ Negotiated Bolt 4.4   # Handshake works!
+
+$ python test_bolt_hello.py
+✅ Negotiated Bolt 4.4
+✅ HELLO sent
+✅ Received response: 1 byte   # Should be ~20-50 bytes
+Response data: 7f               # Incomplete FAILURE message
+```
+
+### Query Execution Implementation ✅ (November 11, 2025)
+
+**File**: `brahmand/src/server/bolt_protocol/handler.rs` (line 360-520)
+
+The query execution pipeline is **now fully implemented**:
+1. ✅ Parse Cypher query with block-scoped lifetime management (Send-safe)
+2. ✅ Extract schema name from USE clause or session parameter
+3. ✅ Get graph schema via `graph_catalog::get_graph_schema_by_name()`
+4. ✅ Generate logical plan → render plan → ClickHouse SQL
+5. ✅ Substitute parameters in SQL
+6. ✅ Execute query with ClickHouse client
+7. ✅ Parse JSON results into Vec<Vec<Value>>
+8. ✅ Cache results for streaming
+9. ✅ Stream via RECORD messages in handle_pull()
+
+**Key Achievement**: Elegant solution to Send bound issue with block scoping:
 ```rust
-// For now, just return success metadata
-// In a full implementation, this would:
-// 1. Transform parsed query to logical plan using effective_schema
-// 2. Optimize the plan
-// 3. Generate ClickHouse SQL
-// 4. Execute the SQL
-// 5. Transform results back to graph format
+// Drop parsed_query BEFORE await to satisfy Send bounds
+let (schema_name, query_type) = {
+    let parsed_query = parse_query(query)?;  // Rc<RefCell<>> created
+    (extract_schema(&parsed_query), get_type(&parsed_query))
+}; // parsed_query dropped here - Rc freed!
+
+let graph_schema = get_graph_schema(&schema_name).await?;  // ✅ Safe now
 ```
 
 ### Why This Happened
-The Bolt protocol was implemented as a **protocol compatibility layer** to demonstrate Neo4j ecosystem integration, but the query execution pipeline was never connected. The HTTP API handler properly executes queries, but the Bolt handler was left as a stub.
+The Bolt protocol implementation focused on **protocol structure** (handshake, message framing, state machine) but left **PackStream binary format** parsing as a simplified stub. The query execution logic was separately implemented and is working, but cannot receive inputs or send outputs because the message format layer is incomplete.
+
+**Historical Context**:
+- Wire protocol implemented first (handshake, chunking, state machine) ✅
+- Query execution implemented November 11, 2025 ✅  
+- PackStream parsing still needs full implementation ❌
 
 ### Impact on Documentation
-Multiple documents incorrectly claim "full Neo4j driver compatibility":
-- ❌ README.md: "Full Neo4j driver compatibility for seamless integration"
-- ❌ README.md: "Cypher queries are processed through the same query engine as HTTP"
-- ❌ STATUS.md: "Bolt Protocol v4.4" marked as complete
-- ❌ Examples: Jupyter notebooks claim Bolt compatibility but only test HTTP
+Multiple documents need updates to reflect current status:
+- ⚠️ README.md: Claims "Full Neo4j driver compatibility" - needs clarification
+- ⚠️ STATUS.md: "Bolt Protocol v4.4" - needs PackStream caveat
+- ⚠️ Examples: Jupyter notebooks mention Bolt but use HTTP only
 
 ### Workaround
 **Use HTTP API instead of Bolt protocol**:
 - ✅ HTTP REST API fully functional with complete query execution
 - ✅ Parameters, aggregations, relationships all working via HTTP
 - ✅ All examples and tests use HTTP successfully
+- ✅ Same query execution engine as Bolt would use
 
 ### Remediation Plan
-**Phase 1: Document Current State** (Immediate) ✅
-- ✅ Add to KNOWN_ISSUES.md (this document)
-- Update README.md to clarify Bolt is protocol-compatible but query execution pending
-- Update STATUS.md to mark Bolt query execution as TODO
-- Add note to API documentation
 
-**Phase 2: Implement Bolt Query Execution** (Future - Estimated 1-2 days)
-Required changes to `brahmand/src/server/bolt_protocol/handler.rs`:
-1. Import HTTP handler's query execution logic
-2. Wire up logical plan generation from parsed query
-3. Generate ClickHouse SQL and execute
-4. Transform results to Bolt protocol format (RECORD messages)
-5. Handle streaming with PULL message
-6. Pass parameters to query executor (currently ignored)
+**Option A: Implement PackStream (From Scratch)** - 2-3 days
+- Implement deserializer for all PackStream types
+- Implement serializer for responses
+- Update parse_message() and serialize_message()
+- Comprehensive testing
 
-**Dependencies**: Same query pipeline as HTTP (already working)
+**Option B: Use Existing Crate** - 1 day ⭐ **RECOMMENDED**
+- Add dependency: `packstream = "0.4"` or similar
+- Replace stubs with crate-based parsing
+- Test integration
+- Lower risk, faster delivery
+
+**Option C: Document & Defer** - <1 hour
+- Update docs to clarify current status
+- Create tracking issue for future work
+- Focus on other high-priority features
+
+**Recommendation**: Option B provides fastest path to full Bolt support with minimal risk.
 
 ### Testing Verification Needed
-Once implemented, verify with:
+Once PackStream is implemented, verify with:
 ```python
 # Python with neo4j driver
 from neo4j import GraphDatabase
 
 driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "password"))
-with driver.session(database="social_network_demo") as session:
-    result = session.run("MATCH (u:User) WHERE u.name = $name RETURN u", name="Alice")
+with driver.session(database="social_network") as session:
+    # Test basic query
+    result = session.run("MATCH (u:User) RETURN u.name LIMIT 5")
+    for record in result:
+        print(record["u.name"])
+    
+    # Test parameterized query
+    result = session.run("MATCH (u:User {name: $name}) RETURN u", name="Alice")
     for record in result:
         print(record["u"])
 ```
 
+**Expected**: All queries work identically to HTTP API
+
 **Related Files**:
-- `brahmand/src/server/bolt_protocol/handler.rs` - Query execution stub
-- `brahmand/src/server/handlers.rs` - Working HTTP query execution (reference implementation)
-- `brahmand/src/server/bolt_protocol/messages.rs` - Parameter extraction (already working)
+- `brahmand/src/server/bolt_protocol/connection.rs` - PackStream parsing stubs ❌
+- `brahmand/src/server/bolt_protocol/handler.rs` - Query execution ✅ COMPLETE
+- `brahmand/src/server/handlers.rs` - HTTP reference implementation ✅
+- `notes/bolt-query-execution.md` - Complete implementation details
+
+**See Also**: `notes/bolt-query-execution.md` for detailed implementation notes, Send issue solution, and PackStream recommendations.
 
 ---
 

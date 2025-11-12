@@ -231,7 +231,7 @@ cargo build 2>&1 | Select-String "error|warning: unused|Compiling clickgraph|Fin
 ```mermaid
 graph TD
     A[Integration Tests<br/>Python tests, full end-to-end] 
-    B[Unit Tests<br/>Rust #[test], SQL generation]
+    B[Unit Tests<br/>Rust test, SQL generation]
     C[Manual Smoke Tests<br/>Quick curl/Python test]
     C --> B
     B --> A

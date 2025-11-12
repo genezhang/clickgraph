@@ -2,6 +2,35 @@
 
 ### 🚀 Features
 
+- **Bolt 5.1-5.8 Protocol Support**: Complete implementation of Bolt 5.x with version negotiation fix (Nov 12, 2025)
+  - **Version negotiation byte-order detection**: Bolt 5.x changed encoding from `[reserved][range][major][minor]` to `[reserved][range][minor][major]`
+  - **Heuristic detection**: Automatically detects Bolt 5.x format when major byte is 5-8
+  - **Version response conversion**: Sends negotiated version in client's expected byte order
+  - **HELLO/LOGON authentication flow**: Bolt 5.1+ splits auth into separate LOGON message
+  - **Auth-less mode**: Handles empty LOGON messages for passwordless connections
+  - **Automatic schema selection**: Uses first loaded schema when database not specified
+  - **LOGON/LOGOFF messages**: New message types (0x6A, 0x6B) for Bolt 5.1+ auth management
+  - **Authentication state**: New `ConnectionState::Authentication` for Bolt 5.1+ flow
+  - **Neo4j driver compatibility**: Successfully tested with Neo4j Python driver v6.0.2
+  - **Test coverage**: 4/4 E2E tests passing (connection, simple query, graph traversal, aggregation)
+
+- **PackStream Binary Format Support**: Vendored neo4rs PackStream module for complete Bolt protocol support (Nov 12, 2025)
+  - ~3,371 lines of production-tested code from neo4rs v0.9.0-rc.8
+  - Complete message parsing: HELLO, RUN, PULL with PackStream deserialization
+  - Complete message serialization: SUCCESS, FAILURE, RECORD with PackStream encoding
+  - Serde-based API: `packstream::from_bytes<T>()` and `packstream::to_bytes<T>()`
+  - MIT license with proper attribution headers
+  - Enables Neo4j drivers (Python, JavaScript, Java) to connect and query
+  - Test coverage: Ready for integration testing with real drivers
+
+- **Bolt Protocol Query Execution**: Complete Cypher-to-ClickHouse execution pipeline (Nov 11, 2025)
+  - Full pipeline: Parse → Plan → Render → SQL → Execute → Stream
+  - Parameter substitution from RUN messages
+  - Schema selection via USE clause or session parameters
+  - Result caching and streaming via RECORD messages
+  - ClickHouse client integration throughout Bolt architecture
+  - Send-safe async with elegant block-scoping solution
+
 - **Query Cache**: Production-ready query caching with LRU eviction (10-100x speedup for repeated queries)
   - HashMap-based cache with dual limits (entry count + memory size)
   - Neo4j-compatible CYPHER replan options (default/force/skip)
@@ -12,18 +41,27 @@
 
 ### 🐛 Bug Fixes
 
+- **Bolt 5.x Version Negotiation**: Fixed byte-order interpretation - Bolt 5.x swaps major/minor bytes (Nov 12, 2025)
+- **Bolt 5.x Version Response**: Convert internal format to client format before sending (Nov 12, 2025)
+- **Schema Selection**: Auto-select first loaded schema when LOGON has no database field (Nov 12, 2025)
+- **PackStream Integration**: Fixed main.rs to import from library instead of redeclaring modules
 - **Query Cache**: Strip CYPHER prefix BEFORE schema extraction and query parsing (critical fix for replan=force)
 - **Query Cache**: Add whitespace normalization in cache key generation
 - **Query Cache**: Fix sql_only mode cache lookup and header injection
 
 ### 📚 Documentation
 
+- Update STATUS.md with Bolt 5.8 implementation details and byte-order discovery (Nov 12, 2025)
+- Document Bolt 5.x version encoding change in copilot-instructions.md
+- Create detailed PackStream vendoring note: notes/packstream-vendoring.md (Nov 12, 2025)
 - Add comprehensive query cache documentation in STATUS.md
 - Create detailed feature note: notes/query-cache.md
 - Document Windows PowerShell background process issue in copilot-instructions.md
 
 ### ⚙️ Infrastructure
 
+- Vendor PackStream module: 4 files in brahmand/src/packstream/ with MIT attribution
+- Remove neo4rs dependency (keep bytes crate only)
 - Create PowerShell server startup script with proper background handling (start_server_with_cache.ps1)
 
 ---

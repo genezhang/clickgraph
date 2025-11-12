@@ -404,7 +404,7 @@ cargo run --bin clickgraph -- --daemon --http-port 8080
 
 ## 🚀 Performance
 
-Preliminary informal tests on a MacBook Pro (M3 Pro, 18 GB RAM) running ClickGraph in Docker against a ~12 million-node Stack Overflow dataset show multihop traversals running approximately 10× faster than Neo4j v2025.03. These early, unoptimized results are for reference only; a full benchmark report is coming soon.
+First [Benchmark Results](notes/benchmarking.md)
 
 ## 🧪 Development Status
 

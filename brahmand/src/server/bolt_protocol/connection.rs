@@ -4,8 +4,14 @@
 //! version negotiation, message parsing, and connection lifecycle management.
 
 use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{timeout, Duration};
+use clickhouse::Client;
+use bytes::Bytes;
+use serde_json::Value;
+
+use crate::packstream;  // Our vendored packstream module
 
 use super::{BoltContext, BoltConfig, ConnectionState, SUPPORTED_VERSIONS};
 use super::errors::{BoltError, BoltResult};
@@ -35,12 +41,12 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     /// Create a new Bolt connection
-    pub fn new(stream: S, context: Arc<Mutex<BoltContext>>, config: Arc<BoltConfig>) -> Self {
+    pub fn new(stream: S, context: Arc<Mutex<BoltContext>>, config: Arc<BoltConfig>, clickhouse_client: Client) -> Self {
         BoltConnection {
             stream,
             context: context.clone(),
             config: config.clone(),
-            handler: BoltHandler::new(context, config),
+            handler: BoltHandler::new(context, config, clickhouse_client),
         }
     }
 
@@ -90,6 +96,13 @@ where
             }
         }
 
+        // Log client version proposals
+        log::info!("Client proposed {} Bolt versions:", client_versions.len());
+        for (i, &version) in client_versions.iter().enumerate() {
+            log::info!("  [{}] {} (0x{:08X})", i, super::utils::version_to_string(version), version);
+        }
+        log::info!("Server supports: {:?}", SUPPORTED_VERSIONS.iter().map(|v| super::utils::version_to_string(*v)).collect::<Vec<_>>());
+
         // Negotiate version
         let negotiated_version = super::utils::negotiate_version(&client_versions)
             .ok_or_else(|| BoltError::VersionNegotiationFailed {
@@ -97,8 +110,23 @@ where
                 server_versions: SUPPORTED_VERSIONS.to_vec(),
             })?;
 
+        // Convert version to client's expected format before sending
+        // Bolt 5.x uses swapped byte order: [reserved][range][minor][major]
+        let version_to_send = if negotiated_version >= 0x00000500 {
+            // Bolt 5.x: swap major/minor bytes
+            let major = (negotiated_version >> 8) & 0xFF;
+            let minor = negotiated_version & 0xFF;
+            (minor << 8) | major  // Swap to [00][00][minor][major]
+        } else {
+            // Bolt 4.x and earlier: use as-is
+            negotiated_version
+        };
+        
+        log::debug!("Sending negotiated version: 0x{:08X} (internal: 0x{:08X})", 
+            version_to_send, negotiated_version);
+
         // Send negotiated version back to client
-        self.stream.write_all(&negotiated_version.to_be_bytes()).await?;
+        self.stream.write_all(&version_to_send.to_be_bytes()).await?;
         self.stream.flush().await?;
 
         // Update context with negotiated version
@@ -226,29 +254,103 @@ where
             return Err(BoltError::invalid_message("Empty message"));
         }
 
-        // For now, implement a basic parser
-        // In a full implementation, this would use the PackStream format
-        // specified by the Bolt protocol
+        // Convert to Bytes for neo4rs packstream
+        let bytes = Bytes::from(data);
         
-        let signature = data[0];
+        // PackStream Bolt messages are structures: 0xB[size] [signature] [field1] [field2] ...
+        // We need to manually parse the structure wrapper to get signature and fields
         
-        // Simplified parsing - in reality this would be much more complex
-        // using PackStream binary format
+        let mut cursor = bytes.clone();
+        if cursor.is_empty() {
+            return Err(BoltError::invalid_message("Empty message data"));
+        }
+        
+        // Read structure marker
+        let marker = cursor[0];
+        if (marker & 0xF0) != 0xB0 {
+            return Err(BoltError::invalid_message(format!(
+                "Expected structure marker (0xB0-0xBF), got 0x{:02X}",
+                marker
+            )));
+        }
+        
+        let field_count = (marker & 0x0F) as usize;
+        
+        // Read signature (message type)
+        if cursor.len() < 2 {
+            return Err(BoltError::invalid_message("Missing signature byte"));
+        }
+        let signature = cursor[1];
+        
+        // Parse fields based on message type
+        // For now, we'll deserialize the remaining bytes as a tuple/list
+        // The actual field structure depends on the message type
+        
         match signature {
             signatures::HELLO => {
-                // Parse HELLO message fields
-                Ok(BoltMessage::new(signature, vec![
-                    serde_json::Value::Object(serde_json::Map::new()),
-                    serde_json::Value::Object(serde_json::Map::new()),
-                ]))
+                // HELLO has 1 field: extra metadata map
+                // We expect: Structure(1) { map }
+                if field_count != 1 {
+                    return Err(BoltError::invalid_message(format!(
+                        "HELLO expects 1 field, got {}",
+                        field_count
+                    )));
+                }
+                
+                // Parse the metadata map from bytes[2..]
+                let field_bytes = Bytes::from(cursor[2..].to_vec());
+                let metadata: HashMap<String, Value> = packstream::from_bytes(field_bytes)
+                    .map_err(|e| BoltError::invalid_message(format!("Failed to parse HELLO metadata: {}", e)))?;
+                
+                Ok(BoltMessage::new(signature, vec![Value::Object(serde_json::Map::from_iter(metadata))]))
             }
+            
             signatures::RUN => {
-                // Parse RUN message - simplified
-                Ok(BoltMessage::new(signature, vec![
-                    serde_json::Value::String("".to_string()),
-                    serde_json::Value::Object(serde_json::Map::new()),
-                ]))
+                // RUN has 2-3 fields: query string, parameters map, optional extra map
+                if field_count < 2 || field_count > 3 {
+                    return Err(BoltError::invalid_message(format!(
+                        "RUN expects 2-3 fields, got {}",
+                        field_count
+                    )));
+                }
+                
+                // Parse all fields from the remaining bytes
+                let field_bytes = Bytes::from(cursor[2..].to_vec());
+                
+                // Parse as tuple: (String, HashMap<String, Value>, Option<HashMap<String, Value>>)
+                let fields: (String, HashMap<String, serde_json::Value>) = 
+                    packstream::from_bytes(field_bytes.clone())
+                    .map_err(|e| BoltError::invalid_message(format!("Failed to parse RUN fields: {:?}", e)))?;
+                
+                // Convert to BoltMessage values
+                let values = vec![
+                    Value::String(fields.0),  // query
+                    Value::Object(serde_json::Map::from_iter(fields.1.into_iter())),  // parameters
+                ];
+                
+                // If field_count == 3, we'd parse the optional extra map here
+                // For now, RUN with 2 fields is most common
+                
+                Ok(BoltMessage::new(signature, values))
             }
+            
+            signatures::PULL => {
+                // PULL has 1 field: extra metadata map with 'n' field
+                if field_count != 1 {
+                    return Err(BoltError::invalid_message(format!(
+                        "PULL expects 1 field, got {}",
+                        field_count
+                    )));
+                }
+                
+                // Parse the metadata map
+                let field_bytes = Bytes::from(cursor[2..].to_vec());
+                let metadata: HashMap<String, Value> = packstream::from_bytes(field_bytes)
+                    .map_err(|e| BoltError::invalid_message(format!("Failed to parse PULL metadata: {}", e)))?;
+                
+                Ok(BoltMessage::new(signature, vec![Value::Object(serde_json::Map::from_iter(metadata))]))
+            }
+            
             _ => {
                 // For other messages, create empty field list for now
                 Ok(BoltMessage::new(signature, vec![]))
@@ -258,14 +360,30 @@ where
 
     /// Serialize a BoltMessage to bytes
     fn serialize_message(&self, message: BoltMessage) -> BoltResult<Vec<u8>> {
-        // For now, implement a basic serializer
-        // In a full implementation, this would use the PackStream format
+        // Bolt messages are PackStream structures: 0xB[field_count] [signature] [field1] [field2] ...
+        let field_count = message.fields.len();
+        
+        if field_count > 15 {
+            return Err(BoltError::invalid_message(format!(
+                "Message has too many fields: {}. Maximum is 15 for tiny struct.",
+                field_count
+            )));
+        }
         
         let mut bytes = Vec::new();
+        
+        // Write structure marker (0xB0 | field_count)
+        bytes.push(0xB0 | (field_count as u8));
+        
+        // Write signature
         bytes.push(message.signature);
         
-        // Simplified serialization - in reality this would be much more complex
-        // using PackStream binary format
+        // Serialize each field using PackStream
+        for field in message.fields {
+            let field_bytes = packstream::to_bytes(&field)
+                .map_err(|e| BoltError::invalid_message(format!("Failed to serialize field: {:?}", e)))?;
+            bytes.extend_from_slice(&field_bytes);
+        }
         
         Ok(bytes)
     }
@@ -353,8 +471,11 @@ mod tests {
         let stream = MockStream::new(vec![]);
         let context = Arc::new(Mutex::new(BoltContext::new()));
         let config = Arc::new(BoltConfig::default());
+        // Create a test ClickHouse client (won't be used in unit tests)
+        let clickhouse_client = Client::default()
+            .with_url("http://localhost:8123");
         
-        let connection = BoltConnection::new(stream, context, config);
+        let connection = BoltConnection::new(stream, context, config, clickhouse_client);
         // Just test that we can create the connection
         assert!(true);
     }

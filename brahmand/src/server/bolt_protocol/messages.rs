@@ -9,15 +9,26 @@ use serde_json::Value;
 
 /// Bolt message signatures (message types)
 pub mod signatures {
+    // Connection management (Bolt 3+)
     pub const HELLO: u8 = 0x01;
     pub const GOODBYE: u8 = 0x02;
+    
+    // Authentication (Bolt 5.1+)
+    pub const LOGON: u8 = 0x6A;
+    pub const LOGOFF: u8 = 0x6B;
+    
+    // Session management
     pub const RESET: u8 = 0x0F;
     pub const RUN: u8 = 0x10;
     pub const DISCARD: u8 = 0x2F;
     pub const PULL: u8 = 0x3F;
+    
+    // Transaction management (Bolt 3+)
     pub const BEGIN: u8 = 0x11;
     pub const COMMIT: u8 = 0x12;
     pub const ROLLBACK: u8 = 0x13;
+    
+    // Routing (Bolt 4.3+)
     pub const ROUTE: u8 = 0x66;
     
     // Response messages
@@ -160,6 +171,8 @@ impl BoltMessage {
         match self.signature {
             signatures::HELLO => "HELLO",
             signatures::GOODBYE => "GOODBYE",
+            signatures::LOGON => "LOGON",
+            signatures::LOGOFF => "LOGOFF",
             signatures::RESET => "RESET",
             signatures::RUN => "RUN",
             signatures::DISCARD => "DISCARD",
@@ -182,6 +195,8 @@ impl BoltMessage {
             self.signature,
             signatures::HELLO
                 | signatures::GOODBYE
+                | signatures::LOGON
+                | signatures::LOGOFF
                 | signatures::RESET
                 | signatures::RUN
                 | signatures::DISCARD
@@ -202,10 +217,21 @@ impl BoltMessage {
     }
 
     /// Extract authentication token from HELLO message
+    /// Bolt 4.x can send either:
+    /// - 1 field: combined auth+metadata in field[0]
+    /// - 2 fields: metadata in field[0], auth in field[1]
     pub fn extract_auth_token(&self) -> Option<HashMap<String, Value>> {
-        if self.signature == signatures::HELLO && self.fields.len() >= 2 {
-            if let Value::Object(auth_map) = &self.fields[1] {
-                return Some(auth_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        if self.signature == signatures::HELLO {
+            if self.fields.len() >= 2 {
+                // Two-field format: field[1] is auth
+                if let Value::Object(auth_map) = &self.fields[1] {
+                    return Some(auth_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+                }
+            } else if self.fields.len() == 1 {
+                // Single-field format: field[0] contains auth (and maybe metadata)
+                if let Value::Object(auth_map) = &self.fields[0] {
+                    return Some(auth_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+                }
             }
         }
         None
@@ -213,6 +239,9 @@ impl BoltMessage {
 
     /// Extract database name from HELLO message extra metadata
     /// Neo4j 4.0+ clients can specify database using "db" or "database" field
+    /// Bolt 4.x can send either:
+    /// - 1 field: combined auth+metadata in field[0] (check for "db"/"database" key)
+    /// - 2 fields: metadata in field[0], auth in field[1]
     pub fn extract_database(&self) -> Option<String> {
         if self.signature == signatures::HELLO && !self.fields.is_empty() {
             if let Value::Object(extra_map) = &self.fields[0] {
@@ -244,6 +273,54 @@ impl BoltMessage {
         if self.signature == signatures::RUN && self.fields.len() >= 2 {
             if let Value::Object(params_map) = &self.fields[1] {
                 return Some(params_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+            }
+        }
+        None
+    }
+
+    /// Extract database from RUN message extra metadata (Bolt 4.x)
+    /// The RUN message can have: RUN query parameters extra_metadata
+    /// where extra_metadata may contain {"db": "database_name"}
+    pub fn extract_run_database(&self) -> Option<String> {
+        if self.signature == signatures::RUN && self.fields.len() >= 3 {
+            if let Value::Object(extra_map) = &self.fields[2] {
+                // Check for "db" field
+                if let Some(Value::String(db)) = extra_map.get("db") {
+                    return Some(db.clone());
+                }
+                // Check for "database" field (alternative)
+                if let Some(Value::String(db)) = extra_map.get("database") {
+                    return Some(db.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract authentication token from LOGON message (Bolt 5.1+)
+    /// LOGON message has a single field: auth::Dictionary(scheme::String, ...)
+    pub fn extract_logon_auth(&self) -> Option<HashMap<String, Value>> {
+        if self.signature == signatures::LOGON && !self.fields.is_empty() {
+            if let Value::Object(auth_map) = &self.fields[0] {
+                return Some(auth_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+            }
+        }
+        None
+    }
+
+    /// Extract database from BEGIN message extra metadata
+    /// BEGIN message: BEGIN {extra::Dictionary(bookmarks, tx_timeout, tx_metadata, mode, db, ...)}
+    pub fn extract_begin_database(&self) -> Option<String> {
+        if self.signature == signatures::BEGIN && !self.fields.is_empty() {
+            if let Value::Object(extra_map) = &self.fields[0] {
+                // Check for "db" field
+                if let Some(Value::String(db)) = extra_map.get("db") {
+                    return Some(db.clone());
+                }
+                // Check for "database" field (alternative)
+                if let Some(Value::String(db)) = extra_map.get("database") {
+                    return Some(db.clone());
+                }
             }
         }
         None

@@ -151,7 +151,7 @@ pub async fn run_with_config(config: ServerConfig) {
         .route("/query", post(query_handler))
         .route("/schemas", get(list_schemas_handler))
         .route("/schemas/load", post(load_schema_handler))
-        .with_state(Arc::new(app_state));
+        .with_state(Arc::new(app_state.clone()));
     
     println!("DEBUG: Routes registered:");
     println!("  - /health");
@@ -189,7 +189,9 @@ pub async fn run_with_config(config: ServerConfig) {
             server_agent: format!("ClickGraph/{}", env!("CARGO_PKG_VERSION")),
         };
         
-        let bolt_server = Arc::new(tokio::sync::Mutex::new(BoltServer::new(bolt_config)));
+        // Clone the ClickHouse client from app_state for Bolt server
+        let bolt_clickhouse_client = app_state.clickhouse_client.clone();
+        let bolt_server = Arc::new(BoltServer::new(bolt_config, bolt_clickhouse_client));
         let bolt_listener = match TcpListener::bind(&bolt_bind_address).await {
             Ok(listener) => {
                 println!("Successfully bound Bolt listener to {}", bolt_bind_address);
@@ -213,9 +215,13 @@ pub async fn run_with_config(config: ServerConfig) {
                         
                         // Spawn individual connection handler
                         tokio::spawn(async move {
-                            let mut server_guard = server.lock().await;
-                            if let Err(e) = server_guard.handle_connection(stream, addr_str).await {
-                                eprintln!("Bolt connection error: {:?}", e);
+                            match server.handle_connection(stream, addr_str).await {
+                                Ok(_) => {
+                                    log::debug!("Bolt connection closed successfully");
+                                }
+                                Err(e) => {
+                                    eprintln!("Bolt connection error: {:?}", e);
+                                }
                             }
                         });
                     }

@@ -1,0 +1,40 @@
+name: ecommerce_demo
+graph_schema:
+  nodes:
+    - label: Customer
+      database: brahmand
+      table: customers_mem
+      id_column: customer_id
+      property_mappings:
+        customer_id: customer_id
+        email: email
+        first_name: first_name
+        last_name: last_name
+        age: age
+        gender: gender
+        country: country
+        city: city
+  
+    - label: Product
+      database: brahmand
+      table: products_mem
+      id_column: product_id
+      property_mappings:
+        product_id: product_id
+        name: name
+        category: category
+        brand: brand
+        price: price
+  
+  relationships:
+    - type: PURCHASED
+      database: brahmand
+      table: orders_mem
+      from_id: customer_id
+      to_id: product_id
+      from_node: Customer
+      to_node: Product
+      property_mappings:
+        quantity: quantity
+        total_amount: total_amount
+        order_date: order_date

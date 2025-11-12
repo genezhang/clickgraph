@@ -1,13 +1,13 @@
 use clap::Parser;
-
-mod open_cypher_parser;
-// mod query_engine;
-pub mod clickhouse_query_generator;
-mod graph_catalog;
-mod query_planner;
-pub mod render_plan;
-mod server;
-mod config;
+use clickgraph::{
+    open_cypher_parser,
+    clickhouse_query_generator,
+    graph_catalog,
+    query_planner,
+    render_plan,
+    server,
+    config,
+};
 
 /// ClickGraph - A graph analysis layer for ClickHouse
 #[derive(Parser)]

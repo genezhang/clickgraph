@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncWrite};
+use clickhouse::Client;
 
 pub mod connection;
 pub mod messages;
@@ -21,13 +22,32 @@ pub mod errors;
 use errors::BoltError;
 
 /// Bolt protocol version constants
+/// Bolt 5.x versions (5.1 introduced LOGON/LOGOFF messages)
+pub const BOLT_VERSION_5_8: u32 = 0x00000508;
+pub const BOLT_VERSION_5_7: u32 = 0x00000507;
+pub const BOLT_VERSION_5_6: u32 = 0x00000506;
+pub const BOLT_VERSION_5_4: u32 = 0x00000504;
+pub const BOLT_VERSION_5_3: u32 = 0x00000503;
+pub const BOLT_VERSION_5_2: u32 = 0x00000502;
+pub const BOLT_VERSION_5_1: u32 = 0x00000501;
+pub const BOLT_VERSION_5_0: u32 = 0x00000500;
+
+/// Bolt 4.x versions (4.0 introduced multi-database support)
 pub const BOLT_VERSION_4_4: u32 = 0x00000404;
 pub const BOLT_VERSION_4_3: u32 = 0x00000403;
 pub const BOLT_VERSION_4_2: u32 = 0x00000402;
 pub const BOLT_VERSION_4_1: u32 = 0x00000401;
 
-/// Supported Bolt protocol versions in order of preference
+/// Supported Bolt protocol versions in order of preference (5.x first, then 4.x)
 pub const SUPPORTED_VERSIONS: &[u32] = &[
+    BOLT_VERSION_5_8,
+    BOLT_VERSION_5_7,
+    BOLT_VERSION_5_6,
+    BOLT_VERSION_5_4,
+    BOLT_VERSION_5_3,
+    BOLT_VERSION_5_2,
+    BOLT_VERSION_5_1,
+    BOLT_VERSION_5_0,
     BOLT_VERSION_4_4,
     BOLT_VERSION_4_3,
     BOLT_VERSION_4_2,
@@ -41,6 +61,8 @@ pub enum ConnectionState {
     Connected,
     /// Version negotiated, waiting for HELLO message
     Negotiated(u32),
+    /// HELLO received (Bolt 5.1+), waiting for LOGON message
+    Authentication(u32),
     /// Authentication completed, ready for queries
     Ready,
     /// Connection is streaming results
@@ -143,41 +165,39 @@ impl Default for BoltConfig {
 }
 
 /// Main Bolt protocol server
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct BoltServer {
     /// Server configuration
     pub config: Arc<BoltConfig>,
-    /// Active connections
-    connections: HashMap<String, Arc<Mutex<BoltContext>>>,
+    /// ClickHouse client for query execution
+    clickhouse_client: Client,
 }
 
 impl BoltServer {
     /// Create a new Bolt server
-    pub fn new(config: BoltConfig) -> Self {
+    pub fn new(config: BoltConfig, clickhouse_client: Client) -> Self {
         BoltServer {
             config: Arc::new(config),
-            connections: HashMap::new(),
+            clickhouse_client,
         }
     }
 
     /// Handle a new Bolt connection
-    pub async fn handle_connection<S>(&mut self, stream: S, peer_addr: String) -> Result<(), BoltError>
+    pub async fn handle_connection<S>(&self, stream: S, _peer_addr: String) -> Result<(), BoltError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let context = Arc::new(std::sync::Mutex::new(BoltContext::new()));
-        self.connections.insert(peer_addr.clone(), context.clone());
 
-        let connection = connection::BoltConnection::new(stream, context.clone(), self.config.clone());
+        let connection = connection::BoltConnection::new(
+            stream, 
+            context.clone(), 
+            self.config.clone(),
+            self.clickhouse_client.clone()
+        );
         connection.handle().await?;
 
-        self.connections.remove(&peer_addr);
         Ok(())
-    }
-
-    /// Get number of active connections
-    pub fn connection_count(&self) -> usize {
-        self.connections.len()
     }
 
     /// Get server configuration
@@ -196,12 +216,65 @@ pub mod utils {
     }
 
     /// Get the best supported version from a list of client versions
+    /// Supports both exact matching and Bolt 4.3+ range format
     pub fn negotiate_version(client_versions: &[u32]) -> Option<u32> {
-        for &server_version in SUPPORTED_VERSIONS {
-            if client_versions.contains(&server_version) {
-                return Some(server_version);
+        for &client_version in client_versions {
+            // Bolt 5.x changed version encoding!
+            // Bolt 4.x and earlier: [reserved][range][major][minor]
+            // Bolt 5.x and later: [reserved][range][minor][major] (SWAPPED!)
+            
+            // Try decoding as Bolt 5.x first (swapped bytes)
+            let bolt5_major = client_version & 0xFF;
+            let bolt5_minor = (client_version >> 8) & 0xFF;
+            let range = (client_version >> 16) & 0xFF;
+            
+            // Try decoding as Bolt 4.x (original format)
+            let bolt4_minor = client_version & 0xFF;
+            let bolt4_major = (client_version >> 8) & 0xFF;
+            
+            // Heuristic: If bolt5_major is 5-8 and bolt5_minor is reasonable (0-8),
+            // interpret as Bolt 5.x. Otherwise, use Bolt 4.x format.
+            let (client_major, client_minor) = if bolt5_major >= 5 && bolt5_major <= 8 && bolt5_minor <= 8 {
+                log::debug!("  Checking client version 0x{:08X}: Bolt 5.x format → major={}, minor={}, range={}",
+                    client_version, bolt5_major, bolt5_minor, range);
+                (bolt5_major, bolt5_minor)
+            } else {
+                log::debug!("  Checking client version 0x{:08X}: Bolt 4.x format → major={}, minor={}, range={}",
+                    client_version, bolt4_major, bolt4_minor, range);
+                (bolt4_major, bolt4_minor)
+            };
+            
+            // Check if any of our supported versions match
+            for &server_version in SUPPORTED_VERSIONS {
+                // Our server versions use Bolt 4.x format: [00][00][major][minor]
+                let server_minor = server_version & 0xFF;
+                let server_major = (server_version >> 8) & 0xFF;
+                
+                // Same major version?
+                if client_major == server_major {
+                    // Check if server minor is within client's range
+                    // Client wants: minor down to (minor - range)
+                    // E.g., client 5.8 with range 8 = accepts 5.8 down to 5.0
+                    if server_minor <= client_minor && server_minor >= client_minor.saturating_sub(range) {
+                        log::info!("✅ Negotiation match: Client wants {}.{} (±{}), Server has {}.{} → Negotiated {}",
+                            client_major, client_minor, range,
+                            server_major, server_minor,
+                            version_to_string(server_version));
+                        return Some(server_version);
+                    }
+                }
+                
+                // Also support exact match for backward compatibility
+                if client_version == server_version {
+                    log::info!("✅ Exact match: {} → {}",
+                        version_to_string(client_version),
+                        version_to_string(server_version));
+                    return Some(server_version);
+                }
             }
+            log::debug!("  ❌ No match found for client version {}.{}", client_major, client_minor);
         }
+        log::warn!("❌ Negotiation failed: No compatible version found");
         None
     }
 
@@ -241,8 +314,12 @@ mod tests {
     #[test]
     fn test_bolt_server_creation() {
         let config = BoltConfig::default();
-        let server = BoltServer::new(config);
-        assert_eq!(server.connection_count(), 0);
+        // Create a test ClickHouse client (won't be used in unit tests)
+        let clickhouse_client = Client::default()
+            .with_url("http://localhost:8123");
+        let _server = BoltServer::new(config, clickhouse_client);
+        // Just test that we can create the server
+        assert!(true);
     }
 
     #[test]

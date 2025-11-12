@@ -9,6 +9,7 @@
 pub mod utils;
 
 pub mod config;
+pub mod packstream;  // Vendored from neo4rs for Bolt protocol support
 pub mod graph_catalog;
 pub mod query_planner;
 pub mod render_plan;
