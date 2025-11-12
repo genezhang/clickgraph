@@ -377,7 +377,7 @@ Scale Factor Examples:
     log("                     -H 'Content-Type: application/json' \\")
     log("                     -d '{\"schema_file\": \"social_network_benchmark.yaml\"}'")
     log("")
-    log(f"2. Run benchmark: python tests/python/test_benchmark_suite.py --scale {args.scale}")
+    log(f"2. Run benchmark: python benchmarks/queries/suite.py --scale {args.scale}")
     log("")
 
 if __name__ == "__main__":
