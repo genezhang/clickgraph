@@ -79,8 +79,9 @@ impl ToSql for SelectItems {
             sql.push_str("      ");
             sql.push_str(&item.expression.to_sql());
             if let Some(alias) = &item.col_alias {
-                sql.push_str(" AS ");
+                sql.push_str(" AS \"");
                 sql.push_str(&alias.0);
+                sql.push('"');
             }
             if i + 1 < self.0.len() {
                 sql.push_str(", ");

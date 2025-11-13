@@ -81,6 +81,80 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 
 ---
 
+## Schema Discipline ⚠️ **[CRITICAL - PREVENTS TIME WASTE]**
+
+**Problem**: Testing with inconsistent schemas wastes significant time debugging "wrong" SQL when the issue is just using the wrong schema file.
+
+**Solution**: **ALWAYS use the benchmark schema for testing/development**
+
+### The One True Schema for Development
+
+**Schema File**: `benchmarks/schemas/social_benchmark.yaml`
+
+**Tables** (all in `brahmand` database):
+- `users_bench` (node)
+- `user_follows_bench` (relationship)
+- `posts_bench` (node)
+- `post_likes_bench` (relationship)
+
+**Property Mappings** (Cypher property → ClickHouse column):
+- **User node**:
+  - `user_id` → `user_id`
+  - `name` → `full_name` ⚠️ (NOT `name`!)
+  - `email` → `email_address` ⚠️ (NOT `email`!)
+  - `registration_date` → `registration_date`
+  - `is_active` → `is_active`
+  - `country` → `country`
+  - `city` → `city`
+
+- **FOLLOWS relationship**:
+  - `follower_id` → `follower_id` (from)
+  - `followed_id` → `followed_id` (to)
+  - `follow_date` → `follow_date`
+
+**When to Use This Schema**:
+- ✅ All manual testing
+- ✅ All benchmark queries
+- ✅ Integration test development
+- ✅ Debug scripts and quick validation
+- ✅ Examples in documentation
+
+**Other Schemas** (use ONLY when explicitly needed):
+- `schemas/demo/users.yaml` - For demo/tutorial purposes only
+- Custom schemas - Only when testing schema-specific features
+
+**Testing Discipline**:
+```powershell
+# ✅ CORRECT: Always set GRAPH_CONFIG_PATH to benchmark schema
+$env:GRAPH_CONFIG_PATH = ".\benchmarks\schemas\social_benchmark.yaml"
+
+# ❌ WRONG: Using inconsistent schema
+$env:GRAPH_CONFIG_PATH = ".\schemas\demo\users.yaml"  # Different property mappings!
+```
+
+**Query Examples with Correct Schema**:
+```cypher
+# ✅ CORRECT (uses full_name mapping from benchmark schema)
+MATCH (u:User) WHERE u.user_id = 1 RETURN u.name
+
+# Generated SQL will use: users_bench.full_name
+
+# ✅ CORRECT relationship
+MATCH (u1:User)-[:FOLLOWS]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name
+
+# Generated SQL will use: user_follows_bench table
+```
+
+**Why This Matters**:
+- Prevents "Schema X doesn't have property Y" errors
+- Ensures generated SQL matches actual database schema
+- Makes benchmark results reproducible
+- Saves debugging time from schema mismatches
+
+**Remember**: If you're testing anything except schema loading itself, use the benchmark schema!
+
+---
+
 ## File Organization Guidelines
 
 **⚠️ CRITICAL: Keep Root Directory Clean!**

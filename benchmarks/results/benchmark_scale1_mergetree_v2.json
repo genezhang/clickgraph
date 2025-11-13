@@ -1,0 +1,243 @@
+{
+  "metadata": {
+    "scale_factor": 1,
+    "num_users": 1000,
+    "iterations": 3,
+    "category": "all",
+    "total_time_seconds": 99.01,
+    "timestamp": "2025-11-12 21:05:04"
+  },
+  "summary": {
+    "total_queries": 16,
+    "passed": 0,
+    "partial": 0,
+    "failed": 16,
+    "success_rate": 0.0
+  },
+  "results": [
+    {
+      "query_name": "simple_node_lookup",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "node_filter_range",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "direct_relationships",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "multi_hop_2",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "friends_of_friends",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "variable_length_exact_2",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "variable_length_range_1to3",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "shortest_path",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "aggregation_follower_count",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "mutual_follows",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "param_filter_function",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "function_aggregation_param",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "math_function_param",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "param_variable_path",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "user_post_count",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    },
+    {
+      "query_name": "active_users_followers",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning.",
+        "HTTP 500: Brahmand Error: Invalid render plan: No select items found. This usually indicates missing schema information or incomplete query planning."
+      ]
+    }
+  ]
+}

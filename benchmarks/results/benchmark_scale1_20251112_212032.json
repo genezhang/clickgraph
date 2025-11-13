@@ -1,0 +1,269 @@
+{
+  "metadata": {
+    "scale_factor": 1,
+    "num_users": 1000,
+    "iterations": 3,
+    "category": "all",
+    "total_time_seconds": 100.26,
+    "timestamp": "2025-11-12 21:22:13"
+  },
+  "summary": {
+    "total_queries": 16,
+    "passed": 13,
+    "partial": 0,
+    "failed": 3,
+    "success_rate": 81.2
+  },
+  "results": [
+    {
+      "query_name": "simple_node_lookup",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2073.99,
+        "median_ms": 2070.15,
+        "min_ms": 2069.37,
+        "max_ms": 2082.44,
+        "stdev_ms": 7.33
+      },
+      "errors": []
+    },
+    {
+      "query_name": "node_filter_range",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2080.11,
+        "median_ms": 2086.65,
+        "min_ms": 2063.69,
+        "max_ms": 2089.98,
+        "stdev_ms": 14.31
+      },
+      "errors": []
+    },
+    {
+      "query_name": "direct_relationships",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2083.06,
+        "median_ms": 2084.2,
+        "min_ms": 2054.57,
+        "max_ms": 2110.42,
+        "stdev_ms": 27.94
+      },
+      "errors": []
+    },
+    {
+      "query_name": "multi_hop_2",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `u1.user_id` in scope SELECT DISTINCT u2.full_name, u2.user_id FROM brahmand.user_foll",
+        "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `u1.user_id` in scope SELECT DISTINCT u2.full_name, u2.user_id FROM brahmand.user_foll",
+        "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `u1.user_id` in scope SELECT DISTINCT u2.full_name, u2.user_id FROM brahmand.user_foll"
+      ]
+    },
+    {
+      "query_name": "friends_of_friends",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `friend.user_id` in scope SELECT DISTINCT fof.full_name, fof.user_id FROM brahmand.use",
+        "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `friend.user_id` in scope SELECT DISTINCT fof.full_name, fof.user_id FROM brahmand.use",
+        "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `friend.user_id` in scope SELECT DISTINCT fof.full_name, fof.user_id FROM brahmand.use"
+      ]
+    },
+    {
+      "query_name": "variable_length_exact_2",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2089.36,
+        "median_ms": 2085.29,
+        "min_ms": 2079.18,
+        "max_ms": 2103.61,
+        "stdev_ms": 12.71
+      },
+      "errors": []
+    },
+    {
+      "query_name": "variable_length_range_1to3",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2084.89,
+        "median_ms": 2086.03,
+        "min_ms": 2071.78,
+        "max_ms": 2096.85,
+        "stdev_ms": 12.57
+      },
+      "errors": []
+    },
+    {
+      "query_name": "shortest_path",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2095.05,
+        "median_ms": 2090.71,
+        "min_ms": 2065.96,
+        "max_ms": 2128.47,
+        "stdev_ms": 31.48
+      },
+      "errors": []
+    },
+    {
+      "query_name": "aggregation_follower_count",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2094.8,
+        "median_ms": 2079.37,
+        "min_ms": 2066.94,
+        "max_ms": 2138.1,
+        "stdev_ms": 38.01
+      },
+      "errors": []
+    },
+    {
+      "query_name": "mutual_follows",
+      "status": "FAIL",
+      "iterations": 3,
+      "successful_runs": 0,
+      "failed_runs": 3,
+      "result_count": 0,
+      "timing": null,
+      "errors": [
+        "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `u1.user_id` in scope SELECT u1.full_name, u2.full_name, u1.user_id, u2.user_id FROM b",
+        "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `u1.user_id` in scope SELECT u1.full_name, u2.full_name, u1.user_id, u2.user_id FROM b",
+        "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `u1.user_id` in scope SELECT u1.full_name, u2.full_name, u1.user_id, u2.user_id FROM b"
+      ]
+    },
+    {
+      "query_name": "param_filter_function",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2079.98,
+        "median_ms": 2075.58,
+        "min_ms": 2063.18,
+        "max_ms": 2101.18,
+        "stdev_ms": 19.38
+      },
+      "errors": []
+    },
+    {
+      "query_name": "function_aggregation_param",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2118.51,
+        "median_ms": 2104.06,
+        "min_ms": 2077.2,
+        "max_ms": 2174.25,
+        "stdev_ms": 50.11
+      },
+      "errors": []
+    },
+    {
+      "query_name": "math_function_param",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2094.13,
+        "median_ms": 2087.6,
+        "min_ms": 2085.59,
+        "max_ms": 2109.21,
+        "stdev_ms": 13.1
+      },
+      "errors": []
+    },
+    {
+      "query_name": "param_variable_path",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2074.61,
+        "median_ms": 2063.46,
+        "min_ms": 2058.96,
+        "max_ms": 2101.4,
+        "stdev_ms": 23.31
+      },
+      "errors": []
+    },
+    {
+      "query_name": "user_post_count",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2092.56,
+        "median_ms": 2078.4,
+        "min_ms": 2076.45,
+        "max_ms": 2122.84,
+        "stdev_ms": 26.24
+      },
+      "errors": []
+    },
+    {
+      "query_name": "active_users_followers",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2086.6,
+        "median_ms": 2086.96,
+        "min_ms": 2066.86,
+        "max_ms": 2105.96,
+        "stdev_ms": 19.55
+      },
+      "errors": []
+    }
+  ]
+}

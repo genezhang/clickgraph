@@ -618,9 +618,29 @@ impl Union {
 
 impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
     fn from(value: CypherReturnItem<'a>) -> Self {
+        // Infer alias from expression if not explicitly provided with AS
+        let inferred_alias = if value.alias.is_none() {
+            match &value.expression {
+                // For property access like "u.name", use "u.name" as alias
+                CypherExpression::PropertyAccessExp(prop_access) => {
+                    Some(format!("{}.{}", prop_access.base, prop_access.key))
+                }
+                // For simple variables like "u", use "u" as alias
+                CypherExpression::Variable(var) => {
+                    Some(var.to_string())
+                }
+                // For function calls, could infer from function name, but keep None for now
+                _ => None,
+            }
+        } else {
+            None
+        };
+        
         ProjectionItem {
             expression: value.expression.into(),
-            col_alias: value.alias.map(|alias| ColumnAlias(alias.to_string())),
+            col_alias: value.alias
+                .map(|alias| ColumnAlias(alias.to_string()))
+                .or_else(|| inferred_alias.map(ColumnAlias)),
             // belongs_to_table: None, // This will be set during planning phase
         }
     }

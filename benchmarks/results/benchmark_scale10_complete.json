@@ -1,0 +1,227 @@
+{
+  "metadata": {
+    "scale_factor": 10,
+    "num_users": 10000,
+    "iterations": 3,
+    "category": "all",
+    "total_time_seconds": 81.49,
+    "timestamp": "2025-11-12 22:46:55"
+  },
+  "summary": {
+    "total_queries": 13,
+    "passed": 13,
+    "partial": 0,
+    "failed": 0,
+    "success_rate": 100.0
+  },
+  "results": [
+    {
+      "query_name": "simple_node_lookup",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2069.71,
+        "median_ms": 2070.54,
+        "min_ms": 2047.09,
+        "max_ms": 2091.5,
+        "stdev_ms": 22.22
+      },
+      "errors": []
+    },
+    {
+      "query_name": "node_filter_range",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2059.46,
+        "median_ms": 2067.24,
+        "min_ms": 2043.25,
+        "max_ms": 2067.9,
+        "stdev_ms": 14.05
+      },
+      "errors": []
+    },
+    {
+      "query_name": "direct_relationships",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2078.42,
+        "median_ms": 2078.49,
+        "min_ms": 2066.5,
+        "max_ms": 2090.27,
+        "stdev_ms": 11.88
+      },
+      "errors": []
+    },
+    {
+      "query_name": "variable_length_exact_2",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2076.22,
+        "median_ms": 2083.01,
+        "min_ms": 2057.23,
+        "max_ms": 2088.43,
+        "stdev_ms": 16.67
+      },
+      "errors": []
+    },
+    {
+      "query_name": "variable_length_range_1to3",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2075.09,
+        "median_ms": 2071.93,
+        "min_ms": 2071.82,
+        "max_ms": 2081.53,
+        "stdev_ms": 5.57
+      },
+      "errors": []
+    },
+    {
+      "query_name": "shortest_path",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2082.89,
+        "median_ms": 2089.89,
+        "min_ms": 2068.81,
+        "max_ms": 2089.96,
+        "stdev_ms": 12.19
+      },
+      "errors": []
+    },
+    {
+      "query_name": "aggregation_follower_count",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2120.06,
+        "median_ms": 2108.19,
+        "min_ms": 2083.09,
+        "max_ms": 2168.9,
+        "stdev_ms": 44.12
+      },
+      "errors": []
+    },
+    {
+      "query_name": "param_filter_function",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2079.14,
+        "median_ms": 2088.54,
+        "min_ms": 2054.7,
+        "max_ms": 2094.19,
+        "stdev_ms": 21.35
+      },
+      "errors": []
+    },
+    {
+      "query_name": "function_aggregation_param",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2081.18,
+        "median_ms": 2086.26,
+        "min_ms": 2057.97,
+        "max_ms": 2099.31,
+        "stdev_ms": 21.13
+      },
+      "errors": []
+    },
+    {
+      "query_name": "math_function_param",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2073.02,
+        "median_ms": 2077.81,
+        "min_ms": 2062.1,
+        "max_ms": 2079.14,
+        "stdev_ms": 9.48
+      },
+      "errors": []
+    },
+    {
+      "query_name": "param_variable_path",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2071.5,
+        "median_ms": 2066.22,
+        "min_ms": 2055.95,
+        "max_ms": 2092.32,
+        "stdev_ms": 18.75
+      },
+      "errors": []
+    },
+    {
+      "query_name": "user_post_count",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2119.85,
+        "median_ms": 2109.59,
+        "min_ms": 2094.81,
+        "max_ms": 2155.16,
+        "stdev_ms": 31.45
+      },
+      "errors": []
+    },
+    {
+      "query_name": "active_users_followers",
+      "status": "PASS",
+      "iterations": 3,
+      "successful_runs": 3,
+      "failed_runs": 0,
+      "result_count": 0,
+      "timing": {
+        "mean_ms": 2162.95,
+        "median_ms": 2155.8,
+        "min_ms": 2145.09,
+        "max_ms": 2187.97,
+        "stdev_ms": 22.32
+      },
+      "errors": []
+    }
+  ]
+}
