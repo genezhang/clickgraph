@@ -86,7 +86,7 @@ Stop-Job -Id $job.Id; Remove-Job -Id $job.Id
 
 For **complete benchmark results and analysis**, see:
 
-### **[`notes/benchmarking.md`](notes/benchmarking.md)** ⭐
+### **[`notes/benchmarking.md`](../notes/benchmarking.md)** ⭐
 
 This comprehensive document includes:
 - ✅ **Large Benchmark** (5M users, 50M follows): 90% success at enterprise scale
@@ -129,7 +129,7 @@ This comprehensive document includes:
   - [`queries/medium.py`](queries/medium.py) - Medium benchmark
 - **Schemas**: [`schemas/social_benchmark.yaml`](schemas/social_benchmark.yaml)
 - **Project Status**: [`../STATUS.md`](../STATUS.md)
-- **Change Log**: [`CHANGELOG.md`](CHANGELOG.md)
+- **Change Log**: [`CHANGELOG.md`](../CHANGELOG.md)
 
 ---
 
@@ -165,4 +165,4 @@ python test_benchmark_final.py
 
 ---
 
-**For full documentation, methodology, and detailed results, see [`notes/benchmarking.md`](notes/benchmarking.md)**
+**For full documentation, methodology, and detailed results, see [`notes/benchmarking.md`](../notes/benchmarking.md)**

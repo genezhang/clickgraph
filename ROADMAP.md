@@ -42,7 +42,7 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 |----------|---------|--------|--------|-----------|
 | ~~1️⃣~~ | ~~**#9 Parameter Support & Query Cache**~~ | ~~2-3 weeks~~ | ~~🔥 Critical~~ | ✅ **COMPLETE** (Nov 10, 2025): Parameter support via HTTP API complete. Query cache with LRU eviction implemented (10-100x speedup, 100% test coverage). Bolt protocol parameter support pending. |
 | ~~2️⃣~~ | ~~**Bolt Protocol Query Execution**~~ | ~~1-2 days~~ | ~~🔥 High~~ | ✅ **COMPLETE** (Nov 12, 2025): Full Bolt 5.1-5.8 implementation. Version negotiation byte-order fix. PackStream vendored from neo4rs. All E2E tests passing (4/4). Neo4j Python driver v6.0.2 working. Enables Neo4j Browser, official drivers, ecosystem tools. |
-| 3️⃣ | **#2 Neo4j Functions** (Phase 1: Core) | 1-2 weeks | 🔥 High | **Quick Win**: Time, string, math functions. Unlocks real-world queries immediately. No dependencies. |
+| 3️⃣ | **#2 Neo4j Functions** (Phase 1: Core) | 1-2 weeks | 🔥 High | ✅ **COMPLETE** (Nov 12, 2025):**Quick Win**: Time, string, math functions. Unlocks real-world queries immediately. No dependencies. |
 | 4️⃣ | **Benchmark Suite** (Small/Medium) | 1 week | 🔥 High | **Validation**: Measure current performance baseline. Guides optimization efforts. No dependencies. |
 
 **Deliverables**:
