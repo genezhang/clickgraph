@@ -142,11 +142,13 @@ if (-not $Quick) {
             Set-Location $using:PWD
             $env:CLICKHOUSE_URL = "http://localhost:8123"
             $env:CLICKHOUSE_DATABASE = "test_integration"
-            # Don't set GRAPH_CONFIG_PATH - let tests load schemas dynamically via API
+            # Pre-load test_integration schema - most tests use this
+            # Tests needing other schemas can load via /schemas/load API
+            $env:GRAPH_CONFIG_PATH = "tests\integration\test_integration.yaml"
             cargo run --release --bin clickgraph 2>&1 | Out-Null
         }
         Start-Sleep -Seconds 10  # Give server time to compile and start
-        Write-Host "[OK] Server started (Job ID: $($serverJob.Id))" -ForegroundColor Gray
+        Write-Host "[OK] Server started with test_graph_schema (Job ID: $($serverJob.Id))" -ForegroundColor Gray
     }
     
     $startTime = Get-Date
