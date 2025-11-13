@@ -52,7 +52,8 @@ BENCHMARK_QUERIES = [
         "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User) WHERE u1.user_id = 1 RETURN u2.name, u2.user_id LIMIT 10",
         "category": "traversal"
     },
-    # Core Query 4: Multi-hop traversal (2 hops) - DISABLED: Anonymous start node not supported
+    # Core Query 4: Multi-hop traversal (2 hops) - TODO: Requires anonymous node support
+    # Anonymous node () needs schema-based UNION expansion to work
     # {
     #     "name": "multi_hop_2",
     #     "query": "MATCH (u1:User)-[:FOLLOWS]->()-[:FOLLOWS]->(u2:User) WHERE u1.user_id = 1 RETURN DISTINCT u2.name, u2.user_id LIMIT 10",
@@ -88,7 +89,8 @@ BENCHMARK_QUERIES = [
         "query": "MATCH (u:User)<-[:FOLLOWS]-(follower) RETURN u.name, u.user_id, COUNT(follower) as count ORDER BY count DESC LIMIT 10",
         "category": "aggregation"
     },
-    # Core Query 10: Bidirectional pattern - mutual follows - DISABLED: Anonymous pattern not supported  
+    # Core Query 10: Bidirectional pattern - TODO: Requires cyclic alias resolution
+    # Pattern reuses u1 as target, needs special handling for cyclic paths
     # {
     #     "name": "mutual_follows",
     #     "query": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:FOLLOWS]->(u1) RETURN u1.name, u2.name, u1.user_id, u2.user_id LIMIT 10",

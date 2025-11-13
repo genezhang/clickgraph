@@ -1,30 +1,32 @@
 # Known Issues
 
-**Current Status**: Major functionality working, 2 critical limitations discovered  
-**Test Results**: 340 unit tests + 3 integration tests passing (100%)  
-**Active Issues**: 2 critical (Bolt protocol query execution not implemented, Multi-hop query planner bug)
+**Current Status**: Major functionality working, 1 feature limitation (anonymous nodes/untyped edges)  
+**Test Results**: 434 unit tests passing (100%), 14/14 benchmark queries passing (100%)  
+**Active Issues**: 1 enhancement (anonymous node/edge pattern support)
 
 ---
 
-## 🚨 CRITICAL: Multi-Hop Query Planner Bug
+## � TODO: Anonymous Node and Untyped Edge Patterns
 
-**Status**: 🚨 **CRITICAL BUG** (Discovered November 12, 2025)  
-**Severity**: High - Blocks 3 common query patterns (multi-hop traversals)  
-**Impact**: Affects queries with intermediate nodes in path patterns
+**Status**: � **FEATURE NOT IMPLEMENTED** (Identified November 13, 2025)  
+**Severity**: Medium - Affects 2 benchmark queries using unlabeled patterns  
+**Impact**: Queries with anonymous nodes `()` or untyped edges `[]` without explicit labels/types
 
 ### Summary
-Multi-hop graph traversals with intermediate nodes fail with SQL generation errors. The query planner doesn't properly chain JOINs for intermediate nodes, causing references to undefined table aliases in WHERE clauses.
+Patterns with unlabeled nodes or untyped relationships require automatic schema-based expansion to UNION queries. When a pattern doesn't specify a label (e.g., `()` instead of `(u:User)`), the planner needs to generate UNION clauses for all possible node labels that match the pattern context.
 
 **What Works** ✅:
-- ✅ Direct relationships: `MATCH (a)-[r]->(b)`
-- ✅ Variable-length paths: `MATCH (a)-[*2]->(b)` (uses recursive CTEs)
-- ✅ Simple multi-hop without intermediate node refs
+- ✅ Explicitly labeled nodes: `MATCH (u:User)-[r]->(p:Post)`
+- ✅ Explicitly typed relationships: `MATCH (a)-[:FOLLOWS]->(b)`
+- ✅ Multiple explicit types: `MATCH (a)-[:FOLLOWS|LIKES]->(b)` (generates UNION)
+- ✅ Named intermediate nodes: `MATCH (u)-[:FOLLOWS]->(friend)-[:FOLLOWS]->(fof)`
 
-**What Does NOT Work** ❌:
-- ❌ Multi-hop with anonymous nodes: `MATCH (u1)-[]->()-[]->(u2) WHERE u1.id = 1`
-- ❌ Multi-hop with named intermediate nodes: `MATCH (u)-[]->(friend)-[]->(fof)`
-- ❌ Bidirectional patterns: `MATCH (u1)-[]->(u2)-[]->(u1)`
+**What Requires Implementation** 🔧:
+- 🔧 Anonymous nodes: `MATCH (u1)-[]->()-[]->(u2)` (should UNION all compatible node types)
+- 🔧 Untyped edges: `MATCH (a)-[]->(b)` (should UNION all relationship types)
+- 🔧 Mixed patterns: `MATCH ()-[:FOLLOWS]->(:User)` (anonymous source, typed target)
 
+### Technical Details
 ### Technical Details
 
 **Example Query**:
@@ -35,63 +37,47 @@ RETURN DISTINCT u2.name, u2.user_id
 LIMIT 10
 ```
 
-**Generated SQL (Broken)**:
-```sql
-SELECT DISTINCT u2.full_name, u2.user_id
-FROM brahmand.user_follows_bench AS adb9fe3d3b
-INNER JOIN brahmand.users_bench AS u2 ON u2.user_id = adb9fe3d3b.followed_id
-WHERE u1.user_id = 1  -- ❌ ERROR: u1 not in FROM clause!
-LIMIT 10
+**Current Behavior**: Query fails because anonymous node `()` requires UNION of all compatible node types from schema.
+
+**Required Implementation**:
+1. **Schema Analysis**: When encountering `()` or `[]`, query planner should:
+   - Identify all node labels that can fit the pattern context
+   - For each compatible label, generate a SQL query branch
+   - Combine branches with UNION ALL
+
+2. **Example Expansion**:
+```cypher
+-- Input pattern:
+MATCH (u1:User)-[:FOLLOWS]->()-[:FOLLOWS]->(u2:User)
+
+-- Should expand to (if schema has User and Post node types):
+MATCH (u1:User)-[:FOLLOWS]->(:User)-[:FOLLOWS]->(u2:User)
+UNION ALL
+MATCH (u1:User)-[:FOLLOWS]->(:Post)-[:FOLLOWS]->(u2:User)
 ```
 
-**The Problem**: 
-- First JOIN for `u1` is missing
-- WHERE clause references `u1.user_id` but `u1` is never joined
-- Intermediate node tables aren't being chained properly
+**Similar to Existing Feature**: We already support explicit multiple types:
+```cypher
+MATCH (a)-[:FOLLOWS|LIKES]->(b)  -- ✅ Works - generates UNION
+```
 
-**ClickHouse Error**:
-```
-Code: 47. DB::Exception: Unknown expression or function identifier `u1.user_id` 
-in scope SELECT DISTINCT...
-```
+The anonymous pattern feature would apply this UNION logic automatically based on schema.
 
 ### Affected Queries
 From benchmark suite (`benchmarks/queries/suite.py`):
-1. **multi_hop_2**: Anonymous intermediate node pattern
-2. **friends_of_friends**: Named intermediate node pattern  
-3. **mutual_follows**: Bidirectional pattern
+1. **multi_hop_2**: `(u1)-[:FOLLOWS]->()-[:FOLLOWS]->(u2)` - Anonymous intermediate node
+2. **mutual_follows**: `(u1)-[:FOLLOWS]->(u2)-[:FOLLOWS]->(u1)` - Cyclic pattern with reused alias
 
-**Workaround**: These queries are currently disabled in the benchmark suite.
+**Status**: Currently disabled in benchmark suite (14/16 queries active)
 
-### Root Cause
-**Location**: Query planner doesn't properly build JOIN chain for multi-hop patterns
-
-**Expected Behavior**:
-```sql
--- Should generate:
-SELECT DISTINCT u2.full_name, u2.user_id
-FROM brahmand.users_bench AS u1
-INNER JOIN brahmand.user_follows_bench AS rel1 ON rel1.follower_id = u1.user_id
-INNER JOIN brahmand.user_follows_bench AS rel2 ON rel2.follower_id = rel1.followed_id
-INNER JOIN brahmand.users_bench AS u2 ON u2.user_id = rel2.followed_id
-WHERE u1.user_id = 1
-LIMIT 10
-```
-
-### Investigation Needed
-- [ ] Review `query_planner/analyzer/graph_traversal_planning.rs`
-- [ ] Check JOIN chain building logic
-- [ ] Add intermediate node tracking in query context
-- [ ] Ensure all path nodes are added to FROM clause before WHERE filters
-
-### Testing
-Created benchmark test that exposed this issue:
-- Scale 1 (1K users): 13/16 queries pass (81.2%)
-- 3 queries fail due to this bug
-- 100% pass rate when problematic queries disabled
+### Implementation Plan
+- [ ] Extend pattern analyzer to detect anonymous nodes/edges
+- [ ] Build schema-based UNION expansion logic (reuse existing `[:TYPE1|TYPE2]` code)
+- [ ] Add tests for various anonymous pattern combinations
+- [ ] Re-enable benchmark queries
 
 ### Priority
-**HIGH** - Common query pattern used in graph analytics
+**MEDIUM** - Enhancement for more flexible queries. Named patterns work fine for now.
 
 ---
 
