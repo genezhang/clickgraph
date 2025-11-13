@@ -43,11 +43,14 @@ This comprehensive document includes:
 
 ## Quick Links
 
-- **Detailed Results**: [`notes/benchmarking.md`](notes/benchmarking.md)
-- **Benchmark Scripts**: [`benchmark/`](benchmark/) directory
-- **Test Scripts**: [`test_benchmark_final.py`](test_benchmark_final.py), [`test_medium_benchmark.py`](test_medium_benchmark.py)
-- **Data Loader**: [`load_large_benchmark.py`](load_large_benchmark.py)
-- **Project Status**: [`STATUS.md`](STATUS.md)
+- **Detailed Results**: [`../notes/benchmarking.md`](../notes/benchmarking.md)
+- **Data Generation**: [`data/setup_unified.py`](data/setup_unified.py) - Unified scale factor approach
+- **Query Suites**: 
+  - [`queries/suite.py`](queries/suite.py) - 16 unified queries (NEW!)
+  - [`queries/final.py`](queries/final.py) - Final benchmark
+  - [`queries/medium.py`](queries/medium.py) - Medium benchmark
+- **Schemas**: [`schemas/social_benchmark.yaml`](schemas/social_benchmark.yaml)
+- **Project Status**: [`../STATUS.md`](../STATUS.md)
 - **Change Log**: [`CHANGELOG.md`](CHANGELOG.md)
 
 ---

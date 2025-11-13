@@ -141,7 +141,7 @@ Historical documentation:
 
 - `target/` - Rust build output (git ignored)
 - `clickhouse_data/` - ClickHouse data directory (git ignored)
-- `benchmark/` - Benchmark results
+- `benchmarks/results/` - Benchmark results (git ignored)
 
 ## Hidden Files
 
