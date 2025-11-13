@@ -31,8 +31,24 @@ The script automatically:
 1. ✅ Starts ClickGraph server in background (if not running)
 2. ✅ Loads benchmark schema (`social_benchmark.yaml`)
 3. ✅ Generates data using **MergeTree tables** (Windows-compatible!)
-4. ✅ Runs 16 benchmark queries
+4. ✅ Runs 13 benchmark queries (3 disabled due to known multi-hop bug)
 5. ✅ Saves results to `benchmarks/results/benchmark_scale{N}_{timestamp}.json`
+
+### Regression Testing
+
+Before releases or after major changes, run the regression test:
+
+```powershell
+# Quick regression test (scale 1, 1 iteration, ~1 minute)
+.\benchmarks\run_regression.ps1
+```
+
+This validates that all 13 working queries still pass. Exits with code 1 if any regression detected.
+
+**Expected Results (as of Nov 12, 2025)**:
+- 13/13 queries passing (100%)
+- 3 queries disabled due to known multi-hop query planner bug
+- ~2 second average query time
 
 ### Manual Steps (Advanced)
 
