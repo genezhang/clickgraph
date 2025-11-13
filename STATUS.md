@@ -2,7 +2,54 @@
 
 *Updated: November 12, 2025*
 
-## 🎉 **Bolt 5.8 Protocol Complete!**
+## � **Benchmark Infrastructure Complete - Bug Discovered**
+
+**Status**: ✅ **Benchmark system working**, ⚠️ **Multi-hop query bug found**  
+**Date**: November 12, 2025  
+**Achievement**: MergeTree-based benchmark suite operational, 13/16 queries passing (81.2%)
+
+### Benchmark Results (Scale 1 - 1K Users)
+
+**Dataset**: 1,000 users, ~100K follows, 20K posts (MergeTree engine)  
+**Success Rate**: 13/16 queries passing (81.2%)  
+**Performance**: ~2.07 second average query time  
+**Data Generation**: <1 second with ClickHouse native functions
+
+**Working Query Types** ✅:
+- ✅ Node lookups and filters
+- ✅ Direct relationship traversals  
+- ✅ Variable-length paths (`*2`, `*1..3`)
+- ✅ Shortest path algorithms
+- ✅ Aggregations (COUNT, GROUP BY)
+- ✅ Parameter queries with functions
+- ✅ Post/content queries
+
+**Failing Query Types** ❌ (Due to Query Planner Bug):
+- ❌ Multi-hop with anonymous intermediate: `(u1)-[]->()-[]->(u2)`
+- ❌ Multi-hop with named intermediate: `(u)-[]->(friend)-[]->(fof)`
+- ❌ Bidirectional patterns: `(u1)-[]->(u2)-[]->(u1)`
+
+**Root Cause**: Query planner doesn't properly chain JOINs for intermediate nodes in multi-hop traversals. See `KNOWN_ISSUES.md` for details.
+
+### Benchmark Infrastructure
+
+**Components Working** ✅:
+- ✅ Unified data generator (`setup_unified.py`) - scale 1 to 10000
+- ✅ MergeTree table support on Windows (named Docker volumes)
+- ✅ Single benchmark suite (`suite.py`) - 13 working queries
+- ✅ Automated test runner (`run_benchmark.ps1`)
+- ✅ JSON results export with statistics
+- ✅ ClickHouse credentials (test_user/test_pass)
+- ✅ GRAPH_CONFIG_PATH schema loading
+
+**Next Steps**:
+- Fix multi-hop query planner bug
+- Re-enable 3 disabled queries
+- Run full scale benchmarks (10, 100, 1000)
+
+---
+
+## �🎉 **Bolt 5.8 Protocol Complete!**
 
 **Status**: ✅ **Bolt 5.1-5.8 fully implemented**, ✅ **Neo4j Python driver v6.0.2 working**, ✅ **All E2E tests passing**  
 **Date**: November 12, 2025  

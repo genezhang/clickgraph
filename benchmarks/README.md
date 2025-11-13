@@ -1,6 +1,68 @@
 # ClickGraph Benchmark Results
 
-**Last Updated**: November 1, 2025
+**Last Updated**: November 12, 2025
+
+---
+
+## 🚀 Quick Start - Running Benchmarks
+
+### Prerequisites
+1. ClickHouse running (via `docker-compose up -d` from project root)
+2. Python 3.x installed
+3. ClickGraph built (`cargo build --release`)
+
+### Run Complete Benchmark
+
+```powershell
+# Small benchmark (1K users) - Quick validation
+.\benchmarks\run_benchmark.ps1 -Scale 1 -Iterations 3
+
+# Medium benchmark (10K users) - Performance testing
+.\benchmarks\run_benchmark.ps1 -Scale 10 -Iterations 5
+
+# Large benchmark (100K users) - Stress testing
+.\benchmarks\run_benchmark.ps1 -Scale 100 -Iterations 3
+
+# XLarge benchmark (1M users) - Production scale
+.\benchmarks\run_benchmark.ps1 -Scale 1000 -Iterations 3
+```
+
+The script automatically:
+1. ✅ Starts ClickGraph server in background (if not running)
+2. ✅ Loads benchmark schema (`social_benchmark.yaml`)
+3. ✅ Generates data using **MergeTree tables** (Windows-compatible!)
+4. ✅ Runs 16 benchmark queries
+5. ✅ Saves results to `benchmarks/results/benchmark_scale{N}_{timestamp}.json`
+
+### Manual Steps (Advanced)
+
+If you prefer to run steps manually:
+
+```powershell
+# 1. Start server (uses Start-Job for proper Windows background handling)
+$job = Start-Job -ScriptBlock {
+    $env:CLICKHOUSE_URL = "http://localhost:8123"
+    $env:CLICKHOUSE_USER = "default"
+    $env:CLICKHOUSE_PASSWORD = ""
+    $env:CLICKHOUSE_DATABASE = "brahmand"
+    Set-Location $using:PWD
+    cargo run --release --bin clickgraph
+}
+
+# 2. Wait for server (check: Invoke-RestMethod http://localhost:8080/health)
+
+# 3. Load schema
+python scripts/utils/load_schema.py benchmarks/schemas/social_benchmark.yaml
+
+# 4. Generate data (MergeTree for persistence)
+python benchmarks/data/setup_unified.py --scale 10 --engine MergeTree
+
+# 5. Run benchmarks
+python benchmarks/queries/suite.py --scale 10 --iterations 5 --output results.json
+
+# 6. Stop server when done
+Stop-Job -Id $job.Id; Remove-Job -Id $job.Id
+```
 
 ---
 
