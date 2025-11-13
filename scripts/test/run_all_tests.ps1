@@ -28,6 +28,46 @@ Write-Host "Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Gr
 Write-Host ""
 
 # ============================================================================
+# Pre-flight Checks
+# ============================================================================
+Write-Host "[Pre-flight] Checking infrastructure..." -ForegroundColor Yellow
+
+# Check Docker
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    Write-Host "[FAIL] Docker not found. Please install Docker Desktop." -ForegroundColor Red
+    exit 1
+}
+
+# Check if ClickHouse container is running
+$clickhouseRunning = docker ps --filter "name=clickhouse" --format "{{.Names}}" | Select-String "clickhouse"
+if (-not $clickhouseRunning) {
+    Write-Host "[WARN] ClickHouse not running. Starting..." -ForegroundColor Yellow
+    docker-compose up -d clickhouse
+    Start-Sleep -Seconds 5
+    Write-Host "[OK] ClickHouse started" -ForegroundColor Green
+} else {
+    Write-Host "[OK] ClickHouse is running" -ForegroundColor Green
+}
+
+# Check if test data exists (only if running Python tests)
+if (-not $Quick) {
+    try {
+        $dataCount = docker exec clickhouse-clickhouse-1 clickhouse-client --query "SELECT count(*) FROM brahmand.users_bench" 2>&1
+        if ($LASTEXITCODE -ne 0 -or [int]$dataCount -eq 0) {
+            Write-Host "[WARN] Test data not loaded. Loading scale 1 data..." -ForegroundColor Yellow
+            python benchmarks\data\setup_unified.py --scale 1
+            Write-Host "[OK] Test data loaded" -ForegroundColor Green
+        } else {
+            Write-Host "[OK] Test data exists ($dataCount users)" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "[WARN] Could not verify test data" -ForegroundColor Yellow
+    }
+}
+
+Write-Host ""
+
+# ============================================================================
 # Phase 1: Rust Unit Tests (434 tests)
 # ============================================================================
 if (-not $Python) {
