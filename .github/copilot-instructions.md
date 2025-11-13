@@ -79,6 +79,122 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 - Creating documentation examples → Show both PowerShell and cross-platform alternatives.
 - Use Mermaid diagrams for architecture explanations where possible
 
+---
+
+## File Organization Guidelines
+
+**⚠️ CRITICAL: Keep Root Directory Clean!**
+
+The root directory should contain ONLY essential project files. Before creating any file, determine its proper location:
+
+### Where Files Belong
+
+**✅ Root Directory (15 files maximum)**
+- Core configs: `.dockerignore`, `.gitignore`
+- Rust workspace: `Cargo.toml`, `Cargo.lock`
+- Docker: `docker-compose.yaml`, `docker-compose.test.yaml`, `Dockerfile`, `Dockerfile.test`
+- Legal: `LICENSE`
+- Entry point: `README.md`
+- Key docs: `CHANGELOG.md`, `STATUS.md`, `DEVELOPMENT_PROCESS.md`, `KNOWN_ISSUES.md`, `ROADMAP.md`
+
+**🧪 Test Files** → `tests/`
+- Unit tests → `tests/unit/`
+- Integration tests → `tests/integration/`
+- E2E tests → `tests/e2e/`
+- Bolt protocol tests → `tests/integration/bolt/`
+- Test data/fixtures → `tests/fixtures/data/`
+- **❌ NEVER** create `test_*.py` or `test_*.rs` in root!
+
+**📊 Benchmark Files** → `benchmarks/`
+- Data generation → `benchmarks/data/`
+- Query suites → `benchmarks/queries/`
+- Benchmark schemas → `benchmarks/schemas/`
+- Results → `benchmarks/results/` (gitignored)
+
+**🛠️ Utility Scripts** → `scripts/`
+- Setup scripts → `scripts/setup/`
+- Test runners → `scripts/test/`
+- Server utilities → `scripts/server/`
+- General utilities → `scripts/utils/`
+- Debug scripts → `scripts/debug/`
+
+**📚 Documentation** → `docs/`
+- Development guides → `docs/development/`
+- Feature documentation → `docs/features/`
+- API docs → `docs/api/`
+- Images/diagrams → `docs/images/`
+
+**🗂️ Schemas** → `schemas/`
+- Demo schemas → `schemas/demo/`
+- Example schemas → `schemas/examples/`
+
+**📝 Feature Notes** → `notes/`
+- Implementation details for specific features
+- Keep concise (1-2 pages max)
+
+**📦 Archive** → `archive/`
+- Completed planning documents
+- Historical session summaries
+- Outdated documentation
+
+### Quick Decision Tree
+
+**Before creating a file, ask:**
+```
+Is it a test file?           → tests/
+Is it a benchmark?           → benchmarks/
+Is it a script/utility?      → scripts/
+Is it documentation?         → docs/
+Is it a schema?             → schemas/
+Is it a feature note?       → notes/
+Is it temporary/planning?   → archive/ (when done)
+Is it truly essential?      → Maybe root (rare!)
+```
+
+### Examples of Proper File Placement
+
+```
+✅ GOOD:
+tests/integration/test_optional_match.py
+benchmarks/queries/suite.py
+scripts/utils/load_schema.py
+docs/features/bolt-protocol.md
+docs/images/architecture.png
+schemas/examples/ecommerce.yaml
+
+❌ BAD (clutters root):
+test_bolt_simple.py              → tests/integration/bolt/
+setup_benchmark_unified.py       → benchmarks/data/
+load_schema.py                   → scripts/utils/
+BOLT_PROTOCOL_STATUS.md          → docs/features/
+architecture.png                 → docs/images/
+ecommerce_simple.yaml            → schemas/examples/
+```
+
+### Preventing File Proliferation
+
+**When creating files:**
+1. ✅ Always use proper directory structure
+2. ✅ Use descriptive, categorized names
+3. ✅ Archive planning docs when complete
+4. ❌ Never create temporary files in root
+5. ❌ Never create test files in root
+6. ❌ Never create multiple status/summary docs
+
+**When adding to .gitignore:**
+```gitignore
+# Prevent accidental test file commits in root
+/test_*.py
+/test_*.rs
+/*_test.py
+/debug_*.py
+/*_debug.py
+```
+
+**Maintenance reminder**: Review root directory monthly. If it grows beyond 20 files, reorganize immediately!
+
+---
+
 ## Current Implementation Status
 
 ### ✅ Completed Features
