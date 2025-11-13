@@ -42,26 +42,24 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
 $clickhouseRunning = docker ps --filter "name=clickhouse" --format "{{.Names}}" | Select-String "clickhouse"
 if (-not $clickhouseRunning) {
     Write-Host "[WARN] ClickHouse not running. Starting..." -ForegroundColor Yellow
-    docker-compose up -d clickhouse
-    Start-Sleep -Seconds 5
+    docker-compose up -d clickhouse-service
+    Start-Sleep -Seconds 10
     Write-Host "[OK] ClickHouse started" -ForegroundColor Green
 } else {
     Write-Host "[OK] ClickHouse is running" -ForegroundColor Green
 }
 
-# Check if test data exists (only if running Python tests)
+# Check if benchmark data exists (for future benchmark runs)
 if (-not $Quick) {
     try {
-        $dataCount = docker exec clickhouse-clickhouse-1 clickhouse-client --query "SELECT count(*) FROM brahmand.users_bench" 2>&1
+        $dataCount = docker exec clickhouse clickhouse-client --query "SELECT count(*) FROM brahmand.users_bench" 2>&1
         if ($LASTEXITCODE -ne 0 -or [int]$dataCount -eq 0) {
-            Write-Host "[WARN] Test data not loaded. Loading scale 1 data..." -ForegroundColor Yellow
-            python benchmarks\data\setup_unified.py --scale 1
-            Write-Host "[OK] Test data loaded" -ForegroundColor Green
+            Write-Host "[INFO] Benchmark data not loaded (optional - integration tests use fixtures)" -ForegroundColor Gray
         } else {
-            Write-Host "[OK] Test data exists ($dataCount users)" -ForegroundColor Green
+            Write-Host "[OK] Benchmark data exists ($dataCount users in brahmand.users_bench)" -ForegroundColor Green
         }
     } catch {
-        Write-Host "[WARN] Could not verify test data" -ForegroundColor Yellow
+        Write-Host "[INFO] Benchmark data not loaded (optional)" -ForegroundColor Gray
     }
 }
 
@@ -143,12 +141,12 @@ if (-not $Quick) {
         $serverJob = Start-Job -ScriptBlock {
             Set-Location $using:PWD
             $env:CLICKHOUSE_URL = "http://localhost:8123"
-            $env:CLICKHOUSE_DATABASE = "brahmand"
-            $env:GRAPH_CONFIG_PATH = ".\benchmarks\schemas\social_benchmark.yaml"
+            $env:CLICKHOUSE_DATABASE = "test_integration"
+            $env:GRAPH_CONFIG_PATH = ".\tests\integration\test_integration.yaml"
             cargo run --release --bin clickgraph 2>&1 | Out-Null
         }
-        Start-Sleep -Seconds 5
-        Write-Host "✓ Server started (Job ID: $($serverJob.Id))" -ForegroundColor Gray
+        Start-Sleep -Seconds 10  # Give server more time to compile and start
+        Write-Host "[OK] Server started (Job ID: $($serverJob.Id))" -ForegroundColor Gray
     }
     
     $startTime = Get-Date
@@ -179,7 +177,7 @@ if (-not $Quick) {
     if ($null -ne $serverJob) {
         Stop-Job -Id $serverJob.Id
         Remove-Job -Id $serverJob.Id
-        Write-Host "✓ Server stopped" -ForegroundColor Gray
+        Write-Host "[OK] Server stopped" -ForegroundColor Gray
     }
     Write-Host ""
 } else {
