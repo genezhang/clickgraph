@@ -33,3 +33,6 @@ setup_social_*.sql
 .vscode/
 setup_large_benchmark_data.sql
 setup_medium_benchmark_data.sql
+
+# archive files
+archive/
