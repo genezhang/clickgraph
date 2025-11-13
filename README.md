@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./cglogo.png" height="200">
+  <img src="./docs/images/cglogo.png" height="200">
 </div>
 
 # ClickGraph
@@ -157,7 +157,7 @@ curl -X POST http://localhost:8080/query \
 
 ClickGraph runs as a lightweight graph wrapper alongside ClickHouse with dual protocol support:
 
-![acrhitecture](./architecture.png)
+![acrhitecture](./docs/images/architecture.png)
 
 ### HTTP API (Port 8080)
 1. **Client** sends HTTP POST request with Cypher query to ClickGraph
@@ -392,8 +392,8 @@ cargo run --bin clickgraph -- --daemon --http-port 8080
 ### For Contributors
 - **[Development Process](DEVELOPMENT_PROCESS.md)** - ⭐ **5-phase feature development workflow** (START HERE!)
 - **[Quick Reference](QUICK_REFERENCE.md)** - Cheat sheet for common development tasks
-- **[Environment Setup](DEV_ENVIRONMENT_CHECKLIST.md)** - Pre-session checklist for developers
-- **[Testing Guide](TESTING_GUIDE.md)** - Comprehensive testing strategies
+- **[Environment Setup](docs/development/environment-checklist.md)** - Pre-session checklist for developers
+- **[Testing Guide](docs/development/testing.md)** - Comprehensive testing strategies
 - **[Current Status](STATUS.md)** - What works now, what's in progress
 - **[Known Issues](KNOWN_ISSUES.md)** - Active bugs and limitations
 

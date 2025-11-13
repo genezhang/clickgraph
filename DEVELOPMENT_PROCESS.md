@@ -779,10 +779,10 @@ print(response.json())
 ## 🔗 Related Documents
 
 - **Architecture**: `.github/copilot-instructions.md` - Project structure and conventions
-- **Environment Setup**: `DEV_ENVIRONMENT_CHECKLIST.md` - Pre-session checklist
+- **Environment Setup**: `docs/development/environment-checklist.md` - Pre-session checklist
 - **Current Status**: `STATUS.md` - What works now
 - **Next Priorities**: `NEXT_STEPS.md` - What to build next
-- **Testing Guide**: `TESTING_GUIDE.md` - Comprehensive testing strategies
+- **Testing Guide**: `docs/development/testing.md` - Comprehensive testing strategies
 - **Feature Notes**: `notes/` - Individual feature documentation
 
 ---

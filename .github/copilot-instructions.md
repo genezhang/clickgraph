@@ -356,9 +356,15 @@ clickgraph/
 ├── DEVELOPMENT_PROCESS.md       # ⭐ 5-phase feature development workflow
 ├── KNOWN_ISSUES.md              # Active issues
 ├── README.md                    # Project overview
-├── DEV_ENVIRONMENT_CHECKLIST.md # Pre-session setup
 ├── NEXT_STEPS.md                # Immediate roadmap
-├── TESTING_GUIDE.md             # Testing strategies
+├── docs/
+│   ├── development/
+│   │   ├── environment-checklist.md
+│   │   ├── testing.md
+│   │   └── git-workflow.md
+│   └── features/
+│       ├── bolt-protocol.md
+│       └── packstream.md
 ├── notes/
 │   ├── viewscan.md             # Feature implementation details
 │   ├── optional-match.md

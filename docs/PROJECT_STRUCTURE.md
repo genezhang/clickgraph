@@ -22,11 +22,11 @@ ClickGraph follows a clean, organized directory structure for maximum maintainab
 - `TESTING_GUIDE.md` - Testing documentation
 - `BENCHMARKS.md` - Performance benchmarks
 - `JOURNEY_RETROSPECTIVE.md` - Development journey notes
-- `NEXT_STEPS.md` - Future roadmap
+- `ROADMAP.md` - Future roadmap and project vision
 
 **Assets:**
-- `architecture.png` - System architecture diagram
-- `logo.svg` - Project logo
+- `docs/images/architecture.png` - System architecture diagram
+- `docs/images/cglogo.png` - Project logo
 - `LICENSE` - Apache 2.0 license
 
 ## Source Code
