@@ -1,4 +1,4 @@
-﻿use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
@@ -226,7 +226,7 @@ impl GraphJoinInference {
             return joins;
         }
 
-        eprintln!("\n🔄 REORDERING {} JOINS by dependencies", joins.len());
+        eprintln!("\n?? REORDERING {} JOINS by dependencies", joins.len());
         
         // Start with tables available from FROM clause (anchor nodes - required nodes)
         let mut available_tables: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -240,7 +240,7 @@ impl GraphJoinInference {
             if !optional_aliases.contains(&join.table_alias) {
                 // This is a required table - it's a candidate for FROM clause (anchor)
                 available_tables.insert(join.table_alias.clone());
-                eprintln!("  🎯 Found REQUIRED table in joins: {}", join.table_alias);
+                eprintln!("  ?? Found REQUIRED table in joins: {}", join.table_alias);
             }
         }
         
@@ -264,15 +264,15 @@ impl GraphJoinInference {
         for table in &referenced_tables {
             if !join_aliases.contains(table) {
                 available_tables.insert(table.clone());
-                eprintln!("  🎯 Found ANCHOR table (referenced but not joined): {}", table);
+                eprintln!("  ?? Found ANCHOR table (referenced but not joined): {}", table);
             }
         }
         
         // If we found anchor tables, they will be in FROM clause
         if !available_tables.is_empty() {
-            eprintln!("  📍 Anchor tables (will be in FROM, not JOIN): {:?}", available_tables);
+            eprintln!("  ?? Anchor tables (will be in FROM, not JOIN): {:?}", available_tables);
         } else {
-            eprintln!("  ⚠️  No anchor tables found - all are optional!");
+            eprintln!("  ??  No anchor tables found - all are optional!");
         }
         
         let mut ordered_joins = Vec::new();
@@ -302,7 +302,7 @@ impl GraphJoinInference {
                 let all_available = referenced_tables.iter().all(|t| available_tables.contains(t));
                 
                 if all_available {
-                    eprintln!("  ✅ JOIN '{}' can be added (references: {:?})", table_alias, referenced_tables);
+                    eprintln!("  ? JOIN '{}' can be added (references: {:?})", table_alias, referenced_tables);
                     // This JOIN can be added now
                     let join = remaining_joins.remove(i);
                     available_tables.insert(table_alias.clone());
@@ -310,7 +310,7 @@ impl GraphJoinInference {
                     made_progress = true;
                     // Don't increment i - we removed an element
                 } else {
-                    eprintln!("  ⏳ JOIN '{}' must wait (needs: {:?}, have: {:?})", 
+                    eprintln!("  ? JOIN '{}' must wait (needs: {:?}, have: {:?})", 
                              table_alias, referenced_tables, available_tables);
                     i += 1;
                 }
@@ -319,12 +319,12 @@ impl GraphJoinInference {
         
         // If there are still remaining joins, we have a circular dependency or missing anchor
         if !remaining_joins.is_empty() {
-            eprintln!("  ⚠️  WARNING: {} JOINs could not be ordered (circular dependency?)", remaining_joins.len());
+            eprintln!("  ??  WARNING: {} JOINs could not be ordered (circular dependency?)", remaining_joins.len());
             // Just append them at the end
             ordered_joins.extend(remaining_joins);
         }
         
-        eprintln!("  ✅ Final JOIN order: {:?}\n", ordered_joins.iter().map(|j| &j.table_alias).collect::<Vec<_>>());
+        eprintln!("  ? Final JOIN order: {:?}\n", ordered_joins.iter().map(|j| &j.table_alias).collect::<Vec<_>>());
         ordered_joins
     }
     
@@ -450,13 +450,13 @@ impl GraphJoinInference {
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
-        eprintln!("\n┌─ collect_graph_joins ENTER");
-        eprintln!("│ Plan variant: {:?}", std::mem::discriminant(&*logical_plan));
-        eprintln!("│ Joins before: {}, Entities: {:?}", collected_graph_joins.len(), joined_entities);
+        eprintln!("\n+- collect_graph_joins ENTER");
+        eprintln!("� Plan variant: {:?}", std::mem::discriminant(&*logical_plan));
+        eprintln!("� Joins before: {}, Entities: {:?}", collected_graph_joins.len(), joined_entities);
         
         let result = match logical_plan.as_ref() {
             LogicalPlan::Projection(projection) => {
-                eprintln!("│ → Projection, recursing into input");
+                eprintln!("� ? Projection, recursing into input");
                 self.collect_graph_joins(
                     projection.input.clone(),
                     root_plan.clone(),
@@ -467,7 +467,7 @@ impl GraphJoinInference {
                 )
             },
             LogicalPlan::GraphNode(graph_node) => {
-                eprintln!("│ → GraphNode({}), recursing into input", graph_node.alias);
+                eprintln!("� ? GraphNode({}), recursing into input", graph_node.alias);
                 self.collect_graph_joins(
                     graph_node.input.clone(),
                     root_plan.clone(),
@@ -478,18 +478,18 @@ impl GraphJoinInference {
                 )
             },
             LogicalPlan::ViewScan(_) => {
-                eprintln!("│ → ViewScan, nothing to collect");
+                eprintln!("� ? ViewScan, nothing to collect");
                 Ok(())
             },
             LogicalPlan::GraphRel(graph_rel) => {
-                eprintln!("│ ═══ GraphRel({}) ═══", graph_rel.alias);
-                eprintln!("│   left_connection: {}", graph_rel.left_connection);
-                eprintln!("│   right_connection: {}", graph_rel.right_connection);
-                eprintln!("│   left type: {:?}", std::mem::discriminant(&*graph_rel.left));
-                eprintln!("│   right type: {:?}", std::mem::discriminant(&*graph_rel.right));
+                eprintln!("� --- GraphRel({}) ---", graph_rel.alias);
+                eprintln!("�   left_connection: {}", graph_rel.left_connection);
+                eprintln!("�   right_connection: {}", graph_rel.right_connection);
+                eprintln!("�   left type: {:?}", std::mem::discriminant(&*graph_rel.left));
+                eprintln!("�   right type: {:?}", std::mem::discriminant(&*graph_rel.right));
                 
                 // Process LEFT branch (may contain nested GraphRels)
-                eprintln!("│   ↓ Processing LEFT branch...");
+                eprintln!("�   ? Processing LEFT branch...");
                 self.collect_graph_joins(
                     graph_rel.left.clone(),
                     root_plan.clone(),
@@ -498,10 +498,10 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     joined_entities,
                 )?;
-                eprintln!("│   ✓ LEFT done. Joins now: {}", collected_graph_joins.len());
+                eprintln!("�   ? LEFT done. Joins now: {}", collected_graph_joins.len());
 
                 // Process CURRENT relationship
-                eprintln!("│   ⚙ Processing CURRENT relationship...");
+                eprintln!("�   ? Processing CURRENT relationship...");
                 self.infer_graph_join(
                     graph_rel,
                     root_plan.clone(),
@@ -510,10 +510,10 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     joined_entities,
                 )?;
-                eprintln!("│   ✓ CURRENT done. Joins now: {}", collected_graph_joins.len());
+                eprintln!("�   ? CURRENT done. Joins now: {}", collected_graph_joins.len());
 
                 // Process RIGHT branch
-                eprintln!("│   ↓ Processing RIGHT branch...");
+                eprintln!("�   ? Processing RIGHT branch...");
                 let result = self.collect_graph_joins(
                     graph_rel.right.clone(),
                     root_plan.clone(),
@@ -522,11 +522,11 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     joined_entities,
                 );
-                eprintln!("│   ✓ RIGHT done. Joins now: {}", collected_graph_joins.len());
+                eprintln!("�   ? RIGHT done. Joins now: {}", collected_graph_joins.len());
                 result
             },
             LogicalPlan::Cte(cte) => {
-                eprintln!("│ → Cte, recursing into input");
+                eprintln!("� ? Cte, recursing into input");
                 self.collect_graph_joins(
                     cte.input.clone(),
                     root_plan.clone(),
@@ -537,15 +537,15 @@ impl GraphJoinInference {
                 )
             },
             LogicalPlan::Scan(_) => {
-                eprintln!("│ → Scan, nothing to collect");
+                eprintln!("� ? Scan, nothing to collect");
                 Ok(())
             },
             LogicalPlan::Empty => {
-                eprintln!("│ → Empty, nothing to collect");
+                eprintln!("� ? Empty, nothing to collect");
                 Ok(())
             },
             LogicalPlan::GraphJoins(graph_joins) => {
-                eprintln!("│ → GraphJoins, recursing into input");
+                eprintln!("� ? GraphJoins, recursing into input");
                 self.collect_graph_joins(
                     graph_joins.input.clone(),
                     root_plan.clone(),
@@ -556,7 +556,7 @@ impl GraphJoinInference {
                 )
             },
             LogicalPlan::Filter(filter) => {
-                eprintln!("│ → Filter, recursing into input");
+                eprintln!("� ? Filter, recursing into input");
                 self.collect_graph_joins(
                     filter.input.clone(),
                     root_plan.clone(),
@@ -567,7 +567,7 @@ impl GraphJoinInference {
                 )
             },
             LogicalPlan::GroupBy(group_by) => {
-                eprintln!("│ → GroupBy, recursing into input");
+                eprintln!("� ? GroupBy, recursing into input");
                 self.collect_graph_joins(
                     group_by.input.clone(),
                     root_plan.clone(),
@@ -578,7 +578,7 @@ impl GraphJoinInference {
                 )
             },
             LogicalPlan::OrderBy(order_by) => {
-                eprintln!("│ → OrderBy, recursing into input");
+                eprintln!("� ? OrderBy, recursing into input");
                 self.collect_graph_joins(
                     order_by.input.clone(),
                     root_plan.clone(),
@@ -589,7 +589,7 @@ impl GraphJoinInference {
                 )
             },
             LogicalPlan::Skip(skip) => {
-                eprintln!("│ → Skip, recursing into input");
+                eprintln!("� ? Skip, recursing into input");
                 self.collect_graph_joins(
                     skip.input.clone(),
                     root_plan.clone(),
@@ -600,7 +600,7 @@ impl GraphJoinInference {
                 )
             },
             LogicalPlan::Limit(limit) => {
-                eprintln!("│ → Limit, recursing into input");
+                eprintln!("� ? Limit, recursing into input");
                 self.collect_graph_joins(
                     limit.input.clone(),
                     root_plan.clone(),
@@ -611,7 +611,7 @@ impl GraphJoinInference {
                 )
             },
             LogicalPlan::Union(union) => {
-                eprintln!("│ → Union, recursing into {} inputs", union.inputs.len());
+                eprintln!("� ? Union, recursing into {} inputs", union.inputs.len());
                 for input_plan in union.inputs.iter() {
                     self.collect_graph_joins(
                         input_plan.clone(),
@@ -625,12 +625,12 @@ impl GraphJoinInference {
                 Ok(())
             },
             LogicalPlan::PageRank(_) => {
-                eprintln!("│ → PageRank, nothing to collect");
+                eprintln!("� ? PageRank, nothing to collect");
                 Ok(())
             },
         };
         
-        eprintln!("└─ collect_graph_joins EXIT");
+        eprintln!("+- collect_graph_joins EXIT");
         eprintln!("   Joins after: {}, Entities: {:?}\n", collected_graph_joins.len(), joined_entities);
         
         result
@@ -645,15 +645,15 @@ impl GraphJoinInference {
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
-        eprintln!("    ┌─ infer_graph_join ENTER for GraphRel({})", graph_rel.alias);
-        eprintln!("    │ left_connection: {}, right_connection: {}", 
+        eprintln!("    +- infer_graph_join ENTER for GraphRel({})", graph_rel.alias);
+        eprintln!("    � left_connection: {}, right_connection: {}", 
                  graph_rel.left_connection, graph_rel.right_connection);
-        eprintln!("    │ joined_entities before: {:?}", joined_entities);
+        eprintln!("    � joined_entities before: {:?}", joined_entities);
         
         // Skip join inference for variable-length paths
         if graph_rel.variable_length.is_some() {
-            eprintln!("    │ → SKIP: Variable-length path detected");
-            eprintln!("    └─ infer_graph_join EXIT\n");
+            eprintln!("    � ? SKIP: Variable-length path detected");
+            eprintln!("    +- infer_graph_join EXIT\n");
             return Ok(());
         }
 
@@ -666,8 +666,8 @@ impl GraphJoinInference {
         
         // Skip if either node is anonymous (no context or no label)
         if left_ctx_opt.is_err() || right_ctx_opt.is_err() {
-            eprintln!("    │ → SKIP: Anonymous node (no context)");
-            eprintln!("    └─ infer_graph_join EXIT\n");
+            eprintln!("    � ? SKIP: Anonymous node (no context)");
+            eprintln!("    +- infer_graph_join EXIT\n");
             return Ok(());
         }
         
@@ -675,8 +675,8 @@ impl GraphJoinInference {
         let right_has_label = right_ctx_opt.as_ref().unwrap().get_label_opt().is_some();
         
         if !left_has_label || !right_has_label {
-            eprintln!("    │ → SKIP: Anonymous node (no label)");
-            eprintln!("    └─ infer_graph_join EXIT\n");
+            eprintln!("    � ? SKIP: Anonymous node (no label)");
+            eprintln!("    +- infer_graph_join EXIT\n");
             return Ok(());
         }
 
@@ -713,13 +713,13 @@ impl GraphJoinInference {
 
         // Check if nodes are actually referenced in the query BEFORE calling get_graph_context
         // to avoid borrow checker issues (get_graph_context takes &mut plan_ctx)
-        eprintln!("    │ Checking if LEFT '{}' is referenced...", graph_rel.left_connection);
+        eprintln!("    � Checking if LEFT '{}' is referenced...", graph_rel.left_connection);
         let left_is_referenced = Self::is_node_referenced(&graph_rel.left_connection, plan_ctx, &root_plan);
-        eprintln!("    │ LEFT '{}' referenced: {}", graph_rel.left_connection, left_is_referenced);
+        eprintln!("    � LEFT '{}' referenced: {}", graph_rel.left_connection, left_is_referenced);
         
-        eprintln!("    │ Checking if RIGHT '{}' is referenced...", graph_rel.right_connection);
+        eprintln!("    � Checking if RIGHT '{}' is referenced...", graph_rel.right_connection);
         let right_is_referenced = Self::is_node_referenced(&graph_rel.right_connection, plan_ctx, &root_plan);
-        eprintln!("    │ RIGHT '{}' referenced: {}", graph_rel.right_connection, right_is_referenced);
+        eprintln!("    � RIGHT '{}' referenced: {}", graph_rel.right_connection, right_is_referenced);
 
         let graph_context = graph_context::get_graph_context(
             graph_rel,
@@ -739,9 +739,9 @@ impl GraphJoinInference {
         let rel_is_optional = optional_aliases.contains(&rel_alias_str) || graph_rel.is_optional.unwrap_or(false);
         let right_is_optional = optional_aliases.contains(&right_alias_str);
         
-        eprintln!("    │ OPTIONAL CHECK: left='{}' optional={}, rel='{}' optional={} (graph_rel.is_optional={:?}), right='{}' optional={}",
+        eprintln!("    � OPTIONAL CHECK: left='{}' optional={}, rel='{}' optional={} (graph_rel.is_optional={:?}), right='{}' optional={}",
                  left_alias_str, left_is_optional, rel_alias_str, rel_is_optional, graph_rel.is_optional, right_alias_str, right_is_optional);
-        eprintln!("    │ optional_aliases set: {:?}", optional_aliases);
+        eprintln!("    � optional_aliases set: {:?}", optional_aliases);
 
         // Check for standalone relationship join.
         // e.g. MATCH (a)-[f1:Follows]->(b)-[f2:Follows]->(c), (a)-[f3:Follows]->(c)
@@ -753,12 +753,12 @@ impl GraphJoinInference {
         let left_node_id_column = graph_context.left.schema.node_id.column.clone(); //  left_schema.node_id.column.clone();
         let right_node_id_column = graph_context.right.schema.node_id.column.clone(); //right_schema.node_id.column.clone();
 
-        eprintln!("    │ Creating joins for relationship...");
+        eprintln!("    � Creating joins for relationship...");
         let joins_before = collected_graph_joins.len();
         
         // ClickGraph uses view-mapped graph storage where relationships are tables
         // with from_id/to_id columns. Process the graph pattern to generate JOINs.
-        eprintln!("    │ → Processing graph pattern");
+        eprintln!("    � ? Processing graph pattern");
         let result = self.handle_graph_pattern(
             graph_rel,
             graph_context,
@@ -775,9 +775,9 @@ impl GraphJoinInference {
         );
         
         let joins_added = collected_graph_joins.len() - joins_before;
-        eprintln!("    │ ✓ Added {} joins", joins_added);
-        eprintln!("    │ joined_entities after: {:?}", joined_entities);
-        eprintln!("    └─ infer_graph_join EXIT\n");
+        eprintln!("    � ? Added {} joins", joins_added);
+        eprintln!("    � joined_entities after: {:?}", joined_entities);
+        eprintln!("    +- infer_graph_join EXIT\n");
         
         result
     }
@@ -820,14 +820,14 @@ impl GraphJoinInference {
         let rel_from_col = rel_cols.from_id;
         let rel_to_col = rel_cols.to_id;
         
-        eprintln!("    │ 🔍 DEBUG REL COLUMNS: rel_from_col = '{}', rel_to_col = '{}'", rel_from_col, rel_to_col);
+        eprintln!("    � ?? DEBUG REL COLUMNS: rel_from_col = '{}', rel_to_col = '{}'", rel_from_col, rel_to_col);
 
         // If both nodes are of the same type then check the direction to determine where are the left and right nodes present in the edgelist.
         if graph_context.left.schema.table_name == graph_context.right.schema.table_name {
-            eprintln!("    │ 🔀 SAME-TYPE NODES PATH (left={}, right={})", 
+            eprintln!("    � ?? SAME-TYPE NODES PATH (left={}, right={})", 
                      graph_context.left.schema.table_name, graph_context.right.schema.table_name);
             if joined_entities.contains(right_alias) {
-                eprintln!("    │ 📍 Branch: RIGHT already joined");
+                eprintln!("    � ?? Branch: RIGHT already joined");
                 // join the rel with right first and then join the left with rel
                 // Since GraphRel structure is already adjusted for direction,
                 // we don't need direction-based logic here
@@ -925,11 +925,11 @@ impl GraphJoinInference {
                 // No need to insert again
                 Ok(())
             } else {
-                eprintln!("    │ 📍 Branch: LEFT already joined (or start of join)");
-                eprintln!("    │ 🔍 left_alias: {}", left_alias);
-                eprintln!("    │ 🔍 left_node_id_column: {:?}", left_node_id_column);
-                eprintln!("    │ 🔍 rel_alias: {}", rel_alias);
-                eprintln!("    │ 🔍 LEFT in joined_entities: {}", joined_entities.contains(left_alias));
+                eprintln!("    � ?? Branch: LEFT already joined (or start of join)");
+                eprintln!("    � ?? left_alias: {}", left_alias);
+                eprintln!("    � ?? left_node_id_column: {:?}", left_node_id_column);
+                eprintln!("    � ?? rel_alias: {}", rel_alias);
+                eprintln!("    � ?? LEFT in joined_entities: {}", joined_entities.contains(left_alias));
                 
                 // CRITICAL FIX: Check if LEFT is ACTUALLY joined yet
                 // If LEFT is not joined, we must connect the relationship to RIGHT (the anchor) instead!
@@ -947,19 +947,19 @@ impl GraphJoinInference {
                 // Choose which node to connect the relationship to (priority order)
                 let (rel_connect_column, node_alias, node_id_column) = 
                     if left_is_joined {
-                        eprintln!("    │ LEFT joined - connecting to LEFT");
+                        eprintln!("    � LEFT joined - connecting to LEFT");
                         (rel_conn_with_left_node.clone(), left_alias.to_string(), left_node_id_column.clone())
                     } else if right_is_joined {
-                        eprintln!("    │ RIGHT joined - connecting to RIGHT");
+                        eprintln!("    � RIGHT joined - connecting to RIGHT");
                         (right_conn_with_rel.clone(), right_alias.to_string(), right_node_id_column.clone())
                     } else if left_is_anchor {
-                        eprintln!("    │ LEFT is ANCHOR - connecting to LEFT");
+                        eprintln!("    � LEFT is ANCHOR - connecting to LEFT");
                         (rel_conn_with_left_node.clone(), left_alias.to_string(), left_node_id_column.clone())
                     } else if right_is_anchor {
-                        eprintln!("    │ RIGHT is ANCHOR - connecting to RIGHT");
+                        eprintln!("    � RIGHT is ANCHOR - connecting to RIGHT");
                         (right_conn_with_rel.clone(), right_alias.to_string(), right_node_id_column.clone())
                     } else {
-                        eprintln!("    │ FALLBACK - connecting to LEFT");
+                        eprintln!("    � FALLBACK - connecting to LEFT");
                         (rel_conn_with_left_node.clone(), left_alias.to_string(), left_node_id_column.clone())
                     };
 
@@ -982,8 +982,8 @@ impl GraphJoinInference {
                     join_type: Self::determine_join_type(rel_is_optional),
                 };
 
-                eprintln!("    │ 🔍 rel_graph_join.joining_on.len() after creation: {}", rel_graph_join.joining_on.len());
-                eprintln!("    │ 🔍 is_standalone_rel: {}", is_standalone_rel);
+                eprintln!("    � ?? rel_graph_join.joining_on.len() after creation: {}", rel_graph_join.joining_on.len());
+                eprintln!("    � ?? is_standalone_rel: {}", is_standalone_rel);
 
                 // Node join not needed for edge list with same-type nodes
                 // let right_graph_join = Join {
@@ -1028,10 +1028,10 @@ impl GraphJoinInference {
                 }
 
                 // For edge list with same-type nodes: only join the right node if it's referenced
-                eprintln!("    │ 🔍 RIGHT BEFORE PUSH: rel_graph_join.table_alias = {}", rel_graph_join.table_alias);
-                eprintln!("    │ 🔍 RIGHT BEFORE PUSH: rel_graph_join.joining_on.len() = {}", rel_graph_join.joining_on.len());
+                eprintln!("    � ?? RIGHT BEFORE PUSH: rel_graph_join.table_alias = {}", rel_graph_join.table_alias);
+                eprintln!("    � ?? RIGHT BEFORE PUSH: rel_graph_join.joining_on.len() = {}", rel_graph_join.joining_on.len());
                 for (i, cond) in rel_graph_join.joining_on.iter().enumerate() {
-                    eprintln!("    │ 🔍   [{}]: {:?}", i, cond);
+                    eprintln!("    � ??   [{}]: {:?}", i, cond);
                 }
                 
                 // Check if this is the first relationship (before pushing the rel)
@@ -1043,16 +1043,16 @@ impl GraphJoinInference {
                 // 1. This is the first relationship (joined_entities is empty)
                 // 2. LEFT was not the anchor node (not in FROM clause)
                 // Solution: Check if LEFT is in joined_entities. If NOT, join LEFT first, then rel.
-                eprintln!("    │ 🔍 DEBUG: left_is_optional={}, !joined_entities.contains(left_alias)={}, left_is_referenced={}", 
+                eprintln!("    � ?? DEBUG: left_is_optional={}, !joined_entities.contains(left_alias)={}, left_is_referenced={}", 
                          left_is_optional, !joined_entities.contains(left_alias), left_is_referenced);
-                eprintln!("    │ 🔍 DEBUG: joined_entities={:?}, left_alias={}", joined_entities, left_alias);
+                eprintln!("    � ?? DEBUG: joined_entities={:?}, left_alias={}", joined_entities, left_alias);
                 
                 // Reverse order if LEFT is not yet joined (must join LEFT before rel that references it)
                 let reverse_join_order = !joined_entities.contains(left_alias) && left_is_referenced;
-                eprintln!("    │ 🔍 DEBUG: reverse_join_order={}", reverse_join_order);
+                eprintln!("    � ?? DEBUG: reverse_join_order={}", reverse_join_order);
                 
                 if reverse_join_order {
-                    eprintln!("    │ 🔄 REVERSING JOIN ORDER: Joining LEFT node '{}' BEFORE relationship", left_alias);
+                    eprintln!("    � ?? REVERSING JOIN ORDER: Joining LEFT node '{}' BEFORE relationship", left_alias);
                     // Join LEFT node first
                     let left_graph_join = Join {
                         table_name: left_cte_name.clone(),
@@ -1074,7 +1074,7 @@ impl GraphJoinInference {
                     };
                     collected_graph_joins.push(left_graph_join);
                     joined_entities.insert(left_alias.to_string());
-                    eprintln!("    │ ✅ LEFT node '{}' joined first", left_alias);
+                    eprintln!("    � ? LEFT node '{}' joined first", left_alias);
                 }
                 
                 // Now push the relationship JOIN
@@ -1083,11 +1083,11 @@ impl GraphJoinInference {
                 
                 // Check if left node needs to be joined (if we didn't already do it above)
                 if !reverse_join_order {
-                    eprintln!("    │ 🎯 Checking if LEFT node ({}) needs to be joined...", left_alias);
-                    eprintln!("    │ 🎯 left_is_referenced: {}", left_is_referenced);
-                    eprintln!("    │ 🎯 left_is_optional: {}", left_is_optional);
-                    eprintln!("    │ 🎯 left already in joined_entities: {}", joined_entities.contains(left_alias));
-                    eprintln!("    │ 🎯 is_first_relationship: {}", is_first_relationship);
+                    eprintln!("    � ?? Checking if LEFT node ({}) needs to be joined...", left_alias);
+                    eprintln!("    � ?? left_is_referenced: {}", left_is_referenced);
+                    eprintln!("    � ?? left_is_optional: {}", left_is_optional);
+                    eprintln!("    � ?? left already in joined_entities: {}", joined_entities.contains(left_alias));
+                    eprintln!("    � ?? is_first_relationship: {}", is_first_relationship);
                     
                     if !joined_entities.contains(left_alias) && left_is_referenced {
                         // Check if this is the anchor node (first relationship AND left is required)
@@ -1095,11 +1095,11 @@ impl GraphJoinInference {
                         
                         if is_anchor {
                             // This is the anchor node - it should go in FROM clause, not as a JOIN
-                            eprintln!("    │ 🎯 LEFT node '{}' is the ANCHOR (required + first) - will go in FROM, not JOIN", left_alias);
+                            eprintln!("    � ?? LEFT node '{}' is the ANCHOR (required + first) - will go in FROM, not JOIN", left_alias);
                             joined_entities.insert(left_alias.to_string());
                         } else {
                             // LEFT is not yet joined but is referenced - create a JOIN for it
-                            eprintln!("    │ ✅ LEFT is referenced but not joined, creating JOIN for '{}'", left_alias);
+                            eprintln!("    � ? LEFT is referenced but not joined, creating JOIN for '{}'", left_alias);
                             let left_graph_join = Join {
                                 table_name: left_cte_name.clone(),
                                 table_alias: left_alias.to_string(),
@@ -1127,9 +1127,9 @@ impl GraphJoinInference {
                     }
                 }
                 
-                eprintln!("    │ 🎯 Checking if RIGHT node ({}) should be joined...", right_alias);
-                eprintln!("    │ 🎯 right_is_referenced: {}", right_is_referenced);
-                eprintln!("    │ 🎯 right_is_optional: {}", right_is_optional);
+                eprintln!("    � ?? Checking if RIGHT node ({}) should be joined...", right_alias);
+                eprintln!("    � ?? right_is_referenced: {}", right_is_referenced);
+                eprintln!("    � ?? right_is_optional: {}", right_is_optional);
                 
                 // MULTI-HOP FIX: Always join RIGHT node for same-type patterns
                 // Even if not referenced in SELECT/WHERE, it may be needed for subsequent relationships
@@ -1139,10 +1139,10 @@ impl GraphJoinInference {
                 
                 if is_anchor {
                     // This is the anchor node - it should go in FROM clause, not as a JOIN
-                    eprintln!("    │ 🎯 RIGHT node '{}' is the ANCHOR (required + first) - will go in FROM, not JOIN", right_alias);
+                    eprintln!("    � ?? RIGHT node '{}' is the ANCHOR (required + first) - will go in FROM, not JOIN", right_alias);
                     joined_entities.insert(right_alias.to_string());
                 } else {
-                    eprintln!("    │ ✅ Creating JOIN for RIGHT '{}'", right_alias);
+                    eprintln!("    � ? Creating JOIN for RIGHT '{}'", right_alias);
                     let right_graph_join = Join {
                         table_name: right_cte_name.clone(),
                         table_alias: right_alias.to_string(),
@@ -1841,7 +1841,7 @@ mod tests {
         plan_ctx
             .get_mut_table_ctx("f1")
             .unwrap()
-            .set_use_edge_list(true);
+            ;
 
         // Create plan: (p1)-[f1:FOLLOWS]->(p2)
         let p1_scan = create_scan_plan("p1", "Person");
@@ -1967,7 +1967,7 @@ mod tests {
         plan_ctx
             .get_mut_table_ctx("w1")
             .unwrap()
-            .set_use_edge_list(true);
+            ;
 
         // Create plan: (p1)-[w1:WORKS_AT]->(c1)
         let p1_scan = create_scan_plan("p1", "Person");
@@ -2056,14 +2056,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Bitmap indexes not used in current schema - edge lists only
+    #[ignore] // Bitmap indexes not used in current schema - edge lists only (use_edge_list flag removed)
     fn test_bitmap_traversal() {
         let analyzer = GraphJoinInference::new();
         let graph_schema = create_test_graph_schema();
-        let mut plan_ctx = setup_plan_ctx_with_graph_entities();
+        let plan_ctx = setup_plan_ctx_with_graph_entities();
 
-        // Don't set use_edge_list, so it will use bitmap traversal
-        assert!(!plan_ctx.get_table_ctx("f1").unwrap().should_use_edge_list());
+        // This test is obsolete - ClickGraph only uses edge lists
+        // Bitmap traversal functionality has been removed
 
         // Create plan: (p1)-[f1:FOLLOWS]->(p2)
         let p1_scan = create_scan_plan("p1", "Person");
@@ -2171,7 +2171,7 @@ mod tests {
         plan_ctx
             .get_mut_table_ctx("f2")
             .unwrap()
-            .set_use_edge_list(true);
+            ;
 
         // Create standalone relationship: (p3)-[f2:FOLLOWS]-(Empty)
         // This simulates a case where left node was already processed/removed
@@ -2289,7 +2289,7 @@ mod tests {
         plan_ctx
             .get_mut_table_ctx("f1")
             .unwrap()
-            .set_use_edge_list(true);
+            ;
 
         // Create plan: (p1)<-[f1:FOLLOWS]-(p2)
         let p1_scan = create_scan_plan("p1", "Person");
@@ -2410,11 +2410,11 @@ mod tests {
         plan_ctx
             .get_mut_table_ctx("f1")
             .unwrap()
-            .set_use_edge_list(true);
+            ;
         plan_ctx
             .get_mut_table_ctx("w1")
             .unwrap()
-            .set_use_edge_list(true);
+            ;
 
         // Create complex plan: (p1)-[f1:FOLLOWS]->(p2)-[w1:WORKS_AT]->(c1)
         let p1_scan = create_scan_plan("p1", "Person");
@@ -2653,3 +2653,4 @@ mod tests {
         }
     }
 }
+

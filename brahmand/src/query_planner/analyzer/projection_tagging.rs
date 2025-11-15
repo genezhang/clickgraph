@@ -223,11 +223,6 @@ impl ProjectionTagging {
                     // table_ctx.projection_items = vec![tagged_proj];
                     table_ctx.set_projections(vec![tagged_proj]);
 
-                    // if table_ctx is of relation then mark use_edge_list = true
-                    if table_ctx.is_relation() {
-                        table_ctx.set_use_edge_list(true);
-                    }
-
                     // update the overall projection
                     item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: table_alias.clone(),

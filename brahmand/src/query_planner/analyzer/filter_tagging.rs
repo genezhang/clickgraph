@@ -344,10 +344,6 @@ impl FilterTagging {
                 table_ctx.insert_filter(
                     LogicalExpr::OperatorApplicationExp(extracted_filter),
                 );
-
-                if table_ctx.is_relation() {
-                    table_ctx.set_use_edge_list(true);
-                }
             } else {
                 return Err(AnalyzerError::OrphanAlias {
                     pass: Pass::FilterTagging,
@@ -364,11 +360,6 @@ impl FilterTagging {
                     expression: LogicalExpr::PropertyAccessExp(prop_acc),
                     col_alias: None,
                 });
-
-                // If there is any filter on relationship then use edgelist of that relation.
-                if table_ctx.is_relation() {
-                    table_ctx.set_use_edge_list(true);
-                }
             } else {
                 return Err(AnalyzerError::OrphanAlias {
                     pass: Pass::FilterTagging,
@@ -845,10 +836,9 @@ mod tests {
             .unwrap();
         assert!(result.is_none());
 
-        // Should tag filter to follows table and set use_edge_list to true
+        // Filter should be tagged to follows table
         let follows_ctx = plan_ctx.get_table_ctx("follows").unwrap();
         assert_eq!(follows_ctx.get_filters().len(), 1);
-        assert!(follows_ctx.should_use_edge_list()); // Should be true for relationships with filters
     }
 
     #[test]

@@ -208,9 +208,6 @@ fn convert_properties(props: Vec<Property>) -> LogicalPlanResult<Vec<LogicalExpr
 fn convert_properties_to_operator_application(plan_ctx: &mut PlanCtx) -> LogicalPlanResult<()> {
     for (_, table_ctx) in plan_ctx.get_mut_alias_table_ctx_map().iter_mut() {
         let mut extracted_props = convert_properties(table_ctx.get_and_clear_properties())?;
-        if !extracted_props.is_empty() {
-            table_ctx.set_use_edge_list(true);
-        }
         table_ctx.append_filters(&mut extracted_props);
     }
     Ok(())
@@ -1179,7 +1176,6 @@ mod tests {
         // Properties should have been converted to filters
         let admin_ctx = plan_ctx.get_table_ctx("admin").unwrap();
         assert_eq!(admin_ctx.get_filters().len(), 1);
-        assert!(admin_ctx.should_use_edge_list()); // Should be true because properties were found
     }
 
     #[test]
@@ -1205,7 +1201,6 @@ mod tests {
         // Before conversion, table should have no filters
         let table_ctx_before = plan_ctx.get_table_ctx("user").unwrap();
         assert_eq!(table_ctx_before.get_filters().len(), 0);
-        assert!(!table_ctx_before.should_use_edge_list());
 
         // Convert properties
         let result = convert_properties_to_operator_application(&mut plan_ctx);
@@ -1214,7 +1209,6 @@ mod tests {
         // After conversion, properties should be moved to filters
         let table_ctx_after = plan_ctx.get_table_ctx("user").unwrap();
         assert_eq!(table_ctx_after.get_filters().len(), 1); // Filter added
-        assert!(table_ctx_after.should_use_edge_list()); // use_edge_list should be true
 
         // Check the filter predicate
         match &table_ctx_after.get_filters()[0] {

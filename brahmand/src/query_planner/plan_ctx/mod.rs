@@ -19,21 +19,12 @@ pub struct TableCtx {
     filter_predicates: Vec<LogicalExpr>,
     projection_items: Vec<ProjectionItem>,
     is_rel: bool,
-    use_edge_list: bool,
     explicit_alias: bool,
 }
 
 impl TableCtx {
     pub fn is_relation(&self) -> bool {
         self.is_rel
-    }
-
-    pub fn set_use_edge_list(&mut self, use_edge_list: bool) {
-        self.use_edge_list = use_edge_list;
-    }
-
-    pub fn should_use_edge_list(&self) -> bool {
-        self.use_edge_list
     }
 
     pub fn is_explicit_alias(&self) -> bool {
@@ -54,7 +45,6 @@ impl TableCtx {
             filter_predicates: vec![],
             projection_items: vec![],
             is_rel,
-            use_edge_list: false,
             explicit_alias,
         }
     }
@@ -344,7 +334,6 @@ impl TableCtx {
             pad, self.projection_items
         )?;
         writeln!(f, "{}         is_rel: {:?}", pad, self.is_rel)?;
-        writeln!(f, "{}         use_edge_list: {:?}", pad, self.use_edge_list)?;
         writeln!(
             f,
             "{}         explicit_alias: {:?}",
