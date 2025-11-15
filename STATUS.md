@@ -1,17 +1,17 @@
 # ClickGraph Status
 
-*Updated: November 13, 2025*
+*Updated: November 15, 2025*
 
 ## 📊 **Integration Test Suite Progress**
 
-**Status**: ✅ **61% passing**, 🔧 **Improvement in progress**  
-**Date**: November 13, 2025  
-**Achievement**: Fixed error handling infrastructure, improved test pass rate from 54% to 61%
+**Status**: ✅ **64% passing**, 🔧 **Continuous improvement**  
+**Date**: November 15, 2025  
+**Achievement**: Fixed error handling + undirected relationships, improved test pass rate from 54% to 64%
 
 ### Integration Test Results
 
-**Overall**: 187/308 tests passing (61%)  
-**Improvement**: +20 tests fixed from yesterday (was 167/308)
+**Overall**: 197/308 tests passing (64%)  
+**Improvement**: +30 tests fixed from Nov 12 (was 167/308), +10 since Nov 13
 
 **Test File Breakdown**:
 - ✅ `test_basic_queries.py`: 19/19 (100%)
@@ -23,13 +23,15 @@
 - ⚠️ `test_shortest_paths.py`: 6/24 (25%) - SQL generation bugs
 - ⚠️ `test_multi_database.py`: 5/21 (24%) - Schema validation issues
 
-**Key Fixes Today** (Nov 13, 2025):
-- ✅ Added `raise_on_error` parameter to `execute_cypher()` helper
-- ✅ Fixed error handling tests to properly catch error responses
-- ✅ Verified Neo4j column naming behavior (qualified names are correct)
-- ✅ Updated test expectations in multiple files
+**Recent Fixes** (Nov 13-15, 2025):
+- ✅ Nov 13: Added `raise_on_error` parameter to `execute_cypher()` helper
+- ✅ Nov 13: Fixed error handling tests to properly catch error responses
+- ✅ Nov 13: Verified Neo4j column naming behavior (qualified names are correct)
+- ✅ Nov 14-15: **Major refactoring**: plan_builder.rs modularization (22% size reduction)
+- ✅ Nov 15: **Implemented undirected relationships** (Direction::Either with OR JOINs)
+- ✅ Nov 15: **Documented anonymous node limitation** in KNOWN_ISSUES.md
 
-**Remaining Test Issues** (121 failures):
+**Remaining Test Issues** (111 failures):
 1. **SQL Generation Bugs** (~70 tests):
    - CASE expressions with OPTIONAL MATCH (ClickHouse syntax errors)
    - Complex aggregations with COUNT(DISTINCT) (identifier resolution)

@@ -1,6 +1,6 @@
 # ClickGraph Roadmap
 
-**Last Updated**: November 13, 2025  
+**Last Updated**: November 15, 2025  
 **Current Version**: v0.3.0 → **v0.4.0 (Phase 1 Complete!)**
 
 This document outlines planned features, enhancements, and benchmark tasks for ClickGraph development.
@@ -9,11 +9,13 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 
 ## 🎯 Current Status
 
-**Phase 1 Complete** ✅ (November 2025):
+**Phase 1 Complete** ✅ (November 15, 2025):
 - ✅ Parameter support & query cache (10-100x speedup)
 - ✅ Bolt 5.8 protocol implementation
 - ✅ 25+ Neo4j function mappings
 - ✅ Benchmark suite for scale 1-10 (1K-10K users)
+- ✅ **Major refactoring**: plan_builder.rs modularization (Nov 14-15)
+- ✅ **Undirected relationships**: Direction::Either support (Nov 15)
 
 **What's Working Well**:
 - ✅ Core graph traversal patterns (MATCH, WHERE, RETURN)
@@ -23,12 +25,14 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 - ✅ Multiple relationship types (`[:TYPE1|TYPE2]`)
 - ✅ PageRank algorithm
 - ✅ Multi-schema architecture with USE clause
-- ✅ **Neo4j Bolt protocol v5.8 support** - UPDATED Nov 12, 2025
+- ✅ **Neo4j Bolt protocol v5.8 support** - Nov 12, 2025
 - ✅ View-based graph model (YAML configuration)
 - ✅ **Query Cache with LRU eviction (10-100x speedup)** - Nov 10, 2025
+- ✅ **Undirected relationships** (`(a)-[r]-(b)` patterns) - Nov 15, 2025
 
 **Test Coverage**:
-- 434/434 unit tests passing (100%)
+- 406/407 Rust unit tests passing (99.8%, 1 known flaky cache test)
+- 197/308 Python integration tests passing (64%)
 - 14/14 benchmark queries passing (100%)
 - 6/6 query cache unit tests + 5/5 e2e tests (100%)
 - 4/4 Bolt 5.8 E2E tests passing (100%)
@@ -44,29 +48,35 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 
 *Phased approach based on dependencies, impact, and effort*
 
-### 🎯 Phase 1: Foundation & Quick Wins (v0.4.0 - December 2025)
+### 🎯 Phase 1: Foundation & Quick Wins ✅ **COMPLETE** (v0.4.0 - November 2025)
 **Focus**: High-impact features with low dependencies  
-**Duration**: 4-6 weeks
+**Duration**: 4-6 weeks (Oct 1 - Nov 15, 2025)
 
-| Priority | Feature | Effort | Impact | Rationale |
-|----------|---------|--------|--------|-----------|
-| ~~1️⃣~~ | ~~**#9 Parameter Support & Query Cache**~~ | ~~2-3 weeks~~ | ~~🔥 Critical~~ | ✅ **COMPLETE** (Nov 10, 2025): Parameter support via HTTP API complete. Query cache with LRU eviction implemented (10-100x speedup, 100% test coverage). Bolt protocol parameter support pending. |
-| ~~2️⃣~~ | ~~**Bolt Protocol Query Execution**~~ | ~~1-2 days~~ | ~~🔥 High~~ | ✅ **COMPLETE** (Nov 12, 2025): Full Bolt 5.1-5.8 implementation. Version negotiation byte-order fix. PackStream vendored from neo4rs. All E2E tests passing (4/4). Neo4j Python driver v6.0.2 working. Enables Neo4j Browser, official drivers, ecosystem tools. |
-| 3️⃣ | **#2 Neo4j Functions** (Phase 1: Core) | 1-2 weeks | 🔥 High | ✅ **COMPLETE** (Nov 12, 2025): Time, string, math functions. 25+ function mappings implemented. |
-| 4️⃣ | **Benchmark Suite** (Small/Medium) | 1 week | 🔥 High | ✅ **COMPLETE** (Nov 13, 2025): 14-query unified suite. Scale 1 (1K users) and Scale 10 (10K users) validated. Performance baseline: ~2077-2088ms. |
+| Priority | Feature | Effort | Impact | Status |
+|----------|---------|--------|--------|--------|
+| ~~1️⃣~~ | ~~**#9 Parameter Support & Query Cache**~~ | ~~2-3 weeks~~ | ~~🔥 Critical~~ | ✅ **COMPLETE** (Nov 10, 2025) |
+| ~~2️⃣~~ | ~~**Bolt Protocol Query Execution**~~ | ~~1-2 days~~ | ~~🔥 High~~ | ✅ **COMPLETE** (Nov 12, 2025) |
+| ~~3️⃣~~ | ~~**#2 Neo4j Functions** (Phase 1: Core)~~ | ~~1-2 weeks~~ | ~~🔥 High~~ | ✅ **COMPLETE** (Nov 12, 2025) |
+| ~~4️⃣~~ | ~~**Benchmark Suite** (Small/Medium)~~ | ~~1 week~~ | ~~🔥 High~~ | ✅ **COMPLETE** (Nov 13, 2025) |
+| ~~5️⃣~~ | ~~**Code Quality & Refactoring**~~ | ~~2 days~~ | ~~🌟 Medium~~ | ✅ **COMPLETE** (Nov 14-15, 2025) |
+| ~~6️⃣~~ | ~~**Undirected Relationships**~~ | ~~1 day~~ | ~~🌟 Medium~~ | ✅ **COMPLETE** (Nov 15, 2025) |
 
-**Deliverables**:
+**Phase 1 Deliverables** ✅:
 - ✅ Parameters working in HTTP API (Nov 10, 2025)
 - ✅ Query plan cache reducing latency by 10-100x (Nov 10, 2025)
-- ✅ **Bolt 5.8 protocol complete with E2E tests** (Nov 12, 2025)
+- ✅ Bolt 5.8 protocol complete with E2E tests (Nov 12, 2025)
 - ✅ 25+ Neo4j functions supported (datetime, string, math) (Nov 12, 2025)
 - ✅ Reproducible benchmarks for 1K-10K scale (Nov 13, 2025)
+- ✅ Major code refactoring: plan_builder.rs modularization (Nov 14-15, 2025)
+- ✅ Undirected relationship support with OR JOIN logic (Nov 15, 2025)
 
-**v0.4.0 Release Goals**:
+**v0.4.0 Release Ready** 🚀:
 - ✅ Production-ready query caching
-- ✅ **Neo4j Bolt 5.8 protocol compatibility**
+- ✅ Neo4j Bolt 5.8 protocol compatibility
 - ✅ Neo4j function compatibility improved (25+ functions)
 - ✅ Performance baseline established (14/14 queries, 2077-2088ms)
+- ✅ Improved code maintainability (22% size reduction in plan_builder.rs)
+- ✅ Enhanced feature completeness (undirected relationships)
 
 ---
 

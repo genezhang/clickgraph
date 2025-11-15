@@ -210,9 +210,9 @@ fn is_standalone_expression(expr: &RenderExpr) -> bool {
             list.iter().all(is_standalone_expression)
         }
         // Any reference to columns, properties, or aliases means it's not standalone
-        RenderExpr::Column(_) | 
-        RenderExpr::PropertyAccessExp(_) | 
-        RenderExpr::TableAlias(_) | 
+        RenderExpr::Column(_) |
+        RenderExpr::PropertyAccessExp(_) |
+        RenderExpr::TableAlias(_) |
         RenderExpr::ColumnAlias(_) |
         RenderExpr::AggregateFnCall(_) |
         RenderExpr::InSubquery(_) => false,
@@ -224,7 +224,7 @@ fn is_standalone_expression(expr: &RenderExpr) -> bool {
 /// Returns a vector of (left_connection, right_connection, relationship_alias) tuples
 fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(String, String, String)> {
     let mut connections = vec![];
-    
+
     fn collect_connections(plan: &LogicalPlan, connections: &mut Vec<(String, String, String)>) {
         match plan {
             LogicalPlan::GraphRel(graph_rel) => {
@@ -244,7 +244,7 @@ fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(String, String, 
             _ => {}
         }
     }
-    
+
     collect_connections(plan, &mut connections);
     connections
 }
@@ -253,7 +253,7 @@ fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(String, String, 
 /// The anchor is the node that should be in the FROM clause
 /// Strategy: Prefer required (non-optional) nodes over optional nodes
 /// When mixing MATCH and OPTIONAL MATCH, the required node should be the anchor (FROM table)
-/// 
+///
 /// Algorithm:
 /// 1. Collect all unique nodes (from both left and right connections)
 /// 2. Prefer nodes that are NOT in optional_aliases (required nodes)
@@ -262,7 +262,7 @@ fn find_anchor_node(connections: &[(String, String, String)], optional_aliases: 
     if connections.is_empty() {
         return None;
     }
-    
+
     // Strategy 1: Prefer LEFT connections that are required (not optional)
     // Check LEFT nodes first since they should be the anchor in (a)-[]->(b) patterns
     for (left, _, _) in connections {
@@ -271,7 +271,7 @@ fn find_anchor_node(connections: &[(String, String, String)], optional_aliases: 
             return Some(left.clone());
         }
     }
-    
+
     // Strategy 2: If all LEFT nodes are optional, check RIGHT nodes that are required
     for (_, right, _) in connections {
         if !optional_aliases.contains(right) {
@@ -279,20 +279,20 @@ fn find_anchor_node(connections: &[(String, String, String)], optional_aliases: 
             return Some(right.clone());
         }
     }
-    
+
     // Strategy 3: All nodes are optional - use traditional anchor pattern
     // (left_connection that is NOT in right_nodes)
     let right_nodes: std::collections::HashSet<_> = connections.iter()
         .map(|(_, right, _)| right.clone())
         .collect();
-    
+
     for (left, _, _) in connections {
         if !right_nodes.contains(left) {
             log::warn!("⚠️ All nodes are optional, using anchor pattern: {}", left);
             return Some(left.clone());
         }
     }
-    
+
     // Strategy 4: Fallback to first left_connection
     let fallback = connections.first().map(|(left, _, _)| left.clone());
     if let Some(ref alias) = fallback {
@@ -306,7 +306,7 @@ fn references_end_node_alias(condition: &OperatorApplication, connections: &[(St
     let end_aliases: std::collections::HashSet<String> = connections.iter()
         .map(|(_, right_alias, _)| right_alias.clone())
         .collect();
-    
+
     // Check if any operand in the condition references an end node alias
     condition.operands.iter().any(|operand| {
         match operand {
@@ -352,7 +352,7 @@ fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name: &str, tab
                             "relationships" => Some("path_relationships"),
                             _ => None,
                         };
-                        
+
                         if let Some(col_name) = column_name {
                             return if table_alias.is_empty() {
                                 RenderExpr::Column(Column(col_name.to_string()))
@@ -366,12 +366,12 @@ fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name: &str, tab
                     }
                 }
             }
-            
+
             // Recursively rewrite arguments for nested calls
             let rewritten_args: Vec<RenderExpr> = fn_call.args.iter()
                 .map(|arg| rewrite_path_functions_with_table(arg, path_var_name, table_alias))
                 .collect();
-            
+
             RenderExpr::ScalarFnCall(ScalarFnCall {
                 name: fn_call.name.clone(),
                 args: rewritten_args,
@@ -382,7 +382,7 @@ fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name: &str, tab
             let rewritten_operands: Vec<RenderExpr> = op.operands.iter()
                 .map(|operand| rewrite_path_functions_with_table(operand, path_var_name, table_alias))
                 .collect();
-            
+
             RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: op.operator.clone(),
                 operands: rewritten_operands,
@@ -397,7 +397,7 @@ fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name: &str, tab
             let rewritten_args: Vec<RenderExpr> = agg.args.iter()
                 .map(|arg| rewrite_path_functions_with_table(arg, path_var_name, table_alias))
                 .collect();
-            
+
             RenderExpr::AggregateFnCall(AggregateFnCall {
                 name: agg.name.clone(),
                 args: rewritten_args,
@@ -547,12 +547,12 @@ fn render_expr_to_sql_for_cte(
     start_cypher_alias: &str,
     end_cypher_alias: &str,
 ) -> String {
-    
+
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
             let table_alias = &prop.table_alias.0;
             let column = &prop.column.0;
-            
+
             // Map Cypher alias to SQL table alias
             if table_alias == start_cypher_alias {
                 format!("start_node.{}", column)
@@ -565,7 +565,7 @@ fn render_expr_to_sql_for_cte(
         }
         RenderExpr::OperatorApplicationExp(op) => {
             use super::render_expr::Operator;
-            
+
             let operator_sql = match op.operator {
                 Operator::Equal => "=",
                 Operator::NotEqual => "!=",
@@ -578,15 +578,15 @@ fn render_expr_to_sql_for_cte(
                 Operator::Not => "NOT",
                 _ => "=", // Fallback
             };
-            
+
             if op.operands.len() == 2 {
-                format!("{} {} {}", 
+                format!("{} {} {}",
                     render_expr_to_sql_for_cte(&op.operands[0], start_cypher_alias, end_cypher_alias),
                     operator_sql,
                     render_expr_to_sql_for_cte(&op.operands[1], start_cypher_alias, end_cypher_alias)
                 )
             } else if op.operands.len() == 1 {
-                format!("{} {}", 
+                format!("{} {}",
                     operator_sql,
                     render_expr_to_sql_for_cte(&op.operands[0], start_cypher_alias, end_cypher_alias)
                 )
@@ -624,9 +624,9 @@ pub(crate) trait RenderPlanBuilder {
     fn extract_final_filters(&self) -> RenderPlanBuilderResult<Option<RenderExpr>>;
 
     fn extract_ctes(&self, last_node_alias: &str) -> RenderPlanBuilderResult<Vec<Cte>>;
-    
+
     fn extract_ctes_with_context(&self, last_node_alias: &str, context: &mut CteGenerationContext) -> RenderPlanBuilderResult<Vec<Cte>>;
-    
+
     /// Find the ID column for a given table alias by traversing the logical plan
     fn find_id_column_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<String>;
 
@@ -746,7 +746,7 @@ impl RenderPlanBuilder for LogicalPlan {
             _ => Ok(expr),
         }
     }
-    
+
     fn extract_last_node_cte(&self) -> RenderPlanBuilderResult<Option<Cte>> {
         let last_node_cte = match &self {
             LogicalPlan::Empty => None,
@@ -817,7 +817,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     .unwrap_or_else(|| "User".to_string()); // Fallback to User if not found
                 let start_table = label_to_table_name(&start_label);
                 let end_table = label_to_table_name(&end_label);
-                
+
                 // Handle multiple relationship types
                 let rel_tables = if let Some(labels) = &graph_rel.labels {
                     if labels.len() > 1 {
@@ -836,7 +836,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 vec![rel_type_to_table_name(&extract_table_name(&graph_rel.center)
                     .unwrap_or_else(|| graph_rel.alias.clone()))]
                 };
-                
+
                 // For now, use the first table for single-table logic
                 // TODO: Implement UNION logic for multiple tables
                 let rel_table = rel_tables.first().ok_or(RenderBuildError::NoRelationshipTablesFound)?.clone();                // Extract ID columns
@@ -844,7 +844,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     .unwrap_or_else(|| table_to_id_column(&start_table));
                 let end_id_col = extract_id_column(&graph_rel.right)
                     .unwrap_or_else(|| table_to_id_column(&end_table));
-                
+
                 // Extract relationship columns from ViewScan (will use schema-specific names if available)
                 let rel_cols = extract_relationship_columns(&graph_rel.center)
                     .unwrap_or(RelationshipColumns {
@@ -853,28 +853,28 @@ impl RenderPlanBuilder for LogicalPlan {
                     });
                 let from_col = rel_cols.from_id;
                 let to_col = rel_cols.to_id;
-                
+
                 // Handle variable-length paths differently
                 if let Some(spec) = &graph_rel.variable_length {
                     // Define aliases that will be used throughout
                     let start_alias = graph_rel.left_connection.clone();
                     let end_alias = graph_rel.right_connection.clone();
-                    
+
                     // Extract node labels for property mapping
                     let start_label = extract_node_label_from_viewscan(&graph_rel.left)
                         .unwrap_or_else(|| "User".to_string()); // fallback
                     let end_label = extract_node_label_from_viewscan(&graph_rel.right)
                         .unwrap_or_else(|| "User".to_string()); // fallback
-                    
+
                     // Extract and categorize filters for variable-length paths from GraphRel.where_predicate
                     let (start_filters_sql, end_filters_sql) = if let Some(where_predicate) = &graph_rel.where_predicate {
                         // Convert LogicalExpr to RenderExpr
                         let mut render_expr = RenderExpr::try_from(where_predicate.clone())
                             .map_err(|e| RenderBuildError::UnsupportedFeature(format!("Failed to convert LogicalExpr to RenderExpr: {}", e)))?;
-                        
+
                         // Apply property mapping to the filter expression before categorization
                         apply_property_mapping_to_expr(&mut render_expr, &LogicalPlan::GraphRel(graph_rel.clone()));
-                        
+
                         // Categorize filters
                         let categorized = categorize_filters(
                             Some(&render_expr),
@@ -882,26 +882,26 @@ impl RenderPlanBuilder for LogicalPlan {
                             &end_alias,
                             "", // rel_alias not used yet
                         );
-                        
+
                         // Create alias mapping
                         let alias_mapping = [
                             (start_alias.clone(), "start_node".to_string()),
                             (end_alias.clone(), "end_node".to_string()),
                         ];
-                        
+
                         let start_sql = categorized.start_node_filters
                             .map(|expr| render_expr_to_sql_string(&expr, &alias_mapping));
                         let end_sql = categorized.end_node_filters
                             .map(|expr| render_expr_to_sql_string(&expr, &alias_mapping));
-                        
+
                         (start_sql, end_sql)
                     } else {
                         (None, None)
                     };
-                    
+
                     // Extract properties from the projection for variable-length paths
                     let properties = extract_var_len_properties(self, &start_alias, &end_alias, &start_label, &end_label);
-                    
+
                     // Choose between chained JOINs (for exact hop counts) or recursive CTE (for ranges)
                     let var_len_cte = if let Some(exact_hops) = spec.exact_hop_count() {
                         // Exact hop count: use optimized chained JOINs
@@ -927,7 +927,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             &start_id_col,                   // start node ID column
                             &rel_table,                      // actual relationship table name
                             &from_col,                       // relationship from column
-                            &to_col,                         // relationship to column  
+                            &to_col,                         // relationship to column
                             &end_table,                      // actual end table name
                             &end_id_col,                     // end node ID column
                             &graph_rel.left_connection,      // start node alias (for output)
@@ -941,11 +941,11 @@ impl RenderPlanBuilder for LogicalPlan {
                         );
                         generator.generate_cte()
                     };
-                    
+
                     // Also extract CTEs from child plans
                     let mut child_ctes = graph_rel.right.extract_ctes(last_node_alias)?;
                     child_ctes.push(var_len_cte);
-                    
+
                     return Ok(child_ctes);
                 }
 
@@ -956,10 +956,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Simple relationship: no CTEs needed, use JOINs
                     return Ok(vec![]);
                 }
-                
+
                 // Handle multiple relationship types or complex cases with UNION/CTEs
                 let mut relationship_ctes = vec![];
-                
+
                 if rel_tables.len() > 1 {
                     // Multiple relationship types: create a UNION CTE
                     let union_queries: Vec<String> = rel_tables.iter().map(|table| {
@@ -968,24 +968,24 @@ impl RenderPlanBuilder for LogicalPlan {
                             .unwrap_or(("from_node_id".to_string(), "to_node_id".to_string())); // fallback
                         format!("SELECT {} as from_node_id, {} as to_node_id FROM {}", from_col, to_col, table)
                     }).collect();
-                    
+
                     let union_sql = union_queries.join(" UNION ALL ");
                     let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
-                    
+
                     // Format as proper CTE: cte_name AS (union_sql)
                     let formatted_union_sql = format!("{} AS (\n{}\n)", cte_name, union_sql);
-                    
+
                     relationship_ctes.push(Cte {
                         cte_name: cte_name.clone(),
                         content: super::CteContent::RawSql(formatted_union_sql),
                         is_recursive: false,
                     });
-                    
+
                     // PATCH: Ensure join uses the union CTE name
                     // Instead of context, propagate rel_table for join construction
                     // We'll use rel_table (CTE name) directly in join construction below
                 }
-                
+
                 // TODO: Apply the resolved table/column names to the child CTEs
                 // For now, fall back to the old path which doesn't resolve properly
                 // first extract the bottom one
@@ -1002,7 +1002,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // Add relationship CTEs to the result
                 relationship_ctes.append(&mut right_cte);
-                
+
                 Ok(relationship_ctes)
             }
             LogicalPlan::Filter(filter) => filter.input.extract_ctes(last_node_alias),
@@ -1063,7 +1063,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Build select items from ViewScan's property mappings and projections
                 // This is needed for multiple relationship types where ViewScan nodes are created
                 // for start/end nodes but don't have explicit projections
-                
+
                 if !view_scan.projections.is_empty() {
                     // Use explicit projections if available
                     view_scan.projections.iter().map(|proj| {
@@ -1088,10 +1088,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             },
             LogicalPlan::GraphNode(graph_node) => {
-                // FIX: GraphNode must generate PropertyAccessExp with its own alias, 
+                // FIX: GraphNode must generate PropertyAccessExp with its own alias,
                 // not delegate to ViewScan which doesn't know the alias.
                 // This fixes the bug where "a.name" becomes "u.name" in OPTIONAL MATCH queries.
-                
+
                 match graph_node.input.as_ref() {
                     LogicalPlan::ViewScan(view_scan) => {
                         if !view_scan.projections.is_empty() {
@@ -1126,13 +1126,13 @@ impl RenderPlanBuilder for LogicalPlan {
                 // FIX: GraphRel must generate SELECT items for both left and right nodes
                 // This fixes OPTIONAL MATCH queries where the right node (b) was being ignored
                 let mut items = vec![];
-                
+
                 // Get SELECT items from left node
                 items.extend(graph_rel.left.extract_select_items()?);
-                
+
                 // Get SELECT items from right node (for OPTIONAL MATCH, this is the optional part)
                 items.extend(graph_rel.right.extract_select_items()?);
-                
+
                 items
             },
             LogicalPlan::Filter(filter) => filter.input.extract_select_items()?,
@@ -1140,7 +1140,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Check if input is a Projection(With) - if so, collect its aliases for resolution
                 // The kind might have been changed from With to Return by analyzer passes, so also check
                 // if the inner Projection has aliases (which indicate it was originally a WITH clause)
-                let with_aliases: std::collections::HashMap<String, crate::query_planner::logical_expr::LogicalExpr> = 
+                let with_aliases: std::collections::HashMap<String, crate::query_planner::logical_expr::LogicalExpr> =
                     match projection.input.as_ref() {
                         LogicalPlan::Projection(inner_proj) => {
                             // Check if this was a WITH projection (either still marked as With, or has aliases)
@@ -1191,7 +1191,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         }
                         _ => std::collections::HashMap::new()
                     };
-                
+
                 let path_var = get_path_variable(&projection.input);
                 let items = projection.items.iter().map(|item| {
                     // Resolve TableAlias references to WITH aliases BEFORE conversion
@@ -1208,9 +1208,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     } else {
                         item.expression.clone()
                     };
-                    
+
                     let mut expr: RenderExpr = resolved_expr.try_into()?;
-                    
+
                     // Check if this is a path variable that needs to be converted to tuple construction
                     if let (Some(path_var_name), RenderExpr::TableAlias(TableAlias(alias))) = (&path_var, &expr) {
                         if alias == path_var_name {
@@ -1226,20 +1226,20 @@ impl RenderPlanBuilder for LogicalPlan {
                             });
                         }
                     }
-                    
+
                     // Rewrite path function calls: length(p), nodes(p), relationships(p)
                     // Use table alias "t" to reference CTE columns
                     if let Some(path_var_name) = &path_var {
                         expr = rewrite_path_functions_with_table(&expr, path_var_name, "t");
                     }
-                    
+
                     // IMPORTANT: Property mapping is already done in the analyzer phase by FilterTagging.apply_property_mapping
                     // for schema-based queries (which use ViewScan). Re-mapping here causes errors because the analyzer
                     // has already converted Cypher property names (e.g., "name") to database column names (e.g., "full_name").
                     // Trying to map "full_name" again fails because it's not in the property_mappings.
                     //
                     // DO NOT apply property mapping here for Projection nodes - it's already been done correctly.
-                    
+
                     let alias = item
                         .col_alias
                         .clone()
@@ -1271,18 +1271,18 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Empty => None,
             LogicalPlan::Scan(scan) => {
                 let table_name_raw = scan.table_name.clone().ok_or(RenderBuildError::MissingFromTable)?;
-                
+
                 // Check if this is a CTE placeholder for multiple relationships
                 // CTE names start with "rel_" and should not be included in FROM clause
                 if table_name_raw.starts_with("rel_") {
                     log::info!("✓ Skipping CTE placeholder '{}' in FROM clause - will be referenced in JOINs", table_name_raw);
                     return Ok(None);
                 }
-                
+
                 // Apply relationship type mapping if this might be a relationship scan
                 // (Node scans should be ViewScan after our fix, so remaining Scans are likely relationships)
                 let table_name = rel_type_to_table_name(&table_name_raw);
-                
+
                 // Get the alias - use Scan's table_alias if available
                 let alias = if let Some(ref scan_alias) = scan.table_alias {
                     log::info!("✓ Scan has table_alias='{}' for table '{}'", scan_alias, table_name);
@@ -1291,12 +1291,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     // No alias in Scan - this shouldn't happen for relationship scans!
                     // Generate a warning and use a default
                     let default_alias = "t".to_string();
-                    log::error!("❌ BUG: Scan for table '{}' has NO table_alias! Using fallback '{}'", 
+                    log::error!("❌ BUG: Scan for table '{}' has NO table_alias! Using fallback '{}'",
                         table_name, default_alias);
                     log::error!("   This indicates the Scan was created without preserving the Cypher variable name!");
                     default_alias
                 };
-                
+
                 log::info!("✓ Creating ViewTableRef: table='{}', alias='{}'", table_name, alias);
                 Some(ViewTableRef::new_view_with_alias(
                     Arc::new(LogicalPlan::Scan(scan.clone())),
@@ -1361,7 +1361,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Check if both nodes are anonymous (edge-driven query)
                 let left_table_name = extract_table_name(&graph_rel.left);
                 let right_table_name = extract_table_name(&graph_rel.right);
-                
+
                 // If both nodes are anonymous, use the relationship table as FROM
                 if left_table_name.is_none() && right_table_name.is_none() {
                     // Edge-driven query: use relationship table directly (not as CTE)
@@ -1376,15 +1376,15 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Fallback to normal extraction if not a ViewScan
                     return Ok(None);
                 }
-                
+
                 // For GraphRel with labeled nodes, we need to include the start node in the FROM clause
                 // This handles simple relationship queries where the start node should be FROM
-                
+
                 // For OPTIONAL MATCH, prefer the required (non-optional) node as FROM
                 // Check if this is an optional relationship (left node optional, right node required)
                 let prefer_right_as_from = graph_rel.is_optional == Some(true);
-                
-                println!("DEBUG: graph_rel.is_optional = {:?}, prefer_right_as_from = {}", 
+
+                println!("DEBUG: graph_rel.is_optional = {:?}, prefer_right_as_from = {}",
                          graph_rel.is_optional, prefer_right_as_from);
 
                 let (primary_from, fallback_from) = if prefer_right_as_from {
@@ -1394,7 +1394,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     // For required relationships, use left (start) node as FROM
                     (graph_rel.left.extract_from(), graph_rel.right.extract_from())
                 };
-                
+
                 println!("DEBUG: primary_from = {:?}", primary_from);
                 println!("DEBUG: fallback_from = {:?}", fallback_from);
 
@@ -1437,7 +1437,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             // Use find_anchor_node logic to choose the correct anchor
                             let all_connections = get_all_relationship_connections(&self);
                             let optional_aliases = std::collections::HashSet::new();
-                            
+
                             if let Some(anchor_alias) = find_anchor_node(&all_connections, &optional_aliases) {
                                 // Determine which node (left or right) the anchor corresponds to
                                 let (table_plan, connection_alias) = if anchor_alias == graph_rel.left_connection {
@@ -1445,7 +1445,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 } else {
                                     (&graph_rel.right, &graph_rel.right_connection)
                                 };
-                                
+
                                 let table_name = extract_table_name(table_plan)
                                     .ok_or_else(|| super::errors::RenderBuildError::TableNameNotFound(format!(
                                         "Could not resolve table name for anchor alias '{}', plan: {:?}",
@@ -1487,7 +1487,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         _ => None,
                     }
                 }
-                
+
                 // Try to find GraphRel through any Projection/Filter wrappers
                 if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
                     if let Some(labels) = &graph_rel.labels {
@@ -1495,7 +1495,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             // Multiple relationship types: need both start and end nodes in FROM
                             // Get end node from GraphRel
                             let end_from = graph_rel.right.extract_from()?;
-                            
+
                             // Return the end node - start node will be added as CROSS JOIN
                             from_table_to_view_ref(end_from)
                         } else {
@@ -1503,7 +1503,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             // FIX: For multi-hop queries, find the anchor node
                             // Collect all relationship connections to find which node is the anchor
                             let all_connections = get_all_relationship_connections(&graph_joins.input);
-                            
+
                             if let Some(anchor_alias) = find_anchor_node(&all_connections, &graph_joins.optional_aliases) {
                                 println!("DEBUG: GraphJoins.extract_from() - found anchor node: {}", anchor_alias);
                                 // Get the table name for the anchor node by recursively finding the GraphNode with matching alias
@@ -1544,7 +1544,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         // No labels: Use anchor node logic for multi-hop
                         // FIX: Same logic - find anchor node for multi-hop
                         let all_connections = get_all_relationship_connections(&graph_joins.input);
-                        
+
                         if let Some(anchor_alias) = find_anchor_node(&all_connections, &graph_joins.optional_aliases) {
                             // Get the table name for the anchor node
                             if let Some(table_name) = find_table_name_for_alias(&graph_joins.input, &anchor_alias) {
@@ -1627,7 +1627,7 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_filters()?,
             LogicalPlan::GraphRel(graph_rel) => {
                 log::trace!("GraphRel node detected, extracting filters from where_predicate only");
-                
+
                 // For GraphRel, check where_predicate first
                 // If present, use it (these are predicates that should go in final WHERE clause)
                 if let Some(ref predicate) = graph_rel.where_predicate {
@@ -1639,7 +1639,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     // This handles cases where Filter is nested under GraphRel
                     // (e.g., multiple OPTIONAL MATCH wrapping a WHERE clause)
                     log::trace!("GraphRel has no where_predicate, checking children");
-                    
+
                     // Try left, center, right in order
                     graph_rel.left.extract_filters()?
                         .or_else(|| graph_rel.center.extract_filters().ok().flatten())
@@ -1689,14 +1689,14 @@ impl RenderPlanBuilder for LogicalPlan {
                     apply_property_mapping_to_expr(&mut filter_expr, &LogicalPlan::GraphRel(graph_rel.clone()));
                     let start_alias = graph_rel.left_connection.clone();
                     let end_alias = graph_rel.right_connection.clone();
-                    
+
                     let categorized = categorize_filters(
                         Some(&filter_expr),
                         &start_alias,
                         &end_alias,
                         &graph_rel.alias,
                     );
-                    
+
                     categorized.path_function_filters
                 } else {
                     None
@@ -1720,7 +1720,7 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GraphNode(graph_node) => {
                 // For nested GraphNodes (multiple standalone nodes), create CROSS JOINs
                 let mut joins = vec![];
-                
+
                 // If this GraphNode has another GraphNode as input, create a CROSS JOIN for the inner node
                 if let LogicalPlan::GraphNode(inner_node) = graph_node.input.as_ref() {
                     if let Some(table_name) = extract_table_name(&graph_node.input) {
@@ -1732,11 +1732,11 @@ impl RenderPlanBuilder for LogicalPlan {
                         });
                     }
                 }
-                
+
                 // Recursively get joins from the input
                 let mut inner_joins = graph_node.input.extract_joins()?;
                 joins.append(&mut inner_joins);
-                
+
                 joins
             },
             LogicalPlan::GraphJoins(graph_joins) => {
@@ -1744,7 +1744,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // These were carefully constructed to handle OPTIONAL MATCH, multi-hop, etc.
                 println!("DEBUG: GraphJoins extract_joins - using pre-computed joins from analyzer");
                 println!("DEBUG: graph_joins.joins.len() = {}", graph_joins.joins.len());
-                
+
                 // Convert from logical_plan::Join to render_plan::Join
                 graph_joins.joins.iter()
                     .map(|j| j.clone().try_into())
@@ -1753,7 +1753,7 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GraphRel(graph_rel) => {
                 // FIX: GraphRel must generate JOINs for the relationship traversal
                 // This fixes OPTIONAL MATCH queries by creating proper JOIN clauses
-                
+
                 // MULTI-HOP FIX: If left side is another GraphRel, recursively extract its joins first
                 // This handles patterns like (a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)
                 let mut joins = vec![];
@@ -1762,12 +1762,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     let mut left_joins = graph_rel.left.extract_joins()?;
                     joins.append(&mut left_joins);
                 }
-                
+
                 // First, check if the plan_ctx marks this relationship as optional
                 // This is set by OPTIONAL MATCH clause processing
                 let is_optional = graph_rel.is_optional.unwrap_or(false);
                 let join_type = if is_optional { JoinType::Left } else { JoinType::Inner };
-                
+
                 // Extract table names and columns
                 let start_label = extract_node_label_from_viewscan(&graph_rel.left)
                     .unwrap_or_else(|| "User".to_string());
@@ -1775,7 +1775,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     .unwrap_or_else(|| "User".to_string());
                 let start_table = label_to_table_name(&start_label);
                 let end_table = label_to_table_name(&end_label);
-                
+
                 // Get relationship table
                 let rel_table = if let Some(labels) = &graph_rel.labels {
                     if !labels.is_empty() {
@@ -1786,7 +1786,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 } else {
                     extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
                 };
-                
+
                 // MULTI-HOP FIX: For ID columns, use table lookup based on connection aliases
                 // instead of extract_id_column which fails for nested GraphRel
                 // The left_connection tells us which node alias we're connecting from
@@ -1802,18 +1802,18 @@ impl RenderPlanBuilder for LogicalPlan {
                 };
                 let end_id_col = extract_id_column(&graph_rel.right)
                     .unwrap_or_else(|| table_to_id_column(&end_table));
-                
+
                 // Get relationship columns
                 let rel_cols = extract_relationship_columns(&graph_rel.center)
                     .unwrap_or(RelationshipColumns {
                         from_id: "from_node_id".to_string(),
                         to_id: "to_node_id".to_string(),
                     });
-                
+
                 // Check if this is an undirected relationship (Direction::Either)
                 let is_undirected = matches!(graph_rel.direction, Direction::Either);
                 println!("DEBUG: Direction={:?}, is_undirected={}", graph_rel.direction, is_undirected);
-                
+
                 // OPTIONAL MATCH FIX: For incoming optional relationships like (b:User)-[:FOLLOWS]->(a)
                 // where 'a' is required and 'b' is optional, we need to reverse the JOIN order:
                 // 1. JOIN b first (optional node)
@@ -1822,10 +1822,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Detect this case: is_optional=true AND FROM clause is right node
                 // (The FROM clause selection logic prefers right node when is_optional=true)
                 let reverse_join_order = is_optional;
-                
+
                 if reverse_join_order {
                     println!("DEBUG: Reversing JOIN order for optional relationship (b)-[:FOLLOWS]->(a) where a is FROM");
-                    
+
                     // JOIN 1: End node (optional left node 'b')
                     //   e.g., LEFT JOIN users AS b ON b.user_id = r.to_node_id
                     joins.push(Join {
@@ -1846,7 +1846,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         }],
                         join_type: join_type.clone(),
                     });
-                    
+
                     // JOIN 2: Relationship table (can now reference both nodes)
                     //   e.g., LEFT JOIN follows AS r ON r.follower_id = b.user_id AND r.followed_id = a.user_id
                     joins.push(Join {
@@ -1884,14 +1884,14 @@ impl RenderPlanBuilder for LogicalPlan {
                     });
                 } else {
                     // Normal order: relationship first, then end node
-                    
+
                     // Check if this is an undirected relationship (Direction::Either)
                     let is_undirected = matches!(graph_rel.direction, Direction::Either);
-                    
+
                     if is_undirected {
                         // UNDIRECTED RELATIONSHIP FIX: For (a)-[r]-(b) patterns, match either direction
                         // Generate: INNER JOIN rel AS r ON (r.from = a.id AND r.to = b.id) OR (r.from = b.id AND r.to = a.id)
-                        
+
                         // JOIN 1: Relationship table with OR condition for both directions
                         joins.push(Join {
                             table_name: rel_table.clone(),
@@ -1970,7 +1970,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             ],
                             join_type: join_type.clone(),
                         });
-                        
+
                         // JOIN 2: End node (no changes needed, but must be present)
                         //   e.g., INNER JOIN users AS b ON b.user_id = r.to_node_id OR b.user_id = r.from_node_id
                         // Note: We use a simpler condition here since the relationship JOIN already handles directionality
@@ -2034,7 +2034,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             }],
                             join_type: join_type.clone(),
                         });
-                        
+
                         // JOIN 2: Relationship table -> End node
                         //   e.g., LEFT JOIN users AS b ON b.user_id = r.to_node_id
                         joins.push(Join {
@@ -2057,7 +2057,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         });
                     }
                 }
-                
+
                 joins
             }
             _ => vec![],
@@ -2146,7 +2146,7 @@ impl RenderPlanBuilder for LogicalPlan {
         use crate::graph_catalog::graph_schema::GraphSchema;
         use std::collections::HashMap;
         let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
-        
+
         let union_opt = match &self {
             LogicalPlan::Union(union) => Some(Union {
                 input: union
@@ -2164,9 +2164,9 @@ impl RenderPlanBuilder for LogicalPlan {
     /// Try to build a JOIN-based render plan for simple queries
     /// Returns Ok(plan) if successful, Err(_) if this query needs CTE-based processing
     fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
-        
+
         println!("DEBUG: try_build_join_based_plan called");
-        
+
         // First, extract ORDER BY/LIMIT/SKIP if present
         let (core_plan, order_by_items, limit_val, skip_val) = match self {
             LogicalPlan::Limit(limit_node) => {
@@ -2185,7 +2185,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             other => (other, None, None, None)
         };
-        
+
         // Check for GraphJoins wrapping Projection(Return) -> GroupBy pattern
         if let LogicalPlan::GraphJoins(graph_joins) = core_plan {
             // Check if there's a multiple-relationship GraphRel anywhere in the tree
@@ -2195,7 +2195,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     "Multiple relationship types require CTE-based processing with UNION".to_string()
                 ));
             }
-            
+
             if let LogicalPlan::Projection(proj) = graph_joins.input.as_ref() {
                 if matches!(proj.kind, crate::query_planner::logical_plan::ProjectionKind::Return) {
                     if let LogicalPlan::GroupBy(group_by) = proj.input.as_ref() {
@@ -2203,7 +2203,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             println!("DEBUG: GraphJoins wrapping Projection(Return)->GroupBy detected, delegating to child");
                             // Delegate to the inner Projection -> GroupBy for CTE-based processing
                             let mut plan = graph_joins.input.try_build_join_based_plan()?;
-                            
+
                             // Add ORDER BY/LIMIT/SKIP if they were present in the original query
                             if let Some(items) = order_by_items {
                                 // Rewrite ORDER BY expressions for CTE context
@@ -2233,22 +2233,22 @@ impl RenderPlanBuilder for LogicalPlan {
                                 }
                                 plan.order_by = OrderByItems(order_by_items_vec);
                             }
-                            
+
                             if let Some(limit) = limit_val {
                                 plan.limit = LimitItem(Some(limit));
                             }
-                            
+
                             if let Some(skip) = skip_val {
                                 plan.skip = SkipItem(Some(skip));
                             }
-                            
+
                             return Ok(plan);
                         }
                     }
                 }
             }
         }
-        
+
         // Check if this query needs CTE-based processing
         if let LogicalPlan::Projection(proj) = self {
             if let LogicalPlan::GraphRel(graph_rel) = proj.input.as_ref() {
@@ -2259,7 +2259,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         "Variable-length paths require CTE-based processing".to_string()
                     ));
                 }
-                
+
                 // Multiple relationship types need UNION CTEs
                 if let Some(labels) = &graph_rel.labels {
                     if labels.len() > 1 {
@@ -2271,7 +2271,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             }
         }
-        
+
         // Try to build with JOINs - this will work for:
         // - Simple MATCH queries with relationships
         // - OPTIONAL MATCH queries (via GraphRel.extract_joins)
@@ -2281,19 +2281,19 @@ impl RenderPlanBuilder for LogicalPlan {
         // - Multiple relationship types (need UNION CTEs)
         // - Complex nested queries
         // - Queries that don't have extractable JOINs
-        
+
         println!("DEBUG: Calling build_simple_relationship_render_plan");
         self.build_simple_relationship_render_plan()
     }
-    
+
     /// Build render plan for simple relationship queries using direct JOINs
     fn build_simple_relationship_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
         println!("DEBUG: build_simple_relationship_render_plan START - plan type: {:?}", std::mem::discriminant(self));
-        
+
         // Special case: Detect Projection(kind=Return) over GroupBy
         // This can be wrapped in OrderBy/Limit/Skip nodes
         // CTE is needed when RETURN items require data not available from WITH output
-        
+
         // Unwrap OrderBy, Limit, Skip to find the core Projection
         let (core_plan, order_by, limit_val, skip_val) = match self {
             LogicalPlan::Limit(limit_node) => {
@@ -2327,10 +2327,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 (other, None, None, None)
             }
         };
-        
-        println!("DEBUG: After unwrapping - core_plan type: {:?}, has_order_by: {}, has_limit: {}, has_skip: {}", 
+
+        println!("DEBUG: After unwrapping - core_plan type: {:?}, has_order_by: {}, has_limit: {}, has_skip: {}",
             std::mem::discriminant(core_plan), order_by.is_some(), limit_val.is_some(), skip_val.is_some());
-        
+
         // Now check if core_plan is Projection(Return) over GroupBy
         if let LogicalPlan::Projection(outer_proj) = core_plan {
             println!("DEBUG: core_plan is Projection, kind: {:?}", outer_proj.kind);
@@ -2343,7 +2343,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     // 1. Node references (TableAlias that refers to a node, not a WITH alias)
                     // 2. Wildcards (like `a.*`)
                     // 3. References to WITH projection aliases that aren't in the inner projection
-                    
+
                     // Collect all WITH projection aliases from the inner Projection
                     let with_aliases: std::collections::HashSet<String> = if let LogicalPlan::Projection(inner_proj) = group_by.input.as_ref() {
                         inner_proj.items.iter()
@@ -2352,27 +2352,27 @@ impl RenderPlanBuilder for LogicalPlan {
                     } else {
                         std::collections::HashSet::new()
                     };
-                    
+
                     // CTE is always needed when there are WITH aliases (aggregates)
                     // because the outer query needs to reference them from the CTE
                     let needs_cte = !with_aliases.is_empty() || outer_proj.items.iter().any(|item| {
                         match &item.expression {
-                            crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop) 
+                            crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop)
                                 if prop.column.0 == "*" => true,
                             _ => false
                         }
                     });
-                    
+
                     if needs_cte {
                         println!("DEBUG: Detected Projection(Return) over GroupBy where RETURN needs data beyond WITH output - using CTE pattern");
-                        
+
                         // Build the GROUP BY subquery as a CTE
                         // Step 1: Build inner query (GROUP BY + HAVING) as a RenderPlan
                         use crate::graph_catalog::graph_schema::GraphSchema;
                         use std::collections::HashMap;
                         let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
                         let inner_render_plan = group_by.input.to_render_plan(&empty_schema)?;
-                        
+
                         // Step 2: Extract GROUP BY expressions and HAVING clause
                         // Fix wildcard grouping: a.* -> a.user_id (use ID column from schema)
                         let group_by_exprs: Vec<RenderExpr> = group_by.expressions
@@ -2407,13 +2407,13 @@ impl RenderPlanBuilder for LogicalPlan {
                                 fixed_expr.try_into()
                             })
                             .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?;
-                        
+
                         let having_expr: Option<RenderExpr> = if let Some(having) = &group_by.having_clause {
                             Some(having.clone().try_into()?)
                         } else {
                             None
                         };
-                        
+
                         // Step 2.5: Build SELECT list for CTE (only grouping keys + aggregates, not wildcards)
                         // Extract from the inner Projection (child of GroupBy)
                         let cte_select_items = if let LogicalPlan::Projection(inner_proj) = group_by.input.as_ref() {
@@ -2422,10 +2422,10 @@ impl RenderPlanBuilder for LogicalPlan {
                                 .map(|item| {
                                     // For each projection item, check if it's an aggregate or grouping key
                                     let render_expr: RenderExpr = item.expression.clone().try_into()?;
-                                    
+
                                     // Normalize aggregate arguments: COUNT(b) -> COUNT(b.user_id)
                                     let normalized_expr = self.normalize_aggregate_args(render_expr)?;
-                                    
+
                                     // Replace wildcard expressions with the specific ID column
                                     let (fixed_expr, auto_alias) = match &normalized_expr {
                                         RenderExpr::PropertyAccessExp(prop) if prop.column.0 == "*" => {
@@ -2440,12 +2440,12 @@ impl RenderPlanBuilder for LogicalPlan {
                                         }
                                         _ => (normalized_expr, None)
                                     };
-                                    
+
                                     // Use existing alias if present, otherwise use auto-generated alias for grouping keys
                                     let col_alias = item.col_alias.as_ref()
                                         .map(|a| super::render_expr::ColumnAlias(a.0.clone()))
                                         .or(auto_alias);
-                                    
+
                                     Ok(super::SelectItem {
                                         expression: fixed_expr,
                                         col_alias,
@@ -2456,7 +2456,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             // Fallback to original select items
                             inner_render_plan.select.0.clone()
                         };
-                        
+
                         // Step 3: Create CTE with GROUP BY + HAVING
                         let cte_name = "grouped_data".to_string();
                         let cte = Cte {
@@ -2476,7 +2476,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             }),
                             is_recursive: false,
                         };
-                        
+
                         // Step 4: Build outer query that joins to CTE
                         // Extract the grouping key to use for join (use the FIXED expression with ID column)
                         let grouping_key_render = if let Some(first_expr) = group_by_exprs.first() {
@@ -2486,7 +2486,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 "GroupBy has no grouping expressions after fixing wildcards".to_string()
                             ));
                         };
-                        
+
                         // Extract table alias and column name from the fixed grouping key
                         let (table_alias, key_column) = match &grouping_key_render {
                             RenderExpr::PropertyAccessExp(prop_access) => {
@@ -2498,14 +2498,14 @@ impl RenderPlanBuilder for LogicalPlan {
                                 ));
                             }
                         };
-                        
+
                         // Build outer SELECT items from outer_proj
                         // Need to rewrite references to WITH aliases to pull from the CTE
                         let outer_select_items = outer_proj.items
                             .iter()
                             .map(|item| {
                                 let expr: RenderExpr = item.expression.clone().try_into()?;
-                                
+
                                 // Rewrite TableAlias references that are WITH aliases to reference the CTE
                                 let rewritten_expr = match &expr {
                                     RenderExpr::TableAlias(alias) => {
@@ -2522,29 +2522,29 @@ impl RenderPlanBuilder for LogicalPlan {
                                     }
                                     _ => expr
                                 };
-                                
+
                                 Ok(super::SelectItem {
                                     expression: rewritten_expr,
                                     col_alias: item.col_alias.as_ref().map(|alias| super::render_expr::ColumnAlias(alias.0.clone())),
                                 })
                             })
                             .collect::<Result<Vec<super::SelectItem>, RenderBuildError>>()?;
-                        
+
                         // Extract FROM table for the outer query (from the original table)
                         // NOTE: ClickHouse CTE scoping - we need to be careful about table references
                         let outer_from = inner_render_plan.from.clone();
-                        
+
                         // Create JOIN condition: a.user_id = grouped_data.user_id
                         let cte_key_expr = RenderExpr::PropertyAccessExp(super::render_expr::PropertyAccess {
                             table_alias: super::render_expr::TableAlias(cte_name.clone()),
                             column: super::render_expr::Column(key_column.clone()),
                         });
-                        
+
                         let join_condition = super::render_expr::OperatorApplication {
                             operator: super::render_expr::Operator::Equal,
                             operands: vec![grouping_key_render, cte_key_expr],
                         };
-                        
+
                         // Create a join to the CTE
                         let cte_join = super::Join {
                             table_name: cte_name.clone(),
@@ -2552,15 +2552,15 @@ impl RenderPlanBuilder for LogicalPlan {
                             joining_on: vec![join_condition],
                             join_type: super::JoinType::Inner,
                         };
-                        
+
                         println!("DEBUG: Created GroupBy CTE pattern with table_alias={}, key_column={}", table_alias, key_column);
-                        
+
                         // Build ORDER BY items, rewriting WITH alias references to CTE references
                         let order_by_items = if let Some(order_items) = order_by {
                             order_items.iter()
                                 .map(|item| {
                                     let expr: RenderExpr = item.expression.clone().try_into()?;
-                                    
+
                                     // Rewrite TableAlias references to WITH aliases
                                     let rewritten_expr = match &expr {
                                         RenderExpr::TableAlias(alias) => {
@@ -2575,7 +2575,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                         }
                                         _ => expr
                                     };
-                                    
+
                                     Ok(super::OrderByItem {
                                         expression: rewritten_expr,
                                         order: match item.order {
@@ -2588,7 +2588,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         } else {
                             vec![]
                         };
-                        
+
                         // Return the CTE-based plan with proper JOIN, ORDER BY, and LIMIT
                         return Ok(RenderPlan {
                             ctes: CteItems(vec![cte]),
@@ -2613,17 +2613,17 @@ impl RenderPlanBuilder for LogicalPlan {
         } else {
             println!("DEBUG: core_plan is NOT Projection, discriminant: {:?}", std::mem::discriminant(core_plan));
         }
-        
+
         let final_select_items = self.extract_select_items()?;
         println!("DEBUG: build_simple_relationship_render_plan - final_select_items: {:?}", final_select_items);
-        
+
         // Validate that we have proper select items
         if final_select_items.is_empty() {
             return Err(RenderBuildError::InvalidRenderPlan(
                 "No select items found for relationship query. This usually indicates missing schema information or incomplete query planning.".to_string()
             ));
         }
-        
+
         // Validate that select items are not just literals (which would indicate failed expression conversion)
         for item in &final_select_items {
             if let RenderExpr::Literal(_) = &item.expression {
@@ -2632,20 +2632,20 @@ impl RenderPlanBuilder for LogicalPlan {
                 ));
             }
         }
-        
+
         let mut final_from = self.extract_from()?;
         println!("DEBUG: build_simple_relationship_render_plan - final_from: {:?}", final_from);
-        
+
         // Validate that we have a FROM clause
         if final_from.is_none() {
             return Err(RenderBuildError::InvalidRenderPlan(
                 "No FROM table found for relationship query. Schema inference may have failed.".to_string()
             ));
         }
-        
+
         let final_filters = self.extract_filters()?;
         println!("DEBUG: build_simple_relationship_render_plan - final_filters: {:?}", final_filters);
-        
+
         // Validate that filters don't contain obviously invalid expressions
         if let Some(ref filter_expr) = final_filters {
             if is_invalid_filter_expression(filter_expr) {
@@ -2654,10 +2654,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 ));
             }
         }
-        
+
         let extracted_joins = self.extract_joins()?;
         println!("DEBUG: build_simple_relationship_render_plan - extracted_joins: {:?}", extracted_joins);
-        
+
         // Filter out JOINs that duplicate the FROM table
         // If we're starting FROM node 'a', we shouldn't also have it in the JOINs list
         let from_alias = final_from.as_ref()
@@ -2678,10 +2678,10 @@ impl RenderPlanBuilder for LogicalPlan {
             extracted_joins
         };
         println!("DEBUG: build_simple_relationship_render_plan - filtered_joins: {:?}", filtered_joins);
-        
+
         // For simple relationships, we need to ensure proper JOIN ordering
         // The extract_joins should handle this correctly
-        
+
         Ok(RenderPlan {
             ctes: CteItems(vec![]),
             select: SelectItems(final_select_items),
@@ -2698,9 +2698,9 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
-        
+
         println!("DEBUG: to_render_plan called for plan type: {:?}", std::mem::discriminant(self));
-        
+
         // Special case for PageRank - it generates complete SQL directly
         if let LogicalPlan::PageRank(_pagerank) = self {
             // For PageRank, we create a minimal RenderPlan that will be handled specially
@@ -2719,7 +2719,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 union: UnionItems(None),
             });
         }
-        
+
         // NEW ARCHITECTURE: Prioritize JOINs over CTEs
         // Only use CTEs for variable-length paths and complex cases
         // Try to build a simple JOIN-based plan first
@@ -2733,12 +2733,12 @@ impl RenderPlanBuilder for LogicalPlan {
                 println!("DEBUG: try_build_join_based_plan failed, falling back to CTE logic");
             }
         }
-        
+
         // Variable-length paths are now supported via recursive CTE generation
         // Two-pass architecture:
         // 1. Analyze property requirements across the entire plan
         // 2. Generate CTEs with full context including required properties
-        
+
         log::trace!("Starting render plan generation for plan type: {}", match self {
             LogicalPlan::Empty => "Empty",
             LogicalPlan::Scan(_) => "Scan",
@@ -2756,10 +2756,10 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Union(_) => "Union",
             LogicalPlan::PageRank(_) => "PageRank",
         });
-        
+
         // First pass: analyze what properties are needed
         let mut context = analyze_property_requirements(self, schema);
-        
+
         let extracted_ctes: Vec<Cte>;
         let mut final_from: Option<FromTable>;
         let final_filters: Option<RenderExpr>;
@@ -2775,20 +2775,20 @@ impl RenderPlanBuilder for LogicalPlan {
 
             // Second pass: generate CTEs with full context
             extracted_ctes = self.extract_ctes_with_context(last_node_alias, &mut context)?;
-            
+
             // Check if we have a variable-length CTE (it will be a recursive RawSql CTE)
             let has_variable_length_cte = extracted_ctes.iter().any(|cte| {
                 let is_recursive = cte.is_recursive;
                 let is_raw_sql = matches!(&cte.content, super::CteContent::RawSql(_));
                 is_recursive && is_raw_sql
             });
-            
+
             if has_variable_length_cte {
                 // For variable-length paths, use the CTE itself as the FROM clause
                 let var_len_cte = extracted_ctes.iter()
                     .find(|cte| cte.is_recursive)
                     .expect("Variable-length CTE should exist");
-                    
+
                 // Create a ViewTableRef that references the CTE by name
                 // We'll use an empty LogicalPlan as the source since the CTE is already defined
                 final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
@@ -2796,7 +2796,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     name: var_len_cte.cte_name.clone(),
                     alias: Some("t".to_string()), // CTE uses 't' as alias
                 })));
-                
+
                 // Check if there are end filters stored in the context that need to be applied to the outer query
                 final_filters = context.get_end_filters_for_outer_query().cloned();
             } else {
@@ -2805,7 +2805,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     super::CteContent::Structured(plan) => (plan.from.0.clone(), plan.filters.0.clone()),
                     super::CteContent::RawSql(_) => (None, None), // Raw SQL CTEs don't have structured access
                 };
-                
+
                 final_from = view_ref_to_from_table(cte_from);
 
                 let last_node_filters_opt = clean_last_node_filters(cte_filters);
@@ -2832,20 +2832,20 @@ impl RenderPlanBuilder for LogicalPlan {
             // No CTE wrapper, but check for variable-length paths which generate CTEs directly
             // Extract CTEs with a dummy alias and context (variable-length doesn't use the alias)
             extracted_ctes = self.extract_ctes_with_context("_", &mut context)?;
-            
+
             // Check if we have a variable-length CTE (recursive or chained join)
             // Both types use RawSql content and need special FROM clause handling
-            let has_variable_length_cte = extracted_ctes.iter().any(|cte| 
-                matches!(&cte.content, super::CteContent::RawSql(_)) && 
+            let has_variable_length_cte = extracted_ctes.iter().any(|cte|
+                matches!(&cte.content, super::CteContent::RawSql(_)) &&
                 (cte.cte_name.starts_with("variable_path_") || cte.cte_name.starts_with("chained_path_"))
             );
-            
+
             if has_variable_length_cte {
                 // For variable-length paths, use the CTE itself as the FROM clause
                 let var_len_cte = extracted_ctes.iter()
                     .find(|cte| cte.cte_name.starts_with("variable_path_") || cte.cte_name.starts_with("chained_path_"))
                     .expect("Variable-length CTE should exist");
-                    
+
                 // Create a ViewTableRef that references the CTE by name
                 final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
                     source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
@@ -2866,25 +2866,25 @@ impl RenderPlanBuilder for LogicalPlan {
         }
 
         let final_select_items = self.extract_select_items()?;
-        
+
         // NOTE: Removed rewrite for select_items in variable-length paths to keep a.*, b.*
 
         let mut extracted_joins = self.extract_joins()?;
-        
+
         // For variable-length paths, add joins to get full user data
         if let Some((start_alias, end_alias)) = has_variable_length_rel(self) {
             // IMPORTANT: Remove any joins that were extracted from the GraphRel itself
-            // The CTE already handles the path traversal, so we only want to join the 
-            // endpoint nodes to the CTE result. Keeping the GraphRel joins causes 
+            // The CTE already handles the path traversal, so we only want to join the
+            // endpoint nodes to the CTE result. Keeping the GraphRel joins causes
             // "Multiple table expressions with same alias" errors.
             extracted_joins.clear();
-            
+
             // Get the actual table names and ID columns from the schema
             let start_table = get_node_table_for_alias(&start_alias);
             let end_table = get_node_table_for_alias(&end_alias);
             let start_id_col = get_node_id_column_for_alias(&start_alias);
             let end_id_col = get_node_id_column_for_alias(&end_alias);
-            
+
             extracted_joins.push(Join {
                 table_name: start_table,
                 table_alias: start_alias.clone(),
@@ -2922,7 +2922,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 join_type: JoinType::Join,
             });
         }
-        
+
         // For multiple relationship types (UNION CTE), add joins to connect nodes
         // Similar to variable-length paths, we need to clear and rebuild joins
         if let Some(union_cte) = extracted_ctes.iter().find(|cte| {
@@ -2932,29 +2932,29 @@ impl RenderPlanBuilder for LogicalPlan {
             if has_multiple_relationship_types(self) {
                 eprintln!("DEBUG: Multi-relationship query detected! Clearing extracted joins and rebuilding...");
                 eprintln!("DEBUG: Before clear: {} joins", extracted_joins.len());
-                
+
                 // Clear extracted joins like we do for variable-length paths
                 // The GraphRel joins include duplicate source node joins which cause
                 // "Multiple table expressions with same alias" errors
                 extracted_joins.clear();
-                
+
                 // Extract the node aliases from the CTE name (e.g., "rel_u_target" → "u", "target")
                 let cte_name = union_cte.cte_name.clone();
                 let parts: Vec<&str> = cte_name.strip_prefix("rel_").unwrap_or(&cte_name).split('_').collect();
-                
+
                 if parts.len() >= 2 {
                     let source_alias = parts[0].to_string();
                     let target_alias = parts[parts.len() - 1].to_string();
-                    
+
                     // Get table names and ID columns from schema
                     let source_table = get_node_table_for_alias(&source_alias);
                     let target_table = get_node_table_for_alias(&target_alias);
                     let source_id_col = get_node_id_column_for_alias(&source_alias);
                     let target_id_col = get_node_id_column_for_alias(&target_alias);
-                    
+
                     // Generate a random alias for the CTE JOIN
                     let cte_alias = crate::query_planner::logical_plan::generate_id();
-                    
+
                     // Add JOIN from CTE to source node (using CTE's from_node_id)
                     extracted_joins.push(Join {
                         table_name: cte_name.clone(),
@@ -2974,7 +2974,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         }],
                         join_type: JoinType::Join,
                     });
-                    
+
                     // Add JOIN from CTE to target node (using CTE's to_node_id)
                     extracted_joins.push(Join {
                         table_name: target_table,
@@ -3004,7 +3004,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Update joins that are relationship tables
                 // Check both with and without schema prefix (e.g., "follows" or "test_integration.follows")
                 let table_lower = join.table_name.to_lowercase();
-                if table_lower.contains("follow") || 
+                if table_lower.contains("follow") ||
                    table_lower.contains("friend") ||
                    table_lower.contains("like") ||
                    table_lower.contains("purchase") ||
@@ -3039,7 +3039,7 @@ impl RenderPlanBuilder for LogicalPlan {
         extracted_joins.sort_by_key(|join| join.joining_on.len());
 
         let mut extracted_group_by_exprs = self.extract_group_by()?;
-        
+
         // Rewrite GROUP BY expressions for variable-length paths
         if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
             let path_var = get_path_variable(self);
@@ -3049,7 +3049,7 @@ impl RenderPlanBuilder for LogicalPlan {
         }
 
         let mut extracted_order_by = self.extract_order_by()?;
-        
+
         // Rewrite ORDER BY expressions for variable-length paths
         if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
             let path_var = get_path_variable(self);
@@ -3075,7 +3075,7 @@ impl RenderPlanBuilder for LogicalPlan {
         }
 
         // Check if this is a standalone RETURN query (no MATCH, only literals/parameters/functions)
-        let is_standalone_return = final_from.is_none() && 
+        let is_standalone_return = final_from.is_none() &&
             final_select_items.iter().all(|item| {
                 is_standalone_expression(&item.expression)
             });
@@ -3084,7 +3084,7 @@ impl RenderPlanBuilder for LogicalPlan {
             // For standalone RETURN queries (e.g., "RETURN 1 + 1", "RETURN toUpper($name)"),
             // use ClickHouse's system.one table as a dummy FROM clause
             log::debug!("Detected standalone RETURN query, using system.one as FROM clause");
-            
+
             // Create a ViewTableRef that references system.one
             // Use an Empty LogicalPlan since we don't need actual view resolution for system tables
             final_from = Some(FromTable::new(Some(ViewTableRef {
@@ -3167,7 +3167,7 @@ fn plan_contains_view_scan(plan: &LogicalPlan) -> bool {
         LogicalPlan::ViewScan(_) => true,
         LogicalPlan::GraphNode(node) => plan_contains_view_scan(&node.input),
         LogicalPlan::GraphRel(rel) => {
-            plan_contains_view_scan(&rel.left) || 
+            plan_contains_view_scan(&rel.left) ||
             plan_contains_view_scan(&rel.right) ||
             plan_contains_view_scan(&rel.center)
         }
@@ -3189,7 +3189,7 @@ fn apply_property_mapping_to_expr(_expr: &mut RenderExpr, _plan: &LogicalPlan) {
     // The analyzer phase maps Cypher properties → database columns, so we should not
     // attempt to re-map them here in the render phase.
     // Re-mapping causes failures because database column names don't exist in property_mappings.
-    
+
     // The LogicalExpr PropertyAccessExp nodes already have the correct database column names
     // when they arrive here from the analyzer, so we just pass them through unchanged.
 }
