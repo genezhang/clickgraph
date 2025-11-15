@@ -163,6 +163,9 @@ fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
 }
 
 /// Helper function to check if a plan tree contains a GraphRel with multiple relationships
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::has_multiple_relationships() instead")]
 fn has_multiple_relationships(plan: &LogicalPlan) -> bool {
     match plan {
         LogicalPlan::GraphRel(graph_rel) => {
@@ -181,6 +184,9 @@ fn has_multiple_relationships(plan: &LogicalPlan) -> bool {
 }
 
 /// Helper function to extract multiple relationship info from a plan tree
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::get_multiple_rel_info() instead")]
 fn get_multiple_rel_info(plan: &LogicalPlan) -> Option<(String, String, String)> {
     match plan {
         LogicalPlan::GraphRel(graph_rel) => {
@@ -205,6 +211,9 @@ fn get_multiple_rel_info(plan: &LogicalPlan) -> Option<(String, String, String)>
 
 /// Helper function to check if an expression is standalone (doesn't reference any table columns)
 /// Returns true for literals, parameters, and functions that only use standalone expressions
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::is_standalone_expression() instead")]
 fn is_standalone_expression(expr: &RenderExpr) -> bool {
     match expr {
         RenderExpr::Literal(_) | RenderExpr::Parameter(_) | RenderExpr::Star => true,
@@ -241,6 +250,9 @@ fn is_standalone_expression(expr: &RenderExpr) -> bool {
 
 /// Helper function to extract all relationship connections from a plan tree
 /// Returns a vector of (left_connection, right_connection, relationship_alias) tuples
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::get_all_relationship_connections() instead")]
 fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(String, String, String)> {
     let mut connections = vec![];
     
@@ -277,6 +289,9 @@ fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(String, String, 
 /// 1. Collect all unique nodes (from both left and right connections)
 /// 2. Prefer nodes that are NOT in optional_aliases (required nodes)
 /// 3. Fall back to traditional anchor pattern (left-but-not-right) if no required nodes found
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::find_anchor_node() instead")]
 fn find_anchor_node(connections: &[(String, String, String)], optional_aliases: &std::collections::HashSet<String>) -> Option<String> {
     if connections.is_empty() {
         return None;
@@ -321,6 +336,9 @@ fn find_anchor_node(connections: &[(String, String, String)], optional_aliases: 
 }
 
 /// Helper function to check if a condition references an end node alias
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::references_end_node_alias() instead")]
 fn references_end_node_alias(condition: &OperatorApplication, connections: &[(String, String, String)]) -> bool {
     let end_aliases: std::collections::HashSet<String> = connections.iter()
         .map(|(_, right_alias, _)| right_alias.clone())
@@ -338,6 +356,9 @@ fn references_end_node_alias(condition: &OperatorApplication, connections: &[(St
 }
 
 /// Check if a condition references a specific node alias
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::references_node_alias() instead")]
 fn references_node_alias(condition: &OperatorApplication, node_alias: &str) -> bool {
     condition.operands.iter().any(|operand| {
         match operand {
@@ -351,12 +372,18 @@ fn references_node_alias(condition: &OperatorApplication, node_alias: &str) -> b
 
 /// Rewrite path function calls (length, nodes, relationships) to CTE column references
 /// Converts: length(p) → hop_count, nodes(p) → path_nodes, relationships(p) → path_relationships
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::rewrite_path_functions() instead")]
 fn rewrite_path_functions(expr: &RenderExpr, path_var_name: &str) -> RenderExpr {
     rewrite_path_functions_with_table(expr, path_var_name, "")
 }
 
 /// Rewrite path function calls with optional table alias
 /// table_alias: if provided, generates PropertyAccessExp (table.column), otherwise Column
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::rewrite_path_functions_with_table() instead")]
 fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name: &str, table_alias: &str) -> RenderExpr {
     match expr {
         RenderExpr::ScalarFnCall(fn_call) => {
@@ -427,6 +454,9 @@ fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name: &str, tab
 }
 
 /// Helper function to get node table name for a given alias
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::get_node_table_for_alias() instead")]
 fn get_node_table_for_alias(alias: &str) -> String {
     // Try to get from global schema first (for production/benchmark)
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
@@ -453,6 +483,9 @@ fn get_node_table_for_alias(alias: &str) -> String {
 }
 
 /// Helper function to get node ID column for a given alias
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::get_node_id_column_for_alias() instead")]
 fn get_node_id_column_for_alias(alias: &str) -> String {
     // Try to get from global schema first (for production/benchmark)
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
@@ -480,6 +513,9 @@ use super::CteGenerationContext;
 
 /// Get relationship columns from schema by relationship type
 /// Returns (from_column, to_column) for a given relationship type
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::get_relationship_columns_from_schema() instead")]
 fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(String, String)> {
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
@@ -498,6 +534,9 @@ fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(String, Strin
 
 /// Get relationship columns from schema by table name
 /// Searches all relationship schemas to find one with matching table name
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::get_relationship_columns_by_table() instead")]
 fn get_relationship_columns_by_table(table_name: &str) -> Option<(String, String)> {
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
@@ -519,6 +558,9 @@ fn get_relationship_columns_by_table(table_name: &str) -> Option<(String, String
 
 /// Get node table name and ID column from schema
 /// Returns (table_name, id_column) for a given node label
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::get_node_info_from_schema() instead")]
 fn get_node_info_from_schema(node_label: &str) -> Option<(String, String)> {
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
@@ -536,6 +578,9 @@ fn get_node_info_from_schema(node_label: &str) -> Option<(String, String)> {
 }
 
 /// Check if a logical plan contains any GraphRel with multiple relationship types
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::has_multiple_relationship_types() instead")]
 fn has_multiple_relationship_types(plan: &LogicalPlan) -> bool {
     match plan {
         LogicalPlan::GraphRel(graph_rel) => {
@@ -561,6 +606,9 @@ fn has_multiple_relationship_types(plan: &LogicalPlan) -> bool {
 
 /// Convert RenderExpr to SQL string with node alias mapping for CTE generation
 /// Maps Cypher aliases (e.g., "a", "b") to SQL table aliases (e.g., "start_node", "end_node")
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::render_expr_to_sql_for_cte() instead")]
 fn render_expr_to_sql_for_cte(
     expr: &RenderExpr,
     start_cypher_alias: &str,
