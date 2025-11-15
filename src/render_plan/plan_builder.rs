@@ -23,14 +23,20 @@ use super::filter_pipeline::{
 use crate::render_plan::cte_extraction::extract_ctes_with_context;
 use crate::render_plan::cte_extraction::{label_to_table_name, rel_types_to_table_names, rel_type_to_table_name, table_to_id_column, extract_relationship_columns, RelationshipColumns, extract_node_label_from_viewscan, has_variable_length_rel, get_path_variable};
 
-// Import helper functions from the dedicated helpers module
-use super::plan_builder_helpers;
+// Import ALL helper functions from the dedicated helpers module using glob import
+// This allows existing code to call helpers without changes (e.g., extract_table_name())
+// The compiler will use the module functions when available
+#[allow(unused_imports)]
+use super::plan_builder_helpers::*;
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
 
 /// Helper function to extract the actual table name from a LogicalPlan node
-/// NOTE: This function is duplicated in plan_builder_helpers.rs
-/// TODO: Remove this version and use plan_builder_helpers::extract_table_name() instead
+/// Recursively traverses the plan tree to find the Scan or ViewScan node
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+/// TODO: Remove this duplicate once all code uses the helpers module version
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::extract_table_name() instead")]
 /// Recursively traverses the plan tree to find the Scan or ViewScan node
 fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
     match plan {
@@ -47,6 +53,9 @@ fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
 
 /// Helper function to find the table name for a given alias by recursively searching the plan tree
 /// Used to find the anchor node's table in multi-hop queries
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::find_table_name_for_alias() instead")]
 fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
     match plan {
         LogicalPlan::GraphNode(node) => {
@@ -74,6 +83,9 @@ fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<S
     }
 }
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::render_expr_to_sql_string() instead")]
 fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> String {
     match expr {
         RenderExpr::Column(col) => col.0.clone(),
@@ -136,6 +148,9 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
 }
 
 /// Helper to extract ID column name from ViewScan
+/// 
+/// ⚠️ DEPRECATED: This function is now available in plan_builder_helpers module
+#[deprecated(since = "0.2.0", note = "Use plan_builder_helpers::extract_id_column() instead")]
 fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::ViewScan(view_scan) => Some(view_scan.id_column.clone()),
