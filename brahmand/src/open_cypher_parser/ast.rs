@@ -11,8 +11,6 @@ pub struct OpenCypherQueryAst<'a> {
     pub with_clause: Option<WithClause<'a>>,
     pub where_clause: Option<WhereClause<'a>>,
     pub create_clause: Option<CreateClause<'a>>,
-    pub create_node_table_clause: Option<CreateNodeTableClause<'a>>,
-    pub create_rel_table_clause: Option<CreateRelTableClause<'a>>,
     pub set_clause: Option<SetClause<'a>>,
     pub remove_clause: Option<RemoveClause<'a>>,
     pub delete_clause: Option<DeleteClause<'a>>,
@@ -42,29 +40,6 @@ pub struct OptionalMatchClause<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct CreateClause<'a> {
     pub path_patterns: Vec<PathPattern<'a>>,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct CreateNodeTableClause<'a> {
-    pub table_name: &'a str,
-    pub table_schema: Vec<ColumnSchema<'a>>,
-    pub table_properties: Vec<Expression<'a>>,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct ColumnSchema<'a> {
-    pub column_name: &'a str,
-    pub column_dtype: &'a str,
-    pub default_value: Option<Expression<'a>>,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct CreateRelTableClause<'a> {
-    pub table_name: &'a str,
-    pub from: &'a str,
-    pub to: &'a str,
-    pub table_schema: Vec<ColumnSchema<'a>>,
-    pub table_properties: Vec<Expression<'a>>,
 }
 
 #[derive(Debug, PartialEq, Clone)]

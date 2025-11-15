@@ -21,8 +21,6 @@ pub mod types;
 pub fn get_query_type(query_ast: &OpenCypherQueryAst) -> QueryType {
     if query_ast.call_clause.is_some() {
         QueryType::Call
-    } else if query_ast.create_node_table_clause.is_some() || query_ast.create_rel_table_clause.is_some() {
-        QueryType::Ddl
     } else if query_ast.delete_clause.is_some() {
         QueryType::Delete
     } else if query_ast.set_clause.is_some() || query_ast.remove_clause.is_some() {

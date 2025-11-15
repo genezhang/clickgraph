@@ -1,5 +1,5 @@
 use ast::{
-    CallClause, CreateClause, CreateNodeTableClause, CreateRelTableClause, DeleteClause, LimitClause,
+    CallClause, CreateClause, DeleteClause, LimitClause,
     MatchClause, OpenCypherQueryAst, OptionalMatchClause, OrderByClause, RemoveClause, 
     ReturnClause, SetClause, SkipClause, UseClause, WhereClause, WithClause,
 };
@@ -17,9 +17,6 @@ pub mod ast;
 mod call_clause;
 mod common;
 mod create_clause;
-mod create_node_table_clause;
-mod create_rel_table_clause;
-mod create_table_schema;
 mod delete_clause;
 pub(crate) mod errors;
 mod expression;
@@ -82,10 +79,6 @@ pub fn parse_query_with_nom(
         where_clause
     };
     
-    let (input, create_node_table_clause): (&str, Option<CreateNodeTableClause>) =
-        opt(create_node_table_clause::parse_create_node_table_clause).parse(input)?;
-    let (input, create_rel_table_clause): (&str, Option<CreateRelTableClause>) =
-        opt(create_rel_table_clause::parse_create_rel_table_clause).parse(input)?;
     let (input, create_clause): (&str, Option<CreateClause>) =
         opt(create_clause::parse_create_clause).parse(input)?;
     let (input, set_clause): (&str, Option<SetClause>) =
@@ -111,8 +104,6 @@ pub fn parse_query_with_nom(
         with_clause,
         where_clause,
         create_clause,
-        create_node_table_clause,
-        create_rel_table_clause,
         set_clause,
         remove_clause,
         delete_clause,
@@ -141,7 +132,7 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use crate::open_cypher_parser::ast::{
-        ColumnSchema, ConnectedPattern, Direction, Expression, FunctionCall, Literal, NodePattern,
+        ConnectedPattern, Direction, Expression, FunctionCall, Literal, NodePattern,
         Operator, OperatorApplication, OrderByItem, OrerByOrder, PathPattern, Property,
         PropertyAccess, PropertyKVPair, RelationshipPattern, ReturnItem, WithItem,
     };
@@ -1279,75 +1270,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_create_node_table_clause() {
-        let input: &str =
-            "CREATE NODE TABLE Product (title STRING, price INT64, PRIMARY KEY (title, price));";
-        let query_ast = parse_query(input).expect("Query parsing failed");
-
-        // --- CREATE NODE TABLE clause ---
-        assert!(
-            query_ast.create_node_table_clause.is_some(),
-            "Expected CREATE NODE TABLE clause"
-        );
-        let create_node_table_clause = query_ast.create_node_table_clause.unwrap();
-        let expected_created_node_table_clause = CreateNodeTableClause {
-            table_name: "Product",
-            table_schema: vec![
-                ColumnSchema {
-                    column_name: "title",
-                    column_dtype: "STRING",
-                    default_value: None,
-                },
-                ColumnSchema {
-                    column_name: "price",
-                    column_dtype: "INT64",
-                    default_value: None,
-                },
-            ],
-            table_properties: vec![Expression::FunctionCallExp(FunctionCall {
-                name: "PRIMARY KEY".to_string(),
-                args: vec![Expression::Variable("title"), Expression::Variable("price")],
-            })],
-        };
-        assert_eq!(create_node_table_clause, expected_created_node_table_clause);
-    }
-
-    #[test]
-    fn test_create_rel_table_clause() {
-        let input = "CREATE REL TABLE Follows (FROM User TO User, since DATE, age INT64, PRIMARY KEY (since));";
-        let query_ast = parse_query(input).expect("Query parsing failed");
-
-        // --- CREATE REL TABLE clause ---
-        assert!(
-            query_ast.create_rel_table_clause.is_some(),
-            "Expected CREATE REL TABLE clause"
-        );
-        let create_rel_table_clause = query_ast.create_rel_table_clause.unwrap();
-
-        let expected_create_rel_table_clause = CreateRelTableClause {
-            table_name: "Follows",
-            from: "User",
-            to: "User",
-            table_schema: vec![
-                ColumnSchema {
-                    column_name: "since",
-                    column_dtype: "DATE",
-                    default_value: None,
-                },
-                ColumnSchema {
-                    column_name: "age",
-                    column_dtype: "INT64",
-                    default_value: None,
-                },
-            ],
-            table_properties: vec![Expression::FunctionCallExp(FunctionCall {
-                name: "PRIMARY KEY".to_string(),
-                args: vec![Expression::Variable("since")],
-            })],
-        };
-
-        assert_eq!(create_rel_table_clause, expected_create_rel_table_clause);
-    }
 }
-

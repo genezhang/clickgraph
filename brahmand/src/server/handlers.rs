@@ -437,16 +437,11 @@ pub async fn query_handler(
             
             (vec![ch_query], None, true, query_type_str)
         } else {
-            let (queries, schema_elem) =
-                clickhouse_query_generator::generate_ddl_query(cypher_ast, &graph_schema).map_err(
-                    |e| {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("Brahmand Error: {}", e),
-                        )
-                    },
-                )?;
-            (queries, Some(schema_elem), false, query_type_str)
+            // DDL operations not supported - ClickGraph is read-only
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("DDL operations (CREATE/SET/DELETE) not supported. ClickGraph is a read-only query engine. Use YAML schemas to define graph views."),
+            ));
         }
     };
 
