@@ -4,6 +4,7 @@ mod cte_generation;
 mod filter_pipeline;
 pub mod cte_extraction;
 mod expression_utils;
+mod plan_builder_helpers;
 
 use errors::RenderBuildError;
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};

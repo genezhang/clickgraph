@@ -1,9 +1,14 @@
 # Copilot Instructions for ClickGraph
 
 ## Project Overview
-ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, written in Rust. It translates Cypher queries into ClickHouse SQL queries, enabling graph analysis capabilities on ClickHouse databases. This is a fork of the original Brahmand project with significant enhancements.
+ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, written in Rust. It translates Cypher queries into ClickHouse SQL queries, enabling graph analysis capabilities on ClickHouse databases. This is based on a fork of the original Brahmand project with significant enhancements. Features related to DDLs for special node and edge tables and updates have been removed.
 
 **Project Scope**: Read-only analytical queries only. Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are explicitly out of scope.
+
+## Coding Style Guidelines
+- Always prefer idiomatic Rust code styles
+- Refactor code to be clear and maintainable whenever appropriate, before, during, or after implementing features
+- Follow Rust's official style guidelines: https://doc.rust-lang.org/1.0.0/style/
 
 ## Windows Environment Constraints
 

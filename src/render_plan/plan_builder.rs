@@ -23,9 +23,14 @@ use super::filter_pipeline::{
 use crate::render_plan::cte_extraction::extract_ctes_with_context;
 use crate::render_plan::cte_extraction::{label_to_table_name, rel_types_to_table_names, rel_type_to_table_name, table_to_id_column, extract_relationship_columns, RelationshipColumns, extract_node_label_from_viewscan, has_variable_length_rel, get_path_variable};
 
+// Import helper functions from the dedicated helpers module
+use super::plan_builder_helpers;
+
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
 
 /// Helper function to extract the actual table name from a LogicalPlan node
+/// NOTE: This function is duplicated in plan_builder_helpers.rs
+/// TODO: Remove this version and use plan_builder_helpers::extract_table_name() instead
 /// Recursively traverses the plan tree to find the Scan or ViewScan node
 fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
     match plan {
