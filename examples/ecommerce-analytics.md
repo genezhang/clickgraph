@@ -691,3 +691,4 @@ This comprehensive example demonstrates:
 - Recommendation algorithms: < 1s
 
 This end-to-end example showcases ClickGraph's ability to transform traditional e-commerce analytics into powerful graph-based insights, combining ClickHouse's performance with Neo4j's ecosystem compatibility for production-grade analytics! 🚀📊
+

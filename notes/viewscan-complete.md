@@ -256,3 +256,6 @@ WHERE u.age > 25
 ---
 
 **Key Insight**: ViewScan transforms ClickGraph from a hardcoded graph layer into a **truly schema-driven** system where YAML configuration defines the graph model completely.
+
+
+

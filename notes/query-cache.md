@@ -38,7 +38,7 @@ RETURN  u.name
 
 ### Implementation Details
 
-**File**: `brahmand/src/server/query_cache.rs` (507 lines)
+**File**: `src/server/query_cache.rs` (507 lines)
 
 **Data Structures**:
 ```rust
@@ -80,7 +80,7 @@ CLICKGRAPH_QUERY_CACHE_MAX_SIZE_MB=100     # Default: 100 MB
 
 ### Startup Configuration
 
-Cache initialized on server startup in `brahmand/src/server/mod.rs`:
+Cache initialized on server startup in `src/server/mod.rs`:
 
 ```rust
 use once_cell::sync::OnceCell;
@@ -159,7 +159,7 @@ CYPHER replan=skip MATCH (u:User) WHERE u.age > $minAge RETURN u.name
 
 ### Request Flow
 
-**Location**: `brahmand/src/server/handlers.rs`
+**Location**: `src/server/handlers.rs`
 
 ```rust
 pub async fn query_handler(
@@ -445,7 +445,10 @@ export CLICKGRAPH_QUERY_CACHE_MAX_ENTRIES=500
 
 ## References
 
-- **Implementation**: `brahmand/src/server/query_cache.rs`
-- **Integration**: `brahmand/src/server/handlers.rs`
+- **Implementation**: `src/server/query_cache.rs`
+- **Integration**: `src/server/handlers.rs`
 - **Tests**: `test_query_cache.py`, `test_query_cache_e2e.py`
 - **Neo4j CYPHER options**: https://neo4j.com/docs/cypher-manual/current/query-tuning/query-options/
+
+
+

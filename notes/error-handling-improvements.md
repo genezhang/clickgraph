@@ -57,10 +57,10 @@ let rel_ctx = rel_ctxs_to_update.first_mut()
 ```
 
 ## Key Files
-- `brahmand/src/render_plan/plan_builder.rs` - Core render plan building with error propagation
-- `brahmand/src/render_plan/errors.rs` - Error enum definitions
-- `brahmand/src/server/graph_catalog.rs` - Server-side schema management
-- `brahmand/src/query_planner/analyzer/graph_traversal_planning.rs` - Graph traversal planning
+- `src/render_plan/plan_builder.rs` - Core render plan building with error propagation
+- `src/render_plan/errors.rs` - Error enum definitions
+- `src/server/graph_catalog.rs` - Server-side schema management
+- `src/query_planner/analyzer/graph_traversal_planning.rs` - Graph traversal planning
 
 ## Design Decisions
 
@@ -113,3 +113,5 @@ let final_filters = match final_filters_opt {
 - **Zero regressions** after error handling improvements
 - **All error paths covered** with proper test cases</content>
 <parameter name="filePath">c:\Users\GenZ\clickgraph\notes\error-handling-improvements.md
+
+

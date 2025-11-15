@@ -12,16 +12,16 @@ Implemented Neo4j 4.0+ multi-database selection standard for ClickGraph's Bolt p
 
 ### Files Modified
 
-1. **brahmand/src/server/bolt_protocol/messages.rs**
+1. **src/server/bolt_protocol/messages.rs**
    - Added `extract_database()` method to BoltMessage
    - Checks for `"db"` or `"database"` field in HELLO message extra metadata (first field)
    - Returns `Option<String>` with selected database name
 
-2. **brahmand/src/server/bolt_protocol/mod.rs**
+2. **src/server/bolt_protocol/mod.rs**
    - Added `schema_name: Option<String>` field to BoltContext
    - Updated Default impl to initialize schema_name as None
 
-3. **brahmand/src/server/bolt_protocol/handler.rs**
+3. **src/server/bolt_protocol/handler.rs**
    - Modified `handle_hello()`: Extract database from HELLO message, store in context
    - Modified `handle_run()`: Retrieve schema_name from context, pass to query executor
    - Modified `execute_cypher_query()`: Accept schema_name parameter, default to "default"
@@ -213,3 +213,6 @@ SHOW DATABASES;
 ## Conclusion
 
 Bolt multi-database support is production-ready and maintains full compatibility with Neo4j 4.0+ standards. Clients can now select graph schemas seamlessly through standard Neo4j driver APIs, with behavior matching HTTP API schema_name parameter.
+
+
+

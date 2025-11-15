@@ -9,24 +9,24 @@ Complete implementation of Cypher path variables and path functions for variable
 ## How It Works
 
 ### 1. Parser Integration
-- **File**: `brahmand/src/open_cypher_parser/match_clause.rs`
+- **File**: `src/open_cypher_parser/match_clause.rs`
 - **Function**: `parse_match_clause()`
 - **Logic**: Detects `p =` pattern in MATCH clauses, stores path variable name in `MatchClause.path_variable`
 
 ### 2. Logical Plan Storage
-- **File**: `brahmand/src/query_planner/logical_plan/mod.rs`
+- **File**: `src/query_planner/logical_plan/mod.rs`
 - **Structure**: `GraphRel.path_variable: Option<String>`
 - **Flow**: Path variable propagates from parser → logical plan → render plan
 
 ### 3. CTE Column Generation
-- **File**: `brahmand/src/clickhouse_query_generator/variable_length_cte.rs`
+- **File**: `src/clickhouse_query_generator/variable_length_cte.rs`
 - **Columns**:
   - `hop_count`: Tracks path length (for `length(p)`)
   - `path_nodes`: Array of node IDs along path (for `nodes(p)`)
   - `path_relationships`: Placeholder array (for `relationships(p)`)
 
 ### 4. Path Function Mapping
-- **File**: `brahmand/src/render_plan/plan_builder.rs`
+- **File**: `src/render_plan/plan_builder.rs`
 - **Function**: `rewrite_expr_for_var_len_cte()`
 - **Mapping**:
   - `length(p)` → `t.hop_count`
@@ -39,10 +39,10 @@ Complete implementation of Cypher path variables and path functions for variable
 
 ## Key Files
 
-- `brahmand/src/open_cypher_parser/match_clause.rs` - Path variable parsing
-- `brahmand/src/query_planner/logical_plan/mod.rs` - GraphRel.path_variable field
-- `brahmand/src/clickhouse_query_generator/variable_length_cte.rs` - CTE column generation
-- `brahmand/src/render_plan/plan_builder.rs` - Path function mapping
+- `src/open_cypher_parser/match_clause.rs` - Path variable parsing
+- `src/query_planner/logical_plan/mod.rs` - GraphRel.path_variable field
+- `src/clickhouse_query_generator/variable_length_cte.rs` - CTE column generation
+- `src/render_plan/plan_builder.rs` - Path function mapping
 - `test_path_variables.py` - End-to-end testing
 
 ## Design Decisions
@@ -102,3 +102,5 @@ Complete implementation of Cypher path variables and path functions for variable
 - **Query Time**: CTE generation adds overhead but leverages ClickHouse recursion
 - **Optimization**: Cycle detection prevents infinite loops
 - **Scalability**: Works with configured max depths (10-1000 hops)
+
+

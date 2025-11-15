@@ -120,12 +120,15 @@ Projection
 ## Code Locations
 
 Logging is implemented in these files:
-- `brahmand/src/query_planner/optimizer/filter_into_graph_rel.rs` - Filter injection logic
-- `brahmand/src/query_planner/optimizer/mod.rs` - Plan structure logging
-- `brahmand/src/render_plan/plan_builder.rs` - CTE generation and filter categorization
+- `src/query_planner/optimizer/filter_into_graph_rel.rs` - Filter injection logic
+- `src/query_planner/optimizer/mod.rs` - Plan structure logging
+- `src/render_plan/plan_builder.rs` - CTE generation and filter categorization
 
 ## Related Documentation
 
 - [WHERE Clause Implementation](../notes/where-clause-filters.md)
 - [FilterIntoGraphRel Optimizer Pass](../notes/filter-into-graph-rel.md)
 - [Testing Guide](../TESTING_GUIDE.md)
+
+
+

@@ -411,3 +411,6 @@ Invoke-WebRequest -Uri "http://localhost:8080/query" -Method POST -ContentType "
 2. Automatic schema validation against ClickHouse
 3. Better error messages for CTE generation issues
 4. Path relationship type tracking in arrays
+
+
+

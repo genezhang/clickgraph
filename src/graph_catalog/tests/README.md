@@ -91,3 +91,4 @@ To test against a real ClickHouse instance:
 2. Create test configurations in temporary files
 3. Use `SchemaValidator` with mock client
 4. Assert expected validation results
+

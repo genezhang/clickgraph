@@ -9,7 +9,7 @@ Lost working code during experimentation because we didn't commit incrementally 
 
 ```bash
 # After fixing each bug, commit immediately
-git add brahmand/src/query_planner/analyzer/plan_sanitization.rs
+git add src/query_planner/analyzer/plan_sanitization.rs
 git commit -m "fix: preserve aliases in plan sanitization"
 
 # Run tests
@@ -81,7 +81,7 @@ git status
 git diff  # See what you're about to lose
 
 # During changes
-git diff brahmand/src/query_planner/analyzer/graph_traversal_planning.rs
+git diff src/query_planner/analyzer/graph_traversal_planning.rs
 
 # Before committing
 git diff --staged
@@ -233,10 +233,10 @@ git status
 git diff  # Review all changes
 
 # Commit in logical groups:
-git add brahmand/src/query_planner/analyzer/plan_sanitization.rs
+git add src/query_planner/analyzer/plan_sanitization.rs
 git commit -m "fix: preserve Cypher variable aliases in plan sanitization"
 
-git add brahmand/src/query_planner/analyzer/graph_traversal_planning.rs
+git add src/query_planner/analyzer/graph_traversal_planning.rs
 git commit -m "fix: qualify columns in IN subqueries with table aliases
 
 - Add table_alias parameter to build_insubquery()
@@ -244,16 +244,16 @@ git commit -m "fix: qualify columns in IN subqueries with table aliases
 - Use schema columns instead of output aliases in WHERE
 - Fix all 7 call sites with correct aliases"
 
-git add brahmand/src/clickhouse_query_generator/to_sql_query.rs
+git add src/clickhouse_query_generator/to_sql_query.rs
 git commit -m "fix: prevent CTE nesting and add SELECT * default"
 
-git add brahmand/src/server/handlers.rs
+git add src/server/handlers.rs
 git commit -m "feat: add debug logging for full SQL queries"
 
-git add brahmand/src/render_plan/plan_builder.rs
+git add src/render_plan/plan_builder.rs
 git commit -m "feat: add schema lookup for relationship types"
 
-git add brahmand/src/query_planner/logical_plan/match_clause.rs
+git add src/query_planner/logical_plan/match_clause.rs
 git commit -m "fix: pass labels to generate_scan for ViewScan resolution"
 
 # Documentation commits
@@ -284,3 +284,6 @@ git push --tags
 ---
 
 **Key Principle**: Commit early, commit often, use stash liberally. Code is cheap, lost time is expensive.
+
+
+

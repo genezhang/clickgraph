@@ -304,3 +304,4 @@ filesystem error: in rename: Permission denied
 - **MergeTree engine**: Use for production with proper Docker volume permissions
 - **Schema warnings**: Will be resolved in future ClickGraph versions
 - **Performance**: This setup easily handles thousands of nodes/relationships
+

@@ -241,3 +241,5 @@ When adding new features to ClickGraph:
 3. Follow naming conventions: `test_<feature>_<scenario>`
 4. Add docstrings explaining what's being tested
 5. Run full test suite before submitting PR
+
+

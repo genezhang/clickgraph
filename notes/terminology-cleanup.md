@@ -11,7 +11,7 @@ Renamed `handle_edge_list_traversal` → `handle_graph_pattern` to remove redund
 ## Changes Made
 
 ### 1. Function Rename
-**File**: `brahmand/src/query_planner/analyzer/graph_join_inference.rs`
+**File**: `src/query_planner/analyzer/graph_join_inference.rs`
 
 - **Line 781**: Function definition renamed
 - **Line 757**: Function call site updated
@@ -88,9 +88,9 @@ Since ClickGraph **only** supports edge list storage (relationships as tables), 
 
 ## Key Files
 
-- `brahmand/src/query_planner/analyzer/graph_join_inference.rs`: Function renamed
-- `brahmand/src/query_planner/plan_ctx/mod.rs`: Has legacy `use_edge_list` methods (not cleaned)
-- `brahmand/src/query_planner/analyzer/query_validation.rs`: Has adjacency index checks (dead code)
+- `src/query_planner/analyzer/graph_join_inference.rs`: Function renamed
+- `src/query_planner/plan_ctx/mod.rs`: Has legacy `use_edge_list` methods (not cleaned)
+- `src/query_planner/analyzer/query_validation.rs`: Has adjacency index checks (dead code)
 
 ## Gotchas
 
@@ -104,3 +104,6 @@ Since ClickGraph **only** supports edge list storage (relationships as tables), 
 - Validation code
 
 These don't impact functionality or user-visible behavior.
+
+
+

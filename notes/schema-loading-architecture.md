@@ -251,3 +251,6 @@ This design:
 ✅ Maintains clear semantics
 
 It's **working as designed**, not a bug!
+
+
+

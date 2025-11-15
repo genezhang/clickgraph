@@ -70,7 +70,7 @@ Write-Host ""
 # ============================================================================
 if (-not $Python) {
     Write-Host "[1/4] Running Rust Unit Tests..." -ForegroundColor Yellow
-    Write-Host "Location: brahmand/src/**/*.rs" -ForegroundColor Gray
+    Write-Host "Location: src/**/*.rs" -ForegroundColor Gray
     Write-Host ""
     
     $startTime = Get-Date

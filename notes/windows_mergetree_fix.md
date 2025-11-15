@@ -282,3 +282,6 @@ For Windows + MergeTree:
 4. 🐧 Or use **WSL2** (best dev experience)
 
 Named volume is the **professional solution** - no permission issues, better performance, proper persistence.
+
+
+

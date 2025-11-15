@@ -253,9 +253,9 @@ CYPHER replan=skip MATCH (n) RETURN n
 ### Implementation Details
 
 **Files Modified**:
-- `brahmand/src/server/query_cache.rs` - Core cache implementation (507 lines)
-- `brahmand/src/server/handlers.rs` - Cache integration in query handler
-- `brahmand/src/server/mod.rs` - Global cache initialization
+- `src/server/query_cache.rs` - Core cache implementation (507 lines)
+- `src/server/handlers.rs` - Cache integration in query handler
+- `src/server/mod.rs` - Global cache initialization
 
 **Key Features Implemented**:
 1. ✅ **Cache lookup before parsing** - Avoids expensive compilation
@@ -460,14 +460,14 @@ GLOBAL_SCHEMAS: OnceCell<RwLock<HashMap<String, GraphSchema>>>  // All schemas, 
 #### **2. Optimizer is_optional Flag Preservation** ✅
 - **Problem**: `FilterIntoGraphRel` optimizer was destroying `is_optional` flag when pushing filters
 - **Fix**: Changed 3 GraphRel creation sites to preserve flag: `is_optional: graph_rel.is_optional`
-- **File**: `brahmand/src/query_planner/optimizer/filter_into_graph_rel.rs` (lines 89, 130, 437)
+- **File**: `src/query_planner/optimizer/filter_into_graph_rel.rs` (lines 89, 130, 437)
 - **Impact**: LEFT JOIN generation now preserved through optimizer passes
 
 #### **3. ClickHouse join_use_nulls Configuration** ✅ **← KEY FIX**
 - **Problem**: ClickHouse returns empty strings instead of NULL for unmatched LEFT JOIN columns
 - **User Insight**: "there is a setting for ClickHouse that return NULL instead of empty string"
 - **Fix**: Added `.with_option("join_use_nulls", "1")` to ClickHouse client
-- **File**: `brahmand/src/server/clickhouse_client.rs` (line 21)
+- **File**: `src/server/clickhouse_client.rs` (line 21)
 - **Impact**: Fixed 2 tests expecting NULL values (17/27 → 19/27)
 
 **Remaining Issues (8 failures - Architectural)**:
@@ -532,8 +532,8 @@ GLOBAL_SCHEMAS: OnceCell<RwLock<HashMap<String, GraphSchema>>>  // All schemas, 
   3. **Fixed ID column lookup**: Use table-based lookup for multi-hop instead of `extract_id_column()`
 - **Technical Debt**: Deprecated `GraphJoins.joins` field (only used as fallback for `extract_from()` now)
 - **Files Modified**: 
-  - `brahmand/src/render_plan/plan_builder.rs` (lines 1588-1720)
-  - `brahmand/src/query_planner/logical_plan/mod.rs` (deprecation comment)
+  - `src/render_plan/plan_builder.rs` (lines 1588-1720)
+  - `src/query_planner/logical_plan/mod.rs` (deprecation comment)
 - **Impact**: **Test 10 now passing** ✅ - Multi-hop WITH clauses work perfectly!
 
 #### **2. ORDER BY + LIMIT Preservation with CTE** (~30 min)
@@ -543,7 +543,7 @@ GLOBAL_SCHEMAS: OnceCell<RwLock<HashMap<String, GraphSchema>>>  // All schemas, 
   1. Unwrap ORDER BY/LIMIT/SKIP nodes BEFORE checking GraphJoins wrapper
   2. Preserve them after CTE delegation
   3. Rewrite ORDER BY expressions for CTE context (`alias` → `grouped_data.alias`)
-- **Files Modified**: `brahmand/src/render_plan/plan_builder.rs` (lines 1831-1895)
+- **Files Modified**: `src/render_plan/plan_builder.rs` (lines 1831-1895)
 - **Impact**: **Test 5 now passing** ✅ - CTE with ORDER BY + LIMIT working!
 
 #### **3. WITH Alias Resolution for Non-aggregation** (~30 min)
@@ -554,7 +554,7 @@ GLOBAL_SCHEMAS: OnceCell<RwLock<HashMap<String, GraphSchema>>>  // All schemas, 
   2. Resolve TableAlias references BEFORE converting to RenderExpr
   3. Handle case where analyzer changes `kind: With` to `kind: Return`
   4. Look through GraphJoins wrapper for nested WITH projections
-- **Files Modified**: `brahmand/src/render_plan/plan_builder.rs` (lines 1041-1087)
+- **Files Modified**: `src/render_plan/plan_builder.rs` (lines 1041-1087)
 - **Impact**: **Test 3 now passing** ✅ - Non-aggregation WITH aliases resolved!
 
 **Test Suite Results**:
@@ -579,7 +579,7 @@ Result: 12/12 passed (100%)
 - Fixed `test_two_hop_traversal_has_all_on_clauses` JOIN counting logic
 - Was double-counting "INNER JOIN" (counted both "INNER JOIN" and "JOIN")
 - Now correctly counts: `INNER JOIN` + `LEFT JOIN` only
-- **Files Modified**: `brahmand/src/render_plan/tests/multiple_relationship_tests.rs` (lines 258-270)
+- **Files Modified**: `src/render_plan/tests/multiple_relationship_tests.rs` (lines 258-270)
 - **Result**: 325/325 unit tests passing (100%) ✅
 
 **Commit**: `0e4a8cd` - "� Fix WITH clause multi-hop patterns and ORDER BY/LIMIT handling"
@@ -632,13 +632,13 @@ Result: 12/12 passed (100%)
 - **Root Cause**: `GraphRel.extract_filters` in plan_builder.rs was collecting from:
   - `left_filters` from ViewScan (which already had the filter)
   - `where_predicate` from GraphRel (same filter pushed by FilterIntoGraphRel)
-- **Solution**: Modified `brahmand/src/render_plan/plan_builder.rs` (lines 1205-1220) to ONLY extract from `where_predicate`, not from left/center/right node filters
+- **Solution**: Modified `src/render_plan/plan_builder.rs` (lines 1205-1220) to ONLY extract from `where_predicate`, not from left/center/right node filters
 - **Result**: Clean single WHERE clause ✅
 
 **0. Missing Table Prefix Fix** (~15 min)
 - **Problem**: `FROM users AS a` instead of `FROM test_integration.users AS a`
 - **Root Cause**: `SchemaInference` in schema_inference.rs only used `node_schema.table_name` (just "users"), ignoring the `database` field
-- **Solution**: Modified `brahmand/src/query_planner/analyzer/schema_inference.rs` (lines 75-92) to use:
+- **Solution**: Modified `src/query_planner/analyzer/schema_inference.rs` (lines 75-92) to use:
   ```rust
   let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
   ```
@@ -682,7 +682,7 @@ WHERE a.name = 'Alice'
   3. WHERE                  3. OPTIONAL MATCH (a)-[:FOLLOWS]->(b)
   4. RETURN                 4. RETURN a.name, b.name
   ```
-- **Solution**: Reordered parser in `brahmand/src/open_cypher_parser/mod.rs`:
+- **Solution**: Reordered parser in `src/open_cypher_parser/mod.rs`:
   1. Parse MATCH clause
   2. Parse WHERE clause (filters the MATCH above)
   3. Parse OPTIONAL MATCH clauses (now input is positioned correctly)
@@ -701,10 +701,10 @@ WHERE a.name = 'Alice'
   ```
 - **DuplicateScansRemoving Fix**: Also fixed analyzer to preserve GraphRel nodes for OPTIONAL MATCH by checking `plan_ctx.is_optional(alias)` before removing duplicate scans
 - **Files Modified**:
-  - `brahmand/src/open_cypher_parser/mod.rs` - Reordered clause parsing
-  - `brahmand/src/query_planner/analyzer/duplicate_scans_removing.rs` - Added optional alias check
-  - `brahmand/src/query_planner/logical_plan/plan_builder.rs` - Added debug logging
-  - `brahmand/src/query_planner/logical_plan/optional_match_clause.rs` - Added entry logging
+  - `src/open_cypher_parser/mod.rs` - Reordered clause parsing
+  - `src/query_planner/analyzer/duplicate_scans_removing.rs` - Added optional alias check
+  - `src/query_planner/logical_plan/plan_builder.rs` - Added debug logging
+  - `src/query_planner/logical_plan/optional_match_clause.rs` - Added entry logging
 
 ### **Test Data Setup** 
 - Integration tests require `test_integration` database with tables
@@ -735,7 +735,7 @@ WHERE a.name = 'Alice'
   MATCH (a:User)<-[:FOLLOWS]-(b:User) WHERE a.name = 'Charlie' RETURN b.name
   -- Now correctly returns 2 rows (Alice, Bob) instead of 6
   ```
-- **File**: `brahmand/src/render_plan/plan_builder.rs`
+- **File**: `src/render_plan/plan_builder.rs`
 - **Commit**: `1385ec3`
 
 **2. WHERE Clause Table Aliases Fixed** - November 3, 2025
@@ -749,7 +749,7 @@ WHERE a.name = 'Alice'
   MATCH (xyz:User) WHERE xyz.age > 25 RETURN xyz.name   ✅ Works!
   ```
 - **Files Modified**: 
-  - `brahmand/src/query_planner/analyzer/filter_tagging.rs` - Removed alias-stripping conversion
+  - `src/query_planner/analyzer/filter_tagging.rs` - Removed alias-stripping conversion
   - Updated 2 unit tests to expect PropertyAccessExp instead of Column
 - **Commits**: 
   - `47bcb74` - Join inference fix (only create JOINs when nodes referenced)
@@ -759,7 +759,7 @@ WHERE a.name = 'Alice'
 - **Problem**: Incoming relationship queries created unnecessary node JOINs
 - **Solution**: Added `is_node_referenced()` function to check if nodes are used before creating JOINs
 - **Result**: Cleaner SQL, better performance
-- **File**: `brahmand/src/query_planner/analyzer/graph_join_inference.rs`
+- **File**: `src/query_planner/analyzer/graph_join_inference.rs`
 
 **4. GROUP BY Support Verified** - Already Working!
 - Implicit GROUP BY in Cypher (when mixing aggregates with properties)
@@ -771,7 +771,7 @@ WHERE a.name = 'Alice'
 - **Problem**: `COUNT(DISTINCT a)` generated invalid SQL `COUNTDistinct(a)`
 - **Solution**: Extended projection tagging to handle `DISTINCT` operator inside aggregate functions
 - **Result**: Now correctly translates to `COUNT(DISTINCT a.user_id)`
-- **File**: `brahmand/src/query_planner/analyzer/projection_tagging.rs`
+- **File**: `src/query_planner/analyzer/projection_tagging.rs`
 
 **3. Test Infrastructure Improvements**
 - **Column Name Normalization**: Auto-checks both alias-prefixed and simple names
@@ -804,8 +804,8 @@ MATCH (u:User) WHERE u.age > 30 RETURN COUNT(*)
 - ❓ 9 other test files: Not yet verified (likely 80%+ pass rate with infrastructure fixes)
 
 **Files Modified**:
-- `brahmand/src/query_planner/analyzer/projection_tagging.rs` - COUNT(DISTINCT) support
-- `brahmand/src/render_plan/plan_builder.rs` - ViewScan filter extraction  
+- `src/query_planner/analyzer/projection_tagging.rs` - COUNT(DISTINCT) support
+- `src/render_plan/plan_builder.rs` - ViewScan filter extraction  
 - `tests/integration/conftest.py` - Enhanced helper functions
 - `tests/integration/test_aggregations.py` - Updated to use helpers
 - All 11 integration test files - Schema name fix
@@ -1287,4 +1287,7 @@ Cypher Query → Parser → Query Planner → SQL Generator → ClickHouse → J
 ---
 
 **For detailed technical information, see feature notes in `notes/` directory.**
+
+
+
 

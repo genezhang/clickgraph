@@ -25,7 +25,7 @@ This document summarizes the comprehensive redesign of the ClickGraph test infra
 
 #### Mock ClickHouse Integration
 ```rust
-// Created: brahmand/src/graph_catalog/testing/mock_clickhouse.rs
+// Created: src/graph_catalog/testing/mock_clickhouse.rs
 pub fn create_test_table_schemas() -> HashMap<String, Vec<ColumnInfo>> {
     let mut schemas = HashMap::new();
     
@@ -278,3 +278,5 @@ This foundation provides a solid base for continued development of the ClickGrap
 *Document prepared: October 11, 2025*  
 *System: ClickGraph v0.0.1 (fork of Brahmand)*  
 *Test Coverage: 100% (374/374 tests passing)*
+
+

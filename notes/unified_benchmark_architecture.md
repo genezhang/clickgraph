@@ -239,3 +239,6 @@ A: Added 4 new patterns (parameters + functions) without replacing core patterns
 
 **Q: Why 4 recommended scales instead of 3 or 5?**  
 A: Covers 3 orders of magnitude (1K → 1M), balanced coverage vs test time
+
+
+

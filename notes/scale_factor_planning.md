@@ -435,3 +435,6 @@ Posts   = scale_factor × 2,000  (2:1 ratio)
 - Flexible (any integer scale factor)
 
 This design balances **simplicity** (easy to understand), **flexibility** (any scale), and **realism** (typical social network patterns).
+
+
+

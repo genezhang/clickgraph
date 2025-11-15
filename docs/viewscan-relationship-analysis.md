@@ -58,7 +58,7 @@ LIMIT 5
 //   - Simple 1-hop patterns → Direct JOIN
 //   - Variable-length (*) → Recursive CTE
 //   - Multi-hop (fixed) → Chained JOIN or CTE depending on complexity
-// Location: brahmand/src/query_planner/analyzer/graph_traversal_planning.rs
+// Location: src/query_planner/analyzer/graph_traversal_planning.rs
 ```
 
 ---
@@ -179,3 +179,6 @@ cargo run --bin brahmand
 // Workaround: sql_only mode or check server logs
 // Location: server/handlers.rs
 ```
+
+
+

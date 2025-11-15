@@ -15,7 +15,7 @@ Filters were extracted from the logical plan tree during analysis and stored in 
 
 ### Solution: FilterIntoGraphRel Optimizer Pass
 
-**Location**: `brahmand/src/query_planner/optimizer/filter_into_graph_rel.rs`
+**Location**: `src/query_planner/optimizer/filter_into_graph_rel.rs`
 
 The optimizer pass:
 1. **Extracts filters** from `plan_ctx` for each GraphRel's left and right connection aliases
@@ -26,7 +26,7 @@ The optimizer pass:
 
 ### Filter Categorization
 
-**Location**: `brahmand/src/render_plan/plan_builder.rs` (`categorize_filters()`)
+**Location**: `src/render_plan/plan_builder.rs` (`categorize_filters()`)
 
 When generating recursive CTEs, filters are categorized by checking which alias each expression references:
 - **Start node filters**: Reference left_connection alias (e.g., `a.name = 'Alice'`)
@@ -41,14 +41,14 @@ Filters are then placed in:
 ## Key Files
 
 ### Core Implementation
-- `brahmand/src/query_planner/optimizer/filter_into_graph_rel.rs` - Filter injection optimizer pass (305 lines)
-- `brahmand/src/query_planner/optimizer/mod.rs` - Optimizer pass registration
-- `brahmand/src/render_plan/plan_builder.rs` - Filter categorization and CTE generation
+- `src/query_planner/optimizer/filter_into_graph_rel.rs` - Filter injection optimizer pass (305 lines)
+- `src/query_planner/optimizer/mod.rs` - Optimizer pass registration
+- `src/render_plan/plan_builder.rs` - Filter categorization and CTE generation
 
 ### Testing
 - `test_where_comprehensive.py` - 4 integration tests for variable-length paths
 - `test_shortest_path_with_filters.py` - 4 integration tests for shortestPath
-- `brahmand/src/render_plan/tests/where_clause_filter_tests.rs` - 18 unit tests (structural verification)
+- `src/render_plan/tests/where_clause_filter_tests.rs` - 18 unit tests (structural verification)
 
 ### Documentation
 - `notes/debug-logging-guide.md` - How to enable debug logging
@@ -166,3 +166,6 @@ cargo run --bin brahmand
 ```
 
 See `notes/debug-logging-guide.md` for full logging reference.
+
+
+

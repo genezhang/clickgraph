@@ -24,7 +24,7 @@ Implemented `shortestPath()` and `allShortestPaths()` functions for ClickGraph, 
 
 ### 1. Parser (Task 4)
 
-**File**: `brahmand/src/open_cypher_parser/path_pattern.rs`
+**File**: `src/open_cypher_parser/path_pattern.rs`
 
 ```rust
 // AST variants
@@ -52,7 +52,7 @@ fn parse_shortest_path_function(input: &str) -> IResult<...> {
 
 ### 2. Query Planner (Task 5)
 
-**File**: `brahmand/src/query_planner/logical_plan/match_clause.rs`
+**File**: `src/query_planner/logical_plan/match_clause.rs`
 
 ```rust
 fn evaluate_single_path_pattern(pattern: &PathPattern) -> LogicalPlan {
@@ -76,7 +76,7 @@ fn evaluate_single_path_pattern(pattern: &PathPattern) -> LogicalPlan {
 
 ### 3. SQL Generation (Task 6)
 
-**File**: `brahmand/src/clickhouse_query_generator/variable_length_cte.rs`
+**File**: `src/clickhouse_query_generator/variable_length_cte.rs`
 
 **Architecture**: Two-pass nested CTE approach
 
@@ -172,11 +172,11 @@ $ python test_shortest_path_integration.py
 ## Key Files
 
 ### Core Implementation
-- `brahmand/src/open_cypher_parser/ast.rs` - AST variants (lines 200-202)
-- `brahmand/src/open_cypher_parser/path_pattern.rs` - Parser (lines 27-62, tests at bottom)
-- `brahmand/src/query_planner/logical_plan/match_clause.rs` - Query planning (lines 70-120)
-- `brahmand/src/query_planner/logical_plan/logical_expr.rs` - ShortestPathMode enum
-- `brahmand/src/clickhouse_query_generator/variable_length_cte.rs` - SQL generation (lines 112-161)
+- `src/open_cypher_parser/ast.rs` - AST variants (lines 200-202)
+- `src/open_cypher_parser/path_pattern.rs` - Parser (lines 27-62, tests at bottom)
+- `src/query_planner/logical_plan/match_clause.rs` - Query planning (lines 70-120)
+- `src/query_planner/logical_plan/logical_expr.rs` - ShortestPathMode enum
+- `src/clickhouse_query_generator/variable_length_cte.rs` - SQL generation (lines 112-161)
 
 ### Testing & Documentation
 - `test_shortest_path.py` - SQL generation tests (RETURN clause only)
@@ -326,3 +326,6 @@ Total: 11 commits over ~4 hours of focused development
 - ClickHouse Recursive CTEs: https://clickhouse.com/docs/en/sql-reference/statements/select/with
 - Project STATUS.md for overall feature tracking
 - CHANGELOG.md for release history
+
+
+

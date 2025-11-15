@@ -162,10 +162,10 @@ Watch for these signs that you may need to adjust the limit:
 ## Implementation Details
 
 **Files Modified:**
-- `brahmand/src/server/mod.rs`: ServerConfig struct with max_cte_depth field
-- `brahmand/src/main.rs`: CLI argument parsing
-- `brahmand/src/clickhouse_query_generator/to_sql_query.rs`: Dynamic SQL generation
-- `brahmand/src/server/handlers.rs`: Pass config to SQL generator
+- `src/server/mod.rs`: ServerConfig struct with max_cte_depth field
+- `src/main.rs`: CLI argument parsing
+- `src/clickhouse_query_generator/to_sql_query.rs`: Dynamic SQL generation
+- `src/server/handlers.rs`: Pass config to SQL generator
 
 **Configuration Flow:**
 1. Environment variable or CLI argument parsed
@@ -179,3 +179,6 @@ Watch for these signs that you may need to adjust the limit:
 - [Variable-Length Paths](../STATUS_REPORT.md#variable-length-paths)
 - [Chained JOIN Optimization](../CHAINED_JOIN_OPTIMIZATION.md)
 - [Known Issues](../KNOWN_ISSUES.md)
+
+
+

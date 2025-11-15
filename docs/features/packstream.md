@@ -7,17 +7,17 @@
 
 ### PackStream Module Vendored
 ✅ **Copied 4 files (~3,371 lines)** from neo4rs v0.9.0-rc.8:
-- `brahmand/src/packstream/mod.rs` (634 lines) - Main module
-- `brahmand/src/packstream/de.rs` (567 lines) - Deserializer
-- `brahmand/src/packstream/ser/mod.rs` (1,138 lines) - Serializer
-- `brahmand/src/packstream/ser/map.rs` (1,032 lines) - Map serialization
+- `src/packstream/mod.rs` (634 lines) - Main module
+- `src/packstream/de.rs` (567 lines) - Deserializer
+- `src/packstream/ser/mod.rs` (1,138 lines) - Serializer
+- `src/packstream/ser/map.rs` (1,032 lines) - Map serialization
 
 ✅ **MIT license compliance**: Added attribution headers to all 4 files
 
 ✅ **Integration complete**:
-- Added `pub mod packstream;` to `brahmand/src/lib.rs`
+- Added `pub mod packstream;` to `src/lib.rs`
 - Removed `neo4rs` dependency from `Cargo.toml`
-- Updated `brahmand/src/main.rs` to import from library
+- Updated `src/main.rs` to import from library
 - Fixed `connection.rs` imports to use `crate::packstream`
 
 ### Message Parsing Implemented
@@ -198,17 +198,17 @@ Map: 0xAX [key1][val1][key2][val2]... (tiny, X = pairs 0-15)
 ## 📝 Files Changed This Session
 
 ### New Files Created
-- `brahmand/src/packstream/mod.rs` (vendored)
-- `brahmand/src/packstream/de.rs` (vendored)
-- `brahmand/src/packstream/ser/mod.rs` (vendored)
-- `brahmand/src/packstream/ser/map.rs` (vendored)
+- `src/packstream/mod.rs` (vendored)
+- `src/packstream/de.rs` (vendored)
+- `src/packstream/ser/mod.rs` (vendored)
+- `src/packstream/ser/map.rs` (vendored)
 - `notes/packstream-vendoring.md` (documentation)
 
 ### Modified Files
-- `brahmand/src/lib.rs` - Added packstream module
+- `src/lib.rs` - Added packstream module
 - `brahmand/Cargo.toml` - Removed neo4rs, kept bytes
-- `brahmand/src/main.rs` - Fixed module imports
-- `brahmand/src/server/bolt_protocol/connection.rs` - Implemented parsing and serialization
+- `src/main.rs` - Fixed module imports
+- `src/server/bolt_protocol/connection.rs` - Implemented parsing and serialization
 - `STATUS.md` - Updated with PackStream completion
 - `CHANGELOG.md` - Added PackStream feature
 
@@ -254,3 +254,6 @@ python test_bolt_protocol.py
 **Phase 1 Task #2: Bolt Protocol Query Execution - ✅ COMPLETE**
 
 **Ready for**: Integration testing with Neo4j drivers
+
+
+

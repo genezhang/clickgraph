@@ -61,7 +61,7 @@ X-Query-SQL-Count: 1
 
 ## Key Files
 
-- **`brahmand/src/server/handlers.rs`**: Main implementation
+- **`src/server/handlers.rs`**: Main implementation
   - `QueryPerformanceMetrics` struct and methods
   - Phase-by-phase timing in `query_handler()`
   - HTTP header injection
@@ -109,3 +109,5 @@ For monitoring dashboards and long-term performance tracking, consider adding a 
 - Most expensive queries
 
 This would require in-memory metric aggregation and possibly Prometheus-style output format.
+
+

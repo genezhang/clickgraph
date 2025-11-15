@@ -57,10 +57,10 @@ CASE expressions now work in all query contexts:
 **Impact**: This fix was critical for CASE expressions in WHERE clauses and any boolean-valued CASE expressions
 
 ## Files Modified
-- `brahmand/src/open_cypher_parser/expression.rs` - Parser implementation
-- `brahmand/src/query_planner/logical_expr/mod.rs` - Logical expression structures
-- `brahmand/src/render_plan/render_expr.rs` - Render expression structures
-- `brahmand/src/clickhouse_query_generator/to_sql_query.rs` - SQL generation with caseWithExpression and boolean literal fix
+- `src/open_cypher_parser/expression.rs` - Parser implementation
+- `src/query_planner/logical_expr/mod.rs` - Logical expression structures
+- `src/render_plan/render_expr.rs` - Render expression structures
+- `src/clickhouse_query_generator/to_sql_query.rs` - SQL generation with caseWithExpression and boolean literal fix
 - `test_case_expressions.py` - Comprehensive integration tests for all CASE expression contexts
 
 ## Gotchas & Limitations
@@ -72,3 +72,5 @@ CASE expressions now work in all query contexts:
 - Consider moving property resolution to analyzer phase for better architecture
 - Add support for more complex expressions in CASE conditions
 - Performance benchmarking against standard SQL CASE
+
+

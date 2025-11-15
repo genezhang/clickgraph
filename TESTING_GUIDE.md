@@ -35,7 +35,7 @@ This guide documents all regression tests and testing procedures for ClickGraph.
 
 ### 1. Rust Unit Tests (434 tests)
 
-**Location**: `brahmand/src/**/*.rs`  
+**Location**: `src/**/*.rs`  
 **Run**: `cargo test --lib`  
 **Duration**: ~5-8 seconds
 
@@ -52,7 +52,7 @@ This guide documents all regression tests and testing procedures for ClickGraph.
 
 **Example**:
 ```rust
-// brahmand/src/query_planner/logical_plan/mod.rs
+// src/query_planner/logical_plan/mod.rs
 #[test]
 fn test_simple_match_query() { ... }
 ```
@@ -273,7 +273,7 @@ pytest -x
 
 ### Rust Unit Test
 ```rust
-// brahmand/src/my_module.rs
+// src/my_module.rs
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,3 +362,5 @@ A: Integration tests validate individual features via HTTP API. E2E tests valida
 ---
 
 **Questions?** Open an issue on GitHub or see `CONTRIBUTING.md`
+
+

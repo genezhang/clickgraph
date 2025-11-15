@@ -566,3 +566,5 @@ clickgraph/
 **Key Principle**: Keep it simple. One source of truth (STATUS.md), one note per feature, archive everything else.
 
 **Development Workflow**: Follow `DEVELOPMENT_PROCESS.md` for systematic feature development (Design → Implement → Test → Debug → Document).
+
+

@@ -49,3 +49,4 @@ To test the auto-approve functionality:
 2. Wait for CI to pass
 3. The auto-approve workflow should approve it automatically
 4. If auto-merge is enabled, it should merge automatically
+

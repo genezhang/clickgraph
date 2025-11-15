@@ -25,7 +25,7 @@
 
 ### File Structure
 ```
-brahmand/src/
+src/
 └── clickhouse_query_generator/
     ├── to_sql.rs              (modify ScalarFnCall handling)
     ├── function_registry.rs   (NEW - function mappings)
@@ -287,19 +287,19 @@ RETURN left('Hello World', 5) AS first_five
 ## Files to Create/Modify
 
 ### NEW Files
-1. `brahmand/src/clickhouse_query_generator/function_registry.rs` (~200 lines)
+1. `src/clickhouse_query_generator/function_registry.rs` (~200 lines)
    - Static function mappings
    - Lookup functions
 
-2. `brahmand/src/clickhouse_query_generator/function_translator.rs` (~150 lines)
+2. `src/clickhouse_query_generator/function_translator.rs` (~150 lines)
    - Translation logic
    - Argument transformations
 
 ### MODIFY Files
-1. `brahmand/src/clickhouse_query_generator/to_sql.rs` (~10 lines change)
+1. `src/clickhouse_query_generator/to_sql.rs` (~10 lines change)
    - Update `ScalarFnCall` handling to use translator
 
-2. `brahmand/src/clickhouse_query_generator/mod.rs` (~5 lines)
+2. `src/clickhouse_query_generator/mod.rs` (~5 lines)
    - Add new module exports
 
 ### TEST Files
@@ -321,3 +321,6 @@ RETURN left('Hello World', 5) AS first_five
 5. Commit progress: "feat: Add Neo4j datetime and string functions (10/20)"
 
 Let's do this! 💪
+
+
+

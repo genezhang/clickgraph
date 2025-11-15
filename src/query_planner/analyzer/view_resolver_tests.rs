@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use crate::query_planner::analyzer::view_resolver::ViewResolver;
-use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, RelationshipIndexSchema};
+use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
 
 #[cfg(test)]
 mod tests {

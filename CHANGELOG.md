@@ -60,7 +60,7 @@
 
 ### ⚙️ Infrastructure
 
-- Vendor PackStream module: 4 files in brahmand/src/packstream/ with MIT attribution
+- Vendor PackStream module: 4 files in src/packstream/ with MIT attribution
 - Remove neo4rs dependency (keep bytes crate only)
 - Create PowerShell server startup script with proper background handling (start_server_with_cache.ps1)
 
@@ -375,3 +375,6 @@
 - Update CHANGELOG.md [skip ci]
 - Update Cargo.lock after axum 0.8.6 upgrade
 - Clean up debug logging and add NEXT_STEPS documentation
+
+
+

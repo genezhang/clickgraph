@@ -69,3 +69,4 @@ We'd love to see more real-world examples! Consider contributing:
 - **Content/Media**: Content recommendation, social media analysis, trend detection
 
 See our [Contributing Guidelines](../CONTRIBUTING.md) to add your own examples! 🚀
+

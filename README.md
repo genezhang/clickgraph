@@ -463,3 +463,4 @@ ClickGraph welcomes contributions! Key areas for development:
 ClickGraph is licensed under the Apache License, Version 2.0. See the LICENSE file for details.
 
 This project is developed on a forked repo of [Brahmand](https://github.com/suryatmodulus/brahmand) with zero-ETL view-based graph querying, Neo4j ecosystem compatibility and enterprise deployment capabilities.
+

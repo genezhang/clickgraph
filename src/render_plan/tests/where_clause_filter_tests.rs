@@ -68,11 +68,8 @@ fn cypher_to_sql(cypher: &str) -> String {
 
 /// Create a test graph schema with proper property mappings
 fn setup_test_graph_schema() -> GraphSchema {
-    use crate::graph_catalog::graph_schema::RelationshipIndexSchema;
-
     let mut nodes = HashMap::new();
     let mut relationships = HashMap::new();
-    let relationships_indexes = HashMap::new();
 
     // Create User node schema
     let user_node = NodeSchema {
@@ -109,7 +106,7 @@ fn setup_test_graph_schema() -> GraphSchema {
     };
     relationships.insert("FOLLOWS".to_string(), follows_rel);
 
-    GraphSchema::build(1, "test_db".to_string(), nodes, relationships, relationships_indexes)
+    GraphSchema::build(1, "test_db".to_string(), nodes, relationships)
 }#[cfg(test)]
 mod variable_length_path_filters {
     use super::*;

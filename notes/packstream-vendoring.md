@@ -2,7 +2,7 @@
 
 **Date**: November 12, 2025  
 **Status**: ✅ Complete  
-**Files**: `brahmand/src/packstream/` (4 files, ~3,371 lines)
+**Files**: `src/packstream/` (4 files, ~3,371 lines)
 
 ## Summary
 
@@ -36,7 +36,7 @@ Bolt protocol requires PackStream binary format for:
 
 ### File Structure
 ```
-brahmand/src/packstream/
+src/packstream/
 ├── mod.rs           (634 lines)  - Main module, exports public API
 ├── de.rs            (567 lines)  - Deserializer implementation
 └── ser/
@@ -103,7 +103,7 @@ All 4 files have attribution header:
 // Copyright (c) Neo4j Labs
 ```
 
-### 2. brahmand/src/lib.rs
+### 2. src/lib.rs
 ```rust
 pub mod packstream;  // Vendored from neo4rs for Bolt protocol support
 ```
@@ -114,7 +114,7 @@ pub mod packstream;  // Vendored from neo4rs for Bolt protocol support
 # Kept: bytes = "1.8"  # Required by packstream
 ```
 
-### 4. brahmand/src/server/bolt_protocol/connection.rs
+### 4. src/server/bolt_protocol/connection.rs
 ```rust
 use crate::packstream;
 
@@ -125,7 +125,7 @@ let metadata: HashMap<String, Value> = packstream::from_bytes(bytes)?;
 let bytes = packstream::to_bytes(&value)?;
 ```
 
-### 5. brahmand/src/main.rs
+### 5. src/main.rs
 ```rust
 // Fixed: Use library modules instead of redeclaring
 use clickgraph::{
@@ -275,3 +275,6 @@ struct Path {
 3. **Block scope for Send**: Drop non-Send types before `.await` points
 4. **Main.rs vs lib.rs**: Binary should import from library, not redeclare modules
 5. **License compliance**: Always add attribution headers for vendored code
+
+
+

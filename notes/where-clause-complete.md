@@ -43,12 +43,12 @@ WHERE t.end_name = 'David Lee'  -- End filter applied here
 ## Key Files
 
 ### Core Implementation
-- `brahmand/src/render_plan/plan_builder.rs`: Main SQL generation and filter processing
-- `brahmand/src/open_cypher_parser/expression.rs`: Parser support for double-quoted strings
-- `brahmand/src/clickhouse_query_generator/variable_length_cte.rs`: CTE generation with property selection
+- `src/render_plan/plan_builder.rs`: Main SQL generation and filter processing
+- `src/open_cypher_parser/expression.rs`: Parser support for double-quoted strings
+- `src/clickhouse_query_generator/variable_length_cte.rs`: CTE generation with property selection
 
 ### Test Coverage
-- `brahmand/src/render_plan/tests/where_clause_filter_tests.rs`: Comprehensive test suite
+- `src/render_plan/tests/where_clause_filter_tests.rs`: Comprehensive test suite
 - 298 total tests passing (100%)
 
 ## Design Decisions
@@ -159,3 +159,5 @@ All tests pass end-to-end with real ClickHouse data, confirming:
 - **Shortest path queries**: Also supports WHERE clause filtering
 - **Path variables**: Foundation for path-based filtering
 - **Schema mapping**: YAML configuration for property mapping
+
+

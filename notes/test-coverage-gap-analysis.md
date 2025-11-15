@@ -28,7 +28,7 @@
 ### The Coverage Gap
 
 ```
-File: brahmand/src/query_planner/optimizer/filter_into_graph_rel.rs
+File: src/query_planner/optimizer/filter_into_graph_rel.rs
 Lines of Code: 563
 Test Coverage: 0%
 Tests Added: 5 (after fix)
@@ -199,3 +199,6 @@ The WHERE ViewScan bug existed alongside 318 passing tests because:
 3. Integration tests didn't exist yet
 
 **Solution**: Require unit tests for all new optimizer passes and code changes.
+
+
+

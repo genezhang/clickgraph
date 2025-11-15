@@ -312,3 +312,6 @@ Extend ViewScan to handle relationship patterns:
 - **Checklist**: `DEV_ENVIRONMENT_CHECKLIST.md`
 - **YAML Schema**: `social_network.yaml`, `ecommerce_graph_demo.yaml`
 - **Test Scripts**: `test_query_simple.py`, `test_optional_match.py`
+
+
+

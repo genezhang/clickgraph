@@ -600,7 +600,7 @@ client.query(query).bind("email", user_input).fetch_all().await?;
 
 ### Phase 1: Parsing (AST Extension)
 
-**File**: `brahmand/src/open_cypher_parser/expression.rs`
+**File**: `src/open_cypher_parser/expression.rs`
 
 **Add Parameter Variant**:
 ```rust
@@ -617,7 +617,7 @@ pub enum Expression {
 }
 ```
 
-**Parser Changes** (`brahmand/src/open_cypher_parser/expression.rs`):
+**Parser Changes** (`src/open_cypher_parser/expression.rs`):
 ```rust
 fn parse_atom(input: &str) -> IResult<&str, Expression> {
     alt((
@@ -638,7 +638,7 @@ fn parse_parameter(input: &str) -> IResult<&str, Expression> {
 
 ### Phase 2: HTTP API Extension
 
-**File**: `brahmand/src/server/handlers.rs`
+**File**: `src/server/handlers.rs`
 
 **Current Structure**:
 ```rust
@@ -666,7 +666,7 @@ struct QueryRequest {
 
 ### Phase 3: Bolt Protocol Extension
 
-**File**: `brahmand/src/server/bolt_protocol/handler.rs`
+**File**: `src/server/bolt_protocol/handler.rs`
 
 **Extract Parameters from RUN Message**:
 ```rust
@@ -685,7 +685,7 @@ async fn handle_run_message(
 
 ### Phase 4: Query Context Propagation
 
-**File**: `brahmand/src/query_planner/mod.rs`
+**File**: `src/query_planner/mod.rs`
 
 **Pass Parameters Through Pipeline**:
 ```rust
@@ -709,7 +709,7 @@ pub fn evaluate_read_query(
 
 ### Phase 5: SQL Generation
 
-**File**: `brahmand/src/clickhouse_query_generator/expression.rs`
+**File**: `src/clickhouse_query_generator/expression.rs`
 
 **Convert Parameter to ClickHouse Syntax**:
 ```rust
@@ -743,7 +743,7 @@ fn infer_type(param_name: &str, ctx: &Context) -> &str {
 
 ### Phase 6: ClickHouse Execution
 
-**File**: `brahmand/src/server/clickhouse_client.rs`
+**File**: `src/server/clickhouse_client.rs`
 
 **Bind Parameters Before Execution**:
 ```rust
@@ -988,3 +988,6 @@ Query 3: "WHERE email = $email" + {email: "carol"} → Cache HIT (reuse plan)
 - [ClickHouse Query Parameters (CLI)](https://clickhouse.com/docs/en/interfaces/cli#cli-queries-with-parameters)
 - [Rust clickhouse Crate Documentation](https://docs.rs/clickhouse/)
 - ✅ **Verification Test**: `brahmand/examples/test_clickhouse_params.rs`
+
+
+

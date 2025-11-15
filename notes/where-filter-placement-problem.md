@@ -85,7 +85,7 @@ LIMIT 1
 
 ## Root Cause Analysis
 
-Need to investigate in `brahmand/src/clickhouse_query_generator/variable_length_cte.rs`:
+Need to investigate in `src/clickhouse_query_generator/variable_length_cte.rs`:
 
 1. **Where are WHERE clauses currently applied?**
    - Likely all filters go to final SELECT
@@ -163,9 +163,9 @@ RETURN a.name, b.name
 
 ## Key Files to Modify
 
-1. `brahmand/src/clickhouse_query_generator/variable_length_cte.rs` - Main fix location
-2. `brahmand/src/query_planner/logical_plan/filter.rs` - Filter expression analysis
-3. `brahmand/src/render_plan/plan_builder.rs` - CTE context (may need filter_expr field)
+1. `src/clickhouse_query_generator/variable_length_cte.rs` - Main fix location
+2. `src/query_planner/logical_plan/filter.rs` - Filter expression analysis
+3. `src/render_plan/plan_builder.rs` - CTE context (may need filter_expr field)
 
 ## Success Criteria
 
@@ -174,3 +174,6 @@ RETURN a.name, b.name
 - [ ] Test 3 returns shortest path from Alice to Charlie
 - [ ] No regression in existing 274 passing tests
 - [ ] Performance improvement (fewer paths generated in CTE)
+
+
+

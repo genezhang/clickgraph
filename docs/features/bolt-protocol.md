@@ -87,7 +87,7 @@ Total: 2/5 tests passed
 
 ### Version Negotiation Fix
 
-**File**: `brahmand/src/server/bolt_protocol/mod.rs`
+**File**: `src/server/bolt_protocol/mod.rs`
 
 **Before**:
 ```rust
@@ -205,7 +205,7 @@ These are **application-level issues**, not protocol issues. The Bolt wire proto
 
 ## Files Modified
 
-1. `brahmand/src/server/bolt_protocol/mod.rs` - Version negotiation logic
+1. `src/server/bolt_protocol/mod.rs` - Version negotiation logic
 2. `brahmand/Cargo.toml` - Added PackStream dependencies (test-case, bytes[serde])
 
 ## Test Statistics
@@ -220,3 +220,6 @@ These are **application-level issues**, not protocol issues. The Bolt wire proto
 ---
 
 **Status**: Protocol implementation robust and production-ready for development use.
+
+
+

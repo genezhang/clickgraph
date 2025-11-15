@@ -117,7 +117,7 @@ Direct validation testing:
 
 ### File Structure
 ```
-brahmand/src/
+src/
 ├── open_cypher_parser/
 │   └── path_pattern.rs (5 validation tests)
 └── render_plan/
@@ -292,3 +292,6 @@ The variable-length path feature now has **robust test coverage** with 35 dedica
 1. Add integration tests with real ClickHouse database
 2. Implement property filtering in MATCH clause
 3. Add SQL generation verification tests
+
+
+

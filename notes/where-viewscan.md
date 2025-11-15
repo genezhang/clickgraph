@@ -27,7 +27,7 @@ The fix required changes at two levels:
 
 ### 1. Logical Plan Level - Filter Injection
 
-**File**: `brahmand/src/query_planner/optimizer/filter_into_graph_rel.rs` (lines 209-315)
+**File**: `src/query_planner/optimizer/filter_into_graph_rel.rs` (lines 209-315)
 
 The `FilterIntoGraphRel` optimizer was enhanced to handle ViewScan nodes:
 
@@ -54,7 +54,7 @@ LogicalPlan::Projection(proj) => {
 
 ### 2. SQL Generation Level - Subquery Wrapping
 
-**File**: `brahmand/src/clickhouse_query_generator/to_sql_query.rs` (lines 83-127)
+**File**: `src/clickhouse_query_generator/to_sql_query.rs` (lines 83-127)
 
 Modified `FromTableItem::to_sql()` to generate subqueries when ViewScan has filters:
 
@@ -168,3 +168,6 @@ The fix was discovered through a multi-phase investigation:
 - **OPTIONAL MATCH**: LEFT JOIN semantics for optional patterns
 - **FilterIntoGraphRel Optimizer**: Pushes filters into graph operators
 - **FilterTagging Analyzer**: Pre-optimizer filter extraction
+
+
+

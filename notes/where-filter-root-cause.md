@@ -107,3 +107,6 @@ This explains why the previous debugging session failed:
 - But the real problem was at **plan-time** (Filter node removal)
 - All the property extraction fixes were unnecessary
 - The baseline code already worked - filters just weren't reaching it!
+
+
+

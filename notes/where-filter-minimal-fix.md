@@ -92,3 +92,6 @@ query = "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) WHERE b.name = '
 - ⏳ Generated SQL has WHERE in correct places
 - ⏳ Test queries return correct filtered results
 - ✅ No regression in existing 274 tests
+
+
+

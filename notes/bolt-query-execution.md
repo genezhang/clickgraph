@@ -138,7 +138,7 @@ let parsed2 = parse_query(query)?;             // Re-parse for planning
 
 ### Root Cause
 
-**File**: `brahmand/src/server/bolt_protocol/connection.rs`  
+**File**: `src/server/bolt_protocol/connection.rs`  
 **Function**: `parse_message()` (line 225)  
 **Issue**: Simplified parsing stub, not full PackStream implementation
 
@@ -172,24 +172,24 @@ fn parse_message(&self, data: Vec<u8>) -> BoltResult<BoltMessage> {
 
 ## Files Modified
 
-1. **brahmand/src/server/bolt_protocol/handler.rs** (200+ lines)
+1. **src/server/bolt_protocol/handler.rs** (200+ lines)
    - Complete execute_cypher_query() implementation
    - Updated handle_pull() for result streaming
    - Added clickhouse_client field
    - Added cached_results field
    - Comprehensive error handling
 
-2. **brahmand/src/server/bolt_protocol/connection.rs** (4 lines)
+2. **src/server/bolt_protocol/connection.rs** (4 lines)
    - Added Client parameter to BoltConnection::new()
    - Updated tests
 
-3. **brahmand/src/server/bolt_protocol/mod.rs** (8 lines)
+3. **src/server/bolt_protocol/mod.rs** (8 lines)
    - Added Client field to BoltServer
    - Removed connections HashMap
    - Changed to `&self` instead of `&mut self`
    - Removed Debug derive
 
-4. **brahmand/src/server/mod.rs** (6 lines)
+4. **src/server/mod.rs** (6 lines)
    - Clone app_state for Router
    - Pass clickhouse_client to BoltServer
    - Simplified spawn (no Mutex)
@@ -336,3 +336,6 @@ The **block-scoping solution for the Send issue** was elegant and demonstrated g
 However, we discovered that the **PackStream message parsing** is incomplete, which blocks actual Neo4j driver usage. The query execution code is production-ready and waiting for the PackStream layer to be completed.
 
 **Recommendation**: Implement Option B (use existing PackStream crate) - fastest path to full Bolt support with minimal risk.
+
+
+

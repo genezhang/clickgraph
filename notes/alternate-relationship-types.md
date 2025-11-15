@@ -59,3 +59,5 @@ Implemented support for alternate relationship types in Cypher patterns, allowin
 - Integration tests with actual ClickHouse execution pending
 - Backward compatibility for single types
 - Integration tests with actual SQL execution
+
+

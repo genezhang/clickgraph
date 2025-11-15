@@ -693,7 +693,7 @@ relationships:
 - **Documentation**: `docs/` directory
 - **Examples**: `examples/` directory  
 - **Issue Tracker**: GitHub Issues
-- **Test Suite**: `brahmand/src/render_plan/tests/variable_length_tests.rs`
+- **Test Suite**: `src/render_plan/tests/variable_length_tests.rs`
 
 ### Reporting Issues
 
@@ -730,3 +730,6 @@ When reporting performance or correctness issues, include:
 **Status**: Production-Ready
 
 For the latest updates, see [STATUS_REPORT.md](../STATUS_REPORT.md)
+
+
+

@@ -152,7 +152,7 @@ The Bolt protocol v4.4 implementation provides **version negotiation** and **que
 
 ### Technical Details
 
-**File**: `brahmand/src/server/bolt_protocol/connection.rs` (line 225-260)
+**File**: `src/server/bolt_protocol/connection.rs` (line 225-260)
 
 **The Problem**: Simplified PackStream parsing stub
 
@@ -200,7 +200,7 @@ Response data: 7f               # Incomplete FAILURE message
 
 ### Query Execution Implementation ✅ (November 11, 2025)
 
-**File**: `brahmand/src/server/bolt_protocol/handler.rs` (line 360-520)
+**File**: `src/server/bolt_protocol/handler.rs` (line 360-520)
 
 The query execution pipeline is **now fully implemented**:
 1. ✅ Parse Cypher query with block-scoped lifetime management (Send-safe)
@@ -288,9 +288,9 @@ with driver.session(database="social_network") as session:
 **Expected**: All queries work identically to HTTP API
 
 **Related Files**:
-- `brahmand/src/server/bolt_protocol/connection.rs` - PackStream parsing stubs ❌
-- `brahmand/src/server/bolt_protocol/handler.rs` - Query execution ✅ COMPLETE
-- `brahmand/src/server/handlers.rs` - HTTP reference implementation ✅
+- `src/server/bolt_protocol/connection.rs` - PackStream parsing stubs ❌
+- `src/server/bolt_protocol/handler.rs` - Query execution ✅ COMPLETE
+- `src/server/handlers.rs` - HTTP reference implementation ✅
 - `notes/bolt-query-execution.md` - Complete implementation details
 
 **See Also**: `notes/bolt-query-execution.md` for detailed implementation notes, Send issue solution, and PackStream recommendations.
@@ -623,8 +623,8 @@ The issue was inadvertently fixed during the configurable CTE depth implementati
 | WSL 2 | ✅ Working | ✅ Working | Also supported |
 
 ### Files Involved
-- `brahmand/src/server/mod.rs` - Server initialization with proper config cloning
-- `brahmand/src/server/handlers.rs` - Request handlers  
+- `src/server/mod.rs` - Server initialization with proper config cloning
+- `src/server/handlers.rs` - Request handlers  
 - Full report: `WINDOWS_FIX_REPORT.md`
 
 ### Impact
@@ -659,7 +659,7 @@ Extended the expression rewriting logic to handle GROUP BY and ORDER BY clauses 
 - `u2.property` → `t.end_property`
 
 ### Files Modified
-- `brahmand/src/render_plan/plan_builder.rs`: Added rewriting for GROUP BY and ORDER BY expressions
+- `src/render_plan/plan_builder.rs`: Added rewriting for GROUP BY and ORDER BY expressions
 
 ---
 
@@ -688,9 +688,9 @@ Full WHERE clause support for variable-length path queries and shortest path fun
 - Comprehensive test coverage with 303/303 tests passing
 
 ### Files Modified
-- `brahmand/src/render_plan/plan_builder.rs` - Main filter processing and SQL generation
-- `brahmand/src/open_cypher_parser/expression.rs` - Double-quoted string support
-- `brahmand/src/clickhouse_query_generator/variable_length_cte.rs` - CTE property selection
+- `src/render_plan/plan_builder.rs` - Main filter processing and SQL generation
+- `src/open_cypher_parser/expression.rs` - Double-quoted string support
+- `src/clickhouse_query_generator/variable_length_cte.rs` - CTE property selection
 
 ### Testing Status
 - ✅ End node filters: Work with all variable-length paths
@@ -729,8 +729,8 @@ CROSS JOIN users AS b
 ```
 
 ### Files Modified
-- `brahmand/src/render_plan/plan_builder.rs` - CROSS JOIN generation logic
-- `brahmand/src/query_planner/logical_plan/graph_node.rs` - Nested structure support
+- `src/render_plan/plan_builder.rs` - CROSS JOIN generation logic
+- `src/query_planner/logical_plan/graph_node.rs` - Nested structure support
 
 ---
 
@@ -751,8 +751,8 @@ Full CASE WHEN THEN ELSE conditional expression support with ClickHouse optimiza
 - **Full context support**: WHERE clauses, function calls, complex expressions ✅
 
 ### Files Modified
-- `brahmand/src/open_cypher_parser/expression.rs` - CASE expression parsing
-- `brahmand/src/clickhouse_query_generator/expression.rs` - SQL generation with optimization
+- `src/open_cypher_parser/expression.rs` - CASE expression parsing
+- `src/clickhouse_query_generator/expression.rs` - SQL generation with optimization
 
 ---
 
@@ -773,8 +773,8 @@ Background schema update detection with graceful error handling.
 - **Comprehensive logging**: For debugging schema monitoring ✅
 
 ### Files Modified
-- `brahmand/src/server/graph_catalog.rs` - Schema monitoring implementation
-- `brahmand/src/server/mod.rs` - Background task integration
+- `src/server/graph_catalog.rs` - Schema monitoring implementation
+- `src/server/mod.rs` - Background task integration
 
 ---
 
@@ -822,7 +822,7 @@ Comprehensive query performance monitoring with phase-by-phase timing and HTTP h
 - **Query type classification**: read/write/call with SQL query count tracking ✅
 
 ### Files Modified
-- `brahmand/src/server/handlers.rs` - QueryPerformanceMetrics struct and timing integration
+- `src/server/handlers.rs` - QueryPerformanceMetrics struct and timing integration
 
 ---
 
@@ -867,3 +867,6 @@ Functional but suboptimal performance for exact hop count queries.
 
 ### Impact
 Core functionality works, but edge cases may have unexpected behavior.
+
+
+

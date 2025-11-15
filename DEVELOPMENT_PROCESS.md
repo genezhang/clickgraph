@@ -112,7 +112,7 @@ graph LR
 ### Process Steps
 
 #### 2.1 Start with Parser (if needed)
-**Location**: `brahmand/src/open_cypher_parser/`
+**Location**: `src/open_cypher_parser/`
 
 **Steps**:
 1. Add token/keyword if needed (`mod.rs`)
@@ -149,7 +149,7 @@ fn test_parse_optional_match() {
 ```
 
 #### 2.2 Update Logical Plan
-**Location**: `brahmand/src/query_planner/logical_plan/`
+**Location**: `src/query_planner/logical_plan/`
 
 **Typical Changes**:
 - Add new plan node types if needed
@@ -166,7 +166,7 @@ pub struct PlanContext {
 ```
 
 #### 2.3 Implement SQL Generation
-**Location**: `brahmand/src/clickhouse_query_generator/` or `brahmand/src/render_plan/`
+**Location**: `src/clickhouse_query_generator/` or `src/render_plan/`
 
 **Common Patterns**:
 - **Simple transformations**: Add cases to existing match statements
@@ -808,3 +808,6 @@ print(response.json())
 **Version**: 1.0  
 **Based on**: OPTIONAL MATCH, Variable-Length Paths, Shortest Path, PageRank implementations  
 **Maintained by**: ClickGraph development team
+
+
+

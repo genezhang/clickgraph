@@ -384,7 +384,7 @@ LogicalPlan::Projection(projection) => {
 
 ## Key Files Modified
 
-### `brahmand/src/render_plan/plan_builder.rs`
+### `src/render_plan/plan_builder.rs`
 
 **Lines 1831-1895**: ORDER BY/LIMIT unwrapping
 - Extracts wrappers BEFORE pattern detection
@@ -406,14 +406,14 @@ LogicalPlan::Projection(projection) => {
 - Fixes ID column lookup for multi-hop
 - Builds joins bottom-up
 
-### `brahmand/src/query_planner/logical_plan/mod.rs`
+### `src/query_planner/logical_plan/mod.rs`
 
 **Lines 261-270**: GraphJoins deprecation comment
 - Documents why pre-computed joins are wrong
 - Explains future migration path
 - Clear TODO for cleanup
 
-### `brahmand/src/render_plan/tests/multiple_relationship_tests.rs`
+### `src/render_plan/tests/multiple_relationship_tests.rs`
 
 **Lines 258-270**: Fixed JOIN counting
 - Count "INNER JOIN" and "LEFT JOIN" separately
@@ -494,3 +494,6 @@ LogicalPlan::Projection(projection) => {
 1. Complete integration test coverage (24/35 → 35/35)
 2. Validate WITH clauses in production benchmarks
 3. Future: Remove pre-computed joins after full validation
+
+
+

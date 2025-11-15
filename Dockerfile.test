@@ -5,7 +5,7 @@ WORKDIR /build
 COPY . .
 
 # Build release binary
-RUN cargo build --release --bin brahmand
+RUN cargo build --release --bin clickgraph
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -18,8 +18,8 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /build/target/release/brahmand /app/brahmand
+COPY --from=builder /build/target/release/clickgraph /app/clickgraph
 
 # Default command
-ENTRYPOINT ["/app/brahmand"]
+ENTRYPOINT ["/app/clickgraph"]
 CMD ["--http-port", "8080"]
