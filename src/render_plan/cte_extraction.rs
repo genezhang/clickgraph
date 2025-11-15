@@ -528,7 +528,8 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                     // For variable-length queries (not shortest path), store end filters in context for outer query
                     if graph_rel.shortest_path_mode.is_none() {
                         if let Some(end_filter_expr) = &categorized.end_node_filters {
-                            context.set_end_filters_for_outer_query(end_filter_expr.clone());
+                            // 🆕 IMMUTABLE PATTERN: Update context immutably
+                            *context = context.clone().with_end_filters_for_outer_query(end_filter_expr.clone());
                         }
                     }
 
@@ -631,15 +632,18 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
         LogicalPlan::Filter(filter) => {
             // Store the filter in context so GraphRel nodes can access it
             log::trace!("Filter node detected, storing filter predicate in context: {:?}", filter.predicate);
-            let mut new_context = context.clone();
+            
+            // 🆕 IMMUTABLE PATTERN: Create new context with filter instead of mutating
             let filter_expr: RenderExpr = filter.predicate.clone().try_into()?;
             log::trace!("Converted to RenderExpr: {:?}", filter_expr);
-            new_context.set_filter(filter_expr);
-            let ctes = extract_ctes_with_context(&filter.input, last_node_alias, &mut new_context)?;
+            let new_context = context.clone().with_filter(filter_expr);
+            
+            // Extract CTEs with the new context
+            let ctes = extract_ctes_with_context(&filter.input, last_node_alias, &mut new_context.clone())?;
+            
             // Merge end filters from the new context back to the original context
-            if let Some(end_filters) = new_context.get_end_filters_for_outer_query().cloned() {
-                context.set_end_filters_for_outer_query(end_filters);
-            }
+            *context = context.clone().merge_end_filters(&new_context);
+            
             Ok(ctes)
         }
         LogicalPlan::Projection(projection) => {

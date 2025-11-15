@@ -60,6 +60,15 @@ impl CteGenerationContext {
         self.variable_length_properties.get(&key).cloned().unwrap_or_default()
     }
 
+    // 🆕 IMMUTABLE BUILDER PATTERN: Returns new context instead of mutating
+    pub(crate) fn with_properties(mut self, left_alias: &str, right_alias: &str, properties: Vec<NodeProperty>) -> Self {
+        let key = format!("{}-{}", left_alias, right_alias);
+        self.variable_length_properties.insert(key, properties);
+        self
+    }
+
+    // 🔧 DEPRECATED: Keep for compatibility during migration
+    #[deprecated(note = "Use with_properties() instead - immutable builder pattern")]
     pub(crate) fn set_properties(&mut self, left_alias: &str, right_alias: &str, properties: Vec<NodeProperty>) {
         let key = format!("{}-{}", left_alias, right_alias);
         self.variable_length_properties.insert(key, properties);
@@ -69,6 +78,14 @@ impl CteGenerationContext {
         self.filter_expr.as_ref()
     }
 
+    // 🆕 IMMUTABLE: Returns new context
+    pub(crate) fn with_filter(mut self, filter: RenderExpr) -> Self {
+        self.filter_expr = Some(filter);
+        self
+    }
+
+    // 🔧 DEPRECATED: Keep for compatibility
+    #[deprecated(note = "Use with_filter() instead")]
     pub(crate) fn set_filter(&mut self, filter: RenderExpr) {
         self.filter_expr = Some(filter);
     }
@@ -77,6 +94,14 @@ impl CteGenerationContext {
         self.end_filters_for_outer_query.as_ref()
     }
 
+    // 🆕 IMMUTABLE: Returns new context
+    pub(crate) fn with_end_filters_for_outer_query(mut self, filters: RenderExpr) -> Self {
+        self.end_filters_for_outer_query = Some(filters);
+        self
+    }
+
+    // 🔧 DEPRECATED: Keep for compatibility
+    #[deprecated(note = "Use with_end_filters_for_outer_query() instead")]
     pub(crate) fn set_end_filters_for_outer_query(&mut self, filters: RenderExpr) {
         self.end_filters_for_outer_query = Some(filters);
     }
@@ -85,6 +110,14 @@ impl CteGenerationContext {
         self.start_cypher_alias.as_deref()
     }
 
+    // 🆕 IMMUTABLE: Returns new context
+    pub(crate) fn with_start_cypher_alias(mut self, alias: String) -> Self {
+        self.start_cypher_alias = Some(alias);
+        self
+    }
+
+    // 🔧 DEPRECATED: Keep for compatibility
+    #[deprecated(note = "Use with_start_cypher_alias() instead")]
     pub(crate) fn set_start_cypher_alias(&mut self, alias: String) {
         self.start_cypher_alias = Some(alias);
     }
@@ -93,8 +126,24 @@ impl CteGenerationContext {
         self.end_cypher_alias.as_deref()
     }
 
+    // 🆕 IMMUTABLE: Returns new context
+    pub(crate) fn with_end_cypher_alias(mut self, alias: String) -> Self {
+        self.end_cypher_alias = Some(alias);
+        self
+    }
+
+    // 🔧 DEPRECATED: Keep for compatibility
+    #[deprecated(note = "Use with_end_cypher_alias() instead")]
     pub(crate) fn set_end_cypher_alias(&mut self, alias: String) {
         self.end_cypher_alias = Some(alias);
+    }
+
+    // 🆕 MERGE HELPER: Merge another context's end filters into this one
+    pub(crate) fn merge_end_filters(mut self, other: &CteGenerationContext) -> Self {
+        if let Some(filters) = other.get_end_filters_for_outer_query() {
+            self.end_filters_for_outer_query = Some(filters.clone());
+        }
+        self
     }
 }
 
@@ -152,12 +201,13 @@ fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
 
 /// Analyze the plan to determine what properties are needed for variable-length CTEs
 pub(crate) fn analyze_property_requirements(plan: &LogicalPlan, schema: &GraphSchema) -> CteGenerationContext {
-    let mut context = CteGenerationContext::with_schema(schema.clone());
+    let context = CteGenerationContext::with_schema(schema.clone());
 
     // Find variable-length relationships and their required properties
     if let Some((left_alias, right_alias, left_label, right_label, _rel_type)) = get_variable_length_info(plan) {
         let properties = extract_var_len_properties(plan, &left_alias, &right_alias, &left_label, &right_label);
-        context.set_properties(&left_alias, &right_alias, properties);
+        // 🆕 IMMUTABLE PATTERN: Chain the builder method
+        return context.with_properties(&left_alias, &right_alias, properties);
     }
 
     context
