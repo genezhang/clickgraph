@@ -11,7 +11,6 @@ mod tests {
     fn create_test_schema() -> GraphSchema {
         let mut nodes = HashMap::new();
         let mut relationships = HashMap::new();
-        let relationships_indexes = HashMap::new();
 
         // Create a test node schema
         let node_schema = NodeSchema {
