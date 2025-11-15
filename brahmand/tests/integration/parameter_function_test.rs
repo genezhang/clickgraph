@@ -15,7 +15,7 @@ fn test_parameter_in_where_with_function_in_return() {
     let query = "MATCH (n:User) WHERE n.age > $minAge RETURN toUpper(n.name) AS upper_name";
     let ast = parse_query(query).expect("Failed to parse query");
     
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     
     let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema).expect("Failed to render SQL");
@@ -33,7 +33,7 @@ fn test_function_with_parameter_in_where() {
     let query = "MATCH (n:User) WHERE toUpper(n.status) = $status RETURN n.name";
     let ast = parse_query(query).expect("Failed to parse query");
     
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     
     let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema).expect("Failed to render SQL");
@@ -51,7 +51,7 @@ fn test_multiple_parameters_with_multiple_functions() {
     let query = "MATCH (n:Product) WHERE n.price >= $minPrice AND n.price <= $maxPrice RETURN toUpper(n.name), ceil(n.price) AS rounded_price";
     let ast = parse_query(query).expect("Failed to parse query");
     
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     
     let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema).expect("Failed to render SQL");
@@ -70,7 +70,7 @@ fn test_math_function_in_where_with_parameter() {
     let query = "MATCH (n:Number) WHERE abs(n.value) > $threshold RETURN n.value";
     let ast = parse_query(query).expect("Failed to parse query");
     
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     
     let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema).expect("Failed to render SQL");
@@ -88,7 +88,7 @@ fn test_string_function_with_parameters_in_return() {
     let query = "MATCH (n:Text) RETURN substring(n.content, $start, $length) AS substr";
     let ast = parse_query(query).expect("Failed to parse query");
     
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     
     let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema).expect("Failed to render SQL");
@@ -106,7 +106,7 @@ fn test_aggregation_function_with_parameter_filter() {
     let query = "MATCH (n:Order) WHERE n.total > $minTotal RETURN count(n) AS order_count, sum(n.total) AS total_sum";
     let ast = parse_query(query).expect("Failed to parse query");
     
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     
     let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema).expect("Failed to render SQL");
@@ -125,7 +125,7 @@ fn test_nested_functions_with_properties() {
     let query = "MATCH (n:Person) RETURN toUpper(substring(n.name, 0, 5)) AS short_upper_name";
     let ast = parse_query(query).expect("Failed to parse query");
     
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     
     let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema).expect("Failed to render SQL");
@@ -144,7 +144,7 @@ fn test_case_expression_with_parameters() {
     let query = "MATCH (n:Product) RETURN CASE WHEN n.price > $threshold THEN 'expensive' ELSE 'affordable' END AS category";
     let ast = parse_query(query).expect("Failed to parse query");
     
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     
     let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema).expect("Failed to render SQL");
@@ -162,7 +162,7 @@ fn test_function_on_parameter_in_return() {
     let query = "MATCH (n:User) RETURN toUpper($userName) AS upper_param, n.name";
     let ast = parse_query(query).expect("Failed to parse query");
     
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     
     let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema).expect("Failed to render SQL");
@@ -173,3 +173,4 @@ fn test_function_on_parameter_in_return() {
     // Verify function applied to parameter
     assert!(sql.to_lowercase().contains("upper(") || sql.to_lowercase().contains("ucase("));
 }
+

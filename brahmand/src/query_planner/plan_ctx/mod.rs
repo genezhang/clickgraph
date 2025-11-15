@@ -305,7 +305,6 @@ impl PlanCtx {
             "test".to_string(),
             HashMap::new(),
             HashMap::new(),
-            HashMap::new(),
         );
         PlanCtx {
             alias_table_ctx_map: HashMap::new(),

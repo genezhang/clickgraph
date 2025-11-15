@@ -170,7 +170,6 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
                             "default".to_string(),
                             std::collections::HashMap::new(),
                             std::collections::HashMap::new(),
-                            std::collections::HashMap::new(),
                         );
 
                         // Initialize multi-schema storage with empty default schema
@@ -213,7 +212,6 @@ pub async fn initialize_global_schema(clickhouse_client: Option<Client>, validat
         let empty_schema = GraphSchema::build(
             1,
             "default".to_string(),
-            std::collections::HashMap::new(),
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
         );
@@ -517,12 +515,6 @@ pub async fn add_to_schema(
                     relationship_schema,
                 );
                 graph_schema.increment_version();
-            }
-            GraphSchemaElement::RelIndex(relationship_index_schema) => {
-                graph_schema.insert_rel_index_schema(
-                    relationship_index_schema.table_name.to_string(),
-                    relationship_index_schema,
-                );
             }
         }
     }

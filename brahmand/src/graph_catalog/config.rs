@@ -244,7 +244,6 @@ impl GraphSchemaConfig {
             "default".to_string(), // Default database, individual tables have their own
             nodes,
             relationships,
-            HashMap::new(), // relationships_indexes
         ))
     }
 }

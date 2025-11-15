@@ -17,7 +17,7 @@ fn test_path_variable_sql_generation() {
         .expect("Failed to parse Cypher query");
     
     // Create empty schema (test doesn't need actual schema)
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     
     // Build logical plan
     let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema)
@@ -51,7 +51,7 @@ fn test_path_variable_with_properties() {
         .expect("Failed to parse Cypher query");
     
     // Create empty schema
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     
     // Build logical plan
     let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema)
@@ -82,7 +82,7 @@ fn test_non_path_variable_unchanged() {
         .expect("Failed to parse Cypher query");
     
     // Create empty schema
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     
     // Build logical plan
     let (logical_plan, _plan_ctx) = build_logical_plan(&ast, &schema)
@@ -102,3 +102,4 @@ fn test_non_path_variable_unchanged() {
     // Just make sure it compiles and runs
     assert!(!sql.is_empty(), "SQL should not be empty");
 }
+

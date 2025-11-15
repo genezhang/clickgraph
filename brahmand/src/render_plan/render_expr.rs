@@ -182,7 +182,6 @@ impl TryFrom<LogicalInSubquery> for InSubquery {
             "default".to_string(),
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
-            std::collections::HashMap::new(),
         );
         let sub_plan = value.subplan.clone().to_render_plan(&empty_schema)?;
         let in_sub_query = InSubquery {

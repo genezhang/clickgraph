@@ -672,7 +672,7 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
             // Use schema from context if available, otherwise create empty schema for tests
             let schema = context.schema().cloned().unwrap_or_else(|| {
                 use crate::graph_catalog::graph_schema::GraphSchema;
-                GraphSchema::build(1, "test".to_string(), std::collections::HashMap::new(), std::collections::HashMap::new(), std::collections::HashMap::new())
+                GraphSchema::build(1, "test".to_string(), std::collections::HashMap::new(), std::collections::HashMap::new())
             });
             Ok(vec![Cte {
                 cte_name: logical_cte.name.clone(),

@@ -778,7 +778,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // let from_table = logical_cte.input.extract_from()?;
                 use crate::graph_catalog::graph_schema::GraphSchema;
                 use std::collections::HashMap;
-                let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+                let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
                 let render_cte = Cte {
                     cte_name: logical_cte.name.clone(),
                     content: super::CteContent::Structured(logical_cte.input.to_render_plan(&empty_schema)?),
@@ -1029,7 +1029,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // let filters = logical_cte.input.extract_filters()?;
                 use crate::graph_catalog::graph_schema::GraphSchema;
                 use std::collections::HashMap;
-                let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+                let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
                 Ok(vec![Cte {
                     cte_name: logical_cte.name.clone(),
                     content: super::CteContent::Structured(logical_cte.input.to_render_plan(&empty_schema)?),
@@ -2010,7 +2010,7 @@ impl RenderPlanBuilder for LogicalPlan {
     fn extract_union(&self) -> RenderPlanBuilderResult<Option<Union>> {
         use crate::graph_catalog::graph_schema::GraphSchema;
         use std::collections::HashMap;
-        let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+        let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
         
         let union_opt = match &self {
             LogicalPlan::Union(union) => Some(Union {
@@ -2235,7 +2235,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         // Step 1: Build inner query (GROUP BY + HAVING) as a RenderPlan
                         use crate::graph_catalog::graph_schema::GraphSchema;
                         use std::collections::HashMap;
-                        let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new(), HashMap::new());
+                        let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
                         let inner_render_plan = group_by.input.to_render_plan(&empty_schema)?;
                         
                         // Step 2: Extract GROUP BY expressions and HAVING clause

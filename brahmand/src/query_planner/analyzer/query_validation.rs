@@ -148,22 +148,7 @@ impl AnalyzerPass for QueryValidation {
                             .contains(&from)
                         && [rel_schema.from_node.clone(), rel_schema.to_node.clone()].contains(&to))
                 {
-                    // valid graph
-                    // if not explicite edge list then check for indexes
-                    if !rel_ctx.should_use_edge_list() {
-                        // check for both adj indexes. If any one is not present then use edgelist
-                        let incoming_index = format!("{}_{}", rel_lable, Direction::Incoming);
-                        let outgoing_index = format!("{}_{}", rel_lable, Direction::Outgoing);
-                        if graph_schema
-                            .get_relationship_index_schema_opt(&incoming_index)
-                            .is_none()
-                            || graph_schema
-                                .get_relationship_index_schema_opt(&outgoing_index)
-                                .is_none()
-                        {
-                            rel_ctx.set_use_edge_list(true);
-                        }
-                    }
+                    // valid graph - ClickGraph only supports edge list (relationships as explicit tables)
                     Transformed::No(logical_plan.clone())
                 } else {
                     // return error

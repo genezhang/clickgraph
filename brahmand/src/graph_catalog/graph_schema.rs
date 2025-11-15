@@ -29,14 +29,6 @@ pub struct RelationshipSchema {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RelationshipIndexSchema {
-    pub base_rel_table_name: String,
-    pub table_name: String,
-    pub direction: Direction,
-    pub index_type: IndexType,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum Direction {
     Outgoing,
     Incoming,
@@ -51,24 +43,10 @@ impl fmt::Display for Direction {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum IndexType {
-    Bitmap,
-}
-
-impl fmt::Display for IndexType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            IndexType::Bitmap => f.write_str("Bitmap"),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum GraphSchemaElement {
     Node(NodeSchema),
     Rel(RelationshipSchema),
-    RelIndex(RelationshipIndexSchema),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -83,7 +61,6 @@ pub struct GraphSchema {
     database: String,
     nodes: HashMap<String, NodeSchema>,
     relationships: HashMap<String, RelationshipSchema>,
-    relationships_indexes: HashMap<String, RelationshipIndexSchema>,
 }
 
 impl GraphSchema {
@@ -92,14 +69,12 @@ impl GraphSchema {
         database: String,
         nodes: HashMap<String, NodeSchema>,
         relationships: HashMap<String, RelationshipSchema>,
-        relationships_indexes: HashMap<String, RelationshipIndexSchema>,
     ) -> GraphSchema {
         GraphSchema {
             version,
             database,
             nodes,
             relationships,
-            relationships_indexes,
         }
     }
 
@@ -138,15 +113,6 @@ impl GraphSchema {
         self.relationships.insert(rel_label, rel_schema);
     }
 
-    pub fn insert_rel_index_schema(
-        &mut self,
-        rel_label: String,
-        rel_index_schema: RelationshipIndexSchema,
-    ) {
-        self.relationships_indexes
-            .insert(rel_label, rel_index_schema);
-    }
-
     pub fn get_version(&self) -> u32 {
         self.version
     }
@@ -169,17 +135,6 @@ impl GraphSchema {
             })
     }
 
-    pub fn get_rel_index_schema(
-        &self,
-        rel_label: &str,
-    ) -> Result<&RelationshipIndexSchema, GraphSchemaError> {
-        self.relationships_indexes
-            .get(rel_label)
-            .ok_or(GraphSchemaError::RelationIndex {
-                rel_label: rel_label.to_string(),
-            })
-    }
-
     pub fn get_relationships_schemas(&self) -> &HashMap<String, RelationshipSchema> {
         &self.relationships
     }
@@ -194,12 +149,5 @@ impl GraphSchema {
 
     pub fn get_relationships_schema_opt(&self, rel_label: &str) -> Option<&RelationshipSchema> {
         self.relationships.get(rel_label)
-    }
-
-    pub fn get_relationship_index_schema_opt(
-        &self,
-        rel_label: &str,
-    ) -> Option<&RelationshipIndexSchema> {
-        self.relationships_indexes.get(rel_label)
     }
 }
