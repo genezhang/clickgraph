@@ -1,10 +1,46 @@
 # Known Issues
 
-**Current Status**: Major functionality working, 1 feature limitation + 1 flaky test  
-**Test Results**: 433/434 unit tests stable (99.8%), 14/14 benchmark queries passing (100%)  
-**Active Issues**: 1 enhancement (anonymous node/edge patterns), 1 flaky test (cache LRU)
+**Current Status**: Major functionality working, 2 feature limitations + 1 flaky test  
+**Test Results**: 433/434 unit tests stable (99.8%), 197/308 integration tests passing (64%)  
+**Active Issues**: 2 enhancements (anonymous nodes, anonymous edge patterns), 1 flaky test (cache LRU)
 
-**Note**: Some integration tests have incorrect expectations about column naming. Neo4j returns qualified names (e.g., `"u.name"`) by default, which matches our implementation. Tests will be updated.
+**Note**: Some integration tests have incorrect expectations or test unimplemented features. Known feature gaps documented below.
+
+---
+
+## 🔧 Anonymous Node Patterns (SQL Generation Bug)
+
+**Status**: ❌ **BUG** (Identified November 15, 2025)  
+**Severity**: Medium - Affects queries with anonymous start/end nodes  
+**Impact**: Queries like `MATCH ()-[r:FOLLOWS]->()` fail with SQL generation errors
+
+### Summary
+Queries with anonymous node patterns generate undefined alias references in SQL. The parser correctly handles anonymous nodes by generating unique aliases (e.g., `afb26174ca`), but the SQL generator loses track of these aliases in JOIN and WHERE clauses.
+
+**Example Failure**:
+```cypher
+MATCH ()-[r:FOLLOWS]->()
+RETURN COUNT(r) as total_follows
+```
+
+**Error**:
+```
+Unknown expression or function identifier `afb26174ca.user_id` in scope
+```
+
+**Root Cause**: Alias scope management issue in SQL generation. Anonymous nodes create table aliases but these aren't properly referenced in the generated JOIN conditions.
+
+**Workaround**: Use named nodes instead:
+```cypher
+MATCH (a)-[r:FOLLOWS]->(b)
+RETURN COUNT(r) as total_follows
+```
+
+**Affected Tests**:
+- `test_aggregations::test_count_relationships` ❌
+- `test_aggregations::test_multiple_aggregations_different_patterns` ❌
+
+**Related**: This is distinct from the "anonymous edge patterns" issue below - it specifically affects SQL generation when nodes have no explicit name or label.
 
 ---
 
