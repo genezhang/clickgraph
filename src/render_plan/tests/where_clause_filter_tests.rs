@@ -30,7 +30,6 @@ fn cypher_to_sql(cypher: &str) -> String {
         "test".to_string(),
         HashMap::new(),
         HashMap::new(),
-        HashMap::new(),
     );
 
     let (logical_plan, mut plan_ctx) = build_logical_plan(&ast, &empty_schema)

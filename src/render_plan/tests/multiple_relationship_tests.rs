@@ -19,7 +19,6 @@ fn empty_test_schema() -> GraphSchema {
         "test".to_string(),
         HashMap::new(),
         HashMap::new(),
-        HashMap::new(),
     )
 }
 
@@ -112,9 +111,8 @@ fn setup_test_schema() {
 
     // Create empty node and index schemas for now
     let nodes = HashMap::new();
-    let relationships_indexes = HashMap::new();
 
-    let schema = GraphSchema::build(1, "test_db".to_string(), nodes, relationships, relationships_indexes);
+    let schema = GraphSchema::build(1, "test_db".to_string(), nodes, relationships);
     
     // Try to set the schema in registry, ignore if already set
     if let Some(schemas_lock) = GLOBAL_SCHEMAS.get() {

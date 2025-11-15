@@ -42,7 +42,7 @@ mod tests {
         };
         relationships.insert("FOLLOWS".to_string(), rel_schema);
 
-        GraphSchema::build(1, "test_db".to_string(), nodes, relationships, relationships_indexes)
+        GraphSchema::build(1, "test_db".to_string(), nodes, relationships)
     }
 
     #[test]

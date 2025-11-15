@@ -1233,7 +1233,6 @@ mod tests {
             "test".to_string(),
             HashMap::new(),
             HashMap::new(),
-            HashMap::new(),
         ));
         let plan_ctx = PlanCtx::new(schema);
         
