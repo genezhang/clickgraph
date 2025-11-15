@@ -172,7 +172,7 @@ Refactoring Impact:
 ```markdown
 ## 🎉 ClickGraph v0.4.0: Foundation Complete
 
-Phase 1 of the ClickGraph roadmap is complete! This release brings production-ready query caching, full Neo4j Bolt 5.8 protocol support, and a validated performance baseline.
+Phase 1 of the ClickGraph roadmap is complete! This release brings development-ready query caching, full Neo4j Bolt 5.8 protocol support, and a validated performance baseline.
 
 ### ✨ What's New
 
@@ -273,7 +273,7 @@ Use this for CHANGELOG.md:
 
 ### 🎉 Phase 1 Complete
 
-Phase 1 of the ClickGraph roadmap is complete! This release brings production-ready query caching, full Neo4j Bolt 5.8 protocol support, and validated performance baselines.
+Phase 1 of the ClickGraph roadmap is complete! This release brings development-ready query caching, full Neo4j Bolt 5.8 protocol support, and validated performance baselines.
 
 ### ✨ Added
 

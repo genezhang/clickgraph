@@ -14,13 +14,13 @@
 
 ## 🚀 What's New in v0.4.0 (November 2025)
 
-### Phase 1 Complete - Production-Ready Graph Analytics Engine! 🎉
+### Phase 1 Complete - Development-Ready Graph Analytics Engine! 🎉
 
-**ClickGraph v0.4.0 delivers a robust, production-ready graph query engine with comprehensive Neo4j compatibility and enterprise-grade performance.**
+**ClickGraph v0.4.0 delivers a robust, development-ready graph query engine with comprehensive Neo4j compatibility and enterprise-grade performance.**
 
 ### Query Cache & Parameter Support - 10-100x Query Translation Performance Boost! 🚀
 
-**Production-ready query caching with parameterized queries**
+**Development-ready query caching with parameterized queries**
 - ✅ **Massive speedup**: 10-100x faster translation for repeated queries (10-50ms → 0.1-0.5ms)
 - ✅ **Parameter support**: Neo4j-compatible parameterized queries for security and performance
 - ✅ **Smart caching**: SQL template reuse with parameter substitution
@@ -80,7 +80,7 @@ curl -X POST http://localhost:8080/query \
 **Performance Validated at Scale**
 - ✅ **5M users, 50M relationships**: 9/10 benchmark queries successful (90%)
 - ✅ **Consistent performance**: 2077-2088ms mean query time (only 0.5% overhead at 10x scale)
-- ✅ **Production-ready**: Stress tested with large-scale datasets
+- ✅ **Development-ready**: Stress tested with large-scale datasets
 
 ---
 
@@ -147,7 +147,7 @@ curl -X POST http://localhost:8080/query \
 - **Stateless Architecture**: Offloads all query execution to ClickHouse—no extra datastore required
 - **Cypher Query Language**: Industry-standard Cypher read syntax for intuitive, expressive property-graph querying
 - **Parameterized Queries**: Neo4j-compatible parameter support (`$param` syntax) for SQL injection prevention and query plan caching
-- **Query Cache**: Production-ready LRU caching with 10-100x speedup for repeated query translations, SQL template reuse with parameter substitution, and Neo4j-compatible CYPHER replan options
+- **Query Cache**: Development-ready LRU caching with 10-100x speedup for repeated query translations, SQL template reuse with parameter substitution, and Neo4j-compatible CYPHER replan options
 - **Variable-Length Paths**: Recursive traversals with `*1..3` syntax using ClickHouse WITH RECURSIVE CTEs
 - **Path Variables & Functions**: Capture and analyze path data with `length(p)`, `nodes(p)`, `relationships(p)` functions
 - **Analytical-scale Performance**: Optimized for very large datasets and complex multi-hop traversals
@@ -430,7 +430,7 @@ First [Benchmark Results](notes/benchmarking.md)
 
 **v0.4.0 Release Status**: Ready for release (November 18, 2025)
 
-### Production-Ready Features (Phase 1)
+### Development-Ready Features (Phase 1)
 - ✅ **Query Cache with LRU Eviction**: 10-100x query translation speedup (0.1-0.5ms cached vs 10-50ms uncached)
   - Smart SQL template caching with parameter substitution
   - Configurable limits: 1000 entries, 100 MB memory
@@ -447,7 +447,7 @@ First [Benchmark Results](notes/benchmarking.md)
   - Message handling for all Bolt operations
   - Dual server architecture (HTTP + Bolt simultaneously)
   - ⚠️ Query execution pending - use HTTP API for production
-- ✅ **Comprehensive Cypher Support**: Production-ready graph query patterns
+- ✅ **Comprehensive Cypher Support**: Development-ready graph query patterns
   - Simple node lookups and filtered scans
   - Direct and multi-hop relationship traversals
   - Variable-length paths with exact (`*2`) and range (`*1..3`) specifications
@@ -509,7 +509,7 @@ See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for detailed workarounds and status.
 **Key Findings**:
 - ✅ Only 0.5% overhead for 10x data scale (2077ms → 2088ms)
 - ✅ All query types working: traversals, aggregations, variable-length paths
-- ✅ Production-ready for analytical workloads
+- ✅ Development-ready for analytical workloads
 - 📖 **Documentation**: See `notes/benchmarking.md` for detailed results
 
 ## 🗺️ Roadmap
