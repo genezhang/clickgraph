@@ -21,7 +21,6 @@ use super::filter_pipeline::{
     render_end_filter_to_column_alias, rewrite_end_filters_for_variable_length_cte,
     rewrite_expr_for_outer_query, rewrite_expr_for_var_len_cte, CategorizedFilters,
 };
-use super::expression_utils::references_alias;
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
 
