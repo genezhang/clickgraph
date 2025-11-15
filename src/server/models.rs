@@ -1,7 +1,7 @@
 use clickhouse::Row;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Deserialize)]
 pub struct QueryRequest {

@@ -1,6 +1,4 @@
-use crate::{
-    render_plan::{RenderPlan, ToSql as RenderPlanToSql},
-};
+use crate::render_plan::{RenderPlan, ToSql as RenderPlanToSql};
 
 mod common;
 mod errors;
@@ -16,9 +14,10 @@ mod view_scan;
 mod where_clause_tests;
 
 pub use errors::ClickhouseQueryGeneratorError;
-pub use variable_length_cte::{VariableLengthCteGenerator, NodeProperty};
-pub use function_translator::{translate_scalar_function, is_function_supported, get_supported_functions};
-
+pub use function_translator::{
+    get_supported_functions, is_function_supported, translate_scalar_function,
+};
+pub use variable_length_cte::{NodeProperty, VariableLengthCteGenerator};
 
 // pub fn generate_sql(plan: RenderPlan) -> String{
 //     let mut sql = String::new();

@@ -24,7 +24,7 @@ fn log_plan_structure(plan: &LogicalPlan, indent: usize) {
     if !log::log_enabled!(log::Level::Trace) {
         return; // Skip if TRACE not enabled
     }
-    
+
     let prefix = "  ".repeat(indent);
     match plan {
         LogicalPlan::Filter(f) => {
@@ -36,7 +36,11 @@ fn log_plan_structure(plan: &LogicalPlan, indent: usize) {
             log_plan_structure(&p.input, indent + 1);
         }
         LogicalPlan::GraphRel(g) => {
-            log::trace!("{}GraphRel(has_filter={})", prefix, g.where_predicate.is_some());
+            log::trace!(
+                "{}GraphRel(has_filter={})",
+                prefix,
+                g.where_predicate.is_some()
+            );
         }
         LogicalPlan::GraphNode(n) => {
             log::trace!("{}GraphNode", prefix);
@@ -54,7 +58,7 @@ pub fn initial_optimization(
 ) -> OptimizerResult<Arc<LogicalPlan>> {
     log::trace!("Initial optimization: Plan structure before FilterIntoGraphRel:");
     log_plan_structure(&plan, 1);
-    
+
     // Push filters from plan_ctx into GraphRel nodes
     let filter_into_graph_rel = FilterIntoGraphRel::new();
     let transformed_plan = filter_into_graph_rel.optimize(plan.clone(), plan_ctx)?;

@@ -20,9 +20,11 @@ pub fn build_logical_plan(
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
     let mut logical_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Empty);
     let mut plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
-    
-    log::debug!("build_logical_plan: Processing query with {} optional_match_clauses", 
-        query_ast.optional_match_clauses.len());
+
+    log::debug!(
+        "build_logical_plan: Processing query with {} optional_match_clauses",
+        query_ast.optional_match_clauses.len()
+    );
 
     if let Some(match_clause) = &query_ast.match_clause {
         logical_plan =
@@ -30,10 +32,15 @@ pub fn build_logical_plan(
     }
 
     // Process OPTIONAL MATCH clauses after regular MATCH
-    log::debug!("build_logical_plan: About to process {} OPTIONAL MATCH clauses", 
-        query_ast.optional_match_clauses.len());
+    log::debug!(
+        "build_logical_plan: About to process {} OPTIONAL MATCH clauses",
+        query_ast.optional_match_clauses.len()
+    );
     for (idx, optional_match) in query_ast.optional_match_clauses.iter().enumerate() {
-        log::debug!("build_logical_plan: Processing OPTIONAL MATCH clause {}", idx);
+        log::debug!(
+            "build_logical_plan: Processing OPTIONAL MATCH clause {}",
+            idx
+        );
         logical_plan = optional_match_clause::evaluate_optional_match_clause(
             optional_match,
             logical_plan,
@@ -44,8 +51,10 @@ pub fn build_logical_plan(
     // Process WITH clause before WHERE to create intermediate projections
     // WITH creates a projection that can be referenced by subsequent clauses (including WHERE)
     if let Some(with_clause_ast) = &query_ast.with_clause {
-        log::debug!("build_logical_plan: Processing WITH clause with {} items", 
-            with_clause_ast.with_items.len());
+        log::debug!(
+            "build_logical_plan: Processing WITH clause with {} items",
+            with_clause_ast.with_items.len()
+        );
         logical_plan = with_clause::evaluate_with_clause(with_clause_ast, logical_plan);
     }
 

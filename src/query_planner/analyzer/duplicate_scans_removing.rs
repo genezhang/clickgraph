@@ -34,38 +34,54 @@ impl DuplicateScansRemoving {
             LogicalPlan::ViewScan(_scan) => {
                 // ViewScans are leaf nodes, no transformation needed
                 Transformed::No(logical_plan.clone())
-            },
+            }
             LogicalPlan::Projection(projection) => {
-                let child_tf = Self::remove_duplicate_scans(projection.input.clone(), traversed, plan_ctx)?;
+                let child_tf =
+                    Self::remove_duplicate_scans(projection.input.clone(), traversed, plan_ctx)?;
                 projection.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphNode(graph_node) => {
                 traversed.insert(graph_node.alias.clone());
 
-                let child_tf = Self::remove_duplicate_scans(graph_node.input.clone(), traversed, plan_ctx)?;
+                let child_tf =
+                    Self::remove_duplicate_scans(graph_node.input.clone(), traversed, plan_ctx)?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphRel(graph_rel) => {
-                let right_tf = Self::remove_duplicate_scans(graph_rel.right.clone(), traversed, plan_ctx)?;
-                let center_tf = Self::remove_duplicate_scans(graph_rel.center.clone(), traversed, plan_ctx)?;
+                let right_tf =
+                    Self::remove_duplicate_scans(graph_rel.right.clone(), traversed, plan_ctx)?;
+                let center_tf =
+                    Self::remove_duplicate_scans(graph_rel.center.clone(), traversed, plan_ctx)?;
 
                 let left_alias = &graph_rel.left_connection;
-                
-                log::debug!("DuplicateScansRemoving: Processing GraphRel, left_alias='{}', traversed contains it: {}", 
-                    left_alias, traversed.contains(left_alias));
+
+                log::debug!(
+                    "DuplicateScansRemoving: Processing GraphRel, left_alias='{}', traversed contains it: {}",
+                    left_alias,
+                    traversed.contains(left_alias)
+                );
 
                 let left_tf = if traversed.contains(left_alias) {
                     let is_optional = plan_ctx.is_optional(left_alias);
-                    log::debug!("DuplicateScansRemoving: left_alias='{}' is in traversed set, is_optional={}", 
-                        left_alias, is_optional);
-                    
+                    log::debug!(
+                        "DuplicateScansRemoving: left_alias='{}' is in traversed set, is_optional={}",
+                        left_alias,
+                        is_optional
+                    );
+
                     // NEW: Check if this alias is optional before removing
                     if is_optional {
-                        log::debug!("DuplicateScansRemoving: Keeping left node for OPTIONAL MATCH (alias='{}')", left_alias);
+                        log::debug!(
+                            "DuplicateScansRemoving: Keeping left node for OPTIONAL MATCH (alias='{}')",
+                            left_alias
+                        );
                         // Keep the node for OPTIONAL MATCH JOIN generation
                         Self::remove_duplicate_scans(graph_rel.left.clone(), traversed, plan_ctx)?
                     } else {
-                        log::debug!("DuplicateScansRemoving: Removing duplicate left node (alias='{}')", left_alias);
+                        log::debug!(
+                            "DuplicateScansRemoving: Removing duplicate left node (alias='{}')",
+                            left_alias
+                        );
                         // Remove duplicate for regular MATCH
                         Transformed::Yes(Arc::new(LogicalPlan::Empty))
                     }
@@ -78,39 +94,47 @@ impl DuplicateScansRemoving {
                 graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
             }
             LogicalPlan::Cte(cte) => {
-                let child_tf = Self::remove_duplicate_scans(cte.input.clone(), traversed, plan_ctx)?;
+                let child_tf =
+                    Self::remove_duplicate_scans(cte.input.clone(), traversed, plan_ctx)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
-                let child_tf = Self::remove_duplicate_scans(graph_joins.input.clone(), traversed, plan_ctx)?;
+                let child_tf =
+                    Self::remove_duplicate_scans(graph_joins.input.clone(), traversed, plan_ctx)?;
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Filter(filter) => {
-                let child_tf = Self::remove_duplicate_scans(filter.input.clone(), traversed, plan_ctx)?;
+                let child_tf =
+                    Self::remove_duplicate_scans(filter.input.clone(), traversed, plan_ctx)?;
                 filter.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GroupBy(group_by) => {
-                let child_tf = Self::remove_duplicate_scans(group_by.input.clone(), traversed, plan_ctx)?;
+                let child_tf =
+                    Self::remove_duplicate_scans(group_by.input.clone(), traversed, plan_ctx)?;
                 group_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::OrderBy(order_by) => {
-                let child_tf = Self::remove_duplicate_scans(order_by.input.clone(), traversed, plan_ctx)?;
+                let child_tf =
+                    Self::remove_duplicate_scans(order_by.input.clone(), traversed, plan_ctx)?;
                 order_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Skip(skip) => {
-                let child_tf = Self::remove_duplicate_scans(skip.input.clone(), traversed, plan_ctx)?;
+                let child_tf =
+                    Self::remove_duplicate_scans(skip.input.clone(), traversed, plan_ctx)?;
                 skip.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Limit(limit) => {
-                let child_tf = Self::remove_duplicate_scans(limit.input.clone(), traversed, plan_ctx)?;
+                let child_tf =
+                    Self::remove_duplicate_scans(limit.input.clone(), traversed, plan_ctx)?;
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Union(union) => {
                 let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
                 for input_plan in union.inputs.iter() {
-                    let child_tf = Self::remove_duplicate_scans(input_plan.clone(), traversed, plan_ctx)?;
+                    let child_tf =
+                        Self::remove_duplicate_scans(input_plan.clone(), traversed, plan_ctx)?;
                     inputs_tf.push(child_tf);
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())

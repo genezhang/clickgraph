@@ -1,8 +1,8 @@
 //! View-specific logical plan nodes for graph views
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use serde::{Serialize, Deserialize};
 
 use super::LogicalPlan;
 use crate::query_planner::logical_expr::LogicalExpr;
@@ -134,7 +134,7 @@ impl ViewScan {
     /// Add a filter to this ViewScan, combining with existing filters
     pub fn with_additional_filter(&self, additional_filter: LogicalExpr) -> Self {
         use crate::query_planner::logical_expr::{Operator, OperatorApplication};
-        
+
         let combined_filter = if let Some(existing_filter) = &self.view_filter {
             // Combine existing filter with additional filter using AND
             Some(LogicalExpr::OperatorApplicationExp(OperatorApplication {
@@ -179,9 +179,10 @@ impl ViewScan {
         match filter {
             LogicalExpr::PropertyAccessExp(_) => true,
             LogicalExpr::Literal(_) => true,
-            LogicalExpr::OperatorApplicationExp(op) => {
-                op.operands.iter().all(|operand| self.can_push_filter(operand))
-            },
+            LogicalExpr::OperatorApplicationExp(op) => op
+                .operands
+                .iter()
+                .all(|operand| self.can_push_filter(operand)),
             LogicalExpr::ScalarFnCall(_) => true,
             LogicalExpr::TableAlias(_) => true,
             LogicalExpr::Column(_) => true,

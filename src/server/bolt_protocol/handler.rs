@@ -4,21 +4,21 @@
 //! It handles the complete Bolt protocol state machine and integrates with
 //! Brahmand's query processing pipeline.
 
+use clickhouse::Client;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use serde_json::Value;
-use clickhouse::Client;
 
-use super::{BoltContext, BoltConfig, ConnectionState};
+use super::auth::{AuthToken, AuthenticatedUser, Authenticator};
 use super::errors::{BoltError, BoltResult};
 use super::messages::{BoltMessage, signatures};
-use super::auth::{Authenticator, AuthToken, AuthenticatedUser};
+use super::{BoltConfig, BoltContext, ConnectionState};
 
+use crate::clickhouse_query_generator;
 use crate::open_cypher_parser;
 use crate::query_planner;
-use crate::clickhouse_query_generator;
-use crate::server::{graph_catalog, parameter_substitution};
 use crate::render_plan::plan_builder::RenderPlanBuilder;
+use crate::server::{graph_catalog, parameter_substitution};
 
 /// Bolt protocol message handler
 pub struct BoltHandler {
@@ -38,7 +38,11 @@ pub struct BoltHandler {
 
 impl BoltHandler {
     /// Create a new Bolt message handler
-    pub fn new(context: Arc<Mutex<BoltContext>>, config: Arc<BoltConfig>, clickhouse_client: Client) -> Self {
+    pub fn new(
+        context: Arc<Mutex<BoltContext>>,
+        config: Arc<BoltConfig>,
+        clickhouse_client: Client,
+    ) -> Self {
         BoltHandler {
             context,
             config: config.clone(),
@@ -100,13 +104,17 @@ impl BoltHandler {
         // DEBUG: Log HELLO message structure
         log::debug!("HELLO message has {} fields", message.fields.len());
         for (i, field) in message.fields.iter().enumerate() {
-            log::debug!("  HELLO Field[{}]: {}", i, serde_json::to_string(field).unwrap_or_else(|_| "?".to_string()));
+            log::debug!(
+                "  HELLO Field[{}]: {}",
+                i,
+                serde_json::to_string(field).unwrap_or_else(|_| "?".to_string())
+            );
         }
 
         if is_bolt_51_plus {
             // Bolt 5.1+: HELLO just initializes connection, auth happens in LOGON
             log::info!("HELLO received (Bolt 5.1+), awaiting LOGON for authentication");
-            
+
             // Update context to AUTHENTICATION state
             {
                 let mut context = self.context.lock().unwrap();
@@ -115,14 +123,23 @@ impl BoltHandler {
 
             // Create success response with server information
             let mut metadata = HashMap::new();
-            metadata.insert("server".to_string(), Value::String(self.config.server_agent.clone()));
-            metadata.insert("connection_id".to_string(), Value::String("bolt-1".to_string()));
-            
+            metadata.insert(
+                "server".to_string(),
+                Value::String(self.config.server_agent.clone()),
+            );
+            metadata.insert(
+                "connection_id".to_string(),
+                Value::String("bolt-1".to_string()),
+            );
+
             // Add server capabilities
             let mut hints = HashMap::new();
             hints.insert("utc_patch".to_string(), Value::Bool(false));
             hints.insert("patch_bolt".to_string(), Value::Bool(false));
-            metadata.insert("hints".to_string(), Value::Object(serde_json::Map::from_iter(hints)));
+            metadata.insert(
+                "hints".to_string(),
+                Value::Object(serde_json::Map::from_iter(hints)),
+            );
 
             Ok(vec![BoltMessage::success(metadata)])
         } else {
@@ -130,11 +147,14 @@ impl BoltHandler {
             // Debug: log HELLO message fields
             log::debug!("HELLO message has {} fields", message.fields.len());
             for (i, field) in message.fields.iter().enumerate() {
-                log::debug!("  Field[{}]: {}", i, serde_json::to_string(field).unwrap_or_else(|_| "ERROR".to_string()));
+                log::debug!(
+                    "  Field[{}]: {}",
+                    i,
+                    serde_json::to_string(field).unwrap_or_else(|_| "ERROR".to_string())
+                );
             }
-            
-            let auth_token = message.extract_auth_token()
-                .unwrap_or_else(HashMap::new);
+
+            let auth_token = message.extract_auth_token().unwrap_or_else(HashMap::new);
 
             // Extract database selection (Neo4j 4.0+ multi-database support)
             let database = message.extract_database();
@@ -165,21 +185,30 @@ impl BoltHandler {
 
                     // Create success response with server information
                     let mut metadata = HashMap::new();
-                    metadata.insert("server".to_string(), Value::String(self.config.server_agent.clone()));
-                    metadata.insert("connection_id".to_string(), Value::String("bolt-1".to_string()));
-                    
+                    metadata.insert(
+                        "server".to_string(),
+                        Value::String(self.config.server_agent.clone()),
+                    );
+                    metadata.insert(
+                        "connection_id".to_string(),
+                        Value::String("bolt-1".to_string()),
+                    );
+
                     // Add server capabilities
                     let mut hints = HashMap::new();
                     hints.insert("utc_patch".to_string(), Value::Bool(false));
                     hints.insert("patch_bolt".to_string(), Value::Bool(false));
-                    metadata.insert("hints".to_string(), Value::Object(serde_json::Map::from_iter(hints)));
+                    metadata.insert(
+                        "hints".to_string(),
+                        Value::Object(serde_json::Map::from_iter(hints)),
+                    );
 
                     log::info!("Bolt authentication successful for user: {}", user.username);
                     Ok(vec![BoltMessage::success(metadata)])
                 }
                 Err(auth_error) => {
                     log::warn!("Bolt authentication failed: {}", auth_error);
-                    
+
                     // Update context to failed state
                     {
                         let mut context = self.context.lock().unwrap();
@@ -207,27 +236,38 @@ impl BoltHandler {
         if !matches!(current_state, ConnectionState::Authentication(_)) {
             return Ok(vec![BoltMessage::failure(
                 "Neo.ClientError.Request.Invalid".to_string(),
-                format!("LOGON message received in invalid state: {:?}", current_state),
+                format!(
+                    "LOGON message received in invalid state: {:?}",
+                    current_state
+                ),
             )]);
         }
 
         // Debug: log LOGON message fields
         log::debug!("LOGON message has {} fields", message.fields.len());
         for (i, field) in message.fields.iter().enumerate() {
-            log::debug!("  Field[{}]: {}", i, serde_json::to_string(field).unwrap_or_else(|_| "ERROR".to_string()));
+            log::debug!(
+                "  Field[{}]: {}",
+                i,
+                serde_json::to_string(field).unwrap_or_else(|_| "ERROR".to_string())
+            );
         }
 
         // Extract authentication token from LOGON message
         // Handle empty LOGON (auth-less mode for Bolt 5.x)
         let auth_token = if message.fields.is_empty() {
             log::info!("Empty LOGON message received - using auth-less mode");
-            HashMap::new()  // Empty auth = no authentication required
+            HashMap::new() // Empty auth = no authentication required
         } else {
-            message.extract_logon_auth()
-                .ok_or_else(|| BoltError::invalid_message("Missing authentication data in LOGON message"))?
+            message.extract_logon_auth().ok_or_else(|| {
+                BoltError::invalid_message("Missing authentication data in LOGON message")
+            })?
         };
-        
-        log::debug!("Extracted auth token: {:?}", auth_token.keys().collect::<Vec<_>>());
+
+        log::debug!(
+            "Extracted auth token: {:?}",
+            auth_token.keys().collect::<Vec<_>>()
+        );
 
         // Parse authentication token
         let token = AuthToken::from_hello_fields(&auth_token)?;
@@ -238,7 +278,8 @@ impl BoltHandler {
                 self.authenticated_user = Some(user.clone());
 
                 // Extract database from auth_token if present (Bolt 5.1+ can include db in LOGON)
-                let mut database = auth_token.get("db")
+                let mut database = auth_token
+                    .get("db")
                     .or_else(|| auth_token.get("database"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
@@ -248,12 +289,16 @@ impl BoltHandler {
                     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
                         let schemas = schemas_lock.read().await;
                         // Find first non-default schema
-                        let first_schema = schemas.keys()
+                        let first_schema = schemas
+                            .keys()
                             .find(|k| *k != "default")
                             .or_else(|| schemas.keys().next())
                             .cloned();
                         if let Some(schema_name) = first_schema {
-                            log::info!("No database specified in LOGON, using first loaded schema: {}", schema_name);
+                            log::info!(
+                                "No database specified in LOGON, using first loaded schema: {}",
+                                schema_name
+                            );
                             database = Some(schema_name);
                         }
                     }
@@ -281,7 +326,7 @@ impl BoltHandler {
             }
             Err(auth_error) => {
                 log::warn!("Bolt LOGON failed: {}", auth_error);
-                
+
                 // Update context to failed state
                 {
                     let mut context = self.context.lock().unwrap();
@@ -307,7 +352,10 @@ impl BoltHandler {
         if !matches!(current_state, ConnectionState::Ready) {
             return Ok(vec![BoltMessage::failure(
                 "Neo.ClientError.Request.Invalid".to_string(),
-                format!("LOGOFF message received in invalid state: {:?}", current_state),
+                format!(
+                    "LOGOFF message received in invalid state: {:?}",
+                    current_state
+                ),
             )]);
         }
 
@@ -343,7 +391,7 @@ impl BoltHandler {
     /// Handle GOODBYE message (connection termination)
     async fn handle_goodbye(&mut self, _message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         log::info!("Received GOODBYE message, closing connection");
-        
+
         // Update context
         {
             let mut context = self.context.lock().unwrap();
@@ -382,32 +430,42 @@ impl BoltHandler {
         }
 
         // Extract query and parameters
-        let query = message.extract_query()
+        let query = message
+            .extract_query()
             .ok_or_else(|| BoltError::invalid_message("RUN message missing query"))?;
-            
-        let parameters = message.extract_parameters()
-            .unwrap_or_else(HashMap::new);
+
+        let parameters = message.extract_parameters().unwrap_or_else(HashMap::new);
 
         // Get selected schema from context, or from RUN message metadata
         let schema_name = {
             let context = self.context.lock().unwrap();
-            
+
             // Debug: log RUN message fields
             log::debug!("RUN message has {} fields", message.fields.len());
             for (i, field) in message.fields.iter().enumerate() {
-                log::debug!("  Field[{}]: {}", i, serde_json::to_string(field).unwrap_or_else(|_| "<<unparseable>>".to_string()));
+                log::debug!(
+                    "  Field[{}]: {}",
+                    i,
+                    serde_json::to_string(field).unwrap_or_else(|_| "<<unparseable>>".to_string())
+                );
             }
-            
+
             // Check if RUN message specifies a database (Bolt 4.x)
             if let Some(run_db) = message.extract_run_database() {
                 log::info!("✅ RUN message contains database: {}", run_db);
                 if run_db != context.schema_name.as_deref().unwrap_or("default") {
-                    log::debug!("RUN message overriding schema: {} -> {}", 
-                        context.schema_name.as_deref().unwrap_or("default"), run_db);
+                    log::debug!(
+                        "RUN message overriding schema: {} -> {}",
+                        context.schema_name.as_deref().unwrap_or("default"),
+                        run_db
+                    );
                 }
                 Some(run_db)
             } else {
-                log::debug!("RUN message does NOT contain database field, using context schema: {:?}", context.schema_name);
+                log::debug!(
+                    "RUN message does NOT contain database field, using context schema: {:?}",
+                    context.schema_name
+                );
                 context.schema_name.clone()
             }
         };
@@ -420,7 +478,10 @@ impl BoltHandler {
         }
 
         // Parse and execute the query
-        match self.execute_cypher_query(query, parameters, schema_name).await {
+        match self
+            .execute_cypher_query(query, parameters, schema_name)
+            .await
+        {
             Ok(result_metadata) => {
                 // Update context to streaming state
                 {
@@ -456,10 +517,10 @@ impl BoltHandler {
 
         // Stream the cached results as RECORD messages
         let mut messages = Vec::new();
-        
+
         if let Some(rows) = self.cached_results.take() {
             log::debug!("Streaming {} rows via Bolt RECORD messages", rows.len());
-            
+
             // Send each row as a RECORD message
             for row in rows {
                 messages.push(BoltMessage::record(row));
@@ -471,7 +532,7 @@ impl BoltHandler {
         metadata.insert("type".to_string(), Value::String("r".to_string()));
         metadata.insert("has_more".to_string(), Value::Bool(false));
         metadata.insert("t_last".to_string(), Value::Number(0.into()));
-        
+
         messages.push(BoltMessage::success(metadata));
 
         // Update context back to ready state
@@ -527,7 +588,11 @@ impl BoltHandler {
         if let Some(db) = message.extract_begin_database() {
             let mut context = self.context.lock().unwrap();
             if context.schema_name.as_deref() != Some(&db) {
-                log::debug!("BEGIN message overriding schema: {:?} -> {}", context.schema_name, db);
+                log::debug!(
+                    "BEGIN message overriding schema: {:?} -> {}",
+                    context.schema_name,
+                    db
+                );
                 context.schema_name = Some(db);
             }
         }
@@ -615,14 +680,14 @@ impl BoltHandler {
 
             // Get query type
             let query_type = query_planner::get_query_type(&parsed_query);
-            
+
             (effective_schema, query_type)
         }; // parsed_query is dropped here!
 
         // Check query type
         if query_type_check != query_planner::types::QueryType::Read {
             return Err(BoltError::query_error(
-                "Only read queries are currently supported via Bolt protocol".to_string()
+                "Only read queries are currently supported via Bolt protocol".to_string(),
             ));
         }
 
@@ -632,28 +697,25 @@ impl BoltHandler {
         let graph_schema = match graph_catalog::get_graph_schema_by_name(&effective_schema).await {
             Ok(schema) => schema,
             Err(e) => {
-                return Err(BoltError::query_error(format!(
-                    "Schema error: {}",
-                    e
-                )));
+                return Err(BoltError::query_error(format!("Schema error: {}", e)));
             }
         };
 
         // Re-parse for planning (yes, inefficient, but ensures Send safety)
-        let parsed_query_for_planning = open_cypher_parser::parse_query(query).map_err(|e| {
-            BoltError::query_error(format!("Query re-parse failed: {}", e))
-        })?;
+        let parsed_query_for_planning = open_cypher_parser::parse_query(query)
+            .map_err(|e| BoltError::query_error(format!("Query re-parse failed: {}", e)))?;
 
         // Generate logical plan
-        let logical_plan = match query_planner::evaluate_read_query(parsed_query_for_planning, &graph_schema) {
-            Ok(plan) => plan,
-            Err(e) => {
-                return Err(BoltError::query_error(format!(
-                    "Query planning failed: {}",
-                    e
-                )));
-            }
-        };
+        let logical_plan =
+            match query_planner::evaluate_read_query(parsed_query_for_planning, &graph_schema) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    return Err(BoltError::query_error(format!(
+                        "Query planning failed: {}",
+                        e
+                    )));
+                }
+            };
         // parsed_query is now dropped - no more Rc<RefCell<>> held!
 
         // Generate render plan
@@ -670,7 +732,7 @@ impl BoltHandler {
         // Generate ClickHouse SQL
         let max_cte_depth = 1000; // Use default from config
         let ch_sql = clickhouse_query_generator::generate_sql(render_plan, max_cte_depth);
-        
+
         // Substitute parameters if provided
         let final_sql = if !parameters.is_empty() {
             match parameter_substitution::substitute_parameters(&ch_sql, &parameters) {
@@ -685,37 +747,37 @@ impl BoltHandler {
         } else {
             ch_sql.clone()
         };
-        
+
         log::debug!("Executing SQL: {}", final_sql);
 
         // Execute the query and fetch results as JSON bytes
         use tokio::io::AsyncBufReadExt;
-        let result_reader = self.clickhouse_client
+        let result_reader = self
+            .clickhouse_client
             .query(&final_sql)
             .fetch_bytes("JSONEachRow")
-            .map_err(|e| BoltError::query_error(format!(
-                "ClickHouse query execution failed: {}",
-                e
-            )))?;
+            .map_err(|e| {
+                BoltError::query_error(format!("ClickHouse query execution failed: {}", e))
+            })?;
 
         // Parse JSON results line by line
         let mut rows = Vec::new();
         let mut field_names = Vec::new();
-        
+
         let mut lines = result_reader.lines();
-        
+
         while let Ok(Some(line)) = lines.next_line().await {
             if line.trim().is_empty() {
                 continue;
             }
-            
+
             match serde_json::from_str::<serde_json::Value>(&line) {
                 Ok(Value::Object(obj)) => {
                     // Extract field names from first row
                     if field_names.is_empty() {
                         field_names = obj.keys().cloned().collect();
                     }
-                    
+
                     // Extract field values in consistent order
                     let mut row_fields = Vec::new();
                     for field_name in &field_names {
@@ -735,12 +797,17 @@ impl BoltHandler {
         // Return SUCCESS with metadata
         let mut metadata = HashMap::new();
         metadata.insert(
-            "fields".to_string(), 
-            Value::Array(field_names.iter().map(|s| Value::String(s.clone())).collect())
+            "fields".to_string(),
+            Value::Array(
+                field_names
+                    .iter()
+                    .map(|s| Value::String(s.clone()))
+                    .collect(),
+            ),
         );
         metadata.insert("t_first".to_string(), Value::Number(0.into()));
         metadata.insert("qid".to_string(), Value::Number(1.into()));
-        
+
         Ok(metadata)
     }
 }
@@ -753,24 +820,21 @@ mod tests {
         let context = Arc::new(Mutex::new(BoltContext::new()));
         let config = Arc::new(BoltConfig::default());
         // Create a test ClickHouse client (won't be used in unit tests)
-        let clickhouse_client = clickhouse::Client::default()
-            .with_url("http://localhost:8123");
+        let clickhouse_client = clickhouse::Client::default().with_url("http://localhost:8123");
         BoltHandler::new(context, config, clickhouse_client)
     }
 
     #[tokio::test]
     async fn test_hello_message_handling() {
         let mut handler = create_test_handler();
-        
+
         // Set context to negotiated state
         {
             let mut context = handler.context.lock().unwrap();
             context.set_version(super::super::BOLT_VERSION_4_4);
         }
 
-        let auth_token = HashMap::from([
-            ("scheme".to_string(), Value::String("none".to_string())),
-        ]);
+        let auth_token = HashMap::from([("scheme".to_string(), Value::String("none".to_string()))]);
 
         let hello = BoltMessage::hello("TestClient/1.0".to_string(), auth_token);
         let responses = handler.handle_message(hello).await.unwrap();
@@ -810,7 +874,7 @@ mod tests {
     #[tokio::test]
     async fn test_transaction_lifecycle() {
         let mut handler = create_test_handler();
-        
+
         // Set context to ready state
         {
             let mut context = handler.context.lock().unwrap();

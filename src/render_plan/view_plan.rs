@@ -1,7 +1,7 @@
 //! View-specific render plan structures
 
-use serde::{Deserialize, Serialize};
 use super::render_expr::RenderExpr;
+use serde::{Deserialize, Serialize};
 
 /// Represents a view-based table reference
 #[derive(Debug, Clone, Serialize, Deserialize)]

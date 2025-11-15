@@ -8,16 +8,16 @@
 //! Reference: Neo4j Bolt Protocol Specification v4.4
 //! https://7687.org/bolt/bolt-protocol-message-specification-4.html
 
+use clickhouse::Client;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncWrite};
-use clickhouse::Client;
 
-pub mod connection;
-pub mod messages;
-pub mod handler;
 pub mod auth;
+pub mod connection;
 pub mod errors;
+pub mod handler;
+pub mod messages;
 
 use errors::BoltError;
 
@@ -128,7 +128,10 @@ impl BoltContext {
 
     /// Check if connection is ready for queries
     pub fn is_ready(&self) -> bool {
-        matches!(self.state, ConnectionState::Ready | ConnectionState::Streaming)
+        matches!(
+            self.state,
+            ConnectionState::Ready | ConnectionState::Streaming
+        )
     }
 
     /// Check if connection is in transaction
@@ -190,10 +193,10 @@ impl BoltServer {
         let context = Arc::new(std::sync::Mutex::new(BoltContext::new()));
 
         let connection = connection::BoltConnection::new(
-            stream, 
-            context.clone(), 
+            stream,
+            context.clone(),
             self.config.clone(),
-            self.clickhouse_client.clone()
+            self.clickhouse_client.clone(),
         );
         connection.handle().await?;
 
@@ -222,57 +225,83 @@ pub mod utils {
             // Bolt 5.x changed version encoding!
             // Bolt 4.x and earlier: [reserved][range][major][minor]
             // Bolt 5.x and later: [reserved][range][minor][major] (SWAPPED!)
-            
+
             // Try decoding as Bolt 5.x first (swapped bytes)
             let bolt5_major = client_version & 0xFF;
             let bolt5_minor = (client_version >> 8) & 0xFF;
             let range = (client_version >> 16) & 0xFF;
-            
+
             // Try decoding as Bolt 4.x (original format)
             let bolt4_minor = client_version & 0xFF;
             let bolt4_major = (client_version >> 8) & 0xFF;
-            
+
             // Heuristic: If bolt5_major is 5-8 and bolt5_minor is reasonable (0-8),
             // interpret as Bolt 5.x. Otherwise, use Bolt 4.x format.
-            let (client_major, client_minor) = if bolt5_major >= 5 && bolt5_major <= 8 && bolt5_minor <= 8 {
-                log::debug!("  Checking client version 0x{:08X}: Bolt 5.x format → major={}, minor={}, range={}",
-                    client_version, bolt5_major, bolt5_minor, range);
+            let (client_major, client_minor) = if bolt5_major >= 5
+                && bolt5_major <= 8
+                && bolt5_minor <= 8
+            {
+                log::debug!(
+                    "  Checking client version 0x{:08X}: Bolt 5.x format → major={}, minor={}, range={}",
+                    client_version,
+                    bolt5_major,
+                    bolt5_minor,
+                    range
+                );
                 (bolt5_major, bolt5_minor)
             } else {
-                log::debug!("  Checking client version 0x{:08X}: Bolt 4.x format → major={}, minor={}, range={}",
-                    client_version, bolt4_major, bolt4_minor, range);
+                log::debug!(
+                    "  Checking client version 0x{:08X}: Bolt 4.x format → major={}, minor={}, range={}",
+                    client_version,
+                    bolt4_major,
+                    bolt4_minor,
+                    range
+                );
                 (bolt4_major, bolt4_minor)
             };
-            
+
             // Check if any of our supported versions match
             for &server_version in SUPPORTED_VERSIONS {
                 // Our server versions use Bolt 4.x format: [00][00][major][minor]
                 let server_minor = server_version & 0xFF;
                 let server_major = (server_version >> 8) & 0xFF;
-                
+
                 // Same major version?
                 if client_major == server_major {
                     // Check if server minor is within client's range
                     // Client wants: minor down to (minor - range)
                     // E.g., client 5.8 with range 8 = accepts 5.8 down to 5.0
-                    if server_minor <= client_minor && server_minor >= client_minor.saturating_sub(range) {
-                        log::info!("✅ Negotiation match: Client wants {}.{} (±{}), Server has {}.{} → Negotiated {}",
-                            client_major, client_minor, range,
-                            server_major, server_minor,
-                            version_to_string(server_version));
+                    if server_minor <= client_minor
+                        && server_minor >= client_minor.saturating_sub(range)
+                    {
+                        log::info!(
+                            "✅ Negotiation match: Client wants {}.{} (±{}), Server has {}.{} → Negotiated {}",
+                            client_major,
+                            client_minor,
+                            range,
+                            server_major,
+                            server_minor,
+                            version_to_string(server_version)
+                        );
                         return Some(server_version);
                     }
                 }
-                
+
                 // Also support exact match for backward compatibility
                 if client_version == server_version {
-                    log::info!("✅ Exact match: {} → {}",
+                    log::info!(
+                        "✅ Exact match: {} → {}",
                         version_to_string(client_version),
-                        version_to_string(server_version));
+                        version_to_string(server_version)
+                    );
                     return Some(server_version);
                 }
             }
-            log::debug!("  ❌ No match found for client version {}.{}", client_major, client_minor);
+            log::debug!(
+                "  ❌ No match found for client version {}.{}",
+                client_major,
+                client_minor
+            );
         }
         log::warn!("❌ Negotiation failed: No compatible version found");
         None
@@ -315,8 +344,7 @@ mod tests {
     fn test_bolt_server_creation() {
         let config = BoltConfig::default();
         // Create a test ClickHouse client (won't be used in unit tests)
-        let clickhouse_client = Client::default()
-            .with_url("http://localhost:8123");
+        let clickhouse_client = Client::default().with_url("http://localhost:8123");
         let _server = BoltServer::new(config, clickhouse_client);
         // Just test that we can create the server
         assert!(true);
@@ -325,12 +353,12 @@ mod tests {
     #[test]
     fn test_context_state_transitions() {
         let mut context = BoltContext::new();
-        
+
         // Test version negotiation
         context.set_version(BOLT_VERSION_4_4);
         assert_eq!(context.state, ConnectionState::Negotiated(BOLT_VERSION_4_4));
         assert_eq!(context.version, Some(BOLT_VERSION_4_4));
-        
+
         // Test authentication
         context.set_user("test_user".to_string());
         assert_eq!(context.state, ConnectionState::Ready);

@@ -50,8 +50,8 @@
 //! WHERE iteration = (SELECT MAX(iteration) FROM pagerank_iterations)
 //! ```
 
-use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::clickhouse_query_generator::errors::ClickhouseQueryGeneratorError;
+use crate::graph_catalog::graph_schema::GraphSchema;
 
 /// Configuration for PageRank computation
 #[derive(Debug, Clone)]
@@ -164,7 +164,11 @@ ORDER BY pagerank DESC
     }
 
     /// Generate iterative PageRank calculations for each iteration
-    fn generate_iterations_sql(&self, node_table: &str, id_column: &str) -> Result<String, ClickhouseQueryGeneratorError> {
+    fn generate_iterations_sql(
+        &self,
+        node_table: &str,
+        id_column: &str,
+    ) -> Result<String, ClickhouseQueryGeneratorError> {
         let mut iterations = Vec::new();
 
         for i in 1..=self.config.iterations {
@@ -196,7 +200,7 @@ ORDER BY pagerank DESC
         if let Some(ref labels) = self.node_labels {
             if labels.is_empty() {
                 return Err(ClickhouseQueryGeneratorError::SchemaError(
-                    "nodeLabels parameter cannot be empty".to_string()
+                    "nodeLabels parameter cannot be empty".to_string(),
                 ));
             }
 
@@ -205,21 +209,26 @@ ORDER BY pagerank DESC
             let mut id_column = None;
 
             for label in labels {
-                let node_schema = self.schema.get_nodes_schemas()
-                    .get(label)
-                    .ok_or_else(|| ClickhouseQueryGeneratorError::SchemaError(
-                        format!("Node label '{}' not found in schema", label)
-                    ))?;
+                let node_schema = self.schema.get_nodes_schemas().get(label).ok_or_else(|| {
+                    ClickhouseQueryGeneratorError::SchemaError(format!(
+                        "Node label '{}' not found in schema",
+                        label
+                    ))
+                })?;
 
-                node_tables.push(format!("SELECT {} AS node_id FROM {}", node_schema.node_id.column, node_schema.table_name));
+                node_tables.push(format!(
+                    "SELECT {} AS node_id FROM {}",
+                    node_schema.node_id.column, node_schema.table_name
+                ));
 
                 // All node types should have the same ID column structure for PageRank
                 if id_column.is_none() {
                     id_column = Some(node_schema.node_id.column.clone());
                 } else if id_column.as_ref() != Some(&node_schema.node_id.column) {
-                    return Err(ClickhouseQueryGeneratorError::SchemaError(
-                        format!("Node label '{}' has different ID column '{}' than others", label, node_schema.node_id.column)
-                    ));
+                    return Err(ClickhouseQueryGeneratorError::SchemaError(format!(
+                        "Node label '{}' has different ID column '{}' than others",
+                        label, node_schema.node_id.column
+                    )));
                 }
             }
 
@@ -230,13 +239,21 @@ ORDER BY pagerank DESC
             // Use specified graph name or default to "User" for backward compatibility
             let node_type = self.graph_name.as_deref().unwrap_or("User");
 
-            let node_schema = self.schema.get_nodes_schemas()
+            let node_schema = self
+                .schema
+                .get_nodes_schemas()
                 .get(node_type)
-                .ok_or_else(|| ClickhouseQueryGeneratorError::SchemaError(
-                    format!("No '{}' node type found in schema", node_type)
-                ))?;
+                .ok_or_else(|| {
+                    ClickhouseQueryGeneratorError::SchemaError(format!(
+                        "No '{}' node type found in schema",
+                        node_type
+                    ))
+                })?;
 
-            Ok((node_schema.table_name.clone(), node_schema.node_id.column.clone()))
+            Ok((
+                node_schema.table_name.clone(),
+                node_schema.node_id.column.clone(),
+            ))
         }
     }
 
@@ -257,7 +274,7 @@ ORDER BY pagerank DESC
 
         if tables.is_empty() {
             return Err(ClickhouseQueryGeneratorError::SchemaError(
-                "No relationship tables found in schema matching the specified types".to_string()
+                "No relationship tables found in schema matching the specified types".to_string(),
             ));
         }
 
@@ -266,15 +283,21 @@ ORDER BY pagerank DESC
 
     /// Generate UNION ALL SQL for all relationship tables
     fn generate_union_relationships_sql(&self, tables: &[String]) -> String {
-        tables.iter()
+        tables
+            .iter()
             .map(|table| {
                 // Find the relationship schema for this table
-                let rel_schema = self.schema.get_relationships_schemas()
+                let rel_schema = self
+                    .schema
+                    .get_relationships_schemas()
                     .values()
                     .find(|schema| schema.table_name == *table)
-                    .ok_or_else(|| ClickhouseQueryGeneratorError::SchemaError(
-                        format!("No relationship schema found for table: {}", table)
-                    ));
+                    .ok_or_else(|| {
+                        ClickhouseQueryGeneratorError::SchemaError(format!(
+                            "No relationship schema found for table: {}",
+                            table
+                        ))
+                    });
 
                 match rel_schema {
                     Ok(schema) => format!(
@@ -284,7 +307,7 @@ ORDER BY pagerank DESC
                     Err(_) => format!(
                         "SELECT from_node_id, to_node_id FROM {} -- Error: schema not found",
                         table
-                    )
+                    ),
                 }
             })
             .collect::<Vec<_>>()

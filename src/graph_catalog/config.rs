@@ -1,20 +1,19 @@
+use super::errors::GraphSchemaError;
+use super::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema};
+use super::schema_validator::SchemaValidator;
+use serde::{Deserialize, Serialize};
+use serde_yaml;
+use std::collections::HashMap;
 /// Graph view configuration management.
-/// 
+///
 /// This module handles loading and validation of graph view definitions from YAML
 /// or JSON configuration files. It supports:
-/// 
+///
 /// - Loading from YAML/JSON files
 /// - Structural validation of configurations
 /// - Schema validation against ClickHouse
-
 use std::fs;
 use std::path::Path;
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
-use serde_yaml;
-use super::errors::GraphSchemaError;
-use super::schema_validator::SchemaValidator;
-use super::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, NodeIdSchema};
 
 /// Graph views are defined in YAML with the following structure:
 ///
@@ -38,13 +37,13 @@ use super::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, NodeIdSch
 ///         to_id: followed_id   # Target node ID
 ///         type_name: FOLLOWS      # Relationship type in graph
 /// ```
-/// 
+///
 /// # Usage
-/// 
+///
 /// ```ignore
 /// use brahmand::graph_catalog::{GraphViewConfig, SchemaValidator};
 /// use clickhouse::Client;
-/// 
+///
 /// async fn load_config(client: Client) {
 ///     let mut validator = SchemaValidator::new(client);
 ///     
@@ -57,14 +56,14 @@ use super::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, NodeIdSch
 ///     // Use configuration...
 /// }
 /// ```
-/// 
+///
 /// # Testing
-/// 
+///
 /// For testing view configurations without a ClickHouse instance:
 /// 1. Use the mock client from `tests::mock_clickhouse`
 /// 2. Create temporary YAML files with test configurations
 /// 3. Validate using the mock client
-/// 
+///
 /// See `tests::config_tests` for examples.
 
 /// Configuration for graph schemas loaded from YAML/JSON
@@ -130,20 +129,18 @@ pub struct RelationshipDefinition {
 impl GraphSchemaConfig {
     /// Load graph schema configuration from a YAML file
     pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, GraphSchemaError> {
-        let contents = fs::read_to_string(path)
-            .map_err(|e| GraphSchemaError::ConfigReadError {
-                error: e.to_string(),
-            })?;
-        
+        let contents = fs::read_to_string(path).map_err(|e| GraphSchemaError::ConfigReadError {
+            error: e.to_string(),
+        })?;
+
         Self::from_yaml_str(&contents)
     }
 
     /// Parse graph schema configuration from YAML string
     pub fn from_yaml_str(yaml: &str) -> Result<Self, GraphSchemaError> {
-        serde_yaml::from_str(yaml)
-            .map_err(|e| GraphSchemaError::ConfigParseError {
-                error: e.to_string(),
-            })
+        serde_yaml::from_str(yaml).map_err(|e| GraphSchemaError::ConfigParseError {
+            error: e.to_string(),
+        })
     }
 
     /// Basic validation of the schema configuration
@@ -179,7 +176,10 @@ impl GraphSchemaConfig {
     }
 
     /// Validate configuration against ClickHouse schema
-    pub async fn validate_schema(&self, _validator: &mut SchemaValidator) -> Result<(), GraphSchemaError> {
+    pub async fn validate_schema(
+        &self,
+        _validator: &mut SchemaValidator,
+    ) -> Result<(), GraphSchemaError> {
         // For now, just do basic structural validation
         // In the future, this could validate against ClickHouse schema
         self.validate()
@@ -212,18 +212,24 @@ impl GraphSchemaConfig {
         for rel_def in &self.graph_schema.relationships {
             // If from_node/to_node not specified, try to infer from first node type
             // This is a simple heuristic - for production, should be explicitly specified
-            let default_node_type = self.graph_schema.nodes
+            let default_node_type = self
+                .graph_schema
+                .nodes
                 .first()
                 .map(|n| n.label.clone())
                 .unwrap_or_else(|| "Unknown".to_string());
-            
-            let from_node = rel_def.from_node.as_ref()
+
+            let from_node = rel_def
+                .from_node
+                .as_ref()
                 .unwrap_or(&default_node_type)
                 .clone();
-            let to_node = rel_def.to_node.as_ref()
+            let to_node = rel_def
+                .to_node
+                .as_ref()
                 .unwrap_or(&default_node_type)
                 .clone();
-            
+
             let rel_schema = RelationshipSchema {
                 database: rel_def.database.clone(),
                 table_name: rel_def.table.clone(),
@@ -240,7 +246,7 @@ impl GraphSchemaConfig {
         }
 
         Ok(GraphSchema::build(
-            1, // version
+            1,                     // version
             "default".to_string(), // Default database, individual tables have their own
             nodes,
             relationships,

@@ -72,7 +72,7 @@ fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Try to peek ahead to see if the next non-whitespace token is "WHEN"
     let (input_after_ws, _) = multispace0.parse(input)?;
     let is_searched = input_after_ws.starts_with("WHEN") || input_after_ws.starts_with("when");
-    
+
     let (input, case_expr) = if is_searched {
         // Searched CASE - no case_expr
         (input, None)
@@ -91,8 +91,9 @@ fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     loop {
         let res = preceded(
             ws(tag_no_case("WHEN")),
-            separated_pair(parse_expression, ws(tag_no_case("THEN")), parse_expression)
-        ).parse(remaining_input);
+            separated_pair(parse_expression, ws(tag_no_case("THEN")), parse_expression),
+        )
+        .parse(remaining_input);
 
         match res {
             Ok((new_input, (when_expr, then_expr))) => {
@@ -105,19 +106,20 @@ fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     }
 
     // Optional ELSE clause
-    let (input, else_expr) = opt(preceded(
-        ws(tag_no_case("ELSE")),
-        parse_expression
-    )).parse(remaining_input)?;
+    let (input, else_expr) =
+        opt(preceded(ws(tag_no_case("ELSE")), parse_expression)).parse(remaining_input)?;
 
     // END keyword
     let (input, _) = ws(tag_no_case("END")).parse(input)?;
 
-    Ok((input, Expression::Case(crate::open_cypher_parser::ast::Case {
-        expr: case_expr.map(Box::new),
-        when_then,
-        else_expr: else_expr.map(Box::new),
-    })))
+    Ok((
+        input,
+        Expression::Case(crate::open_cypher_parser::ast::Case {
+            expr: case_expr.map(Box::new),
+            when_then,
+            else_expr: else_expr.map(Box::new),
+        }),
+    ))
 }
 
 fn parse_primary(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {

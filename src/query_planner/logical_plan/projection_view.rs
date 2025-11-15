@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use super::{LogicalPlan, ViewScan, ProjectionItem, Projection};
-use crate::query_planner::logical_expr::{LogicalExpr, ColumnAlias};
+use super::{LogicalPlan, Projection, ProjectionItem, ViewScan};
+use crate::query_planner::logical_expr::{ColumnAlias, LogicalExpr};
 
 impl Projection {
     /// Create a new projection on a view scan
@@ -22,7 +22,7 @@ impl Projection {
     pub fn view_scan(&self) -> Option<&ViewScan> {
         match &*self.input {
             LogicalPlan::ViewScan(scan) => Some(scan),
-            _ => None
+            _ => None,
         }
     }
 
@@ -44,7 +44,7 @@ impl Projection {
     pub fn add_view_projections(&mut self) {
         if let Some(scan) = self.view_scan().cloned() {
             let mut new_items = Vec::new();
-            
+
             // Add ID column projection if not present
             let has_id = self.items.iter().any(|item| {
                 if let LogicalExpr::ColumnAlias(col) = &item.expression {

@@ -1,27 +1,26 @@
 /// Query cache module for caching SQL templates
-/// 
+///
 /// This module implements an LRU cache for SQL query templates to avoid
 /// re-parsing, planning, and rendering the same Cypher queries repeatedly.
-/// 
+///
 /// # Architecture
-/// 
+///
 /// Cache Key: (normalized_query, schema_name)
 /// Cache Value: SQL template with $paramName placeholders
-/// 
+///
 /// # Neo4j Compatibility
-/// 
+///
 /// Supports Neo4j's CYPHER query options for cache control:
 /// - `CYPHER replan=default` - Normal cache behavior (LRU)
 /// - `CYPHER replan=force` - Bypass cache, regenerate SQL, update cache
 /// - `CYPHER replan=skip` - Always use cache (error if not cached)
-/// 
+///
 /// # Configuration
-/// 
+///
 /// Environment variables:
 /// - `CLICKGRAPH_QUERY_CACHE_ENABLED` (default: true)
 /// - `CLICKGRAPH_QUERY_CACHE_MAX_ENTRIES` (default: 1000)
 /// - `CLICKGRAPH_QUERY_CACHE_MAX_SIZE_MB` (default: 100)
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -46,7 +45,7 @@ impl Default for ReplanOption {
 
 impl ReplanOption {
     /// Parse replan option from query string prefix
-    /// 
+    ///
     /// Examples:
     /// - "CYPHER replan=force MATCH ..." -> Some(ReplanOption::Force)
     /// - "CYPHER replan=skip MATCH ..." -> Some(ReplanOption::Skip)
@@ -56,7 +55,7 @@ impl ReplanOption {
         if !trimmed.to_uppercase().starts_with("CYPHER") {
             return None;
         }
-        
+
         // Simple parser for "CYPHER replan=<option>"
         if trimmed.to_uppercase().contains("REPLAN=FORCE") {
             Some(ReplanOption::Force)
@@ -68,9 +67,9 @@ impl ReplanOption {
             None
         }
     }
-    
+
     /// Remove CYPHER prefix from query string
-    /// 
+    ///
     /// Examples:
     /// - "CYPHER replan=force MATCH ..." -> "MATCH ..."
     /// - "MATCH ..." -> "MATCH ..."
@@ -79,24 +78,27 @@ impl ReplanOption {
         if !trimmed.to_uppercase().starts_with("CYPHER") {
             return query;
         }
-        
+
         // Find first occurrence of MATCH, RETURN, WITH, UNWIND, CREATE, etc.
         // These are the actual Cypher clause keywords
-        let cypher_keywords = ["MATCH", "RETURN", "WITH", "UNWIND", "CREATE", "MERGE", "DELETE", "SET", "REMOVE", "CALL", "EXPLAIN", "PROFILE", "USE"];
-        
+        let cypher_keywords = [
+            "MATCH", "RETURN", "WITH", "UNWIND", "CREATE", "MERGE", "DELETE", "SET", "REMOVE",
+            "CALL", "EXPLAIN", "PROFILE", "USE",
+        ];
+
         for keyword in cypher_keywords {
             if let Some(pos) = trimmed.to_uppercase().find(keyword) {
                 return trimmed[pos..].trim();
             }
         }
-        
+
         // If no keyword found, return original
         query
     }
 }
 
 /// Key for cache lookup
-/// 
+///
 /// Uses normalized query (parameters replaced with placeholders) and schema name
 /// to uniquely identify a query template.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -111,13 +113,10 @@ impl QueryCacheKey {
     pub fn new(query: &str, schema_name: &str) -> Self {
         // Strip CYPHER prefix if present
         let stripped = ReplanOption::strip_prefix(query);
-        
+
         // Normalize whitespace: collapse multiple spaces/tabs/newlines into single space
-        let normalized = stripped
-            .split_whitespace()
-            .collect::<Vec<&str>>()
-            .join(" ");
-        
+        let normalized = stripped.split_whitespace().collect::<Vec<&str>>().join(" ");
+
         QueryCacheKey {
             normalized_query: normalized,
             schema_name: schema_name.to_string(),
@@ -148,7 +147,7 @@ impl CacheEntry {
             access_count: 0,
         }
     }
-    
+
     fn touch(&mut self) {
         self.last_accessed = current_timestamp();
         self.access_count += 1;
@@ -183,17 +182,17 @@ impl QueryCacheConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(true);
-        
+
         let max_entries = std::env::var("CLICKGRAPH_QUERY_CACHE_MAX_ENTRIES")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000);
-        
+
         let max_size_mb = std::env::var("CLICKGRAPH_QUERY_CACHE_MAX_SIZE_MB")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(100);
-        
+
         QueryCacheConfig {
             enabled,
             max_entries,
@@ -225,25 +224,25 @@ impl QueryCache {
             evictions: Arc::new(AtomicU64::new(0)),
         }
     }
-    
+
     /// Create a new query cache with default configuration
     pub fn with_defaults() -> Self {
         Self::new(QueryCacheConfig::default())
     }
-    
+
     /// Create a new query cache from environment variables
     pub fn from_env() -> Self {
         Self::new(QueryCacheConfig::from_env())
     }
-    
+
     /// Get SQL template from cache
-    /// 
+    ///
     /// Returns Some(sql) if found, None if not cached
     pub fn get(&self, key: &QueryCacheKey) -> Option<String> {
         if !self.config.enabled {
             return None;
         }
-        
+
         let mut cache = self.cache.lock().unwrap();
         if let Some(entry) = cache.get_mut(key) {
             entry.touch();
@@ -254,55 +253,49 @@ impl QueryCache {
             None
         }
     }
-    
+
     /// Insert SQL template into cache
-    /// 
+    ///
     /// May trigger LRU eviction if cache is full
     pub fn insert(&self, key: QueryCacheKey, sql_template: String) {
         if !self.config.enabled {
             return;
         }
-        
+
         let entry = CacheEntry::new(sql_template);
-        
+
         let mut cache = self.cache.lock().unwrap();
-        
+
         // Check if we need to evict entries
         if cache.len() >= self.config.max_entries {
             self.evict_lru(&mut cache);
         }
-        
+
         // Check memory limit
         let current_size: usize = cache.values().map(|e| e.size_bytes).sum();
         if current_size + entry.size_bytes > self.config.max_size_bytes {
             self.evict_by_size(&mut cache, entry.size_bytes);
         }
-        
+
         cache.insert(key, entry);
     }
-    
+
     /// Evict least recently used entry
     fn evict_lru(&self, cache: &mut HashMap<QueryCacheKey, CacheEntry>) {
-        if let Some((key, _)) = cache
-            .iter()
-            .min_by_key(|(_, entry)| entry.last_accessed)
-        {
+        if let Some((key, _)) = cache.iter().min_by_key(|(_, entry)| entry.last_accessed) {
             let key = key.clone();
             cache.remove(&key);
             self.evictions.fetch_add(1, Ordering::Relaxed);
         }
     }
-    
+
     /// Evict entries to make room for new_entry_size bytes
     fn evict_by_size(&self, cache: &mut HashMap<QueryCacheKey, CacheEntry>, needed_size: usize) {
         let current_size: usize = cache.values().map(|e| e.size_bytes).sum();
         let mut freed = 0;
-        
+
         while current_size + needed_size - freed > self.config.max_size_bytes && !cache.is_empty() {
-            if let Some((key, entry)) = cache
-                .iter()
-                .min_by_key(|(_, e)| e.last_accessed)
-            {
+            if let Some((key, entry)) = cache.iter().min_by_key(|(_, e)| e.last_accessed) {
                 let key = key.clone();
                 let size = entry.size_bytes;
                 cache.remove(&key);
@@ -313,27 +306,27 @@ impl QueryCache {
             }
         }
     }
-    
+
     /// Invalidate cache entries for a specific schema
-    /// 
+    ///
     /// Called when a schema is reloaded to ensure cache consistency
     pub fn invalidate_schema(&self, schema_name: &str) {
         let mut cache = self.cache.lock().unwrap();
         cache.retain(|key, _| key.schema_name != schema_name);
     }
-    
+
     /// Clear entire cache
     pub fn clear(&self) {
         let mut cache = self.cache.lock().unwrap();
         cache.clear();
     }
-    
+
     /// Get cache metrics
     pub fn metrics(&self) -> CacheMetrics {
         let cache = self.cache.lock().unwrap();
         let size = cache.len();
         let size_bytes = cache.values().map(|e| e.size_bytes).sum();
-        
+
         CacheMetrics {
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
@@ -368,7 +361,7 @@ impl CacheMetrics {
             self.hits as f64 / total as f64
         }
     }
-    
+
     /// Calculate memory utilization (0.0 to 1.0)
     pub fn memory_utilization(&self) -> f64 {
         if self.max_size_bytes == 0 {
@@ -377,7 +370,7 @@ impl CacheMetrics {
             self.size_bytes as f64 / self.max_size_bytes as f64
         }
     }
-    
+
     /// Calculate entry utilization (0.0 to 1.0)
     pub fn entry_utilization(&self) -> f64 {
         if self.max_entries == 0 {
@@ -399,47 +392,68 @@ fn current_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_replan_option_parsing() {
         assert_eq!(ReplanOption::from_query_prefix("MATCH (n) RETURN n"), None);
-        assert_eq!(ReplanOption::from_query_prefix("CYPHER replan=force MATCH (n) RETURN n"), Some(ReplanOption::Force));
-        assert_eq!(ReplanOption::from_query_prefix("CYPHER replan=skip MATCH (n) RETURN n"), Some(ReplanOption::Skip));
-        assert_eq!(ReplanOption::from_query_prefix("CYPHER replan=default MATCH (n) RETURN n"), Some(ReplanOption::Default));
-        assert_eq!(ReplanOption::from_query_prefix("cypher replan=FORCE match (n) return n"), Some(ReplanOption::Force));
+        assert_eq!(
+            ReplanOption::from_query_prefix("CYPHER replan=force MATCH (n) RETURN n"),
+            Some(ReplanOption::Force)
+        );
+        assert_eq!(
+            ReplanOption::from_query_prefix("CYPHER replan=skip MATCH (n) RETURN n"),
+            Some(ReplanOption::Skip)
+        );
+        assert_eq!(
+            ReplanOption::from_query_prefix("CYPHER replan=default MATCH (n) RETURN n"),
+            Some(ReplanOption::Default)
+        );
+        assert_eq!(
+            ReplanOption::from_query_prefix("cypher replan=FORCE match (n) return n"),
+            Some(ReplanOption::Force)
+        );
     }
-    
+
     #[test]
     fn test_strip_prefix() {
-        assert_eq!(ReplanOption::strip_prefix("MATCH (n) RETURN n"), "MATCH (n) RETURN n");
-        assert_eq!(ReplanOption::strip_prefix("CYPHER replan=force MATCH (n) RETURN n"), "MATCH (n) RETURN n");
-        assert_eq!(ReplanOption::strip_prefix("  CYPHER replan=skip  MATCH (n) RETURN n  "), "MATCH (n) RETURN n");
+        assert_eq!(
+            ReplanOption::strip_prefix("MATCH (n) RETURN n"),
+            "MATCH (n) RETURN n"
+        );
+        assert_eq!(
+            ReplanOption::strip_prefix("CYPHER replan=force MATCH (n) RETURN n"),
+            "MATCH (n) RETURN n"
+        );
+        assert_eq!(
+            ReplanOption::strip_prefix("  CYPHER replan=skip  MATCH (n) RETURN n  "),
+            "MATCH (n) RETURN n"
+        );
     }
-    
+
     #[test]
     fn test_cache_key_creation() {
         let key1 = QueryCacheKey::new("MATCH (n) RETURN n", "default");
         let key2 = QueryCacheKey::new("CYPHER replan=force MATCH (n) RETURN n", "default");
         assert_eq!(key1.normalized_query, key2.normalized_query);
     }
-    
+
     #[test]
     fn test_cache_basic_operations() {
         let cache = QueryCache::with_defaults();
         let key = QueryCacheKey::new("MATCH (n) RETURN n", "default");
-        
+
         // Cache miss
         assert_eq!(cache.get(&key), None);
         assert_eq!(cache.metrics().misses, 1);
-        
+
         // Insert
         cache.insert(key.clone(), "SELECT * FROM nodes".to_string());
-        
+
         // Cache hit
         assert_eq!(cache.get(&key), Some("SELECT * FROM nodes".to_string()));
         assert_eq!(cache.metrics().hits, 1);
     }
-    
+
     #[test]
     fn test_cache_lru_eviction() {
         let config = QueryCacheConfig {
@@ -448,55 +462,55 @@ mod tests {
             max_size_bytes: 1024 * 1024,
         };
         let cache = QueryCache::new(config);
-        
+
         let key1 = QueryCacheKey::new("MATCH (n) RETURN n", "default");
         let key2 = QueryCacheKey::new("MATCH (n)-[r]->(m) RETURN n,m", "default");
         let key3 = QueryCacheKey::new("MATCH (n) WHERE n.age > 25 RETURN n", "default");
-        
+
         cache.insert(key1.clone(), "SQL1".to_string());
         cache.insert(key2.clone(), "SQL2".to_string());
-        
+
         // Access key1 to make key2 LRU
         cache.get(&key1);
-        
+
         // Insert key3 should evict key2
         cache.insert(key3.clone(), "SQL3".to_string());
-        
+
         assert!(cache.get(&key1).is_some());
         assert!(cache.get(&key2).is_none());
         assert!(cache.get(&key3).is_some());
         assert_eq!(cache.metrics().evictions, 1);
     }
-    
+
     #[test]
     fn test_schema_invalidation() {
         let cache = QueryCache::with_defaults();
-        
+
         let key1 = QueryCacheKey::new("MATCH (n) RETURN n", "schema1");
         let key2 = QueryCacheKey::new("MATCH (n) RETURN n", "schema2");
-        
+
         cache.insert(key1.clone(), "SQL1".to_string());
         cache.insert(key2.clone(), "SQL2".to_string());
-        
+
         // Invalidate schema1
         cache.invalidate_schema("schema1");
-        
+
         assert!(cache.get(&key1).is_none());
         assert!(cache.get(&key2).is_some());
     }
-    
+
     #[test]
     fn test_cache_metrics() {
         let cache = QueryCache::with_defaults();
         let key = QueryCacheKey::new("MATCH (n) RETURN n", "default");
-        
+
         cache.insert(key.clone(), "SELECT * FROM nodes".to_string());
         cache.get(&key); // hit
         cache.get(&key); // hit
-        
+
         let key2 = QueryCacheKey::new("MATCH (n)-[r]->(m) RETURN n", "default");
         cache.get(&key2); // miss
-        
+
         let metrics = cache.metrics();
         assert_eq!(metrics.hits, 2);
         assert_eq!(metrics.misses, 1);

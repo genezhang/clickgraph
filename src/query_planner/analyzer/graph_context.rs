@@ -1,7 +1,5 @@
 use crate::{
-    graph_catalog::{
-        graph_schema::{GraphSchema, NodeSchema, RelationshipSchema},
-    },
+    graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema},
     query_planner::{
         analyzer::{
             analyzer_pass::AnalyzerResult,
@@ -29,7 +27,7 @@ impl<'a> GraphContext<'a> {
     pub fn get_node_schema(&self, table_name: &str) -> Option<&'a NodeSchema> {
         self.schema.get_node_schema(table_name).ok()
     }
-    
+
     /// Get schema for a relationship table
     pub fn get_relationship_schema(&self, table_name: &str) -> Option<&'a RelationshipSchema> {
         self.schema.get_rel_schema(table_name).ok()
@@ -65,7 +63,7 @@ pub fn get_graph_context<'a>(
     let left_alias = &graph_rel.left_connection;
     let rel_alias = &graph_rel.alias;
     let right_alias = &graph_rel.right_connection;
-    
+
     let left_ctx = plan_ctx
         .get_node_table_ctx(left_alias)
         .map_err(|e| AnalyzerError::PlanCtx {

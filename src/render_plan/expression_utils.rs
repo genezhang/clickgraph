@@ -2,11 +2,11 @@
 //!
 //! This module provides common utilities for working with RenderExpr trees.
 
-use super::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator, OperatorApplication, PropertyAccess,
-    RenderCase, RenderExpr, ScalarFnCall, TableAlias,
-};
 use super::errors::RenderBuildError;
+use super::render_expr::{
+    AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator, OperatorApplication,
+    PropertyAccess, RenderCase, RenderExpr, ScalarFnCall, TableAlias,
+};
 
 /// Check if a RenderExpr references a specific table alias (USED by tests)
 pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
@@ -18,17 +18,17 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
         RenderExpr::ScalarFnCall(fn_call) => {
             fn_call.args.iter().any(|arg| references_alias(arg, alias))
         }
-        RenderExpr::AggregateFnCall(agg) => {
-            agg.args.iter().any(|arg| references_alias(arg, alias))
-        }
+        RenderExpr::AggregateFnCall(agg) => agg.args.iter().any(|arg| references_alias(arg, alias)),
         RenderExpr::List(exprs) => exprs.iter().any(|expr| references_alias(expr, alias)),
         RenderExpr::Case(case_expr) => {
-            case_expr.when_then.iter().any(|(when, then)| {
-                references_alias(when, alias) || references_alias(then, alias)
-            }) || case_expr
-                .else_expr
-                .as_ref()
-                .map_or(false, |else_expr| references_alias(else_expr, alias))
+            case_expr
+                .when_then
+                .iter()
+                .any(|(when, then)| references_alias(when, alias) || references_alias(then, alias))
+                || case_expr
+                    .else_expr
+                    .as_ref()
+                    .map_or(false, |else_expr| references_alias(else_expr, alias))
         }
         RenderExpr::InSubquery(subquery) => references_alias(&subquery.expr, alias),
         // Simple expressions that don't contain aliases

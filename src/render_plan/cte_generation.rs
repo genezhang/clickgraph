@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use crate::clickhouse_query_generator::NodeProperty;
-use crate::query_planner::logical_plan::LogicalPlan;
-use crate::query_planner::logical_expr::LogicalExpr;
-use crate::render_plan::render_expr::RenderExpr;
 use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::query_planner::logical_expr::LogicalExpr;
+use crate::query_planner::logical_plan::LogicalPlan;
+use crate::render_plan::render_expr::RenderExpr;
 
 /// Context for CTE generation - holds property requirements and other metadata
 #[derive(Debug, Clone)]
@@ -57,11 +57,19 @@ impl CteGenerationContext {
 
     pub(crate) fn get_properties(&self, left_alias: &str, right_alias: &str) -> Vec<NodeProperty> {
         let key = format!("{}-{}", left_alias, right_alias);
-        self.variable_length_properties.get(&key).cloned().unwrap_or_default()
+        self.variable_length_properties
+            .get(&key)
+            .cloned()
+            .unwrap_or_default()
     }
 
     // 🆕 IMMUTABLE BUILDER PATTERN: Returns new context instead of mutating
-    pub(crate) fn with_properties(mut self, left_alias: &str, right_alias: &str, properties: Vec<NodeProperty>) -> Self {
+    pub(crate) fn with_properties(
+        mut self,
+        left_alias: &str,
+        right_alias: &str,
+        properties: Vec<NodeProperty>,
+    ) -> Self {
         let key = format!("{}-{}", left_alias, right_alias);
         self.variable_length_properties.insert(key, properties);
         self
@@ -69,7 +77,12 @@ impl CteGenerationContext {
 
     // 🔧 DEPRECATED: Keep for compatibility during migration
     #[deprecated(note = "Use with_properties() instead - immutable builder pattern")]
-    pub(crate) fn set_properties(&mut self, left_alias: &str, right_alias: &str, properties: Vec<NodeProperty>) {
+    pub(crate) fn set_properties(
+        &mut self,
+        left_alias: &str,
+        right_alias: &str,
+        properties: Vec<NodeProperty>,
+    ) {
         let key = format!("{}-{}", left_alias, right_alias);
         self.variable_length_properties.insert(key, properties);
     }
@@ -170,7 +183,9 @@ fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
             if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
                 if let Ok(schemas) = schemas_lock.try_read() {
                     if let Some(schema) = schemas.get("default") {
-                        if let Some((label, _)) = get_node_schema_by_table(schema, &view_scan.source_table) {
+                        if let Some((label, _)) =
+                            get_node_schema_by_table(schema, &view_scan.source_table)
+                        {
                             return Some(label.to_string());
                         }
                     }
@@ -200,12 +215,18 @@ fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
 }
 
 /// Analyze the plan to determine what properties are needed for variable-length CTEs
-pub(crate) fn analyze_property_requirements(plan: &LogicalPlan, schema: &GraphSchema) -> CteGenerationContext {
+pub(crate) fn analyze_property_requirements(
+    plan: &LogicalPlan,
+    schema: &GraphSchema,
+) -> CteGenerationContext {
     let context = CteGenerationContext::with_schema(schema.clone());
 
     // Find variable-length relationships and their required properties
-    if let Some((left_alias, right_alias, left_label, right_label, _rel_type)) = get_variable_length_info(plan) {
-        let properties = extract_var_len_properties(plan, &left_alias, &right_alias, &left_label, &right_label);
+    if let Some((left_alias, right_alias, left_label, right_label, _rel_type)) =
+        get_variable_length_info(plan)
+    {
+        let properties =
+            extract_var_len_properties(plan, &left_alias, &right_alias, &left_label, &right_label);
         // 🆕 IMMUTABLE PATTERN: Chain the builder method
         return context.with_properties(&left_alias, &right_alias, properties);
     }
@@ -221,7 +242,7 @@ pub(crate) fn extract_var_len_properties(
     left_alias: &str,
     right_alias: &str,
     left_label: &str,
-    right_label: &str
+    right_label: &str,
 ) -> Vec<NodeProperty> {
     let mut properties = Vec::new();
 
@@ -249,9 +270,13 @@ pub(crate) fn extract_var_len_properties(
                             if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
                                 if let Ok(schemas) = schema_lock.try_read() {
                                     if let Some(schema) = schemas.get("default") {
-                                        if let Some(node_schema) = schema.get_nodes_schemas().get(node_label) {
+                                        if let Some(node_schema) =
+                                            schema.get_nodes_schemas().get(node_label)
+                                        {
                                             // Create a property for each mapping
-                                            for (prop_name, column_name) in &node_schema.property_mappings {
+                                            for (prop_name, column_name) in
+                                                &node_schema.property_mappings
+                                            {
                                                 properties.push(NodeProperty {
                                                     cypher_alias: node_alias.to_string(),
                                                     column_name: column_name.clone(),
@@ -264,8 +289,9 @@ pub(crate) fn extract_var_len_properties(
                             }
                         } else {
                             // Regular property
-                            let column_name = map_property_to_column_with_schema(property_name, node_label)
-                                .unwrap_or_else(|_| property_name.to_string());
+                            let column_name =
+                                map_property_to_column_with_schema(property_name, node_label)
+                                    .unwrap_or_else(|_| property_name.to_string());
                             let alias = property_name.to_string();
 
                             properties.push(NodeProperty {
@@ -279,12 +305,60 @@ pub(crate) fn extract_var_len_properties(
             }
         }
         // Recursively search in child plans
-        LogicalPlan::Filter(filter) => return extract_var_len_properties(&filter.input, left_alias, right_alias, left_label, right_label),
-        LogicalPlan::OrderBy(order_by) => return extract_var_len_properties(&order_by.input, left_alias, right_alias, left_label, right_label),
-        LogicalPlan::Skip(skip) => return extract_var_len_properties(&skip.input, left_alias, right_alias, left_label, right_label),
-        LogicalPlan::Limit(limit) => return extract_var_len_properties(&limit.input, left_alias, right_alias, left_label, right_label),
-        LogicalPlan::GroupBy(group_by) => return extract_var_len_properties(&group_by.input, left_alias, right_alias, left_label, right_label),
-        LogicalPlan::GraphJoins(joins) => return extract_var_len_properties(&joins.input, left_alias, right_alias, left_label, right_label),
+        LogicalPlan::Filter(filter) => {
+            return extract_var_len_properties(
+                &filter.input,
+                left_alias,
+                right_alias,
+                left_label,
+                right_label,
+            );
+        }
+        LogicalPlan::OrderBy(order_by) => {
+            return extract_var_len_properties(
+                &order_by.input,
+                left_alias,
+                right_alias,
+                left_label,
+                right_label,
+            );
+        }
+        LogicalPlan::Skip(skip) => {
+            return extract_var_len_properties(
+                &skip.input,
+                left_alias,
+                right_alias,
+                left_label,
+                right_label,
+            );
+        }
+        LogicalPlan::Limit(limit) => {
+            return extract_var_len_properties(
+                &limit.input,
+                left_alias,
+                right_alias,
+                left_label,
+                right_label,
+            );
+        }
+        LogicalPlan::GroupBy(group_by) => {
+            return extract_var_len_properties(
+                &group_by.input,
+                left_alias,
+                right_alias,
+                left_label,
+                right_label,
+            );
+        }
+        LogicalPlan::GraphJoins(joins) => {
+            return extract_var_len_properties(
+                &joins.input,
+                left_alias,
+                right_alias,
+                left_label,
+                right_label,
+            );
+        }
         _ => {}
     }
 
@@ -302,7 +376,9 @@ fn extract_alias_from_plan(plan: &LogicalPlan) -> Option<String> {
 }
 
 /// Get variable length info from plan
-fn get_variable_length_info(plan: &LogicalPlan) -> Option<(String, String, String, String, String)> {
+fn get_variable_length_info(
+    plan: &LogicalPlan,
+) -> Option<(String, String, String, String, String)> {
     match plan {
         LogicalPlan::GraphRel(graph_rel) => {
             if graph_rel.variable_length.is_some() {
@@ -326,81 +402,117 @@ fn get_variable_length_info(plan: &LogicalPlan) -> Option<(String, String, Strin
 /// Schema-aware property mapping using GraphSchema
 /// Map a property to column with schema awareness
 /// Returns an error if the schema is not available or the property mapping is not found
-pub(crate) fn map_property_to_column_with_schema(property: &str, node_label: &str) -> Result<String, String> {
+pub(crate) fn map_property_to_column_with_schema(
+    property: &str,
+    node_label: &str,
+) -> Result<String, String> {
     use std::fs::OpenOptions;
     use std::io::Write;
-    
+
     // Try to get the schema from the global state
-    let schema_lock = crate::server::GLOBAL_SCHEMAS.get()
-        .ok_or_else(|| {
-            let msg = "GLOBAL_SCHEMAS not initialized".to_string();
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "ERROR: {}", msg);
-            }
-            msg
-        })?;
-    
-    let schemas = schema_lock.try_read()
-        .map_err(|_| {
-            let msg = "Failed to acquire read lock on GLOBAL_SCHEMAS".to_string();
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "ERROR: {}", msg);
-            }
-            msg
-        })?;
-    
+    let schema_lock = crate::server::GLOBAL_SCHEMAS.get().ok_or_else(|| {
+        let msg = "GLOBAL_SCHEMAS not initialized".to_string();
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("debug_property_mapping.log")
+        {
+            let _ = writeln!(file, "ERROR: {}", msg);
+        }
+        msg
+    })?;
+
+    let schemas = schema_lock.try_read().map_err(|_| {
+        let msg = "Failed to acquire read lock on GLOBAL_SCHEMAS".to_string();
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("debug_property_mapping.log")
+        {
+            let _ = writeln!(file, "ERROR: {}", msg);
+        }
+        msg
+    })?;
+
     if schemas.is_empty() {
         let msg = "No schemas loaded in GLOBAL_SCHEMAS".to_string();
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("debug_property_mapping.log")
+        {
             let _ = writeln!(file, "ERROR: {}", msg);
         }
         return Err(msg);
     }
-    
-    let schema = schemas.get("default")
-        .ok_or_else(|| {
-            let available: Vec<String> = schemas.keys().map(|s| s.clone()).collect();
-            let msg = format!("Schema 'default' not found. Available schemas: {}", available.join(", "));
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "ERROR: {}", msg);
-            }
-            msg
-        })?;
-    
-    let node_schema = schema.get_nodes_schemas().get(node_label)
-        .ok_or_else(|| {
-            let available: Vec<String> = schema.get_nodes_schemas().keys().map(|s| s.clone()).collect();
-            let msg = format!(
-                "Node label '{}' not found in schema. Available labels: {}", 
-                node_label, 
-                available.join(", ")
-            );
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "ERROR: {}", msg);
-            }
-            msg
-        })?;
-    
-    let column = node_schema.property_mappings.get(property)
-        .ok_or_else(|| {
-            let available: Vec<String> = node_schema.property_mappings.keys().map(|s| s.clone()).collect();
-            let msg = format!(
-                "Property '{}' not found for node label '{}'. Available properties: {}", 
-                property, 
-                node_label, 
-                available.join(", ")
-            );
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "ERROR: {}", msg);
-            }
-            msg
-        })?;
-    
+
+    let schema = schemas.get("default").ok_or_else(|| {
+        let available: Vec<String> = schemas.keys().map(|s| s.clone()).collect();
+        let msg = format!(
+            "Schema 'default' not found. Available schemas: {}",
+            available.join(", ")
+        );
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("debug_property_mapping.log")
+        {
+            let _ = writeln!(file, "ERROR: {}", msg);
+        }
+        msg
+    })?;
+
+    let node_schema = schema.get_nodes_schemas().get(node_label).ok_or_else(|| {
+        let available: Vec<String> = schema
+            .get_nodes_schemas()
+            .keys()
+            .map(|s| s.clone())
+            .collect();
+        let msg = format!(
+            "Node label '{}' not found in schema. Available labels: {}",
+            node_label,
+            available.join(", ")
+        );
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("debug_property_mapping.log")
+        {
+            let _ = writeln!(file, "ERROR: {}", msg);
+        }
+        msg
+    })?;
+
+    let column = node_schema.property_mappings.get(property).ok_or_else(|| {
+        let available: Vec<String> = node_schema
+            .property_mappings
+            .keys()
+            .map(|s| s.clone())
+            .collect();
+        let msg = format!(
+            "Property '{}' not found for node label '{}'. Available properties: {}",
+            property,
+            node_label,
+            available.join(", ")
+        );
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("debug_property_mapping.log")
+        {
+            let _ = writeln!(file, "ERROR: {}", msg);
+        }
+        msg
+    })?;
+
     Ok(column.clone())
 }
 
 /// Get node schema by table name
-fn get_node_schema_by_table<'a>(schema: &'a GraphSchema, table_name: &str) -> Option<(&'a str, &'a crate::graph_catalog::graph_schema::NodeSchema)> {
+fn get_node_schema_by_table<'a>(
+    schema: &'a GraphSchema,
+    table_name: &str,
+) -> Option<(&'a str, &'a crate::graph_catalog::graph_schema::NodeSchema)> {
     for (label, node_schema) in schema.get_nodes_schemas() {
         if node_schema.table_name == table_name {
             return Some((label.as_str(), node_schema));

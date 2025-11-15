@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use super::{LogicalPlan, ViewScan, Filter};
-use crate::query_planner::logical_expr::{LogicalExpr, OperatorApplication, Operator};
+use super::{Filter, LogicalPlan, ViewScan};
+use crate::query_planner::logical_expr::{LogicalExpr, Operator, OperatorApplication};
 
 impl Filter {
     /// Create a new filter on a view scan
@@ -21,7 +21,7 @@ impl Filter {
     pub fn view_scan(&self) -> Option<&ViewScan> {
         match &*self.input {
             LogicalPlan::ViewScan(scan) => Some(scan),
-            _ => None
+            _ => None,
         }
     }
 

@@ -3,34 +3,34 @@
 //! This module defines the message types for the Neo4j Bolt protocol v4.4.
 //! Messages are the primary communication unit between client and server.
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// Bolt message signatures (message types)
 pub mod signatures {
     // Connection management (Bolt 3+)
     pub const HELLO: u8 = 0x01;
     pub const GOODBYE: u8 = 0x02;
-    
+
     // Authentication (Bolt 5.1+)
     pub const LOGON: u8 = 0x6A;
     pub const LOGOFF: u8 = 0x6B;
-    
+
     // Session management
     pub const RESET: u8 = 0x0F;
     pub const RUN: u8 = 0x10;
     pub const DISCARD: u8 = 0x2F;
     pub const PULL: u8 = 0x3F;
-    
+
     // Transaction management (Bolt 3+)
     pub const BEGIN: u8 = 0x11;
     pub const COMMIT: u8 = 0x12;
     pub const ROLLBACK: u8 = 0x13;
-    
+
     // Routing (Bolt 4.3+)
     pub const ROUTE: u8 = 0x66;
-    
+
     // Response messages
     pub const SUCCESS: u8 = 0x70;
     pub const RECORD: u8 = 0x71;
@@ -58,9 +58,10 @@ impl BoltMessage {
         BoltMessage::new(
             signatures::HELLO,
             vec![
-                Value::Object(serde_json::Map::from_iter([
-                    ("user_agent".to_string(), Value::String(user_agent)),
-                ])),
+                Value::Object(serde_json::Map::from_iter([(
+                    "user_agent".to_string(),
+                    Value::String(user_agent),
+                )])),
                 Value::Object(serde_json::Map::from_iter(auth_token)),
             ],
         )
@@ -77,16 +78,20 @@ impl BoltMessage {
     }
 
     /// Create a RUN message
-    pub fn run(query: String, parameters: HashMap<String, Value>, extra: Option<HashMap<String, Value>>) -> Self {
+    pub fn run(
+        query: String,
+        parameters: HashMap<String, Value>,
+        extra: Option<HashMap<String, Value>>,
+    ) -> Self {
         let mut fields = vec![
             Value::String(query),
             Value::Object(serde_json::Map::from_iter(parameters)),
         ];
-        
+
         if let Some(extra_map) = extra {
             fields.push(Value::Object(serde_json::Map::from_iter(extra_map)));
         }
-        
+
         BoltMessage::new(signatures::RUN, fields)
     }
 
@@ -94,11 +99,11 @@ impl BoltMessage {
     pub fn pull(n: i64, qid: Option<i64>) -> Self {
         let mut extra = serde_json::Map::new();
         extra.insert("n".to_string(), Value::Number(n.into()));
-        
+
         if let Some(qid) = qid {
             extra.insert("qid".to_string(), Value::Number(qid.into()));
         }
-        
+
         BoltMessage::new(signatures::PULL, vec![Value::Object(extra)])
     }
 
@@ -106,11 +111,11 @@ impl BoltMessage {
     pub fn discard(n: i64, qid: Option<i64>) -> Self {
         let mut extra = serde_json::Map::new();
         extra.insert("n".to_string(), Value::Number(n.into()));
-        
+
         if let Some(qid) = qid {
             extra.insert("qid".to_string(), Value::Number(qid.into()));
         }
-        
+
         BoltMessage::new(signatures::DISCARD, vec![Value::Object(extra)])
     }
 
@@ -121,7 +126,7 @@ impl BoltMessage {
         } else {
             vec![Value::Object(serde_json::Map::new())]
         };
-        
+
         BoltMessage::new(signatures::BEGIN, fields)
     }
 
@@ -154,7 +159,7 @@ impl BoltMessage {
             ("code".to_string(), Value::String(code)),
             ("message".to_string(), Value::String(message)),
         ]);
-        
+
         BoltMessage::new(
             signatures::FAILURE,
             vec![Value::Object(serde_json::Map::from_iter(metadata))],
@@ -225,12 +230,22 @@ impl BoltMessage {
             if self.fields.len() >= 2 {
                 // Two-field format: field[1] is auth
                 if let Value::Object(auth_map) = &self.fields[1] {
-                    return Some(auth_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+                    return Some(
+                        auth_map
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
+                    );
                 }
             } else if self.fields.len() == 1 {
                 // Single-field format: field[0] contains auth (and maybe metadata)
                 if let Value::Object(auth_map) = &self.fields[0] {
-                    return Some(auth_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+                    return Some(
+                        auth_map
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
+                    );
                 }
             }
         }
@@ -272,7 +287,12 @@ impl BoltMessage {
     pub fn extract_parameters(&self) -> Option<HashMap<String, Value>> {
         if self.signature == signatures::RUN && self.fields.len() >= 2 {
             if let Value::Object(params_map) = &self.fields[1] {
-                return Some(params_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+                return Some(
+                    params_map
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                );
             }
         }
         None
@@ -302,7 +322,12 @@ impl BoltMessage {
     pub fn extract_logon_auth(&self) -> Option<HashMap<String, Value>> {
         if self.signature == signatures::LOGON && !self.fields.is_empty() {
             if let Value::Object(auth_map) = &self.fields[0] {
-                return Some(auth_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+                return Some(
+                    auth_map
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                );
             }
         }
         None
@@ -368,13 +393,16 @@ mod tests {
         let auth_token = HashMap::from([
             ("scheme".to_string(), Value::String("basic".to_string())),
             ("principal".to_string(), Value::String("user".to_string())),
-            ("credentials".to_string(), Value::String("password".to_string())),
+            (
+                "credentials".to_string(),
+                Value::String("password".to_string()),
+            ),
         ]);
 
         let hello = BoltMessage::hello("Brahmand/1.0".to_string(), auth_token.clone());
         assert_eq!(hello.signature, signatures::HELLO);
         assert_eq!(hello.fields.len(), 2);
-        
+
         let extracted_auth = hello.extract_auth_token();
         assert!(extracted_auth.is_some());
         assert_eq!(extracted_auth.unwrap(), auth_token);
@@ -382,9 +410,7 @@ mod tests {
 
     #[test]
     fn test_run_message_creation() {
-        let parameters = HashMap::from([
-            ("name".to_string(), Value::String("Alice".to_string())),
-        ]);
+        let parameters = HashMap::from([("name".to_string(), Value::String("Alice".to_string()))]);
 
         let run = BoltMessage::run(
             "MATCH (n:Person {name: $name}) RETURN n".to_string(),
@@ -393,7 +419,10 @@ mod tests {
         );
 
         assert_eq!(run.signature, signatures::RUN);
-        assert_eq!(run.extract_query(), Some("MATCH (n:Person {name: $name}) RETURN n"));
+        assert_eq!(
+            run.extract_query(),
+            Some("MATCH (n:Person {name: $name}) RETURN n")
+        );
         assert_eq!(run.extract_parameters(), Some(parameters));
     }
 

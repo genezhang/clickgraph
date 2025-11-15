@@ -1,25 +1,27 @@
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use axum::{Router, routing::{get, post}};
+use axum::{
+    Router,
+    routing::{get, post},
+};
 use clickhouse::Client;
-use handlers::{query_handler, health_check, simple_test_handler, list_schemas_handler, load_schema_handler};
+use handlers::{
+    health_check, list_schemas_handler, load_schema_handler, query_handler, simple_test_handler,
+};
 
 use dotenv::dotenv;
-use tokio::sync::{OnceCell, RwLock};
 use tokio::net::TcpListener;
-#[cfg(unix)]
-use tokio::signal::unix::{signal, SignalKind};
 #[cfg(windows)]
 use tokio::signal;
+#[cfg(unix)]
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::{OnceCell, RwLock};
 
-use crate::graph_catalog::{
-    graph_schema::GraphSchema,
-    config::GraphSchemaConfig,
-};
+use crate::config::{CliConfig, ConfigError, ServerConfig};
+use crate::graph_catalog::{config::GraphSchemaConfig, graph_schema::GraphSchema};
 use crate::server::graph_catalog::SchemaSource;
-use bolt_protocol::{BoltServer, BoltConfig};
-use crate::config::{ServerConfig, CliConfig, ConfigError};
+use bolt_protocol::{BoltConfig, BoltServer};
 
 pub mod bolt_protocol;
 mod clickhouse_client;
@@ -50,11 +52,14 @@ pub struct AppState {
 // ==================================================================================
 
 // Legacy single-schema config support (DEPRECATED - use GLOBAL_SCHEMA_CONFIGS)
-pub static GLOBAL_SCHEMA_CONFIG: OnceCell<RwLock<crate::graph_catalog::config::GraphSchemaConfig>> = OnceCell::const_new();
+pub static GLOBAL_SCHEMA_CONFIG: OnceCell<RwLock<crate::graph_catalog::config::GraphSchemaConfig>> =
+    OnceCell::const_new();
 
 // Multi-schema support - all schemas stored by name (including "default")
 pub static GLOBAL_SCHEMAS: OnceCell<RwLock<HashMap<String, GraphSchema>>> = OnceCell::const_new();
-pub static GLOBAL_SCHEMA_CONFIGS: OnceCell<RwLock<HashMap<String, crate::graph_catalog::config::GraphSchemaConfig>>> = OnceCell::const_new();
+pub static GLOBAL_SCHEMA_CONFIGS: OnceCell<
+    RwLock<HashMap<String, crate::graph_catalog::config::GraphSchemaConfig>>,
+> = OnceCell::const_new();
 
 // Query cache for SQL templates
 pub static GLOBAL_QUERY_CACHE: OnceCell<query_cache::QueryCache> = OnceCell::const_new();
@@ -77,15 +82,20 @@ pub async fn run() {
 pub async fn run_with_config(config: ServerConfig) {
     println!("DEBUG: run_with_config called!");
     dotenv().ok();
-    
+
     // Test that logging is working
     log::debug!("=== SERVER STARTING (debug log test) ===");
-    log::info!("Server configuration: http={}:{}, bolt={}:{}", 
-        config.http_host, config.http_port, config.bolt_host, config.bolt_port);
-    
+    log::info!(
+        "Server configuration: http={}:{}, bolt={}:{}",
+        config.http_host,
+        config.http_port,
+        config.bolt_host,
+        config.bolt_port
+    );
+
     // Try to create ClickHouse client (optional for YAML-only mode)
     let client_opt = clickhouse_client::try_get_client();
-    
+
     let app_state = if let Some(client) = client_opt.as_ref() {
         AppState {
             clickhouse_client: client.clone(),
@@ -96,7 +106,7 @@ pub async fn run_with_config(config: ServerConfig) {
         // This is a limitation we should fix in the future
         eprintln!("⚠ No ClickHouse configuration found. Running in YAML-only mode.");
         eprintln!("  Note: Some query functionality may be limited without ClickHouse connection.");
-        
+
         // Create a dummy client for now - this is not ideal but allows server to start
         let dummy_client = clickhouse::Client::default().with_url("http://localhost:8123");
         AppState {
@@ -106,29 +116,37 @@ pub async fn run_with_config(config: ServerConfig) {
     };
 
     // Initialize schema with proper error handling
-    let schema_source = match graph_catalog::initialize_global_schema(client_opt.clone(), config.validate_schema).await {
-        Ok(source) => source,
-        Err(e) => {
-            eprintln!("✗ Failed to initialize ClickGraph: {}", e);
-            eprintln!("  Server cannot start without proper schema initialization.");
-            std::process::exit(1);
-        }
-    };
+    let schema_source =
+        match graph_catalog::initialize_global_schema(client_opt.clone(), config.validate_schema)
+            .await
+        {
+            Ok(source) => source,
+            Err(e) => {
+                eprintln!("✗ Failed to initialize ClickGraph: {}", e);
+                eprintln!("  Server cannot start without proper schema initialization.");
+                std::process::exit(1);
+            }
+        };
 
-    println!("GLOBAL_SCHEMAS initialized: {:?}", GLOBAL_SCHEMAS.get().is_some());
+    println!(
+        "GLOBAL_SCHEMAS initialized: {:?}",
+        GLOBAL_SCHEMAS.get().is_some()
+    );
 
     // Initialize query cache
     let cache_config = query_cache::QueryCacheConfig::from_env();
-    log::info!("Initializing query cache: enabled={}, max_entries={}, max_size_mb={}", 
-        cache_config.enabled, 
-        cache_config.max_entries, 
-        cache_config.max_size_bytes / (1024 * 1024));
+    log::info!(
+        "Initializing query cache: enabled={}, max_entries={}, max_size_mb={}",
+        cache_config.enabled,
+        cache_config.max_entries,
+        cache_config.max_size_bytes / (1024 * 1024)
+    );
     let _ = GLOBAL_QUERY_CACHE.set(query_cache::QueryCache::new(cache_config));
 
     // Schema monitoring disabled - our YAML-based schema format differs from upstream Brahmand
     // Re-enable when we implement proper schema versioning in ClickHouse tables
     println!("Schema monitoring disabled: Using in-memory schema management");
-    
+
     // // Start background schema monitoring (only for database-loaded schemas)
     // if let Some(schema_client) = client_opt {
     //     match schema_source {
@@ -149,14 +167,14 @@ pub async fn run_with_config(config: ServerConfig) {
     // Start HTTP server
     let http_bind_address = format!("{}:{}", config.http_host, config.http_port);
     println!("Starting HTTP server on {}", http_bind_address);
-    
+
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/query", post(query_handler))
         .route("/schemas", get(list_schemas_handler))
         .route("/schemas/load", post(load_schema_handler))
         .with_state(Arc::new(app_state.clone()));
-    
+
     println!("DEBUG: Routes registered:");
     println!("  - /health");
     println!("  - /query");
@@ -167,24 +185,34 @@ pub async fn run_with_config(config: ServerConfig) {
     let http_listener = match TcpListener::bind(&http_bind_address).await {
         Ok(listener) => {
             log::info!("Successfully bound HTTP listener to {}", http_bind_address);
-            println!("✓ Successfully bound HTTP listener to {}", http_bind_address);
+            println!(
+                "✓ Successfully bound HTTP listener to {}",
+                http_bind_address
+            );
             listener
         }
         Err(e) => {
-            log::error!("Failed to bind HTTP listener to {}: {}", http_bind_address, e);
-            eprintln!("✗ FATAL: Failed to bind HTTP listener to {}: {}", http_bind_address, e);
+            log::error!(
+                "Failed to bind HTTP listener to {}: {}",
+                http_bind_address,
+                e
+            );
+            eprintln!(
+                "✗ FATAL: Failed to bind HTTP listener to {}: {}",
+                http_bind_address, e
+            );
             eprintln!("  Is another process using port {}?", config.http_port);
             std::process::exit(1);
         }
     };
-    
+
     let http_server = axum::serve(http_listener, app);
-    
+
     // Start Bolt server if enabled
     if config.bolt_enabled {
         let bolt_bind_address = format!("{}:{}", config.bolt_host, config.bolt_port);
         println!("Starting Bolt server on {}", bolt_bind_address);
-        
+
         let bolt_config = BoltConfig {
             max_message_size: 65536,
             connection_timeout: 300,
@@ -192,7 +220,7 @@ pub async fn run_with_config(config: ServerConfig) {
             default_user: Some("neo4j".to_string()),
             server_agent: format!("ClickGraph/{}", env!("CARGO_PKG_VERSION")),
         };
-        
+
         // Clone the ClickHouse client from app_state for Bolt server
         let bolt_clickhouse_client = app_state.clickhouse_client.clone();
         let bolt_server = Arc::new(BoltServer::new(bolt_config, bolt_clickhouse_client));
@@ -202,11 +230,14 @@ pub async fn run_with_config(config: ServerConfig) {
                 listener
             }
             Err(e) => {
-                eprintln!("Failed to bind Bolt listener to {}: {}", bolt_bind_address, e);
+                eprintln!(
+                    "Failed to bind Bolt listener to {}: {}",
+                    bolt_bind_address, e
+                );
                 return;
             }
         };
-        
+
         // Spawn Bolt server task
         tokio::spawn(async move {
             println!("Bolt server loop starting, listening for connections...");
@@ -216,7 +247,7 @@ pub async fn run_with_config(config: ServerConfig) {
                         println!("Accepted Bolt connection from: {}", addr);
                         let addr_str = addr.to_string();
                         let server = bolt_server.clone();
-                        
+
                         // Spawn individual connection handler
                         tokio::spawn(async move {
                             match server.handle_connection(stream, addr_str).await {
@@ -237,23 +268,26 @@ pub async fn run_with_config(config: ServerConfig) {
             }
         });
     }
-    
+
     println!("ClickGraph server is running");
     println!("  HTTP API: http://{}", http_bind_address);
     if config.bolt_enabled {
-        println!("  Bolt Protocol: bolt://{}", format!("{}:{}", config.bolt_host, config.bolt_port));
+        println!(
+            "  Bolt Protocol: bolt://{}",
+            format!("{}:{}", config.bolt_host, config.bolt_port)
+        );
     }
-    
+
     if config.daemon {
         println!("Running in daemon mode - press Ctrl+C to stop");
-        
+
         // Run server and signal handler concurrently
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal};
             let mut sigterm = signal(SignalKind::terminate()).unwrap();
             let mut sigint = signal(SignalKind::interrupt()).unwrap();
-            
+
             tokio::select! {
                 result = http_server => {
                     if let Err(e) = result {
@@ -264,7 +298,7 @@ pub async fn run_with_config(config: ServerConfig) {
                 _ = sigint.recv() => println!("Received SIGINT, shutting down..."),
             }
         }
-        
+
         #[cfg(windows)]
         {
             tokio::select! {
@@ -278,7 +312,7 @@ pub async fn run_with_config(config: ServerConfig) {
                 }
             }
         }
-        
+
         println!("Server stopped");
     } else {
         // Run HTTP server (this will block until shutdown)

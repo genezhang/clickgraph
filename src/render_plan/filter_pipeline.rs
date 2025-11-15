@@ -1,7 +1,8 @@
-use super::render_expr::{
-    AggregateFnCall, Column, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
-};
 use super::expression_utils::references_alias;
+use super::render_expr::{
+    AggregateFnCall, Column, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
+    ScalarFnCall, TableAlias,
+};
 
 /// Represents categorized filters for different parts of a query
 #[derive(Debug, Clone)]
@@ -19,7 +20,11 @@ pub fn categorize_filters(
     end_cypher_alias: &str,
     _rel_alias: &str, // For future relationship filtering
 ) -> CategorizedFilters {
-    log::debug!("Categorizing filters for start alias '{}' and end alias '{}'", start_cypher_alias, end_cypher_alias);
+    log::debug!(
+        "Categorizing filters for start alias '{}' and end alias '{}'",
+        start_cypher_alias,
+        end_cypher_alias
+    );
 
     let mut result = CategorizedFilters {
         start_node_filters: None,
@@ -44,9 +49,10 @@ pub fn categorize_filters(
                 let table_alias = &prop.table_alias.0;
                 table_alias == cypher_alias || table_alias == sql_alias
             }
-            RenderExpr::OperatorApplicationExp(op) => {
-                op.operands.iter().any(|operand| references_alias(operand, cypher_alias, sql_alias))
-            }
+            RenderExpr::OperatorApplicationExp(op) => op
+                .operands
+                .iter()
+                .any(|operand| references_alias(operand, cypher_alias, sql_alias)),
             _ => false,
         }
     }
@@ -56,11 +62,15 @@ pub fn categorize_filters(
         match expr {
             RenderExpr::ScalarFnCall(fn_call) => {
                 // Check if this is a path function (length, nodes, relationships)
-                matches!(fn_call.name.to_lowercase().as_str(), "length" | "nodes" | "relationships")
+                matches!(
+                    fn_call.name.to_lowercase().as_str(),
+                    "length" | "nodes" | "relationships"
+                )
             }
-            RenderExpr::OperatorApplicationExp(op) => {
-                op.operands.iter().any(|operand| contains_path_function(operand))
-            }
+            RenderExpr::OperatorApplicationExp(op) => op
+                .operands
+                .iter()
+                .any(|operand| contains_path_function(operand)),
             _ => false,
         }
     }
@@ -93,8 +103,14 @@ pub fn categorize_filters(
         let has_path_fn = contains_path_function(&predicate);
 
         println!("DEBUG: Categorizing predicate: {:?}", predicate);
-        println!("DEBUG: refs_start (alias '{}'): {}", start_cypher_alias, refs_start);
-        println!("DEBUG: refs_end (alias '{}'): {}", end_cypher_alias, refs_end);
+        println!(
+            "DEBUG: refs_start (alias '{}'): {}",
+            start_cypher_alias, refs_start
+        );
+        println!(
+            "DEBUG: refs_end (alias '{}'): {}",
+            end_cypher_alias, refs_end
+        );
         println!("DEBUG: has_path_fn: {}", has_path_fn);
 
         if has_path_fn {
@@ -142,7 +158,10 @@ pub fn categorize_filters(
     log::trace!("  Start filters: {:?}", result.start_node_filters);
     log::trace!("  End filters: {:?}", result.end_node_filters);
     log::trace!("  Rel filters: {:?}", result.relationship_filters);
-    log::trace!("  Path function filters: {:?}", result.path_function_filters);
+    log::trace!(
+        "  Path function filters: {:?}",
+        result.path_function_filters
+    );
 
     result
 }
@@ -161,14 +180,29 @@ pub fn extract_start_end_filters(
             let mut other_filters = vec![];
 
             for operand in &op_app.operands {
-                let (start_f, end_f, other_f) = extract_start_end_filters(operand, left_alias, right_alias);
-                if let Some(sf) = start_f { start_filters.push(sf); }
-                if let Some(ef) = end_f { end_filters.push(ef); }
-                if let Some(of) = other_f { other_filters.push(of); }
+                let (start_f, end_f, other_f) =
+                    extract_start_end_filters(operand, left_alias, right_alias);
+                if let Some(sf) = start_f {
+                    start_filters.push(sf);
+                }
+                if let Some(ef) = end_f {
+                    end_filters.push(ef);
+                }
+                if let Some(of) = other_f {
+                    other_filters.push(of);
+                }
             }
 
-            let start_filter = if start_filters.is_empty() { None } else { Some(start_filters.join(" AND ")) };
-            let end_filter = if end_filters.is_empty() { None } else { Some(end_filters.join(" AND ")) };
+            let start_filter = if start_filters.is_empty() {
+                None
+            } else {
+                Some(start_filters.join(" AND "))
+            };
+            let end_filter = if end_filters.is_empty() {
+                None
+            } else {
+                Some(end_filters.join(" AND "))
+            };
             let remaining_filter = if other_filters.is_empty() {
                 None
             } else if other_filters.len() == 1 {
@@ -186,10 +220,18 @@ pub fn extract_start_end_filters(
             // Check if this filter references start or end node
             if references_alias(filter_expr, left_alias) {
                 // Convert to SQL string for start filter
-                (Some(filter_expr_to_sql(filter_expr, left_alias, "start_")), None, None)
+                (
+                    Some(filter_expr_to_sql(filter_expr, left_alias, "start_")),
+                    None,
+                    None,
+                )
             } else if references_alias(filter_expr, right_alias) {
                 // Convert to SQL string for end filter
-                (None, Some(filter_expr_to_sql(filter_expr, right_alias, "end_")), None)
+                (
+                    None,
+                    Some(filter_expr_to_sql(filter_expr, right_alias, "end_")),
+                    None,
+                )
             } else {
                 // Keep as general filter
                 (None, None, Some(filter_expr.clone()))
@@ -201,8 +243,12 @@ pub fn extract_start_end_filters(
 /// Convert a filter expression to SQL string for CTE filters
 pub fn filter_expr_to_sql(expr: &RenderExpr, alias: &str, prefix: &str) -> String {
     match expr {
-        RenderExpr::OperatorApplicationExp(op_app) if op_app.operator == Operator::Equal && op_app.operands.len() == 2 => {
-            if let (RenderExpr::PropertyAccessExp(prop), RenderExpr::Literal(lit)) = (&op_app.operands[0], &op_app.operands[1]) {
+        RenderExpr::OperatorApplicationExp(op_app)
+            if op_app.operator == Operator::Equal && op_app.operands.len() == 2 =>
+        {
+            if let (RenderExpr::PropertyAccessExp(prop), RenderExpr::Literal(lit)) =
+                (&op_app.operands[0], &op_app.operands[1])
+            {
                 if prop.table_alias.0 == alias {
                     let column = format!("{}{}", prefix, prop.column.0);
                     match lit {
@@ -218,7 +264,7 @@ pub fn filter_expr_to_sql(expr: &RenderExpr, alias: &str, prefix: &str) -> Strin
                 "true".to_string() // fallback
             }
         }
-        _ => "true".to_string() // fallback for complex expressions
+        _ => "true".to_string(), // fallback for complex expressions
     }
 }
 
@@ -231,25 +277,36 @@ pub fn render_end_filter_to_column_alias(
     start_node_label: &str,
     end_node_label: &str,
 ) -> String {
-    println!("DEBUG: render_end_filter_to_column_alias called with start_cypher_alias='{}', end_cypher_alias='{}'", start_cypher_alias, end_cypher_alias);
+    println!(
+        "DEBUG: render_end_filter_to_column_alias called with start_cypher_alias='{}', end_cypher_alias='{}'",
+        start_cypher_alias, end_cypher_alias
+    );
 
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
             let table_alias = &prop.table_alias.0;
             let column = &prop.column.0;
-            println!("DEBUG: PropertyAccessExp: table_alias='{}', column='{}', start_cypher_alias='{}', end_cypher_alias='{}'",
-                table_alias, column, start_cypher_alias, end_cypher_alias);
+            println!(
+                "DEBUG: PropertyAccessExp: table_alias='{}', column='{}', start_cypher_alias='{}', end_cypher_alias='{}'",
+                table_alias, column, start_cypher_alias, end_cypher_alias
+            );
 
             // Map Cypher aliases to database column references
             if table_alias == end_cypher_alias {
-                let mapped_column = super::cte_generation::map_property_to_column_with_schema(column, end_node_label)
-                    .unwrap_or_else(|_| column.to_string());
+                let mapped_column = super::cte_generation::map_property_to_column_with_schema(
+                    column,
+                    end_node_label,
+                )
+                .unwrap_or_else(|_| column.to_string());
                 let result = format!("end_node.{}", mapped_column);
                 println!("DEBUG: Mapped to end column reference: {}", result);
                 result
             } else if table_alias == start_cypher_alias {
-                let mapped_column = super::cte_generation::map_property_to_column_with_schema(column, start_node_label)
-                    .unwrap_or_else(|_| column.to_string());
+                let mapped_column = super::cte_generation::map_property_to_column_with_schema(
+                    column,
+                    start_node_label,
+                )
+                .unwrap_or_else(|_| column.to_string());
                 let result = format!("start_node.{}", mapped_column);
                 println!("DEBUG: Mapped to start column reference: {}", result);
                 result
@@ -275,33 +332,75 @@ pub fn render_end_filter_to_column_alias(
             };
 
             if op.operands.len() == 1 {
-                format!("{} {}", operator_sql, render_end_filter_to_column_alias(&op.operands[0], start_cypher_alias, end_cypher_alias, start_node_label, end_node_label))
-            } else if op.operands.len() == 2 {
-                format!("{} {} {}",
-                    render_end_filter_to_column_alias(&op.operands[0], start_cypher_alias, end_cypher_alias, start_node_label, end_node_label),
+                format!(
+                    "{} {}",
                     operator_sql,
-                    render_end_filter_to_column_alias(&op.operands[1], start_cypher_alias, end_cypher_alias, start_node_label, end_node_label)
+                    render_end_filter_to_column_alias(
+                        &op.operands[0],
+                        start_cypher_alias,
+                        end_cypher_alias,
+                        start_node_label,
+                        end_node_label
+                    )
+                )
+            } else if op.operands.len() == 2 {
+                format!(
+                    "{} {} {}",
+                    render_end_filter_to_column_alias(
+                        &op.operands[0],
+                        start_cypher_alias,
+                        end_cypher_alias,
+                        start_node_label,
+                        end_node_label
+                    ),
+                    operator_sql,
+                    render_end_filter_to_column_alias(
+                        &op.operands[1],
+                        start_cypher_alias,
+                        end_cypher_alias,
+                        start_node_label,
+                        end_node_label
+                    )
                 )
             } else {
                 // Fallback for complex expressions
-                format!("{}({})", operator_sql, op.operands.iter()
-                    .map(|operand| render_end_filter_to_column_alias(operand, start_cypher_alias, end_cypher_alias, start_node_label, end_node_label))
-                    .collect::<Vec<_>>()
-                    .join(", "))
+                format!(
+                    "{}({})",
+                    operator_sql,
+                    op.operands
+                        .iter()
+                        .map(|operand| render_end_filter_to_column_alias(
+                            operand,
+                            start_cypher_alias,
+                            end_cypher_alias,
+                            start_node_label,
+                            end_node_label
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             }
         }
-        RenderExpr::Literal(lit) => {
-            match lit {
-                Literal::String(s) => format!("'{}'", s),
-                Literal::Integer(i) => i.to_string(),
-                Literal::Float(f) => f.to_string(),
-                Literal::Boolean(b) => b.to_string(),
-                _ => "NULL".to_string(),
-            }
-        }
+        RenderExpr::Literal(lit) => match lit {
+            Literal::String(s) => format!("'{}'", s),
+            Literal::Integer(i) => i.to_string(),
+            Literal::Float(f) => f.to_string(),
+            Literal::Boolean(b) => b.to_string(),
+            _ => "NULL".to_string(),
+        },
         RenderExpr::ScalarFnCall(fn_call) => {
-            let args_sql = fn_call.args.iter()
-                .map(|arg| render_end_filter_to_column_alias(arg, start_cypher_alias, end_cypher_alias, start_node_label, end_node_label))
+            let args_sql = fn_call
+                .args
+                .iter()
+                .map(|arg| {
+                    render_end_filter_to_column_alias(
+                        arg,
+                        start_cypher_alias,
+                        end_cypher_alias,
+                        start_node_label,
+                        end_node_label,
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{}({})", fn_call.name, args_sql)
@@ -343,14 +442,21 @@ pub fn rewrite_end_filters_for_variable_length_cte(
                 expr.clone()
             }
         }
-        RenderExpr::TableAlias(alias) => {
-            expr.clone()
-        }
+        RenderExpr::TableAlias(alias) => expr.clone(),
         RenderExpr::OperatorApplicationExp(op) => {
             RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: op.operator.clone(),
-                operands: op.operands.iter()
-                    .map(|operand| rewrite_end_filters_for_variable_length_cte(operand, cte_table_alias, start_cypher_alias, end_cypher_alias))
+                operands: op
+                    .operands
+                    .iter()
+                    .map(|operand| {
+                        rewrite_end_filters_for_variable_length_cte(
+                            operand,
+                            cte_table_alias,
+                            start_cypher_alias,
+                            end_cypher_alias,
+                        )
+                    })
                     .collect(),
             })
         }
@@ -463,7 +569,9 @@ pub fn rewrite_expr_for_outer_query(
         }
         RenderExpr::OperatorApplicationExp(op) => {
             // Recursively rewrite operands
-            let rewritten_operands = op.operands.iter()
+            let rewritten_operands = op
+                .operands
+                .iter()
                 .map(|operand| rewrite_expr_for_outer_query(operand, left_alias, right_alias))
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
@@ -473,7 +581,9 @@ pub fn rewrite_expr_for_outer_query(
         }
         RenderExpr::ScalarFnCall(fn_call) => {
             // Recursively rewrite function arguments
-            let rewritten_args = fn_call.args.iter()
+            let rewritten_args = fn_call
+                .args
+                .iter()
                 .map(|arg| rewrite_expr_for_outer_query(arg, left_alias, right_alias))
                 .collect();
             RenderExpr::ScalarFnCall(ScalarFnCall {
@@ -511,8 +621,17 @@ pub fn rewrite_expr_for_var_len_cte(
             RenderExpr::PropertyAccessExp(new_prop)
         }
         RenderExpr::OperatorApplicationExp(op) => {
-            let rewritten_operands = op.operands.iter()
-                .map(|operand| rewrite_expr_for_var_len_cte(operand, start_cypher_alias, end_cypher_alias, _path_var))
+            let rewritten_operands = op
+                .operands
+                .iter()
+                .map(|operand| {
+                    rewrite_expr_for_var_len_cte(
+                        operand,
+                        start_cypher_alias,
+                        end_cypher_alias,
+                        _path_var,
+                    )
+                })
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: op.operator.clone(),
@@ -520,8 +639,17 @@ pub fn rewrite_expr_for_var_len_cte(
             })
         }
         RenderExpr::ScalarFnCall(fn_call) => {
-            let rewritten_args = fn_call.args.iter()
-                .map(|arg| rewrite_expr_for_var_len_cte(arg, start_cypher_alias, end_cypher_alias, _path_var))
+            let rewritten_args = fn_call
+                .args
+                .iter()
+                .map(|arg| {
+                    rewrite_expr_for_var_len_cte(
+                        arg,
+                        start_cypher_alias,
+                        end_cypher_alias,
+                        _path_var,
+                    )
+                })
                 .collect();
             RenderExpr::ScalarFnCall(ScalarFnCall {
                 name: fn_call.name.clone(),

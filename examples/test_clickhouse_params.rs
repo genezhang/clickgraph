@@ -14,18 +14,18 @@ struct User {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Testing ClickHouse Parameter Support ===\n");
-    
+
     let client = Client::default()
         .with_url("http://localhost:8123")
         .with_user("test_user")
         .with_password("test_pass")
         .with_database("test_integration");
-    
+
     // Test 1: Simple positional parameter with ? placeholder
     println!("Test 1: Single positional parameter");
     println!("Query: SELECT name, age FROM users WHERE name = ?");
     println!("Binding: 'Alice Johnson'");
-    
+
     match client
         .query("SELECT name, age FROM users WHERE name = ?")
         .bind("Alice Johnson")
@@ -44,12 +44,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("❌ Failed: {}\n", e);
         }
     }
-    
+
     // Test 2: Multiple positional parameters
     println!("Test 2: Multiple positional parameters");
     println!("Query: SELECT name, age FROM users WHERE name = ? AND age > ?");
     println!("Bindings: 'Alice Johnson', 25");
-    
+
     match client
         .query("SELECT name, age FROM users WHERE name = ? AND age > ?")
         .bind("Alice Johnson")
@@ -69,12 +69,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("❌ Failed: {}\n", e);
         }
     }
-    
+
     // Test 3: Array parameter for IN clause
     println!("Test 3: Array parameter");
     println!("Query: SELECT name, age FROM users WHERE name IN ?");
     println!("Binding: vec!['Alice Johnson', 'Bob Smith']");
-    
+
     match client
         .query("SELECT name, age FROM users WHERE name IN ?")
         .bind(vec!["Alice Johnson", "Bob Smith"])
@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("❌ Failed: {}\n", e);
         }
     }
-    
+
     // Summary
     println!("\n=== Summary ===");
     println!("ClickHouse Rust client uses POSITIONAL parameters with ? placeholders.");
@@ -105,6 +105,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("3. Implement parameter extraction from HTTP/Bolt");
     println!("4. Generate SQL with ? placeholders");
     println!("5. Bind parameters in order before execution");
-    
+
     Ok(())
 }

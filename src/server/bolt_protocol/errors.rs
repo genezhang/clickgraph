@@ -12,7 +12,9 @@ pub enum BoltError {
     Io(#[from] std::io::Error),
 
     /// Protocol version negotiation failed
-    #[error("Version negotiation failed: client versions {client_versions:?}, server supports {server_versions:?}")]
+    #[error(
+        "Version negotiation failed: client versions {client_versions:?}, server supports {server_versions:?}"
+    )]
     VersionNegotiationFailed {
         client_versions: Vec<u32>,
         server_versions: Vec<u32>,
@@ -162,15 +164,23 @@ mod tests {
         let auth_error = BoltError::AuthenticationFailed {
             user: "test".to_string(),
         };
-        assert_eq!(auth_error.error_code(), "Neo.ClientError.Security.Unauthorized");
+        assert_eq!(
+            auth_error.error_code(),
+            "Neo.ClientError.Security.Unauthorized"
+        );
 
         let query_error = BoltError::query_error("Syntax error");
-        assert_eq!(query_error.error_code(), "Neo.ClientError.Statement.SyntaxError");
+        assert_eq!(
+            query_error.error_code(),
+            "Neo.ClientError.Statement.SyntaxError"
+        );
     }
 
     #[test]
     fn test_recoverable_errors() {
-        let timeout_error = BoltError::ConnectionTimeout { timeout_seconds: 30 };
+        let timeout_error = BoltError::ConnectionTimeout {
+            timeout_seconds: 30,
+        };
         assert!(timeout_error.is_recoverable());
 
         let auth_error = BoltError::AuthenticationFailed {

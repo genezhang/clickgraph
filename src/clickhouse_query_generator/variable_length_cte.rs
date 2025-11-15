@@ -4,9 +4,9 @@ use crate::render_plan::Cte;
 /// Property to include in the CTE (column name and which node it belongs to)
 #[derive(Debug, Clone)]
 pub struct NodeProperty {
-    pub cypher_alias: String,  // "u1" or "u2" - which node this property is for
-    pub column_name: String,    // Actual column name in the table (e.g., "full_name")
-    pub alias: String,          // Output alias (e.g., "name" or "u1_name")
+    pub cypher_alias: String, // "u1" or "u2" - which node this property is for
+    pub column_name: String,  // Actual column name in the table (e.g., "full_name")
+    pub alias: String,        // Output alias (e.g., "name" or "u1_name")
 }
 
 /// Generates recursive CTE SQL for variable-length path traversal
@@ -14,23 +14,23 @@ pub struct VariableLengthCteGenerator {
     pub spec: VariableLengthSpec,
     pub cte_name: String,
     pub start_node_table: String,
-    pub start_node_id_column: String,    // ID column for start node (e.g., "user_id")
-    pub start_node_alias: String, 
+    pub start_node_id_column: String, // ID column for start node (e.g., "user_id")
+    pub start_node_alias: String,
     pub relationship_table: String,
     pub relationship_from_column: String, // From column in relationship table
     pub relationship_to_column: String,   // To column in relationship table
     pub relationship_alias: String,
     pub end_node_table: String,
-    pub end_node_id_column: String,      // ID column for end node
+    pub end_node_id_column: String, // ID column for end node
     pub end_node_alias: String,
-    pub start_cypher_alias: String,      // Original Cypher query alias (e.g., "u1")
-    pub end_cypher_alias: String,        // Original Cypher query alias (e.g., "u2")
-    pub properties: Vec<NodeProperty>,   // Properties to include in the CTE
-    pub database: Option<String>,        // Optional database prefix
+    pub start_cypher_alias: String, // Original Cypher query alias (e.g., "u1")
+    pub end_cypher_alias: String,   // Original Cypher query alias (e.g., "u2")
+    pub properties: Vec<NodeProperty>, // Properties to include in the CTE
+    pub database: Option<String>,   // Optional database prefix
     pub shortest_path_mode: Option<ShortestPathMode>, // Shortest path optimization mode
     pub start_node_filters: Option<String>, // WHERE clause for start node (e.g., "start_node.full_name = 'Alice'")
-    pub end_node_filters: Option<String>,   // WHERE clause for end node (e.g., "end_full_name = 'Bob'")
-    pub path_variable: Option<String>,   // Path variable name from MATCH clause (e.g., "p" in "MATCH p = ...")
+    pub end_node_filters: Option<String>, // WHERE clause for end node (e.g., "end_full_name = 'Bob'")
+    pub path_variable: Option<String>, // Path variable name from MATCH clause (e.g., "p" in "MATCH p = ...")
     pub relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
 }
 
@@ -57,25 +57,25 @@ impl From<crate::query_planner::logical_plan::ShortestPathMode> for ShortestPath
 impl VariableLengthCteGenerator {
     pub fn new(
         spec: VariableLengthSpec,
-        start_table: &str,         // Actual table name (e.g., "users")
-        start_id_col: &str,        // ID column name (e.g., "user_id")
-        relationship_table: &str,  // Actual relationship table name
-        rel_from_col: &str,        // Relationship from column (e.g., "follower_id")
-        rel_to_col: &str,          // Relationship to column (e.g., "followed_id")
-        end_table: &str,           // Actual table name (e.g., "users")
-        end_id_col: &str,          // ID column name (e.g., "user_id")
-        start_alias: &str,         // Cypher alias (e.g., "u1")
-        end_alias: &str,           // Cypher alias (e.g., "u2")
+        start_table: &str,             // Actual table name (e.g., "users")
+        start_id_col: &str,            // ID column name (e.g., "user_id")
+        relationship_table: &str,      // Actual relationship table name
+        rel_from_col: &str,            // Relationship from column (e.g., "follower_id")
+        rel_to_col: &str,              // Relationship to column (e.g., "followed_id")
+        end_table: &str,               // Actual table name (e.g., "users")
+        end_id_col: &str,              // ID column name (e.g., "user_id")
+        start_alias: &str,             // Cypher alias (e.g., "u1")
+        end_alias: &str,               // Cypher alias (e.g., "u2")
         properties: Vec<NodeProperty>, // Properties to include in CTE
         shortest_path_mode: Option<ShortestPathMode>, // Shortest path mode
         start_node_filters: Option<String>, // WHERE clause for start node
-        end_node_filters: Option<String>,   // WHERE clause for end node
-        path_variable: Option<String>,      // Path variable name (e.g., "p")
+        end_node_filters: Option<String>, // WHERE clause for end node
+        path_variable: Option<String>, // Path variable name (e.g., "p")
         relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
     ) -> Self {
         // Try to get database from environment
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
-        
+
         Self {
             spec,
             cte_name: format!("variable_path_{}", uuid::Uuid::new_v4().simple()),
@@ -84,7 +84,7 @@ impl VariableLengthCteGenerator {
             start_node_alias: "start_node".to_string(),
             relationship_table: relationship_table.to_string(),
             relationship_from_column: rel_from_col.to_string(),
-            relationship_to_column: rel_to_col.to_string(), 
+            relationship_to_column: rel_to_col.to_string(),
             relationship_alias: "rel".to_string(),
             end_node_table: end_table.to_string(),
             end_node_id_column: end_id_col.to_string(),
@@ -100,7 +100,7 @@ impl VariableLengthCteGenerator {
             relationship_types,
         }
     }
-    
+
     /// Helper to format table name with optional database prefix
     /// If table already contains a dot (already qualified), return as-is
     fn format_table_name(&self, table: &str) -> String {
@@ -108,7 +108,7 @@ impl VariableLengthCteGenerator {
         if table.contains('.') {
             return table.to_string();
         }
-        
+
         if let Some(db) = &self.database {
             format!("{}.{}", db, table)
         } else {
@@ -146,7 +146,7 @@ impl VariableLengthCteGenerator {
     /// Generate the recursive CTE for variable-length traversal
     pub fn generate_cte(&self) -> Cte {
         let cte_sql = self.generate_recursive_sql();
-        
+
         Cte {
             cte_name: self.cte_name.clone(),
             content: crate::render_plan::CteContent::RawSql(cte_sql),
@@ -160,9 +160,9 @@ impl VariableLengthCteGenerator {
         // Replace end_node.{id_column} with end_id
         let mut rewritten = filter.replace(
             &format!("{}.{}", self.end_node_alias, self.end_node_id_column),
-            "end_id"
+            "end_id",
         );
-        
+
         // Replace end_node.{property} with end_{property} for each property
         for prop in &self.properties {
             if prop.cypher_alias == self.end_cypher_alias {
@@ -171,7 +171,7 @@ impl VariableLengthCteGenerator {
                 rewritten = rewritten.replace(&pattern, &replacement);
             }
         }
-        
+
         rewritten
     }
 
@@ -211,21 +211,38 @@ impl VariableLengthCteGenerator {
                 // Rewrite end filter for use in intermediate CTE
                 // Replace "end_node.property" with "end_property" (column names in CTE)
                 let rewritten_filter = self.rewrite_end_filter_for_cte(end_filters);
-                
+
                 // Find shortest path first, then apply end filters
                 format!(
                     "{}_inner AS (\n{}\n),\n{}_shortest AS (\n    SELECT * FROM {}_inner ORDER BY hop_count ASC LIMIT 1\n),\n{}_to_target AS (\n    SELECT * FROM {}_shortest WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target\n)",
-                    self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name, self.cte_name, rewritten_filter, self.cte_name, self.cte_name
+                    self.cte_name,
+                    query_body,
+                    self.cte_name,
+                    self.cte_name,
+                    self.cte_name,
+                    self.cte_name,
+                    rewritten_filter,
+                    self.cte_name,
+                    self.cte_name
                 )
             }
             (Some(ShortestPathMode::AllShortest), Some(end_filters)) => {
                 // Rewrite end filter for use in intermediate CTE
                 let rewritten_filter = self.rewrite_end_filter_for_cte(end_filters);
-                
+
                 // Find all shortest paths first, then apply end filters
                 format!(
                     "{}_inner AS (\n{}\n),\n{}_all_shortest AS (\n    SELECT * FROM {}_inner WHERE hop_count = (SELECT MIN(hop_count) FROM {}_inner)\n),\n{}_to_target AS (\n    SELECT * FROM {}_all_shortest WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target\n)",
-                    self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name, self.cte_name, self.cte_name, rewritten_filter, self.cte_name, self.cte_name
+                    self.cte_name,
+                    query_body,
+                    self.cte_name,
+                    self.cte_name,
+                    self.cte_name,
+                    self.cte_name,
+                    self.cte_name,
+                    rewritten_filter,
+                    self.cte_name,
+                    self.cte_name
                 )
             }
             (Some(ShortestPathMode::Shortest), None) => {
@@ -246,7 +263,13 @@ impl VariableLengthCteGenerator {
                 // End filters are applied in separate _to_target CTE
                 format!(
                     "{}_inner AS (\n{}\n),\n{}_to_target AS (\n    SELECT * FROM {}_inner WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target\n)",
-                    self.cte_name, query_body, self.cte_name, self.cte_name, end_filters, self.cte_name, self.cte_name
+                    self.cte_name,
+                    query_body,
+                    self.cte_name,
+                    self.cte_name,
+                    end_filters,
+                    self.cte_name,
+                    self.cte_name
                 )
             }
             (None, None) => {
@@ -254,7 +277,7 @@ impl VariableLengthCteGenerator {
                 format!("{} AS (\n{}\n)", self.cte_name, query_body)
             }
         };
-        
+
         sql
     }
 
@@ -263,28 +286,41 @@ impl VariableLengthCteGenerator {
         if hop_count == 1 {
             // Build property selections
             let mut select_items = vec![
-                format!("{}.{} as start_id", self.start_node_alias, self.start_node_id_column),
-                format!("{}.{} as end_id", self.end_node_alias, self.end_node_id_column),
+                format!(
+                    "{}.{} as start_id",
+                    self.start_node_alias, self.start_node_id_column
+                ),
+                format!(
+                    "{}.{} as end_id",
+                    self.end_node_alias, self.end_node_id_column
+                ),
                 "1 as hop_count".to_string(),
-                format!("[{}.{}] as path_nodes", self.start_node_alias, self.start_node_id_column),
+                format!(
+                    "[{}.{}] as path_nodes",
+                    self.start_node_alias, self.start_node_id_column
+                ),
                 self.generate_relationship_type_for_hop(1), // path_relationships for single hop
             ];
-            
+
             // Add properties for start and end nodes
             for prop in &self.properties {
                 if prop.cypher_alias == self.start_cypher_alias {
                     // Property belongs to start node
-                    select_items.push(format!("{}.{} as start_{}", 
-                        self.start_node_alias, prop.column_name, prop.alias));
+                    select_items.push(format!(
+                        "{}.{} as start_{}",
+                        self.start_node_alias, prop.column_name, prop.alias
+                    ));
                 } else if prop.cypher_alias == self.end_cypher_alias {
                     // Property belongs to end node
-                    select_items.push(format!("{}.{} as end_{}", 
-                        self.end_node_alias, prop.column_name, prop.alias));
+                    select_items.push(format!(
+                        "{}.{} as end_{}",
+                        self.end_node_alias, prop.column_name, prop.alias
+                    ));
                 }
             }
-            
+
             let select_clause = select_items.join(",\n        ");
-            
+
             // Build the base query without WHERE clause
             let mut query = format!(
                 "    SELECT \n        {select}\n    FROM {start_table} {start}\n    JOIN {rel_table} {rel} ON {start}.{start_id_col} = {rel}.{from_col}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}",
@@ -300,7 +336,7 @@ impl VariableLengthCteGenerator {
                 to_col = self.relationship_to_column,
                 end_table = self.format_table_name(&self.end_node_table)
             );
-            
+
             // Add WHERE clause with start and end node filters
             let mut where_conditions = Vec::new();
             if let Some(ref filters) = self.start_node_filters {
@@ -309,11 +345,11 @@ impl VariableLengthCteGenerator {
             if let Some(ref filters) = self.end_node_filters {
                 where_conditions.push(filters.clone());
             }
-            
+
             if !where_conditions.is_empty() {
                 query.push_str(&format!("\n    WHERE {}", where_conditions.join(" AND ")));
             }
-            
+
             query
         } else {
             // Multi-hop base case (for min_hops > 1)
@@ -336,12 +372,21 @@ impl VariableLengthCteGenerator {
         // Build property selections for recursive case
         let mut select_items = vec![
             "vp.start_id".to_string(),
-            format!("{}.{} as end_id", self.end_node_alias, self.end_node_id_column),
+            format!(
+                "{}.{} as end_id",
+                self.end_node_alias, self.end_node_id_column
+            ),
             "vp.hop_count + 1 as hop_count".to_string(),
-            format!("arrayConcat(vp.path_nodes, [current_node.{}]) as path_nodes", self.end_node_id_column),
-            format!("arrayConcat(vp.path_relationships, {}) as path_relationships", self.get_relationship_type_array()),
+            format!(
+                "arrayConcat(vp.path_nodes, [current_node.{}]) as path_nodes",
+                self.end_node_id_column
+            ),
+            format!(
+                "arrayConcat(vp.path_relationships, {}) as path_relationships",
+                self.get_relationship_type_array()
+            ),
         ];
-        
+
         // Add properties: start properties come from CTE, end properties from new joined node
         for prop in &self.properties {
             if prop.cypher_alias == self.start_cypher_alias {
@@ -349,25 +394,30 @@ impl VariableLengthCteGenerator {
                 select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
             } else if prop.cypher_alias == self.end_cypher_alias {
                 // End node properties come from the newly joined node
-                select_items.push(format!("{}.{} as end_{}", 
-                    self.end_node_alias, prop.column_name, prop.alias));
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    self.end_node_alias, prop.column_name, prop.alias
+                ));
             }
         }
-        
+
         let select_clause = select_items.join(",\n        ");
-        
+
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
-            format!("NOT has(vp.path_nodes, current_node.{})", self.end_node_id_column),  // Cycle detection
+            format!(
+                "NOT has(vp.path_nodes, current_node.{})",
+                self.end_node_id_column
+            ), // Cycle detection
         ];
-        
+
         // Add end node filters if present
         if let Some(ref filters) = self.end_node_filters {
             where_conditions.push(filters.clone());
         }
-        
+
         let where_clause = where_conditions.join("\n      AND ");
-        
+
         format!(
             "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON vp.end_id = current_node.{current_id_col}\n    JOIN {rel_table} {rel} ON current_node.{current_id_col} = {rel}.{from_col}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}\n    WHERE {where_clause}",
             select = select_clause,
@@ -395,26 +445,26 @@ mod tests {
         let spec = VariableLengthSpec::range(1, 3);
         let generator = VariableLengthCteGenerator::new(
             spec,
-            "users",       // start table
-            "user_id",     // start id column
-            "authored",    // relationship table
-            "author_id",   // from column
-            "post_id",     // to column
-            "posts",       // end table
-            "post_id",     // end id column
-            "u",           // start alias
-            "p",           // end alias
-            vec![],        // no properties for test
-            None,          // no shortest path mode
-            None,          // no start node filters
-            None,          // no end node filters
-            None,          // no path variable
-            None,          // no relationship types
+            "users",     // start table
+            "user_id",   // start id column
+            "authored",  // relationship table
+            "author_id", // from column
+            "post_id",   // to column
+            "posts",     // end table
+            "post_id",   // end id column
+            "u",         // start alias
+            "p",         // end alias
+            vec![],      // no properties for test
+            None,        // no shortest path mode
+            None,        // no start node filters
+            None,        // no end node filters
+            None,        // no path variable
+            None,        // no relationship types
         );
 
         let cte = generator.generate_cte();
         println!("Generated CTE: {}", cte.cte_name);
-        
+
         // Test that CTE was created
         assert!(!cte.cte_name.is_empty());
         assert!(cte.cte_name.starts_with("variable_path_"));
@@ -425,30 +475,31 @@ mod tests {
         let spec = VariableLengthSpec::unbounded();
         let generator = VariableLengthCteGenerator::new(
             spec,
-            "users",        // start table
-            "user_id",      // start id column
-            "follows",      // relationship table
-            "follower_id",  // from column
-            "followed_id",  // to column
-            "users",        // end table
-            "user_id",      // end id column
-            "u1",           // start alias
-            "u2",           // end alias
-            vec![],         // no properties for test
-            None,           // no shortest path mode
-            None,           // no start node filters
-            None,           // no end node filters
-            None,           // no path variable
-            None,           // no relationship types
+            "users",       // start table
+            "user_id",     // start id column
+            "follows",     // relationship table
+            "follower_id", // from column
+            "followed_id", // to column
+            "users",       // end table
+            "user_id",     // end id column
+            "u1",          // start alias
+            "u2",          // end alias
+            vec![],        // no properties for test
+            None,          // no shortest path mode
+            None,          // no start node filters
+            None,          // no end node filters
+            None,          // no path variable
+            None,          // no relationship types
         );
 
         let sql = generator.generate_recursive_sql();
         println!("Unbounded SQL:\n{}", sql);
-        
+
         // Should contain recursive case
         assert!(sql.contains("UNION ALL"));
         assert!(sql.contains("hop_count < 10")); // Default max
-    }    #[test]
+    }
+    #[test]
     fn test_fixed_length_spec() {
         let spec = VariableLengthSpec::fixed(2);
         assert_eq!(spec.effective_min_hops(), 2);
@@ -489,7 +540,7 @@ impl ChainedJoinGenerator {
         properties: Vec<NodeProperty>,
     ) -> Self {
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
-        
+
         Self {
             hop_count,
             start_node_table: start_table.to_string(),
@@ -511,10 +562,10 @@ impl ChainedJoinGenerator {
     pub fn generate_cte(&self) -> Cte {
         let cte_name = format!("chained_path_{}", uuid::Uuid::new_v4().simple());
         let cte_sql = self.generate_query();
-        
+
         // Wrap the query body with CTE name, like recursive CTE does
         let wrapped_sql = format!("{} AS (\n{}\n)", cte_name, cte_sql);
-        
+
         Cte {
             cte_name,
             content: crate::render_plan::CteContent::RawSql(wrapped_sql),
@@ -527,7 +578,7 @@ impl ChainedJoinGenerator {
         if table.contains('.') {
             return table.to_string();
         }
-        
+
         if let Some(db) = &self.database {
             format!("{}.{}", db, table)
         } else {
@@ -543,7 +594,7 @@ impl ChainedJoinGenerator {
         }
 
         let mut sql = String::new();
-        
+
         // Build SELECT clause with properties
         let mut select_items = vec![
             format!("s.{} as start_id", self.start_node_id_column),
@@ -578,7 +629,7 @@ impl ChainedJoinGenerator {
             } else {
                 format!("m{}", hop)
             };
-            
+
             let prev_node = if hop == 1 {
                 "s".to_string()
             } else {
@@ -610,7 +661,11 @@ impl ChainedJoinGenerator {
                 rel_alias,
                 self.relationship_to_column,
                 node_alias,
-                if hop == self.hop_count { &self.end_node_id_column } else { &self.start_node_id_column }
+                if hop == self.hop_count {
+                    &self.end_node_id_column
+                } else {
+                    &self.start_node_id_column
+                }
             ));
         }
 
@@ -618,28 +673,38 @@ impl ChainedJoinGenerator {
         if self.hop_count > 1 {
             sql.push_str("WHERE ");
             let mut conditions = vec![];
-            
+
             // Prevent start == end
-            conditions.push(format!("s.{} != e.{}", self.start_node_id_column, self.end_node_id_column));
-            
+            conditions.push(format!(
+                "s.{} != e.{}",
+                self.start_node_id_column, self.end_node_id_column
+            ));
+
             // Prevent intermediate nodes from being start or end
             for hop in 1..self.hop_count {
                 let mid_alias = format!("m{}", hop);
-                conditions.push(format!("s.{} != {}.{}", self.start_node_id_column, mid_alias, self.start_node_id_column));
-                conditions.push(format!("e.{} != {}.{}", self.end_node_id_column, mid_alias, self.start_node_id_column));
+                conditions.push(format!(
+                    "s.{} != {}.{}",
+                    self.start_node_id_column, mid_alias, self.start_node_id_column
+                ));
+                conditions.push(format!(
+                    "e.{} != {}.{}",
+                    self.end_node_id_column, mid_alias, self.start_node_id_column
+                ));
             }
-            
+
             // Prevent intermediate nodes from repeating
             if self.hop_count > 2 {
                 for i in 1..self.hop_count {
-                    for j in (i+1)..self.hop_count {
-                        conditions.push(format!("m{}.{} != m{}.{}", 
-                            i, self.start_node_id_column, 
-                            j, self.start_node_id_column));
+                    for j in (i + 1)..self.hop_count {
+                        conditions.push(format!(
+                            "m{}.{} != m{}.{}",
+                            i, self.start_node_id_column, j, self.start_node_id_column
+                        ));
                     }
                 }
             }
-            
+
             sql.push_str(&conditions.join("\n  AND "));
         }
 
@@ -692,7 +757,7 @@ mod chained_join_tests {
 
         let sql = generator.generate_query();
         println!("2-hop chained JOIN:\n{}", sql);
-        
+
         assert!(sql.contains("FROM") && sql.contains("users"));
         assert!(sql.contains("JOIN") && sql.contains("friendships"));
         assert!(sql.contains("r1") && sql.contains("r2")); // 2 relationship aliases
@@ -718,7 +783,7 @@ mod chained_join_tests {
 
         let sql = generator.generate_query();
         println!("3-hop chained JOIN:\n{}", sql);
-        
+
         assert!(sql.contains("r1") && sql.contains("r2") && sql.contains("r3"));
         assert!(sql.contains("m1") && sql.contains("m2")); // 2 intermediate nodes
     }
@@ -754,7 +819,7 @@ mod chained_join_tests {
 
         let sql = generator.generate_query();
         println!("2-hop with properties:\n{}", sql);
-        
+
         assert!(sql.contains("s.full_name as start_name"));
         assert!(sql.contains("e.email_address as end_email"));
     }

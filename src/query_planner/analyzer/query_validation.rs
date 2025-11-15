@@ -61,7 +61,7 @@ impl AnalyzerPass for QueryValidation {
                     },
                     _ => true,
                 };
-                
+
                 let right_has_table = match graph_rel.right.as_ref() {
                     LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
                         LogicalPlan::Scan(scan) => scan.table_name.is_some(),
@@ -70,7 +70,7 @@ impl AnalyzerPass for QueryValidation {
                     },
                     _ => true,
                 };
-                
+
                 // Skip validation if BOTH nodes are anonymous (no table names)
                 // This allows edge-driven queries like ()-[r:FOLLOWS]->()
                 if !left_has_table && !right_has_table {
@@ -79,7 +79,8 @@ impl AnalyzerPass for QueryValidation {
 
                 // Try to get table contexts for validation
                 let left_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone()));
-                let right_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
+                let right_ctx_opt =
+                    plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
 
                 // If contexts don't exist yet, skip (will be validated in later passes)
                 if left_ctx_opt.is_err() || right_ctx_opt.is_err() {
@@ -124,7 +125,11 @@ impl AnalyzerPass for QueryValidation {
 
                 // Skip validation for relationships with multiple types (e.g., [:FOLLOWS|FRIENDS_WITH])
                 // The CTE generation will handle validation for multiple relationships
-                if rel_ctx.get_labels().map(|labels| labels.len() > 1).unwrap_or(false) {
+                if rel_ctx
+                    .get_labels()
+                    .map(|labels| labels.len() > 1)
+                    .unwrap_or(false)
+                {
                     return Ok(Transformed::No(logical_plan));
                 }
 

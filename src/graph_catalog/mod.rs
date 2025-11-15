@@ -1,7 +1,7 @@
 pub mod column_info;
+pub mod config;
 pub mod errors;
 pub mod graph_schema;
-pub mod config;
 pub mod schema_validator;
 
 #[cfg(test)]
@@ -13,6 +13,8 @@ pub mod testing;
 pub use column_info::ColumnInfo;
 #[allow(unused_imports)]
 pub use config::{GraphSchemaConfig, GraphSchemaDefinition};
-pub use graph_schema::{GraphSchema, NodeSchema, RelationshipSchema, Direction, GraphSchemaElement, NodeIdSchema};
+pub use graph_schema::{
+    Direction, GraphSchema, GraphSchemaElement, NodeIdSchema, NodeSchema, RelationshipSchema,
+};
 #[allow(unused_imports)]
 pub use schema_validator::SchemaValidator;

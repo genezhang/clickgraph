@@ -26,35 +26,39 @@ use super::{common, expression};
 use nom::character::complete::digit1;
 /// Try to parse shortestPath() or allShortestPaths() wrapper
 fn parse_shortest_path_function(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>> {
-    use nom::sequence::delimited;
     use nom::combinator::map;
-    
+    use nom::sequence::delimited;
+
     // Parse shortestPath() - consume leading whitespace first!
     let parse_shortest = map(
-        (multispace0,  // <-- Add this to consume leading whitespace!
-         tag_no_case::<_, _, Error<&str>>("shortestPath"),
-         multispace0,
-         delimited(
-             char('('),
-             delimited(multispace0, parse_path_pattern_inner, multispace0),
-             char(')')
-         )),
-        |(_, _, _, pattern)| PathPattern::ShortestPath(Box::new(pattern))
+        (
+            multispace0, // <-- Add this to consume leading whitespace!
+            tag_no_case::<_, _, Error<&str>>("shortestPath"),
+            multispace0,
+            delimited(
+                char('('),
+                delimited(multispace0, parse_path_pattern_inner, multispace0),
+                char(')'),
+            ),
+        ),
+        |(_, _, _, pattern)| PathPattern::ShortestPath(Box::new(pattern)),
     );
-    
+
     // Parse allShortestPaths() - consume leading whitespace first!
     let parse_all_shortest = map(
-        (multispace0,  // <-- Add this to consume leading whitespace!
-         tag_no_case::<_, _, Error<&str>>("allShortestPaths"),
-         multispace0,
-         delimited(
-             char('('),
-             delimited(multispace0, parse_path_pattern_inner, multispace0),
-             char(')')
-         )),
-        |(_, _, _, pattern)| PathPattern::AllShortestPaths(Box::new(pattern))
+        (
+            multispace0, // <-- Add this to consume leading whitespace!
+            tag_no_case::<_, _, Error<&str>>("allShortestPaths"),
+            multispace0,
+            delimited(
+                char('('),
+                delimited(multispace0, parse_path_pattern_inner, multispace0),
+                char(')'),
+            ),
+        ),
+        |(_, _, _, pattern)| PathPattern::AllShortestPaths(Box::new(pattern)),
     );
-    
+
     // Try both parsers
     alt((parse_shortest, parse_all_shortest)).parse(input)
 }
@@ -238,9 +242,7 @@ fn parse_name_or_label_with_properties(
 }
 
 // Parse relationship labels that can be multiple labels separated by |
-fn parse_relationship_labels(
-    input: &'_ str,
-) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
+fn parse_relationship_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
     let (remainder, first_label) =
         ws(opt(common::parse_alphanumeric_with_underscore)).parse(input)?;
 
@@ -321,7 +323,15 @@ fn parse_relationship_internals(
 // Parse relationship internals with support for multiple labels
 fn parse_relationship_internals_with_multiple_labels(
     input: &'_ str,
-) -> IResult<&'_ str, (Option<&'_ str>, Option<Vec<&'_ str>>, Option<Vec<Property<'_>>>, Option<VariableLengthSpec>)> {
+) -> IResult<
+    &'_ str,
+    (
+        Option<&'_ str>,
+        Option<Vec<&'_ str>>,
+        Option<Vec<Property<'_>>>,
+        Option<VariableLengthSpec>,
+    ),
+> {
     let (input, _) = ws(char('[')).parse(input)?;
     let (input, _) = multispace0(input)?;
 
@@ -348,10 +358,13 @@ fn parse_relationship_internals_with_multiple_labels(
 // Returns: ((name, properties), (labels, properties), variable_length_spec)
 fn parse_relationship_internals_with_var_len(
     input: &'_ str,
-) -> IResult<&'_ str, (
-    (NameOrLabelWithProperties<'_>, NameOrLabelWithProperties<'_>),
-    Option<VariableLengthSpec>,
-)> {
+) -> IResult<
+    &'_ str,
+    (
+        (NameOrLabelWithProperties<'_>, NameOrLabelWithProperties<'_>),
+        Option<VariableLengthSpec>,
+    ),
+> {
     let (input, _) = ws(char('[')).parse(input)?;
     let (input, name_label) = parse_name_label(input)?;
     let (input, var_len) = parse_variable_length_spec(input)?;
@@ -363,16 +376,16 @@ fn parse_relationship_internals_with_var_len(
 // Returns Some(VariableLengthSpec) if parsed, None if not present
 fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<VariableLengthSpec>> {
     let (input, _) = multispace0(input)?;
-    
+
     // Check if there's a * character
     let (input, asterisk_opt) = opt(char('*')).parse(input)?;
     if asterisk_opt.is_none() {
         // No *, so no variable-length spec
         return Ok((input, None));
     }
-    
+
     let (input, _) = multispace0(input)?;
-    
+
     // Try to parse range specifications
     // *N..M (range with both bounds)
     let range_parser = map(
@@ -386,28 +399,24 @@ fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<Variabl
             max_hops: max,
         },
     );
-    
+
     // *..M (upper bound only, min defaults to 1)
     let upper_bound_parser = map(
-        nom::sequence::preceded(
-            tag(".."),
-            map(digit1, |s: &str| s.parse::<u32>().ok()),
-        ),
+        nom::sequence::preceded(tag(".."), map(digit1, |s: &str| s.parse::<u32>().ok())),
         |max| VariableLengthSpec {
             min_hops: Some(1),
             max_hops: max,
         },
     );
-    
+
     // *N (fixed length)
-    let fixed_length_parser = map(
-        map(digit1, |s: &str| s.parse::<u32>().ok()),
-        |n| VariableLengthSpec {
+    let fixed_length_parser = map(map(digit1, |s: &str| s.parse::<u32>().ok()), |n| {
+        VariableLengthSpec {
             min_hops: n,
             max_hops: n,
-        },
-    );
-    
+        }
+    });
+
     // * (unbounded, equivalent to *1..)
     let unbounded_parser = map(
         nom::combinator::peek(nom::branch::alt((
@@ -419,7 +428,7 @@ fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<Variabl
             max_hops: None,
         },
     );
-    
+
     let (input, spec_opt) = alt((
         range_parser,
         upper_bound_parser,
@@ -428,17 +437,20 @@ fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<Variabl
     ))
     .map(|spec| Some(spec))
     .parse(input)?;
-    
+
     // Validate the parsed specification
     if let Some(ref spec) = spec_opt {
         if let Err(validation_error) = spec.validate() {
             // Convert validation error to nom error
             // Note: We use Failure (not Error) to indicate this is a semantic error, not a parsing error
-            eprintln!("Variable-length path validation error: {}", validation_error);
+            eprintln!(
+                "Variable-length path validation error: {}",
+                validation_error
+            );
             return Err(nom::Err::Failure(Error::new(input, ErrorKind::Verify)));
         }
     }
-    
+
     Ok((input, spec_opt))
 }
 
@@ -460,7 +472,11 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
         });
 
     let incoming_relationship_with_props_parser = map(
-        delimited(tag("<-"), parse_relationship_internals_with_multiple_labels, tag("-")),
+        delimited(
+            tag("<-"),
+            parse_relationship_internals_with_multiple_labels,
+            tag("-"),
+        ),
         |(rel_name, rel_labels, rel_properties, var_len)| RelationshipPattern {
             direction: Direction::Incoming,
             name: rel_name,
@@ -482,7 +498,11 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
         });
 
     let outgoing_relationship_with_props_parser = map(
-        delimited(tag("-"), parse_relationship_internals_with_multiple_labels, tag("->")),
+        delimited(
+            tag("-"),
+            parse_relationship_internals_with_multiple_labels,
+            tag("->"),
+        ),
         |(rel_name, rel_labels, rel_properties, var_len)| RelationshipPattern {
             direction: Direction::Outgoing,
             name: rel_name,
@@ -504,7 +524,11 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
         });
 
     let either_relationship_with_props_parser = map(
-        delimited(tag("-"), parse_relationship_internals_with_multiple_labels, tag("-")),
+        delimited(
+            tag("-"),
+            parse_relationship_internals_with_multiple_labels,
+            tag("-"),
+        ),
         |(rel_name, rel_labels, rel_properties, var_len)| RelationshipPattern {
             direction: Direction::Either,
             name: rel_name,
@@ -878,11 +902,11 @@ mod tests {
     fn test_valid_variable_length_patterns() {
         // Test various valid patterns
         let valid_inputs = vec![
-            "()-[*1..3]->()",   // Normal range
-            "()-[*2]->()",      // Fixed length
-            "()-[*..5]->()",    // Upper bound only
-            "()-[*]->()",       // Unbounded
-            "()-[*1..100]->()," // Large but valid range
+            "()-[*1..3]->()",    // Normal range
+            "()-[*2]->()",       // Fixed length
+            "()-[*..5]->()",     // Upper bound only
+            "()-[*]->()",        // Unbounded
+            "()-[*1..100]->(),", // Large but valid range
         ];
 
         for input in valid_inputs {
@@ -899,13 +923,13 @@ mod tests {
     #[test]
     fn test_variable_length_spec_validation_direct() {
         // Test the validation method directly
-        
+
         // Valid cases
         assert!(VariableLengthSpec::range(1, 3).validate().is_ok());
         assert!(VariableLengthSpec::fixed(5).validate().is_ok());
         assert!(VariableLengthSpec::unbounded().validate().is_ok());
         assert!(VariableLengthSpec::max_only(10).validate().is_ok());
-        
+
         // Invalid case: min > max
         let invalid_spec = VariableLengthSpec {
             min_hops: Some(5),
@@ -914,7 +938,7 @@ mod tests {
         assert!(invalid_spec.validate().is_err());
         let err_msg = invalid_spec.validate().unwrap_err();
         assert!(err_msg.contains("minimum hops (5) cannot be greater than maximum hops (2)"));
-        
+
         // Invalid case: zero hops
         let zero_spec = VariableLengthSpec {
             min_hops: Some(0),
@@ -929,11 +953,11 @@ mod tests {
     fn test_parse_shortest_path_simple() {
         let input = "shortestPath((a:Person)-[*]-(b:Person))";
         let result = parse_path_pattern(input);
-        
+
         assert!(result.is_ok(), "Failed to parse shortestPath: {:?}", result);
         let (remaining, path_pattern) = result.unwrap();
         assert_eq!(remaining, "", "Should consume entire input");
-        
+
         // Verify it's a ShortestPath variant
         match path_pattern {
             PathPattern::ShortestPath(inner) => {
@@ -953,11 +977,15 @@ mod tests {
     fn test_parse_all_shortest_paths() {
         let input = "allShortestPaths((a:Person)-[*]-(b:Person))";
         let result = parse_path_pattern(input);
-        
-        assert!(result.is_ok(), "Failed to parse allShortestPaths: {:?}", result);
+
+        assert!(
+            result.is_ok(),
+            "Failed to parse allShortestPaths: {:?}",
+            result
+        );
         let (remaining, path_pattern) = result.unwrap();
         assert_eq!(remaining, "", "Should consume entire input");
-        
+
         // Verify it's an AllShortestPaths variant
         match path_pattern {
             PathPattern::AllShortestPaths(inner) => {
@@ -977,11 +1005,15 @@ mod tests {
     fn test_parse_shortest_path_with_relationship_type() {
         let input = "shortestPath((a:Person)-[:KNOWS*]-(b:Person))";
         let result = parse_path_pattern(input);
-        
-        assert!(result.is_ok(), "Failed to parse shortestPath with relationship type: {:?}", result);
+
+        assert!(
+            result.is_ok(),
+            "Failed to parse shortestPath with relationship type: {:?}",
+            result
+        );
         let (remaining, path_pattern) = result.unwrap();
         assert_eq!(remaining, "", "Should consume entire input");
-        
+
         match path_pattern {
             PathPattern::ShortestPath(inner) => {
                 match inner.as_ref() {
@@ -1001,11 +1033,15 @@ mod tests {
     fn test_parse_shortest_path_with_whitespace() {
         let input = "shortestPath( ( a : Person ) - [ * ] - ( b : Person ) )";
         let result = parse_path_pattern(input);
-        
-        assert!(result.is_ok(), "Failed to parse shortestPath with whitespace: {:?}", result);
+
+        assert!(
+            result.is_ok(),
+            "Failed to parse shortestPath with whitespace: {:?}",
+            result
+        );
         let (remaining, path_pattern) = result.unwrap();
         assert_eq!(remaining, "", "Should consume entire input");
-        
+
         match path_pattern {
             PathPattern::ShortestPath(_) => {
                 // Success - whitespace handled correctly
@@ -1018,10 +1054,10 @@ mod tests {
     fn test_parse_regular_pattern_not_shortest_path() {
         let input = "(a:Person)-[*]-(b:Person)";
         let result = parse_path_pattern(input);
-        
+
         assert!(result.is_ok());
         let (_, path_pattern) = result.unwrap();
-        
+
         // Should NOT be wrapped in ShortestPath
         match path_pattern {
             PathPattern::ConnectedPattern(_) => {
@@ -1038,11 +1074,15 @@ mod tests {
     fn test_parse_shortest_path_directed() {
         let input = "shortestPath((a:Person)-[*]->(b:Person))";
         let result = parse_path_pattern(input);
-        
-        assert!(result.is_ok(), "Failed to parse directed shortestPath: {:?}", result);
+
+        assert!(
+            result.is_ok(),
+            "Failed to parse directed shortestPath: {:?}",
+            result
+        );
         let (remaining, path_pattern) = result.unwrap();
         assert_eq!(remaining, "", "Should consume entire input");
-        
+
         match path_pattern {
             PathPattern::ShortestPath(inner) => {
                 match inner.as_ref() {

@@ -3,10 +3,10 @@
 //! This module handles authentication for Bolt protocol connections,
 //! supporting various authentication schemes compatible with Neo4j drivers.
 
-use std::collections::HashMap;
-use serde_json::Value;
-use sha2::{Sha256, Digest};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 use super::errors::{BoltError, BoltResult};
 
@@ -90,14 +90,14 @@ impl AuthToken {
             .get("scheme")
             .and_then(|v| v.as_str())
             .unwrap_or("none");
-        
+
         let scheme = AuthScheme::from_str(scheme_str);
-        
+
         let principal = auth_map
             .get("principal")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-            
+
         let credentials = auth_map
             .get("credentials")
             .and_then(|v| v.as_str())
@@ -124,21 +124,24 @@ impl AuthToken {
     /// Convert to HashMap for serialization
     pub fn to_map(&self) -> HashMap<String, Value> {
         let mut map = HashMap::new();
-        
+
         map.insert("scheme".to_string(), Value::String(self.scheme.to_string()));
-        
+
         if let Some(ref principal) = self.principal {
             map.insert("principal".to_string(), Value::String(principal.clone()));
         }
-        
+
         if let Some(ref credentials) = self.credentials {
-            map.insert("credentials".to_string(), Value::String(credentials.clone()));
+            map.insert(
+                "credentials".to_string(),
+                Value::String(credentials.clone()),
+            );
         }
-        
+
         for (key, value) in &self.parameters {
             map.insert(key.clone(), Value::String(value.clone()));
         }
-        
+
         map
     }
 }
@@ -219,17 +222,22 @@ impl Authenticator {
     pub fn authenticate(&self, token: &AuthToken) -> BoltResult<AuthenticatedUser> {
         if !self.enabled {
             // Authentication disabled - allow all connections
-            let username = token.principal.clone()
+            let username = token
+                .principal
+                .clone()
                 .or_else(|| self.default_user.clone())
                 .unwrap_or_else(|| "anonymous".to_string());
-                
+
             return Ok(AuthenticatedUser::new(username, token.scheme.clone()));
         }
 
         match &token.scheme {
             AuthScheme::None => {
                 if let Some(ref default_user) = self.default_user {
-                    Ok(AuthenticatedUser::new(default_user.clone(), AuthScheme::None))
+                    Ok(AuthenticatedUser::new(
+                        default_user.clone(),
+                        AuthScheme::None,
+                    ))
                 } else {
                     Err(BoltError::AuthenticationFailed {
                         user: "anonymous".to_string(),
@@ -237,15 +245,21 @@ impl Authenticator {
                 }
             }
             AuthScheme::Basic => {
-                let username = token.principal.as_ref()
-                    .ok_or_else(|| BoltError::AuthenticationFailed {
-                        user: "unknown".to_string(),
-                    })?;
+                let username =
+                    token
+                        .principal
+                        .as_ref()
+                        .ok_or_else(|| BoltError::AuthenticationFailed {
+                            user: "unknown".to_string(),
+                        })?;
 
-                let password = token.credentials.as_ref()
-                    .ok_or_else(|| BoltError::AuthenticationFailed {
-                        user: username.clone(),
-                    })?;
+                let password =
+                    token
+                        .credentials
+                        .as_ref()
+                        .ok_or_else(|| BoltError::AuthenticationFailed {
+                            user: username.clone(),
+                        })?;
 
                 if self.verify_password(username, password) {
                     Ok(AuthenticatedUser::new(username.clone(), AuthScheme::Basic))
@@ -255,12 +269,11 @@ impl Authenticator {
                     })
                 }
             }
-            AuthScheme::Kerberos => {
-                Err(BoltError::not_implemented("Kerberos authentication"))
-            }
-            AuthScheme::Custom(scheme) => {
-                Err(BoltError::not_implemented(format!("Custom authentication scheme: {}", scheme)))
-            }
+            AuthScheme::Kerberos => Err(BoltError::not_implemented("Kerberos authentication")),
+            AuthScheme::Custom(scheme) => Err(BoltError::not_implemented(format!(
+                "Custom authentication scheme: {}",
+                scheme
+            ))),
         }
     }
 
@@ -303,7 +316,10 @@ mod tests {
         assert_eq!(AuthScheme::from_str("basic"), AuthScheme::Basic);
         assert_eq!(AuthScheme::from_str("BASIC"), AuthScheme::Basic);
         assert_eq!(AuthScheme::from_str("none"), AuthScheme::None);
-        assert_eq!(AuthScheme::from_str("custom"), AuthScheme::Custom("custom".to_string()));
+        assert_eq!(
+            AuthScheme::from_str("custom"),
+            AuthScheme::Custom("custom".to_string())
+        );
     }
 
     #[test]
@@ -319,7 +335,10 @@ mod tests {
         let mut auth_map = HashMap::new();
         auth_map.insert("scheme".to_string(), Value::String("basic".to_string()));
         auth_map.insert("principal".to_string(), Value::String("alice".to_string()));
-        auth_map.insert("credentials".to_string(), Value::String("secret".to_string()));
+        auth_map.insert(
+            "credentials".to_string(),
+            Value::String("secret".to_string()),
+        );
 
         let token = AuthToken::from_hello_fields(&auth_map).unwrap();
         assert_eq!(token.scheme, AuthScheme::Basic);
@@ -331,7 +350,7 @@ mod tests {
     fn test_authenticator_disabled() {
         let authenticator = Authenticator::new(false, Some("default".to_string()));
         let token = AuthToken::basic("alice".to_string(), "wrong_password".to_string());
-        
+
         let result = authenticator.authenticate(&token);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().username, "alice");

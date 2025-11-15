@@ -1,7 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use serde::{Serialize, Deserialize};
 
-pub fn serialize<S, T>(val: &Arc<T>, serializer: S) -> Result<S::Ok, S::Error> 
+pub fn serialize<S, T>(val: &Arc<T>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
     T: Serialize,

@@ -41,30 +41,26 @@ fn parse_procedure_name<'a>(
     use nom::character::complete::{alphanumeric1, char};
     use nom::combinator::recognize;
     use nom::multi::many1;
-    
+
     // Parse procedure name that can contain alphanumeric characters and dots
-    ws(recognize(many1(
-        nom::branch::alt((alphanumeric1, nom::combinator::recognize(char('.'))))
-    ))).parse(input)
+    ws(recognize(many1(nom::branch::alt((
+        alphanumeric1,
+        nom::combinator::recognize(char('.')),
+    )))))
+    .parse(input)
 }
 
 fn parse_call_argument<'a>(
     input: &'a str,
 ) -> IResult<&'a str, CallArgument<'a>, OpenCypherParsingError<'a>> {
     let (input, name) = ws(alphanumeric1).parse(input)?;
-    
+
     // Support both => (GDS style) and : (traditional) syntax
     let (input, _) = ws(alt((tag("=>"), tag(":")))).parse(input)?;
-    
+
     let (input, value) = expression_parser(input)?;
 
-    Ok((
-        input,
-        CallArgument {
-            name,
-            value,
-        },
-    ))
+    Ok((input, CallArgument { name, value }))
 }
 
 fn expression_parser(input: &str) -> IResult<&str, Expression<'_>, OpenCypherParsingError<'_>> {

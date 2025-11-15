@@ -1,5 +1,5 @@
 //! Helper functions for plan building
-//! 
+//!
 //! This module contains utility functions used by the RenderPlanBuilder trait implementation.
 //! These functions assist with:
 //! - Plan tree traversal and table/column extraction
@@ -8,11 +8,11 @@
 //! - Path function rewriting
 //! - Schema lookups
 
-use crate::query_planner::logical_plan::LogicalPlan;
 use super::render_expr::{
-    AggregateFnCall, Column, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, 
+    AggregateFnCall, Column, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
     ScalarFnCall, TableAlias,
 };
+use crate::query_planner::logical_plan::LogicalPlan;
 
 /// Helper function to extract the actual table name from a LogicalPlan node
 /// Recursively traverses the plan tree to find the Scan or ViewScan node
@@ -43,12 +43,12 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
                 // Not a match, recurse into input
                 find_table_name_for_alias(&node.input, target_alias)
             }
-        },
+        }
         LogicalPlan::GraphRel(rel) => {
             // Search in both left and right branches
             find_table_name_for_alias(&rel.left, target_alias)
                 .or_else(|| find_table_name_for_alias(&rel.right, target_alias))
-        },
+        }
         LogicalPlan::Projection(proj) => find_table_name_for_alias(&proj.input, target_alias),
         LogicalPlan::Filter(filter) => find_table_name_for_alias(&filter.input, target_alias),
         LogicalPlan::OrderBy(order) => find_table_name_for_alias(&order.input, target_alias),
@@ -58,7 +58,10 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
 }
 
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
-pub(super) fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> String {
+pub(super) fn render_expr_to_sql_string(
+    expr: &RenderExpr,
+    alias_mapping: &[(String, String)],
+) -> String {
     match expr {
         RenderExpr::Column(col) => col.0.clone(),
         RenderExpr::TableAlias(alias) => alias.0.clone(),
@@ -74,14 +77,17 @@ pub(super) fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(Str
         RenderExpr::PropertyAccessExp(prop) => {
             // Convert property access to table.column format
             // Apply alias mapping to convert Cypher aliases to CTE aliases
-            let table_alias = alias_mapping.iter()
+            let table_alias = alias_mapping
+                .iter()
                 .find(|(cypher, _)| *cypher == prop.table_alias.0)
                 .map(|(_, cte)| cte.clone())
                 .unwrap_or_else(|| prop.table_alias.0.clone());
             format!("{}.{}", table_alias, prop.column.0)
         }
         RenderExpr::OperatorApplicationExp(op) => {
-            let operands: Vec<String> = op.operands.iter()
+            let operands: Vec<String> = op
+                .operands
+                .iter()
                 .map(|operand| render_expr_to_sql_string(operand, alias_mapping))
                 .collect();
             match op.operator {
@@ -104,13 +110,17 @@ pub(super) fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(Str
         }
         RenderExpr::Parameter(param) => format!("${}", param),
         RenderExpr::ScalarFnCall(func) => {
-            let args: Vec<String> = func.args.iter()
+            let args: Vec<String> = func
+                .args
+                .iter()
                 .map(|arg| render_expr_to_sql_string(arg, alias_mapping))
                 .collect();
             format!("{}({})", func.name, args.join(", "))
         }
         RenderExpr::AggregateFnCall(agg) => {
-            let args: Vec<String> = agg.args.iter()
+            let args: Vec<String> = agg
+                .args
+                .iter()
                 .map(|arg| render_expr_to_sql_string(arg, alias_mapping))
                 .collect();
             format!("{}({})", agg.name, args.join(", "))
@@ -155,8 +165,15 @@ pub(super) fn get_multiple_rel_info(plan: &LogicalPlan) -> Option<(String, Strin
         LogicalPlan::GraphRel(graph_rel) => {
             if let Some(labels) = &graph_rel.labels {
                 if labels.len() > 1 {
-                    let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
-                    Some((graph_rel.left_connection.clone(), graph_rel.right_connection.clone(), cte_name))
+                    let cte_name = format!(
+                        "rel_{}_{}",
+                        graph_rel.left_connection, graph_rel.right_connection
+                    );
+                    Some((
+                        graph_rel.left_connection.clone(),
+                        graph_rel.right_connection.clone(),
+                        cte_name,
+                    ))
                 } else {
                     None
                 }
@@ -190,7 +207,10 @@ pub(super) fn is_standalone_expression(expr: &RenderExpr) -> bool {
             let when_then_standalone = case_expr.when_then.iter().all(|(cond, result)| {
                 is_standalone_expression(cond) && is_standalone_expression(result)
             });
-            let else_standalone = case_expr.else_expr.as_ref().map_or(true, |e| is_standalone_expression(e));
+            let else_standalone = case_expr
+                .else_expr
+                .as_ref()
+                .map_or(true, |e| is_standalone_expression(e));
             when_then_standalone && else_standalone
         }
         RenderExpr::List(list) => {
@@ -198,21 +218,23 @@ pub(super) fn is_standalone_expression(expr: &RenderExpr) -> bool {
             list.iter().all(is_standalone_expression)
         }
         // Any reference to columns, properties, or aliases means it's not standalone
-        RenderExpr::Column(_) | 
-        RenderExpr::PropertyAccessExp(_) | 
-        RenderExpr::TableAlias(_) | 
-        RenderExpr::ColumnAlias(_) |
-        RenderExpr::AggregateFnCall(_) |
-        RenderExpr::InSubquery(_) => false,
+        RenderExpr::Column(_)
+        | RenderExpr::PropertyAccessExp(_)
+        | RenderExpr::TableAlias(_)
+        | RenderExpr::ColumnAlias(_)
+        | RenderExpr::AggregateFnCall(_)
+        | RenderExpr::InSubquery(_) => false,
         RenderExpr::Raw(_) => false, // Be conservative with raw SQL
     }
 }
 
 /// Helper function to extract all relationship connections from a plan tree
 /// Returns a vector of (left_connection, right_connection, relationship_alias) tuples
-pub(super) fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(String, String, String)> {
+pub(super) fn get_all_relationship_connections(
+    plan: &LogicalPlan,
+) -> Vec<(String, String, String)> {
     let mut connections = vec![];
-    
+
     fn collect_connections(plan: &LogicalPlan, connections: &mut Vec<(String, String, String)>) {
         match plan {
             LogicalPlan::GraphRel(graph_rel) => {
@@ -227,12 +249,16 @@ pub(super) fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(Strin
             }
             LogicalPlan::Projection(proj) => collect_connections(&proj.input, connections),
             LogicalPlan::Filter(filter) => collect_connections(&filter.input, connections),
-            LogicalPlan::GraphJoins(graph_joins) => collect_connections(&graph_joins.input, connections),
-            LogicalPlan::GraphNode(graph_node) => collect_connections(&graph_node.input, connections),
+            LogicalPlan::GraphJoins(graph_joins) => {
+                collect_connections(&graph_joins.input, connections)
+            }
+            LogicalPlan::GraphNode(graph_node) => {
+                collect_connections(&graph_node.input, connections)
+            }
             _ => {}
         }
     }
-    
+
     collect_connections(plan, &mut connections);
     connections
 }
@@ -241,46 +267,56 @@ pub(super) fn get_all_relationship_connections(plan: &LogicalPlan) -> Vec<(Strin
 /// The anchor is the node that should be in the FROM clause
 /// Strategy: Prefer required (non-optional) nodes over optional nodes
 /// When mixing MATCH and OPTIONAL MATCH, the required node should be the anchor (FROM table)
-/// 
+///
 /// Algorithm:
 /// 1. Collect all unique nodes (from both left and right connections)
 /// 2. Prefer nodes that are NOT in optional_aliases (required nodes)
 /// 3. Fall back to traditional anchor pattern (left-but-not-right) if no required nodes found
-pub(super) fn find_anchor_node(connections: &[(String, String, String)], optional_aliases: &std::collections::HashSet<String>) -> Option<String> {
+pub(super) fn find_anchor_node(
+    connections: &[(String, String, String)],
+    optional_aliases: &std::collections::HashSet<String>,
+) -> Option<String> {
     if connections.is_empty() {
         return None;
     }
-    
+
     // Strategy 1: Prefer LEFT connections that are required (not optional)
     // Check LEFT nodes first since they should be the anchor in (a)-[]->(b) patterns
     for (left, _, _) in connections {
         if !optional_aliases.contains(left) {
-            log::info!("✓ Found REQUIRED LEFT anchor node: {} (not in optional_aliases)", left);
+            log::info!(
+                "✓ Found REQUIRED LEFT anchor node: {} (not in optional_aliases)",
+                left
+            );
             return Some(left.clone());
         }
     }
-    
+
     // Strategy 2: If all LEFT nodes are optional, check RIGHT nodes that are required
     for (_, right, _) in connections {
         if !optional_aliases.contains(right) {
-            log::info!("✓ Found REQUIRED RIGHT anchor node: {} (not in optional_aliases)", right);
+            log::info!(
+                "✓ Found REQUIRED RIGHT anchor node: {} (not in optional_aliases)",
+                right
+            );
             return Some(right.clone());
         }
     }
-    
+
     // Strategy 3: All nodes are optional - use traditional anchor pattern
     // (left_connection that is NOT in right_nodes)
-    let right_nodes: std::collections::HashSet<_> = connections.iter()
+    let right_nodes: std::collections::HashSet<_> = connections
+        .iter()
         .map(|(_, right, _)| right.clone())
         .collect();
-    
+
     for (left, _, _) in connections {
         if !right_nodes.contains(left) {
             log::warn!("⚠️ All nodes are optional, using anchor pattern: {}", left);
             return Some(left.clone());
         }
     }
-    
+
     // Strategy 4: Fallback to first left_connection
     let fallback = connections.first().map(|(left, _, _)| left.clone());
     if let Some(ref alias) = fallback {
@@ -290,31 +326,27 @@ pub(super) fn find_anchor_node(connections: &[(String, String, String)], optiona
 }
 
 /// Helper function to check if a condition references an end node alias
-pub(super) fn references_end_node_alias(condition: &OperatorApplication, connections: &[(String, String, String)]) -> bool {
-    let end_aliases: std::collections::HashSet<String> = connections.iter()
+pub(super) fn references_end_node_alias(
+    condition: &OperatorApplication,
+    connections: &[(String, String, String)],
+) -> bool {
+    let end_aliases: std::collections::HashSet<String> = connections
+        .iter()
         .map(|(_, right_alias, _)| right_alias.clone())
         .collect();
-    
+
     // Check if any operand in the condition references an end node alias
-    condition.operands.iter().any(|operand| {
-        match operand {
-            RenderExpr::PropertyAccessExp(prop) => {
-                end_aliases.contains(&prop.table_alias.0)
-            }
-            _ => false,
-        }
+    condition.operands.iter().any(|operand| match operand {
+        RenderExpr::PropertyAccessExp(prop) => end_aliases.contains(&prop.table_alias.0),
+        _ => false,
     })
 }
 
 /// Check if a condition references a specific node alias
 pub(super) fn references_node_alias(condition: &OperatorApplication, node_alias: &str) -> bool {
-    condition.operands.iter().any(|operand| {
-        match operand {
-            RenderExpr::PropertyAccessExp(prop) => {
-                prop.table_alias.0 == node_alias
-            }
-            _ => false,
-        }
+    condition.operands.iter().any(|operand| match operand {
+        RenderExpr::PropertyAccessExp(prop) => prop.table_alias.0 == node_alias,
+        _ => false,
     })
 }
 
@@ -326,7 +358,11 @@ pub(super) fn rewrite_path_functions(expr: &RenderExpr, path_var_name: &str) -> 
 
 /// Rewrite path function calls with optional table alias
 /// table_alias: if provided, generates PropertyAccessExp (table.column), otherwise Column
-pub(super) fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name: &str, table_alias: &str) -> RenderExpr {
+pub(super) fn rewrite_path_functions_with_table(
+    expr: &RenderExpr,
+    path_var_name: &str,
+    table_alias: &str,
+) -> RenderExpr {
     match expr {
         RenderExpr::ScalarFnCall(fn_call) => {
             // Check if this is a path function call with the path variable as argument
@@ -340,7 +376,7 @@ pub(super) fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name
                             "relationships" => Some("path_relationships"),
                             _ => None,
                         };
-                        
+
                         if let Some(col_name) = column_name {
                             return if table_alias.is_empty() {
                                 RenderExpr::Column(Column(col_name.to_string()))
@@ -354,12 +390,14 @@ pub(super) fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name
                     }
                 }
             }
-            
+
             // Recursively rewrite arguments for nested calls
-            let rewritten_args: Vec<RenderExpr> = fn_call.args.iter()
+            let rewritten_args: Vec<RenderExpr> = fn_call
+                .args
+                .iter()
                 .map(|arg| rewrite_path_functions_with_table(arg, path_var_name, table_alias))
                 .collect();
-            
+
             RenderExpr::ScalarFnCall(ScalarFnCall {
                 name: fn_call.name.clone(),
                 args: rewritten_args,
@@ -367,10 +405,14 @@ pub(super) fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name
         }
         RenderExpr::OperatorApplicationExp(op) => {
             // Recursively rewrite operands
-            let rewritten_operands: Vec<RenderExpr> = op.operands.iter()
-                .map(|operand| rewrite_path_functions_with_table(operand, path_var_name, table_alias))
+            let rewritten_operands: Vec<RenderExpr> = op
+                .operands
+                .iter()
+                .map(|operand| {
+                    rewrite_path_functions_with_table(operand, path_var_name, table_alias)
+                })
                 .collect();
-            
+
             RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: op.operator.clone(),
                 operands: rewritten_operands,
@@ -382,10 +424,12 @@ pub(super) fn rewrite_path_functions_with_table(expr: &RenderExpr, path_var_name
         }
         RenderExpr::AggregateFnCall(agg) => {
             // Recursively rewrite arguments for aggregate functions
-            let rewritten_args: Vec<RenderExpr> = agg.args.iter()
+            let rewritten_args: Vec<RenderExpr> = agg
+                .args
+                .iter()
                 .map(|arg| rewrite_path_functions_with_table(arg, path_var_name, table_alias))
                 .collect();
-            
+
             RenderExpr::AggregateFnCall(AggregateFnCall {
                 name: agg.name.clone(),
                 args: rewritten_args,
@@ -453,7 +497,7 @@ pub(super) fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(St
             if let Some(schema) = schemas.get("default") {
                 if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
                     return Some((
-                        rel_schema.from_id.clone(),  // Use column names, not node types!
+                        rel_schema.from_id.clone(), // Use column names, not node types!
                         rel_schema.to_id.clone(),
                     ));
                 }
@@ -473,7 +517,7 @@ pub(super) fn get_relationship_columns_by_table(table_name: &str) -> Option<(Str
                 for (_key, rel_schema) in schema.get_relationships_schemas().iter() {
                     if rel_schema.table_name == table_name {
                         return Some((
-                            rel_schema.from_id.clone(),  // Use column names!
+                            rel_schema.from_id.clone(), // Use column names!
                             rel_schema.to_id.clone(),
                         ));
                     }
@@ -512,7 +556,8 @@ pub(super) fn has_multiple_relationship_types(plan: &LogicalPlan) -> bool {
                 }
             }
             // Check child plans
-            has_multiple_relationship_types(&graph_rel.left) || has_multiple_relationship_types(&graph_rel.right)
+            has_multiple_relationship_types(&graph_rel.left)
+                || has_multiple_relationship_types(&graph_rel.right)
         }
         LogicalPlan::GraphJoins(joins) => has_multiple_relationship_types(&joins.input),
         LogicalPlan::Projection(proj) => has_multiple_relationship_types(&proj.input),
@@ -533,17 +578,16 @@ pub(super) fn render_expr_to_sql_for_cte(
     start_cypher_alias: &str,
     end_cypher_alias: &str,
 ) -> String {
-    
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
             let table_alias = &prop.table_alias.0;
             let column = &prop.column.0;
-            
+
             // Map Cypher alias to SQL table alias
             if table_alias == start_cypher_alias {
                 format!("start_node.{}", column)
             } else if table_alias == end_cypher_alias {
-                format!("end_node.{}", column)  // end_node.name, end_node.email, etc.
+                format!("end_node.{}", column) // end_node.name, end_node.email, etc.
             } else {
                 // Fallback: use as-is
                 format!("{}.{}", table_alias, column)
@@ -562,35 +606,51 @@ pub(super) fn render_expr_to_sql_for_cte(
                 Operator::Not => "NOT",
                 _ => "=", // Fallback
             };
-            
+
             if op.operands.len() == 2 {
-                format!("{} {} {}", 
-                    render_expr_to_sql_for_cte(&op.operands[0], start_cypher_alias, end_cypher_alias),
+                format!(
+                    "{} {} {}",
+                    render_expr_to_sql_for_cte(
+                        &op.operands[0],
+                        start_cypher_alias,
+                        end_cypher_alias
+                    ),
                     operator_sql,
-                    render_expr_to_sql_for_cte(&op.operands[1], start_cypher_alias, end_cypher_alias)
+                    render_expr_to_sql_for_cte(
+                        &op.operands[1],
+                        start_cypher_alias,
+                        end_cypher_alias
+                    )
                 )
             } else if op.operands.len() == 1 {
-                format!("{} {}", 
+                format!(
+                    "{} {}",
                     operator_sql,
-                    render_expr_to_sql_for_cte(&op.operands[0], start_cypher_alias, end_cypher_alias)
+                    render_expr_to_sql_for_cte(
+                        &op.operands[0],
+                        start_cypher_alias,
+                        end_cypher_alias
+                    )
                 )
             } else {
                 // Multiple operands with AND/OR
-                let operand_sqls: Vec<String> = op.operands.iter()
-                    .map(|operand| render_expr_to_sql_for_cte(operand, start_cypher_alias, end_cypher_alias))
+                let operand_sqls: Vec<String> = op
+                    .operands
+                    .iter()
+                    .map(|operand| {
+                        render_expr_to_sql_for_cte(operand, start_cypher_alias, end_cypher_alias)
+                    })
                     .collect();
                 format!("({})", operand_sqls.join(&format!(" {} ", operator_sql)))
             }
         }
-        RenderExpr::Literal(lit) => {
-            match lit {
-                Literal::String(s) => format!("'{}'", s),
-                Literal::Integer(i) => i.to_string(),
-                Literal::Float(f) => f.to_string(),
-                Literal::Boolean(b) => b.to_string(),
-                Literal::Null => "NULL".to_string(),
-            }
-        }
+        RenderExpr::Literal(lit) => match lit {
+            Literal::String(s) => format!("'{}'", s),
+            Literal::Integer(i) => i.to_string(),
+            Literal::Float(f) => f.to_string(),
+            Literal::Boolean(b) => b.to_string(),
+            Literal::Null => "NULL".to_string(),
+        },
         _ => expr.to_sql(), // Fallback to default to_sql()
     }
 }

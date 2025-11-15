@@ -1,8 +1,8 @@
 //! Tests for view resolution functionality
 
-use std::collections::HashMap;
-use crate::query_planner::analyzer::view_resolver::ViewResolver;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
+use crate::query_planner::analyzer::view_resolver::ViewResolver;
+use std::collections::HashMap;
 
 #[cfg(test)]
 mod tests {
@@ -48,12 +48,12 @@ mod tests {
     fn test_view_resolver_creation() {
         let schema = create_test_schema();
         let resolver = ViewResolver::new(&schema);
-        
+
         // Basic test - just verify it can be created without panicking
         drop(resolver);
     }
 
-    #[test] 
+    #[test]
     fn test_basic_structure() {
         let schema = create_test_schema();
         let resolver = ViewResolver::new(&schema);

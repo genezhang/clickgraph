@@ -28,7 +28,7 @@ pub struct UseClause<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchClause<'a> {
     pub path_patterns: Vec<PathPattern<'a>>,
-    pub path_variable: Option<&'a str>,  // For: MATCH p = (pattern)
+    pub path_variable: Option<&'a str>, // For: MATCH p = (pattern)
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -178,7 +178,7 @@ pub struct ConnectedPattern<'a> {
 pub struct RelationshipPattern<'a> {
     pub name: Option<&'a str>,
     pub direction: Direction,
-    pub labels: Option<Vec<&'a str>>,  // Support multiple labels: [:TYPE1|TYPE2]
+    pub labels: Option<Vec<&'a str>>, // Support multiple labels: [:TYPE1|TYPE2]
     pub properties: Option<Vec<Property<'a>>>,
     pub variable_length: Option<VariableLengthSpec>,
 }
@@ -240,7 +240,7 @@ impl VariableLengthSpec {
     pub fn has_max_bound(&self) -> bool {
         self.max_hops.is_some()
     }
-    
+
     /// Validate the variable-length specification
     /// Returns Ok(()) if valid, Err with descriptive message if invalid
     pub fn validate(&self) -> Result<(), String> {
@@ -253,7 +253,7 @@ impl VariableLengthSpec {
                     min, max, max, min, min, max
                 ));
             }
-            
+
             // Check for zero in range (special case - 0 hops means same node)
             if min == 0 || max == 0 {
                 return Err(
@@ -263,7 +263,7 @@ impl VariableLengthSpec {
                         .to_string()
                 );
             }
-            
+
             // Warn about very large ranges (potential performance issue)
             if max > 100 {
                 // Note: This is just a warning, not an error - we still allow it
@@ -274,18 +274,16 @@ impl VariableLengthSpec {
                 );
             }
         }
-        
+
         // Check for zero in unbounded spec
         if let Some(min) = self.min_hops {
             if min == 0 {
-                return Err(
-                    "Invalid variable-length range: hop count cannot be 0. \
+                return Err("Invalid variable-length range: hop count cannot be 0. \
                      Variable-length paths must have at least 1 hop."
-                        .to_string()
-                );
+                    .to_string());
             }
         }
-        
+
         Ok(())
     }
 }

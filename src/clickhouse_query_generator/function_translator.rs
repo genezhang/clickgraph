@@ -1,40 +1,44 @@
-/// Neo4j Function Translator
-/// 
-/// Translates Neo4j function calls to ClickHouse SQL equivalents
-
-use crate::query_planner::logical_expr::ScalarFnCall;
+use super::errors::ClickhouseQueryGeneratorError;
 use super::function_registry::get_function_mapping;
 use super::to_sql::ToSql;
-use super::errors::ClickhouseQueryGeneratorError;
+/// Neo4j Function Translator
+///
+/// Translates Neo4j function calls to ClickHouse SQL equivalents
+use crate::query_planner::logical_expr::ScalarFnCall;
 
 /// Translate a Neo4j scalar function call to ClickHouse SQL
-pub fn translate_scalar_function(fn_call: &ScalarFnCall) -> Result<String, ClickhouseQueryGeneratorError> {
+pub fn translate_scalar_function(
+    fn_call: &ScalarFnCall,
+) -> Result<String, ClickhouseQueryGeneratorError> {
     let fn_name_lower = fn_call.name.to_lowercase();
-    
+
     // Look up function mapping
     match get_function_mapping(&fn_name_lower) {
         Some(mapping) => {
             // Convert arguments to SQL
-            let args_sql: Result<Vec<String>, _> = fn_call.args
-                .iter()
-                .map(|e| e.to_sql())
-                .collect();
-            
+            let args_sql: Result<Vec<String>, _> =
+                fn_call.args.iter().map(|e| e.to_sql()).collect();
+
             let args_sql = args_sql.map_err(|e| {
-                ClickhouseQueryGeneratorError::SchemaError(
-                    format!("Failed to convert function arguments to SQL: {}", e)
-                )
+                ClickhouseQueryGeneratorError::SchemaError(format!(
+                    "Failed to convert function arguments to SQL: {}",
+                    e
+                ))
             })?;
-            
+
             // Apply argument transformation if provided
             let transformed_args = if let Some(transform_fn) = mapping.arg_transform {
                 transform_fn(&args_sql)
             } else {
                 args_sql
             };
-            
+
             // Generate ClickHouse function call
-            Ok(format!("{}({})", mapping.clickhouse_name, transformed_args.join(", ")))
+            Ok(format!(
+                "{}({})",
+                mapping.clickhouse_name,
+                transformed_args.join(", ")
+            ))
         }
         None => {
             // Function not mapped - try direct passthrough with warning
@@ -43,19 +47,18 @@ pub fn translate_scalar_function(fn_call: &ScalarFnCall) -> Result<String, Click
                  This may fail if ClickHouse doesn't support this function name.",
                 fn_call.name
             );
-            
+
             // Convert arguments and attempt passthrough
-            let args_sql: Result<Vec<String>, _> = fn_call.args
-                .iter()
-                .map(|e| e.to_sql())
-                .collect();
-            
+            let args_sql: Result<Vec<String>, _> =
+                fn_call.args.iter().map(|e| e.to_sql()).collect();
+
             let args_sql = args_sql.map_err(|e| {
-                ClickhouseQueryGeneratorError::SchemaError(
-                    format!("Failed to convert function arguments to SQL: {}", e)
-                )
+                ClickhouseQueryGeneratorError::SchemaError(format!(
+                    "Failed to convert function arguments to SQL: {}",
+                    e
+                ))
             })?;
-            
+
             Ok(format!("{}({})", fn_call.name, args_sql.join(", ")))
         }
     }
@@ -72,16 +75,38 @@ pub fn get_supported_functions() -> Vec<&'static str> {
     // For now, return a static list
     vec![
         // DateTime
-        "datetime", "date", "timestamp",
+        "datetime",
+        "date",
+        "timestamp",
         // String
-        "toUpper", "toLower", "trim", "substring", "size", 
-        "split", "replace", "reverse", "left", "right",
+        "toUpper",
+        "toLower",
+        "trim",
+        "substring",
+        "size",
+        "split",
+        "replace",
+        "reverse",
+        "left",
+        "right",
         // Math
-        "abs", "ceil", "floor", "round", "sqrt", "rand", "sign",
+        "abs",
+        "ceil",
+        "floor",
+        "round",
+        "sqrt",
+        "rand",
+        "sign",
         // List
-        "head", "tail", "last", "range",
+        "head",
+        "tail",
+        "last",
+        "range",
         // Type Conversion
-        "toInteger", "toFloat", "toString", "toBoolean",
+        "toInteger",
+        "toFloat",
+        "toString",
+        "toBoolean",
     ]
 }
 
@@ -89,7 +114,7 @@ pub fn get_supported_functions() -> Vec<&'static str> {
 mod tests {
     use super::*;
     use crate::query_planner::logical_expr::{Literal, LogicalExpr};
-    
+
     #[test]
     fn test_translate_simple_function() {
         // toUpper('hello') -> upper('hello')
@@ -97,11 +122,11 @@ mod tests {
             name: "toUpper".to_string(),
             args: vec![LogicalExpr::Literal(Literal::String("hello".to_string()))],
         };
-        
+
         let result = translate_scalar_function(&fn_call).unwrap();
         assert_eq!(result, "upper('hello')");
     }
-    
+
     #[test]
     fn test_translate_math_function() {
         // abs(-5) -> abs(-5)
@@ -109,11 +134,11 @@ mod tests {
             name: "abs".to_string(),
             args: vec![LogicalExpr::Literal(Literal::Integer(-5))],
         };
-        
+
         let result = translate_scalar_function(&fn_call).unwrap();
         assert_eq!(result, "abs(-5)");
     }
-    
+
     #[test]
     fn test_translate_function_with_transformation() {
         // left('hello', 3) -> substring('hello', 1, 3)
@@ -124,11 +149,11 @@ mod tests {
                 LogicalExpr::Literal(Literal::Integer(3)),
             ],
         };
-        
+
         let result = translate_scalar_function(&fn_call).unwrap();
         assert_eq!(result, "substring('hello', 1, 3)");
     }
-    
+
     #[test]
     fn test_unsupported_function_passthrough() {
         // unknownFunc(arg) -> unknownFunc(arg) with warning
@@ -136,11 +161,11 @@ mod tests {
             name: "unknownFunc".to_string(),
             args: vec![LogicalExpr::Literal(Literal::Integer(42))],
         };
-        
+
         let result = translate_scalar_function(&fn_call).unwrap();
         assert_eq!(result, "unknownFunc(42)");
     }
-    
+
     #[test]
     fn test_is_function_supported() {
         assert!(is_function_supported("toUpper"));
@@ -148,7 +173,7 @@ mod tests {
         assert!(is_function_supported("abs"));
         assert!(!is_function_supported("unknownFunc"));
     }
-    
+
     #[test]
     fn test_get_supported_functions() {
         let supported = get_supported_functions();

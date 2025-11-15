@@ -122,7 +122,7 @@ impl PlanSanitization {
     fn sanitize_scan(&self, scan: &Scan) -> LogicalPlan {
         let sanitized_scan = Scan {
             table_name: scan.table_name.clone(),
-            table_alias: scan.table_alias.clone(),  // Preserve the Cypher variable name!
+            table_alias: scan.table_alias.clone(), // Preserve the Cypher variable name!
         };
         LogicalPlan::Scan(sanitized_scan)
     }

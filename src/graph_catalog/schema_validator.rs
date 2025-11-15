@@ -1,18 +1,18 @@
 //! Schema validation module for graph views on ClickHouse tables.
-//! 
+//!
 //! This module provides functionality to validate graph view definitions against
 //! actual ClickHouse table schemas. It ensures that:
-//! 
+//!
 //! - Referenced tables exist in ClickHouse
 //! - Required columns exist with correct data types
 //! - ID columns have compatible types for graph operations
-//! 
+//!
 //! # Example
-//! 
+//!
 //! ```ignore
 //! use brahmand::graph_catalog::{SchemaValidator, NodeViewMapping};
 //! use clickhouse::Client;
-//! 
+//!
 //! async fn validate_mapping(client: Client) {
 //!     let mut validator = SchemaValidator::new(client);
 //!     
@@ -30,15 +30,14 @@
 //!     validator.validate_node_mapping(&mapping).await.unwrap();
 //! }
 //! ```
-//! 
+//!
 //! # Schema Caching
-//! 
+//!
 //! The validator caches table schemas to minimize database queries. Cache is
 //! maintained per validator instance and is cleared when the instance is dropped.
 
-use std::collections::HashMap;
 use clickhouse::Client;
-
+use std::collections::HashMap;
 
 use super::errors::GraphSchemaError;
 
@@ -64,7 +63,10 @@ impl SchemaValidator {
     }
 
     /// Get column information for a table, using cache if available
-    async fn get_table_columns(&mut self, table: &str) -> Result<Vec<ColumnInfo>, GraphSchemaError> {
+    async fn get_table_columns(
+        &mut self,
+        table: &str,
+    ) -> Result<Vec<ColumnInfo>, GraphSchemaError> {
         if let Some(columns) = self.column_cache.get(table) {
             return Ok(columns.clone());
         }
@@ -75,7 +77,8 @@ impl SchemaValidator {
             table
         );
 
-        let rows = self.client
+        let rows = self
+            .client
             .query(&query)
             .fetch_all::<(String, String)>()
             .await
@@ -83,13 +86,14 @@ impl SchemaValidator {
                 table: table.to_string(),
             })?;
 
-        let columns = rows.into_iter()
+        let columns = rows
+            .into_iter()
             .map(|(name, data_type)| ColumnInfo::new(name, data_type))
             .collect::<Vec<_>>();
 
         // Cache the result
         self.column_cache.insert(table.to_string(), columns.clone());
-        
+
         Ok(columns)
     }
 
@@ -117,13 +121,12 @@ impl SchemaValidator {
         columns: &[ColumnInfo],
     ) -> Result<(), GraphSchemaError> {
         // Find the column info
-        let col_info = columns
-            .iter()
-            .find(|c| c.name == column)
-            .ok_or_else(|| GraphSchemaError::InvalidColumn {
+        let col_info = columns.iter().find(|c| c.name == column).ok_or_else(|| {
+            GraphSchemaError::InvalidColumn {
                 column: column.to_string(),
                 table: table.to_string(),
-            })?;
+            }
+        })?;
 
         // Check if type is valid for an ID column (integers, UUID)
         let valid_id_types = ["UInt64", "UInt32", "Int64", "Int32", "UUID"];

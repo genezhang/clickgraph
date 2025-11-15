@@ -2,8 +2,8 @@ use crate::{
     open_cypher_parser::{self},
     query_planner::logical_plan::LogicalPlan,
 };
+use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
-use serde::{Serialize, Deserialize};
 
 // Import serde_arc module for serialization
 #[path = "../../utils/serde_arc.rs"]
@@ -208,7 +208,7 @@ pub struct ConnectedPattern {
 pub struct RelationshipPattern {
     pub name: Option<String>,
     pub direction: Direction,
-    pub labels: Option<Vec<String>>,  // Support multiple labels: [:TYPE1|TYPE2]
+    pub labels: Option<Vec<String>>, // Support multiple labels: [:TYPE1|TYPE2]
     pub properties: Option<Vec<Property>>,
 }
 
@@ -255,7 +255,10 @@ impl<'a> From<open_cypher_parser::ast::PropertyAccess<'a>> for PropertyAccess {
     fn from(value: open_cypher_parser::ast::PropertyAccess<'a>) -> Self {
         let alias = value.base.to_string();
         let column = value.key.to_string();
-        println!("PropertyAccess::from AST: alias='{}', column='{}'", alias, column);
+        println!(
+            "PropertyAccess::from AST: alias='{}', column='{}'",
+            alias, column
+        );
         PropertyAccess {
             table_alias: TableAlias(alias),
             column: Column(column),
@@ -373,7 +376,9 @@ impl<'a> From<open_cypher_parser::ast::RelationshipPattern<'a>> for Relationship
         RelationshipPattern {
             name: value.name.map(|s| s.to_string()),
             direction: Direction::from(value.direction),
-            labels: value.labels.map(|labels| labels.into_iter().map(|s| s.to_string()).collect()),
+            labels: value
+                .labels
+                .map(|labels| labels.into_iter().map(|s| s.to_string()).collect()),
             properties: value
                 .properties
                 .map(|props| props.into_iter().map(Property::from).collect()),
@@ -385,7 +390,9 @@ impl<'a> From<open_cypher_parser::ast::Case<'a>> for LogicalCase {
     fn from(case: open_cypher_parser::ast::Case<'a>) -> Self {
         LogicalCase {
             expr: case.expr.map(|e| Box::new(LogicalExpr::from(*e))),
-            when_then: case.when_then.into_iter()
+            when_then: case
+                .when_then
+                .into_iter()
                 .map(|(when, then)| (LogicalExpr::from(when), LogicalExpr::from(then)))
                 .collect(),
             else_expr: case.else_expr.map(|e| Box::new(LogicalExpr::from(*e))),
@@ -633,11 +640,13 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("user"),
             label: Some("User"),
-            properties: None,        };
+            properties: None,
+        };
         let end_node = ast::NodePattern {
             name: Some("company"),
             label: Some("Company"),
-            properties: None,        };
+            properties: None,
+        };
         let relationship = ast::RelationshipPattern {
             name: Some("works_at"),
             direction: ast::Direction::Outgoing,
@@ -688,7 +697,8 @@ mod tests {
         let ast_node = ast::NodePattern {
             name: Some("customer"),
             label: Some("Customer"),
-            properties: None,        };
+            properties: None,
+        };
         let ast_path_pattern = ast::PathPattern::Node(ast_node);
         let logical_path_pattern = PathPattern::from(ast_path_pattern);
 

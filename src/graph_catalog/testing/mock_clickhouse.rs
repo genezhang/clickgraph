@@ -1,11 +1,11 @@
 //! Test utilities for ClickHouse schema validation
-use std::collections::HashMap;
 use crate::graph_catalog::column_info::ColumnInfo;
+use std::collections::HashMap;
 
 /// Create test table schemas for unit tests
 pub fn create_test_table_schemas() -> HashMap<String, Vec<ColumnInfo>> {
     let mut tables = HashMap::new();
-    
+
     // Mock users table
     tables.insert(
         "users".to_string(),
@@ -50,11 +50,11 @@ mod tests {
     #[test]
     fn test_create_test_table_schemas() {
         let tables = create_test_table_schemas();
-        
+
         assert!(tables.contains_key("users"));
         assert!(tables.contains_key("posts"));
         assert!(tables.contains_key("follows"));
-        
+
         let users_schema = tables.get("users").unwrap();
         assert_eq!(users_schema.len(), 5);
         assert_eq!(users_schema[0].name, "user_id");

@@ -48,7 +48,11 @@ impl AnalyzerPass for GraphTRaversalPlanning {
                 // Skip traversal planning for variable-length paths and simple relationships
                 // Variable-length paths are handled by SQL generator
                 // Simple relationships should use direct JOINs, not CTEs/InSubquery
-                let should_skip = graph_rel.variable_length.is_some() || graph_rel.labels.as_ref().map_or(true, |labels| labels.len() <= 1);
+                let should_skip = graph_rel.variable_length.is_some()
+                    || graph_rel
+                        .labels
+                        .as_ref()
+                        .map_or(true, |labels| labels.len() <= 1);
                 if should_skip {
                     return Ok(Transformed::No(logical_plan));
                 }
@@ -233,7 +237,9 @@ impl GraphTRaversalPlanning {
             .get_projections()
             .iter()
             .any(|item| match &item.expression {
-                LogicalExpr::Column(Column(col)) => col.as_str() == graph_context.left.id_column.as_str(),
+                LogicalExpr::Column(Column(col)) => {
+                    col.as_str() == graph_context.left.id_column.as_str()
+                }
                 LogicalExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
                     column.0 == graph_context.left.id_column
                 }
@@ -259,7 +265,9 @@ impl GraphTRaversalPlanning {
             .get_projections()
             .iter()
             .any(|item| match &item.expression {
-                LogicalExpr::Column(Column(col)) => col.as_str() == graph_context.right.id_column.as_str(),
+                LogicalExpr::Column(Column(col)) => {
+                    col.as_str() == graph_context.right.id_column.as_str()
+                }
                 LogicalExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
                     column.0 == graph_context.right.id_column
                 }
@@ -319,14 +327,14 @@ impl GraphTRaversalPlanning {
             graph_context.right.id_column.clone(),
             rel_cte_name.clone(),
             right_sub_plan_column,
-            graph_context.right.alias.to_string(),  // Pass node alias for qualification
+            graph_context.right.alias.to_string(), // Pass node alias for qualification
         );
 
         let left_insubquery: LogicalExpr = self.build_insubquery(
             graph_context.left.id_column,
             rel_cte_name.clone(),
             left_sub_plan_column,
-            graph_context.left.alias.to_string(),  // Pass node alias for qualification
+            graph_context.left.alias.to_string(), // Pass node alias for qualification
         );
 
         if graph_rel.is_rel_anchor {
@@ -340,7 +348,12 @@ impl GraphTRaversalPlanning {
             };
             ctxs_to_update.push(right_ctx_to_update);
 
-            rel_ctxs_to_update.first_mut().ok_or(AnalyzerError::NoRelationshipContextsFound { pass: Pass::GraphTraversalPlanning })?.insubquery = None;
+            rel_ctxs_to_update
+                .first_mut()
+                .ok_or(AnalyzerError::NoRelationshipContextsFound {
+                    pass: Pass::GraphTraversalPlanning,
+                })?
+                .insubquery = None;
 
             ctxs_to_update.append(&mut rel_ctxs_to_update);
 
@@ -452,7 +465,10 @@ impl GraphTRaversalPlanning {
             scan.source_table.clone()
         } else {
             // Fallback to fully qualified schema table name if not a ViewScan
-            format!("{}.{}", graph_context.rel.schema.database, graph_context.rel.schema.table_name)
+            format!(
+                "{}.{}",
+                graph_context.rel.schema.database, graph_context.rel.schema.table_name
+            )
         };
 
         // if direction == Direction::Either and both nodes are of same types then use UNION of both.
@@ -489,7 +505,7 @@ impl GraphTRaversalPlanning {
                 "from_id".to_string(),
                 connected_node_cte_name.clone(),
                 connected_node_id_column.clone(),
-                outgoing_alias.clone(),  // Pass relationship alias for variable-length path
+                outgoing_alias.clone(), // Pass relationship alias for variable-length path
             );
 
             let from_edge_proj_input: Vec<(String, Option<ColumnAlias>)> = if !star_found {
@@ -565,12 +581,18 @@ impl GraphTRaversalPlanning {
                 vec![
                     (
                         // Use actual schema columns with table alias qualification
-                        format!("{}.{}", graph_context.rel.alias, graph_context.rel.schema.from_id),
+                        format!(
+                            "{}.{}",
+                            graph_context.rel.alias, graph_context.rel.schema.from_id
+                        ),
                         Some(ColumnAlias("from_id".to_string())),
                     ),
                     (
-                        // Use actual schema columns with table alias qualification  
-                        format!("{}.{}", graph_context.rel.alias, graph_context.rel.schema.to_id),
+                        // Use actual schema columns with table alias qualification
+                        format!(
+                            "{}.{}",
+                            graph_context.rel.alias, graph_context.rel.schema.to_id
+                        ),
                         Some(ColumnAlias("to_id".to_string())),
                     ),
                 ]
@@ -583,21 +605,21 @@ impl GraphTRaversalPlanning {
             // when using edge list, we need to check which node joins to "from_id" and which node joins to "to_id" of the relationship.
             // Based on that we decide, how the relationship is connected with right node as we traverse in graph traversal planning from right to left i.e. bottom to top.
             // Relationship direction integrity is already checked during query validation. If there is wrong direction then plan won't come to this stage. So we don't have to check direction here.
-            
+
             // IMPORTANT: Use actual schema column names (e.g., user1_id, user2_id), not output aliases (from_id, to_id)
             // The WHERE clause needs to reference the actual table columns
             let sub_in_expr_str =
                 if graph_context.rel.schema.from_node == graph_context.right.schema.table_name {
-                    graph_context.rel.schema.from_id.clone()  // Use schema column (e.g., user1_id)
+                    graph_context.rel.schema.from_id.clone() // Use schema column (e.g., user1_id)
                 } else {
-                    graph_context.rel.schema.to_id.clone()    // Use schema column (e.g., user2_id)
+                    graph_context.rel.schema.to_id.clone() // Use schema column (e.g., user2_id)
                 };
 
             let rel_insubquery = self.build_insubquery(
                 sub_in_expr_str,
                 connected_node_cte_name,
                 connected_node_id_column,
-                graph_context.rel.alias.to_string(),  // Pass relationship alias for qualification
+                graph_context.rel.alias.to_string(), // Pass relationship alias for qualification
             );
 
             let rel_plan = graph_rel.center.clone();
@@ -632,7 +654,7 @@ impl GraphTRaversalPlanning {
         sub_in_exp: String,
         sub_plan_table: String,
         sub_plan_column: String,
-        table_alias: String,  // Add table alias for column qualification
+        table_alias: String, // Add table alias for column qualification
     ) -> LogicalExpr {
         // Qualify the column with table alias to avoid ambiguity
         let qualified_column = format!("{}.{}", table_alias, sub_in_exp);
@@ -645,14 +667,17 @@ impl GraphTRaversalPlanning {
     fn get_subplan(&self, table_name: String, table_column: String) -> Arc<LogicalPlan> {
         // Use consistent alias 't' for subquery table references
         let table_alias = "t".to_string();
-        
+
         Arc::new(LogicalPlan::Projection(Projection {
             input: Arc::new(LogicalPlan::Scan(Scan {
                 table_alias: Some(table_alias.clone()),
                 table_name: Some(table_name),
             })),
             items: vec![ProjectionItem {
-                expression: LogicalExpr::Column(Column(format!("{}.{}", table_alias, table_column))),
+                expression: LogicalExpr::Column(Column(format!(
+                    "{}.{}",
+                    table_alias, table_column
+                ))),
                 col_alias: None,
             }],
             kind: crate::query_planner::logical_plan::ProjectionKind::Return,

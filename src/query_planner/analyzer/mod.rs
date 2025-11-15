@@ -59,11 +59,8 @@ pub fn initial_analyzing(
 
     // Step 3: Property Mapping - map Cypher properties to database columns (ONCE)
     let filter_tagging = FilterTagging::new();
-    let transformed_plan = filter_tagging.analyze_with_graph_schema(
-        plan.clone(),
-        plan_ctx,
-        current_graph_schema,
-    )?;
+    let transformed_plan =
+        filter_tagging.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?;
     let plan = transformed_plan.get_plan();
 
     // Step 4: Projection Tagging - tag projections into plan_ctx (NO mapping, just tagging)
@@ -90,7 +87,7 @@ pub fn intermediate_analyzing(
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
     // Note: SchemaInference and QueryValidation already ran in initial_analyzing
     // This pass focuses on graph-specific planning and optimizations
-    
+
     let graph_traversal_planning = GraphTRaversalPlanning::new();
     let transformed_plan = graph_traversal_planning.analyze_with_graph_schema(
         plan.clone(),

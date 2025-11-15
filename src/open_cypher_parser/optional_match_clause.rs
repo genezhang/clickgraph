@@ -2,8 +2,11 @@ use nom::character::complete::char;
 use nom::combinator::{cut, opt};
 use nom::error::context;
 use nom::{
-    IResult, Parser, bytes::complete::tag_no_case, character::complete::{multispace0, multispace1},
-    multi::separated_list1, sequence::delimited,
+    IResult, Parser,
+    bytes::complete::tag_no_case,
+    character::complete::{multispace0, multispace1},
+    multi::separated_list1,
+    sequence::delimited,
 };
 
 use super::ast::{OptionalMatchClause, PathPattern};
@@ -11,9 +14,9 @@ use super::errors::OpenCypherParsingError;
 use super::{path_pattern, where_clause};
 
 /// Parse an OPTIONAL MATCH clause
-/// 
+///
 /// Syntax: OPTIONAL MATCH <pattern> [WHERE <condition>]
-/// 
+///
 /// Examples:
 /// - OPTIONAL MATCH (a)-[:FRIEND]->(b)
 /// - OPTIONAL MATCH (a)-[:FRIEND]->(b) WHERE b.age > 25
@@ -23,7 +26,7 @@ pub fn parse_optional_match_clause(
 ) -> IResult<&'_ str, OptionalMatchClause<'_>, OpenCypherParsingError<'_>> {
     // Parse "OPTIONAL MATCH" as two separate keywords
     let (input, _) = tag_no_case("OPTIONAL").parse(input)?;
-    let (input, _) = multispace1.parse(input)?;  // Require whitespace between OPTIONAL and MATCH
+    let (input, _) = multispace1.parse(input)?; // Require whitespace between OPTIONAL and MATCH
     let (input, _) = tag_no_case("MATCH").parse(input)?;
 
     // Parse path patterns (comma-separated list)
@@ -85,7 +88,7 @@ mod tests {
         let (remaining, optional_match_clause) = result.unwrap();
         assert_eq!(remaining, "");
         assert_eq!(optional_match_clause.path_patterns.len(), 1);
-        
+
         if let PathPattern::Node(node) = &optional_match_clause.path_patterns[0] {
             assert_eq!(node.name, Some("a"));
         } else {
@@ -102,11 +105,13 @@ mod tests {
         let (remaining, optional_match_clause) = result.unwrap();
         assert_eq!(remaining, "");
         assert_eq!(optional_match_clause.path_patterns.len(), 1);
-        
+
         // Just verify we got a path pattern (Node, ConnectedPattern, or shortest path variants)
         match &optional_match_clause.path_patterns[0] {
-            PathPattern::Node(_) | PathPattern::ConnectedPattern(_) 
-            | PathPattern::ShortestPath(_) | PathPattern::AllShortestPaths(_) => {
+            PathPattern::Node(_)
+            | PathPattern::ConnectedPattern(_)
+            | PathPattern::ShortestPath(_)
+            | PathPattern::AllShortestPaths(_) => {
                 // Success - valid pattern parsed
             }
         }

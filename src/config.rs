@@ -1,7 +1,7 @@
-use std::env;
 use serde::{Deserialize, Serialize};
-use validator::{Validate, ValidationError};
+use std::env;
 use thiserror::Error;
+use validator::{Validate, ValidationError};
 
 /// Configuration errors
 #[derive(Error, Debug)]
@@ -28,7 +28,11 @@ pub struct ServerConfig {
     pub http_host: String,
 
     /// HTTP server port (1-65535)
-    #[validate(range(min = 1, max = 65535, message = "HTTP port must be between 1 and 65535"))]
+    #[validate(range(
+        min = 1,
+        max = 65535,
+        message = "HTTP port must be between 1 and 65535"
+    ))]
     pub http_port: u16,
 
     /// Bolt server host address
@@ -36,14 +40,22 @@ pub struct ServerConfig {
     pub bolt_host: String,
 
     /// Bolt server port (1-65535)
-    #[validate(range(min = 1, max = 65535, message = "Bolt port must be between 1 and 65535"))]
+    #[validate(range(
+        min = 1,
+        max = 65535,
+        message = "Bolt port must be between 1 and 65535"
+    ))]
     pub bolt_port: u16,
 
     /// Whether Bolt protocol server is enabled
     pub bolt_enabled: bool,
 
     /// Maximum recursive CTE evaluation depth for variable-length paths
-    #[validate(range(min = 1, max = 1000, message = "Max CTE depth must be between 1 and 1000"))]
+    #[validate(range(
+        min = 1,
+        max = 1000,
+        message = "Max CTE depth must be between 1 and 1000"
+    ))]
     pub max_cte_depth: u32,
 
     /// Whether to validate YAML schema against ClickHouse tables on startup
@@ -105,19 +117,17 @@ impl ServerConfig {
 
     /// Create configuration from YAML file
     pub fn from_yaml_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, ConfigError> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| ConfigError::Parse {
-                field: "yaml_file".to_string(),
-                value: "file read failed".to_string(),
-                source: Box::new(e),
-            })?;
+        let content = std::fs::read_to_string(path).map_err(|e| ConfigError::Parse {
+            field: "yaml_file".to_string(),
+            value: "file read failed".to_string(),
+            source: Box::new(e),
+        })?;
 
-        let config: Self = serde_yaml::from_str(&content)
-            .map_err(|e| ConfigError::Parse {
-                field: "yaml_content".to_string(),
-                value: content,
-                source: Box::new(e),
-            })?;
+        let config: Self = serde_yaml::from_str(&content).map_err(|e| ConfigError::Parse {
+            field: "yaml_content".to_string(),
+            value: content,
+            source: Box::new(e),
+        })?;
 
         config.validate()?;
         Ok(config)

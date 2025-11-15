@@ -6,7 +6,10 @@ use types::QueryType;
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
     open_cypher_parser::ast::OpenCypherQueryAst,
-    query_planner::{analyzer::errors::AnalyzerError, logical_plan::{LogicalPlan, PageRank}},
+    query_planner::{
+        analyzer::errors::AnalyzerError,
+        logical_plan::{LogicalPlan, PageRank},
+    },
 };
 
 pub mod analyzer;
@@ -30,12 +33,12 @@ pub fn get_query_type(query_ast: &OpenCypherQueryAst) -> QueryType {
     }
 }
 
-
 pub fn evaluate_read_query(
     query_ast: OpenCypherQueryAst,
     current_graph_schema: &GraphSchema,
 ) -> Result<LogicalPlan, QueryPlannerError> {
-    let (logical_plan, mut plan_ctx) = logical_plan::evaluate_query(query_ast, current_graph_schema)?;
+    let (logical_plan, mut plan_ctx) =
+        logical_plan::evaluate_query(query_ast, current_graph_schema)?;
 
     let logical_plan =
         analyzer::initial_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
@@ -43,7 +46,8 @@ pub fn evaluate_read_query(
     let logical_plan = optimizer::initial_optimization(logical_plan, &mut plan_ctx)?;
 
     // Validation now happens in initial_analyzing, so errors propagate cleanly
-    let logical_plan = analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
+    let logical_plan =
+        analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
 
     let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx)?;
 
@@ -75,42 +79,65 @@ pub fn evaluate_call_query(
                 for arg in call_clause.arguments {
                     match arg.name {
                         "graph" => {
-                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::String(s)) = arg.value {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(
+                                crate::open_cypher_parser::ast::Literal::String(s),
+                            ) = arg.value
+                            {
                                 graph_name = Some(s.to_string());
                             }
                         }
                         "nodeLabels" => {
-                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::String(s)) = arg.value {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(
+                                crate::open_cypher_parser::ast::Literal::String(s),
+                            ) = arg.value
+                            {
                                 // Parse comma-separated list
-                                let labels: Vec<String> = s.split(',').map(|s| s.trim().to_string()).collect();
+                                let labels: Vec<String> =
+                                    s.split(',').map(|s| s.trim().to_string()).collect();
                                 node_labels = Some(labels);
                             }
                         }
                         "relationshipTypes" => {
-                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::String(s)) = arg.value {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(
+                                crate::open_cypher_parser::ast::Literal::String(s),
+                            ) = arg.value
+                            {
                                 // Parse comma-separated list
-                                let types: Vec<String> = s.split(',').map(|s| s.trim().to_string()).collect();
+                                let types: Vec<String> =
+                                    s.split(',').map(|s| s.trim().to_string()).collect();
                                 relationship_types = Some(types);
                             }
                         }
                         "maxIterations" => {
-                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::Integer(i)) = arg.value {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(
+                                crate::open_cypher_parser::ast::Literal::Integer(i),
+                            ) = arg.value
+                            {
                                 iterations = i as usize;
                             }
                         }
                         "dampingFactor" => {
-                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::Float(f)) = arg.value {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(
+                                crate::open_cypher_parser::ast::Literal::Float(f),
+                            ) = arg.value
+                            {
                                 damping_factor = f;
                             }
                         }
                         // Backward compatibility - also accept old parameter names
                         "iterations" => {
-                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::Integer(i)) = arg.value {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(
+                                crate::open_cypher_parser::ast::Literal::Integer(i),
+                            ) = arg.value
+                            {
                                 iterations = i as usize;
                             }
                         }
                         "damping" => {
-                            if let crate::open_cypher_parser::ast::Expression::Literal(crate::open_cypher_parser::ast::Literal::Float(f)) = arg.value {
+                            if let crate::open_cypher_parser::ast::Expression::Literal(
+                                crate::open_cypher_parser::ast::Literal::Float(f),
+                            ) = arg.value
+                            {
                                 damping_factor = f;
                             }
                         }
@@ -132,6 +159,8 @@ pub fn evaluate_call_query(
             }),
         }
     } else {
-        Err(QueryPlannerError::InvalidQuery("No CALL clause found".to_string()))
+        Err(QueryPlannerError::InvalidQuery(
+            "No CALL clause found".to_string(),
+        ))
     }
 }

@@ -1,12 +1,7 @@
 use clap::Parser;
 use clickgraph::{
-    open_cypher_parser,
-    clickhouse_query_generator,
-    graph_catalog,
-    query_planner,
-    render_plan,
-    server,
-    config,
+    clickhouse_query_generator, config, graph_catalog, open_cypher_parser, query_planner,
+    render_plan, server,
 };
 
 /// ClickGraph - A graph analysis layer for ClickHouse
@@ -53,7 +48,7 @@ impl From<Cli> for config::CliConfig {
             http_port: cli.http_port,
             bolt_host: cli.bolt_host,
             bolt_port: cli.bolt_port,
-            bolt_enabled: !cli.disable_bolt,  // Invert the flag
+            bolt_enabled: !cli.disable_bolt, // Invert the flag
             max_cte_depth: cli.max_cte_depth,
             validate_schema: cli.validate_schema,
             daemon: cli.daemon,
@@ -64,12 +59,14 @@ impl From<Cli> for config::CliConfig {
 #[tokio::main]
 async fn main() {
     // Initialize logger - defaults to INFO level, can be overridden with RUST_LOG env var
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
-        .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
 
     let cli = Cli::parse();
 
-    println!("\nClickGraph v{} (fork of Brahmand)\n", env!("CARGO_PKG_VERSION"));
+    println!(
+        "\nClickGraph v{} (fork of Brahmand)\n",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Create configuration from CLI args
     let cli_config: config::CliConfig = cli.into();

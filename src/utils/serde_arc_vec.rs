@@ -1,10 +1,4 @@
-use serde::{
-    ser::SerializeSeq,
-    Deserialize,
-    Deserializer,
-    Serialize,
-    Serializer,
-};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
 use std::sync::Arc;
 
 pub fn serialize<'a, S, T>(v: &Vec<Arc<T>>, s: S) -> Result<S::Ok, S::Error>

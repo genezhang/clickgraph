@@ -7,7 +7,10 @@ use crate::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::{AnalyzerError, Pass},
         },
-        logical_expr::{AggregateFnCall, Column, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias},
+        logical_expr::{
+            AggregateFnCall, Column, LogicalExpr, Operator, OperatorApplication, PropertyAccess,
+            TableAlias,
+        },
         logical_plan::{LogicalPlan, Projection, ProjectionItem},
         plan_ctx::PlanCtx,
         transformed::Transformed,
@@ -36,7 +39,7 @@ impl AnalyzerPass for ProjectionTagging {
                     plan_ctx,
                     graph_schema,
                 )?;
-                
+
                 // handler select all. e.g. -
                 //
                 // MATCH (u:User)-[c:Created]->(p:Post)
@@ -71,7 +74,7 @@ impl AnalyzerPass for ProjectionTagging {
                 }
 
                 Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
-                    input: child_tf.get_plan(),  // Use transformed child instead of original
+                    input: child_tf.get_plan(), // Use transformed child instead of original
                     items: proj_items_to_mutate,
                     kind: projection.kind.clone(),
                 })))
@@ -194,7 +197,7 @@ impl ProjectionTagging {
                     // Keep it as-is - it will be resolved during query execution
                     return Ok(());
                 }
-                
+
                 // if just table alias i.e MATCH (p:Post) Return p; then For final overall projection keep p.* and for p's projection keep *.
 
                 let table_ctx = plan_ctx.get_mut_table_ctx(&table_alias.0).map_err(|e| {
@@ -203,11 +206,12 @@ impl ProjectionTagging {
                         source: e,
                     }
                 })?;
-                
+
                 // Check if this is a path variable (has no label - path variables are registered without labels)
                 // Path variables should be kept as-is, not expanded to .*
-                let is_path_variable = table_ctx.get_label_opt().is_none() && !table_ctx.is_relation();
-                
+                let is_path_variable =
+                    table_ctx.get_label_opt().is_none() && !table_ctx.is_relation();
+
                 if is_path_variable {
                     // This is a path variable - don't expand to .*, keep it as TableAlias
                     // The render layer will handle converting it to the appropriate map() construction
@@ -239,10 +243,10 @@ impl ProjectionTagging {
                         source: e,
                     })?;
                 table_ctx.insert_projection(item.clone());
-                
+
                 // Don't set an alias - let ClickHouse return just the column name
                 // SQL will be: SELECT u.name (returns as "name" not "u.name")
-                
+
                 Ok(())
             }
             LogicalExpr::OperatorApplicationExp(operator_application) => {
@@ -272,9 +276,10 @@ impl ProjectionTagging {
                     // Handle COUNT(a) or COUNT(DISTINCT a)
                     let table_alias_opt = match arg {
                         LogicalExpr::TableAlias(TableAlias(t_alias)) => Some(t_alias.as_str()),
-                        LogicalExpr::OperatorApplicationExp(OperatorApplication { operator, operands })
-                            if *operator == Operator::Distinct && operands.len() == 1 =>
-                        {
+                        LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                            operator,
+                            operands,
+                        }) if *operator == Operator::Distinct && operands.len() == 1 => {
                             // Handle DISTINCT a inside COUNT(DISTINCT a)
                             if let LogicalExpr::TableAlias(TableAlias(t_alias)) = &operands[0] {
                                 Some(t_alias.as_str())
@@ -293,7 +298,7 @@ impl ProjectionTagging {
                                     source: e,
                                 }
                             })?;
-                            
+
                             if table_ctx.is_relation() {
                                 // For relationships, count the relationship records
                                 // Convert count(r) or count(distinct r) to count(*) for the relationship table
@@ -303,30 +308,31 @@ impl ProjectionTagging {
                                 });
                             } else {
                                 // For nodes, count distinct node IDs
-                                let table_label =
-                                    table_ctx
-                                        .get_label_str()
-                                        .map_err(|e| AnalyzerError::PlanCtx {
-                                            pass: Pass::ProjectionTagging,
-                                            source: e,
-                                        })?;
-                                let table_schema =
-                                    graph_schema.get_node_schema(&table_label).map_err(|e| {
-                                        AnalyzerError::GraphSchema {
-                                            pass: Pass::ProjectionTagging,
-                                            source: e,
-                                        }
+                                let table_label = table_ctx.get_label_str().map_err(|e| {
+                                    AnalyzerError::PlanCtx {
+                                        pass: Pass::ProjectionTagging,
+                                        source: e,
+                                    }
+                                })?;
+                                let table_schema = graph_schema
+                                    .get_node_schema(&table_label)
+                                    .map_err(|e| AnalyzerError::GraphSchema {
+                                        pass: Pass::ProjectionTagging,
+                                        source: e,
                                     })?;
                                 let table_node_id = table_schema.node_id.column.clone();
-                                
+
                                 // Preserve DISTINCT if it was in the original expression
-                                let new_arg = if matches!(arg, LogicalExpr::OperatorApplicationExp(OperatorApplication { operator, .. }) if *operator == Operator::Distinct) {
+                                let new_arg = if matches!(arg, LogicalExpr::OperatorApplicationExp(OperatorApplication { operator, .. }) if *operator == Operator::Distinct)
+                                {
                                     LogicalExpr::OperatorApplicationExp(OperatorApplication {
                                         operator: Operator::Distinct,
-                                        operands: vec![LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: TableAlias(t_alias.to_string()),
-                                            column: Column(table_node_id),
-                                        })],
+                                        operands: vec![LogicalExpr::PropertyAccessExp(
+                                            PropertyAccess {
+                                                table_alias: TableAlias(t_alias.to_string()),
+                                                column: Column(table_node_id),
+                                            },
+                                        )],
                                     })
                                 } else {
                                     LogicalExpr::PropertyAccessExp(PropertyAccess {
@@ -334,7 +340,7 @@ impl ProjectionTagging {
                                         column: Column(table_node_id),
                                     })
                                 };
-                                
+
                                 item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
                                     name: aggregate_fn_call.name.clone(),
                                     args: vec![new_arg],

@@ -12,6 +12,20 @@ server.pid
 # Test artifacts
 *.pyc
 __pycache__/
+.pytest_cache/
+
+# Test output files
+test_*.txt
+test_*.log
+pytest_*.txt
+integration_*.txt
+python_test_*.txt
+TEST_SUITE_STATUS.md
+
+# Temporary test/debug scripts
+test_*.py
+debug_*.py
+*_debug.py
 
 # Session summaries (archive these manually if needed)
 SESSION_COMPLETE_*.md

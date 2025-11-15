@@ -1,26 +1,26 @@
-mod view_table_ref;
-mod from_table;
-mod cte_generation;
-mod filter_pipeline;
 pub mod cte_extraction;
+mod cte_generation;
 mod expression_utils;
+mod filter_pipeline;
+mod from_table;
 mod plan_builder_helpers;
+mod view_table_ref;
 
 use errors::RenderBuildError;
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
 
-pub use view_table_ref::ViewTableRef;
-pub use from_table::FromTable;
 pub use cte_generation::CteGenerationContext;
 pub use filter_pipeline::CategorizedFilters;
+pub use from_table::FromTable;
+pub use view_table_ref::ViewTableRef;
 
 use crate::query_planner::logical_plan::{
     Join as LogicalJoin, JoinType as LogicalJoinType, OrderByItem as LogicalOrderByItem,
     OrderByOrder as LogicalOrderByOrder, UnionType as LogicalUnionType,
 };
 
-use std::fmt;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 pub mod errors;
 pub mod plan_builder;
@@ -29,8 +29,6 @@ pub mod view_plan;
 
 #[cfg(test)]
 mod tests;
-
-
 
 pub trait ToSql {
     fn to_sql(&self) -> String;
@@ -53,7 +51,7 @@ pub struct RenderPlan {
     pub joins: JoinItems,
     pub filters: FilterItems,
     pub group_by: GroupByExpressions,
-    pub having_clause: Option<RenderExpr>,  // HAVING clause for post-aggregation filtering
+    pub having_clause: Option<RenderExpr>, // HAVING clause for post-aggregation filtering
     pub order_by: OrderByItems,
     pub skip: SkipItem,
     pub limit: LimitItem,

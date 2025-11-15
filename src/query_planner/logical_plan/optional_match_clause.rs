@@ -4,20 +4,18 @@ use crate::{
     open_cypher_parser::ast,
     query_planner::{
         logical_plan::{
-            errors::LogicalPlanError,
-            match_clause::evaluate_match_clause,
+            LogicalPlan, errors::LogicalPlanError, match_clause::evaluate_match_clause,
             plan_builder::LogicalPlanResult,
-            LogicalPlan,
         },
         plan_ctx::PlanCtx,
     },
 };
 
 /// Evaluate an OPTIONAL MATCH clause
-/// 
+///
 /// OPTIONAL MATCH uses LEFT JOIN semantics - all rows from the input are preserved,
 /// with NULL values for unmatched optional patterns.
-/// 
+///
 /// Strategy:
 /// 1. Set the optional match mode flag in PlanCtx
 /// 2. Process patterns using regular MATCH logic (which now auto-marks aliases as optional)
@@ -28,31 +26,37 @@ pub fn evaluate_optional_match_clause<'a>(
     input_plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
-    log::debug!("OPTIONAL_MATCH: evaluate_optional_match_clause called with {} path patterns", 
-        optional_match_clause.path_patterns.len());
-    
+    log::debug!(
+        "OPTIONAL_MATCH: evaluate_optional_match_clause called with {} path patterns",
+        optional_match_clause.path_patterns.len()
+    );
+
     // SIMPLE FIX: Set the optional match mode flag BEFORE processing patterns
     // This will automatically mark all new aliases as optional during planning
     plan_ctx.set_optional_match_mode(true);
-    
+
     eprintln!("🔔 DEBUG OPTIONAL_MATCH: Enabled optional match mode");
 
     // Create a temporary MatchClause from the OptionalMatchClause
     // This allows us to reuse the existing match clause logic
     let temp_match_clause = ast::MatchClause {
         path_patterns: optional_match_clause.path_patterns.clone(),
-        path_variable: None,  // OPTIONAL MATCH doesn't support path variables
+        path_variable: None, // OPTIONAL MATCH doesn't support path variables
     };
 
     // Process the patterns using the _with_optional variant and pass is_optional=true
     // This ensures GraphRel structures are created with is_optional=Some(true)
     use crate::query_planner::logical_plan::match_clause::evaluate_match_clause_with_optional;
-    let mut plan = evaluate_match_clause_with_optional(&temp_match_clause, input_plan, plan_ctx, true)?;
-    
+    let mut plan =
+        evaluate_match_clause_with_optional(&temp_match_clause, input_plan, plan_ctx, true)?;
+
     // Restore normal mode
     plan_ctx.set_optional_match_mode(false);
-    
-    eprintln!("🔕 DEBUG OPTIONAL_MATCH: Disabled optional match mode, plan type: {:?}", std::mem::discriminant(&*plan));
+
+    eprintln!(
+        "🔕 DEBUG OPTIONAL_MATCH: Disabled optional match mode, plan type: {:?}",
+        std::mem::discriminant(&*plan)
+    );
 
     // If there's a WHERE clause specific to this OPTIONAL MATCH,
     // it should be applied as part of the JOIN condition, not as a final filter

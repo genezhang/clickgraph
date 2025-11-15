@@ -19,10 +19,10 @@ pub struct RelationshipSchema {
     pub database: String,
     pub table_name: String,
     pub column_names: Vec<String>,
-    pub from_node: String,  // Node type (e.g., "User")
-    pub to_node: String,    // Node type (e.g., "User")
-    pub from_id: String,  // Column name for source node ID (e.g., "user1_id")
-    pub to_id: String,    // Column name for target node ID (e.g., "user2_id")
+    pub from_node: String, // Node type (e.g., "User")
+    pub to_node: String,   // Node type (e.g., "User")
+    pub from_id: String,   // Column name for source node ID (e.g., "user1_id")
+    pub to_id: String,     // Column name for target node ID (e.g., "user2_id")
     pub from_node_id_dtype: String,
     pub to_node_id_dtype: String,
     pub property_mappings: HashMap<String, String>,
@@ -86,7 +86,11 @@ impl GraphSchema {
         self.nodes.insert(node_label, node_schema);
     }
 
-    pub fn insert_relationship_schema(&mut self, type_name: String, rel_schema: RelationshipSchema) {
+    pub fn insert_relationship_schema(
+        &mut self,
+        type_name: String,
+        rel_schema: RelationshipSchema,
+    ) {
         self.relationships.insert(type_name, rel_schema);
     }
 

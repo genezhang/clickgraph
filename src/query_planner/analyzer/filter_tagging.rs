@@ -8,7 +8,8 @@ use crate::{
             errors::{AnalyzerError, Pass},
         },
         logical_expr::{
-            AggregateFnCall, LogicalExpr, Operator, OperatorApplication, PropertyAccess, ScalarFnCall, Column, TableAlias,
+            AggregateFnCall, Column, LogicalExpr, Operator, OperatorApplication, PropertyAccess,
+            ScalarFnCall, TableAlias,
         },
         logical_plan::{Filter, GroupBy, LogicalPlan, ProjectionItem},
         plan_ctx::PlanCtx,
@@ -25,8 +26,14 @@ impl AnalyzerPass for FilterTagging {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        println!("FilterTagging: analyze_with_graph_schema called with plan: {:?}", logical_plan);
-        println!("FilterTagging: analyze_with_graph_schema called with plan type: {:?}", std::mem::discriminant(&*logical_plan));
+        println!(
+            "FilterTagging: analyze_with_graph_schema called with plan: {:?}",
+            logical_plan
+        );
+        println!(
+            "FilterTagging: analyze_with_graph_schema called with plan type: {:?}",
+            std::mem::discriminant(&*logical_plan)
+        );
         let variant_name = match &*logical_plan {
             LogicalPlan::Empty => "Empty",
             LogicalPlan::Scan(_) => "Scan",
@@ -48,42 +55,69 @@ impl AnalyzerPass for FilterTagging {
         Ok(match logical_plan.as_ref() {
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphNode(graph_node) => {
-                let child_tf = self.analyze_with_graph_schema(graph_node.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = self.analyze_with_graph_schema(
+                    graph_node.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphRel(graph_rel) => {
-                let left_tf = self.analyze_with_graph_schema(graph_rel.left.clone(), plan_ctx, graph_schema)?;
-                let center_tf = self.analyze_with_graph_schema(graph_rel.center.clone(), plan_ctx, graph_schema)?;
-                let right_tf = self.analyze_with_graph_schema(graph_rel.right.clone(), plan_ctx, graph_schema)?;
+                let left_tf =
+                    self.analyze_with_graph_schema(graph_rel.left.clone(), plan_ctx, graph_schema)?;
+                let center_tf = self.analyze_with_graph_schema(
+                    graph_rel.center.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                let right_tf = self.analyze_with_graph_schema(
+                    graph_rel.right.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
             }
             LogicalPlan::Cte(cte) => {
-                let child_tf = self.analyze_with_graph_schema(cte.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf =
+                    self.analyze_with_graph_schema(cte.input.clone(), plan_ctx, graph_schema)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
-                let child_tf = self.analyze_with_graph_schema(graph_joins.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = self.analyze_with_graph_schema(
+                    graph_joins.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Filter(filter) => {
                 println!("FilterTagging: ENTERING Filter case - processing Filter node");
-                println!("FilterTagging: Processing Filter node with predicate: {:?}", filter.predicate);
-                let child_tf = self.analyze_with_graph_schema(filter.input.clone(), plan_ctx, graph_schema)?;
+                println!(
+                    "FilterTagging: Processing Filter node with predicate: {:?}",
+                    filter.predicate
+                );
+                let child_tf =
+                    self.analyze_with_graph_schema(filter.input.clone(), plan_ctx, graph_schema)?;
                 // Apply property mapping to the filter predicate
-                let mapped_predicate = self.apply_property_mapping(filter.predicate.clone(), plan_ctx, graph_schema)?;
+                let mapped_predicate =
+                    self.apply_property_mapping(filter.predicate.clone(), plan_ctx, graph_schema)?;
                 println!("FilterTagging: Mapped predicate: {:?}", mapped_predicate);
-                
+
                 // Check if this filter references projection aliases (HAVING clause)
                 if Self::references_projection_alias(&mapped_predicate, plan_ctx) {
-                    println!("FilterTagging: Filter references projection alias - converting to HAVING clause");
+                    println!(
+                        "FilterTagging: Filter references projection alias - converting to HAVING clause"
+                    );
                     // This filter should become a HAVING clause on the child GroupBy
                     match &child_tf {
                         Transformed::Yes(plan) | Transformed::No(plan) => {
                             if let LogicalPlan::GroupBy(group_by) = plan.as_ref() {
-                                println!("FilterTagging: Child is GroupBy, attaching filter as HAVING clause");
+                                println!(
+                                    "FilterTagging: Child is GroupBy, attaching filter as HAVING clause"
+                                );
                                 let new_group_by = LogicalPlan::GroupBy(GroupBy {
                                     input: group_by.input.clone(),
                                     expressions: group_by.expressions.clone(),
@@ -91,12 +125,14 @@ impl AnalyzerPass for FilterTagging {
                                 });
                                 return Ok(Transformed::Yes(Arc::new(new_group_by)));
                             } else {
-                                println!("FilterTagging: WARNING - projection alias reference but child is not GroupBy!");
+                                println!(
+                                    "FilterTagging: WARNING - projection alias reference but child is not GroupBy!"
+                                );
                             }
                         }
                     }
                 }
-                
+
                 // call filter tagging and get new filter
                 let final_filter_opt = self.extract_filters(mapped_predicate, plan_ctx)?;
                 println!("FilterTagging: Final filter option: {:?}", final_filter_opt);
@@ -112,66 +148,101 @@ impl AnalyzerPass for FilterTagging {
             }
             LogicalPlan::Projection(projection) => {
                 println!("FilterTagging: Processing Projection, analyzing child input");
-                println!("FilterTagging: Projection input type: {:?}", std::mem::discriminant(&*projection.input));
-                println!("FilterTagging: About to call analyze_with_graph_schema on child input: {:?}", projection.input);
-                let child_tf = self.analyze_with_graph_schema(projection.input.clone(), plan_ctx, graph_schema)?;
-                println!("FilterTagging: Finished analyzing child input, result: {:?}", child_tf);
-                println!("FilterTagging: Projection child processed, applying property mapping to projection items");
+                println!(
+                    "FilterTagging: Projection input type: {:?}",
+                    std::mem::discriminant(&*projection.input)
+                );
+                println!(
+                    "FilterTagging: About to call analyze_with_graph_schema on child input: {:?}",
+                    projection.input
+                );
+                let child_tf = self.analyze_with_graph_schema(
+                    projection.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                println!(
+                    "FilterTagging: Finished analyzing child input, result: {:?}",
+                    child_tf
+                );
+                println!(
+                    "FilterTagging: Projection child processed, applying property mapping to projection items"
+                );
                 // Apply property mapping to projection expressions
                 let mut mapped_items = Vec::new();
                 for item in &projection.items {
-                    let mapped_expr = self.apply_property_mapping(item.expression.clone(), plan_ctx, graph_schema)?;
+                    let mapped_expr = self.apply_property_mapping(
+                        item.expression.clone(),
+                        plan_ctx,
+                        graph_schema,
+                    )?;
                     mapped_items.push(ProjectionItem {
                         expression: mapped_expr.clone(),
                         col_alias: item.col_alias.clone(),
                     });
-                    
+
                     // Register projection aliases for HAVING clause support
                     // If this projection item has an alias (e.g., COUNT(b) as follows),
                     // register it so filters can reference it
                     if let Some(col_alias) = &item.col_alias {
-                        println!("FilterTagging: Registering projection alias: {} -> {:?}", col_alias.0, mapped_expr);
+                        println!(
+                            "FilterTagging: Registering projection alias: {} -> {:?}",
+                            col_alias.0, mapped_expr
+                        );
                         plan_ctx.register_projection_alias(col_alias.0.clone(), mapped_expr);
                     }
                 }
-                Transformed::Yes(Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
-                    input: child_tf.get_plan(),
-                    items: mapped_items,
-                    kind: projection.kind.clone(),
-                })))
+                Transformed::Yes(Arc::new(LogicalPlan::Projection(
+                    crate::query_planner::logical_plan::Projection {
+                        input: child_tf.get_plan(),
+                        items: mapped_items,
+                        kind: projection.kind.clone(),
+                    },
+                )))
             }
             LogicalPlan::GroupBy(group_by) => {
-                let child_tf = self.analyze_with_graph_schema(group_by.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf =
+                    self.analyze_with_graph_schema(group_by.input.clone(), plan_ctx, graph_schema)?;
                 group_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::OrderBy(order_by) => {
-                let child_tf = self.analyze_with_graph_schema(order_by.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf =
+                    self.analyze_with_graph_schema(order_by.input.clone(), plan_ctx, graph_schema)?;
                 // Apply property mapping to order by expressions
                 let mut mapped_items = Vec::new();
                 for item in &order_by.items {
-                    let mapped_expr = self.apply_property_mapping(item.expression.clone(), plan_ctx, graph_schema)?;
+                    let mapped_expr = self.apply_property_mapping(
+                        item.expression.clone(),
+                        plan_ctx,
+                        graph_schema,
+                    )?;
                     mapped_items.push(crate::query_planner::logical_plan::OrderByItem {
                         expression: mapped_expr,
                         order: item.order.clone(),
                     });
                 }
-                Transformed::Yes(Arc::new(LogicalPlan::OrderBy(crate::query_planner::logical_plan::OrderBy {
-                    input: child_tf.get_plan(),
-                    items: mapped_items,
-                })))
+                Transformed::Yes(Arc::new(LogicalPlan::OrderBy(
+                    crate::query_planner::logical_plan::OrderBy {
+                        input: child_tf.get_plan(),
+                        items: mapped_items,
+                    },
+                )))
             }
             LogicalPlan::Skip(skip) => {
-                let child_tf = self.analyze_with_graph_schema(skip.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf =
+                    self.analyze_with_graph_schema(skip.input.clone(), plan_ctx, graph_schema)?;
                 skip.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Limit(limit) => {
-                let child_tf = self.analyze_with_graph_schema(limit.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf =
+                    self.analyze_with_graph_schema(limit.input.clone(), plan_ctx, graph_schema)?;
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Union(union) => {
                 let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
                 for input_plan in union.inputs.iter() {
-                    let child_tf = self.analyze_with_graph_schema(input_plan.clone(), plan_ctx, graph_schema)?;
+                    let child_tf =
+                        self.analyze_with_graph_schema(input_plan.clone(), plan_ctx, graph_schema)?;
                     inputs_tf.push(child_tf);
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
@@ -195,48 +266,73 @@ impl FilterTagging {
     ) -> AnalyzerResult<LogicalExpr> {
         match expr {
             LogicalExpr::PropertyAccessExp(property_access) => {
-                println!("FilterTagging: apply_property_mapping for alias '{}', property '{}'", 
-                         property_access.table_alias.0, property_access.column.0);
+                println!(
+                    "FilterTagging: apply_property_mapping for alias '{}', property '{}'",
+                    property_access.table_alias.0, property_access.column.0
+                );
                 // Get the table context for this alias
-                let table_ctx = plan_ctx.get_table_ctx(&property_access.table_alias.0)
+                let table_ctx = plan_ctx
+                    .get_table_ctx(&property_access.table_alias.0)
                     .map_err(|e| {
-                        eprintln!("FilterTagging: ERROR - Failed to get table_ctx for alias '{}': {:?}", 
-                                 property_access.table_alias.0, e);
+                        eprintln!(
+                            "FilterTagging: ERROR - Failed to get table_ctx for alias '{}': {:?}",
+                            property_access.table_alias.0, e
+                        );
                         AnalyzerError::PlanCtx {
                             pass: Pass::FilterTagging,
                             source: e,
                         }
                     })?;
-                
-                println!("FilterTagging: Found table_ctx, is_relation={}, label={:?}", 
-                         table_ctx.is_relation(), table_ctx.get_label_opt());
+
+                println!(
+                    "FilterTagging: Found table_ctx, is_relation={}, label={:?}",
+                    table_ctx.is_relation(),
+                    table_ctx.get_label_opt()
+                );
 
                 // Get the label for this table
-                let label = table_ctx.get_label_opt()
-                    .ok_or_else(|| {
-                        eprintln!("FilterTagging: ERROR - No label found for alias '{}', is_relation={}", 
-                                 property_access.table_alias.0, table_ctx.is_relation());
-                        AnalyzerError::PropertyNotFound {
-                            entity_type: "node".to_string(),
-                            entity_name: property_access.table_alias.0.clone(),
-                            property: property_access.column.0.clone(),
-                        }
-                    })?;
+                let label = table_ctx.get_label_opt().ok_or_else(|| {
+                    eprintln!(
+                        "FilterTagging: ERROR - No label found for alias '{}', is_relation={}",
+                        property_access.table_alias.0,
+                        table_ctx.is_relation()
+                    );
+                    AnalyzerError::PropertyNotFound {
+                        entity_type: "node".to_string(),
+                        entity_name: property_access.table_alias.0.clone(),
+                        property: property_access.column.0.clone(),
+                    }
+                })?;
 
                 // Use view resolver to map the property
-                let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
-                println!("FilterTagging: About to call resolve_node_property, is_relation={}, label={}, property={}",
-                         table_ctx.is_relation(), label, property_access.column.0);
+                let view_resolver =
+                    crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(
+                        graph_schema,
+                    );
+                println!(
+                    "FilterTagging: About to call resolve_node_property, is_relation={}, label={}, property={}",
+                    table_ctx.is_relation(),
+                    label,
+                    property_access.column.0
+                );
                 let mapped_column = if table_ctx.is_relation() {
-                    let result = view_resolver.resolve_relationship_property(&label, &property_access.column.0);
-                    println!("FilterTagging: resolve_relationship_property result: {:?}", result);
+                    let result = view_resolver
+                        .resolve_relationship_property(&label, &property_access.column.0);
+                    println!(
+                        "FilterTagging: resolve_relationship_property result: {:?}",
+                        result
+                    );
                     result?
                 } else {
-                    let result = view_resolver.resolve_node_property(&label, &property_access.column.0);
+                    let result =
+                        view_resolver.resolve_node_property(&label, &property_access.column.0);
                     println!("FilterTagging: resolve_node_property result: {:?}", result);
                     result?
                 };
-                println!("FilterTagging: Successfully mapped property '{}' to column '{}'", property_access.column.0, mapped_column);
+                println!(
+                    "FilterTagging: Successfully mapped property '{}' to column '{}'",
+                    property_access.column.0, mapped_column
+                );
 
                 Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: property_access.table_alias,
@@ -247,7 +343,11 @@ impl FilterTagging {
                 // Recursively apply property mapping to operands
                 let mut mapped_operands = Vec::new();
                 for operand in op.operands {
-                    mapped_operands.push(self.apply_property_mapping(operand, plan_ctx, graph_schema)?);
+                    mapped_operands.push(self.apply_property_mapping(
+                        operand,
+                        plan_ctx,
+                        graph_schema,
+                    )?);
                 }
                 op.operands = mapped_operands;
                 Ok(LogicalExpr::OperatorApplicationExp(op))
@@ -274,7 +374,11 @@ impl FilterTagging {
                 // Recursively apply property mapping to list elements
                 let mut mapped_elements = Vec::new();
                 for element in list {
-                    mapped_elements.push(self.apply_property_mapping(element, plan_ctx, graph_schema)?);
+                    mapped_elements.push(self.apply_property_mapping(
+                        element,
+                        plan_ctx,
+                        graph_schema,
+                    )?);
                 }
                 Ok(LogicalExpr::List(mapped_elements))
             }
@@ -289,7 +393,10 @@ impl FilterTagging {
         filter_predicate: LogicalExpr,
         plan_ctx: &mut PlanCtx,
     ) -> AnalyzerResult<Option<LogicalExpr>> {
-        println!("FilterTagging: extract_filters called with predicate: {:?}", filter_predicate);
+        println!(
+            "FilterTagging: extract_filters called with predicate: {:?}",
+            filter_predicate
+        );
         let mut extracted_filters: Vec<OperatorApplication> = vec![];
         let mut extracted_projections: Vec<PropertyAccess> = vec![];
 
@@ -300,8 +407,12 @@ impl FilterTagging {
             false,
         );
 
-        println!("FilterTagging: Extracted {} filters, {} projections, remaining: {:?}", 
-                 extracted_filters.len(), extracted_projections.len(), remaining);
+        println!(
+            "FilterTagging: Extracted {} filters, {} projections, remaining: {:?}",
+            extracted_filters.len(),
+            extracted_projections.len(),
+            remaining
+        );
 
         // tag extracted filters to respective table data
         for extracted_filter in extracted_filters {
@@ -310,7 +421,10 @@ impl FilterTagging {
                 true,
             )
             .unwrap_or_default();
-            println!("FilterTagging: Extracted filter for table alias: '{}'", table_alias);
+            println!(
+                "FilterTagging: Extracted filter for table alias: '{}'",
+                table_alias
+            );
             // let mut table_alias = "";
             // for operand in &extracted_filter.operands {
             //     match operand {
@@ -341,9 +455,7 @@ impl FilterTagging {
                 // FIXED: Keep PropertyAccessExp with table_alias instead of converting to Column
                 // The table_alias is needed for correct SQL generation (e.g., a.name not just name)
                 // Property mapping was already done above, so column names are correct
-                table_ctx.insert_filter(
-                    LogicalExpr::OperatorApplicationExp(extracted_filter),
-                );
+                table_ctx.insert_filter(LogicalExpr::OperatorApplicationExp(extracted_filter));
             } else {
                 return Err(AnalyzerError::OrphanAlias {
                     pass: Pass::FilterTagging,
@@ -633,21 +745,22 @@ impl FilterTagging {
     /// Used to determine if a filter should become a HAVING clause
     fn references_projection_alias(expr: &LogicalExpr, plan_ctx: &PlanCtx) -> bool {
         match expr {
-            LogicalExpr::TableAlias(TableAlias(alias)) => {
-                plan_ctx.is_projection_alias(alias)
-            }
-            LogicalExpr::OperatorApplicationExp(op_app) => {
-                op_app.operands.iter().any(|operand| Self::references_projection_alias(operand, plan_ctx))
-            }
-            LogicalExpr::ScalarFnCall(fn_call) => {
-                fn_call.args.iter().any(|arg| Self::references_projection_alias(arg, plan_ctx))
-            }
-            LogicalExpr::AggregateFnCall(agg_call) => {
-                agg_call.args.iter().any(|arg| Self::references_projection_alias(arg, plan_ctx))
-            }
-            LogicalExpr::List(exprs) => {
-                exprs.iter().any(|e| Self::references_projection_alias(e, plan_ctx))
-            }
+            LogicalExpr::TableAlias(TableAlias(alias)) => plan_ctx.is_projection_alias(alias),
+            LogicalExpr::OperatorApplicationExp(op_app) => op_app
+                .operands
+                .iter()
+                .any(|operand| Self::references_projection_alias(operand, plan_ctx)),
+            LogicalExpr::ScalarFnCall(fn_call) => fn_call
+                .args
+                .iter()
+                .any(|arg| Self::references_projection_alias(arg, plan_ctx)),
+            LogicalExpr::AggregateFnCall(agg_call) => agg_call
+                .args
+                .iter()
+                .any(|arg| Self::references_projection_alias(arg, plan_ctx)),
+            LogicalExpr::List(exprs) => exprs
+                .iter()
+                .any(|e| Self::references_projection_alias(e, plan_ctx)),
             _ => false,
         }
     }
@@ -710,7 +823,7 @@ mod tests {
             TableCtx::build(
                 "company".to_string(),
                 Some(vec!["Company".to_string()]),
-                vec![], 
+                vec![],
                 false,
                 true,
             ),
@@ -720,66 +833,89 @@ mod tests {
     }
 
     fn setup_test_graph_schema() -> GraphSchema {
-        use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema, NodeIdSchema};
+        use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema, RelationshipSchema};
         use std::collections::HashMap;
-        
+
         let mut node_schemas = HashMap::new();
         let mut rel_schemas = HashMap::new();
-        
+
         // Person node with properties
         let mut person_props = HashMap::new();
         person_props.insert("age".to_string(), "age".to_string());
         person_props.insert("status".to_string(), "status".to_string());
         person_props.insert("name".to_string(), "name".to_string());
-        
-        node_schemas.insert("Person".to_string(), NodeSchema {
-            database: "test_db".to_string(),
-            table_name: "users".to_string(),
-            column_names: vec!["user_id".to_string(), "name".to_string(), "age".to_string(), "status".to_string()],
-            primary_keys: "user_id".to_string(),
-            node_id: NodeIdSchema {
-                column: "user_id".to_string(),
-                dtype: "UInt32".to_string(),
+
+        node_schemas.insert(
+            "Person".to_string(),
+            NodeSchema {
+                database: "test_db".to_string(),
+                table_name: "users".to_string(),
+                column_names: vec![
+                    "user_id".to_string(),
+                    "name".to_string(),
+                    "age".to_string(),
+                    "status".to_string(),
+                ],
+                primary_keys: "user_id".to_string(),
+                node_id: NodeIdSchema {
+                    column: "user_id".to_string(),
+                    dtype: "UInt32".to_string(),
+                },
+                property_mappings: person_props,
             },
-            property_mappings: person_props,
-        });
-        
+        );
+
         // Company node
         let mut company_props = HashMap::new();
         company_props.insert("name".to_string(), "name".to_string());
         company_props.insert("owner_id".to_string(), "owner_id".to_string());
-        
-        node_schemas.insert("Company".to_string(), NodeSchema {
-            database: "test_db".to_string(),
-            table_name: "companies".to_string(),
-            column_names: vec!["company_id".to_string(), "name".to_string(), "owner_id".to_string()],
-            primary_keys: "company_id".to_string(),
-            node_id: NodeIdSchema {
-                column: "company_id".to_string(),
-                dtype: "UInt32".to_string(),
+
+        node_schemas.insert(
+            "Company".to_string(),
+            NodeSchema {
+                database: "test_db".to_string(),
+                table_name: "companies".to_string(),
+                column_names: vec![
+                    "company_id".to_string(),
+                    "name".to_string(),
+                    "owner_id".to_string(),
+                ],
+                primary_keys: "company_id".to_string(),
+                node_id: NodeIdSchema {
+                    column: "company_id".to_string(),
+                    dtype: "UInt32".to_string(),
+                },
+                property_mappings: company_props,
             },
-            property_mappings: company_props,
-        });
-        
+        );
+
         // FOLLOWS relationship
         let mut follows_props = HashMap::new();
         follows_props.insert("since".to_string(), "created_at".to_string());
-        
-        rel_schemas.insert("FOLLOWS".to_string(), RelationshipSchema {
-            database: "test_db".to_string(),
-            table_name: "follows".to_string(),
-            column_names: vec!["from_node_id".to_string(), "to_node_id".to_string(), "created_at".to_string()],
-            from_node: "Person".to_string(),
-            to_node: "Person".to_string(),
-            from_id: "from_node_id".to_string(),
-            to_id: "to_node_id".to_string(),
-            from_node_id_dtype: "UInt32".to_string(),
-            to_node_id_dtype: "UInt32".to_string(),
-            property_mappings: follows_props,
-        });
-        
+
+        rel_schemas.insert(
+            "FOLLOWS".to_string(),
+            RelationshipSchema {
+                database: "test_db".to_string(),
+                table_name: "follows".to_string(),
+                column_names: vec![
+                    "from_node_id".to_string(),
+                    "to_node_id".to_string(),
+                    "created_at".to_string(),
+                ],
+                from_node: "Person".to_string(),
+                to_node: "Person".to_string(),
+                from_id: "from_node_id".to_string(),
+                to_id: "to_node_id".to_string(),
+                from_node_id_dtype: "UInt32".to_string(),
+                to_node_id_dtype: "UInt32".to_string(),
+                property_mappings: follows_props,
+            },
+        );
+
         GraphSchema::build(1, "test_db".to_string(), node_schemas, rel_schemas)
-    }    #[test]
+    }
+    #[test]
     fn test_single_table_filter_extraction() {
         let analyzer = FilterTagging::new();
         let mut plan_ctx = setup_plan_ctx_with_tables();
@@ -1104,7 +1240,9 @@ mod tests {
             predicate: create_simple_filter("user", "age", 30),
         }));
 
-        let result = analyzer.analyze_with_graph_schema(filter, &mut plan_ctx, &graph_schema).unwrap();
+        let result = analyzer
+            .analyze_with_graph_schema(filter, &mut plan_ctx, &graph_schema)
+            .unwrap();
 
         // Should remove Filter node and return the scan directly
         match result {
@@ -1141,7 +1279,9 @@ mod tests {
             alias: "user".to_string(),
         }));
 
-        let result = analyzer.analyze_with_graph_schema(graph_node, &mut plan_ctx, &graph_schema).unwrap();
+        let result = analyzer
+            .analyze_with_graph_schema(graph_node, &mut plan_ctx, &graph_schema)
+            .unwrap();
 
         // Should transform the nested structure
         match result {

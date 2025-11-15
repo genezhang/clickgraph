@@ -1,25 +1,32 @@
-use std::sync::Arc;
-use crate::query_planner::logical_plan::LogicalPlan;
-use crate::query_planner::logical_expr::Direction;
-use crate::query_planner::plan_ctx::PlanCtx;
+use crate::clickhouse_query_generator::variable_length_cte::{
+    ChainedJoinGenerator, VariableLengthCteGenerator,
+};
 use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::clickhouse_query_generator::variable_length_cte::{VariableLengthCteGenerator, ChainedJoinGenerator};
+use crate::query_planner::logical_expr::Direction;
+use crate::query_planner::logical_plan::LogicalPlan;
+use crate::query_planner::plan_ctx::PlanCtx;
+use std::sync::Arc;
 
-use super::plan_builder::RenderPlanBuilder;
+use super::cte_generation::{
+    analyze_property_requirements, extract_var_len_properties, map_property_to_column_with_schema,
+};
 use super::errors::RenderBuildError;
+use super::filter_pipeline::{
+    CategorizedFilters, categorize_filters, clean_last_node_filters, extract_start_end_filters,
+    filter_expr_to_sql, render_end_filter_to_column_alias,
+    rewrite_end_filters_for_variable_length_cte, rewrite_expr_for_outer_query,
+    rewrite_expr_for_var_len_cte,
+};
+use super::plan_builder::RenderPlanBuilder;
 use super::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
+    AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
+    RenderExpr, ScalarFnCall, TableAlias,
 };
 use super::{
-    Cte, CteItems, FilterItems, FromTable, FromTableItem, GroupByExpressions, Join, JoinItems, JoinType,
-    LimitItem, OrderByItem, OrderByItems, RenderPlan, SelectItem, SelectItems, SkipItem, Union,
-    UnionItems, ViewTableRef, view_table_ref::{view_ref_to_from_table, from_table_to_view_ref},
-};
-use super::cte_generation::{analyze_property_requirements, map_property_to_column_with_schema, extract_var_len_properties};
-use super::filter_pipeline::{
-    categorize_filters, clean_last_node_filters, extract_start_end_filters, filter_expr_to_sql,
-    render_end_filter_to_column_alias, rewrite_end_filters_for_variable_length_cte,
-    rewrite_expr_for_outer_query, rewrite_expr_for_var_len_cte, CategorizedFilters,
+    Cte, CteItems, FilterItems, FromTable, FromTableItem, GroupByExpressions, Join, JoinItems,
+    JoinType, LimitItem, OrderByItem, OrderByItems, RenderPlan, SelectItem, SelectItems, SkipItem,
+    Union, UnionItems, ViewTableRef,
+    view_table_ref::{from_table_to_view_ref, view_ref_to_from_table},
 };
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
@@ -65,14 +72,17 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
         RenderExpr::PropertyAccessExp(prop) => {
             // Convert property access to table.column format
             // Apply alias mapping to convert Cypher aliases to CTE aliases
-            let table_alias = alias_mapping.iter()
+            let table_alias = alias_mapping
+                .iter()
                 .find(|(cypher, _)| *cypher == prop.table_alias.0)
                 .map(|(_, cte)| cte.clone())
                 .unwrap_or_else(|| prop.table_alias.0.clone());
             format!("{}.{}", table_alias, prop.column.0)
         }
         RenderExpr::OperatorApplicationExp(op) => {
-            let operands: Vec<String> = op.operands.iter()
+            let operands: Vec<String> = op
+                .operands
+                .iter()
                 .map(|operand| render_expr_to_sql_string(operand, alias_mapping))
                 .collect();
             match op.operator {
@@ -99,34 +109,60 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
             }
         }
         RenderExpr::ScalarFnCall(func) => {
-            let args: Vec<String> = func.args.iter()
+            let args: Vec<String> = func
+                .args
+                .iter()
                 .map(|arg| render_expr_to_sql_string(arg, alias_mapping))
                 .collect();
             format!("{}({})", func.name, args.join(", "))
         }
         RenderExpr::AggregateFnCall(agg) => {
-            let args: Vec<String> = agg.args.iter()
+            let args: Vec<String> = agg
+                .args
+                .iter()
                 .map(|arg| render_expr_to_sql_string(arg, alias_mapping))
                 .collect();
             format!("{}({})", agg.name, args.join(", "))
         }
         RenderExpr::List(list) => {
-            let items: Vec<String> = list.iter()
+            let items: Vec<String> = list
+                .iter()
                 .map(|item| render_expr_to_sql_string(item, alias_mapping))
                 .collect();
             format!("({})", items.join(", "))
         }
         RenderExpr::InSubquery(subq) => {
-            format!("{} IN ({})", render_expr_to_sql_string(&subq.expr, alias_mapping), "/* subquery */")
+            format!(
+                "{} IN ({})",
+                render_expr_to_sql_string(&subq.expr, alias_mapping),
+                "/* subquery */"
+            )
         }
         RenderExpr::Case(case) => {
-            let when_clauses: Vec<String> = case.when_then.iter()
-                .map(|(condition, result)| format!("WHEN {} THEN {}", render_expr_to_sql_string(condition, alias_mapping), render_expr_to_sql_string(result, alias_mapping)))
+            let when_clauses: Vec<String> = case
+                .when_then
+                .iter()
+                .map(|(condition, result)| {
+                    format!(
+                        "WHEN {} THEN {}",
+                        render_expr_to_sql_string(condition, alias_mapping),
+                        render_expr_to_sql_string(result, alias_mapping)
+                    )
+                })
                 .collect();
-            let else_clause = case.else_expr.as_ref()
+            let else_clause = case
+                .else_expr
+                .as_ref()
                 .map(|expr| format!(" ELSE {}", render_expr_to_sql_string(expr, alias_mapping)))
                 .unwrap_or_default();
-            format!("CASE {} {} END", case.expr.as_ref().map(|e| render_expr_to_sql_string(e, alias_mapping)).unwrap_or_default(), when_clauses.join(" ") + &else_clause)
+            format!(
+                "CASE {} {} END",
+                case.expr
+                    .as_ref()
+                    .map(|e| render_expr_to_sql_string(e, alias_mapping))
+                    .unwrap_or_default(),
+                when_clauses.join(" ") + &else_clause
+            )
         }
         RenderExpr::Star => "*".to_string(),
         RenderExpr::Parameter(param) => format!("${}", param),
@@ -141,12 +177,15 @@ pub struct RelationshipColumns {
 }
 
 /// Convert a label to its corresponding table name using provided schema
-pub fn label_to_table_name_with_schema(label: &str, schema: &crate::graph_catalog::graph_schema::GraphSchema) -> String {
+pub fn label_to_table_name_with_schema(
+    label: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> String {
     if let Ok(node_schema) = schema.get_node_schema(label) {
         // Use fully qualified table name: database.table_name
         return format!("{}.{}", node_schema.database, node_schema.table_name);
     }
-    
+
     // Fallback to label as table name (not ideal but better than wrong hardcoded values)
     label.to_lowercase()
 }
@@ -162,18 +201,21 @@ pub fn label_to_table_name(label: &str) -> String {
             }
         }
     }
-    
+
     // Fallback to label as table name (not ideal but better than wrong hardcoded values)
     label.to_lowercase()
 }
 
 /// Convert a relationship type to its corresponding table name using provided schema
-pub fn rel_type_to_table_name_with_schema(rel_type: &str, schema: &crate::graph_catalog::graph_schema::GraphSchema) -> String {
+pub fn rel_type_to_table_name_with_schema(
+    rel_type: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> String {
     if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
         // Use fully qualified table name: database.table_name
         return format!("{}.{}", rel_schema.database, rel_schema.table_name);
     }
-    
+
     // Fallback to rel_type as table name
     rel_type.to_lowercase()
 }
@@ -189,34 +231,41 @@ pub fn rel_type_to_table_name(rel_type: &str) -> String {
             }
         }
     }
-    
+
     // Fallback to relationship type as table name (not ideal but better than wrong hardcoded values)
     rel_type.to_string()
 }
 
 /// Convert multiple relationship types to table names
 pub fn rel_types_to_table_names(rel_types: &[String]) -> Vec<String> {
-    rel_types.iter().map(|rt| rel_type_to_table_name(rt)).collect()
+    rel_types
+        .iter()
+        .map(|rt| rel_type_to_table_name(rt))
+        .collect()
 }
 
 /// Extract relationship columns from a table name using provided schema
-pub fn extract_relationship_columns_from_table_with_schema(table_name: &str, schema: &crate::graph_catalog::graph_schema::GraphSchema) -> RelationshipColumns {
+pub fn extract_relationship_columns_from_table_with_schema(
+    table_name: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> RelationshipColumns {
     // Extract just the table name without database prefix for matching
     let table_only = table_name.split('.').last().unwrap_or(table_name);
-    
+
     // Find relationship schema by table name
     for rel_schema in schema.get_relationships_schemas().values() {
         // Match both with full name (db.table) or just table name
-        if rel_schema.table_name == table_name 
-            || rel_schema.table_name == table_only 
-            || table_name.ends_with(&format!(".{}", rel_schema.table_name)) {
+        if rel_schema.table_name == table_name
+            || rel_schema.table_name == table_only
+            || table_name.ends_with(&format!(".{}", rel_schema.table_name))
+        {
             return RelationshipColumns {
                 from_id: rel_schema.from_id.clone(),
                 to_id: rel_schema.to_id.clone(),
             };
         }
     }
-    
+
     // Fallback to hardcoded defaults
     RelationshipColumns {
         from_id: "from_id".to_string(),
@@ -235,7 +284,7 @@ pub fn extract_relationship_columns_from_table(table_name: &str) -> Relationship
             }
         }
     }
-    
+
     // No schema available or table not found - use generic defaults
     // This ensures the system works in schema-less mode but doesn't bypass user configuration
     RelationshipColumns {
@@ -247,9 +296,10 @@ pub fn extract_relationship_columns_from_table(table_name: &str) -> Relationship
 /// Extract relationship columns from a LogicalPlan
 pub fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipColumns> {
     match plan {
-        LogicalPlan::Scan(scan) => {
-            scan.table_name.as_ref().map(|table| extract_relationship_columns_from_table(table))
-        }
+        LogicalPlan::Scan(scan) => scan
+            .table_name
+            .as_ref()
+            .map(|table| extract_relationship_columns_from_table(table)),
         LogicalPlan::ViewScan(view_scan) => {
             // Check if ViewScan already has relationship columns configured
             if let (Some(from_col), Some(to_col)) = (&view_scan.from_id, &view_scan.to_id) {
@@ -259,7 +309,9 @@ pub fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipCo
                 })
             } else {
                 // Fallback to table-based lookup
-                Some(extract_relationship_columns_from_table(&view_scan.source_table))
+                Some(extract_relationship_columns_from_table(
+                    &view_scan.source_table,
+                ))
             }
         }
         LogicalPlan::GraphRel(rel) => extract_relationship_columns(&rel.center),
@@ -272,7 +324,10 @@ pub fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipCo
 /// Extract ID column from a LogicalPlan
 fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
     match plan {
-        LogicalPlan::Scan(scan) => scan.table_name.as_ref().map(|table| table_to_id_column(table)),
+        LogicalPlan::Scan(scan) => scan
+            .table_name
+            .as_ref()
+            .map(|table| table_to_id_column(table)),
         LogicalPlan::ViewScan(view_scan) => Some(view_scan.id_column.clone()),
         LogicalPlan::GraphNode(node) => extract_id_column(&node.input),
         LogicalPlan::Filter(filter) => extract_id_column(&filter.input),
@@ -282,7 +337,10 @@ fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
 }
 
 /// Get ID column for a table using provided schema
-pub fn table_to_id_column_with_schema(table: &str, schema: &crate::graph_catalog::graph_schema::GraphSchema) -> String {
+pub fn table_to_id_column_with_schema(
+    table: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> String {
     // Find node schema by table name
     // Handle both fully qualified (database.table) and simple (table) names
     for node_schema in schema.get_nodes_schemas().values() {
@@ -291,7 +349,7 @@ pub fn table_to_id_column_with_schema(table: &str, schema: &crate::graph_catalog
             return node_schema.node_id.column.clone();
         }
     }
-    
+
     // Fallback to "id" if not found
     "id".to_string()
 }
@@ -307,7 +365,7 @@ pub fn table_to_id_column(table: &str) -> String {
             }
         }
     }
-    
+
     // Fallback to "id" if schema not available or table not found
     "id".to_string()
 }
@@ -395,11 +453,9 @@ fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
             extract_node_label_from_viewscan(&node.input)
         }
         LogicalPlan::GraphNode(node) => get_node_label_for_alias(alias, &node.input),
-        LogicalPlan::GraphRel(rel) => {
-            get_node_label_for_alias(alias, &rel.left)
-                .or_else(|| get_node_label_for_alias(alias, &rel.center))
-                .or_else(|| get_node_label_for_alias(alias, &rel.right))
-        }
+        LogicalPlan::GraphRel(rel) => get_node_label_for_alias(alias, &rel.left)
+            .or_else(|| get_node_label_for_alias(alias, &rel.center))
+            .or_else(|| get_node_label_for_alias(alias, &rel.right)),
         LogicalPlan::Filter(filter) => get_node_label_for_alias(alias, &filter.input),
         LogicalPlan::Projection(proj) => get_node_label_for_alias(alias, &proj.input),
         LogicalPlan::GraphJoins(joins) => get_node_label_for_alias(alias, &joins.input),
@@ -421,7 +477,11 @@ fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
 }
 
 /// Extract CTEs with context - the main CTE extraction function
-pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, context: &mut super::cte_generation::CteGenerationContext) -> RenderPlanBuilderResult<Vec<Cte>> {
+pub fn extract_ctes_with_context(
+    plan: &LogicalPlan,
+    last_node_alias: &str,
+    context: &mut super::cte_generation::CteGenerationContext,
+) -> RenderPlanBuilderResult<Vec<Cte>> {
     match plan {
         LogicalPlan::Empty => Ok(vec![]),
         LogicalPlan::Scan(_) => Ok(vec![]),
@@ -429,8 +489,14 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
             // Check if this is a relationship ViewScan (has from_id/to_id)
             if let (Some(from_col), Some(to_col)) = (&view_scan.from_id, &view_scan.to_id) {
                 // This is a relationship ViewScan - create a CTE that selects the relationship columns
-                let cte_name = format!("rel_{}", view_scan.source_table.replace([' ', '-', '_'], ""));
-                let sql = format!("SELECT {}, {} FROM {}", from_col, to_col, view_scan.source_table);
+                let cte_name = format!(
+                    "rel_{}",
+                    view_scan.source_table.replace([' ', '-', '_'], "")
+                );
+                let sql = format!(
+                    "SELECT {}, {} FROM {}",
+                    from_col, to_col, view_scan.source_table
+                );
                 let formatted_sql = format!("{} AS (\n{}\n)", cte_name, sql);
 
                 Ok(vec![Cte {
@@ -442,8 +508,10 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                 // This is a node ViewScan - no CTE needed
                 Ok(vec![])
             }
-        },
-        LogicalPlan::GraphNode(graph_node) => extract_ctes_with_context(&graph_node.input, last_node_alias, context),
+        }
+        LogicalPlan::GraphNode(graph_node) => {
+            extract_ctes_with_context(&graph_node.input, last_node_alias, context)
+        }
         LogicalPlan::GraphRel(graph_rel) => {
             // Handle variable-length paths with context
             if let Some(spec) = &graph_rel.variable_length {
@@ -473,70 +541,89 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                     .unwrap_or_else(|| table_to_id_column(&end_table));
 
                 // Extract relationship columns
-                let rel_cols = extract_relationship_columns(&graph_rel.center)
-                    .unwrap_or(RelationshipColumns {
+                let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
+                    RelationshipColumns {
                         from_id: "from_node_id".to_string(),
                         to_id: "to_node_id".to_string(),
-                    });
+                    },
+                );
                 let from_col = rel_cols.from_id;
                 let to_col = rel_cols.to_id;
 
                 // Define aliases based on traversal direction
                 // For variable-length paths, we need to know which node is the traversal start vs end
                 let (start_alias, end_alias) = match graph_rel.direction {
-                    Direction::Outgoing => {
-                        (graph_rel.left_connection.clone(), graph_rel.right_connection.clone())
-                    }
-                    Direction::Incoming => {
-                        (graph_rel.right_connection.clone(), graph_rel.left_connection.clone())
-                    }
+                    Direction::Outgoing => (
+                        graph_rel.left_connection.clone(),
+                        graph_rel.right_connection.clone(),
+                    ),
+                    Direction::Incoming => (
+                        graph_rel.right_connection.clone(),
+                        graph_rel.left_connection.clone(),
+                    ),
                     Direction::Either => {
                         // For Either, assume left to right traversal
-                        (graph_rel.left_connection.clone(), graph_rel.right_connection.clone())
+                        (
+                            graph_rel.left_connection.clone(),
+                            graph_rel.right_connection.clone(),
+                        )
                     }
                 };
 
                 // Extract and categorize filters for variable-length paths from GraphRel.where_predicate
-                let (start_filters_sql, end_filters_sql) = if let Some(where_predicate) = &graph_rel.where_predicate {
-                    // Convert LogicalExpr to RenderExpr
-                    let mut render_expr = RenderExpr::try_from(where_predicate.clone())
-                        .map_err(|e| RenderBuildError::UnsupportedFeature(format!("Failed to convert LogicalExpr to RenderExpr: {}", e)))?;
+                let (start_filters_sql, end_filters_sql) =
+                    if let Some(where_predicate) = &graph_rel.where_predicate {
+                        // Convert LogicalExpr to RenderExpr
+                        let mut render_expr = RenderExpr::try_from(where_predicate.clone())
+                            .map_err(|e| {
+                                RenderBuildError::UnsupportedFeature(format!(
+                                    "Failed to convert LogicalExpr to RenderExpr: {}",
+                                    e
+                                ))
+                            })?;
 
-                    // Apply property mapping to the filter expression before categorization
-                    apply_property_mapping_to_expr(&mut render_expr, &LogicalPlan::GraphRel(graph_rel.clone()));
+                        // Apply property mapping to the filter expression before categorization
+                        apply_property_mapping_to_expr(
+                            &mut render_expr,
+                            &LogicalPlan::GraphRel(graph_rel.clone()),
+                        );
 
-                    // Categorize filters
-                    let categorized = categorize_filters(
-                        Some(&render_expr),
-                        &start_alias,
-                        &end_alias,
-                        "", // rel_alias not used yet
-                    );
+                        // Categorize filters
+                        let categorized = categorize_filters(
+                            Some(&render_expr),
+                            &start_alias,
+                            &end_alias,
+                            "", // rel_alias not used yet
+                        );
 
-                    // Create alias mapping
-                    let alias_mapping = [
-                        (start_alias.clone(), "start_node".to_string()),
-                        (end_alias.clone(), "end_node".to_string()),
-                    ];
+                        // Create alias mapping
+                        let alias_mapping = [
+                            (start_alias.clone(), "start_node".to_string()),
+                            (end_alias.clone(), "end_node".to_string()),
+                        ];
 
-                    let start_sql = categorized.start_node_filters
-                        .map(|expr| render_expr_to_sql_string(&expr, &alias_mapping));
-                    let end_sql = categorized.end_node_filters
-                        .as_ref()
-                        .map(|expr| render_expr_to_sql_string(expr, &alias_mapping));
+                        let start_sql = categorized
+                            .start_node_filters
+                            .map(|expr| render_expr_to_sql_string(&expr, &alias_mapping));
+                        let end_sql = categorized
+                            .end_node_filters
+                            .as_ref()
+                            .map(|expr| render_expr_to_sql_string(expr, &alias_mapping));
 
-                    // For variable-length queries (not shortest path), store end filters in context for outer query
-                    if graph_rel.shortest_path_mode.is_none() {
-                        if let Some(end_filter_expr) = &categorized.end_node_filters {
-                            // 🆕 IMMUTABLE PATTERN: Update context immutably
-                            *context = context.clone().with_end_filters_for_outer_query(end_filter_expr.clone());
+                        // For variable-length queries (not shortest path), store end filters in context for outer query
+                        if graph_rel.shortest_path_mode.is_none() {
+                            if let Some(end_filter_expr) = &categorized.end_node_filters {
+                                // 🆕 IMMUTABLE PATTERN: Update context immutably
+                                *context = context
+                                    .clone()
+                                    .with_end_filters_for_outer_query(end_filter_expr.clone());
+                            }
                         }
-                    }
 
-                    (start_sql, end_sql)
-                } else {
-                    (None, None)
-                };
+                        (start_sql, end_sql)
+                    } else {
+                        (None, None)
+                    };
 
                 // Generate CTE with filters
                 let var_len_cte = if let Some(exact_hops) = spec.exact_hop_count() {
@@ -552,7 +639,7 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                         &end_id_col,
                         &graph_rel.left_connection,
                         &graph_rel.right_connection,
-                        vec![],  // No properties in SQL_ONLY mode
+                        vec![], // No properties in SQL_ONLY mode
                     );
                     generator.generate_cte()
                 } else {
@@ -568,10 +655,14 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                         &end_id_col,
                         &graph_rel.left_connection,
                         &graph_rel.right_connection,
-                        vec![],  // No properties in SQL_ONLY mode
+                        vec![], // No properties in SQL_ONLY mode
                         graph_rel.shortest_path_mode.clone().map(|m| m.into()),
-                        start_filters_sql,   // Start filters
-                        if graph_rel.shortest_path_mode.is_some() { end_filters_sql } else { None },     // End filters only for shortest path
+                        start_filters_sql, // Start filters
+                        if graph_rel.shortest_path_mode.is_some() {
+                            end_filters_sql
+                        } else {
+                            None
+                        }, // End filters only for shortest path
                         graph_rel.path_variable.clone(),
                         graph_rel.labels.clone(),
                     );
@@ -579,7 +670,8 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
                 };
 
                 // Also extract CTEs from child plans
-                let mut child_ctes = extract_ctes_with_context(&graph_rel.right, last_node_alias, context)?;
+                let mut child_ctes =
+                    extract_ctes_with_context(&graph_rel.right, last_node_alias, context)?;
                 child_ctes.push(var_len_cte);
 
                 return Ok(child_ctes);
@@ -589,26 +681,42 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
             let mut relationship_ctes = vec![];
 
             if let Some(labels) = &graph_rel.labels {
-                eprintln!("DEBUG cte_extraction: GraphRel labels: {:?} (len={})", labels, labels.len());
+                eprintln!(
+                    "DEBUG cte_extraction: GraphRel labels: {:?} (len={})",
+                    labels,
+                    labels.len()
+                );
                 if labels.len() > 1 {
                     // Multiple relationship types: create a UNION CTE
                     let rel_tables = rel_types_to_table_names(labels);
-                    eprintln!("DEBUG cte_extraction: Resolved tables for labels {:?}: {:?}", labels, rel_tables);
+                    eprintln!(
+                        "DEBUG cte_extraction: Resolved tables for labels {:?}: {:?}",
+                        labels, rel_tables
+                    );
 
                     // Create a UNION CTE
-                    let union_queries: Vec<String> = rel_tables.iter().map(|table| {
-                        // Get the correct column names for this table
-                        let (from_col, to_col) = get_relationship_columns_by_table(table)
-                            .unwrap_or(("from_node_id".to_string(), "to_node_id".to_string())); // fallback
-                        format!("SELECT {} as from_node_id, {} as to_node_id FROM {}", from_col, to_col, table)
-                    }).collect();
+                    let union_queries: Vec<String> = rel_tables
+                        .iter()
+                        .map(|table| {
+                            // Get the correct column names for this table
+                            let (from_col, to_col) = get_relationship_columns_by_table(table)
+                                .unwrap_or(("from_node_id".to_string(), "to_node_id".to_string())); // fallback
+                            format!(
+                                "SELECT {} as from_node_id, {} as to_node_id FROM {}",
+                                from_col, to_col, table
+                            )
+                        })
+                        .collect();
 
                     let union_sql = union_queries.join(" UNION ALL ");
-                    let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
+                    let cte_name = format!(
+                        "rel_{}_{}",
+                        graph_rel.left_connection, graph_rel.right_connection
+                    );
 
                     // Format as proper CTE: cte_name AS (union_sql)
                     let formatted_union_sql = format!("{} AS (\n{}\n)", cte_name, union_sql);
-                    
+
                     eprintln!("DEBUG cte_extraction: Generated UNION CTE: {}", cte_name);
 
                     relationship_ctes.push(Cte {
@@ -631,51 +739,74 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
         }
         LogicalPlan::Filter(filter) => {
             // Store the filter in context so GraphRel nodes can access it
-            log::trace!("Filter node detected, storing filter predicate in context: {:?}", filter.predicate);
-            
+            log::trace!(
+                "Filter node detected, storing filter predicate in context: {:?}",
+                filter.predicate
+            );
+
             // 🆕 IMMUTABLE PATTERN: Create new context with filter instead of mutating
             let filter_expr: RenderExpr = filter.predicate.clone().try_into()?;
             log::trace!("Converted to RenderExpr: {:?}", filter_expr);
             let new_context = context.clone().with_filter(filter_expr);
-            
+
             // Extract CTEs with the new context
-            let ctes = extract_ctes_with_context(&filter.input, last_node_alias, &mut new_context.clone())?;
-            
+            let ctes = extract_ctes_with_context(
+                &filter.input,
+                last_node_alias,
+                &mut new_context.clone(),
+            )?;
+
             // Merge end filters from the new context back to the original context
             *context = context.clone().merge_end_filters(&new_context);
-            
+
             Ok(ctes)
         }
         LogicalPlan::Projection(projection) => {
-            log::trace!("Projection node detected, recursing into input type: {}", match &*projection.input {
-                LogicalPlan::Empty => "Empty",
-                LogicalPlan::Scan(_) => "Scan",
-                LogicalPlan::ViewScan(_) => "ViewScan",
-                LogicalPlan::GraphNode(_) => "GraphNode",
-                LogicalPlan::GraphRel(_) => "GraphRel",
-                LogicalPlan::Filter(_) => "Filter",
-                LogicalPlan::Projection(_) => "Projection",
-                LogicalPlan::GraphJoins(_) => "GraphJoins",
-                LogicalPlan::GroupBy(_) => "GroupBy",
-                LogicalPlan::OrderBy(_) => "OrderBy",
-                LogicalPlan::Skip(_) => "Skip",
-                LogicalPlan::Limit(_) => "Limit",
-                LogicalPlan::Cte(_) => "Cte",
-                LogicalPlan::Union(_) => "Union",
-                LogicalPlan::PageRank(_) => "PageRank",
-            });
+            log::trace!(
+                "Projection node detected, recursing into input type: {}",
+                match &*projection.input {
+                    LogicalPlan::Empty => "Empty",
+                    LogicalPlan::Scan(_) => "Scan",
+                    LogicalPlan::ViewScan(_) => "ViewScan",
+                    LogicalPlan::GraphNode(_) => "GraphNode",
+                    LogicalPlan::GraphRel(_) => "GraphRel",
+                    LogicalPlan::Filter(_) => "Filter",
+                    LogicalPlan::Projection(_) => "Projection",
+                    LogicalPlan::GraphJoins(_) => "GraphJoins",
+                    LogicalPlan::GroupBy(_) => "GroupBy",
+                    LogicalPlan::OrderBy(_) => "OrderBy",
+                    LogicalPlan::Skip(_) => "Skip",
+                    LogicalPlan::Limit(_) => "Limit",
+                    LogicalPlan::Cte(_) => "Cte",
+                    LogicalPlan::Union(_) => "Union",
+                    LogicalPlan::PageRank(_) => "PageRank",
+                }
+            );
             extract_ctes_with_context(&projection.input, last_node_alias, context)
         }
-        LogicalPlan::GraphJoins(graph_joins) => extract_ctes_with_context(&graph_joins.input, last_node_alias, context),
-        LogicalPlan::GroupBy(group_by) => extract_ctes_with_context(&group_by.input, last_node_alias, context),
-        LogicalPlan::OrderBy(order_by) => extract_ctes_with_context(&order_by.input, last_node_alias, context),
+        LogicalPlan::GraphJoins(graph_joins) => {
+            extract_ctes_with_context(&graph_joins.input, last_node_alias, context)
+        }
+        LogicalPlan::GroupBy(group_by) => {
+            extract_ctes_with_context(&group_by.input, last_node_alias, context)
+        }
+        LogicalPlan::OrderBy(order_by) => {
+            extract_ctes_with_context(&order_by.input, last_node_alias, context)
+        }
         LogicalPlan::Skip(skip) => extract_ctes_with_context(&skip.input, last_node_alias, context),
-        LogicalPlan::Limit(limit) => extract_ctes_with_context(&limit.input, last_node_alias, context),
+        LogicalPlan::Limit(limit) => {
+            extract_ctes_with_context(&limit.input, last_node_alias, context)
+        }
         LogicalPlan::Cte(logical_cte) => {
             // Use schema from context if available, otherwise create empty schema for tests
             let schema = context.schema().cloned().unwrap_or_else(|| {
                 use crate::graph_catalog::graph_schema::GraphSchema;
-                GraphSchema::build(1, "test".to_string(), std::collections::HashMap::new(), std::collections::HashMap::new())
+                GraphSchema::build(
+                    1,
+                    "test".to_string(),
+                    std::collections::HashMap::new(),
+                    std::collections::HashMap::new(),
+                )
             });
             Ok(vec![Cte {
                 cte_name: logical_cte.name.clone(),
@@ -686,7 +817,11 @@ pub fn extract_ctes_with_context(plan: &LogicalPlan, last_node_alias: &str, cont
         LogicalPlan::Union(union) => {
             let mut ctes = vec![];
             for input_plan in union.inputs.iter() {
-                ctes.append(&mut extract_ctes_with_context(input_plan, last_node_alias, context)?);
+                ctes.append(&mut extract_ctes_with_context(
+                    input_plan,
+                    last_node_alias,
+                    context,
+                )?);
             }
             Ok(ctes)
         }
@@ -717,9 +852,7 @@ pub fn has_variable_length_rel(plan: &LogicalPlan) -> Option<(String, String)> {
 /// Extract path variable from the plan
 pub fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
     match plan {
-        LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
-            rel.path_variable.clone()
-        }
+        LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => rel.path_variable.clone(),
         LogicalPlan::GraphNode(node) => get_path_variable(&node.input),
         LogicalPlan::Filter(filter) => get_path_variable(&filter.input),
         LogicalPlan::Projection(proj) => get_path_variable(&proj.input),
@@ -741,7 +874,9 @@ pub fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
             if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
                 if let Ok(schemas) = schemas_lock.try_read() {
                     if let Some(schema) = schemas.get("default") {
-                        if let Some((label, _)) = get_node_schema_by_table(schema, &view_scan.source_table) {
+                        if let Some((label, _)) =
+                            get_node_schema_by_table(schema, &view_scan.source_table)
+                        {
                             return Some(label.to_string());
                         }
                     }
@@ -771,7 +906,10 @@ pub fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
 }
 
 /// Get node schema information by table name
-pub fn get_node_schema_by_table<'a>(schema: &'a GraphSchema, table_name: &str) -> Option<(&'a str, &'a crate::graph_catalog::graph_schema::NodeSchema)> {
+pub fn get_node_schema_by_table<'a>(
+    schema: &'a GraphSchema,
+    table_name: &str,
+) -> Option<(&'a str, &'a crate::graph_catalog::graph_schema::NodeSchema)> {
     for (label, node_schema) in schema.get_nodes_schemas() {
         if node_schema.table_name == table_name {
             return Some((label.as_str(), node_schema));

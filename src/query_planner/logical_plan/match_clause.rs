@@ -13,38 +13,56 @@ use crate::{
     },
 };
 
-use super::{generate_id, ViewScan};
+use super::{ViewScan, generate_id};
 use std::collections::HashMap;
 
 /// Generate a scan operation for a node pattern
-/// 
+///
 /// This function creates a ViewScan using schema information from plan_ctx.
 /// If the schema lookup fails, it returns an error since node labels should be validated
 /// against the schema.
-fn generate_scan(alias: String, label: Option<String>, plan_ctx: &PlanCtx) -> LogicalPlanResult<Arc<LogicalPlan>> {
-    log::debug!("generate_scan called with alias='{}', label={:?}", alias, label);
-    
+fn generate_scan(
+    alias: String,
+    label: Option<String>,
+    plan_ctx: &PlanCtx,
+) -> LogicalPlanResult<Arc<LogicalPlan>> {
+    log::debug!(
+        "generate_scan called with alias='{}', label={:?}",
+        alias,
+        label
+    );
+
     if let Some(label_str) = &label {
         log::debug!("Trying to create ViewScan for label '{}'", label_str);
         if let Some(view_scan) = try_generate_view_scan(&alias, &label_str, plan_ctx) {
             log::info!("✓ Successfully created ViewScan for label '{}'", label_str);
             Ok(view_scan)
         } else {
-            log::warn!("Schema lookup failed for node label '{}', falling back to regular Scan", label_str);
-            
+            log::warn!(
+                "Schema lookup failed for node label '{}', falling back to regular Scan",
+                label_str
+            );
+
             // Even for fallback Scan, try to get the actual table name from schema
             // Use plan_ctx.schema() instead of GLOBAL_GRAPH_SCHEMA
             let table_name = match plan_ctx.schema().get_node_schema(label_str) {
                 Ok(node_schema) => {
-                    log::info!("✓ Fallback Scan: Using table '{}' for label '{}'", node_schema.table_name, label_str);
+                    log::info!(
+                        "✓ Fallback Scan: Using table '{}' for label '{}'",
+                        node_schema.table_name,
+                        label_str
+                    );
                     Some(node_schema.table_name.clone())
                 }
                 Err(_) => {
-                    log::warn!("Could not find schema for label '{}', using label as table name", label_str);
+                    log::warn!(
+                        "Could not find schema for label '{}', using label as table name",
+                        label_str
+                    );
                     Some(label_str.clone())
                 }
             };
-            
+
             let scan = Scan {
                 table_alias: Some(alias),
                 table_name,
@@ -60,14 +78,19 @@ fn generate_scan(alias: String, label: Option<String>, plan_ctx: &PlanCtx) -> Lo
         };
         Ok(Arc::new(LogicalPlan::Scan(scan)))
     }
-}/// Try to generate a ViewScan for a node by looking up the label in the schema from plan_ctx
+}
+/// Try to generate a ViewScan for a node by looking up the label in the schema from plan_ctx
 /// Returns None if schema is not available or label not found.
-fn try_generate_view_scan(_alias: &str, label: &str, plan_ctx: &PlanCtx) -> Option<Arc<LogicalPlan>> {
+fn try_generate_view_scan(
+    _alias: &str,
+    label: &str,
+    plan_ctx: &PlanCtx,
+) -> Option<Arc<LogicalPlan>> {
     log::debug!("try_generate_view_scan: label='{}'", label);
-    
+
     // Use plan_ctx.schema() instead of GLOBAL_SCHEMAS
     let schema = plan_ctx.schema();
-    
+
     // Look up the node schema for this label
     let node_schema = match schema.get_node_schema(label) {
         Ok(s) => s,
@@ -76,84 +99,127 @@ fn try_generate_view_scan(_alias: &str, label: &str, plan_ctx: &PlanCtx) -> Opti
             return None;
         }
     };
-    
+
     // Log successful resolution
-    log::info!("✓ ViewScan: Resolved label '{}' to table '{}'", label, node_schema.table_name);
-    
+    log::info!(
+        "✓ ViewScan: Resolved label '{}' to table '{}'",
+        label,
+        node_schema.table_name
+    );
+
     // Create property mapping from schema
     let property_mapping = node_schema.property_mappings.clone();
-    
+
     // Create fully qualified table name (database.table)
     let full_table_name = format!("{}.{}", node_schema.database, node_schema.table_name);
     log::debug!("Using fully qualified table name: {}", full_table_name);
-    
+
     // Create ViewScan with the actual table name from schema
     let view_scan = ViewScan::new(
-        full_table_name,  // Use fully qualified table name (database.table)
-        None,                             // No filter condition yet
-        property_mapping,                 // Property mappings from schema
+        full_table_name,                    // Use fully qualified table name (database.table)
+        None,                               // No filter condition yet
+        property_mapping,                   // Property mappings from schema
         node_schema.node_id.column.clone(), // ID column from schema
-        vec!["id".to_string()],          // Basic output schema
-        vec![],                           // No projections yet
+        vec!["id".to_string()],             // Basic output schema
+        vec![],                             // No projections yet
     );
-    
+
     Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))))
 }
 
 /// Try to generate a ViewScan for a relationship by looking up the relationship type in the schema from plan_ctx
-fn try_generate_relationship_view_scan(_alias: &str, rel_type: &str, plan_ctx: &PlanCtx) -> Option<Arc<LogicalPlan>> {
-    log::debug!("try_generate_relationship_view_scan: rel_type='{}'", rel_type);
-    
+fn try_generate_relationship_view_scan(
+    _alias: &str,
+    rel_type: &str,
+    plan_ctx: &PlanCtx,
+) -> Option<Arc<LogicalPlan>> {
+    log::debug!(
+        "try_generate_relationship_view_scan: rel_type='{}'",
+        rel_type
+    );
+
     // Use plan_ctx.schema() instead of GLOBAL_SCHEMAS
     let schema = plan_ctx.schema();
-    
+
     // Look up the relationship schema for this type
     let rel_schema = match schema.get_rel_schema(rel_type) {
         Ok(s) => s,
         Err(e) => {
-            log::warn!("Could not find relationship schema for type '{}': {:?}", rel_type, e);
+            log::warn!(
+                "Could not find relationship schema for type '{}': {:?}",
+                rel_type,
+                e
+            );
             return None;
         }
     };
-    
+
     // Log successful resolution
-    log::info!("✓ Relationship ViewScan: Resolved type '{}' to table '{}'", rel_type, rel_schema.table_name);
-    
+    log::info!(
+        "✓ Relationship ViewScan: Resolved type '{}' to table '{}'",
+        rel_type,
+        rel_schema.table_name
+    );
+
     // Create property mapping (initially empty - will be populated during projection planning)
     let property_mapping = HashMap::new();
-    
+
     // Create fully qualified table name (database.table)
     let full_table_name = format!("{}.{}", rel_schema.database, rel_schema.table_name);
-    log::debug!("Using fully qualified relationship table name: {}", full_table_name);
-    
+    log::debug!(
+        "Using fully qualified relationship table name: {}",
+        full_table_name
+    );
+
     // Create ViewScan for relationship with from/to columns
     let view_scan = ViewScan::new_relationship(
-        full_table_name,  // Use fully qualified table name (database.table)
-        None,                             // No filter condition yet
-        property_mapping,                 // Empty for now
-        rel_schema.from_id.clone(),       // Use from_id as id_column for relationships
-        vec!["id".to_string()],          // Output schema - relationships have "id" property
-        vec![],                           // No projections yet
-        rel_schema.from_id.clone(),       // From column from schema
-        rel_schema.to_id.clone(),         // To column from schema
+        full_table_name,            // Use fully qualified table name (database.table)
+        None,                       // No filter condition yet
+        property_mapping,           // Empty for now
+        rel_schema.from_id.clone(), // Use from_id as id_column for relationships
+        vec!["id".to_string()],     // Output schema - relationships have "id" property
+        vec![],                     // No projections yet
+        rel_schema.from_id.clone(), // From column from schema
+        rel_schema.to_id.clone(),   // To column from schema
     );
-    
+
     Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))))
 }
 
 /// Generate a relationship center (ViewScan if possible, otherwise regular Scan)
-fn generate_relationship_center(rel_alias: &str, rel_labels: &Option<Vec<String>>, left_connection: &str, right_connection: &str, plan_ctx: &PlanCtx) -> LogicalPlanResult<Arc<LogicalPlan>> {
-    log::debug!("Creating relationship center for alias '{}', labels: {:?}", rel_alias, rel_labels);
+fn generate_relationship_center(
+    rel_alias: &str,
+    rel_labels: &Option<Vec<String>>,
+    left_connection: &str,
+    right_connection: &str,
+    plan_ctx: &PlanCtx,
+) -> LogicalPlanResult<Arc<LogicalPlan>> {
+    log::debug!(
+        "Creating relationship center for alias '{}', labels: {:?}",
+        rel_alias,
+        rel_labels
+    );
     // Try to generate a ViewScan for the relationship if we have a single type
     if let Some(labels) = rel_labels {
         log::debug!("Relationship has {} labels: {:?}", labels.len(), labels);
         if labels.len() == 1 {
-            log::debug!("Trying to create Relationship ViewScan for type '{}'", labels[0]);
-            if let Some(view_scan) = try_generate_relationship_view_scan(rel_alias, &labels[0], plan_ctx) {
-                log::info!("✓ Successfully created Relationship ViewScan for type '{}'", labels[0]);
+            log::debug!(
+                "Trying to create Relationship ViewScan for type '{}'",
+                labels[0]
+            );
+            if let Some(view_scan) =
+                try_generate_relationship_view_scan(rel_alias, &labels[0], plan_ctx)
+            {
+                log::info!(
+                    "✓ Successfully created Relationship ViewScan for type '{}'",
+                    labels[0]
+                );
                 return Ok(view_scan);
             } else {
-                log::warn!("Relationship ViewScan creation failed for type '{}', falling back to regular Scan", labels[0]);
+                log::warn!(
+                    "Relationship ViewScan creation failed for type '{}', falling back to regular Scan",
+                    labels[0]
+                );
                 // Fallback to regular Scan when schema is not available (e.g., in tests)
                 let scan = Scan {
                     table_alias: Some(rel_alias.to_string()),
@@ -162,7 +228,10 @@ fn generate_relationship_center(rel_alias: &str, rel_labels: &Option<Vec<String>
                 return Ok(Arc::new(LogicalPlan::Scan(scan)));
             }
         } else {
-            log::debug!("Multiple relationship types ({}), will be handled by CTE generation", labels.len());
+            log::debug!(
+                "Multiple relationship types ({}), will be handled by CTE generation",
+                labels.len()
+            );
             // For multiple relationships, create a placeholder scan that will be replaced by CTE generation
             // Use the CTE name as the table name so the plan builder knows to use the CTE
             let cte_name = format!("rel_{}_{}", left_connection, right_connection);
@@ -220,7 +289,15 @@ fn traverse_connected_pattern<'a>(
     plan_ctx: &mut PlanCtx,
     path_pattern_idx: usize,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
-    traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, path_pattern_idx, None, None, false)
+    traverse_connected_pattern_with_mode(
+        connected_patterns,
+        plan,
+        plan_ctx,
+        path_pattern_idx,
+        None,
+        None,
+        false,
+    )
 }
 
 fn traverse_connected_pattern_with_mode<'a>(
@@ -237,10 +314,10 @@ fn traverse_connected_pattern_with_mode<'a>(
     eprintln!("║ connected_patterns.len() = {}", connected_patterns.len());
     eprintln!("║ Current plan type: {:?}", std::mem::discriminant(&*plan));
     eprintln!("╚════════════════════════════════════════\n");
-    
+
     for (pattern_idx, connected_pattern) in connected_patterns.iter().enumerate() {
         eprintln!("┌─ Processing connected_pattern #{}", pattern_idx);
-        
+
         let start_node_ref = connected_pattern.start_node.borrow();
         let start_node_label = start_node_ref.label.map(|val| val.to_string());
         let start_node_alias = if let Some(alias) = start_node_ref.name {
@@ -248,9 +325,12 @@ fn traverse_connected_pattern_with_mode<'a>(
         } else {
             generate_id()
         };
-        
-        eprintln!("│ Start node: alias='{}', label={:?}", start_node_alias, start_node_label);
-        
+
+        eprintln!(
+            "│ Start node: alias='{}', label={:?}",
+            start_node_alias, start_node_label
+        );
+
         let start_node_props = start_node_ref
             .properties
             .clone()
@@ -263,11 +343,16 @@ fn traverse_connected_pattern_with_mode<'a>(
         } else {
             generate_id()
         };
-        let rel_labels = rel.labels.as_ref().map(|labels| labels.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        
-        eprintln!("│ Relationship: alias='{}', labels={:?}, direction={:?}", 
-                 rel_alias, rel_labels, rel.direction);
-        
+        let rel_labels = rel
+            .labels
+            .as_ref()
+            .map(|labels| labels.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+
+        eprintln!(
+            "│ Relationship: alias='{}', labels={:?}, direction={:?}",
+            rel_alias, rel_labels, rel.direction
+        );
+
         log::debug!("Parsed relationship labels: {:?}", rel_labels);
         let rel_properties = rel
             .properties
@@ -282,9 +367,12 @@ fn traverse_connected_pattern_with_mode<'a>(
             generate_id()
         };
         let end_node_label = end_node_ref.label.map(|val| val.to_string());
-        
-        eprintln!("│ End node: alias='{}', label={:?}", end_node_alias, end_node_label);
-        
+
+        eprintln!(
+            "│ End node: alias='{}', label={:?}",
+            end_node_alias, end_node_label
+        );
+
         let end_node_props = end_node_ref
             .properties
             .clone()
@@ -324,37 +412,55 @@ fn traverse_connected_pattern_with_mode<'a>(
                     // (a)-[:r1]->(b)-[:r2]->(c): existing plan (a-r1-b) on left, new node (c) on right
                     (
                         plan.clone(),
-                        Arc::new(LogicalPlan::GraphNode(GraphNode { 
-                            input: generate_scan(end_node_alias.clone(), end_node_label.clone(), plan_ctx)?, 
-                            alias: end_node_alias.clone()
-                        }))
+                        Arc::new(LogicalPlan::GraphNode(GraphNode {
+                            input: generate_scan(
+                                end_node_alias.clone(),
+                                end_node_label.clone(),
+                                plan_ctx,
+                            )?,
+                            alias: end_node_alias.clone(),
+                        })),
                     )
-                },
+                }
                 ast::Direction::Incoming => {
                     // (c)<-[:r2]-(b)<-[:r1]-(a): new node (c) on left, existing plan (b-r1-a) on right
                     (
-                        Arc::new(LogicalPlan::GraphNode(GraphNode { 
-                            input: generate_scan(end_node_alias.clone(), end_node_label.clone(), plan_ctx)?, 
-                            alias: end_node_alias.clone()
+                        Arc::new(LogicalPlan::GraphNode(GraphNode {
+                            input: generate_scan(
+                                end_node_alias.clone(),
+                                end_node_label.clone(),
+                                plan_ctx,
+                            )?,
+                            alias: end_node_alias.clone(),
                         })),
-                        plan.clone()
+                        plan.clone(),
                     )
-                },
+                }
                 ast::Direction::Either => {
                     // Either direction: existing plan on left, new node on right
                     (
                         plan.clone(),
-                        Arc::new(LogicalPlan::GraphNode(GraphNode { 
-                            input: generate_scan(end_node_alias.clone(), end_node_label.clone(), plan_ctx)?, 
-                            alias: end_node_alias.clone()
-                        }))
+                        Arc::new(LogicalPlan::GraphNode(GraphNode {
+                            input: generate_scan(
+                                end_node_alias.clone(),
+                                end_node_label.clone(),
+                                plan_ctx,
+                            )?,
+                            alias: end_node_alias.clone(),
+                        })),
                     )
-                },
+                }
             };
 
             let graph_rel_node = GraphRel {
                 left: left_node,
-                center: generate_relationship_center(&rel_alias, &rel_labels, &left_conn, &right_conn, plan_ctx)?,
+                center: generate_relationship_center(
+                    &rel_alias,
+                    &rel_labels,
+                    &left_conn,
+                    &right_conn,
+                    plan_ctx,
+                )?,
                 right: right_node,
                 alias: rel_alias.clone(),
                 direction: rel.direction.clone().into(),
@@ -385,16 +491,16 @@ fn traverse_connected_pattern_with_mode<'a>(
                     path_var.to_string(),
                     TableCtx::build(
                         path_var.to_string(),
-                        None.map(|l| vec![l]),  // Path variables don't have labels
-                        vec![], // Path variables don't have properties
-                        false,  // Not a relationship
-                        true,   // Explicitly named by user
+                        None.map(|l| vec![l]), // Path variables don't have labels
+                        vec![],                // Path variables don't have properties
+                        false,                 // Not a relationship
+                        true,                  // Explicitly named by user
                     ),
                 );
             }
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
-            
+
             eprintln!("│ ✓ Created GraphRel (start node already in context)");
             eprintln!("│   Plan is now: GraphRel");
             eprintln!("└─ Pattern #{} complete\n", pattern_idx);
@@ -425,7 +531,13 @@ fn traverse_connected_pattern_with_mode<'a>(
 
             let graph_rel_node = GraphRel {
                 left: Arc::new(LogicalPlan::GraphNode(start_graph_node)),
-                center: generate_relationship_center(&rel_alias, &rel_labels, &start_node_alias, &end_node_alias, plan_ctx)?,
+                center: generate_relationship_center(
+                    &rel_alias,
+                    &rel_labels,
+                    &start_node_alias,
+                    &end_node_alias,
+                    plan_ctx,
+                )?,
                 right: plan.clone(),
                 alias: rel_alias.clone(),
                 direction: rel.direction.clone().into(),
@@ -437,12 +549,18 @@ fn traverse_connected_pattern_with_mode<'a>(
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization
                 labels: rel_labels.clone(),
-                is_optional: if plan_ctx.is_optional_match_mode() { 
-                    log::warn!("CREATING GraphRel with is_optional=Some(true), mode={}", plan_ctx.is_optional_match_mode());
-                    Some(true) 
-                } else { 
-                    log::warn!("CREATING GraphRel with is_optional=None, mode={}", plan_ctx.is_optional_match_mode());
-                    None 
+                is_optional: if plan_ctx.is_optional_match_mode() {
+                    log::warn!(
+                        "CREATING GraphRel with is_optional=Some(true), mode={}",
+                        plan_ctx.is_optional_match_mode()
+                    );
+                    Some(true)
+                } else {
+                    log::warn!(
+                        "CREATING GraphRel with is_optional=None, mode={}",
+                        plan_ctx.is_optional_match_mode()
+                    );
+                    None
                 },
             };
             plan_ctx.insert_table_ctx(
@@ -462,16 +580,16 @@ fn traverse_connected_pattern_with_mode<'a>(
                     path_var.to_string(),
                     TableCtx::build(
                         path_var.to_string(),
-                        None.map(|l| vec![l]),  // Path variables don't have labels
-                        vec![], // Path variables don't have properties
-                        false,  // Not a relationship
-                        true,   // Explicitly named by user
+                        None.map(|l| vec![l]), // Path variables don't have labels
+                        vec![],                // Path variables don't have properties
+                        false,                 // Not a relationship
+                        true,                  // Explicitly named by user
                     ),
                 );
             }
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
-            
+
             eprintln!("│ ✓ Created GraphRel (end node already in context)");
             eprintln!("│   Plan is now: GraphRel");
             eprintln!("└─ Pattern #{} complete\n", pattern_idx);
@@ -538,11 +656,17 @@ fn traverse_connected_pattern_with_mode<'a>(
 
             let graph_rel_node = GraphRel {
                 left: left_node,
-                center: generate_relationship_center(&rel_alias, &rel_labels, &left_conn, &right_conn, plan_ctx)?,
+                center: generate_relationship_center(
+                    &rel_alias,
+                    &rel_labels,
+                    &left_conn,
+                    &right_conn,
+                    plan_ctx,
+                )?,
                 right: right_node,
                 alias: rel_alias.clone(),
                 direction: rel.direction.clone().into(),
-                left_connection: left_conn.clone(),  // Left node is the start node (left_conn for Outgoing)
+                left_connection: left_conn.clone(), // Left node is the start node (left_conn for Outgoing)
                 right_connection: right_conn.clone(), // Right node is the end node (right_conn for Outgoing)
                 is_rel_anchor: false,
                 variable_length: rel.variable_length.clone().map(|v| v.into()),
@@ -569,22 +693,22 @@ fn traverse_connected_pattern_with_mode<'a>(
                     path_var.to_string(),
                     TableCtx::build(
                         path_var.to_string(),
-                        None.map(|l| vec![l]),  // Path variables don't have labels
-                        vec![], // Path variables don't have properties
-                        false,  // Not a relationship
-                        true,   // Explicitly named by user
+                        None.map(|l| vec![l]), // Path variables don't have labels
+                        vec![],                // Path variables don't have properties
+                        false,                 // Not a relationship
+                        true,                  // Explicitly named by user
                     ),
                 );
             }
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
-            
+
             eprintln!("│ ✓ Created GraphRel (first pattern - disconnected)");
             eprintln!("│   Plan is now: GraphRel");
             eprintln!("└─ Pattern #{} complete\n", pattern_idx);
         }
     }
-    
+
     eprintln!("╔════════════════════════════════════════");
     eprintln!("║ traverse_connected_pattern_with_mode COMPLETE");
     eprintln!("║ Final plan type: {:?}", std::mem::discriminant(&*plan));
@@ -625,7 +749,7 @@ fn traverse_node_pattern(
             node_alias.clone(),
             TableCtx::build(
                 node_alias.clone(),
-                node_label.clone().map(|l| vec![l]),  // Clone here so we can use it below
+                node_label.clone().map(|l| vec![l]), // Clone here so we can use it below
                 node_props,
                 false,
                 node_pattern.name.is_some(),
@@ -633,7 +757,7 @@ fn traverse_node_pattern(
         );
 
         let graph_node = GraphNode {
-            input: generate_scan(node_alias.clone(), node_label, plan_ctx)?,  // Pass the label here!
+            input: generate_scan(node_alias.clone(), node_label, plan_ctx)?, // Pass the label here!
             alias: node_alias,
         };
         Ok(Arc::new(LogicalPlan::GraphNode(graph_node)))
@@ -661,14 +785,22 @@ pub fn evaluate_match_clause_with_optional<'a>(
                 plan = traverse_node_pattern(node_pattern, plan, plan_ctx)?;
             }
             ast::PathPattern::ConnectedPattern(connected_patterns) => {
-                plan = traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, idx, None, match_clause.path_variable, is_optional)?;
+                plan = traverse_connected_pattern_with_mode(
+                    connected_patterns,
+                    plan,
+                    plan_ctx,
+                    idx,
+                    None,
+                    match_clause.path_variable,
+                    is_optional,
+                )?;
             }
             ast::PathPattern::ShortestPath(inner_pattern) => {
                 // Process inner pattern with shortest path mode enabled
                 plan = evaluate_single_path_pattern_with_mode(
-                    inner_pattern.as_ref(), 
-                    plan, 
-                    plan_ctx, 
+                    inner_pattern.as_ref(),
+                    plan,
+                    plan_ctx,
                     idx,
                     Some(ShortestPathMode::Shortest),
                     match_clause.path_variable,
@@ -677,9 +809,9 @@ pub fn evaluate_match_clause_with_optional<'a>(
             ast::PathPattern::AllShortestPaths(inner_pattern) => {
                 // Process inner pattern with all shortest paths mode enabled
                 plan = evaluate_single_path_pattern_with_mode(
-                    inner_pattern.as_ref(), 
-                    plan, 
-                    plan_ctx, 
+                    inner_pattern.as_ref(),
+                    plan,
+                    plan_ctx,
                     idx,
                     Some(ShortestPathMode::AllShortest),
                     match_clause.path_variable,
@@ -702,18 +834,24 @@ fn evaluate_single_path_pattern_with_mode<'a>(
     path_variable: Option<&str>,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
     match path_pattern {
-        ast::PathPattern::Node(node_pattern) => {
-            traverse_node_pattern(node_pattern, plan, plan_ctx)
-        }
+        ast::PathPattern::Node(node_pattern) => traverse_node_pattern(node_pattern, plan, plan_ctx),
         ast::PathPattern::ConnectedPattern(connected_patterns) => {
-            traverse_connected_pattern_with_mode(connected_patterns, plan, plan_ctx, idx, shortest_path_mode, path_variable, false)
+            traverse_connected_pattern_with_mode(
+                connected_patterns,
+                plan,
+                plan_ctx,
+                idx,
+                shortest_path_mode,
+                path_variable,
+                false,
+            )
         }
         ast::PathPattern::ShortestPath(inner) => {
             // Recursively unwrap with shortest path mode
             evaluate_single_path_pattern_with_mode(
-                inner.as_ref(), 
-                plan, 
-                plan_ctx, 
+                inner.as_ref(),
+                plan,
+                plan_ctx,
                 idx,
                 Some(ShortestPathMode::Shortest),
                 path_variable,
@@ -722,9 +860,9 @@ fn evaluate_single_path_pattern_with_mode<'a>(
         ast::PathPattern::AllShortestPaths(inner) => {
             // Recursively unwrap with all shortest paths mode
             evaluate_single_path_pattern_with_mode(
-                inner.as_ref(), 
-                plan, 
-                plan_ctx, 
+                inner.as_ref(),
+                plan,
+                plan_ctx,
                 idx,
                 Some(ShortestPathMode::AllShortest),
                 path_variable,
@@ -920,7 +1058,8 @@ mod tests {
         let node_pattern = ast::NodePattern {
             name: None, // Empty node
             label: Some("Person"),
-            properties: None,        };
+            properties: None,
+        };
 
         let result = traverse_node_pattern(&node_pattern, initial_plan, &mut plan_ctx);
         assert!(result.is_err());
@@ -938,12 +1077,14 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("user"),
             label: Some("Person"),
-            properties: None,        };
+            properties: None,
+        };
 
         let end_node = ast::NodePattern {
             name: Some("company"),
             label: Some("Organization"),
-            properties: None,        };
+            properties: None,
+        };
 
         let relationship = ast::RelationshipPattern {
             name: Some("works_at"),
@@ -970,8 +1111,8 @@ mod tests {
             LogicalPlan::GraphRel(graph_rel) => {
                 assert_eq!(graph_rel.alias, "works_at");
                 assert_eq!(graph_rel.direction, Direction::Outgoing);
-                assert_eq!(graph_rel.left_connection, "user");  // Left node is the start node (user) for outgoing relationships
-                assert_eq!(graph_rel.right_connection, "company");    // Right node is the end node (company) for outgoing relationships
+                assert_eq!(graph_rel.left_connection, "user"); // Left node is the start node (user) for outgoing relationships
+                assert_eq!(graph_rel.right_connection, "company"); // Right node is the end node (company) for outgoing relationships
                 assert!(!graph_rel.is_rel_anchor);
 
                 // Check left side (start node for outgoing relationships)
@@ -1022,12 +1163,14 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("user"),      // This exists in plan_ctx
             label: Some("Employee"), // Different label
-            properties: None,        };
+            properties: None,
+        };
 
         let end_node = ast::NodePattern {
             name: Some("project"),
             label: Some("Project"),
-            properties: None,        };
+            properties: None,
+        };
 
         let relationship = ast::RelationshipPattern {
             name: Some("assigned_to"),
@@ -1081,12 +1224,14 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("user1"),
             label: Some("Person"),
-            properties: None,        };
+            properties: None,
+        };
 
         let end_node = ast::NodePattern {
             name: Some("user2"),
             label: Some("Person"),
-            properties: None,        };
+            properties: None,
+        };
 
         let relationship = ast::RelationshipPattern {
             name: Some("knows"),
@@ -1133,12 +1278,14 @@ mod tests {
         let start_node = ast::NodePattern {
             name: Some("admin"), // Same as above - should connect
             label: None,
-            properties: None,        };
+            properties: None,
+        };
 
         let end_node = ast::NodePattern {
             name: Some("system"),
             label: Some("System"),
-            properties: None,        };
+            properties: None,
+        };
 
         let relationship = ast::RelationshipPattern {
             name: Some("manages"),
@@ -1235,8 +1382,13 @@ mod tests {
             HashMap::new(),
         ));
         let plan_ctx = PlanCtx::new(schema);
-        
-        let scan = generate_scan("customers".to_string(), Some("Customer".to_string()), &plan_ctx).unwrap();
+
+        let scan = generate_scan(
+            "customers".to_string(),
+            Some("Customer".to_string()),
+            &plan_ctx,
+        )
+        .unwrap();
 
         match scan.as_ref() {
             LogicalPlan::Scan(scan_plan) => {
@@ -1247,4 +1399,3 @@ mod tests {
         }
     }
 }
-

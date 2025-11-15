@@ -23,7 +23,10 @@ impl AnalyzerPass for SchemaInference {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        println!("SchemaInference: analyze_with_graph_schema called with plan: {:?}", logical_plan);
+        println!(
+            "SchemaInference: analyze_with_graph_schema called with plan: {:?}",
+            logical_plan
+        );
         self.infer_schema(logical_plan.clone(), plan_ctx, graph_schema)?;
 
         Self::push_inferred_table_names_to_scan(logical_plan, plan_ctx)
@@ -71,7 +74,7 @@ impl SchemaInference {
                         pass: Pass::SchemaInference,
                         source: e,
                     })?;
-                
+
                 // Get the actual table name from schema, not the label
                 let table_name = if let Some(label) = table_ctx.get_label_opt() {
                     // Use the graph_schema parameter that was passed to analyze_with_graph_schema
@@ -79,7 +82,8 @@ impl SchemaInference {
                     // but we can get it from plan_ctx
                     if let Ok(node_schema) = plan_ctx.schema().get_node_schema(&label) {
                         // Use fully qualified table name: database.table_name
-                        let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
+                        let fully_qualified =
+                            format!("{}.{}", node_schema.database, node_schema.table_name);
                         Some(fully_qualified)
                     } else {
                         Some(label)
@@ -87,7 +91,7 @@ impl SchemaInference {
                 } else {
                     None
                 };
-                
+
                 Transformed::Yes(Arc::new(LogicalPlan::Scan(Scan {
                     table_name,
                     table_alias: scan.table_alias.clone(),
@@ -170,7 +174,7 @@ impl SchemaInference {
                     },
                     _ => true,
                 };
-                
+
                 let right_has_table = match graph_rel.right.as_ref() {
                     LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
                         LogicalPlan::Scan(scan) => scan.table_name.is_some(),
@@ -179,15 +183,17 @@ impl SchemaInference {
                     },
                     _ => true,
                 };
-                
+
                 // Skip schema inference if BOTH nodes are anonymous (no table names)
                 if !left_has_table && !right_has_table {
                     return Ok(());
                 }
 
                 // Try to get table contexts - may not exist yet
-                let left_table_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone()));
-                let right_table_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
+                let left_table_ctx_opt =
+                    plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone()));
+                let right_table_ctx_opt =
+                    plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
 
                 // If contexts don't exist yet, skip (will be handled in later passes)
                 if left_table_ctx_opt.is_err() || right_table_ctx_opt.is_err() {
@@ -206,7 +212,8 @@ impl SchemaInference {
 
                 // Skip label inference for relationships with multiple types
                 // (e.g., [:FOLLOWS|FRIENDS_WITH]) to preserve the multiple labels
-                let should_infer_labels = !rel_table_ctx.get_labels()
+                let should_infer_labels = !rel_table_ctx
+                    .get_labels()
                     .map(|labels| labels.len() > 1)
                     .unwrap_or(false);
 
@@ -223,13 +230,12 @@ impl SchemaInference {
                         (&graph_rel.alias, rel_label),
                         (right_alias, right_label),
                     ] {
-                        let table_ctx =
-                            plan_ctx
-                                .get_mut_table_ctx(alias)
-                                .map_err(|e| AnalyzerError::PlanCtx {
-                                    pass: Pass::SchemaInference,
-                                    source: e,
-                                })?;
+                        let table_ctx = plan_ctx.get_mut_table_ctx(alias).map_err(|e| {
+                            AnalyzerError::PlanCtx {
+                                pass: Pass::SchemaInference,
+                                source: e,
+                            }
+                        })?;
                         table_ctx.set_labels(Some(vec![label]));
                     }
                 }

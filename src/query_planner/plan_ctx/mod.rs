@@ -1,6 +1,10 @@
 pub mod errors;
 
-use std::{collections::{HashMap, HashSet}, fmt, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    sync::Arc,
+};
 
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
@@ -50,9 +54,13 @@ impl TableCtx {
     }
 
     pub fn get_label_str(&self) -> Result<String, PlanCtxError> {
-        self.labels.as_ref().and_then(|v| v.first()).cloned().ok_or(PlanCtxError::Label {
-            alias: self.alias.clone(),
-        })
+        self.labels
+            .as_ref()
+            .and_then(|v| v.first())
+            .cloned()
+            .ok_or(PlanCtxError::Label {
+                alias: self.alias.clone(),
+            })
     }
 
     pub fn get_labels(&self) -> Option<&Vec<String>> {
@@ -136,9 +144,12 @@ pub struct PlanCtx {
 
 impl PlanCtx {
     pub fn insert_table_ctx(&mut self, alias: String, table_ctx: TableCtx) {
-        eprintln!("DEBUG PlanCtx::insert_table_ctx: alias='{}', in_optional_match_mode={}", alias, self.in_optional_match_mode);
+        eprintln!(
+            "DEBUG PlanCtx::insert_table_ctx: alias='{}', in_optional_match_mode={}",
+            alias, self.in_optional_match_mode
+        );
         self.alias_table_ctx_map.insert(alias.clone(), table_ctx);
-        
+
         // Auto-mark as optional if we're in OPTIONAL MATCH mode
         if self.in_optional_match_mode {
             eprintln!("DEBUG PlanCtx: Auto-marking '{}' as optional", alias);
@@ -290,12 +301,8 @@ impl PlanCtx {
     /// Create an empty PlanCtx with an empty schema (for tests only)
     pub fn default() -> Self {
         use crate::graph_catalog::graph_schema::GraphSchema;
-        let empty_schema = GraphSchema::build(
-            1,
-            "test".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-        );
+        let empty_schema =
+            GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
         PlanCtx {
             alias_table_ctx_map: HashMap::new(),
             optional_aliases: HashSet::new(),

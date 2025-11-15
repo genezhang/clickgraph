@@ -1,10 +1,10 @@
-use std::{fmt, sync::Arc};
 use serde::{Deserialize, Serialize};
+use std::{fmt, sync::Arc};
 
 // Import serde_arc modules for serialization
 #[path = "../../utils/serde_arc.rs"]
 mod serde_arc;
-#[path = "../../utils/serde_arc_vec.rs"] 
+#[path = "../../utils/serde_arc_vec.rs"]
 mod serde_arc_vec;
 
 use crate::{
@@ -14,7 +14,9 @@ use crate::{
         OrerByOrder as CypherOrerByOrder, ReturnItem as CypherReturnItem, WithItem,
     },
     query_planner::{
-        logical_expr::{ColumnAlias, Direction, Literal, LogicalExpr, Operator, OperatorApplication},
+        logical_expr::{
+            ColumnAlias, Direction, Literal, LogicalExpr, Operator, OperatorApplication,
+        },
         transformed::Transformed,
     },
 };
@@ -30,17 +32,17 @@ use super::plan_ctx::PlanCtx;
 
 pub mod errors;
 // pub mod logical_plan;
+mod filter_view;
 mod match_clause;
 mod optional_match_clause;
 mod order_by_clause;
 pub mod plan_builder;
+mod projection_view;
 mod return_clause;
 mod skip_n_limit_clause;
+mod view_scan;
 mod where_clause;
 mod with_clause;
-mod view_scan;
-mod filter_view;
-mod projection_view;
 
 pub use view_scan::ViewScan;
 
@@ -50,8 +52,6 @@ pub fn evaluate_query(
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
     plan_builder::build_logical_plan(&query_ast, schema)
 }
-
-
 
 pub fn generate_id() -> String {
     format!(
@@ -125,10 +125,10 @@ pub struct GraphRel {
     pub is_rel_anchor: bool,
     pub variable_length: Option<VariableLengthSpec>,
     pub shortest_path_mode: Option<ShortestPathMode>,
-    pub path_variable: Option<String>,  // For: MATCH p = pattern, stores "p"
-    pub where_predicate: Option<LogicalExpr>,  // WHERE clause predicates for filter placement in CTEs
-    pub labels: Option<Vec<String>>,  // Relationship type labels for [:TYPE1|TYPE2] patterns
-    pub is_optional: Option<bool>,  // For OPTIONAL MATCH: marks this relationship as optional (LEFT JOIN)
+    pub path_variable: Option<String>, // For: MATCH p = pattern, stores "p"
+    pub where_predicate: Option<LogicalExpr>, // WHERE clause predicates for filter placement in CTEs
+    pub labels: Option<Vec<String>>, // Relationship type labels for [:TYPE1|TYPE2] patterns
+    pub is_optional: Option<bool>, // For OPTIONAL MATCH: marks this relationship as optional (LEFT JOIN)
 }
 
 /// Mode for shortest path queries
@@ -265,13 +265,13 @@ pub struct PageRank {
 pub struct GraphJoins {
     #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
-    
+
     /// DEPRECATED: These pre-computed joins are incorrect for multi-hop patterns.
     /// Only used as fallback for extract_from(). The correct approach is to call
     /// input.extract_joins() which handles nested GraphRel recursively.
     /// TODO: Remove this field in future refactor after validating all tests pass.
     pub joins: Vec<Join>,
-    
+
     /// Aliases that came from OPTIONAL MATCH clauses (for correct FROM table selection)
     pub optional_aliases: std::collections::HashSet<String>,
 }
@@ -627,19 +627,18 @@ impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
                     Some(format!("{}.{}", prop_access.base, prop_access.key))
                 }
                 // For simple variables like "u", use "u" as alias
-                CypherExpression::Variable(var) => {
-                    Some(var.to_string())
-                }
+                CypherExpression::Variable(var) => Some(var.to_string()),
                 // For function calls, could infer from function name, but keep None for now
                 _ => None,
             }
         } else {
             None
         };
-        
+
         ProjectionItem {
             expression: value.expression.into(),
-            col_alias: value.alias
+            col_alias: value
+                .alias
                 .map(|alias| ColumnAlias(alias.to_string()))
                 .or_else(|| inferred_alias.map(ColumnAlias)),
             // belongs_to_table: None, // This will be set during planning phase
@@ -799,7 +798,10 @@ impl LogicalPlan {
             LogicalPlan::Cte(cte) => format!("Cte({})", cte.name),
             LogicalPlan::GraphJoins(_) => "GraphJoins".to_string(),
             LogicalPlan::Union(_) => "Union".to_string(),
-            LogicalPlan::PageRank(pagerank) => format!("PageRank(iterations: {}, damping: {:.2})", pagerank.iterations, pagerank.damping_factor),
+            LogicalPlan::PageRank(pagerank) => format!(
+                "PageRank(iterations: {}, damping: {:.2})",
+                pagerank.iterations, pagerank.damping_factor
+            ),
             LogicalPlan::ViewScan(scan) => format!("ViewScan({:?})", scan.source_table),
         }
     }
@@ -817,9 +819,7 @@ impl LogicalPlan {
                     || graph_rel.center.contains_variable_length_path()
                     || graph_rel.right.contains_variable_length_path()
             }
-            LogicalPlan::GraphNode(graph_node) => {
-                graph_node.input.contains_variable_length_path()
-            }
+            LogicalPlan::GraphNode(graph_node) => graph_node.input.contains_variable_length_path(),
             LogicalPlan::Filter(filter) => filter.input.contains_variable_length_path(),
             LogicalPlan::Projection(proj) => proj.input.contains_variable_length_path(),
             LogicalPlan::GraphJoins(joins) => joins.input.contains_variable_length_path(),
@@ -833,7 +833,10 @@ impl LogicalPlan {
                 .iter()
                 .any(|input| input.contains_variable_length_path()),
             // Leaf nodes
-            LogicalPlan::Scan(_) | LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => false,
+            LogicalPlan::Scan(_)
+            | LogicalPlan::ViewScan(_)
+            | LogicalPlan::Empty
+            | LogicalPlan::PageRank(_) => false,
         }
     }
 }

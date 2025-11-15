@@ -20,10 +20,9 @@ use crate::{
 };
 
 use super::{
-    AppState, graph_catalog,
+    AppState, GLOBAL_QUERY_CACHE, graph_catalog,
     models::{OutputFormat, QueryRequest, SqlOnlyResponse},
-    parameter_substitution,
-    query_cache, GLOBAL_QUERY_CACHE,
+    parameter_substitution, query_cache,
 };
 
 /// Performance metrics for query execution
@@ -66,24 +65,49 @@ impl QueryPerformanceMetrics {
             self.execution_time * 1000.0,
             self.query_type,
             self.sql_queries_count,
-            self.result_rows.map_or("N/A".to_string(), |r| r.to_string())
+            self.result_rows
+                .map_or("N/A".to_string(), |r| r.to_string())
         );
 
         if log::log_enabled!(log::Level::Debug) {
-            log::debug!("Performance breakdown for query: {}", query.chars().take(100).collect::<String>());
+            log::debug!(
+                "Performance breakdown for query: {}",
+                query.chars().take(100).collect::<String>()
+            );
         }
     }
 
     pub fn to_headers(&self) -> Vec<(String, String)> {
         vec![
-            ("X-Query-Total-Time".to_string(), format!("{:.3}ms", self.total_time * 1000.0)),
-            ("X-Query-Parse-Time".to_string(), format!("{:.3}ms", self.parse_time * 1000.0)),
-            ("X-Query-Planning-Time".to_string(), format!("{:.3}ms", self.planning_time * 1000.0)),
-            ("X-Query-Render-Time".to_string(), format!("{:.3}ms", self.render_time * 1000.0)),
-            ("X-Query-SQL-Gen-Time".to_string(), format!("{:.3}ms", self.sql_generation_time * 1000.0)),
-            ("X-Query-Execution-Time".to_string(), format!("{:.3}ms", self.execution_time * 1000.0)),
+            (
+                "X-Query-Total-Time".to_string(),
+                format!("{:.3}ms", self.total_time * 1000.0),
+            ),
+            (
+                "X-Query-Parse-Time".to_string(),
+                format!("{:.3}ms", self.parse_time * 1000.0),
+            ),
+            (
+                "X-Query-Planning-Time".to_string(),
+                format!("{:.3}ms", self.planning_time * 1000.0),
+            ),
+            (
+                "X-Query-Render-Time".to_string(),
+                format!("{:.3}ms", self.render_time * 1000.0),
+            ),
+            (
+                "X-Query-SQL-Gen-Time".to_string(),
+                format!("{:.3}ms", self.sql_generation_time * 1000.0),
+            ),
+            (
+                "X-Query-Execution-Time".to_string(),
+                format!("{:.3}ms", self.execution_time * 1000.0),
+            ),
             ("X-Query-Type".to_string(), self.query_type.clone()),
-            ("X-Query-SQL-Count".to_string(), self.sql_queries_count.to_string()),
+            (
+                "X-Query-SQL-Count".to_string(),
+                self.sql_queries_count.to_string(),
+            ),
         ]
     }
 }
@@ -115,13 +139,13 @@ pub async fn query_handler(
 
     let output_format = payload.format.unwrap_or(OutputFormat::JSONEachRow);
     let sql_only = payload.sql_only.unwrap_or(false);
-    
+
     // Query cache integration - Strip CYPHER prefix FIRST
     // Extract replan option and clean query
     let replan_option = query_cache::ReplanOption::from_query_prefix(&payload.query)
         .unwrap_or(query_cache::ReplanOption::Default);
     let clean_query = query_cache::ReplanOption::strip_prefix(&payload.query);
-    
+
     // Pre-parse to check for USE clause (minimal parse just to extract database selection)
     // IMPORTANT: Parse the CLEAN query without CYPHER prefix
     let schema_name = if let Ok(ast) = open_cypher_parser::parse_query(clean_query) {
@@ -133,13 +157,13 @@ pub async fn query_handler(
     } else {
         payload.schema_name.as_deref().unwrap_or("default")
     };
-    
+
     log::debug!("Using schema: {}", schema_name);
-    
+
     // Generate cache key
     let cache_key = query_cache::QueryCacheKey::new(clean_query, schema_name);
     let mut cache_status = "MISS";
-    
+
     // Try cache lookup (unless replan=force)
     let cached_sql = if replan_option != query_cache::ReplanOption::Force {
         if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
@@ -161,11 +185,11 @@ pub async fn query_handler(
         }
         None
     };
-    
+
     // If cache hit, substitute parameters and return early
     if let Some(sql_template) = cached_sql {
         log::info!("Using cached SQL template");
-        
+
         // Substitute parameters if provided
         let final_sql = if let Some(params) = &payload.parameters {
             match parameter_substitution::substitute_parameters(&sql_template, params) {
@@ -180,7 +204,7 @@ pub async fn query_handler(
         } else {
             sql_template
         };
-        
+
         // If SQL-only mode, return SQL without executing
         if sql_only {
             let sql_response = Json(SqlOnlyResponse {
@@ -188,48 +212,45 @@ pub async fn query_handler(
                 generated_sql: final_sql.clone(),
                 execution_mode: "sql_only".to_string(),
             });
-            
+
             let mut response = sql_response.into_response();
             if let Ok(cache_header) = axum::http::HeaderValue::try_from(cache_status) {
-                response.headers_mut().insert("X-Query-Cache-Status", cache_header);
+                response
+                    .headers_mut()
+                    .insert("X-Query-Cache-Status", cache_header);
             }
             return Ok(response);
         }
-        
+
         // Execute query and return
         let ch_sql_queries = vec![final_sql];
         let execution_start = Instant::now();
-        let response = execute_cte_queries(app_state, ch_sql_queries, output_format, payload.parameters).await;
+        let response =
+            execute_cte_queries(app_state, ch_sql_queries, output_format, payload.parameters).await;
         metrics.execution_time = execution_start.elapsed().as_secs_f64();
-        
+
         let elapsed = start_time.elapsed();
         metrics.total_time = elapsed.as_secs_f64();
-        
+
         match response {
             Ok(mut resp) => {
                 log::info!("✓ Query succeeded (cached) in {:.2}ms", elapsed.as_millis());
-                
+
                 // Add cache status header to response
                 let headers = resp.headers_mut();
-                headers.insert(
-                    "X-Query-Cache-Status",
-                    HeaderValue::from_static("HIT")
-                );
-                
+                headers.insert("X-Query-Cache-Status", HeaderValue::from_static("HIT"));
+
                 return Ok(resp);
             }
             Err(e) => return Err(e),
         }
     }
 
-        let (ch_sql_queries, maybe_schema_elem, is_read, query_type_str) = {
+    let (ch_sql_queries, maybe_schema_elem, is_read, query_type_str) = {
         let graph_schema = match graph_catalog::get_graph_schema_by_name(schema_name).await {
             Ok(schema) => schema,
             Err(e) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    format!("Schema error: {}", e),
-                ));
+                return Err((StatusCode::BAD_REQUEST, format!("Schema error: {}", e)));
             }
         };
 
@@ -265,7 +286,8 @@ pub async fn query_handler(
             QueryType::Update => "update",
             QueryType::Delete => "delete",
             QueryType::Call => "call",
-        }.to_string();
+        }
+        .to_string();
 
         let is_read = query_type == QueryType::Read;
         let is_call = query_type == QueryType::Call;
@@ -296,21 +318,21 @@ pub async fn query_handler(
             let ch_sql = match &logical_plan {
                 crate::query_planner::logical_plan::LogicalPlan::PageRank(pagerank) => {
                     // Generate PageRank SQL directly
-                    use crate::clickhouse_query_generator::pagerank::PageRankGenerator;
                     use crate::clickhouse_query_generator::pagerank::PageRankConfig;
-                    
+                    use crate::clickhouse_query_generator::pagerank::PageRankGenerator;
+
                     let config = PageRankConfig {
                         iterations: pagerank.iterations as usize,
                         damping_factor: pagerank.damping_factor,
                         convergence_threshold: None,
                     };
-                    
+
                     let generator = PageRankGenerator::new(
                         &graph_schema,
                         config,
                         pagerank.graph_name.clone(),
                         pagerank.node_labels.clone(),
-                        pagerank.relationship_types.clone()
+                        pagerank.relationship_types.clone(),
                     );
                     match generator.generate_pagerank_sql() {
                         Ok(sql) => sql,
@@ -409,16 +431,19 @@ pub async fn query_handler(
 
             // Phase 4: SQL generation
             let sql_generation_start = Instant::now();
-            let ch_query = clickhouse_query_generator::generate_sql(render_plan, app_state.config.max_cte_depth);
+            let ch_query = clickhouse_query_generator::generate_sql(
+                render_plan,
+                app_state.config.max_cte_depth,
+            );
             metrics.sql_generation_time = sql_generation_start.elapsed().as_secs_f64();
             println!("\n ch_query \n {} \n", ch_query);
-            
+
             // Store in cache (even in sql_only mode for future use)
             if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
                 cache.insert(cache_key.clone(), ch_query.clone());
                 log::debug!("Stored SQL template in cache");
             }
-            
+
             // If SQL-only mode, return the SQL without executing
             if sql_only {
                 let mut sql_response = Json(SqlOnlyResponse {
@@ -426,21 +451,25 @@ pub async fn query_handler(
                     generated_sql: ch_query.clone(),
                     execution_mode: "sql_only".to_string(),
                 });
-                
+
                 // Add cache status header
                 let mut response = sql_response.into_response();
                 if let Ok(cache_header) = axum::http::HeaderValue::try_from(cache_status) {
-                    response.headers_mut().insert("X-Query-Cache-Status", cache_header);
+                    response
+                        .headers_mut()
+                        .insert("X-Query-Cache-Status", cache_header);
                 }
                 return Ok(response);
             }
-            
+
             (vec![ch_query], None, true, query_type_str)
         } else {
             // DDL operations not supported - ClickGraph is read-only
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("DDL operations (CREATE/SET/DELETE) not supported. ClickGraph is a read-only query engine. Use YAML schemas to define graph views."),
+                format!(
+                    "DDL operations (CREATE/SET/DELETE) not supported. ClickGraph is a read-only query engine. Use YAML schemas to define graph views."
+                ),
             ));
         }
     };
@@ -482,17 +511,18 @@ pub async fn query_handler(
             for (key, value) in headers {
                 if let (Ok(header_name), Ok(header_value)) = (
                     axum::http::HeaderName::try_from(key),
-                    axum::http::HeaderValue::try_from(value)
+                    axum::http::HeaderValue::try_from(value),
                 ) {
                     resp.headers_mut().insert(header_name, header_value);
                 }
             }
-            
+
             // Add cache status header
             if let Ok(cache_header) = axum::http::HeaderValue::try_from(cache_status) {
-                resp.headers_mut().insert("X-Query-Cache-Status", cache_header);
+                resp.headers_mut()
+                    .insert("X-Query-Cache-Status", cache_header);
             }
-            
+
             Ok(resp)
         }
         Err(e) => Err(e),
@@ -560,7 +590,7 @@ async fn execute_cte_queries(
     parameters: Option<std::collections::HashMap<String, Value>>,
 ) -> Result<Response, (StatusCode, String)> {
     let ch_query_string = ch_sql_queries.join(" ");
-    
+
     // Substitute parameters if provided
     let final_sql = if let Some(params) = parameters {
         match parameter_substitution::substitute_parameters(&ch_query_string, &params) {
@@ -576,7 +606,7 @@ async fn execute_cte_queries(
     } else {
         ch_query_string.clone()
     };
-    
+
     // Log full SQL for debugging (especially helpful when ClickHouse truncates errors)
     log::debug!("Executing SQL:\n{}", final_sql);
 
@@ -592,7 +622,11 @@ async fn execute_cte_queries(
             .fetch_bytes(output_format)
             .map_err(|e| {
                 // Log full SQL on error for debugging
-                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", final_sql, e);
+                log::error!(
+                    "ClickHouse query failed. SQL was:\n{}\nError: {}",
+                    final_sql,
+                    e
+                );
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Clickhouse Error: {}", e),
@@ -626,7 +660,11 @@ async fn execute_cte_queries(
             .fetch_bytes("JSONEachRow")
             .map_err(|e| {
                 // Log full SQL on error for debugging
-                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", final_sql, e);
+                log::error!(
+                    "ClickHouse query failed. SQL was:\n{}\nError: {}",
+                    final_sql,
+                    e
+                );
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Clickhouse Error: {}", e),
@@ -636,8 +674,12 @@ async fn execute_cte_queries(
 
         let mut rows: Vec<Value> = vec![];
         while let Some(line) = lines.next_line().await.map_err(|e| {
-                // Log full SQL on error for debugging
-                log::error!("ClickHouse response parsing failed. SQL was:\n{}\nError: {}", final_sql, e);
+            // Log full SQL on error for debugging
+            log::error!(
+                "ClickHouse response parsing failed. SQL was:\n{}\nError: {}",
+                final_sql,
+                e
+            );
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Clickhouse Error: {}", e),
@@ -815,7 +857,7 @@ pub async fn ddl_handler(
 #[derive(Deserialize)]
 pub struct LoadSchemaRequest {
     pub schema_name: String,
-    pub config_content: String,  // YAML content as string
+    pub config_content: String, // YAML content as string
     pub validate_schema: Option<bool>,
 }
 
@@ -831,7 +873,11 @@ pub async fn list_schemas_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     println!("DEBUG: list_schemas_handler called");
     let schema_names = graph_catalog::list_available_schemas().await;
-    println!("DEBUG: Found {} schemas: {:?}", schema_names.len(), schema_names);
+    println!(
+        "DEBUG: Found {} schemas: {:?}",
+        schema_names.len(),
+        schema_names
+    );
     let mut schemas_info = Vec::new();
 
     for name in schema_names {
@@ -862,24 +908,26 @@ pub async fn load_schema_handler(
         &payload.config_content,
         Some(app_state.clickhouse_client.clone()),
         validate_schema,
-    ).await {
+    )
+    .await
+    {
         Ok(_) => {
             // Invalidate cache entries for this schema
             if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
                 cache.invalidate_schema(&payload.schema_name);
                 log::info!("Cache invalidated for schema: {}", payload.schema_name);
             }
-            
+
             Ok(Json(serde_json::json!({
                 "message": format!("Schema '{}' loaded successfully", payload.schema_name),
                 "schema_name": payload.schema_name
             })))
-        },
+        }
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
                 "error": format!("Failed to load schema: {}", e)
-            }))
+            })),
         )),
     }
 }
@@ -899,12 +947,12 @@ pub async fn get_schema_handler(
                 "nodes": schema.get_nodes_schemas().keys().collect::<Vec<_>>(),
                 "relationships": schema.get_relationships_schemas().keys().collect::<Vec<_>>()
             })))
-        },
+        }
         Err(e) => Err((
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
                 "error": e
-            }))
+            })),
         )),
     }
 }

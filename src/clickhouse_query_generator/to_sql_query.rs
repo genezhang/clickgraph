@@ -2,12 +2,13 @@ use crate::{
     query_planner::logical_plan::LogicalPlan,
     render_plan::{
         render_expr::{
-            Column, ColumnAlias, InSubquery, Literal, Operator, OperatorApplication, PropertyAccess,
-            RenderExpr, TableAlias,
+            Column, ColumnAlias, InSubquery, Literal, Operator, OperatorApplication,
+            PropertyAccess, RenderExpr, TableAlias,
         },
         {
-            Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join, JoinItems, JoinType,
-            OrderByItems, OrderByOrder, RenderPlan, SelectItems, ToSql, UnionItems, UnionType,
+            Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join,
+            JoinItems, JoinType, OrderByItems, OrderByOrder, RenderPlan, SelectItems, ToSql,
+            UnionItems, UnionType,
         },
     },
 };
@@ -27,14 +28,14 @@ pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     sql.push_str(&plan.joins.to_sql());
     sql.push_str(&plan.filters.to_sql());
     sql.push_str(&plan.group_by.to_sql());
-    
+
     // Add HAVING clause if present (after GROUP BY, before ORDER BY)
     if let Some(having_expr) = &plan.having_clause {
         sql.push_str("HAVING ");
         sql.push_str(&having_expr.to_sql());
         sql.push('\n');
     }
-    
+
     sql.push_str(&plan.order_by.to_sql());
     sql.push_str(&plan.union.to_sql());
 
@@ -47,14 +48,17 @@ pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
         let limit_str = format!("LIMIT {skip_str} {m}");
         sql.push_str(&limit_str)
     }
-    
+
     // Add ClickHouse SETTINGS for recursive CTEs (variable-length paths)
     // Check if any CTE is recursive
     let has_recursive_cte = plan.ctes.0.iter().any(|cte| cte.is_recursive);
     if has_recursive_cte {
-        sql.push_str(&format!("\nSETTINGS max_recursive_cte_evaluation_depth = {}", max_cte_depth));
+        sql.push_str(&format!(
+            "\nSETTINGS max_recursive_cte_evaluation_depth = {}",
+            max_cte_depth
+        ));
     }
-    
+
     sql
 }
 
@@ -102,8 +106,8 @@ impl ToSql for FromTableItem {
             // Note: WHERE clause filtering is handled in WhereClause generation,
             // not as a subquery in FROM clause
             sql.push_str(&view_ref.name);
-            
-            // Extract the alias - prefer the explicit alias from ViewTableRef, 
+
+            // Extract the alias - prefer the explicit alias from ViewTableRef,
             // otherwise try to get it from the source logical plan
             let alias = if let Some(explicit_alias) = &view_ref.alias {
                 explicit_alias.clone()
@@ -120,7 +124,7 @@ impl ToSql for FromTableItem {
                     _ => "t".to_string(), // Default fallback
                 }
             };
-            
+
             sql.push_str(" AS ");
             sql.push_str(&alias);
             sql.push('\n');
@@ -204,7 +208,7 @@ impl ToSql for CteItems {
 
         // Check if any CTE is recursive
         let has_recursive_cte = self.0.iter().any(|cte| cte.is_recursive);
-        
+
         if has_recursive_cte {
             sql.push_str("WITH RECURSIVE ");
         } else {
@@ -230,29 +234,29 @@ impl ToSql for Cte {
                 // For structured content, render only the query body (not nested CTEs)
                 // CTEs should already be hoisted to the top level
                 let mut cte_body = String::new();
-                
+
                 // If there are no explicit SELECT items, default to SELECT *
                 if plan.select.0.is_empty() {
                     cte_body.push_str("SELECT *\n");
                 } else {
                     cte_body.push_str(&plan.select.to_sql());
                 }
-                
+
                 cte_body.push_str(&plan.from.to_sql());
                 cte_body.push_str(&plan.joins.to_sql());
                 cte_body.push_str(&plan.filters.to_sql());
                 cte_body.push_str(&plan.group_by.to_sql());
-                
+
                 // Add HAVING clause if present (after GROUP BY)
                 if let Some(having_expr) = &plan.having_clause {
                     cte_body.push_str("HAVING ");
                     cte_body.push_str(&having_expr.to_sql());
                     cte_body.push('\n');
                 }
-                
+
                 cte_body.push_str(&plan.order_by.to_sql());
                 cte_body.push_str(&plan.union.to_sql());
-                
+
                 format!("{} AS ({})", self.cte_name, cte_body)
             }
             CteContent::RawSql(sql) => {
@@ -309,7 +313,7 @@ impl ToSql for Join {
         } else {
             eprintln!("  ⚠️  WARNING: joining_on is EMPTY!");
         }
-        
+
         let join_type_str = match self.join_type {
             JoinType::Join => {
                 if self.joining_on.is_empty() {
@@ -317,7 +321,7 @@ impl ToSql for Join {
                 } else {
                     "JOIN"
                 }
-            },
+            }
             JoinType::Inner => "INNER JOIN",
             JoinType::Left => "LEFT JOIN",
             JoinType::Right => "RIGHT JOIN",
@@ -363,8 +367,9 @@ impl RenderExpr {
             RenderExpr::Parameter(name) => format!("${}", name),
             RenderExpr::Raw(raw) => raw.clone(),
             RenderExpr::Star => "*".into(),
-            RenderExpr::TableAlias(TableAlias(a))
-            | RenderExpr::ColumnAlias(ColumnAlias(a)) => a.clone(),
+            RenderExpr::TableAlias(TableAlias(a)) | RenderExpr::ColumnAlias(ColumnAlias(a)) => {
+                a.clone()
+            }
             RenderExpr::Column(Column(a)) => {
                 // For column references, we need to add the table alias prefix
                 // to match our FROM clause alias generation
@@ -373,36 +378,56 @@ impl RenderExpr {
                 } else {
                     // COMPREHENSIVE FIX: Enhanced heuristic for table alias determination
                     // This handles ALL column names by inferring from column patterns and table context
-                    
+
                     // STRATEGY: Infer table alias from column name patterns and common conventions
                     // This covers the vast majority of real-world cases until we can implement
                     // proper context propagation for multi-table queries
-                    
-                    let alias = if a.contains("user") || a.contains("username") || a.contains("last_login") ||
-                                 a.contains("registration") || a == "name" || a == "age" || a == "active" ||
-                                 a.starts_with("u_") {
+
+                    let alias = if a.contains("user")
+                        || a.contains("username")
+                        || a.contains("last_login")
+                        || a.contains("registration")
+                        || a == "name"
+                        || a == "age"
+                        || a == "active"
+                        || a.starts_with("u_")
+                    {
                         "u" // User-related columns use 'u' alias
-                    } else if a.contains("post") || a.contains("article") || a.contains("published") ||
-                              a == "title" || a == "views" || a == "status" || a == "author" || 
-                              a == "category" || a.starts_with("p_") {
+                    } else if a.contains("post")
+                        || a.contains("article")
+                        || a.contains("published")
+                        || a == "title"
+                        || a == "views"
+                        || a == "status"
+                        || a == "author"
+                        || a == "category"
+                        || a.starts_with("p_")
+                    {
                         "p" // Post-related columns use 'p' alias
-                    } else if a.contains("customer") || a.contains("rating") || a == "email" ||
-                              a.starts_with("customer_") || a.starts_with("c_") {
+                    } else if a.contains("customer")
+                        || a.contains("rating")
+                        || a == "email"
+                        || a.starts_with("customer_")
+                        || a.starts_with("c_")
+                    {
                         // CRITICAL FIX: Use 'c' to match FROM clause, not 'customer'
                         // The FROM clause uses original Cypher variable names (c, not customer)
                         "c" // Customer-related columns use 'c' alias to match FROM Customer AS c
-                    } else if a.contains("product") || a.contains("price") || a.contains("inventory") ||
-                              a.starts_with("prod_") {
+                    } else if a.contains("product")
+                        || a.contains("price")
+                        || a.contains("inventory")
+                        || a.starts_with("prod_")
+                    {
                         "product" // Product-related columns
                     } else {
                         // FALLBACK: For truly unknown columns, use 't' (temporary/table)
                         // This maintains compatibility while covering 95%+ of real use cases
                         "t"
                     };
-                    
+
                     format!("{}.{}", alias, a)
                 }
-            },
+            }
             RenderExpr::List(items) => {
                 let inner = items
                     .iter()
@@ -417,24 +442,27 @@ impl RenderExpr {
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {
                         // Convert arguments to SQL
-                        let args_sql: Vec<String> = fn_call.args
-                            .iter()
-                            .map(|e| e.to_sql())
-                            .collect();
-                        
+                        let args_sql: Vec<String> =
+                            fn_call.args.iter().map(|e| e.to_sql()).collect();
+
                         // Apply transformation if provided
                         let transformed_args = if let Some(transform_fn) = mapping.arg_transform {
                             transform_fn(&args_sql)
                         } else {
                             args_sql
                         };
-                        
+
                         // Return ClickHouse function with transformed args
-                        format!("{}({})", mapping.clickhouse_name, transformed_args.join(", "))
+                        format!(
+                            "{}({})",
+                            mapping.clickhouse_name,
+                            transformed_args.join(", ")
+                        )
                     }
                     None => {
                         // No mapping found - use original function name (passthrough)
-                        let args = fn_call.args
+                        let args = fn_call
+                            .args
                             .iter()
                             .map(|e| e.to_sql())
                             .collect::<Vec<_>>()
@@ -490,7 +518,7 @@ impl RenderExpr {
                 let rendered: Vec<String> = op.operands.iter().map(|e| e.to_sql()).collect();
 
                 match rendered.len() {
-                    0 => "".into(),                              // should not happen
+                    0 => "".into(), // should not happen
                     1 => {
                         // Handle unary operators: IS NULL/IS NOT NULL are suffix, NOT is prefix
                         match op.operator {
@@ -514,30 +542,36 @@ impl RenderExpr {
                 if let Some(case_expr) = &case.expr {
                     // caseWithExpression(expr, val1, res1, val2, res2, ..., default)
                     let mut args = vec![case_expr.to_sql()];
-                    
+
                     for (when_expr, then_expr) in &case.when_then {
                         args.push(when_expr.to_sql());
                         args.push(then_expr.to_sql());
                     }
-                    
-                    let else_expr = case.else_expr.as_ref()
+
+                    let else_expr = case
+                        .else_expr
+                        .as_ref()
                         .map(|e| e.to_sql())
                         .unwrap_or_else(|| "NULL".to_string());
                     args.push(else_expr);
-                    
+
                     format!("caseWithExpression({})", args.join(", "))
                 } else {
                     // Searched CASE - use standard CASE syntax
                     let mut sql = String::from("CASE");
-                    
+
                     for (when_expr, then_expr) in &case.when_then {
-                        sql.push_str(&format!(" WHEN {} THEN {}", when_expr.to_sql(), then_expr.to_sql()));
+                        sql.push_str(&format!(
+                            " WHEN {} THEN {}",
+                            when_expr.to_sql(),
+                            then_expr.to_sql()
+                        ));
                     }
-                    
+
                     if let Some(else_expr) = &case.else_expr {
                         sql.push_str(&format!(" ELSE {}", else_expr.to_sql()));
                     }
-                    
+
                     sql.push_str(" END");
                     sql
                 }

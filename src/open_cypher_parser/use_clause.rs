@@ -4,11 +4,7 @@ use nom::{
     error::context,
 };
 
-use super::{
-    ast::UseClause,
-    common::ws,
-    errors::OpenCypherParsingError,
-};
+use super::{ast::UseClause, common::ws, errors::OpenCypherParsingError};
 
 /// Parse a USE clause: USE database_name
 /// Examples:
@@ -22,7 +18,9 @@ pub fn parse_use_clause<'a>(
 
     let (input, database_name) = context(
         "Error parsing database name in USE clause",
-        ws(take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == '.'))
+        ws(take_while1(|c: char| {
+            c.is_alphanumeric() || c == '_' || c == '.'
+        })),
     )
     .parse(input)?;
 
@@ -80,7 +78,7 @@ mod tests {
         let res = parse_use_clause(input);
         match res {
             Ok((remaining, use_clause)) => {
-                assert_eq!(remaining, "MATCH (n) RETURN n");  // ws() consumes trailing whitespace
+                assert_eq!(remaining, "MATCH (n) RETURN n"); // ws() consumes trailing whitespace
                 assert_eq!(use_clause.database_name, "social_network");
             }
             Err(e) => panic!("Failed to parse USE clause with trailing: {:?}", e),
