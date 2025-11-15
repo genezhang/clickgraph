@@ -6,7 +6,7 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 **Project Scope**: Read-only analytical queries only. Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are explicitly out of scope.
 
 ## Coding Style Guidelines
-- Always prefer idiomatic Rust code styles
+- Always prefer idiomatic Rust code styles and best practices
 - Refactor code to be clear and maintainable whenever appropriate, before, during, or after implementing features
 - Follow Rust's official style guidelines: https://doc.rust-lang.org/1.0.0/style/
 

@@ -8,7 +8,7 @@
 
 **A high-performance, stateless, read-only graph query engine for ClickHouse with Neo4j ecosystem compatibility.**
 
-> **Note: ClickGraph is under active development for view-based graph analysis and Neo4j Bolt protocol support. This is a read-only analytical query engine - write operations are not supported.**
+> **Note: ClickGraph is under active development for view-based graph analysis and Neo4j Bolt protocol support. This is a read-only analytical query engine - write operations are not supported. Codebase has diverged from the upstream with DDL/writes feature removal and other structure/code refactoring to follow Rust idiomatic style.**
 
 ---
 
