@@ -2494,94 +2494,63 @@ fn apply_property_mapping_to_expr(_expr: &mut RenderExpr, _plan: &LogicalPlan) {
 
 /// Get the node label for a given Cypher alias by searching the plan
 fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-        let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Searching for alias '{}' in plan type {:?}", alias, std::mem::discriminant(plan));
-    }
+    log::debug!("get_node_label_for_alias: Searching for alias '{}' in plan type {:?}", alias, std::mem::discriminant(plan));
+    
     match plan {
         LogicalPlan::GraphNode(node) if node.alias == alias => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Found GraphNode with matching alias '{}'", alias);
-            }
+            log::debug!("get_node_label_for_alias: Found GraphNode with matching alias '{}'", alias);
             extract_node_label_from_viewscan(&node.input)
         }
         LogicalPlan::GraphNode(node) => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: GraphNode alias '{}' doesn't match '{}', recursing", node.alias, alias);
-            }
+            log::debug!("get_node_label_for_alias: GraphNode alias '{}' doesn't match '{}', recursing", node.alias, alias);
             get_node_label_for_alias(alias, &node.input)
         }
         LogicalPlan::GraphRel(rel) => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Searching GraphRel for alias '{}'", alias);
-            }
+            log::debug!("get_node_label_for_alias: Searching GraphRel for alias '{}'", alias);
             get_node_label_for_alias(alias, &rel.left)
                 .or_else(|| {
-                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                        let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Alias '{}' not in left, trying center", alias);
-                    }
+                    log::debug!("get_node_label_for_alias: Alias '{}' not in left, trying center", alias);
                     get_node_label_for_alias(alias, &rel.center)
                 })
                 .or_else(|| {
-                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                        let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Alias '{}' not in center, trying right", alias);
-                    }
+                    log::debug!("get_node_label_for_alias: Alias '{}' not in center, trying right", alias);
                     get_node_label_for_alias(alias, &rel.right)
                 })
         }
         LogicalPlan::Filter(filter) => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through Filter for alias '{}'", alias);
-            }
+            log::debug!("get_node_label_for_alias: Recursing through Filter for alias '{}'", alias);
             get_node_label_for_alias(alias, &filter.input)
         }
         LogicalPlan::Projection(proj) => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through Projection for alias '{}'", alias);
-            }
+            log::debug!("get_node_label_for_alias: Recursing through Projection for alias '{}'", alias);
             get_node_label_for_alias(alias, &proj.input)
         }
         LogicalPlan::GraphJoins(joins) => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through GraphJoins for alias '{}'", alias);
-            }
+            log::debug!("get_node_label_for_alias: Recursing through GraphJoins for alias '{}'", alias);
             get_node_label_for_alias(alias, &joins.input)
         }
         LogicalPlan::OrderBy(order_by) => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through OrderBy for alias '{}'", alias);
-            }
+            log::debug!("get_node_label_for_alias: Recursing through OrderBy for alias '{}'", alias);
             get_node_label_for_alias(alias, &order_by.input)
         }
         LogicalPlan::Skip(skip) => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through Skip for alias '{}'", alias);
-            }
+            log::debug!("get_node_label_for_alias: Recursing through Skip for alias '{}'", alias);
             get_node_label_for_alias(alias, &skip.input)
         }
         LogicalPlan::Limit(limit) => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through Limit for alias '{}'", alias);
-            }
+            log::debug!("get_node_label_for_alias: Recursing through Limit for alias '{}'", alias);
             get_node_label_for_alias(alias, &limit.input)
         }
         LogicalPlan::GroupBy(group_by) => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through GroupBy for alias '{}'", alias);
-            }
+            log::debug!("get_node_label_for_alias: Recursing through GroupBy for alias '{}'", alias);
             get_node_label_for_alias(alias, &group_by.input)
         }
         LogicalPlan::Cte(cte) => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Recursing through Cte for alias '{}'", alias);
-            }
+            log::debug!("get_node_label_for_alias: Recursing through Cte for alias '{}'", alias);
             get_node_label_for_alias(alias, &cte.input)
         }
         LogicalPlan::Union(union) => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: Searching Union for alias '{}'", alias);
-            }
+            log::debug!("get_node_label_for_alias: Searching Union for alias '{}'", alias);
             for input in &union.inputs {
                 if let Some(label) = get_node_label_for_alias(alias, input) {
                     return Some(label);
@@ -2590,9 +2559,7 @@ fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
             None
         }
         _ => {
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("debug_property_mapping.log") {
-                let _ = writeln!(file, "DEBUG: get_node_label_for_alias: No match for alias '{}' in plan type {:?}", alias, std::mem::discriminant(plan));
-            }
+            log::debug!("get_node_label_for_alias: No match for alias '{}' in plan type {:?}", alias, std::mem::discriminant(plan));
             None
         }
     }
