@@ -491,7 +491,17 @@ impl RenderExpr {
 
                 match rendered.len() {
                     0 => "".into(),                              // should not happen
-                    1 => format!("{} {}", sql_op, &rendered[0]), // unary
+                    1 => {
+                        // Handle unary operators: IS NULL/IS NOT NULL are suffix, NOT is prefix
+                        match op.operator {
+                            Operator::IsNull | Operator::IsNotNull => {
+                                format!("{} {}", &rendered[0], sql_op) // suffix: "x IS NULL"
+                            }
+                            _ => {
+                                format!("{} {}", sql_op, &rendered[0]) // prefix: "NOT x"
+                            }
+                        }
+                    }
                     2 => format!("{} {} {}", &rendered[0], sql_op, &rendered[1]),
                     _ => {
                         // n-ary: join with the operator

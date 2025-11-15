@@ -31,7 +31,7 @@ class TestBasicMatch:
         
         assert_query_success(response)
         assert_row_count(response, 5)
-        assert_column_exists(response, "name")  # ClickGraph returns 'name', not 'n.name'
+        assert_column_exists(response, "n.name")  # Neo4j returns qualified names by default
     
     def test_match_with_label(self, simple_graph):
         """Test MATCH with node label."""
@@ -42,8 +42,8 @@ class TestBasicMatch:
         
         assert_query_success(response)
         assert_row_count(response, 5)
-        assert_column_exists(response, "name")  # ClickGraph returns 'name', not 'u.name'
-        assert_column_exists(response, "age")   # ClickGraph returns 'age', not 'u.age'
+        assert_column_exists(response, "u.name")  # Neo4j returns qualified names
+        assert_column_exists(response, "u.age")   # Neo4j returns qualified names
     
     def test_match_with_alias(self, simple_graph):
         """Test MATCH with different alias."""
@@ -54,7 +54,7 @@ class TestBasicMatch:
         
         assert_query_success(response)
         assert_row_count(response, 5)
-        assert_contains_value(response, "name", "Alice")  # ClickGraph returns 'name', not 'person.name'
+        assert_contains_value(response, "person.name", "Alice")  # Neo4j returns qualified names
 
 
 class TestWhereClause:
@@ -69,7 +69,7 @@ class TestWhereClause:
         
         assert_query_success(response)
         assert_row_count(response, 1)
-        assert_contains_value(response, "name", "Alice")
+        assert_contains_value(response, "u.name", "Alice")
     
     def test_where_greater_than(self, simple_graph):
         """Test WHERE with > comparison."""
@@ -80,8 +80,8 @@ class TestWhereClause:
         
         assert_query_success(response)
         assert_row_count(response, 2)  # Charlie (35) and Eve (32)
-        assert_contains_value(response, "name", "Charlie")
-        assert_contains_value(response, "name", "Eve")
+        assert_contains_value(response, "u.name", "Charlie")
+        assert_contains_value(response, "u.name", "Eve")
     
     def test_where_less_than(self, simple_graph):
         """Test WHERE with < comparison."""
@@ -112,8 +112,8 @@ class TestWhereClause:
         
         assert_query_success(response)
         assert_row_count(response, 2)
-        assert_contains_value(response, "name", "Alice")
-        assert_contains_value(response, "name", "Bob")
+        assert_contains_value(response, "u.name", "Alice")
+        assert_contains_value(response, "u.name", "Bob")
 
 
 class TestOrderByLimit:
@@ -131,9 +131,9 @@ class TestOrderByLimit:
         # First should be Bob (age 25)
         results = response["results"]
         if isinstance(results[0], dict):
-            assert results[0]["name"] == "Bob"
+            assert results[0]["u.name"] == "Bob"
         else:
-            col_idx = response["columns"].index("name")
+            col_idx = response["columns"].index("u.name")
             assert results[0][col_idx] == "Bob"
     
     def test_order_by_descending(self, simple_graph):
@@ -148,9 +148,9 @@ class TestOrderByLimit:
         # First should be Charlie (age 35)
         results = response["results"]
         if isinstance(results[0], dict):
-            assert results[0]["name"] == "Charlie"
+            assert results[0]["u.name"] == "Charlie"
         else:
-            col_idx = response["columns"].index("name")
+            col_idx = response["columns"].index("u.name")
             assert results[0][col_idx] == "Charlie"
     
     def test_limit(self, simple_graph):
@@ -173,8 +173,8 @@ class TestOrderByLimit:
         assert_query_success(response)
         assert_row_count(response, 2)
         # Should get Charlie (35) and Eve (32)
-        assert_contains_value(response, "name", "Charlie")
-        assert_contains_value(response, "name", "Eve")
+        assert_contains_value(response, "u.name", "Charlie")
+        assert_contains_value(response, "u.name", "Eve")
 
 
 class TestPropertyAccess:
@@ -191,9 +191,9 @@ class TestPropertyAccess:
         assert_row_count(response, 1)
         results = response["results"]
         if isinstance(results[0], dict):
-            assert results[0]["age"] == 30
+            assert results[0]["u.age"] == 30
         else:
-            col_idx = response["columns"].index("age")
+            col_idx = response["columns"].index("u.age")
             assert results[0][col_idx] == 30
     
     def test_multiple_properties(self, simple_graph):
@@ -205,8 +205,8 @@ class TestPropertyAccess:
         
         assert_query_success(response)
         assert_row_count(response, 1)
-        assert_column_exists(response, "name")
-        assert_column_exists(response, "age")
+        assert_column_exists(response, "u.name")
+        assert_column_exists(response, "u.age")
     
     def test_property_in_where_and_return(self, simple_graph):
         """Test using same property in WHERE and RETURN."""

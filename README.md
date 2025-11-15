@@ -4,20 +4,20 @@
 
 # ClickGraph
 
-#### ClickGraph - A Fork of Brahmand
+#### ClickGraph - A graph query layer on top of ClickHouse(r), developed on a forked repo of Brahmand
 
 **A high-performance, stateless, read-only graph query engine for ClickHouse with Neo4j ecosystem compatibility.**
 
-> **Note: ClickGraph is a fork of Brahmand with additional features including Neo4j Bolt protocol support and view-based graph analysis. This is a read-only analytical query engine - write operations are not supported.**
+> **Note: ClickGraph is under active development for view-based graph analysis and Neo4j Bolt protocol support. This is a read-only analytical query engine - write operations are not supported.**
 
 ---
 
 ## 🚀 What's New (November 10, 2025)
 
-### Query Cache & Parameter Support - 10-100x Performance Boost! 🚀
+### Query Cache & Parameter Support - 10-100x Query Translation Performance Boost! 🚀
 
 **Production-ready query caching with parameterized queries**
-- ✅ **Massive speedup**: 10-100x faster for repeated queries (10-50ms → 0.1-0.5ms)
+- ✅ **Massive speedup**: 10-100x faster translation for repeated queries (10-50ms → 0.1-0.5ms)
 - ✅ **Parameter support**: Neo4j-compatible parameterized queries for security and performance
 - ✅ **Smart caching**: SQL template reuse with parameter substitution
 - ✅ **Neo4j compatible**: CYPHER replan options (default/force/skip)
@@ -462,4 +462,4 @@ ClickGraph welcomes contributions! Key areas for development:
 
 ClickGraph is licensed under the Apache License, Version 2.0. See the LICENSE file for details.
 
-This project is a fork of [Brahmand](https://github.com/suryatmodulus/brahmand) with significant enhancements for Neo4j ecosystem compatibility and enterprise deployment capabilities.
+This project is developed on a forked repo of [Brahmand](https://github.com/suryatmodulus/brahmand) with zero-ETL view-based graph querying, Neo4j ecosystem compatibility and enterprise deployment capabilities.

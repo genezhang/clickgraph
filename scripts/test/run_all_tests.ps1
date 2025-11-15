@@ -141,17 +141,49 @@ if (-not $Quick) {
         $serverJob = Start-Job -ScriptBlock {
             Set-Location $using:PWD
             $env:CLICKHOUSE_URL = "http://localhost:8123"
+            $env:CLICKHOUSE_USER = "test_user"
+            $env:CLICKHOUSE_PASSWORD = "test_pass"
             $env:CLICKHOUSE_DATABASE = "test_integration"
             # Pre-load test_integration schema - most tests use this
             # Tests needing other schemas can load via /schemas/load API
             $env:GRAPH_CONFIG_PATH = "tests\integration\test_integration.yaml"
-            cargo run --release --bin clickgraph 2>&1 | Out-Null
+            cargo run --release --bin clickgraph
         }
-        Start-Sleep -Seconds 10  # Give server time to compile and start
-        Write-Host "[OK] Server started with test_graph_schema (Job ID: $($serverJob.Id))" -ForegroundColor Gray
+        
+        # Wait for server to start (up to 30 seconds)
+        $maxWait = 30
+        $waited = 0
+        $serverReady = $false
+        while ($waited -lt $maxWait) {
+            Start-Sleep -Seconds 2
+            $waited += 2
+            try {
+                $response = Invoke-WebRequest -Uri "http://localhost:8080/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
+                $serverReady = $true
+                Write-Host "[OK] Server responding after $waited seconds (Job ID: $($serverJob.Id))" -ForegroundColor Green
+                break
+            } catch {
+                Write-Host "." -NoNewline -ForegroundColor Gray
+            }
+        }
+        
+        if (-not $serverReady) {
+            Write-Host ""
+            Write-Host "[FAIL] Server did not start after $maxWait seconds" -ForegroundColor Red
+            Write-Host "Job output:" -ForegroundColor Yellow
+            Receive-Job -Id $serverJob.Id
+            Stop-Job -Id $serverJob.Id
+            Remove-Job -Id $serverJob.Id
+            $results.PythonIntegration.Skipped = $true
+            $results.PythonE2E.Skipped = $true
+            Write-Host ""
+            Write-Host "Skipping Python tests - server failed to start" -ForegroundColor Yellow
+            Write-Host ""
+        }
     }
     
-    $startTime = Get-Date
+    # Only run tests if server is ready
+    if ($serverReady -or $serverRunning) {
     Push-Location tests/integration
     try {
         if ($Verbose) {
@@ -181,6 +213,7 @@ if (-not $Quick) {
         Remove-Job -Id $serverJob.Id
         Write-Host "[OK] Server stopped" -ForegroundColor Gray
     }
+    } # End if server ready
     Write-Host ""
 } else {
     $results.PythonIntegration.Skipped = $true

@@ -65,8 +65,9 @@ X-Query-SQL-Count: 1
 
 **Response Fields:**
 - `results` (array): Array of result rows, each row is an object with column names as keys
-  - Columns use simple property names (e.g., `"name"`, `"age"`) without alias prefixes
-  - Example: `RETURN u.name, u.age` returns columns as `"name"` and `"age"`
+  - Columns use **qualified property names** (e.g., `"u.name"`, `"u.age"`) matching Neo4j behavior
+  - Example: `RETURN u.name, u.age` returns columns as `"u.name"` and `"u.age"`
+  - Use `AS` for custom aliases: `RETURN u.name AS userName` returns column as `"userName"`
 
 **Note**: The response format changed in November 2025 to wrap results in a `{"results": [...]}` object for consistency with Neo4j format. Previously returned a bare array `[...]`.
 

@@ -75,19 +75,20 @@ def clean_database(clickhouse_client, test_database):
         clickhouse_client.command(f"DROP TABLE IF EXISTS {test_database}.{table_name}")
 
 
-def execute_cypher(query: str, schema_name: str = "default") -> Dict[str, Any]:
+def execute_cypher(query: str, schema_name: str = "default", raise_on_error: bool = True) -> Dict[str, Any]:
     """
     Execute a Cypher query via ClickGraph HTTP API.
     
     Args:
         query: Cypher query string
         schema_name: Schema/database name to query
+        raise_on_error: If True, raise HTTPError on failure. If False, return error in response dict.
         
     Returns:
         Response JSON with results, columns, and performance metrics
         
     Raises:
-        requests.HTTPError: If query execution fails
+        requests.HTTPError: If query execution fails and raise_on_error=True
     """
     response = requests.post(
         f"{CLICKGRAPH_URL}/query",
@@ -100,6 +101,14 @@ def execute_cypher(query: str, schema_name: str = "default") -> Dict[str, Any]:
         print(f"\nError Response ({response.status_code}):")
         print(f"Request: query={query}, schema_name={schema_name}")
         print(f"Response: {response.text}")
+        
+        # For error handling tests, return error info instead of raising
+        if not raise_on_error:
+            try:
+                error_json = response.json()
+                return {"status": "error", "error": error_json, "status_code": response.status_code}
+            except:
+                return {"status": "error", "error": response.text, "status_code": response.status_code}
     
     response.raise_for_status()
     return response.json()

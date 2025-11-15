@@ -621,7 +621,8 @@ impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
         // Infer alias from expression if not explicitly provided with AS
         let inferred_alias = if value.alias.is_none() {
             match &value.expression {
-                // For property access like "u.name", use "u.name" as alias
+                // For property access like "u.name", use "u.name" as alias (Neo4j behavior)
+                // Neo4j returns qualified names by default: RETURN u.name → column "u.name"
                 CypherExpression::PropertyAccessExp(prop_access) => {
                     Some(format!("{}.{}", prop_access.base, prop_access.key))
                 }

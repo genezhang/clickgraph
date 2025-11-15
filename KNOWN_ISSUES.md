@@ -4,6 +4,8 @@
 **Test Results**: 433/434 unit tests stable (99.8%), 14/14 benchmark queries passing (100%)  
 **Active Issues**: 1 enhancement (anonymous node/edge patterns), 1 flaky test (cache LRU)
 
+**Note**: Some integration tests have incorrect expectations about column naming. Neo4j returns qualified names (e.g., `"u.name"`) by default, which matches our implementation. Tests will be updated.
+
 ---
 
 ## 🧪 Flaky Test: Cache LRU Eviction

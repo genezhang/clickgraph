@@ -1,8 +1,47 @@
 # ClickGraph Status
 
-*Updated: November 12, 2025*
+*Updated: November 13, 2025*
 
-## � **Benchmark Infrastructure Complete - Bug Discovered**
+## 📊 **Integration Test Suite Progress**
+
+**Status**: ✅ **61% passing**, 🔧 **Improvement in progress**  
+**Date**: November 13, 2025  
+**Achievement**: Fixed error handling infrastructure, improved test pass rate from 54% to 61%
+
+### Integration Test Results
+
+**Overall**: 187/308 tests passing (61%)  
+**Improvement**: +20 tests fixed from yesterday (was 167/308)
+
+**Test File Breakdown**:
+- ✅ `test_basic_queries.py`: 19/19 (100%)
+- ✅ `test_aggregations.py`: 27/29 (93%)
+- ✅ `test_optional_match.py`: 23/27 (85%)
+- ✅ `test_error_handling.py`: 29/37 (78%)
+- ✅ `test_relationships.py`: 9/19 (47%)
+- ⚠️ `test_path_variables.py`: 6/24 (25%) - SQL generation bugs
+- ⚠️ `test_shortest_paths.py`: 6/24 (25%) - SQL generation bugs
+- ⚠️ `test_multi_database.py`: 5/21 (24%) - Schema validation issues
+
+**Key Fixes Today** (Nov 13, 2025):
+- ✅ Added `raise_on_error` parameter to `execute_cypher()` helper
+- ✅ Fixed error handling tests to properly catch error responses
+- ✅ Verified Neo4j column naming behavior (qualified names are correct)
+- ✅ Updated test expectations in multiple files
+
+**Remaining Test Issues** (121 failures):
+1. **SQL Generation Bugs** (~70 tests):
+   - CASE expressions with OPTIONAL MATCH (ClickHouse syntax errors)
+   - Complex aggregations with COUNT(DISTINCT) (identifier resolution)
+   - Path functions: `nodes()`, `relationships()`, `length()` (not implemented)
+   - Variable-length path property filters (SQL generation errors)
+2. **Multi-Database Tests** (16 failures): Schema validation and USE clause issues
+3. **Relationship Tests** (10 failures): Multi-hop JOIN generation bugs
+4. **Bolt Protocol Tests** (10 errors): Require Bolt client setup (expected)
+
+---
+
+## 🏆 **Benchmark Infrastructure Complete - Bug Discovered**
 
 **Status**: ✅ **Benchmark system working**, ⚠️ **Multi-hop query bug found**  
 **Date**: November 12, 2025  
