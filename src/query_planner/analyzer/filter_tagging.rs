@@ -778,7 +778,7 @@ mod tests {
             property_mappings: follows_props,
         });
         
-        GraphSchema::build(1, "test_db".to_string(), node_schemas, rel_schemas, HashMap::new())
+        GraphSchema::build(1, "test_db".to_string(), node_schemas, rel_schemas)
     }    #[test]
     fn test_single_table_filter_extraction() {
         let analyzer = FilterTagging::new();

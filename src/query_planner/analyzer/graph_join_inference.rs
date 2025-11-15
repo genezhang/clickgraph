@@ -1680,7 +1680,7 @@ mod tests {
             },
         );
 
-        GraphSchema::build(1, "default".to_string(), nodes, relationships, HashMap::new())
+        GraphSchema::build(1, "default".to_string(), nodes, relationships)
     }
 
     fn setup_plan_ctx_with_graph_entities() -> PlanCtx {
@@ -2060,7 +2060,7 @@ mod tests {
     fn test_bitmap_traversal() {
         let analyzer = GraphJoinInference::new();
         let graph_schema = create_test_graph_schema();
-        let plan_ctx = setup_plan_ctx_with_graph_entities();
+        let mut plan_ctx = setup_plan_ctx_with_graph_entities();
 
         // This test is obsolete - ClickGraph only uses edge lists
         // Bitmap traversal functionality has been removed

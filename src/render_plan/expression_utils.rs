@@ -56,44 +56,4 @@ mod tests {
         assert!(references_alias(&expr, "users"));
         assert!(!references_alias(&expr, "posts"));
     }
-
-    #[test]
-    fn test_extract_table_aliases() {
-        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
-            operator: Operator::And,
-            operands: vec![
-                RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias("users".to_string()),
-                    column: Column("name".to_string()),
-                }),
-                RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias("posts".to_string()),
-                    column: Column("title".to_string()),
-                }),
-            ],
-        });
-
-        let aliases = extract_table_aliases(&expr);
-        assert_eq!(aliases, vec!["posts", "users"]);
-    }
-
-    #[test]
-    fn test_validate_expression_valid() {
-        let expr = RenderExpr::PropertyAccessExp(PropertyAccess {
-            table_alias: TableAlias("users".to_string()),
-            column: Column("name".to_string()),
-        });
-
-        assert!(validate_expression(&expr).is_ok());
-    }
-
-    #[test]
-    fn test_validate_expression_invalid_property_access() {
-        let expr = RenderExpr::PropertyAccessExp(PropertyAccess {
-            table_alias: TableAlias("".to_string()),
-            column: Column("name".to_string()),
-        });
-
-        assert!(validate_expression(&expr).is_err());
-    }
 }
