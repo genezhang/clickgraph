@@ -1,188 +1,70 @@
-## [Unreleased]
-
 ## [0.4.0] - 2025-11-15
 
-### 🎉 Phase 1 Complete - Development-Ready Graph Analytics Engine
-
-This release marks the completion of Phase 1, delivering a robust, development-ready graph query engine with comprehensive Neo4j compatibility and validated performance.
-
 ### 🚀 Features
 
-- **Query Cache with LRU Eviction**: 10-100x speedup for repeated query translations (Nov 10, 2025)
-  - HashMap-based cache with dual limits (1000 entries, 100 MB memory)
-  - Neo4j-compatible CYPHER replan options (default/force/skip)
-  - Parameterized query support with SQL template caching
-  - Whitespace normalization and CYPHER prefix handling
-  - Schema-aware automatic cache invalidation
-  - Thread-safe concurrent access with Arc<Mutex<HashMap>>
-  - Response headers: X-Query-Cache-Status (HIT/MISS/BYPASS)
-  - Test coverage: 6/6 unit tests + 5/5 e2e tests (100%)
-
-- **Parameter Support**: Neo4j-compatible parameterized queries (Nov 10, 2025)
-  - `$param` syntax in WHERE clauses, RETURN, aggregations
-  - Type-safe parameter binding (String, Integer, Float, Boolean)
-  - SQL injection prevention
-  - Query plan caching and reuse
-  - HTTP API and Bolt protocol support
-
-- **Bolt 5.8 Protocol**: Complete wire protocol implementation (Nov 12, 2025)
-  - Version negotiation with byte-order detection (Bolt 5.x format changes)
-  - HELLO/LOGON authentication flow for Bolt 5.1+
-  - Multi-database support with session parameters
-  - Auth-less mode for development
-  - Automatic schema selection (first loaded schema as fallback)
-  - Message handling: HELLO, LOGON, RUN, PULL, RESET
-  - PackStream binary format (vendored from neo4rs v0.9.0-rc.8)
-  - Neo4j Python driver v6.0.2 compatibility tested
-  - Test coverage: 4/4 E2E tests (connection, query, traversal, aggregation)
-
-- **Neo4j Function Mappings**: 25+ functions for compatibility (Nov 8, 2025)
-  - **Datetime**: datetime(), date(), timestamp(), duration(), localtime(), localdatetime()
-  - **String**: toString(), toUpper(), toLower(), substring(), trim(), split(), replace()
-  - **Math**: abs(), ceil(), floor(), round(), sqrt(), log(), exp(), sign()
-  - **Aggregation**: count(), sum(), avg(), min(), max(), collect()
-  - **Type checking**: Working towards full Neo4j compatibility
-
-- **Undirected Relationships**: Bidirectional pattern matching (Nov 15, 2025)
-  - `(a)-[r]-(b)` syntax support
-  - OR JOIN logic: `(r.from=a.id AND r.to=b.id) OR (r.from=b.id AND r.to=a.id)`
-  - Direction::Either handling in SQL generation
-  - Enables mutual relationship queries
-
-- **Benchmark Suite**: Production validation framework (Nov 1, 2025)
-  - 14 comprehensive queries covering all major patterns
-  - 3 scale levels: Small (1K), Medium (10K), Large (5M nodes)
-  - Performance metrics: Mean time, p50/p95/p99 latency
-  - ClickHouse-native data generation for efficient loading
-  - 100% success rate at small/medium scale, 90% at large scale
-  - Validates: traversals, aggregations, variable-length paths, shortest paths
+- Add parameter support via HTTP API + identity fallback for properties
+- Add production-ready query cache with LRU eviction
+- Complete Bolt 5.8 protocol implementation with E2E tests passing
+- Add Neo4j function support with 25+ function mappings
+- Complete E2E testing infrastructure + critical bug fixes
+- Unified benchmark architecture with scale factor parameter
+- Adjust post ratio to 20 and add 2 post-related benchmark queries
+- Add MergeTree engine support for large-scale benchmarks
+- *(benchmark)* Complete MergeTree benchmark infrastructure, discover multi-hop query bug
+- Add comprehensive regression test suite (799 tests)
+- Add pre-flight checks to test runner
+- Pre-load test_integration schema at server startup
+- Implement undirected relationship support (Direction::Either)
 
 ### 🐛 Bug Fixes
 
-- **Undirected Relationships**: Fixed Direction::Either SQL generation (Nov 15, 2025)
-- **ChainedJoin CTE**: Fixed exact hop variable-length paths (`*2`, `*3`) (Nov 1, 2025)
-- **Shortest Path Filters**: Fixed WHERE clause rewriting for end nodes (Nov 1, 2025)
-- **Aggregation Schema**: Fixed table name lookup for GROUP BY queries (Nov 1, 2025)
-- **Test Infrastructure**: Fixed raise_on_error parameter handling (Nov 15, 2025)
-- **Bolt 5.x Version Negotiation**: Fixed byte-order interpretation (Nov 12, 2025)
-- **Bolt 5.x Version Response**: Convert internal format to client format (Nov 12, 2025)
-- **Schema Selection**: Auto-select first loaded schema in LOGON (Nov 12, 2025)
-- **Query Cache**: Strip CYPHER prefix before schema extraction (Nov 10, 2025)
-- **Query Cache**: Add whitespace normalization in cache keys (Nov 10, 2025)
-- **PackStream Integration**: Fixed main.rs module imports (Nov 12, 2025)
+- Multi-hop JOINs, SELECT aliases, SQL quoting + improve benchmark display
+- Use correct schema and database for integration tests
+- Start server without pre-loaded schema for integration tests
+- IS NULL operator in CASE expressions (22/25 tests passing)
+- Resolve compilation errors from API changes and incomplete cleanup
+- Additional GraphSchema::build() signature fixes in test files
+- Remove unused variable in view_resolver_tests.rs
+- Update error handling tests to match actual ClickGraph behavior
 
-### 🔧 Code Quality
+### 🚜 Refactor
 
-- **Major Refactoring**: 22% size reduction in query planner (Nov 14, 2025)
-  - Extracted 590 lines from plan_builder.rs into plan_builder_helpers.rs
-  - Reduced plan_builder.rs from 3,311 to 2,542 lines (769 LOC removed)
-  - Improved code organization and maintainability
-  - Cleaner separation of concerns in query planning
-  - All tests passing after refactoring
-
-- **Documentation**: Comprehensive improvements (Nov 15, 2025)
-  - Anonymous node limitation documented in KNOWN_ISSUES.md
-  - Complete Phase 1 status in STATUS.md
-  - Updated ROADMAP.md with achievements and timelines
-  - Enhanced README.md with v0.4.0 features
-
-### 📊 Test Coverage (November 15, 2025)
-
-- **Rust Unit Tests**: 406/407 passing (99.8%)
-- **Integration Tests**: 197/308 passing (64%, +30 tests from Nov 12)
-- **Benchmarks**: 14/14 passing (100%)
-- **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
-
-### 🐛 Known Limitations
-
-- **Anonymous Node Patterns**: SQL alias scope issue - use named nodes as workaround
-- **Bolt Query Execution**: Wire protocol complete, query execution pending - use HTTP API
-- **Integration Test Gaps**: 111 tests represent unimplemented features, not regressions
-- **Flaky Test**: 1 cache LRU test occasionally fails (non-blocking)
-
-### 📈 Performance Metrics
-
-**Benchmark Results** (November 1, 2025):
-- **Scale 1 (1K users)**: 2077ms mean, 100% success (10/10 queries)
-- **Scale 10 (10K users)**: 2088ms mean, 100% success (10/10 queries)
-- **Scale Large (5M users)**: 90% success (9/10 queries)
-- **Overhead**: Only 0.5% for 10x data scale increase
-
-**Query Cache Performance** (November 10, 2025):
-- **Cache hit**: 0.1-0.5ms (translation time)
-- **Cache miss**: 10-50ms (full translation)
-- **Speedup**: 10-100x for repeated queries
-
----
-
-## [Unreleased]
-
-### 🚀 Features
-
-- **Bolt 5.1-5.8 Protocol Support**: Complete implementation of Bolt 5.x with version negotiation fix (Nov 12, 2025)
-  - **Version negotiation byte-order detection**: Bolt 5.x changed encoding from `[reserved][range][major][minor]` to `[reserved][range][minor][major]`
-  - **Heuristic detection**: Automatically detects Bolt 5.x format when major byte is 5-8
-  - **Version response conversion**: Sends negotiated version in client's expected byte order
-  - **HELLO/LOGON authentication flow**: Bolt 5.1+ splits auth into separate LOGON message
-  - **Auth-less mode**: Handles empty LOGON messages for passwordless connections
-  - **Automatic schema selection**: Uses first loaded schema when database not specified
-  - **LOGON/LOGOFF messages**: New message types (0x6A, 0x6B) for Bolt 5.1+ auth management
-  - **Authentication state**: New `ConnectionState::Authentication` for Bolt 5.1+ flow
-  - **Neo4j driver compatibility**: Successfully tested with Neo4j Python driver v6.0.2
-  - **Test coverage**: 4/4 E2E tests passing (connection, simple query, graph traversal, aggregation)
-
-- **PackStream Binary Format Support**: Vendored neo4rs PackStream module for complete Bolt protocol support (Nov 12, 2025)
-  - ~3,371 lines of production-tested code from neo4rs v0.9.0-rc.8
-  - Complete message parsing: HELLO, RUN, PULL with PackStream deserialization
-  - Complete message serialization: SUCCESS, FAILURE, RECORD with PackStream encoding
-  - Serde-based API: `packstream::from_bytes<T>()` and `packstream::to_bytes<T>()`
-  - MIT license with proper attribution headers
-  - Enables Neo4j drivers (Python, JavaScript, Java) to connect and query
-  - Test coverage: Ready for integration testing with real drivers
-
-- **Bolt Protocol Query Execution**: Complete Cypher-to-ClickHouse execution pipeline (Nov 11, 2025)
-  - Full pipeline: Parse → Plan → Render → SQL → Execute → Stream
-  - Parameter substitution from RUN messages
-  - Schema selection via USE clause or session parameters
-  - Result caching and streaming via RECORD messages
-  - ClickHouse client integration throughout Bolt architecture
-  - Send-safe async with elegant block-scoping solution
-
-- **Query Cache**: Production-ready query caching with LRU eviction (10-100x speedup for repeated queries)
-  - HashMap-based cache with dual limits (entry count + memory size)
-  - Neo4j-compatible CYPHER replan options (default/force/skip)
-  - Parameterized query support with SQL template caching
-  - Whitespace normalization and CYPHER prefix handling
-  - Schema-aware cache invalidation
-  - Test coverage: 6/6 unit tests + 5/5 e2e tests (100%)
-
-### 🐛 Bug Fixes
-
-- **Bolt 5.x Version Negotiation**: Fixed byte-order interpretation - Bolt 5.x swaps major/minor bytes (Nov 12, 2025)
-- **Bolt 5.x Version Response**: Convert internal format to client format before sending (Nov 12, 2025)
-- **Schema Selection**: Auto-select first loaded schema when LOGON has no database field (Nov 12, 2025)
-- **PackStream Integration**: Fixed main.rs to import from library instead of redeclaring modules
-- **Query Cache**: Strip CYPHER prefix BEFORE schema extraction and query parsing (critical fix for replan=force)
-- **Query Cache**: Add whitespace normalization in cache key generation
-- **Query Cache**: Fix sql_only mode cache lookup and header injection
+- Archive NEXT_STEPS.md in favor of ROADMAP.md
+- Remove inherited DDL generation code (~1250 LOC)
+- Remove bitmap index infrastructure (~200 LOC)
+- Remove use_edge_list flag (~50 LOC)
+- Flatten directory structure - remove brahmand/ wrapper
+- Remove expression_utils dead code - visitor pattern + utility functions
+- Convert CteGenerationContext to immutable builder pattern
+- Create plan_builder_helpers module (preparatory step)
+- Integrate plan_builder_helpers module
+- Add deprecation markers to duplicate helper functions
+- Complete deprecation markers for all helper functions (20/20)
+- Remove all deprecated helper functions (~736 LOC, 22% reduction)
+- Replace file-based debug logging with standard log::debug! macro
 
 ### 📚 Documentation
 
-- Update STATUS.md with Bolt 5.8 implementation details and byte-order discovery (Nov 12, 2025)
-- Document Bolt 5.x version encoding change in copilot-instructions.md
-- Create detailed PackStream vendoring note: notes/packstream-vendoring.md (Nov 12, 2025)
-- Add comprehensive query cache documentation in STATUS.md
-- Create detailed feature note: notes/query-cache.md
-- Document Windows PowerShell background process issue in copilot-instructions.md
+- Update KNOWN_ISSUES and copilot-instructions - all major issues resolved
+- Add comprehensive ROADMAP with real-world features and prioritization
+- Architecture decision - Use string substitution for parameters (not ClickHouse .bind())
+- Update NEXT_STEPS.md roadmap with query cache completion
+- Update README and ROADMAP with query cache completion
+- Highlight parameter support in README and add usage restrictions
+- Update ROADMAP.md with Bolt 5.8 completion
+- Clarify anonymous node/edge pattern as TODO feature
+- Document flaky cache LRU eviction test
+- Document anonymous node SQL generation bug
+- Change 'production-ready' to 'development-ready' for v0.4.0
 
-### ⚙️ Infrastructure
+### 🧪 Testing
 
-- Vendor PackStream module: 4 files in src/packstream/ with MIT attribution
-- Remove neo4rs dependency (keep bytes crate only)
-- Create PowerShell server startup script with proper background handling (start_server_with_cache.ps1)
+- *(benchmark)* Add regression test script for CI/CD
 
----
+### ⚙️ Miscellaneous Tasks
 
+- Update CHANGELOG.md [skip ci]
+- Complete v0.4.0 release preparation - Phase 1 complete
 ## [0.3.0] - 2025-11-10
 
 ### 🚀 Features
@@ -492,6 +374,3 @@ This release marks the completion of Phase 1, delivering a robust, development-r
 - Update CHANGELOG.md [skip ci]
 - Update Cargo.lock after axum 0.8.6 upgrade
 - Clean up debug logging and add NEXT_STEPS documentation
-
-
-
