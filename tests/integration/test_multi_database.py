@@ -64,12 +64,13 @@ class TestSchemaNameParameter:
             MATCH (n:User)
             RETURN COUNT(n) as count
             """,
-            schema_name="nonexistent_database"
+            schema_name="nonexistent_database",
+            raise_on_error=False
         )
         
-        # Should either error or return 0 results
-        # Implementation may vary
+        # Should return error response
         assert isinstance(response, dict)
+        assert response.get("status") == "error"
 
 
 class TestUSEClause:
