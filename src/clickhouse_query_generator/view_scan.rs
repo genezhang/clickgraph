@@ -18,7 +18,7 @@ pub fn build_view_scan(scan: &ViewScan, plan: &LogicalPlan) -> String {
     let table_ref = if let (Some(param_names), Some(param_values)) = 
         (&scan.view_parameter_names, &scan.view_parameter_values) 
     {
-        // This is a parameterized view - generate table(param=value, ...) syntax
+        // This is a parameterized view - generate view(param=value, ...) syntax
         let param_pairs: Vec<String> = param_names
             .iter()
             .filter_map(|name| {
@@ -31,19 +31,19 @@ pub fn build_view_scan(scan: &ViewScan, plan: &LogicalPlan) -> String {
             .collect();
 
         if param_pairs.is_empty() {
-            // No matching parameters found - use plain table name
+            // No matching parameters found - use plain table/view name
             log::warn!(
-                "ViewScan: Table '{}' expects parameters {:?} but none matched in provided values",
+                "ViewScan: View '{}' expects parameters {:?} but none matched in provided values",
                 scan.source_table,
                 param_names
             );
             scan.source_table.clone()
         } else {
-            // Generate table function call: table(param1='value1', param2='value2')
+            // Generate parameterized view call: view_name(param1='value1', param2='value2')
             format!("{}({})", scan.source_table, param_pairs.join(", "))
         }
     } else {
-        // Not a parameterized view - use plain table name
+        // Not a parameterized view - use plain table/view name
         scan.source_table.clone()
     };
     

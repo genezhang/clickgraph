@@ -1,0 +1,46 @@
+graph_schema:
+  nodes:
+    - label: User
+      database: brahmand
+      table: users_by_tenant
+      view_parameters: [tenant_id]
+      id_column: user_id
+      property_mappings:
+        user_id: user_id
+        name: name
+        email: email
+        country: country
+
+    - label: Order
+      database: brahmand
+      table: orders_by_tenant
+      view_parameters: [tenant_id]
+      id_column: order_id
+      property_mappings:
+        order_id: order_id
+        user_id: user_id
+        product: product
+        amount: amount
+
+  relationships:
+    - type: FRIENDS_WITH
+      database: brahmand
+      table: friendships_by_tenant
+      view_parameters: [tenant_id]
+      from_id: user_id_from
+      to_id: user_id_to
+      from_node: User
+      to_node: User
+      property_mappings:
+        friendship_id: friendship_id
+
+    - type: PLACED
+      database: brahmand
+      table: orders_by_tenant
+      view_parameters: [tenant_id]
+      from_id: user_id
+      to_id: order_id
+      from_node: User
+      to_node: Order
+      property_mappings:
+        amount: amount
