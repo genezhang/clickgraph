@@ -437,7 +437,7 @@ impl BoltHandler {
         let parameters = message.extract_parameters().unwrap_or_else(HashMap::new);
 
         // Get selected schema from context, or from RUN message metadata
-        let (schema_name, tenant_id, role) = {
+        let (schema_name, tenant_id, role, view_parameters) = {
             let context = self.context.lock().unwrap();
 
             // Debug: log RUN message fields
@@ -481,7 +481,13 @@ impl BoltHandler {
                 log::debug!("✅ RUN message contains role: {}", r);
             }
 
-            (schema_name, tenant_id, role)
+            // Extract view_parameters from RUN message metadata (Phase 2 Multi-tenancy)
+            let view_parameters = message.extract_run_view_parameters();
+            if let Some(ref vp) = view_parameters {
+                log::debug!("✅ RUN message contains view_parameters: {:?}", vp);
+            }
+
+            (schema_name, tenant_id, role, view_parameters)
         };
 
         log::info!("Executing Cypher query: {}", query);
@@ -493,7 +499,7 @@ impl BoltHandler {
 
         // Parse and execute the query
         match self
-            .execute_cypher_query(query, parameters, schema_name, tenant_id, role)
+            .execute_cypher_query(query, parameters, schema_name, tenant_id, role, view_parameters)
             .await
         {
             Ok(result_metadata) => {
@@ -673,6 +679,7 @@ impl BoltHandler {
         schema_name: Option<String>,
         tenant_id: Option<String>,
         role: Option<String>,
+        view_parameters: Option<HashMap<String, String>>,
     ) -> BoltResult<HashMap<String, Value>> {
         // Parse and extract schema name synchronously (no await points, so Rc<RefCell<>> is safe)
         let (effective_schema, query_type_check) = {
@@ -726,7 +733,7 @@ impl BoltHandler {
             parsed_query_for_planning,
             &graph_schema,
             tenant_id,
-            None, // TODO: Extract view_parameters from Bolt RUN message (Task 9)
+            view_parameters,
         ) {
                 Ok(plan) => plan,
                 Err(e) => {

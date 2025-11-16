@@ -344,6 +344,32 @@ impl BoltMessage {
         None
     }
 
+    /// Extract view_parameters from RUN message extra metadata (Phase 2 Multi-tenancy)
+    /// Example: RUN "MATCH (n) RETURN n" {} {"db": "brahmand", "view_parameters": {"tenant_id": "acme", "region": "US"}}
+    pub fn extract_run_view_parameters(&self) -> Option<HashMap<String, String>> {
+        if self.signature == signatures::RUN && self.fields.len() >= 3 {
+            if let Value::Object(extra_map) = &self.fields[2] {
+                if let Some(Value::Object(view_params)) = extra_map.get("view_parameters") {
+                    // Convert HashMap<String, Value> to HashMap<String, String>
+                    let converted: HashMap<String, String> = view_params
+                        .iter()
+                        .map(|(k, v)| {
+                            let string_value = match v {
+                                Value::String(s) => s.clone(),
+                                Value::Number(n) => n.to_string(),
+                                Value::Bool(b) => b.to_string(),
+                                _ => v.to_string(),
+                            };
+                            (k.clone(), string_value)
+                        })
+                        .collect();
+                    return Some(converted);
+                }
+            }
+        }
+        None
+    }
+
     /// Extract authentication token from LOGON message (Bolt 5.1+)
     /// LOGON message has a single field: auth::Dictionary(scheme::String, ...)
     pub fn extract_logon_auth(&self) -> Option<HashMap<String, Value>> {
