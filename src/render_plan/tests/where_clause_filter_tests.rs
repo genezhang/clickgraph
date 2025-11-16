@@ -27,7 +27,7 @@ fn cypher_to_sql(cypher: &str) -> String {
     let empty_schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
 
     let (logical_plan, mut plan_ctx) =
-        build_logical_plan(&ast, &empty_schema).expect("Failed to build logical plan");
+        build_logical_plan(&ast, &empty_schema, None).expect("Failed to build logical plan");
 
     // Debug: Print logical plan before analyzer passes
     println!("Logical plan before analyzer passes: {:?}", logical_plan);
@@ -92,6 +92,7 @@ fn setup_test_graph_schema() -> GraphSchema {
         ]
         .into_iter()
         .collect(),
+        view_parameters: None,
     };
     nodes.insert("User".to_string(), user_node);
 
@@ -107,6 +108,7 @@ fn setup_test_graph_schema() -> GraphSchema {
         from_node_id_dtype: "UInt64".to_string(),
         to_node_id_dtype: "UInt64".to_string(),
         property_mappings: HashMap::new(),
+        view_parameters: None,
     };
     relationships.insert("FOLLOWS".to_string(), follows_rel);
 
@@ -527,3 +529,4 @@ mod edge_cases {
         );
     }
 }
+

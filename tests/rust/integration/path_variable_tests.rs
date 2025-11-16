@@ -21,7 +21,7 @@ fn test_path_variable_sql_generation() {
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema).expect("Failed to build logical plan");
+        build_logical_plan(&ast, &schema, None).expect("Failed to build logical plan");
 
     // Build render plan
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
@@ -66,7 +66,7 @@ fn test_path_variable_with_properties() {
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema).expect("Failed to build logical plan");
+        build_logical_plan(&ast, &schema, None).expect("Failed to build logical plan");
 
     // Build render plan
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
@@ -102,7 +102,7 @@ fn test_non_path_variable_unchanged() {
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema).expect("Failed to build logical plan");
+        build_logical_plan(&ast, &schema, None).expect("Failed to build logical plan");
 
     // Build render plan
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
@@ -118,3 +118,4 @@ fn test_non_path_variable_unchanged() {
     // Just make sure it compiles and runs
     assert!(!sql.is_empty(), "SQL should not be empty");
 }
+

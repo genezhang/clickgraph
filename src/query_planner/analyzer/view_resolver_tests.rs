@@ -23,6 +23,7 @@ mod tests {
                 dtype: "UInt64".to_string(),
             },
             property_mappings: HashMap::new(),
+            view_parameters: None,
         };
         nodes.insert("User".to_string(), node_schema);
 
@@ -38,6 +39,7 @@ mod tests {
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
+            view_parameters: None,
         };
         relationships.insert("FOLLOWS".to_string(), rel_schema);
 

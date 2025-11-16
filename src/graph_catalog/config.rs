@@ -99,6 +99,10 @@ pub struct NodeDefinition {
     /// Property mappings
     #[serde(rename = "property_mappings")]
     pub properties: HashMap<String, String>,
+    /// Optional: List of view parameters for parameterized views
+    /// Example: ["tenant_id", "region"]
+    #[serde(default)]
+    pub view_parameters: Option<Vec<String>>,
 }
 
 /// Relationship definition in schema config
@@ -124,6 +128,10 @@ pub struct RelationshipDefinition {
     /// Property mappings
     #[serde(rename = "property_mappings")]
     pub properties: HashMap<String, String>,
+    /// Optional: List of view parameters for parameterized views
+    /// Example: ["tenant_id", "region"]
+    #[serde(default)]
+    pub view_parameters: Option<Vec<String>>,
 }
 
 impl GraphSchemaConfig {
@@ -204,6 +212,7 @@ impl GraphSchemaConfig {
                     dtype: "UInt64".to_string(), // Default, could be made configurable
                 },
                 property_mappings: node_def.properties.clone(),
+                view_parameters: node_def.view_parameters.clone(),
             };
             nodes.insert(node_def.label.clone(), node_schema);
         }
@@ -241,6 +250,7 @@ impl GraphSchemaConfig {
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: rel_def.properties.clone(),
+                view_parameters: rel_def.view_parameters.clone(),
             };
             relationships.insert(rel_def.type_name.clone(), rel_schema);
         }

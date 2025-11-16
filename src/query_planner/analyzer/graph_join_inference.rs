@@ -1818,6 +1818,7 @@ mod tests {
                     dtype: "UInt64".to_string(),
                 },
                 property_mappings: HashMap::new(),
+                view_parameters: None,
             },
         );
 
@@ -1834,6 +1835,7 @@ mod tests {
                     dtype: "UInt64".to_string(),
                 },
                 property_mappings: HashMap::new(),
+                view_parameters: None,
             },
         );
 
@@ -1855,6 +1857,7 @@ mod tests {
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),
+                view_parameters: None,
             },
         );
 
@@ -1876,6 +1879,7 @@ mod tests {
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),
+                view_parameters: None,
             },
         );
 

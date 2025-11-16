@@ -12,6 +12,9 @@ pub struct NodeSchema {
     pub primary_keys: String,
     pub node_id: NodeIdSchema,
     pub property_mappings: HashMap<String, String>,
+    /// Optional: List of view parameters for parameterized views
+    /// Example: Some(vec!["tenant_id".to_string(), "region".to_string()])
+    pub view_parameters: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -26,6 +29,8 @@ pub struct RelationshipSchema {
     pub from_node_id_dtype: String,
     pub to_node_id_dtype: String,
     pub property_mappings: HashMap<String, String>,
+    /// Optional: List of view parameters for parameterized views
+    pub view_parameters: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
