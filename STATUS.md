@@ -2,7 +2,29 @@
 
 *Updated: November 15, 2025*
 
-## 📊 **Integration Test Suite Progress**
+## � **Phase 2: Multi-Tenancy & RBAC** (In Progress)
+
+**Status**: ⚙️ **Week 1 of 4 - Infrastructure Complete**  
+**Date**: November 15, 2025  
+**Progress**: 5/18 tasks (28%)
+
+**Completed** ✅:
+1. ✅ tenant_id context propagation (HTTP + Bolt)
+2. ✅ view_parameters infrastructure 
+3. ✅ SET ROLE RBAC support for single-tenant deployments
+
+**Key Design**:
+- **Scenario 1**: No RBAC (use currentUser() in views) - Works today
+- **Scenario 2**: Multi-tenancy via parameterized views - Infrastructure ready
+- **Scenario 3**: Single-tenant ClickHouse native RBAC via SET ROLE - Implemented
+
+**Next Week 2**: Schema YAML extensions, parameterized view SQL generation
+
+**Technical Details**: See `notes/phase2-minimal-rbac.md`
+
+---
+
+## �📊 **Integration Test Suite Progress**
 
 **Status**: ✅ **64% passing**, 🔧 **Continuous improvement**  
 **Date**: November 15, 2025  
