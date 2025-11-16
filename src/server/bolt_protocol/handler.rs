@@ -437,7 +437,7 @@ impl BoltHandler {
         let parameters = message.extract_parameters().unwrap_or_else(HashMap::new);
 
         // Get selected schema from context, or from RUN message metadata
-        let (schema_name, tenant_id) = {
+        let (schema_name, tenant_id, role) = {
             let context = self.context.lock().unwrap();
 
             // Debug: log RUN message fields
@@ -475,7 +475,13 @@ impl BoltHandler {
                 log::debug!("✅ RUN message contains tenant_id: {}", tid);
             }
 
-            (schema_name, tenant_id)
+            // Extract role from RUN message metadata (Phase 2 RBAC)
+            let role = message.extract_run_role();
+            if let Some(ref r) = role {
+                log::debug!("✅ RUN message contains role: {}", r);
+            }
+
+            (schema_name, tenant_id, role)
         };
 
         log::info!("Executing Cypher query: {}", query);
@@ -487,7 +493,7 @@ impl BoltHandler {
 
         // Parse and execute the query
         match self
-            .execute_cypher_query(query, parameters, schema_name, tenant_id)
+            .execute_cypher_query(query, parameters, schema_name, tenant_id, role)
             .await
         {
             Ok(result_metadata) => {
@@ -666,6 +672,7 @@ impl BoltHandler {
         parameters: HashMap<String, Value>,
         schema_name: Option<String>,
         tenant_id: Option<String>,
+        role: Option<String>,
     ) -> BoltResult<HashMap<String, Value>> {
         // Parse and extract schema name synchronously (no await points, so Rc<RefCell<>> is safe)
         let (effective_schema, query_type_check) = {
@@ -761,6 +768,21 @@ impl BoltHandler {
         };
 
         log::debug!("Executing SQL: {}", final_sql);
+
+        // Apply role for ClickHouse RBAC (Phase 2)
+        if let Some(ref role_name) = role {
+            crate::server::clickhouse_client::set_role(
+                &self.clickhouse_client,
+                role_name,
+            )
+            .await
+            .map_err(|e| {
+                BoltError::query_error(format!(
+                    "Failed to set ClickHouse role: {}. Ensure role is granted to user.", 
+                    e
+                ))
+            })?;
+        }
 
         // Execute the query and fetch results as JSON bytes
         use tokio::io::AsyncBufReadExt;

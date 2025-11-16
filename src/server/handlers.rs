@@ -225,8 +225,14 @@ pub async fn query_handler(
         // Execute query and return
         let ch_sql_queries = vec![final_sql];
         let execution_start = Instant::now();
-        let response =
-            execute_cte_queries(app_state, ch_sql_queries, output_format, payload.parameters).await;
+        let response = execute_cte_queries(
+            app_state,
+            ch_sql_queries,
+            output_format,
+            payload.parameters,
+            payload.role.clone(),
+        )
+        .await;
         metrics.execution_time = execution_start.elapsed().as_secs_f64();
 
         let elapsed = start_time.elapsed();
@@ -482,7 +488,14 @@ pub async fn query_handler(
     let execution_start = Instant::now();
     let sql_queries_count = ch_sql_queries.len();
     let response = if is_read {
-        execute_cte_queries(app_state, ch_sql_queries, output_format, payload.parameters).await
+        execute_cte_queries(
+            app_state,
+            ch_sql_queries,
+            output_format,
+            payload.parameters,
+            payload.role.clone(),
+        )
+        .await
     } else {
         ddl_handler(
             app_state.clickhouse_client.clone(),
@@ -592,6 +605,7 @@ async fn execute_cte_queries(
     ch_sql_queries: Vec<String>,
     output_format: OutputFormat,
     parameters: Option<std::collections::HashMap<String, Value>>,
+    role: Option<String>,
 ) -> Result<Response, (StatusCode, String)> {
     let ch_query_string = ch_sql_queries.join(" ");
 
@@ -613,6 +627,22 @@ async fn execute_cte_queries(
 
     // Log full SQL for debugging (especially helpful when ClickHouse truncates errors)
     log::debug!("Executing SQL:\n{}", final_sql);
+
+    // Apply role for ClickHouse RBAC (Phase 2)
+    if let Some(ref role_name) = role {
+        crate::server::clickhouse_client::set_role(
+            &app_state.clickhouse_client,
+            role_name,
+        )
+        .await
+        .map_err(|e| {
+            log::error!("Failed to set ClickHouse role: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SET ROLE error: {}. Ensure role is granted to user.", e),
+            )
+        })?;
+    }
 
     if output_format == OutputFormat::Pretty
         || output_format == OutputFormat::PrettyCompact

@@ -15,6 +15,10 @@ pub struct QueryRequest {
     pub parameters: Option<HashMap<String, Value>>,
     /// Tenant ID for multi-tenant deployments (passed to parameterized views)
     pub tenant_id: Option<String>,
+    /// View parameters for parameterized views (e.g., {"region": "US", "start_date": "2025-01-01"})
+    pub view_parameters: Option<HashMap<String, Value>>,
+    /// ClickHouse role name for RBAC via SET ROLE (requires database-managed users with granted roles)
+    pub role: Option<String>,
 }
 
 // #[derive(Debug, Serialize)]

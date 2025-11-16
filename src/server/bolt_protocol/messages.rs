@@ -331,6 +331,19 @@ impl BoltMessage {
         None
     }
 
+    /// Extract role from RUN message extra metadata (Phase 2 RBAC)
+    /// Example: RUN "MATCH (n) RETURN n" {} {"db": "brahmand", "role": "admin_role"}
+    pub fn extract_run_role(&self) -> Option<String> {
+        if self.signature == signatures::RUN && self.fields.len() >= 3 {
+            if let Value::Object(extra_map) = &self.fields[2] {
+                if let Some(Value::String(role)) = extra_map.get("role") {
+                    return Some(role.clone());
+                }
+            }
+        }
+        None
+    }
+
     /// Extract authentication token from LOGON message (Bolt 5.1+)
     /// LOGON message has a single field: auth::Dictionary(scheme::String, ...)
     pub fn extract_logon_auth(&self) -> Option<HashMap<String, Value>> {
