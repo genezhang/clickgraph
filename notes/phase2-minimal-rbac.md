@@ -136,16 +136,41 @@ SELECT * FROM users
 WHERE tenant_id = {tenant_id:String};
 ```
 
-**Pattern 2: Tenant + Role-Based Access**
+**Pattern 2: Tenant + ClickHouse Native RBAC**
 ```sql
+-- ⚠️ REQUIRES: Database-managed ClickHouse users (not users.xml)
+-- Create roles and grant to users
+CREATE ROLE admin_role;
+CREATE ROLE user_role;
+CREATE USER alice IDENTIFIED WITH plaintext_password BY 'password';
+GRANT admin_role TO alice;
+
+-- View filters based on current roles
 CREATE VIEW users_secure AS
 SELECT * FROM users 
 WHERE tenant_id = {tenant_id:String}
   AND (
-    getSetting('user_role') = 'admin'  -- Admins see all
-    OR owner_id = getSetting('user_id')  -- Others see their own
+    -- Admins see all within tenant
+    'admin_role' IN (SELECT role_name FROM system.current_roles)
+    -- Regular users see only their own records
+    OR owner_id = currentUser()
   );
 ```
+
+**ClickGraph Usage**:
+```json
+{
+  "query": "MATCH (u:User) RETURN u",
+  "tenant_id": "acme",
+  "role": "admin_role"  // ClickGraph executes: SET ROLE admin_role
+}
+```
+
+**Notes**:
+- ✅ Uses ClickHouse's native `SET ROLE` command
+- ✅ Views filter with `system.current_roles` table
+- ⚠️ Requires database-managed users (CREATE USER ... IDENTIFIED WITH ...)
+- ❌ Won't work with users.xml (read-only storage backend)
 
 **Pattern 3: Per-Tenant Encryption (Your Use Case!)**
 ```sql
