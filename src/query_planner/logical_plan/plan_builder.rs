@@ -17,9 +17,10 @@ pub type LogicalPlanResult<T> = Result<T, LogicalPlanError>;
 pub fn build_logical_plan(
     query_ast: &OpenCypherQueryAst,
     schema: &GraphSchema,
+    tenant_id: Option<String>,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
     let mut logical_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Empty);
-    let mut plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
+    let mut plan_ctx = PlanCtx::with_tenant(Arc::new(schema.clone()), tenant_id);
 
     log::debug!(
         "build_logical_plan: Processing query with {} optional_match_clauses",

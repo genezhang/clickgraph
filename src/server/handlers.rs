@@ -385,7 +385,11 @@ pub async fn query_handler(
         } else if is_read {
             // Phase 2: Plan query
             let planning_start = Instant::now();
-            let logical_plan = match query_planner::evaluate_read_query(cypher_ast, &graph_schema) {
+            let logical_plan = match query_planner::evaluate_read_query(
+                cypher_ast,
+                &graph_schema,
+                payload.tenant_id.clone(),
+            ) {
                 Ok(plan) => plan,
                 Err(e) => {
                     metrics.planning_time = planning_start.elapsed().as_secs_f64();

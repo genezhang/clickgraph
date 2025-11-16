@@ -317,6 +317,20 @@ impl BoltMessage {
         None
     }
 
+    /// Extract tenant_id from RUN message extra metadata (Phase 2 Multi-tenancy)
+    /// The RUN message can have: RUN query parameters extra_metadata
+    /// where extra_metadata may contain {"tenant_id": "acme-corp"}
+    pub fn extract_run_tenant_id(&self) -> Option<String> {
+        if self.signature == signatures::RUN && self.fields.len() >= 3 {
+            if let Value::Object(extra_map) = &self.fields[2] {
+                if let Some(Value::String(tenant)) = extra_map.get("tenant_id") {
+                    return Some(tenant.clone());
+                }
+            }
+        }
+        None
+    }
+
     /// Extract authentication token from LOGON message (Bolt 5.1+)
     /// LOGON message has a single field: auth::Dictionary(scheme::String, ...)
     pub fn extract_logon_auth(&self) -> Option<HashMap<String, Value>> {

@@ -437,7 +437,7 @@ impl BoltHandler {
         let parameters = message.extract_parameters().unwrap_or_else(HashMap::new);
 
         // Get selected schema from context, or from RUN message metadata
-        let schema_name = {
+        let (schema_name, tenant_id) = {
             let context = self.context.lock().unwrap();
 
             // Debug: log RUN message fields
@@ -451,7 +451,7 @@ impl BoltHandler {
             }
 
             // Check if RUN message specifies a database (Bolt 4.x)
-            if let Some(run_db) = message.extract_run_database() {
+            let schema_name = if let Some(run_db) = message.extract_run_database() {
                 log::info!("✅ RUN message contains database: {}", run_db);
                 if run_db != context.schema_name.as_deref().unwrap_or("default") {
                     log::debug!(
@@ -467,7 +467,15 @@ impl BoltHandler {
                     context.schema_name
                 );
                 context.schema_name.clone()
+            };
+
+            // Extract tenant_id from RUN message metadata (Phase 2)
+            let tenant_id = message.extract_run_tenant_id();
+            if let Some(ref tid) = tenant_id {
+                log::debug!("✅ RUN message contains tenant_id: {}", tid);
             }
+
+            (schema_name, tenant_id)
         };
 
         log::info!("Executing Cypher query: {}", query);
@@ -479,7 +487,7 @@ impl BoltHandler {
 
         // Parse and execute the query
         match self
-            .execute_cypher_query(query, parameters, schema_name)
+            .execute_cypher_query(query, parameters, schema_name, tenant_id)
             .await
         {
             Ok(result_metadata) => {
@@ -657,6 +665,7 @@ impl BoltHandler {
         query: &str,
         parameters: HashMap<String, Value>,
         schema_name: Option<String>,
+        tenant_id: Option<String>,
     ) -> BoltResult<HashMap<String, Value>> {
         // Parse and extract schema name synchronously (no await points, so Rc<RefCell<>> is safe)
         let (effective_schema, query_type_check) = {
@@ -706,8 +715,11 @@ impl BoltHandler {
             .map_err(|e| BoltError::query_error(format!("Query re-parse failed: {}", e)))?;
 
         // Generate logical plan
-        let logical_plan =
-            match query_planner::evaluate_read_query(parsed_query_for_planning, &graph_schema) {
+        let logical_plan = match query_planner::evaluate_read_query(
+            parsed_query_for_planning,
+            &graph_schema,
+            tenant_id,
+        ) {
                 Ok(plan) => plan,
                 Err(e) => {
                     return Err(BoltError::query_error(format!(

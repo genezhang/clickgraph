@@ -49,8 +49,9 @@ pub use view_scan::ViewScan;
 pub fn evaluate_query(
     query_ast: OpenCypherQueryAst<'_>,
     schema: &GraphSchema,
+    tenant_id: Option<String>,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
-    plan_builder::build_logical_plan(&query_ast, schema)
+    plan_builder::build_logical_plan(&query_ast, schema, tenant_id)
 }
 
 pub fn generate_id() -> String {

@@ -36,9 +36,10 @@ pub fn get_query_type(query_ast: &OpenCypherQueryAst) -> QueryType {
 pub fn evaluate_read_query(
     query_ast: OpenCypherQueryAst,
     current_graph_schema: &GraphSchema,
+    tenant_id: Option<String>,
 ) -> Result<LogicalPlan, QueryPlannerError> {
     let (logical_plan, mut plan_ctx) =
-        logical_plan::evaluate_query(query_ast, current_graph_schema)?;
+        logical_plan::evaluate_query(query_ast, current_graph_schema, tenant_id)?;
 
     let logical_plan =
         analyzer::initial_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
