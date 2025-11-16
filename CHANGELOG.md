@@ -2,6 +2,14 @@
 
 ### 🚀 Features
 
+- **Add parameterized views for multi-tenancy** (Tasks 7-11 complete)
+  - Schema configuration: `view_parameters` field in NodeDefinition/RelationshipDefinition
+  - SQL generation: Generates `view_name(param='value')` syntax with injection protection
+  - Bolt protocol support: Extract view_parameters from RUN message extra field
+  - Unit tests: 7/7 passing (schema parsing, backward compat, multi-param, edge cases)
+  - Test infrastructure: ClickHouse parameterized views + test data + Python test script
+  - Documentation: Complete guide in `notes/parameterized-views.md`
+  - Commits: 2d1cb04, 7ea4a05, 4ad7563, 8c21fca, a639049
 - Add parameter support via HTTP API + identity fallback for properties
 - Add production-ready query cache with LRU eviction
 - Complete Bolt 5.8 protocol implementation with E2E tests passing
