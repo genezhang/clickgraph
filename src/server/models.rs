@@ -13,6 +13,8 @@ pub struct QueryRequest {
     pub schema_name: Option<String>,
     /// Parameters for the query (e.g., {"email": "alice@example.com", "minAge": 25})
     pub parameters: Option<HashMap<String, Value>>,
+    /// Tenant ID for multi-tenant deployments (passed to parameterized views)
+    pub tenant_id: Option<String>,
 }
 
 // #[derive(Debug, Serialize)]

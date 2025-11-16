@@ -140,6 +140,8 @@ pub struct PlanCtx {
     in_optional_match_mode: bool,
     /// Graph schema for this query (enables multi-schema support)
     schema: Arc<GraphSchema>,
+    /// Tenant ID for multi-tenant deployments (passed to parameterized views)
+    tenant_id: Option<String>,
 }
 
 impl PlanCtx {
@@ -295,6 +297,19 @@ impl PlanCtx {
             projection_aliases: HashMap::new(),
             in_optional_match_mode: false,
             schema,
+            tenant_id: None,
+        }
+    }
+
+    /// Create a new PlanCtx with the given schema and tenant_id
+    pub fn with_tenant(schema: Arc<GraphSchema>, tenant_id: Option<String>) -> Self {
+        PlanCtx {
+            alias_table_ctx_map: HashMap::new(),
+            optional_aliases: HashSet::new(),
+            projection_aliases: HashMap::new(),
+            in_optional_match_mode: false,
+            schema,
+            tenant_id,
         }
     }
 
@@ -309,7 +324,13 @@ impl PlanCtx {
             projection_aliases: HashMap::new(),
             in_optional_match_mode: false,
             schema: Arc::new(empty_schema),
+            tenant_id: None,
         }
+    }
+
+    /// Get the tenant ID for this query context
+    pub fn tenant_id(&self) -> Option<&String> {
+        self.tenant_id.as_ref()
     }
 }
 
