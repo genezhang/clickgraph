@@ -3,8 +3,8 @@
 //! These tests focus on individual components and functions without external I/O.
 //! Most unit tests are embedded in source files with #[cfg(test)] modules.
 
-// Include unit tests from source modules
-// These are automatically discovered by cargo test when run with --lib
+// Standalone unit test modules
+mod test_view_parameters;
 
 #[cfg(test)]
 mod tests {
