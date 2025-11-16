@@ -144,7 +144,7 @@ async fn test_view_based_query() -> anyhow::Result<()> {
     // Parse and plan query
     let ast = OpenCypherQueryAst::parse(cypher)?;
     let empty_schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
-    let (logical_plan, plan_ctx) = evaluate_query(ast, &empty_schema)?;
+    let (logical_plan, plan_ctx) = evaluate_query(ast, &empty_schema, None, None)?;
     
     // Generate SQL
     let render_plan = logical_plan.to_render_plan(&empty_schema)?;
@@ -177,7 +177,7 @@ async fn test_filtered_view_query() -> anyhow::Result<()> {
     
     let ast = OpenCypherQueryAst::parse(cypher)?;
     let empty_schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
-    let (logical_plan, plan_ctx) = evaluate_query(ast, &empty_schema)?;
+    let (logical_plan, plan_ctx) = evaluate_query(ast, &empty_schema, None, None)?;
     let render_plan = logical_plan.to_render_plan(&empty_schema)?;
     let sql = generate_sql(render_plan);
 
@@ -188,4 +188,5 @@ async fn test_filtered_view_query() -> anyhow::Result<()> {
 
     Ok(())
 }
+
 

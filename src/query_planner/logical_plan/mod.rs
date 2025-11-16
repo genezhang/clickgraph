@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{fmt, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 // Import serde_arc modules for serialization
 #[path = "../../utils/serde_arc.rs"]
@@ -50,8 +50,9 @@ pub fn evaluate_query(
     query_ast: OpenCypherQueryAst<'_>,
     schema: &GraphSchema,
     tenant_id: Option<String>,
+    view_parameter_values: Option<HashMap<String, String>>,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
-    plan_builder::build_logical_plan(&query_ast, schema, tenant_id)
+    plan_builder::build_logical_plan(&query_ast, schema, tenant_id, view_parameter_values)
 }
 
 pub fn generate_id() -> String {

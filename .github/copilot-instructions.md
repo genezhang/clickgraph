@@ -137,6 +137,8 @@ $env:GRAPH_CONFIG_PATH = ".\benchmarks\schemas\social_benchmark.yaml"
 $env:GRAPH_CONFIG_PATH = ".\schemas\demo\users.yaml"  # Different property mappings!
 ```
 
+**Use consistent commands with fewer variations so auto-approval can work without waiting for manual approval**
+
 **Query Examples with Correct Schema**:
 ```cypher
 # ✅ CORRECT (uses full_name mapping from benchmark schema)

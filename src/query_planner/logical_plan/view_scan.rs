@@ -29,6 +29,12 @@ pub struct ViewScan {
     /// Child plan (if any)
     #[serde(skip)]
     pub input: Option<Arc<LogicalPlan>>,
+    /// Parameter names expected by this parameterized view (e.g., ["tenant_id", "region"])
+    /// If None, this is not a parameterized view
+    pub view_parameter_names: Option<Vec<String>>,
+    /// Actual parameter values to pass to the view (e.g., {"tenant_id": "acme", "region": "US"})
+    /// Must match view_parameter_names if the view is parameterized
+    pub view_parameter_values: Option<HashMap<String, String>>,
 }
 
 impl ViewScan {
@@ -51,6 +57,8 @@ impl ViewScan {
             from_id: None,
             to_id: None,
             input: None,
+            view_parameter_names: None,
+            view_parameter_values: None,
         }
     }
 
@@ -74,6 +82,8 @@ impl ViewScan {
             from_id: None,
             to_id: None,
             input: Some(input),
+            view_parameter_names: None,
+            view_parameter_values: None,
         }
     }
 
@@ -98,10 +108,12 @@ impl ViewScan {
             from_id: Some(from_id),
             to_id: Some(to_id),
             input: None,
+            view_parameter_names: None,
+            view_parameter_values: None,
         }
     }
 
-    /// Create a new relationship view scan with an input plan
+    /// Create a new relationship view scan with input plan
     pub fn relationship_with_input(
         source_table: String,
         view_filter: Option<LogicalExpr>,
@@ -123,6 +135,8 @@ impl ViewScan {
             from_id: Some(from_id),
             to_id: Some(to_id),
             input: Some(input),
+            view_parameter_names: None,
+            view_parameter_values: None,
         }
     }
 
@@ -156,6 +170,8 @@ impl ViewScan {
             from_id: self.from_id.clone(),
             to_id: self.to_id.clone(),
             input: self.input.clone(),
+            view_parameter_names: self.view_parameter_names.clone(),
+            view_parameter_values: self.view_parameter_values.clone(),
         }
     }
 

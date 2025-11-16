@@ -726,6 +726,7 @@ impl BoltHandler {
             parsed_query_for_planning,
             &graph_schema,
             tenant_id,
+            None, // TODO: Extract view_parameters from Bolt RUN message (Task 9)
         ) {
                 Ok(plan) => plan,
                 Err(e) => {

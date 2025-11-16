@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
@@ -18,9 +19,14 @@ pub fn build_logical_plan(
     query_ast: &OpenCypherQueryAst,
     schema: &GraphSchema,
     tenant_id: Option<String>,
+    view_parameter_values: Option<HashMap<String, String>>,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
     let mut logical_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Empty);
-    let mut plan_ctx = PlanCtx::with_tenant(Arc::new(schema.clone()), tenant_id);
+    let mut plan_ctx = PlanCtx::with_parameters(
+        Arc::new(schema.clone()),
+        tenant_id,
+        view_parameter_values,
+    );
 
     log::debug!(
         "build_logical_plan: Processing query with {} optional_match_clauses",

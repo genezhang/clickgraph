@@ -391,10 +391,28 @@ pub async fn query_handler(
         } else if is_read {
             // Phase 2: Plan query
             let planning_start = Instant::now();
+
+            // Convert view_parameters from Option<HashMap<String, Value>> to Option<HashMap<String, String>>
+            let view_parameter_values = payload.view_parameters.as_ref().map(|params| {
+                params
+                    .iter()
+                    .map(|(k, v)| {
+                        let string_value = match v {
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            _ => v.to_string(),
+                        };
+                        (k.clone(), string_value)
+                    })
+                    .collect()
+            });
+
             let logical_plan = match query_planner::evaluate_read_query(
                 cypher_ast,
                 &graph_schema,
                 payload.tenant_id.clone(),
+                view_parameter_values,
             ) {
                 Ok(plan) => plan,
                 Err(e) => {

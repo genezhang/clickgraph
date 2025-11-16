@@ -114,8 +114,31 @@ fn try_generate_view_scan(
     let full_table_name = format!("{}.{}", node_schema.database, node_schema.table_name);
     log::debug!("Using fully qualified table name: {}", full_table_name);
 
+    // Get view parameter names from schema (if this is a parameterized view)
+    let view_parameter_names = node_schema.view_parameters.clone();
+
+    // Get view parameter values from PlanCtx (if provided)
+    let view_parameter_values = plan_ctx.view_parameter_values().cloned();
+
+    // Log parameter info
+    if let Some(ref param_names) = view_parameter_names {
+        log::debug!(
+            "ViewScan: Table '{}' expects parameters: {:?}",
+            node_schema.table_name,
+            param_names
+        );
+        if let Some(ref param_values) = view_parameter_values {
+            log::debug!("ViewScan: Will use parameter values: {:?}", param_values);
+        } else {
+            log::warn!(
+                "ViewScan: Table '{}' is parameterized but no values provided!",
+                node_schema.table_name
+            );
+        }
+    }
+
     // Create ViewScan with the actual table name from schema
-    let view_scan = ViewScan::new(
+    let mut view_scan = ViewScan::new(
         full_table_name,                    // Use fully qualified table name (database.table)
         None,                               // No filter condition yet
         property_mapping,                   // Property mappings from schema
@@ -123,6 +146,10 @@ fn try_generate_view_scan(
         vec!["id".to_string()],             // Basic output schema
         vec![],                             // No projections yet
     );
+
+    // Set view parameters if this is a parameterized view
+    view_scan.view_parameter_names = view_parameter_names;
+    view_scan.view_parameter_values = view_parameter_values;
 
     Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))))
 }
@@ -171,8 +198,34 @@ fn try_generate_relationship_view_scan(
         full_table_name
     );
 
+    // Get view parameter names from schema (if this is a parameterized view)
+    let view_parameter_names = rel_schema.view_parameters.clone();
+
+    // Get view parameter values from PlanCtx (if provided)
+    let view_parameter_values = plan_ctx.view_parameter_values().cloned();
+
+    // Log parameter info
+    if let Some(ref param_names) = view_parameter_names {
+        log::debug!(
+            "Relationship ViewScan: Table '{}' expects parameters: {:?}",
+            rel_schema.table_name,
+            param_names
+        );
+        if let Some(ref param_values) = view_parameter_values {
+            log::debug!(
+                "Relationship ViewScan: Will use parameter values: {:?}",
+                param_values
+            );
+        } else {
+            log::warn!(
+                "Relationship ViewScan: Table '{}' is parameterized but no values provided!",
+                rel_schema.table_name
+            );
+        }
+    }
+
     // Create ViewScan for relationship with from/to columns
-    let view_scan = ViewScan::new_relationship(
+    let mut view_scan = ViewScan::new_relationship(
         full_table_name,            // Use fully qualified table name (database.table)
         None,                       // No filter condition yet
         property_mapping,           // Empty for now
@@ -182,6 +235,10 @@ fn try_generate_relationship_view_scan(
         rel_schema.from_id.clone(), // From column from schema
         rel_schema.to_id.clone(),   // To column from schema
     );
+
+    // Set view parameters if this is a parameterized view
+    view_scan.view_parameter_names = view_parameter_names;
+    view_scan.view_parameter_values = view_parameter_values;
 
     Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))))
 }

@@ -142,6 +142,9 @@ pub struct PlanCtx {
     schema: Arc<GraphSchema>,
     /// Tenant ID for multi-tenant deployments (passed to parameterized views)
     tenant_id: Option<String>,
+    /// View parameter values for parameterized views (e.g., {"region": "US", "tier": "premium"})
+    /// These are passed to table functions: table(region = 'US', tier = 'premium')
+    view_parameter_values: Option<HashMap<String, String>>,
 }
 
 impl PlanCtx {
@@ -298,6 +301,7 @@ impl PlanCtx {
             in_optional_match_mode: false,
             schema,
             tenant_id: None,
+            view_parameter_values: None,
         }
     }
 
@@ -310,6 +314,24 @@ impl PlanCtx {
             in_optional_match_mode: false,
             schema,
             tenant_id,
+            view_parameter_values: None,
+        }
+    }
+
+    /// Create a new PlanCtx with schema, tenant_id, and view_parameters
+    pub fn with_parameters(
+        schema: Arc<GraphSchema>,
+        tenant_id: Option<String>,
+        view_parameter_values: Option<HashMap<String, String>>,
+    ) -> Self {
+        PlanCtx {
+            alias_table_ctx_map: HashMap::new(),
+            optional_aliases: HashSet::new(),
+            projection_aliases: HashMap::new(),
+            in_optional_match_mode: false,
+            schema,
+            tenant_id,
+            view_parameter_values,
         }
     }
 
@@ -325,12 +347,18 @@ impl PlanCtx {
             in_optional_match_mode: false,
             schema: Arc::new(empty_schema),
             tenant_id: None,
+            view_parameter_values: None,
         }
     }
 
     /// Get the tenant ID for this query context
     pub fn tenant_id(&self) -> Option<&String> {
         self.tenant_id.as_ref()
+    }
+
+    /// Get the view parameter values for parameterized views
+    pub fn view_parameter_values(&self) -> Option<&HashMap<String, String>> {
+        self.view_parameter_values.as_ref()
     }
 }
 

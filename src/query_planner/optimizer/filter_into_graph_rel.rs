@@ -170,6 +170,8 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 from_id: view_scan.from_id.clone(),
                                 to_id: view_scan.to_id.clone(),
                                 input: view_scan.input.clone(),
+                                view_parameter_names: view_scan.view_parameter_names.clone(),
+                                view_parameter_values: view_scan.view_parameter_values.clone(),
                             },
                         )));
 
@@ -212,6 +214,8 @@ impl OptimizerPass for FilterIntoGraphRel {
                             from_id: view_scan.from_id.clone(),
                             to_id: view_scan.to_id.clone(),
                             input: view_scan.input.clone(),
+                            view_parameter_names: view_scan.view_parameter_names.clone(),
+                            view_parameter_values: view_scan.view_parameter_values.clone(),
                         },
                     )));
 
@@ -366,6 +370,8 @@ impl OptimizerPass for FilterIntoGraphRel {
                                     from_id: view_scan.from_id.clone(),
                                     to_id: view_scan.to_id.clone(),
                                     input: view_scan.input.clone(),
+                                    view_parameter_names: view_scan.view_parameter_names.clone(),
+                                    view_parameter_values: view_scan.view_parameter_values.clone(),
                                 },
                             )));
 
@@ -609,6 +615,8 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 from_id: view_scan.from_id.clone(),
                                 to_id: view_scan.to_id.clone(),
                                 input: view_scan.input.clone(),
+                                view_parameter_names: view_scan.view_parameter_names.clone(),
+                                view_parameter_values: view_scan.view_parameter_values.clone(),
                             },
                         )));
 
