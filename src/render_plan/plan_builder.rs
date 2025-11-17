@@ -997,6 +997,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     source: std::sync::Arc::new(LogicalPlan::Empty),
                                     name: table_name,
                                     alias: Some(nested_graph_rel.left_connection.clone()),
+                                    use_final: false,
                                 })
                             }
                         } else {
@@ -1026,6 +1027,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     source: std::sync::Arc::new(LogicalPlan::Empty),
                                     name: table_name,
                                     alias: Some(connection_alias.clone()),
+                                    use_final: false,
                                 })
                             } else {
                                 // Fallback: use left_connection as anchor (traditional behavior)
@@ -1039,6 +1041,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     source: std::sync::Arc::new(LogicalPlan::Empty),
                                     name: table_name,
                                     alias: Some(graph_rel.left_connection.clone()),
+                                    use_final: false,
                                 })
                             }
                         }
@@ -1096,7 +1099,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                         source: std::sync::Arc::new(LogicalPlan::Empty),
                                         name: table_name,
                                         alias: Some(anchor_alias),
-                                    })
+                                    use_final: false,
+                                })
                                 } else {
                                     println!(
                                         "DEBUG: GraphJoins.extract_from() - could not find table_name for anchor '{}', falling back to first join",
@@ -1108,7 +1112,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                             source: std::sync::Arc::new(LogicalPlan::Empty),
                                             name: first_join.table_name.clone(),
                                             alias: Some(first_join.table_alias.clone()),
-                                        })
+                                    use_final: false,
+                                })
                                     } else {
                                         None
                                     }
@@ -1120,7 +1125,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                         source: std::sync::Arc::new(LogicalPlan::Empty),
                                         name: first_join.table_name.clone(),
                                         alias: Some(first_join.table_alias.clone()),
-                                    })
+                                    use_final: false,
+                                })
                                 } else {
                                     None
                                 }
@@ -1142,6 +1148,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     source: std::sync::Arc::new(LogicalPlan::Empty),
                                     name: table_name,
                                     alias: Some(anchor_alias),
+                                    use_final: false,
                                 })
                             } else {
                                 if let Some(first_join) = graph_joins.joins.first() {
@@ -1149,7 +1156,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                         source: std::sync::Arc::new(LogicalPlan::Empty),
                                         name: first_join.table_name.clone(),
                                         alias: Some(first_join.table_alias.clone()),
-                                    })
+                                    use_final: false,
+                                })
                                 } else {
                                     None
                                 }
@@ -1161,6 +1169,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     source: std::sync::Arc::new(LogicalPlan::Empty),
                                     name: first_join.table_name.clone(),
                                     alias: Some(first_join.table_alias.clone()),
+                                    use_final: false,
                                 })
                             } else {
                                 None
@@ -1181,7 +1190,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 source: std::sync::Arc::new(LogicalPlan::Empty),
                                 name: first_join.table_name.clone(),
                                 alias: Some(first_join.table_alias.clone()),
-                            })
+                                    use_final: false,
+                                })
                         } else {
                             None
                         }
@@ -2403,6 +2413,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     ),
                     name: var_len_cte.cte_name.clone(),
                     alias: Some("t".to_string()), // CTE uses 't' as alias
+                    use_final: false, // CTEs don't use FINAL
                 })));
 
                 // Check if there are end filters stored in the context that need to be applied to the outer query
@@ -2469,6 +2480,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     ),
                     name: var_len_cte.cte_name.clone(),
                     alias: Some("t".to_string()), // CTE uses 't' as alias
+                    use_final: false, // CTEs don't use FINAL
                 })));
                 // For variable-length paths, apply end filters in the outer query
                 if let Some((_start_alias, _end_alias)) = has_variable_length_rel(self) {
@@ -2737,7 +2749,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
                 name: "system.one".to_string(),
                 alias: None,
-            })));
+                                    use_final: false,
+                                })));
         }
 
         // Validate FROM clause exists (after potentially adding system.one for standalone queries)

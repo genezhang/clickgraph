@@ -14,6 +14,8 @@ pub struct ViewTableRef {
     pub name: String,
     /// The alias to use in SQL (e.g., the Cypher variable name like "u" or "n")
     pub alias: Option<String>,
+    /// Whether to use FINAL keyword for this table (for ReplacingMergeTree, etc.)
+    pub use_final: bool,
 }
 
 impl ViewTableRef {
@@ -39,38 +41,58 @@ impl ViewTableRef {
     /// Create a new table reference
     pub fn new_table(scan: ViewScan, name: String) -> Self {
         let table_ref = Self::build_table_reference(&scan, &name);
+        let use_final = scan.use_final;  // Extract before moving scan
         Self {
             source: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),
             name: table_ref,
             alias: None,
+            use_final,
         }
     }
 
     /// Create a new table reference with an explicit alias
     pub fn new_table_with_alias(scan: ViewScan, name: String, alias: String) -> Self {
         let table_ref = Self::build_table_reference(&scan, &name);
+        let use_final = scan.use_final;  // Extract before moving scan
         Self {
             source: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),
             name: table_ref,
             alias: Some(alias),
+            use_final,
         }
     }
 
     /// Create a new view reference
     pub fn new_view(source: Arc<LogicalPlan>, name: String) -> Self {
+        // Try to extract use_final from source if it's a ViewScan
+        let use_final = if let LogicalPlan::ViewScan(scan) = source.as_ref() {
+            scan.use_final
+        } else {
+            false
+        };
+        
         Self {
             source,
             name,
             alias: None,
+            use_final,
         }
     }
 
     /// Create a new view reference with an explicit alias
     pub fn new_view_with_alias(source: Arc<LogicalPlan>, name: String, alias: String) -> Self {
+        // Try to extract use_final from source if it's a ViewScan
+        let use_final = if let LogicalPlan::ViewScan(scan) = source.as_ref() {
+            scan.use_final
+        } else {
+            false
+        };
+        
         Self {
             source,
             name,
             alias: Some(alias),
+            use_final,
         }
     }
 }
