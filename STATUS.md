@@ -143,16 +143,31 @@ SELECT name FROM users_by_tenant(tenant_id = $tenant_id)
 
 Per ROADMAP.md Phase 2 scope:
 
-#### ❌ 3. **ReplacingMergeTree & FINAL** (Not Started)
+#### ⏳ 3. **ReplacingMergeTree & FINAL** (In Progress - 60%)
 **Effort**: 1-2 weeks  
 **Impact**: 🌟 Medium-High  
-**Purpose**: Support mutable data patterns common in production
+**Purpose**: Support mutable data patterns common in production  
+**Started**: November 17, 2025
 
-**What's Needed**:
-- Detect ReplacingMergeTree tables from ClickHouse metadata
-- Generate SQL with `FINAL` keyword for latest versions
-- Handle version columns in queries
-- Test with UPDATE/DELETE patterns
+**Completed (3/5)**:
+- ✅ Engine detection module (`engine_detection.rs`) - 13 tests passing (commit 8694728)
+- ✅ Schema configuration fields (`use_final: bool` in YAML) (commit 2334633)
+- ✅ SQL generation with FINAL keyword (commit c4a6c95, 2ae16fd)
+  * Correct syntax verified: `FROM table AS alias FINAL` (user-tested)
+  * ViewTableRef propagates use_final through entire query pipeline
+  * All 13 construction sites updated
+
+**Remaining (2/5)**:
+- ⏳ Schema loading integration: Call `detect_table_engine()` during YAML load
+- ⏳ Query planning integration: Set ViewScan.use_final from schema
+- ⏳ Integration tests: Auto-detection + manual override
+- ⏳ Documentation: User guide for ReplacingMergeTree support
+
+**Next Steps**:
+1. Integrate engine detection into `GraphSchemaConfig::to_graph_schema()`
+2. Propagate engine info to ViewScan during query planning
+3. Add integration tests with real ReplacingMergeTree tables
+4. Document usage patterns
 
 #### ❌ 4. **Auto-Schema Discovery** (Not Started)
 **Effort**: 1-2 weeks  

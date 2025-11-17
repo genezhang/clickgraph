@@ -25,12 +25,27 @@
   - Column-level security: Combine with row-level (parameterized views)
   - Commit: 5d0f712
 
+- **ReplacingMergeTree FINAL support (partial - 60% complete)**
+  - Engine detection: Identify ReplacingMergeTree tables (commit 8694728)
+  - Schema configuration: `use_final: bool` fields (commit 2334633)
+  - SQL generation: Correct FINAL placement (`FROM table AS alias FINAL`) (commits c4a6c95, 2ae16fd)
+  - ViewTableRef pipeline: Propagates use_final through query execution
+  - Remaining: Schema loading integration + integration tests
+
 - **Example schemas and patterns**
   - Simple tenant isolation: `schemas/examples/multi_tenant_simple.yaml`
   - Per-tenant encryption: `schemas/examples/multi_tenant_encrypted.yaml`
   - Multi-parameter views (tenant + region + date)
   - Hierarchical tenant trees
   - Role-based + row-level security
+
+### 🐛 Bug Fixes
+
+- **Correct FINAL keyword syntax** (commit 2ae16fd)
+  - Fixed placement: FINAL must come AFTER table alias
+  - Verified with actual ClickHouse instance
+  - Updated all 13 ViewTableRef construction sites
+  - Proper syntax: `FROM table AS t FINAL` (not `FROM table FINAL AS t`)
 
 ### 🧪 Testing
 
