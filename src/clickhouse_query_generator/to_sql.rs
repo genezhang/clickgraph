@@ -148,7 +148,10 @@ impl ToSql for LogicalPlan {
     fn to_sql(&self) -> Result<String, ClickhouseQueryGeneratorError> {
         match self {
             LogicalPlan::ViewScan(scan) => {
-                let mut sql = format!("SELECT * FROM {}", scan.source_table);
+                // Add FINAL keyword if enabled
+                let final_keyword = if scan.use_final { " FINAL" } else { "" };
+                let mut sql = format!("SELECT * FROM {}{}", scan.source_table, final_keyword);
+                
                 // Add WHERE clause if view_filter is present
                 if let Some(ref filter) = scan.view_filter {
                     sql.push_str(" WHERE ");

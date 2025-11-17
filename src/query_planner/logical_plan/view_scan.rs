@@ -35,6 +35,10 @@ pub struct ViewScan {
     /// Actual parameter values to pass to the view (e.g., {"tenant_id": "acme", "region": "US"})
     /// Must match view_parameter_names if the view is parameterized
     pub view_parameter_values: Option<HashMap<String, String>>,
+    /// Whether to use FINAL keyword for this table scan
+    /// - true: Use FINAL (for ReplacingMergeTree, CollapsingMergeTree, etc.)
+    /// - false: Don't use FINAL
+    pub use_final: bool,
 }
 
 impl ViewScan {
@@ -59,6 +63,7 @@ impl ViewScan {
             input: None,
             view_parameter_names: None,
             view_parameter_values: None,
+            use_final: false,  // Default: no FINAL
         }
     }
 
@@ -84,6 +89,7 @@ impl ViewScan {
             input: Some(input),
             view_parameter_names: None,
             view_parameter_values: None,
+            use_final: false,  // Default: no FINAL
         }
     }
 
@@ -110,6 +116,7 @@ impl ViewScan {
             input: None,
             view_parameter_names: None,
             view_parameter_values: None,
+            use_final: false,  // Default: no FINAL
         }
     }
 
@@ -137,6 +144,7 @@ impl ViewScan {
             input: Some(input),
             view_parameter_names: None,
             view_parameter_values: None,
+            use_final: false,  // Default: no FINAL
         }
     }
 
@@ -172,6 +180,7 @@ impl ViewScan {
             input: self.input.clone(),
             view_parameter_names: self.view_parameter_names.clone(),
             view_parameter_values: self.view_parameter_values.clone(),
+            use_final: self.use_final,  // Preserve use_final setting
         }
     }
 

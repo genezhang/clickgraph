@@ -172,6 +172,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: view_scan.input.clone(),
                                 view_parameter_names: view_scan.view_parameter_names.clone(),
                                 view_parameter_values: view_scan.view_parameter_values.clone(),
+                                use_final: view_scan.use_final,
                             },
                         )));
 
@@ -216,6 +217,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             input: view_scan.input.clone(),
                             view_parameter_names: view_scan.view_parameter_names.clone(),
                             view_parameter_values: view_scan.view_parameter_values.clone(),
+                            use_final: view_scan.use_final,
                         },
                     )));
 
@@ -372,6 +374,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                     input: view_scan.input.clone(),
                                     view_parameter_names: view_scan.view_parameter_names.clone(),
                                     view_parameter_values: view_scan.view_parameter_values.clone(),
+                                    use_final: view_scan.use_final,
                                 },
                             )));
 
@@ -617,6 +620,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: view_scan.input.clone(),
                                 view_parameter_names: view_scan.view_parameter_names.clone(),
                                 view_parameter_values: view_scan.view_parameter_values.clone(),
+                                use_final: view_scan.use_final,
                             },
                         )));
 

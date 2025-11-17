@@ -47,6 +47,12 @@ pub fn build_view_scan(scan: &ViewScan, plan: &LogicalPlan) -> String {
         scan.source_table.clone()
     };
     
-    sql.push_str(&format!("SELECT * FROM {}", table_ref));
+    // Add FINAL keyword if enabled for this table
+    if scan.use_final {
+        sql.push_str(&format!("SELECT * FROM {} FINAL", table_ref));
+    } else {
+        sql.push_str(&format!("SELECT * FROM {}", table_ref));
+    }
+    
     sql
 }
