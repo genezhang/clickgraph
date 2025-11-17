@@ -2,13 +2,16 @@
 
 *Updated: November 17, 2025*
 
-## ✅ **Phase 2: Multi-Tenancy & RBAC** - **COMPLETE**
+## 🔄 **Phase 2: Enterprise Readiness** - **In Progress (2/5 Complete)**
 
-**Status**: 🎉 **Production Ready**  
-**Completion Date**: November 17, 2025  
-**Target**: v0.5.0-beta
+**Status**: 🚧 **Core Features Done, Advanced Features Remaining**  
+**Started**: November 15, 2025  
+**Updated**: November 17, 2025  
+**Target**: v0.5.0 (January-February 2026)
 
-### 🚀 Delivered Features
+### 🚀 Delivered Features (2/5)
+
+#### ✅ 1. **RBAC & Row-Level Security** (Complete)
 
 #### 1. **Parameterized Views for Multi-Tenancy**
 - ✅ **Schema Configuration**: `view_parameters: [tenant_id, region, ...]` in YAML
@@ -127,24 +130,82 @@ SELECT name FROM users_by_tenant(tenant_id = $tenant_id)
 
 ### 📝 Key Commits
 
+- `5a1303d`: Phase 2 documentation complete (Nov 17)
 - `805db43`: Cache optimization with SQL placeholders (Nov 17)
 - `fa215e3`: Complete parameterized views documentation (Nov 16)
 - `7ea4a05`: SQL generation with view parameters (Nov 15)
 - `5d0f712`: SET ROLE RBAC support (Nov 15)
 - `2d1cb04`: Schema configuration (Nov 15)
 
-### 🚀 Next Steps
+---
 
-**v0.5.0-beta Release** (Ready Now):
-- ✅ All core features complete
-- ✅ Documentation published
-- ✅ E2E tested and validated
-- ⏳ Pending: Beta user feedback
+### 🔄 Remaining Phase 2 Tasks (3/5)
 
-**Future Enhancements** (v0.6.0+):
-- Parameter type validation
-- Schema-level parameter defaults
-- Advanced audit logging patterns
+Per ROADMAP.md Phase 2 scope:
+
+#### ❌ 3. **ReplacingMergeTree & FINAL** (Not Started)
+**Effort**: 1-2 weeks  
+**Impact**: 🌟 Medium-High  
+**Purpose**: Support mutable data patterns common in production
+
+**What's Needed**:
+- Detect ReplacingMergeTree tables from ClickHouse metadata
+- Generate SQL with `FINAL` keyword for latest versions
+- Handle version columns in queries
+- Test with UPDATE/DELETE patterns
+
+#### ❌ 4. **Auto-Schema Discovery** (Not Started)
+**Effort**: 1-2 weeks  
+**Impact**: 🌟 Medium  
+**Purpose**: Reduce YAML maintenance for wide tables
+
+**What's Needed**:
+- Query ClickHouse `DESCRIBE TABLE` metadata
+- Auto-generate node/relationship schemas
+- Cache discovered schemas
+- CLI command: `clickgraph discover --database=mydb --table=users`
+
+#### ❌ 5. **v0.5.0 Wiki Documentation** (Not Started)
+**Effort**: 3-4 weeks  
+**Impact**: 🔥 High  
+**Purpose**: Comprehensive documentation for adoption
+
+**What's Needed**:
+- GitHub Wiki setup
+- Architecture guide
+- Deployment guide
+- Performance tuning guide
+- API reference
+- Tutorial series
+
+---
+
+### 🎯 Phase 2 Completion Plan
+
+**Current Progress**: 2/5 features complete (40%)  
+**Estimated Time Remaining**: 5-7 weeks
+
+**Recommended Order**:
+1. **Week 1-2**: ReplacingMergeTree & FINAL support
+2. **Week 3-4**: Auto-schema discovery
+3. **Week 5-7**: Comprehensive Wiki documentation
+
+**Alternative**: Ship v0.5.0-beta now with items 1-2, complete documentation for v0.5.0 final
+
+---
+
+### 🚀 Next Steps Options
+
+**Option A: Quick Beta Ship** (Recommended)
+- Ship v0.5.0-beta with completed features (RBAC + Multi-tenancy)
+- Gather user feedback
+- Complete remaining items for v0.5.0 final
+
+**Option B: Complete Phase 2**
+- Implement ReplacingMergeTree support (1-2 weeks)
+- Add auto-schema discovery (1-2 weeks)
+- Write comprehensive Wiki (3-4 weeks)
+- Ship v0.5.0 final (6-8 weeks total)
 
 ---
 
