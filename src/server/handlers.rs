@@ -25,6 +25,27 @@ use super::{
     parameter_substitution, query_cache,
 };
 
+/// Merge view_parameters and query parameters into a single HashMap
+/// 
+/// Both view_parameters and parameters can contain values that need to be substituted
+/// in the SQL template. View parameters (like tenant_id) and query parameters (like $userId)
+/// are merged, with query parameters taking precedence in case of conflicts.
+fn merge_parameters(
+    query_params: &Option<std::collections::HashMap<String, Value>>,
+    view_params: &Option<std::collections::HashMap<String, Value>>,
+) -> Option<std::collections::HashMap<String, Value>> {
+    match (query_params, view_params) {
+        (None, None) => None,
+        (Some(p), None) => Some(p.clone()),
+        (None, Some(v)) => Some(v.clone()),
+        (Some(p), Some(v)) => {
+            let mut merged = v.clone();
+            merged.extend(p.clone());  // Query params override view params
+            Some(merged)
+        }
+    }
+}
+
 /// Performance metrics for query execution
 #[derive(Debug, Clone)]
 pub struct QueryPerformanceMetrics {
@@ -160,7 +181,8 @@ pub async fn query_handler(
 
     log::debug!("Using schema: {}", schema_name);
 
-    // Generate cache key
+    // Generate cache key (view_parameters are NOT part of the key)
+    // They will be substituted at execution time via $placeholder syntax
     let cache_key = query_cache::QueryCacheKey::new(clean_query, schema_name);
     let mut cache_status = "MISS";
 
@@ -190,8 +212,11 @@ pub async fn query_handler(
     if let Some(sql_template) = cached_sql {
         log::info!("Using cached SQL template");
 
+        // Merge view_parameters and query parameters for substitution
+        let all_params = merge_parameters(&payload.parameters, &payload.view_parameters);
+
         // Substitute parameters if provided
-        let final_sql = if let Some(params) = &payload.parameters {
+        let final_sql = if let Some(params) = &all_params {
             match parameter_substitution::substitute_parameters(&sql_template, params) {
                 Ok(sql) => sql,
                 Err(e) => {
@@ -229,7 +254,7 @@ pub async fn query_handler(
             app_state,
             ch_sql_queries,
             output_format,
-            payload.parameters,
+            all_params,  // Use merged parameters
             payload.role.clone(),
         )
         .await;
@@ -505,12 +530,16 @@ pub async fn query_handler(
     // Phase 5: Execute query
     let execution_start = Instant::now();
     let sql_queries_count = ch_sql_queries.len();
+    
+    // Merge view_parameters and query parameters for substitution
+    let all_params = merge_parameters(&payload.parameters, &payload.view_parameters);
+    
     let response = if is_read {
         execute_cte_queries(
             app_state,
             ch_sql_queries,
             output_format,
-            payload.parameters,
+            all_params,  // Use merged parameters
             payload.role.clone(),
         )
         .await

@@ -17,20 +17,41 @@ pub struct ViewTableRef {
 }
 
 impl ViewTableRef {
+    /// Build table reference with parameterized view syntax if applicable
+    fn build_table_reference(scan: &ViewScan, base_name: &str) -> String {
+        if let Some(param_names) = &scan.view_parameter_names {
+            if !param_names.is_empty() {
+                // Generate parameterized view call with $placeholder syntax
+                // e.g., view_name(tenant_id = $tenant_id, region = $region)
+                let param_pairs: Vec<String> = param_names
+                    .iter()
+                    .map(|name| format!("{} = ${}", name, name))
+                    .collect();
+
+                return format!("{}({})", base_name, param_pairs.join(", "));
+            }
+        }
+        
+        // Not a parameterized view - use plain table name
+        base_name.to_string()
+    }
+
     /// Create a new table reference
     pub fn new_table(scan: ViewScan, name: String) -> Self {
+        let table_ref = Self::build_table_reference(&scan, &name);
         Self {
             source: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),
-            name,
+            name: table_ref,
             alias: None,
         }
     }
 
     /// Create a new table reference with an explicit alias
     pub fn new_table_with_alias(scan: ViewScan, name: String, alias: String) -> Self {
+        let table_ref = Self::build_table_reference(&scan, &name);
         Self {
             source: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),
-            name,
+            name: table_ref,
             alias: Some(alias),
         }
     }

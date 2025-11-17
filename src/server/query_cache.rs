@@ -99,8 +99,8 @@ impl ReplanOption {
 
 /// Key for cache lookup
 ///
-/// Uses normalized query (parameters replaced with placeholders) and schema name
-/// to uniquely identify a query template.
+/// Uses normalized query and schema name to uniquely identify a query template.
+/// View parameters are NOT part of the cache key - they are substituted at execution time.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct QueryCacheKey {
     /// Normalized Cypher query (with CYPHER prefix stripped)
