@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
+use super::engine_detection::TableEngine;
 use super::errors::GraphSchemaError;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -15,6 +16,42 @@ pub struct NodeSchema {
     /// Optional: List of view parameters for parameterized views
     /// Example: Some(vec!["tenant_id".to_string(), "region".to_string()])
     pub view_parameters: Option<Vec<String>>,
+    /// Table engine type (for FINAL keyword support)
+    #[serde(skip)]
+    pub engine: Option<TableEngine>,
+    /// Optional: Whether to use FINAL keyword for this table
+    /// - None: Auto-detect based on engine type
+    /// - Some(true): Always use FINAL
+    /// - Some(false): Never use FINAL
+    pub use_final: Option<bool>,
+}
+
+impl NodeSchema {
+    /// Determine if FINAL should be used for this node
+    pub fn should_use_final(&self) -> bool {
+        // 1. Check explicit override (user choice takes precedence)
+        if let Some(use_final) = self.use_final {
+            return use_final;
+        }
+
+        // 2. Auto-detect: Use FINAL for engines that need it for correctness
+        // (Conservative: only deduplication/collapsing engines)
+        if let Some(ref engine) = self.engine {
+            engine.requires_final_for_correctness()
+        } else {
+            // No engine information - default to false
+            false
+        }
+    }
+
+    /// Check if this engine supports FINAL (regardless of whether we use it by default)
+    pub fn can_use_final(&self) -> bool {
+        if let Some(ref engine) = self.engine {
+            engine.supports_final()
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -31,6 +68,40 @@ pub struct RelationshipSchema {
     pub property_mappings: HashMap<String, String>,
     /// Optional: List of view parameters for parameterized views
     pub view_parameters: Option<Vec<String>>,
+    /// Table engine type (for FINAL keyword support)
+    #[serde(skip)]
+    pub engine: Option<TableEngine>,
+    /// Optional: Whether to use FINAL keyword for this table
+    /// - None: Auto-detect based on engine type
+    /// - Some(true): Always use FINAL
+    /// - Some(false): Never use FINAL
+    pub use_final: Option<bool>,
+}
+
+impl RelationshipSchema {
+    /// Determine if FINAL should be used for this relationship
+    pub fn should_use_final(&self) -> bool {
+        // 1. Check explicit override (user choice takes precedence)
+        if let Some(use_final) = self.use_final {
+            return use_final;
+        }
+
+        // 2. Auto-detect: Use FINAL for engines that need it for correctness
+        if let Some(ref engine) = self.engine {
+            engine.requires_final_for_correctness()
+        } else {
+            false
+        }
+    }
+
+    /// Check if this engine supports FINAL
+    pub fn can_use_final(&self) -> bool {
+        if let Some(ref engine) = self.engine {
+            engine.supports_final()
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

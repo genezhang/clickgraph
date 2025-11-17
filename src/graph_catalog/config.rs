@@ -103,6 +103,12 @@ pub struct NodeDefinition {
     /// Example: ["tenant_id", "region"]
     #[serde(default)]
     pub view_parameters: Option<Vec<String>>,
+    /// Optional: Whether to use FINAL keyword for this table
+    /// - None (default): Auto-detect based on engine type
+    /// - Some(true): Always use FINAL
+    /// - Some(false): Never use FINAL
+    #[serde(default)]
+    pub use_final: Option<bool>,
 }
 
 /// Relationship definition in schema config
@@ -132,6 +138,12 @@ pub struct RelationshipDefinition {
     /// Example: ["tenant_id", "region"]
     #[serde(default)]
     pub view_parameters: Option<Vec<String>>,
+    /// Optional: Whether to use FINAL keyword for this table
+    /// - None (default): Auto-detect based on engine type
+    /// - Some(true): Always use FINAL
+    /// - Some(false): Never use FINAL
+    #[serde(default)]
+    pub use_final: Option<bool>,
 }
 
 impl GraphSchemaConfig {
@@ -213,6 +225,8 @@ impl GraphSchemaConfig {
                 },
                 property_mappings: node_def.properties.clone(),
                 view_parameters: node_def.view_parameters.clone(),
+                engine: None, // Will be populated during schema loading with ClickHouse client
+                use_final: node_def.use_final,
             };
             nodes.insert(node_def.label.clone(), node_schema);
         }
@@ -251,6 +265,8 @@ impl GraphSchemaConfig {
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: rel_def.properties.clone(),
                 view_parameters: rel_def.view_parameters.clone(),
+                engine: None, // Will be populated during schema loading with ClickHouse client
+                use_final: rel_def.use_final,
             };
             relationships.insert(rel_def.type_name.clone(), rel_schema);
         }
