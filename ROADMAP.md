@@ -80,31 +80,60 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 
 ---
 
-### 🎯 Phase 2: Enterprise Readiness (v0.5.0 - January-February 2026)
+### 🎯 Phase 2: Enterprise Readiness (v0.5.0 - January-February 2026) 🔄 **IN PROGRESS**
 **Focus**: Security, multi-tenancy, documentation  
-**Duration**: 8-10 weeks
+**Duration**: 8-10 weeks  
+**Started**: November 15, 2025  
+**Progress**: 2/5 complete (40%)
 
-| Priority | Feature | Effort | Impact | Rationale |
-|----------|---------|--------|--------|-----------|
-| 1️⃣ | **#5 RBAC & Row-Level Security** | 3-4 weeks | 🔥 Critical | **Enterprise Blocker**: Required for production deployments. Builds on parameter support (#9). |
-| 2️⃣ | **#1 Multi-Tenant Support** | 2-3 weeks | 🔥 Critical | **SaaS Requirement**: Depends on parameters (#9) and RLS (#5). Enables commercial deployments. |
-| 3️⃣ | **#6 ReplacingMergeTree & FINAL** | 1-2 weeks | 🌟 Medium-High | **Real-World Data**: Mutable data patterns common in production. Low complexity. |
-| 4️⃣ | **Auto-Schema Discovery** | 1-2 weeks | 🌟 Medium | **Developer UX**: Query ClickHouse metadata to auto-discover columns/types. Reduces YAML maintenance for wide tables. |
-| 5️⃣ | **v0.5.0 Wiki Documentation** | 3-4 weeks | 🔥 High | **Adoption Blocker**: Comprehensive docs critical for users. Can be done in parallel. |
+| Priority | Feature | Effort | Impact | Status |
+|----------|---------|--------|--------|--------|
+| ~~1️⃣~~ | ~~**#5 RBAC & Row-Level Security**~~ | ~~3-4 weeks~~ | ~~🔥 Critical~~ | ✅ **COMPLETE** (Nov 15-17, 2025) |
+| ~~2️⃣~~ | ~~**#1 Multi-Tenant Support**~~ | ~~2-3 weeks~~ | ~~🔥 Critical~~ | ✅ **COMPLETE** (Nov 15-17, 2025) |
+| 3️⃣ | **#6 ReplacingMergeTree & FINAL** | 1-2 weeks | 🌟 Medium-High | ⏳ **Not Started** |
+| 4️⃣ | **Auto-Schema Discovery** | 1-2 weeks | 🌟 Medium | ⏳ **Not Started** |
+| 5️⃣ | **v0.5.0 Wiki Documentation** | 3-4 weeks | 🔥 High | ⏳ **Not Started** |
 
-**Deliverables**:
-- ✅ Complete RBAC system with role definitions
-- ✅ Row-level security with policy engine
-- ✅ Multi-tenant query isolation working
-- ✅ ReplacingMergeTree support with FINAL
-- ✅ Auto-schema from ClickHouse `DESCRIBE TABLE` with caching
-- ✅ Comprehensive GitHub Wiki live
+**Phase 2 Deliverables**:
+- ✅ Complete RBAC system with role definitions (SET ROLE support)
+- ✅ Row-level security with parameterized views (99% cache memory reduction)
+- ✅ Multi-tenant query isolation working (HTTP + Bolt protocols)
+- ✅ Complete documentation: `docs/multi-tenancy.md` + example schemas
+- ✅ Integration test suite (11 test classes)
+- ⏳ ReplacingMergeTree support with FINAL
+- ⏳ Auto-schema from ClickHouse `DESCRIBE TABLE` with caching
+- ⏳ Comprehensive GitHub Wiki live
+
+**Completed Features (Nov 15-17, 2025)**:
+
+**1. RBAC & Row-Level Security** ✅:
+- Parameterized views: `view_parameters: [tenant_id, region, ...]`
+- SQL generation with placeholders: `view_name(param=$paramName)`
+- Cache optimization: Single template shared across all tenants
+- SET ROLE support for ClickHouse native RBAC
+- Multi-parameter views (unlimited parameters)
+- Performance: 99% memory reduction, 2x faster on cache hits
+- Commits: 805db43, 5d0f712, 7ea4a05, 2d1cb04
+
+**2. Multi-Tenant Support** ✅:
+- HTTP API: `view_parameters` field in requests
+- Bolt protocol: Extract from RUN message metadata
+- Complete documentation: `docs/multi-tenancy.md` (300+ lines)
+- Example schemas: simple + encrypted multi-tenancy
+- Integration tests: 11 test classes, E2E validation
+- 5 multi-tenant patterns documented
+- Commits: fa215e3, 5a1303d, 4ad7563, 8c21fca, a639049
+
+**Remaining Work (Estimated 5-7 weeks)**:
+1. ReplacingMergeTree & FINAL support (1-2 weeks)
+2. Auto-schema discovery (1-2 weeks)
+3. Comprehensive Wiki documentation (3-4 weeks)
 
 **v0.5.0 Release Goals**:
-- Enterprise security features complete
-- Multi-tenant SaaS deployments enabled
-- Schema evolution without YAML updates
-- Production documentation available
+- ✅ Enterprise security features complete
+- ✅ Multi-tenant SaaS deployments enabled
+- ⏳ Schema evolution without YAML updates
+- ⏳ Production documentation available (Wiki)
 
 ---
 
