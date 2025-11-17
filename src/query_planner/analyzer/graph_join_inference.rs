@@ -1818,7 +1818,7 @@ mod tests {
                     dtype: "UInt64".to_string(),
                 },
                 property_mappings: HashMap::new(),
-                view_parameters: None,
+                view_parameters: None, engine: None, use_final: None,
             },
         );
 
@@ -1835,7 +1835,7 @@ mod tests {
                     dtype: "UInt64".to_string(),
                 },
                 property_mappings: HashMap::new(),
-                view_parameters: None,
+                view_parameters: None, engine: None, use_final: None,
             },
         );
 
@@ -1857,7 +1857,7 @@ mod tests {
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),
-                view_parameters: None,
+                view_parameters: None, engine: None, use_final: None,
             },
         );
 
@@ -1879,7 +1879,7 @@ mod tests {
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),
-                view_parameters: None,
+                view_parameters: None, engine: None, use_final: None,
             },
         );
 

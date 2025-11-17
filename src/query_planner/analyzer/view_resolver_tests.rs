@@ -24,6 +24,8 @@ mod tests {
             },
             property_mappings: HashMap::new(),
             view_parameters: None,
+            engine: None,
+            use_final: None,
         };
         nodes.insert("User".to_string(), node_schema);
 
@@ -40,6 +42,8 @@ mod tests {
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
             view_parameters: None,
+            engine: None,
+            use_final: None,
         };
         relationships.insert("FOLLOWS".to_string(), rel_schema);
 

@@ -93,6 +93,8 @@ fn setup_test_graph_schema() -> GraphSchema {
         .into_iter()
         .collect(),
         view_parameters: None,
+        engine: None,
+        use_final: None,
     };
     nodes.insert("User".to_string(), user_node);
 
@@ -108,7 +110,7 @@ fn setup_test_graph_schema() -> GraphSchema {
         from_node_id_dtype: "UInt64".to_string(),
         to_node_id_dtype: "UInt64".to_string(),
         property_mappings: HashMap::new(),
-        view_parameters: None,
+        view_parameters: None, engine: None, use_final: None,
     };
     relationships.insert("FOLLOWS".to_string(), follows_rel);
 
