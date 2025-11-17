@@ -25,16 +25,30 @@
   - Column-level security: Combine with row-level (parameterized views)
   - Commit: 5d0f712
 
-- **ReplacingMergeTree FINAL support (partial - 60% complete)**
+- **ReplacingMergeTree FINAL support (complete)**
   - Engine detection: Identify ReplacingMergeTree tables (commit 8694728)
   - Schema configuration: `use_final: bool` fields (commit 2334633)
   - SQL generation: Correct FINAL placement (`FROM table AS alias FINAL`) (commits c4a6c95, 2ae16fd)
   - ViewTableRef pipeline: Propagates use_final through query execution
-  - Remaining: Schema loading integration + integration tests
+  - Schema loading integration: Auto-detect engines via `to_graph_schema_with_client()` (commit 97d67fd)
+  - Auto-set use_final based on engine type with manual override support
+
+- **Auto-schema discovery (complete)** (commit 97d67fd)
+  - Column auto-discovery via `system.columns` query
+  - Identity property mappings: `column_name → column_name` by default
+  - Selective column exclusion: `exclude_columns: [_version, _internal]`
+  - Manual override system: `property_mappings` wins over auto-discovery
+  - Automatic engine detection + FINAL support
+  - 90% YAML reduction for wide tables (50 columns → 5 lines)
+  - Backward compatible: Manual schemas still work
+  - Example: `schemas/examples/auto_discovery_demo.yaml`
+  - Tests: `tests/integration/test_auto_discovery.py`
+  - Documentation: `notes/auto-schema-discovery.md`
 
 - **Example schemas and patterns**
   - Simple tenant isolation: `schemas/examples/multi_tenant_simple.yaml`
   - Per-tenant encryption: `schemas/examples/multi_tenant_encrypted.yaml`
+  - Auto-discovery demo: `schemas/examples/auto_discovery_demo.yaml`
   - Multi-parameter views (tenant + region + date)
   - Hierarchical tenant trees
   - Role-based + row-level security

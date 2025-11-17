@@ -139,46 +139,68 @@ SELECT name FROM users_by_tenant(tenant_id = $tenant_id)
 
 ---
 
-### 🔄 Remaining Phase 2 Tasks (3/5)
+### 🔄 Remaining Phase 2 Tasks (2/5)
 
 Per ROADMAP.md Phase 2 scope:
 
-#### ⏳ 3. **ReplacingMergeTree & FINAL** (In Progress - 60%)
+#### ✅ 3. **ReplacingMergeTree & FINAL** (Complete)
 **Effort**: 1-2 weeks  
 **Impact**: 🌟 Medium-High  
 **Purpose**: Support mutable data patterns common in production  
-**Started**: November 17, 2025
+**Completed**: November 17, 2025
 
-**Completed (3/5)**:
-- ✅ Engine detection module (`engine_detection.rs`) - 13 tests passing (commit 8694728)
-- ✅ Schema configuration fields (`use_final: bool` in YAML) (commit 2334633)
-- ✅ SQL generation with FINAL keyword (commit c4a6c95, 2ae16fd)
-  * Correct syntax verified: `FROM table AS alias FINAL` (user-tested)
-  * ViewTableRef propagates use_final through entire query pipeline
-  * All 13 construction sites updated
+**Delivered**:
+- ✅ Engine detection module (`engine_detection.rs`) - 13 tests passing
+- ✅ Schema configuration: `use_final: bool` field in YAML
+- ✅ SQL generation: Correct FINAL placement (`FROM table AS alias FINAL`)
+- ✅ Schema loading integration: Auto-detect engines via `to_graph_schema_with_client()`
+- ✅ Auto-set use_final based on engine type
+- ✅ Manual override support
 
-**Remaining (2/5)**:
-- ⏳ Schema loading integration: Call `detect_table_engine()` during YAML load
-- ⏳ Query planning integration: Set ViewScan.use_final from schema
-- ⏳ Integration tests: Auto-detection + manual override
-- ⏳ Documentation: User guide for ReplacingMergeTree support
+**Usage**:
+```yaml
+nodes:
+  - label: User
+    table: users
+    use_final: true  # Manual (for any engine)
+    
+  - label: Post
+    table: posts
+    auto_discover_columns: true  # Auto-detects engine + sets use_final
+```
 
-**Next Steps**:
-1. Integrate engine detection into `GraphSchemaConfig::to_graph_schema()`
-2. Propagate engine info to ViewScan during query planning
-3. Add integration tests with real ReplacingMergeTree tables
-4. Document usage patterns
-
-#### ❌ 4. **Auto-Schema Discovery** (Not Started)
+#### ✅ 4. **Auto-Schema Discovery** (Complete)
 **Effort**: 1-2 weeks  
 **Impact**: 🌟 Medium  
-**Purpose**: Reduce YAML maintenance for wide tables
+**Purpose**: Reduce YAML maintenance for wide tables  
+**Completed**: November 17, 2025
 
-**What's Needed**:
-- Query ClickHouse `DESCRIBE TABLE` metadata
-- Auto-generate node/relationship schemas
-- Cache discovered schemas
-- CLI command: `clickgraph discover --database=mydb --table=users`
+**Delivered**:
+- ✅ Column auto-discovery via `system.columns` query
+- ✅ Identity property mappings (column_name → column_name)
+- ✅ Selective column exclusion
+- ✅ Manual override system
+- ✅ Automatic engine detection + FINAL support
+- ✅ Example schema: `schemas/examples/auto_discovery_demo.yaml`
+- ✅ Integration tests: `tests/integration/test_auto_discovery.py`
+- ✅ Documentation: `notes/auto-schema-discovery.md`
+
+**Usage**:
+```yaml
+nodes:
+  - label: User
+    table: users
+    id_column: user_id
+    auto_discover_columns: true
+    exclude_columns: [_version, _internal]
+    property_mappings:
+      full_name: name  # Override specific mappings
+```
+
+**Benefits**:
+- 90% reduction in YAML (50 columns → 5 lines)
+- Auto-syncs with schema changes
+- Backward compatible
 
 #### ❌ 5. **v0.5.0 Wiki Documentation** (Not Started)
 **Effort**: 3-4 weeks  
@@ -197,7 +219,7 @@ Per ROADMAP.md Phase 2 scope:
 
 ### 🎯 Phase 2 Completion Plan
 
-**Current Progress**: 2/5 features complete (40%)  
+**Current Progress**: 4/5 features complete (80%)  
 **Estimated Time Remaining**: 5-7 weeks
 
 **Recommended Order**:
