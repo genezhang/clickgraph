@@ -31,26 +31,48 @@ async fn test_clickhouse_connection(client: Client) -> Result<(), String> {
 /// Load schema and config from YAML file
 async fn load_schema_and_config_from_yaml(
     config_path: &str,
+    clickhouse_client: Option<&Client>,
 ) -> Result<(GraphSchema, GraphSchemaConfig), String> {
     let config = GraphSchemaConfig::from_yaml_file(config_path)
         .map_err(|e| format!("Failed to load YAML config: {}", e))?;
 
-    let schema = config
-        .to_graph_schema()
-        .map_err(|e| format!("Failed to create schema from config: {}", e))?;
+    let schema = if let Some(client) = clickhouse_client {
+        // Use auto-discovery and engine detection when client is available
+        config
+            .to_graph_schema_with_client(client)
+            .await
+            .map_err(|e| format!("Failed to create schema with auto-discovery: {}", e))?
+    } else {
+        // Fallback to manual mode without client
+        config
+            .to_graph_schema()
+            .map_err(|e| format!("Failed to create schema from config: {}", e))?
+    };
+
     Ok((schema, config))
 }
 
 /// Load schema and config from YAML content string
 async fn load_schema_and_config_from_yaml_content(
     yaml_content: &str,
+    clickhouse_client: Option<&Client>,
 ) -> Result<(GraphSchema, GraphSchemaConfig), String> {
     let config: GraphSchemaConfig = serde_yaml::from_str(yaml_content)
         .map_err(|e| format!("Failed to parse YAML config: {}", e))?;
 
-    let schema = config
-        .to_graph_schema()
-        .map_err(|e| format!("Failed to create schema from config: {}", e))?;
+    let schema = if let Some(client) = clickhouse_client {
+        // Use auto-discovery and engine detection when client is available
+        config
+            .to_graph_schema_with_client(client)
+            .await
+            .map_err(|e| format!("Failed to create schema with auto-discovery: {}", e))?
+    } else {
+        // Fallback to manual mode without client
+        config
+            .to_graph_schema()
+            .map_err(|e| format!("Failed to create schema from config: {}", e))?
+    };
+
     Ok((schema, config))
 }
 
@@ -64,7 +86,7 @@ pub async fn initialize_global_schema(
     if let Ok(yaml_config_path) = std::env::var("GRAPH_CONFIG_PATH") {
         println!("Found GRAPH_CONFIG_PATH: {}", yaml_config_path);
 
-        match load_schema_and_config_from_yaml(&yaml_config_path).await {
+        match load_schema_and_config_from_yaml(&yaml_config_path, clickhouse_client.as_ref()).await {
             Ok((schema, config)) => {
                 println!(
                     "✓ Successfully loaded schema from YAML config: {}",
@@ -355,7 +377,7 @@ pub async fn load_schema_by_name(
         schema_name, config_path
     );
 
-    match load_schema_and_config_from_yaml(config_path).await {
+    match load_schema_and_config_from_yaml(config_path, None).await {
         Ok((schema, config)) => {
             println!(
                 "✓ Successfully loaded schema '{}' from YAML config",
@@ -418,7 +440,7 @@ pub async fn load_schema_from_content(
 ) -> Result<(), String> {
     println!("Loading schema '{}' from YAML content", schema_name);
 
-    match load_schema_and_config_from_yaml_content(yaml_content).await {
+    match load_schema_and_config_from_yaml_content(yaml_content, None).await {
         Ok((schema, config)) => {
             println!(
                 "✓ Successfully loaded schema '{}' from YAML content",

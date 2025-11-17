@@ -11,7 +11,7 @@ pub mod testing;
 // Re-export commonly used types
 // Note: These are public re-exports for library users
 #[allow(unused_imports)]
-pub use column_info::ColumnInfo;
+pub use column_info::{query_table_columns, ColumnInfo};
 #[allow(unused_imports)]
 pub use config::{GraphSchemaConfig, GraphSchemaDefinition};
 pub use engine_detection::{detect_table_engine, TableEngine};

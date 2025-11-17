@@ -1,0 +1,60 @@
+name: auto_discovery_demo
+
+graph_schema:
+  nodes:
+    - label: User
+      database: brahmand
+      table: users_bench
+      id_column: user_id
+      
+      # Enable auto-discovery: All columns become properties
+      auto_discover_columns: true
+      
+      # Exclude internal/system columns
+      exclude_columns:
+        - _shard_num
+        - _version
+      
+      # Override specific property mappings
+      property_mappings:
+        full_name: name           # Rename full_name → name in Cypher
+        email_address: email      # Rename email_address → email
+        # All other columns use identity mapping (e.g., user_id → user_id)
+
+    - label: Post
+      database: brahmand
+      table: posts_bench
+      id_column: post_id
+      
+      # Auto-discover without exclusions
+      auto_discover_columns: true
+      
+      # Simple rename
+      property_mappings:
+        post_content: content
+
+  relationships:
+    - type: FOLLOWS
+      database: brahmand
+      table: user_follows_bench
+      from_id: follower_id
+      to_id: followed_id
+      from_node: User
+      to_node: User
+      
+      # Auto-discover relationship properties
+      auto_discover_columns: true
+      exclude_columns: [_internal_seq]
+      
+      # No property_mappings needed - use identity mapping
+
+    - type: LIKES
+      database: brahmand
+      table: post_likes_bench
+      from_id: user_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+      
+      # Auto-discover all columns
+      auto_discover_columns: true

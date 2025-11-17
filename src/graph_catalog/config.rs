@@ -109,6 +109,16 @@ pub struct NodeDefinition {
     /// - Some(false): Never use FINAL
     #[serde(default)]
     pub use_final: Option<bool>,
+    /// Optional: Auto-discover columns from ClickHouse table metadata
+    /// When true, all table columns become properties with identity mappings
+    /// (column_name → column_name), except those in exclude_columns.
+    /// Manual property_mappings override auto-discovered mappings.
+    #[serde(default)]
+    pub auto_discover_columns: bool,
+    /// Optional: Columns to exclude from auto-discovery
+    /// Use for internal/system columns that shouldn't be exposed as properties
+    #[serde(default)]
+    pub exclude_columns: Vec<String>,
 }
 
 /// Relationship definition in schema config
@@ -144,6 +154,16 @@ pub struct RelationshipDefinition {
     /// - Some(false): Never use FINAL
     #[serde(default)]
     pub use_final: Option<bool>,
+    /// Optional: Auto-discover columns from ClickHouse table metadata
+    /// When true, all table columns become properties with identity mappings
+    /// (column_name → column_name), except those in exclude_columns.
+    /// Manual property_mappings override auto-discovered mappings.
+    #[serde(default)]
+    pub auto_discover_columns: bool,
+    /// Optional: Columns to exclude from auto-discovery
+    /// Use for internal/system columns that shouldn't be exposed as properties
+    #[serde(default)]
+    pub exclude_columns: Vec<String>,
 }
 
 impl GraphSchemaConfig {
@@ -274,6 +294,170 @@ impl GraphSchemaConfig {
         Ok(GraphSchema::build(
             1,                     // version
             "default".to_string(), // Default database, individual tables have their own
+            nodes,
+            relationships,
+        ))
+    }
+
+    /// Convert to GraphSchema with auto-discovery and engine detection
+    ///
+    /// This method extends `to_graph_schema()` with:
+    /// - Auto-discovery of table columns when `auto_discover_columns = true`
+    /// - Automatic engine detection for FINAL keyword support
+    ///
+    /// # Arguments
+    /// * `client` - ClickHouse client for querying metadata
+    ///
+    /// # Returns
+    /// GraphSchema with auto-discovered properties and detected engines
+    pub async fn to_graph_schema_with_client(
+        &self,
+        client: &clickhouse::Client,
+    ) -> Result<GraphSchema, GraphSchemaError> {
+        use super::column_info::query_table_columns;
+        use super::engine_detection::detect_table_engine;
+
+        self.validate()?;
+
+        let mut nodes = HashMap::new();
+        let mut relationships = HashMap::new();
+
+        // Convert node definitions with auto-discovery
+        for node_def in &self.graph_schema.nodes {
+            let property_mappings = if node_def.auto_discover_columns {
+                // Auto-discover columns from ClickHouse
+                let columns = query_table_columns(client, &node_def.database, &node_def.table)
+                    .await
+                    .map_err(|e| GraphSchemaError::ConfigReadError {
+                        error: format!("Failed to query columns: {}", e),
+                    })?;
+
+                // Build identity mappings for all columns except excluded
+                let mut mappings = HashMap::new();
+                for col in columns {
+                    if !node_def.exclude_columns.contains(&col) {
+                        mappings.insert(col.clone(), col);
+                    }
+                }
+
+                // Apply manual overrides from YAML (manual wins)
+                mappings.extend(node_def.properties.clone());
+
+                mappings
+            } else {
+                // Manual mode: use YAML as-is
+                node_def.properties.clone()
+            };
+
+            // Auto-detect engine type
+            let engine =
+                detect_table_engine(client, &node_def.database, &node_def.table)
+                    .await
+                    .ok(); // Gracefully handle detection failures
+
+            // Determine use_final: manual override > engine detection > false
+            let use_final = node_def.use_final.unwrap_or_else(|| {
+                engine
+                    .as_ref()
+                    .map(|e| e.supports_final())
+                    .unwrap_or(false)
+            });
+
+            let node_schema = NodeSchema {
+                database: node_def.database.clone(),
+                table_name: node_def.table.clone(),
+                column_names: property_mappings.values().cloned().collect(),
+                primary_keys: node_def.id_column.clone(),
+                node_id: NodeIdSchema {
+                    column: node_def.id_column.clone(),
+                    dtype: "UInt64".to_string(),
+                },
+                property_mappings,
+                view_parameters: node_def.view_parameters.clone(),
+                engine,
+                use_final: Some(use_final),
+            };
+            nodes.insert(node_def.label.clone(), node_schema);
+        }
+
+        // Convert relationship definitions with auto-discovery
+        for rel_def in &self.graph_schema.relationships {
+            let property_mappings = if rel_def.auto_discover_columns {
+                // Auto-discover columns from ClickHouse
+                let columns = query_table_columns(client, &rel_def.database, &rel_def.table)
+                    .await
+                    .map_err(|e| GraphSchemaError::ConfigReadError {
+                        error: format!("Failed to query columns: {}", e),
+                    })?;
+
+                // Build identity mappings for all columns except excluded
+                let mut mappings = HashMap::new();
+                for col in columns {
+                    if !rel_def.exclude_columns.contains(&col) {
+                        mappings.insert(col.clone(), col);
+                    }
+                }
+
+                // Apply manual overrides
+                mappings.extend(rel_def.properties.clone());
+
+                mappings
+            } else {
+                rel_def.properties.clone()
+            };
+
+            // Auto-detect engine type
+            let engine =
+                detect_table_engine(client, &rel_def.database, &rel_def.table)
+                    .await
+                    .ok();
+
+            let use_final = rel_def.use_final.unwrap_or_else(|| {
+                engine
+                    .as_ref()
+                    .map(|e| e.supports_final())
+                    .unwrap_or(false)
+            });
+
+            let default_node_type = self
+                .graph_schema
+                .nodes
+                .first()
+                .map(|n| n.label.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            let from_node = rel_def
+                .from_node
+                .as_ref()
+                .unwrap_or(&default_node_type)
+                .clone();
+            let to_node = rel_def
+                .to_node
+                .as_ref()
+                .unwrap_or(&default_node_type)
+                .clone();
+
+            let rel_schema = RelationshipSchema {
+                database: rel_def.database.clone(),
+                table_name: rel_def.table.clone(),
+                column_names: property_mappings.values().cloned().collect(),
+                from_node,
+                to_node,
+                from_id: rel_def.from_id.clone(),
+                to_id: rel_def.to_id.clone(),
+                from_node_id_dtype: "UInt64".to_string(),
+                to_node_id_dtype: "UInt64".to_string(),
+                property_mappings,
+                view_parameters: rel_def.view_parameters.clone(),
+                engine,
+                use_final: Some(use_final),
+            };
+            relationships.insert(rel_def.type_name.clone(), rel_schema);
+        }
+
+        Ok(GraphSchema::build(
+            1,
+            "default".to_string(),
             nodes,
             relationships,
         ))
