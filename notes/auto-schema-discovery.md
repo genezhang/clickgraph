@@ -12,7 +12,7 @@ Auto-schema discovery automatically detects table columns and engine types from 
 
 ### Configuration
 
-Add two new optional fields to node/relationship definitions:
+Add two optional fields to node/relationship definitions:
 
 ```yaml
 nodes:
@@ -22,6 +22,9 @@ nodes:
     
     # Enable auto-discovery
     auto_discover_columns: true
+    
+    # Optional: Naming convention (snake_case or camelCase)
+    naming_convention: camelCase
     
     # Optional: Exclude columns
     exclude_columns: [_version, _internal]
@@ -34,11 +37,21 @@ nodes:
 ### Discovery Process
 
 1. **Column Query**: Query `system.columns` for table metadata
-2. **Identity Mappings**: Create `column_name → column_name` mappings for all columns
+2. **Apply Naming Convention**: Convert column names (snake_case → camelCase if specified)
 3. **Apply Exclusions**: Remove columns listed in `exclude_columns`
 4. **Manual Overrides**: Merge `property_mappings` (manual wins)
 5. **Engine Detection**: Query `system.tables` for engine type
 6. **Auto FINAL**: Set `use_final = true` for ReplacingMergeTree tables
+
+### Naming Conventions
+
+**snake_case (default)**:
+- Keep original column names: `user_id → user_id`
+- No conversion applied
+
+**camelCase**:
+- Convert to camelCase: `user_id → userId`, `email_address → emailAddress`
+- Common for GraphQL/JavaScript frontends
 
 ### Data Flow
 
@@ -105,14 +118,15 @@ NodeSchema with auto-discovered properties + engine
 - User intent is clear
 - Simpler implementation
 
-### 3. Identity Mapping by Default
+### 3. Naming Convention Support
 
-**Decision**: Auto-discovered columns use `column_name → column_name` mapping.
+**Decision**: Support both `snake_case` (default) and `camelCase` naming conventions.
 
 **Rationale**:
-- Predictable: Cypher property name = ClickHouse column name
-- Zero configuration for most columns
-- Easy to understand
+- ClickHouse uses snake_case: `user_id`, `email_address`
+- GraphQL/JavaScript prefer camelCase: `userId`, `emailAddress`
+- Users can choose what fits their API style
+- Simple conversion function (snake_to_camel_case)
 
 ### 4. Graceful Fallback
 
@@ -134,10 +148,10 @@ NodeSchema with auto-discovered properties + engine
 
 ### Future Enhancements
 
-1. **Smart naming**: Auto-convert `snake_case → camelCase`
-2. **Primary key detection**: Auto-set `id_column` from ClickHouse PK
-3. **Foreign key hints**: Detect relationships from naming patterns (`*_id` columns)
-4. **Type awareness**: Expose ClickHouse types to Cypher (for type checking)
+1. **Primary key detection**: Auto-set `id_column` from ClickHouse PK
+2. **Foreign key hints**: Detect relationships from naming patterns (`*_id` columns)
+3. **Type awareness**: Expose ClickHouse types to Cypher (for type checking)
+4. **Additional naming conventions**: kebab-case, PascalCase, etc.
 
 ## Gotchas
 
@@ -177,13 +191,30 @@ Auto-discovery only works when ClickHouse client is available. Without client:
 
 ## Examples
 
-### Minimal (50-column table)
+### Minimal (Identity Mapping)
 
 ```yaml
 nodes:
   - label: WideTable
     table: analytics_events
     id_column: event_id
+    auto_discover_columns: true
+```
+
+Result: All 50 columns become properties (snake_case).
+
+### With camelCase Naming
+
+```yaml
+nodes:
+  - label: User
+    table: users
+    id_column: user_id
+    auto_discover_columns: true
+    naming_convention: camelCase
+```
+
+Result: `user_id → userId`, `email_address → emailAddress`, etc.
     auto_discover_columns: true
 ```
 

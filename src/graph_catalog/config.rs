@@ -119,6 +119,15 @@ pub struct NodeDefinition {
     /// Use for internal/system columns that shouldn't be exposed as properties
     #[serde(default)]
     pub exclude_columns: Vec<String>,
+    /// Optional: Naming convention for auto-discovered property names
+    /// - "snake_case" (default): Keep original names (user_id → user_id)
+    /// - "camelCase": Convert to camelCase (user_id → userId)
+    #[serde(default = "default_naming_convention")]
+    pub naming_convention: String,
+}
+
+fn default_naming_convention() -> String {
+    "snake_case".to_string()
 }
 
 /// Relationship definition in schema config
@@ -164,6 +173,38 @@ pub struct RelationshipDefinition {
     /// Use for internal/system columns that shouldn't be exposed as properties
     #[serde(default)]
     pub exclude_columns: Vec<String>,
+    /// Optional: Naming convention for auto-discovered property names
+    /// - "snake_case" (default): Keep original names (user_id → user_id)
+    /// - "camelCase": Convert to camelCase (user_id → userId)
+    #[serde(default = "default_naming_convention")]
+    pub naming_convention: String,
+}
+
+/// Convert snake_case to camelCase
+fn snake_to_camel_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+    
+    for c in s.chars() {
+        if c == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(c.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(c);
+        }
+    }
+    
+    result
+}
+
+/// Apply naming convention to a column name
+fn apply_naming_convention(column_name: &str, convention: &str) -> String {
+    match convention {
+        "camelCase" => snake_to_camel_case(column_name),
+        _ => column_name.to_string(), // Default: keep as-is (snake_case)
+    }
 }
 
 impl GraphSchemaConfig {
@@ -336,7 +377,9 @@ impl GraphSchemaConfig {
                 let mut mappings = HashMap::new();
                 for col in columns {
                     if !node_def.exclude_columns.contains(&col) {
-                        mappings.insert(col.clone(), col);
+                        // Apply naming convention to property name
+                        let property_name = apply_naming_convention(&col, &node_def.naming_convention);
+                        mappings.insert(property_name, col);
                     }
                 }
 
@@ -394,7 +437,9 @@ impl GraphSchemaConfig {
                 let mut mappings = HashMap::new();
                 for col in columns {
                     if !rel_def.exclude_columns.contains(&col) {
-                        mappings.insert(col.clone(), col);
+                        // Apply naming convention to property name
+                        let property_name = apply_naming_convention(&col, &rel_def.naming_convention);
+                        mappings.insert(property_name, col);
                     }
                 }
 
@@ -461,5 +506,39 @@ impl GraphSchemaConfig {
             nodes,
             relationships,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_snake_to_camel_case() {
+        assert_eq!(snake_to_camel_case("user_id"), "userId");
+        assert_eq!(snake_to_camel_case("email_address"), "emailAddress");
+        assert_eq!(snake_to_camel_case("first_name"), "firstName");
+        assert_eq!(snake_to_camel_case("created_at"), "createdAt");
+        assert_eq!(snake_to_camel_case("is_active"), "isActive");
+        assert_eq!(snake_to_camel_case("full_name_with_title"), "fullNameWithTitle");
+        
+        // Edge cases
+        assert_eq!(snake_to_camel_case("id"), "id"); // No underscore
+        assert_eq!(snake_to_camel_case("_internal"), "Internal"); // Leading underscore
+        assert_eq!(snake_to_camel_case("user__id"), "userId"); // Double underscore
+    }
+
+    #[test]
+    fn test_apply_naming_convention() {
+        // camelCase conversion
+        assert_eq!(apply_naming_convention("user_id", "camelCase"), "userId");
+        assert_eq!(apply_naming_convention("email_address", "camelCase"), "emailAddress");
+        
+        // snake_case (default - no conversion)
+        assert_eq!(apply_naming_convention("user_id", "snake_case"), "user_id");
+        assert_eq!(apply_naming_convention("email_address", "snake_case"), "email_address");
+        
+        // Unknown convention (defaults to no conversion)
+        assert_eq!(apply_naming_convention("user_id", "kebab-case"), "user_id");
     }
 }

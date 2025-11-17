@@ -10,6 +10,9 @@ graph_schema:
       # Enable auto-discovery: All columns become properties
       auto_discover_columns: true
       
+      # Optional: Convert snake_case to camelCase
+      naming_convention: camelCase
+      
       # Exclude internal/system columns
       exclude_columns:
         - _shard_num
@@ -19,7 +22,7 @@ graph_schema:
       property_mappings:
         full_name: name           # Rename full_name → name in Cypher
         email_address: email      # Rename email_address → email
-        # All other columns use identity mapping (e.g., user_id → user_id)
+        # All other columns use camelCase (e.g., user_id → userId)
 
     - label: Post
       database: brahmand
