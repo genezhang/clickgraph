@@ -1,0 +1,160 @@
+# Simple Multi-Tenant Schema Example
+#
+# This schema demonstrates basic tenant isolation using parameterized views.
+# Each tenant's data is filtered by tenant_id at the database level.
+#
+# Setup Instructions:
+# 1. Create base tables and populate with sample data
+# 2. Create parameterized views (see SQL below)
+# 3. Load this schema into ClickGraph
+# 4. Query with view_parameters: {"tenant_id": "tenant-a"}
+
+# ============================================================================
+# ClickHouse Setup (run these first)
+# ============================================================================
+
+# -- Base tables
+# CREATE TABLE users (
+#     user_id UInt64,
+#     tenant_id String,
+#     name String,
+#     email String,
+#     created_at DateTime DEFAULT now()
+# ) ENGINE = MergeTree()
+# ORDER BY (tenant_id, user_id);
+#
+# CREATE TABLE orders (
+#     order_id UInt64,
+#     tenant_id String,
+#     user_id UInt64,
+#     product String,
+#     amount Decimal(10,2),
+#     order_date Date
+# ) ENGINE = MergeTree()
+# ORDER BY (tenant_id, order_id);
+#
+# -- Parameterized views for tenant isolation
+# CREATE VIEW users_by_tenant AS
+# SELECT * FROM users
+# WHERE tenant_id = {tenant_id:String};
+#
+# CREATE VIEW orders_by_tenant AS
+# SELECT * FROM orders
+# WHERE tenant_id = {tenant_id:String};
+#
+# -- Sample data for testing
+# INSERT INTO users VALUES
+#     (1, 'tenant-a', 'Alice', 'alice@tenant-a.com', '2025-01-01'),
+#     (2, 'tenant-a', 'Bob', 'bob@tenant-a.com', '2025-01-02'),
+#     (3, 'tenant-b', 'Charlie', 'charlie@tenant-b.com', '2025-01-01'),
+#     (4, 'tenant-b', 'Diana', 'diana@tenant-b.com', '2025-01-03');
+#
+# INSERT INTO orders VALUES
+#     (101, 'tenant-a', 1, 'Widget', 29.99, '2025-01-15'),
+#     (102, 'tenant-a', 2, 'Gadget', 49.99, '2025-01-16'),
+#     (103, 'tenant-b', 3, 'Thing', 19.99, '2025-01-15'),
+#     (104, 'tenant-b', 4, 'Stuff', 39.99, '2025-01-17');
+
+# ============================================================================
+# ClickGraph Schema Configuration
+# ============================================================================
+
+graph_schema:
+  database: default
+  
+  nodes:
+    - label: User
+      table: users_by_tenant
+      view_parameters: [tenant_id]  # Required: must provide tenant_id in queries
+      id_column: user_id
+      properties:
+        user_id: user_id
+        name: name
+        email: email
+        created_at: created_at
+    
+    - label: Order
+      table: orders_by_tenant
+      view_parameters: [tenant_id]  # Same tenant_id requirement
+      id_column: order_id
+      properties:
+        order_id: order_id
+        product: product
+        amount: amount
+        order_date: order_date
+  
+  relationships:
+    - type: PLACED
+      table: orders_by_tenant  # Reuse orders table for relationship
+      view_parameters: [tenant_id]  # Relationships are also tenant-isolated
+      from_id_column: user_id
+      to_id_column: order_id
+      properties:
+        order_date: order_date
+        amount: amount
+
+# ============================================================================
+# Example Queries
+# ============================================================================
+
+# Query 1: Get all users for tenant A
+# POST /query
+# {
+#   "query": "MATCH (u:User) RETURN u.name, u.email",
+#   "schema_name": "multi_tenant_simple",
+#   "view_parameters": {"tenant_id": "tenant-a"}
+# }
+# 
+# Result: Only Alice and Bob (tenant-a users)
+
+# Query 2: Get orders for tenant B
+# POST /query
+# {
+#   "query": "MATCH (u:User)-[:PLACED]->(o:Order) RETURN u.name, o.product, o.amount",
+#   "schema_name": "multi_tenant_simple",
+#   "view_parameters": {"tenant_id": "tenant-b"}
+# }
+#
+# Result: Only Charlie's and Diana's orders
+
+# Query 3: Filter within tenant
+# POST /query
+# {
+#   "query": "MATCH (u:User) WHERE u.name STARTS WITH 'A' RETURN u.name",
+#   "schema_name": "multi_tenant_simple",
+#   "view_parameters": {"tenant_id": "tenant-a"}
+# }
+#
+# Result: Only Alice (from tenant-a)
+
+# Query 4: Aggregation within tenant
+# POST /query
+# {
+#   "query": "MATCH (u:User)-[:PLACED]->(o:Order) RETURN u.name, SUM(o.amount) AS total",
+#   "schema_name": "multi_tenant_simple",
+#   "view_parameters": {"tenant_id": "tenant-a"}
+# }
+#
+# Result: Tenant-a users with their total order amounts
+
+# ============================================================================
+# Security Notes
+# ============================================================================
+
+# 1. Validate tenant_id at API gateway
+#    - Extract from JWT claims or session
+#    - Never trust client-provided tenant_id directly
+#
+# 2. Use ClickHouse roles for additional security
+#    {
+#      "view_parameters": {"tenant_id": "tenant-a"},
+#      "role": "read_only"
+#    }
+#
+# 3. Enable audit logging
+#    CREATE TABLE audit_log (
+#        tenant_id String,
+#        user_id String,
+#        query String,
+#        timestamp DateTime
+#    ) ENGINE = MergeTree() ORDER BY timestamp;

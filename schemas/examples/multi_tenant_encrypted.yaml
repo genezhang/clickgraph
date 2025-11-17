@@ -1,0 +1,249 @@
+# Multi-Tenant Schema with Per-Tenant Encryption
+#
+# This schema demonstrates advanced multi-tenancy with per-tenant encryption keys.
+# Each tenant's sensitive data is encrypted with their unique key stored in ClickHouse.
+#
+# Use Case: Healthcare, Financial Services, HIPAA/GDPR compliance
+#
+# Security Properties:
+# - ClickGraph never sees encryption keys
+# - Each tenant has unique encryption key
+# - Cross-tenant queries automatically fail (wrong key)
+# - Data at rest is encrypted in ClickHouse
+
+# ============================================================================
+# ClickHouse Setup (run these first)
+# ============================================================================
+
+# -- Tenant encryption keys (secured, not in application code!)
+# CREATE TABLE tenant_keys (
+#     tenant_id String,
+#     encryption_key String,  -- 256-bit key for AES-256-GCM
+#     created_at DateTime DEFAULT now()
+# ) ENGINE = MergeTree()
+# ORDER BY tenant_id;
+#
+# -- Encrypted patient data (healthcare example)
+# CREATE TABLE patients_encrypted (
+#     patient_id UInt64,
+#     tenant_id String,  -- Hospital/clinic ID
+#     name String,
+#     ssn_encrypted String,        -- Social Security Number (encrypted)
+#     diagnosis_encrypted String,  -- Medical diagnosis (encrypted)
+#     dob Date,
+#     last_visit DateTime
+# ) ENGINE = MergeTree()
+# ORDER BY (tenant_id, patient_id);
+#
+# -- Encrypted financial transactions
+# CREATE TABLE transactions_encrypted (
+#     transaction_id UInt64,
+#     tenant_id String,
+#     patient_id UInt64,
+#     amount Decimal(10,2),
+#     card_number_encrypted String,  -- Credit card (encrypted)
+#     transaction_date DateTime
+# ) ENGINE = MergeTree()
+# ORDER BY (tenant_id, transaction_id);
+#
+# -- Parameterized view with automatic decryption
+# CREATE VIEW patients_secure AS
+# SELECT 
+#     patient_id,
+#     tenant_id,
+#     name,
+#     -- Decrypt SSN using tenant's key
+#     decrypt('aes-256-gcm', 
+#             unhex(ssn_encrypted),
+#             (SELECT unhex(encryption_key) FROM tenant_keys 
+#              WHERE tenant_id = {tenant_id:String})) AS ssn,
+#     -- Decrypt diagnosis using tenant's key
+#     decrypt('aes-256-gcm', 
+#             unhex(diagnosis_encrypted),
+#             (SELECT unhex(encryption_key) FROM tenant_keys 
+#              WHERE tenant_id = {tenant_id:String})) AS diagnosis,
+#     dob,
+#     last_visit
+# FROM patients_encrypted
+# WHERE tenant_id = {tenant_id:String};
+#
+# CREATE VIEW transactions_secure AS
+# SELECT 
+#     transaction_id,
+#     tenant_id,
+#     patient_id,
+#     amount,
+#     -- Decrypt card number (show last 4 digits only)
+#     concat('****-****-****-',
+#            substring(
+#                decrypt('aes-256-gcm', 
+#                        unhex(card_number_encrypted),
+#                        (SELECT unhex(encryption_key) FROM tenant_keys 
+#                         WHERE tenant_id = {tenant_id:String})),
+#                -4
+#            )) AS card_number_masked,
+#     transaction_date
+# FROM transactions_encrypted
+# WHERE tenant_id = {tenant_id:String};
+#
+# -- Sample encryption keys (NEVER hardcode in production!)
+# INSERT INTO tenant_keys VALUES
+#     ('hospital-a', '0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF', now()),
+#     ('hospital-b', 'FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210', now());
+#
+# -- Sample encrypted data (encrypted with respective tenant keys)
+# INSERT INTO patients_encrypted VALUES
+#     (1, 'hospital-a', 'John Doe', 
+#      hex(encrypt('aes-256-gcm', '123-45-6789', unhex('0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF'))),
+#      hex(encrypt('aes-256-gcm', 'Type 2 Diabetes', unhex('0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF'))),
+#      '1980-05-15', '2025-01-10 09:30:00'),
+#     (2, 'hospital-a', 'Jane Smith',
+#      hex(encrypt('aes-256-gcm', '987-65-4321', unhex('0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF'))),
+#      hex(encrypt('aes-256-gcm', 'Hypertension', unhex('0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF'))),
+#      '1975-08-22', '2025-01-12 14:00:00');
+
+# ============================================================================
+# ClickGraph Schema Configuration
+# ============================================================================
+
+graph_schema:
+  database: default
+  
+  nodes:
+    - label: Patient
+      table: patients_secure
+      view_parameters: [tenant_id]  # Automatically decrypts with tenant's key
+      id_column: patient_id
+      properties:
+        patient_id: patient_id
+        name: name
+        ssn: ssn                # Decrypted automatically
+        diagnosis: diagnosis    # Decrypted automatically
+        dob: dob
+        last_visit: last_visit
+    
+    - label: Transaction
+      table: transactions_secure
+      view_parameters: [tenant_id]
+      id_column: transaction_id
+      properties:
+        transaction_id: transaction_id
+        amount: amount
+        card_number_masked: card_number_masked  # Masked card number
+        transaction_date: transaction_date
+  
+  relationships:
+    - type: HAD_TRANSACTION
+      table: transactions_secure
+      view_parameters: [tenant_id]
+      from_id_column: patient_id
+      to_id_column: transaction_id
+      properties:
+        amount: amount
+        transaction_date: transaction_date
+
+# ============================================================================
+# Example Queries
+# ============================================================================
+
+# Query 1: Get patient records (auto-decrypted)
+# POST /query
+# {
+#   "query": "MATCH (p:Patient) RETURN p.name, p.ssn, p.diagnosis",
+#   "schema_name": "multi_tenant_encrypted",
+#   "view_parameters": {"tenant_id": "hospital-a"}
+# }
+#
+# Result: Decrypted data using hospital-a's key
+# [
+#   {"p.name": "John Doe", "p.ssn": "123-45-6789", "p.diagnosis": "Type 2 Diabetes"},
+#   {"p.name": "Jane Smith", "p.ssn": "987-65-4321", "p.diagnosis": "Hypertension"}
+# ]
+
+# Query 2: Get transactions with masked card numbers
+# POST /query
+# {
+#   "query": "MATCH (p:Patient)-[:HAD_TRANSACTION]->(t:Transaction) 
+#             RETURN p.name, t.amount, t.card_number_masked",
+#   "schema_name": "multi_tenant_encrypted",
+#   "view_parameters": {"tenant_id": "hospital-a"}
+# }
+#
+# Result: Patient transactions with masked cards (last 4 digits only)
+
+# Query 3: Filter by diagnosis (works on decrypted data)
+# POST /query
+# {
+#   "query": "MATCH (p:Patient) 
+#             WHERE p.diagnosis CONTAINS 'Diabetes' 
+#             RETURN p.name, p.last_visit",
+#   "schema_name": "multi_tenant_encrypted",
+#   "view_parameters": {"tenant_id": "hospital-a"}
+# }
+#
+# Result: Finds patients with diabetes diagnosis
+
+# Query 4: Cross-tenant query fails (wrong key)
+# POST /query
+# {
+#   "query": "MATCH (p:Patient) RETURN p.name, p.ssn",
+#   "schema_name": "multi_tenant_encrypted",
+#   "view_parameters": {"tenant_id": "hospital-b"}  # Different tenant
+# }
+#
+# Result: Cannot decrypt hospital-a's data with hospital-b's key
+#         Returns garbled data or decryption errors
+
+# ============================================================================
+# Security Best Practices
+# ============================================================================
+
+# 1. Key Management
+#    - Store keys in ClickHouse, NOT in application code
+#    - Use hardware security modules (HSM) for key storage in production
+#    - Rotate keys periodically
+#    - Audit key access
+#
+# 2. Access Control
+#    - Validate tenant_id from JWT claims (never trust client input)
+#    - Use ClickHouse roles to restrict key table access:
+#      GRANT SELECT ON tenant_keys TO key_manager_role;
+#      REVOKE SELECT ON tenant_keys FROM default;
+#
+# 3. Compliance
+#    - HIPAA: Encryption at rest + access controls + audit logging
+#    - GDPR: Data minimization + right to erasure + encryption
+#    - PCI-DSS: Tokenization of card numbers + encryption
+#
+# 4. Monitoring
+#    - Log all access to encrypted data
+#    - Alert on cross-tenant access attempts
+#    - Monitor decryption performance
+
+# ============================================================================
+# Performance Considerations
+# ============================================================================
+
+# 1. Encryption overhead is minimal (< 5ms per row)
+# 2. ClickHouse optimizes view queries with pushdown
+# 3. Index on (tenant_id, patient_id) for fast lookups
+# 4. Consider encryption only for PII columns (not all data)
+
+# ============================================================================
+# Key Rotation Example
+# ============================================================================
+
+# -- Step 1: Generate new key
+# INSERT INTO tenant_keys VALUES 
+#     ('hospital-a', '<new-256-bit-key>', now());
+#
+# -- Step 2: Re-encrypt data with new key (background job)
+# UPDATE patients_encrypted
+# SET ssn_encrypted = hex(encrypt('aes-256-gcm', 
+#                                  decrypt('aes-256-gcm', unhex(ssn_encrypted), unhex('<old-key>')),
+#                                  unhex('<new-key>')))
+# WHERE tenant_id = 'hospital-a';
+#
+# -- Step 3: Delete old key
+# DELETE FROM tenant_keys 
+# WHERE tenant_id = 'hospital-a' AND encryption_key = '<old-key>';

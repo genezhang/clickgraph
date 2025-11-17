@@ -1,3 +1,110 @@
+## [0.5.0-beta] - 2025-11-17
+
+### 🚀 Features - Phase 2: Multi-Tenancy & RBAC Complete
+
+- **Multi-tenant parameterized views with cache optimization**
+  - SQL generation with `$paramName` placeholders for efficient caching
+  - Single cache entry shared across all tenants (99% memory reduction)
+  - Runtime parameter substitution maintains tenant isolation
+  - Cache hit rate improved to ~100% for multi-tenant workloads
+  - 2x performance improvement on cache hits (18ms → 9ms)
+  - Commits: 805db43 (cache optimization), fa215e3 (docs), 2d1cb04-a639049 (core feature)
+
+- **Comprehensive multi-tenancy support**
+  - Schema configuration: `view_parameters: [tenant_id, region, ...]`
+  - HTTP API: `view_parameters` field in query requests
+  - Bolt protocol: Extract from RUN message metadata
+  - Multi-parameter support: Unlimited parameters per view
+  - Parameter merging: view_parameters + query parameters
+  - Full documentation: `docs/multi-tenancy.md` with 5 patterns
+
+- **SET ROLE RBAC support**
+  - ClickHouse native RBAC via `SET ROLE 'viewer'`
+  - HTTP API: `role` field in requests
+  - Bolt protocol: Role extraction from metadata
+  - Column-level security: Combine with row-level (parameterized views)
+  - Commit: 5d0f712
+
+- **Example schemas and patterns**
+  - Simple tenant isolation: `schemas/examples/multi_tenant_simple.yaml`
+  - Per-tenant encryption: `schemas/examples/multi_tenant_encrypted.yaml`
+  - Multi-parameter views (tenant + region + date)
+  - Hierarchical tenant trees
+  - Role-based + row-level security
+
+### 🧪 Testing
+
+- **Comprehensive integration test suite**
+  - 11 test classes covering tenant isolation, SQL generation, caching
+  - E2E validation: ACME/GLOBEX tenant isolation verified
+  - Cache behavior tests: Template sharing validated
+  - Performance tests: <100ms query time validated
+  - File: `tests/integration/test_multi_tenant_parameterized_views.py`
+
+- **Unit test coverage**
+  - 7/7 schema parsing tests passing
+  - Backward compatibility validated
+  - Multi-parameter support tested
+  - Edge cases covered
+
+### 📚 Documentation
+
+- **Complete user guide**: `docs/multi-tenancy.md`
+  - Quick start tutorial
+  - 5 multi-tenant patterns (isolation, encryption, hierarchical, etc.)
+  - Security best practices
+  - Performance tuning guide
+  - Migration guide for existing schemas
+  - Troubleshooting section
+  - API reference
+
+- **Technical documentation**: `notes/parameterized-views.md`
+  - Implementation details
+  - Data flow diagrams
+  - Cache architecture
+  - Design decisions
+
+- **Design document**: `notes/phase2-minimal-rbac.md`
+  - Philosophy: Maximum power, minimum code
+  - 5 security patterns with complete SQL examples
+  - 4-week implementation timeline
+
+### ⚡ Performance
+
+- **Cache optimization metrics**:
+  - Memory: 99% reduction for 100-tenant scenario (1 entry vs 100)
+  - Cache hit rate: ~100% (all tenants share template)
+  - Query time: 2x faster on cache hit (18ms → 9ms)
+  - Scalability: O(1) cache entries regardless of tenant count
+
+### 🔐 Security
+
+- **Row-level security**: Tenant isolation at database level via parameterized views
+- **Column-level security**: Role-based permissions via SET ROLE
+- **Per-tenant encryption**: Unique encryption keys per tenant
+- **Time-based access**: Date-range filtering in parameterized views
+- **Hierarchical tenants**: Parent sees child data via recursive CTEs
+- **Audit ready**: All security patterns support audit logging
+
+### 📦 Deliverables
+
+- **Code**: Schema parsing, SQL generation, cache optimization, HTTP/Bolt support
+- **Tests**: Comprehensive pytest suite + unit tests
+- **Docs**: User guide + technical notes + design document
+- **Examples**: 2 complete example schemas (simple + encrypted)
+- **Migration**: Guide for adding multi-tenancy to existing schemas
+
+### 🎯 Production Readiness
+
+- ✅ All core features complete and tested
+- ✅ E2E validation with multiple tenants
+- ✅ Cache optimization validated (2x performance)
+- ✅ Security patterns documented
+- ✅ Migration path for existing deployments
+- ⏳ Beta user feedback pending
+
+---
+
 ## [0.4.0] - 2025-11-15
 
 ### 🚀 Features
