@@ -1,7 +1,7 @@
 # ClickGraph Roadmap
 
-**Last Updated**: November 15, 2025  
-**Current Version**: v0.3.0 → **v0.4.0 (Phase 1 Complete!)**
+**Last Updated**: November 17, 2025  
+**Current Version**: v0.4.0 → **v0.5.0 (Phase 2: 60% Complete)**
 
 This document outlines planned features, enhancements, and benchmark tasks for ClickGraph development.
 
@@ -84,15 +84,15 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 **Focus**: Security, multi-tenancy, documentation  
 **Duration**: 8-10 weeks  
 **Started**: November 15, 2025  
-**Progress**: 2/5 complete (40%)
+**Progress**: 3/5 complete (60%)
 
 | Priority | Feature | Effort | Impact | Status |
 |----------|---------|--------|--------|--------|
 | ~~1️⃣~~ | ~~**#5 RBAC & Row-Level Security**~~ | ~~3-4 weeks~~ | ~~🔥 Critical~~ | ✅ **COMPLETE** (Nov 15-17, 2025) |
 | ~~2️⃣~~ | ~~**#1 Multi-Tenant Support**~~ | ~~2-3 weeks~~ | ~~🔥 Critical~~ | ✅ **COMPLETE** (Nov 15-17, 2025) |
-| 3️⃣ | **#6 ReplacingMergeTree & FINAL** | 1-2 weeks | 🌟 Medium-High | ⏳ **Not Started** |
-| 4️⃣ | **Auto-Schema Discovery** | 1-2 weeks | 🌟 Medium | ⏳ **Not Started** |
-| 5️⃣ | **v0.5.0 Wiki Documentation** | 3-4 weeks | 🔥 High | ⏳ **Not Started** |
+| ~~3️⃣~~ | ~~**Wiki Documentation (Foundation)**~~ | ~~1 week~~ | ~~🔥 High~~ | ✅ **COMPLETE** (Nov 17, 2025) |
+| 4️⃣ | **#6 ReplacingMergeTree & FINAL** | 1-2 weeks | 🌟 Medium-High | ⏳ **Not Started** |
+| 5️⃣ | **Auto-Schema Discovery** | 1-2 weeks | 🌟 Medium | ⏳ **Not Started** |
 
 **Phase 2 Deliverables**:
 - ✅ Complete RBAC system with role definitions (SET ROLE support)
@@ -100,9 +100,11 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 - ✅ Multi-tenant query isolation working (HTTP + Bolt protocols)
 - ✅ Complete documentation: `docs/multi-tenancy.md` + example schemas
 - ✅ Integration test suite (11 test classes)
+- ✅ **Wiki foundation complete**: 16 pages (14K+ lines) with schema-aligned examples
+- ✅ **Critical bug fix**: RETURN whole node property expansion
+- ✅ **Validation infrastructure**: Automated wiki query validation system
 - ⏳ ReplacingMergeTree support with FINAL
 - ⏳ Auto-schema from ClickHouse `DESCRIBE TABLE` with caching
-- ⏳ Comprehensive GitHub Wiki live
 
 **Completed Features (Nov 15-17, 2025)**:
 
@@ -124,16 +126,38 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 - 5 multi-tenant patterns documented
 - Commits: fa215e3, 5a1303d, 4ad7563, 8c21fca, a639049
 
-**Remaining Work (Estimated 5-7 weeks)**:
+**3. Wiki Documentation Foundation** ✅ (Nov 17, 2025):
+- **16 wiki pages created**: 14,300+ lines of content
+  - Quick Start Guide, Cypher Basic Patterns, Functions, Multi-Hop Traversals
+  - Use cases: Social Network, Fraud Detection, Knowledge Graphs
+  - Production: Docker/K8s Deployment, Best Practices, Troubleshooting
+  - Advanced: Schema Configuration, Multi-Tenancy, RBAC, Performance
+  - Architecture: Internals documentation
+- **Schema alignment**: All examples use benchmark schema properties
+- **HTML comment strategy**: Future features preserved but hidden
+- **Validation infrastructure**:
+  - `scripts/validate_wiki_docs.py`: Automated query testing
+  - `docs/FUTURE_FEATURES_TRACKER.md`: Tracks commented examples
+  - `scripts/utils/find_commented_examples.py`: Discovery utility
+- **Critical bug fix**: RETURN whole node property expansion
+  - Fixed "No select items found" error for `RETURN u` queries
+  - Added `expand_node_properties()` helper
+  - Now generates complete SELECT clause with all properties
+- **Quality assurance**: PowerShell scripts for wiki validation workflow
+- Commits: cc5bd6f (bug fix), b9b09f5 (docs), b10be71 (scripts)
+
+**Remaining Work (Estimated 4-6 weeks)**:
 1. ReplacingMergeTree & FINAL support (1-2 weeks)
 2. Auto-schema discovery (1-2 weeks)
-3. Comprehensive Wiki documentation (3-4 weeks)
+3. Wiki refinement & publishing (1-2 weeks)
 
 **v0.5.0 Release Goals**:
 - ✅ Enterprise security features complete
 - ✅ Multi-tenant SaaS deployments enabled
+- ✅ Wiki documentation foundation established (16 pages, 14K+ lines)
+- ✅ Critical query bugs fixed (RETURN whole node)
 - ⏳ Schema evolution without YAML updates
-- ⏳ Production documentation available (Wiki)
+- ⏳ Wiki published to GitHub (after final refinement)
 
 ---
 
