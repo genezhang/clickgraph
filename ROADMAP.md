@@ -1,7 +1,7 @@
 # ClickGraph Roadmap
 
 **Last Updated**: November 17, 2025  
-**Current Version**: v0.4.0 → **v0.5.0 (Phase 2: 60% Complete)**
+**Current Version**: v0.4.0 → **v0.5.0 (Phase 2 Complete! 🎉)**
 
 This document outlines planned features, enhancements, and benchmark tasks for ClickGraph development.
 
@@ -80,19 +80,20 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 
 ---
 
-### 🎯 Phase 2: Enterprise Readiness (v0.5.0 - January-February 2026) 🔄 **IN PROGRESS**
+### 🎯 Phase 2: Enterprise Readiness (v0.5.0 - January-February 2026) ✅ **COMPLETE**
 **Focus**: Security, multi-tenancy, documentation  
 **Duration**: 8-10 weeks  
 **Started**: November 15, 2025  
-**Progress**: 3/5 complete (60%)
+**Completed**: November 17, 2025  
+**Progress**: 5/5 complete (100%)
 
 | Priority | Feature | Effort | Impact | Status |
 |----------|---------|--------|--------|--------|
 | ~~1️⃣~~ | ~~**#5 RBAC & Row-Level Security**~~ | ~~3-4 weeks~~ | ~~🔥 Critical~~ | ✅ **COMPLETE** (Nov 15-17, 2025) |
 | ~~2️⃣~~ | ~~**#1 Multi-Tenant Support**~~ | ~~2-3 weeks~~ | ~~🔥 Critical~~ | ✅ **COMPLETE** (Nov 15-17, 2025) |
 | ~~3️⃣~~ | ~~**Wiki Documentation (Foundation)**~~ | ~~1 week~~ | ~~🔥 High~~ | ✅ **COMPLETE** (Nov 17, 2025) |
-| 4️⃣ | **#6 ReplacingMergeTree & FINAL** | 1-2 weeks | 🌟 Medium-High | ⏳ **Not Started** |
-| 5️⃣ | **Auto-Schema Discovery** | 1-2 weeks | 🌟 Medium | ⏳ **Not Started** |
+| ~~4️⃣~~ | ~~**#6 ReplacingMergeTree & FINAL**~~ | ~~1-2 weeks~~ | ~~🌟 Medium-High~~ | ✅ **COMPLETE** (Nov 2025) |
+| ~~5️⃣~~ | ~~**Auto-Schema Discovery**~~ | ~~1-2 weeks~~ | ~~🌟 Medium~~ | ✅ **COMPLETE** (Nov 2025) |
 
 **Phase 2 Deliverables**:
 - ✅ Complete RBAC system with role definitions (SET ROLE support)
@@ -103,8 +104,8 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 - ✅ **Wiki foundation complete**: 16 pages (14K+ lines) with schema-aligned examples
 - ✅ **Critical bug fix**: RETURN whole node property expansion
 - ✅ **Validation infrastructure**: Automated wiki query validation system
-- ⏳ ReplacingMergeTree support with FINAL
-- ⏳ Auto-schema from ClickHouse `DESCRIBE TABLE` with caching
+- ✅ **ReplacingMergeTree support with FINAL**: Mutable graph data support
+- ✅ **Auto-schema from ClickHouse**: `DESCRIBE TABLE` with caching
 
 **Completed Features (Nov 15-17, 2025)**:
 
@@ -146,18 +147,35 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 - **Quality assurance**: PowerShell scripts for wiki validation workflow
 - Commits: cc5bd6f (bug fix), b9b09f5 (docs), b10be71 (scripts)
 
-**Remaining Work (Estimated 4-6 weeks)**:
-1. ReplacingMergeTree & FINAL support (1-2 weeks)
-2. Auto-schema discovery (1-2 weeks)
-3. Wiki refinement & publishing (1-2 weeks)
+**4. ReplacingMergeTree & FINAL Support** ✅ (Nov 2025):
+- Support for mutable ClickHouse tables with `ReplacingMergeTree` engine
+- Automatic `FINAL` clause generation for deduplicated reads
+- Enables graph data updates and deletions
+- Compatible with CDC patterns
+
+**5. Auto-Schema Discovery** ✅ (Nov 2025):
+- Automatic schema detection from ClickHouse `DESCRIBE TABLE`
+- Schema caching for performance
+- Reduces manual YAML configuration
+- Supports dynamic table structures
+
+**Phase 2 Summary**:
+- **Duration**: 2 weeks (Nov 15-17, 2025)
+- **All goals achieved**: Security, multi-tenancy, documentation, mutable data, auto-discovery
+- **Ready for v0.5.0 release**
+
+---
 
 **v0.5.0 Release Goals**:
 - ✅ Enterprise security features complete
 - ✅ Multi-tenant SaaS deployments enabled
 - ✅ Wiki documentation foundation established (16 pages, 14K+ lines)
 - ✅ Critical query bugs fixed (RETURN whole node)
-- ⏳ Schema evolution without YAML updates
-- ⏳ Wiki published to GitHub (after final refinement)
+- ✅ Schema evolution without YAML updates (auto-discovery)
+- ✅ Mutable graph data support (ReplacingMergeTree + FINAL)
+- ⏳ Wiki published to GitHub (ready for publishing)
+
+**🚀 v0.5.0 RELEASE READY** - All Phase 2 features complete!
 
 ---
 
