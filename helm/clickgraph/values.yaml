@@ -1,0 +1,217 @@
+# Default values for clickgraph Helm chart
+# This is a YAML-formatted file.
+#
+# ⚠️ WARNING: This Helm chart has NOT been tested yet.
+# See TESTING_CHECKLIST.md for validation procedures before use.
+
+## ClickGraph Configuration
+
+# Number of ClickGraph replicas
+replicaCount: 3
+
+image:
+  repository: clickgraph/clickgraph
+  pullPolicy: IfNotPresent
+  tag: ""  # Defaults to appVersion in Chart.yaml
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Service account configuration
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+# Service configuration
+service:
+  type: ClusterIP
+  http:
+    port: 8080
+  bolt:
+    port: 7687
+  metrics:
+    port: 9090
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # nginx.ingress.kubernetes.io/rate-limit: "100"
+  hosts:
+    - host: clickgraph.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: clickgraph-tls
+  #    hosts:
+  #      - clickgraph.example.com
+
+# Resource limits and requests
+resources:
+  requests:
+    cpu: 1000m
+    memory: 2Gi
+  limits:
+    cpu: 4000m
+    memory: 4Gi
+
+# Horizontal Pod Autoscaler
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity rules
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - clickgraph
+          topologyKey: kubernetes.io/hostname
+
+# Liveness probe configuration
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Readiness probe configuration
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Environment variables
+env:
+  - name: RUST_LOG
+    value: "info"
+  - name: HTTP_PORT
+    value: "8080"
+  - name: BOLT_PORT
+    value: "7687"
+  - name: HTTP_ENABLED
+    value: "true"
+  - name: BOLT_ENABLED
+    value: "true"
+  - name: MAX_RECURSION_DEPTH
+    value: "100"
+
+# ClickHouse connection configuration
+clickhouse:
+  # Enable bundled ClickHouse (for development/testing)
+  enabled: false
+  
+  # External ClickHouse configuration
+  external:
+    enabled: true
+    host: clickhouse.default.svc.cluster.local
+    port: 8123
+    database: brahmand
+    user: clickgraph_user
+    # Password should be provided via existingSecret
+    existingSecret: clickhouse-credentials
+    existingSecretPasswordKey: password
+
+# Schema configuration
+schemas:
+  # Create schemas from inline YAML
+  create: true
+  configs:
+    social:
+      name: social_graph
+      version: "1.0"
+      graph_schema:
+        nodes:
+          - label: User
+            database: brahmand
+            table: users_bench
+            id_column: user_id
+            property_mappings:
+              user_id: user_id
+              name: full_name
+              email: email_address
+        relationships:
+          - type: FOLLOWS
+            database: brahmand
+            table: user_follows_bench
+            from_id: follower_id
+            to_id: followed_id
+            from_node: User
+            to_node: User
+            property_mappings:
+              follow_date: follow_date
+  
+  # Or reference existing ConfigMaps
+  # existingConfigMaps:
+  #   - name: social-graph-schema
+  #     key: social.yaml
+
+# Monitoring
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+# Volume mounts for temporary files
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+
+extraVolumes:
+  - name: tmp
+    emptyDir: {}

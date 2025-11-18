@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "clickgraph.fullname" . }}
+  labels:
+    {{- include "clickgraph.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "clickgraph.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "clickgraph.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "clickgraph.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: {{ .Chart.Name }}
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 12 }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.service.http.port }}
+          protocol: TCP
+        - name: bolt
+          containerPort: {{ .Values.service.bolt.port }}
+          protocol: TCP
+        - name: metrics
+          containerPort: {{ .Values.service.metrics.port }}
+          protocol: TCP
+        env:
+        - name: CLICKHOUSE_URL
+          value: {{ include "clickgraph.clickhouseUrl" . | quote }}
+        {{- if .Values.clickhouse.external.enabled }}
+        - name: CLICKHOUSE_USER
+          value: {{ .Values.clickhouse.external.user | quote }}
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.clickhouse.external.existingSecret }}
+              key: {{ .Values.clickhouse.external.existingSecretPasswordKey }}
+        - name: CLICKHOUSE_DATABASE
+          value: {{ .Values.clickhouse.external.database | quote }}
+        {{- end }}
+        {{- if .Values.schemas.create }}
+        - name: GRAPH_CONFIG_PATH
+          value: "/app/schemas/{{ range $key, $val := .Values.schemas.configs }}{{ $key }}.yaml,{{ end }}"
+        {{- end }}
+        {{- with .Values.env }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        volumeMounts:
+        {{- if .Values.schemas.create }}
+        - name: schemas
+          mountPath: /app/schemas
+          readOnly: true
+        {{- end }}
+        {{- with .Values.extraVolumeMounts }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        livenessProbe:
+          {{- toYaml .Values.livenessProbe | nindent 10 }}
+        readinessProbe:
+          {{- toYaml .Values.readinessProbe | nindent 10 }}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+      volumes:
+      {{- if .Values.schemas.create }}
+      - name: schemas
+        configMap:
+          name: {{ include "clickgraph.fullname" . }}-schemas
+      {{- end }}
+      {{- with .Values.extraVolumes }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

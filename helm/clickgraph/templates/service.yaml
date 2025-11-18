@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "clickgraph.fullname" . }}
+  labels:
+    {{- include "clickgraph.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  - port: {{ .Values.service.http.port }}
+    targetPort: http
+    protocol: TCP
+    name: http
+  - port: {{ .Values.service.bolt.port }}
+    targetPort: bolt
+    protocol: TCP
+    name: bolt
+  - port: {{ .Values.service.metrics.port }}
+    targetPort: metrics
+    protocol: TCP
+    name: metrics
+  selector:
+    {{- include "clickgraph.selectorLabels" . | nindent 4 }}

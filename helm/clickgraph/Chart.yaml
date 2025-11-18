@@ -1,0 +1,23 @@
+apiVersion: v2
+name: clickgraph
+description: A Helm chart for deploying ClickGraph - Graph query engine for ClickHouse
+type: application
+version: 0.5.0
+appVersion: "0.5.0"
+keywords:
+  - graph
+  - database
+  - cypher
+  - clickhouse
+  - neo4j
+home: https://github.com/yourusername/clickgraph
+sources:
+  - https://github.com/yourusername/clickgraph
+maintainers:
+  - name: ClickGraph Team
+    email: maintainers@clickgraph.io
+dependencies:
+  - name: clickhouse
+    version: "3.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: clickhouse.enabled

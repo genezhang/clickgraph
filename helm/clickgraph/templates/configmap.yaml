@@ -1,0 +1,13 @@
+{{- if .Values.schemas.create }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "clickgraph.fullname" . }}-schemas
+  labels:
+    {{- include "clickgraph.labels" . | nindent 4 }}
+data:
+  {{- range $key, $val := .Values.schemas.configs }}
+  {{ $key }}.yaml: |
+    {{- toYaml $val | nindent 4 }}
+  {{- end }}
+{{- end }}
