@@ -1,3 +1,27 @@
+## [Unreleased]
+
+### 🚀 Features
+
+- **Anonymous edge pattern support (untyped relationships)**
+  - Queries like `MATCH (a)-[r]->(b)` now automatically expand to UNION of all relationship types
+  - Schema-based automatic expansion: `[]` → `[:TYPE1|TYPE2|TYPE3]` 
+  - Leverages existing multiple relationship type UNION logic
+  - Example: `MATCH (a)-[]->(b)` generates CTE with `UNION ALL` across all relationship tables
+  - Implementation: `match_clause.rs` lines 406-434 (Nov 18, 2025)
+  - Enables more flexible graph queries without explicit relationship typing
+
+### 🐛 Bug Fixes
+
+- **Anonymous node pattern support**
+  - Fixed `MATCH ()-[r:FOLLOWS]->()` pattern SQL generation (Nov 17, 2025)
+  - Automatic label inference from relationship schema
+  - Removed early-return skips for nodes without labels
+  - JOIN creation now based on graph structure, not just SELECT references
+  - Affected queries: `()-[r]->()`, `(a)-[r]->()`  
+  - Fix locations: `graph_join_inference.rs` (lines 777-818, 1228), `graph_context.rs` (lines 87-127)
+
+---
+
 ## [0.5.0-beta] - 2025-11-17
 
 ### 🚀 Features - Phase 2: Multi-Tenancy & RBAC Complete
