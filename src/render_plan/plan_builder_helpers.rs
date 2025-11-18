@@ -125,6 +125,13 @@ pub(super) fn render_expr_to_sql_string(
                 .collect();
             format!("{}({})", agg.name, args.join(", "))
         }
+        RenderExpr::List(list) => {
+            let items: Vec<String> = list
+                .iter()
+                .map(|item| render_expr_to_sql_string(item, alias_mapping))
+                .collect();
+            format!("({})", items.join(", "))
+        }
         _ => "TRUE".to_string(), // fallback for unsupported expressions
     }
 }
@@ -280,47 +287,75 @@ pub(super) fn find_anchor_node(
         return None;
     }
 
-    // Strategy 1: Prefer LEFT connections that are required (not optional)
-    // Check LEFT nodes first since they should be the anchor in (a)-[]->(b) patterns
+    // CRITICAL FIX: For multi-hop patterns like (a)-[]->(b)-[]->(c), the anchor is the node
+    // that appears as LEFT but NEVER as RIGHT in any relationship. This is the true starting point.
+    // We must find this FIRST before considering optional status!
+    
+    // Strategy 1: Find the true leftmost node (appears in left_connections but NOT in right_connections)
+    // This is the chain's starting point regardless of optional status
+    let right_nodes: std::collections::HashSet<_> = connections
+        .iter()
+        .map(|(_, right, _)| right.clone())
+        .collect();
+
+    // Among nodes that are LEFT-only, prefer required (non-optional) ones
+    let mut leftmost_required = None;
+    let mut leftmost_any = None;
+
+    for (left, _, _) in connections {
+        if !right_nodes.contains(left) {
+            // This node is only on the left side (true leftmost/anchor)
+            if leftmost_any.is_none() {
+                leftmost_any = Some(left.clone());
+            }
+            if !optional_aliases.contains(left) && leftmost_required.is_none() {
+                leftmost_required = Some(left.clone());
+            }
+        }
+    }
+
+    if let Some(anchor) = leftmost_required {
+        log::info!(
+            "✓ Found REQUIRED leftmost anchor node: {} (left-only, not optional)",
+            anchor
+        );
+        return Some(anchor);
+    }
+
+    if let Some(anchor) = leftmost_any {
+        log::info!(
+            "✓ Found leftmost anchor node: {} (left-only, may be optional)",
+            anchor
+        );
+        return Some(anchor);
+    }
+
+    // Strategy 2: No true leftmost node found (circular pattern?). Prefer any required LEFT node.
     for (left, _, _) in connections {
         if !optional_aliases.contains(left) {
-            log::info!(
-                "✓ Found REQUIRED LEFT anchor node: {} (not in optional_aliases)",
+            log::warn!(
+                "⚠️ No leftmost node found, using first REQUIRED LEFT: {}",
                 left
             );
             return Some(left.clone());
         }
     }
 
-    // Strategy 2: If all LEFT nodes are optional, check RIGHT nodes that are required
+    // Strategy 3: All LEFT nodes are optional, try required RIGHT nodes
     for (_, right, _) in connections {
         if !optional_aliases.contains(right) {
-            log::info!(
-                "✓ Found REQUIRED RIGHT anchor node: {} (not in optional_aliases)",
+            log::warn!(
+                "⚠️ All LEFT nodes optional, using REQUIRED RIGHT: {}",
                 right
             );
             return Some(right.clone());
         }
     }
 
-    // Strategy 3: All nodes are optional - use traditional anchor pattern
-    // (left_connection that is NOT in right_nodes)
-    let right_nodes: std::collections::HashSet<_> = connections
-        .iter()
-        .map(|(_, right, _)| right.clone())
-        .collect();
-
-    for (left, _, _) in connections {
-        if !right_nodes.contains(left) {
-            log::warn!("⚠️ All nodes are optional, using anchor pattern: {}", left);
-            return Some(left.clone());
-        }
-    }
-
     // Strategy 4: Fallback to first left_connection
     let fallback = connections.first().map(|(left, _, _)| left.clone());
     if let Some(ref alias) = fallback {
-        log::warn!("⚠️ Using fallback anchor: {}", alias);
+        log::warn!("⚠️ All nodes optional, using fallback: {}", alias);
     }
     fallback
 }
@@ -449,7 +484,8 @@ pub(super) fn get_node_table_for_alias(alias: &str) -> String {
                 // In a real implementation, we'd need to track node types per alias
                 // For now, assume "User" type for common cases
                 if let Some(user_node) = schema.get_node_schema_opt("User") {
-                    return user_node.table_name.clone();
+                    // Return fully qualified table name: database.table_name
+                    return format!("{}.{}", user_node.database, user_node.table_name);
                 }
             }
         }

@@ -3,7 +3,7 @@ use crate::clickhouse_query_generator::variable_length_cte::{
 };
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_expr::Direction;
-use crate::query_planner::logical_plan::{GraphRel, LogicalPlan};
+use crate::query_planner::logical_plan::{GraphRel, LogicalPlan, ProjectionItem};
 use crate::query_planner::plan_ctx::PlanCtx;
 use std::sync::Arc;
 
@@ -58,6 +58,10 @@ pub(crate) trait RenderPlanBuilder {
 
     /// Find the ID column for a given table alias by traversing the logical plan
     fn find_id_column_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<String>;
+    
+    /// Get all properties for a table alias by traversing the logical plan
+    /// Returns a vector of (property_name, column_name) tuples
+    fn get_all_properties_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<Vec<(String, String)>>;
 
     /// Normalize aggregate function arguments: convert TableAlias(a) to PropertyAccess(a.id_column)
     /// This is needed for queries like COUNT(b) where b is a node alias
@@ -134,6 +138,61 @@ impl RenderPlanBuilder for LogicalPlan {
         }
         Err(RenderBuildError::InvalidRenderPlan(format!(
             "Cannot find ID column for alias '{}'",
+            alias
+        )))
+    }
+
+    /// Get all properties for a table alias by traversing the logical plan
+    /// Returns a vector of (property_name, column_name) tuples
+    fn get_all_properties_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<Vec<(String, String)>> {
+        // Traverse the plan tree to find a GraphNode or ViewScan with matching alias
+        match self {
+            LogicalPlan::GraphNode(node) if node.alias == alias => {
+                // Found the matching node - extract all properties from its ViewScan
+                if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                    // Convert property_mapping HashMap to Vec of tuples
+                    let properties: Vec<(String, String)> = scan
+                        .property_mapping
+                        .iter()
+                        .map(|(prop_name, col_name)| (prop_name.clone(), col_name.clone()))
+                        .collect();
+                    return Ok(properties);
+                }
+            }
+            LogicalPlan::GraphRel(rel) => {
+                // Check both left and right branches
+                if let Ok(props) = rel.left.get_all_properties_for_alias(alias) {
+                    return Ok(props);
+                }
+                if let Ok(props) = rel.right.get_all_properties_for_alias(alias) {
+                    return Ok(props);
+                }
+            }
+            LogicalPlan::Projection(proj) => {
+                return proj.input.get_all_properties_for_alias(alias);
+            }
+            LogicalPlan::Filter(filter) => {
+                return filter.input.get_all_properties_for_alias(alias);
+            }
+            LogicalPlan::GroupBy(gb) => {
+                return gb.input.get_all_properties_for_alias(alias);
+            }
+            LogicalPlan::GraphJoins(joins) => {
+                return joins.input.get_all_properties_for_alias(alias);
+            }
+            LogicalPlan::OrderBy(order) => {
+                return order.input.get_all_properties_for_alias(alias);
+            }
+            LogicalPlan::Skip(skip) => {
+                return skip.input.get_all_properties_for_alias(alias);
+            }
+            LogicalPlan::Limit(limit) => {
+                return limit.input.get_all_properties_for_alias(alias);
+            }
+            _ => {}
+        }
+        Err(RenderBuildError::InvalidRenderPlan(format!(
+            "Cannot find properties for alias '{}'",
             alias
         )))
     }
@@ -366,8 +425,14 @@ impl RenderPlanBuilder for LogicalPlan {
                     );
 
                     // Choose between chained JOINs (for exact hop counts) or recursive CTE (for ranges)
-                    let var_len_cte = if let Some(exact_hops) = spec.exact_hop_count() {
-                        // Exact hop count: use optimized chained JOINs
+                    // For shortest path queries, always use recursive CTE (even for exact hops)
+                    // because we need proper filtering and shortest path selection logic
+                    let use_chained_join = spec.exact_hop_count().is_some() 
+                        && graph_rel.shortest_path_mode.is_none();
+                    
+                    let var_len_cte = if use_chained_join {
+                        // Exact hop count, non-shortest-path: use optimized chained JOINs
+                        let exact_hops = spec.exact_hop_count().unwrap();
                         let generator = ChainedJoinGenerator::new(
                             exact_hops,
                             &start_table,
@@ -383,7 +448,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         );
                         generator.generate_cte()
                     } else {
-                        // Range or unbounded: use recursive CTE
+                        // Range, unbounded, or shortest path: use recursive CTE
                         let generator = VariableLengthCteGenerator::new(
                             spec.clone(),
                             &start_table,                // actual start table name
@@ -719,7 +784,72 @@ impl RenderPlanBuilder for LogicalPlan {
                 };
 
                 let path_var = get_path_variable(&projection.input);
-                let items = projection.items.iter().map(|item| {
+                
+                // EXPANDED NODE FIX: Check if we need to expand node variables to all properties
+                // This happens when users write `RETURN u` (returning whole node)
+                // The ProjectionTagging analyzer may convert this to `u.*`, OR it may leave it as TableAlias
+                let mut expanded_items = Vec::new();
+                for item in &projection.items {
+                    // Check for TableAlias (u) - expand to all properties
+                    if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) = &item.expression {
+                        println!("DEBUG: Found TableAlias {} - checking if should expand to properties", alias.0);
+                        
+                        // Get all properties for this table alias from the schema
+                        if let Ok(properties) = self.get_all_properties_for_alias(&alias.0) {
+                            if !properties.is_empty() {
+                                println!("DEBUG: Expanding TableAlias {} to {} properties", alias.0, properties.len());
+                                
+                                // Create a separate ProjectionItem for each property
+                                for (prop_name, col_name) in properties {
+                                    expanded_items.push(ProjectionItem {
+                                        expression: crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
+                                            crate::query_planner::logical_expr::PropertyAccess {
+                                                table_alias: alias.clone(),
+                                                column: crate::query_planner::logical_expr::Column(col_name),
+                                            }
+                                        ),
+                                        col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(prop_name)),
+                                    });
+                                }
+                                continue; // Skip adding the TableAlias item itself
+                            }
+                        }
+                    }
+                    
+                    // Check for PropertyAccessExp with wildcard (u.*) - expand to all properties
+                    if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop) = &item.expression {
+                        if prop.column.0 == "*" {
+                            // This is u.* - need to expand to all properties from schema
+                            println!("DEBUG: Found wildcard property access {}.* - expanding to all properties", prop.table_alias.0);
+                            
+                            // Get all properties for this table alias from the schema
+                            if let Ok(properties) = self.get_all_properties_for_alias(&prop.table_alias.0) {
+                                println!("DEBUG: Expanding {}.* to {} properties", prop.table_alias.0, properties.len());
+                                
+                                // Create a separate ProjectionItem for each property
+                                for (prop_name, col_name) in properties {
+                                    expanded_items.push(ProjectionItem {
+                                        expression: crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
+                                            crate::query_planner::logical_expr::PropertyAccess {
+                                                table_alias: prop.table_alias.clone(),
+                                                column: crate::query_planner::logical_expr::Column(col_name),
+                                            }
+                                        ),
+                                        col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(prop_name)),
+                                    });
+                                }
+                                continue; // Skip adding the wildcard item itself
+                            } else {
+                                println!("DEBUG: Could not expand {}.* - falling back to wildcard", prop.table_alias.0);
+                            }
+                        }
+                    }
+                    
+                    // Not a node variable or wildcard expansion failed - keep the item as-is
+                    expanded_items.push(item.clone());
+                }
+                
+                let items = expanded_items.iter().map(|item| {
                     // Resolve TableAlias references to WITH aliases BEFORE conversion
                     let resolved_expr =
                         if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(
@@ -2290,14 +2420,11 @@ impl RenderPlanBuilder for LogicalPlan {
             filtered_joins
         );
 
-        // For simple relationships, we need to ensure proper JOIN ordering
-        // The extract_joins should handle this correctly
-
         Ok(RenderPlan {
             ctes: CteItems(vec![]),
             select: SelectItems(final_select_items),
             from: FromTableItem(from_table_to_view_ref(final_from)),
-            joins: JoinItems(filtered_joins),
+            joins: JoinItems(filtered_joins),  // GraphJoinInference already ordered these correctly
             filters: FilterItems(final_filters),
             group_by: GroupByExpressions(self.extract_group_by()?),
             having_clause: self.extract_having()?,
@@ -2515,42 +2642,82 @@ impl RenderPlanBuilder for LogicalPlan {
             let start_id_col = get_node_id_column_for_alias(&start_alias);
             let end_id_col = get_node_id_column_for_alias(&end_alias);
 
-            extracted_joins.push(Join {
-                table_name: start_table,
-                table_alias: start_alias.clone(),
-                joining_on: vec![OperatorApplication {
-                    operator: Operator::Equal,
-                    operands: vec![
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias("t".to_string()),
-                            column: Column("start_id".to_string()),
-                        }),
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(start_alias.clone()),
-                            column: Column(start_id_col),
-                        }),
+            // Check for self-loop: start and end are the same node (e.g., (a)-[*0..]->(a))
+            if start_alias == end_alias {
+                // Self-loop: Only add ONE JOIN with compound ON condition
+                // JOIN users AS a ON t.start_id = a.user_id AND t.end_id = a.user_id
+                extracted_joins.push(Join {
+                    table_name: start_table,
+                    table_alias: start_alias.clone(),
+                    joining_on: vec![
+                        OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias("t".to_string()),
+                                    column: Column("start_id".to_string()),
+                                }),
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(start_alias.clone()),
+                                    column: Column(start_id_col.clone()),
+                                }),
+                            ],
+                        },
+                        OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias("t".to_string()),
+                                    column: Column("end_id".to_string()),
+                                }),
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(start_alias.clone()),
+                                    column: Column(start_id_col),
+                                }),
+                            ],
+                        },
                     ],
-                }],
-                join_type: JoinType::Join,
-            });
-            extracted_joins.push(Join {
-                table_name: end_table,
-                table_alias: end_alias.clone(),
-                joining_on: vec![OperatorApplication {
-                    operator: Operator::Equal,
-                    operands: vec![
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias("t".to_string()),
-                            column: Column("end_id".to_string()),
-                        }),
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(end_alias.clone()),
-                            column: Column(end_id_col),
-                        }),
-                    ],
-                }],
-                join_type: JoinType::Join,
-            });
+                    join_type: JoinType::Join,
+                });
+            } else {
+                // Different start and end nodes: Add two separate JOINs
+                extracted_joins.push(Join {
+                    table_name: start_table,
+                    table_alias: start_alias.clone(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias("t".to_string()),
+                                column: Column("start_id".to_string()),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(start_alias.clone()),
+                                column: Column(start_id_col),
+                            }),
+                        ],
+                    }],
+                    join_type: JoinType::Join,
+                });
+                extracted_joins.push(Join {
+                    table_name: end_table,
+                    table_alias: end_alias.clone(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias("t".to_string()),
+                                column: Column("end_id".to_string()),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(end_alias.clone()),
+                                column: Column(end_id_col),
+                            }),
+                        ],
+                    }],
+                    join_type: JoinType::Join,
+                });
+            }
         }
 
         // For multiple relationship types (UNION CTE), add joins to connect nodes
