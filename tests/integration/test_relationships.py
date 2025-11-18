@@ -98,11 +98,14 @@ class TestMultiHopTraversal:
         )
         
         assert_query_success(response)
+        # All 2-hop paths:
         # Alice -> Bob -> Charlie
         # Alice -> Bob -> Diana
         # Alice -> Charlie -> Diana
         # Bob -> Charlie -> Diana
-        assert_row_count(response, 4)
+        # Bob -> Diana -> Eve
+        # Charlie -> Diana -> Eve
+        assert_row_count(response, 6)
     
     def test_three_hop_traversal(self, simple_graph):
         """Test (a)-[]->(b)-[]->(c)-[]->(d) pattern."""
