@@ -400,10 +400,37 @@ fn traverse_connected_pattern_with_mode<'a>(
         } else {
             generate_id()
         };
-        let rel_labels = rel
-            .labels
-            .as_ref()
-            .map(|labels| labels.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        
+        // Handle anonymous edge patterns: [] (no type specified)
+        // Automatically expand to UNION of all relationship types from schema
+        let rel_labels = match rel.labels.as_ref() {
+            Some(labels) => {
+                // Explicit labels provided: [:TYPE1|TYPE2]
+                Some(labels.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+            }
+            None => {
+                // Anonymous edge pattern: [] 
+                // Expand to all relationship types from schema
+                let graph_schema = plan_ctx.schema();
+                let all_rel_types: Vec<String> = graph_schema
+                    .get_relationships_schemas()
+                    .keys()
+                    .map(|k| k.to_string())
+                    .collect();
+                
+                if all_rel_types.is_empty() {
+                    log::warn!("Anonymous edge pattern [] but no relationship types in schema");
+                    None
+                } else {
+                    log::info!(
+                        "Anonymous edge pattern [] expanded to UNION of {} types: {:?}",
+                        all_rel_types.len(),
+                        all_rel_types
+                    );
+                    Some(all_rel_types)
+                }
+            }
+        };
 
         eprintln!(
             "│ Relationship: alias='{}', labels={:?}, direction={:?}",

@@ -234,6 +234,82 @@ pub(crate) fn analyze_property_requirements(
     context
 }
 
+/// Extract properties referenced in a RenderExpr (e.g., from filters)
+/// Returns a vector of properties that need to be included in the CTE
+pub(crate) fn extract_properties_from_filter(
+    expr: &RenderExpr,
+    node_alias: &str,
+    node_label: &str,
+) -> Vec<NodeProperty> {
+    let mut properties = Vec::new();
+    extract_properties_from_expr_recursive(expr, node_alias, node_label, &mut properties);
+    properties
+}
+
+fn extract_properties_from_expr_recursive(
+    expr: &RenderExpr,
+    node_alias: &str,
+    node_label: &str,
+    properties: &mut Vec<NodeProperty>,
+) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            // Check if this property belongs to the target node
+            if prop.table_alias.0 == node_alias {
+                let property_name = &prop.column.0;
+                // Map Cypher property to ClickHouse column
+                let column_name = map_property_to_column_with_schema(property_name, node_label)
+                    .unwrap_or_else(|_| property_name.clone());
+                
+                // Add if not already in the list
+                if !properties.iter().any(|p| p.alias == *property_name) {
+                    properties.push(NodeProperty {
+                        cypher_alias: node_alias.to_string(),
+                        column_name,
+                        alias: property_name.clone(),
+                    });
+                }
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            // Recurse into all operands
+            for operand in &op.operands {
+                extract_properties_from_expr_recursive(operand, node_alias, node_label, properties);
+            }
+        }
+        RenderExpr::ScalarFnCall(fn_call) => {
+            // Recurse into function arguments
+            for arg in &fn_call.args {
+                extract_properties_from_expr_recursive(arg, node_alias, node_label, properties);
+            }
+        }
+        RenderExpr::List(exprs) => {
+            // Recurse into list elements
+            for e in exprs {
+                extract_properties_from_expr_recursive(e, node_alias, node_label, properties);
+            }
+        }
+        RenderExpr::Case(case_expr) => {
+            // Recurse into case expression
+            if let Some(expr) = &case_expr.expr {
+                extract_properties_from_expr_recursive(expr, node_alias, node_label, properties);
+            }
+            for (when_expr, then_expr) in &case_expr.when_then {
+                extract_properties_from_expr_recursive(when_expr, node_alias, node_label, properties);
+                extract_properties_from_expr_recursive(then_expr, node_alias, node_label, properties);
+            }
+            if let Some(else_expr) = &case_expr.else_expr {
+                extract_properties_from_expr_recursive(else_expr, node_alias, node_label, properties);
+            }
+        }
+        RenderExpr::InSubquery(subquery) => {
+            extract_properties_from_expr_recursive(&subquery.expr, node_alias, node_label, properties);
+        }
+        // Base cases: literals, columns, etc. don't contain property accesses
+        _ => {}
+    }
+}
+
 /// Extract property requirements from projection for variable-length paths
 /// Returns a vector of properties that need to be included in the CTE
 /// Recursively searches through the plan to find the Projection node

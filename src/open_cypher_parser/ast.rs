@@ -215,6 +215,14 @@ impl VariableLengthSpec {
         }
     }
 
+    /// Create a lower-bounded spec: *2.. becomes min=2, max=None (unbounded)
+    pub fn min_only(min: u32) -> Self {
+        Self {
+            min_hops: Some(min),
+            max_hops: None,
+        }
+    }
+
     /// Create an unbounded spec: * becomes min=1, max=None (unlimited)
     pub fn unbounded() -> Self {
         Self {
@@ -255,12 +263,12 @@ impl VariableLengthSpec {
             }
 
             // Check for zero in range (special case - 0 hops means same node)
+            // Zero is allowed for shortest path self-loops like *0..
+            // but we warn about it since it's unusual
             if min == 0 || max == 0 {
-                return Err(
-                    "Invalid variable-length range: hop count cannot be 0. \
-                     Variable-length paths must have at least 1 hop. \
-                     If you want to match the same node, use a simple node pattern like (n) instead of a relationship pattern."
-                        .to_string()
+                eprintln!(
+                    "Note: Variable-length path with 0 hops matches the same node. \
+                     This is typically used with shortest path functions for self-loops."
                 );
             }
 
@@ -276,11 +284,13 @@ impl VariableLengthSpec {
         }
 
         // Check for zero in unbounded spec
+        // Zero is allowed for shortest path self-loops like *0..
         if let Some(min) = self.min_hops {
             if min == 0 {
-                return Err("Invalid variable-length range: hop count cannot be 0. \
-                     Variable-length paths must have at least 1 hop."
-                    .to_string());
+                eprintln!(
+                    "Note: Variable-length path with 0 hops matches the same node. \
+                     This is typically used with shortest path functions for self-loops."
+                );
             }
         }
 

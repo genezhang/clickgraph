@@ -101,8 +101,8 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
                 Operator::Division => format!("{} / {}", operands[0], operands[1]),
                 Operator::ModuloDivision => format!("{} % {}", operands[0], operands[1]),
                 Operator::Exponentiation => format!("POWER({}, {})", operands[0], operands[1]),
-                Operator::In => format!("{} IN ({})", operands[0], operands[1]),
-                Operator::NotIn => format!("{} NOT IN ({})", operands[0], operands[1]),
+                Operator::In => format!("{} IN {}", operands[0], operands[1]),
+                Operator::NotIn => format!("{} NOT IN {}", operands[0], operands[1]),
                 Operator::IsNull => format!("{} IS NULL", operands[0]),
                 Operator::IsNotNull => format!("{} IS NOT NULL", operands[0]),
                 Operator::Distinct => format!("{} IS DISTINCT FROM {}", operands[0], operands[1]),
@@ -571,7 +571,7 @@ pub fn extract_ctes_with_context(
                 };
 
                 // Extract and categorize filters for variable-length paths from GraphRel.where_predicate
-                let (start_filters_sql, end_filters_sql) =
+                let (start_filters_sql, end_filters_sql, categorized_filters_opt) =
                     if let Some(where_predicate) = &graph_rel.where_predicate {
                         // Convert LogicalExpr to RenderExpr
                         let mut render_expr = RenderExpr::try_from(where_predicate.clone())
@@ -604,7 +604,8 @@ pub fn extract_ctes_with_context(
 
                         let start_sql = categorized
                             .start_node_filters
-                            .map(|expr| render_expr_to_sql_string(&expr, &alias_mapping));
+                            .as_ref()
+                            .map(|expr| render_expr_to_sql_string(expr, &alias_mapping));
                         let end_sql = categorized
                             .end_node_filters
                             .as_ref()
@@ -620,14 +621,54 @@ pub fn extract_ctes_with_context(
                             }
                         }
 
-                        (start_sql, end_sql)
+                        (start_sql, end_sql, Some(categorized))
                     } else {
-                        (None, None)
+                        (None, None, None)
                     };
 
+                // Extract properties from filter expressions for shortest path queries
+                // Even in SQL_ONLY mode, we need properties that appear in filters
+                let filter_properties = if graph_rel.shortest_path_mode.is_some() {
+                    use crate::render_plan::cte_generation::extract_properties_from_filter;
+                    
+                    let mut props = Vec::new();
+                    
+                    if let Some(categorized) = categorized_filters_opt {
+                        // Extract from start filters
+                        if let Some(ref filter_expr) = categorized.start_node_filters {
+                            let start_props = extract_properties_from_filter(
+                                filter_expr,
+                                &start_alias,
+                                &start_label,
+                            );
+                            props.extend(start_props);
+                        }
+                        
+                        // Extract from end filters
+                        if let Some(ref filter_expr) = categorized.end_node_filters {
+                            let end_props = extract_properties_from_filter(
+                                filter_expr,
+                                &end_alias,
+                                &end_label,
+                            );
+                            props.extend(end_props);
+                        }
+                    }
+                    
+                    props
+                } else {
+                    vec![]
+                };
+
                 // Generate CTE with filters
-                let var_len_cte = if let Some(exact_hops) = spec.exact_hop_count() {
-                    // Exact hop count: use optimized chained JOINs
+                // For shortest path queries, always use recursive CTE (even for exact hops)
+                // because we need proper filtering and shortest path selection logic
+                let use_chained_join = spec.exact_hop_count().is_some() 
+                    && graph_rel.shortest_path_mode.is_none();
+                
+                let var_len_cte = if use_chained_join {
+                    // Exact hop count, non-shortest-path: use optimized chained JOINs
+                    let exact_hops = spec.exact_hop_count().unwrap();
                     let generator = ChainedJoinGenerator::new(
                         exact_hops,
                         &start_table,
@@ -639,11 +680,11 @@ pub fn extract_ctes_with_context(
                         &end_id_col,
                         &graph_rel.left_connection,
                         &graph_rel.right_connection,
-                        vec![], // No properties in SQL_ONLY mode
+                        filter_properties.clone(), // Use filter properties
                     );
                     generator.generate_cte()
                 } else {
-                    // Range or unbounded: use recursive CTE
+                    // Range, unbounded, or shortest path: use recursive CTE
                     let generator = VariableLengthCteGenerator::new(
                         spec.clone(),
                         &start_table,
@@ -655,7 +696,7 @@ pub fn extract_ctes_with_context(
                         &end_id_col,
                         &graph_rel.left_connection,
                         &graph_rel.right_connection,
-                        vec![], // No properties in SQL_ONLY mode
+                        filter_properties, // Use filter properties
                         graph_rel.shortest_path_mode.clone().map(|m| m.into()),
                         start_filters_sql, // Start filters
                         if graph_rel.shortest_path_mode.is_some() {

@@ -774,25 +774,27 @@ impl GraphJoinInference {
         let left_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone()));
         let right_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
 
-        // Skip if either node is anonymous (no context or no label)
+        // FIX: Don't skip anonymous nodes - they still need JOINs created
+        // because relationship JOIN conditions reference their aliases
+        // Old logic: Skip if either node is anonymous (no context or no label)
+        // New logic: Only skip if nodes truly don't exist in plan_ctx
         if left_ctx_opt.is_err() || right_ctx_opt.is_err() {
-            eprintln!("    � ? SKIP: Anonymous node (no context)");
+            eprintln!("    � ? SKIP: Node context missing entirely");
             eprintln!("    +- infer_graph_join EXIT\n");
             return Ok(());
         }
 
-        let left_has_label = left_ctx_opt.as_ref().unwrap().get_label_opt().is_some();
-        let right_has_label = right_ctx_opt.as_ref().unwrap().get_label_opt().is_some();
+        // FIX: Don't check for labels - anonymous nodes don't have labels but still need JOINs
+        // let left_has_label = left_ctx_opt.as_ref().unwrap().get_label_opt().is_some();
+        // let right_has_label = right_ctx_opt.as_ref().unwrap().get_label_opt().is_some();
+        // if !left_has_label || !right_has_label {
+        //     eprintln!("    � ? SKIP: Anonymous node (no label)");
+        //     eprintln!("    +- infer_graph_join EXIT\n");
+        //     return Ok(());
+        // }
 
-        if !left_has_label || !right_has_label {
-            eprintln!("    � ? SKIP: Anonymous node (no label)");
-            eprintln!("    +- infer_graph_join EXIT\n");
-            return Ok(());
-        }
-
-        // Check if nodes actually have table names - skip join creation for anonymous nodes
-        // For patterns like ()-[r:FOLLOWS]->(), nodes are Empty Scans with table_name: None
-        let left_has_table = match graph_rel.left.as_ref() {
+        // FIX: Keep table checks for debugging but don't skip on them
+        let _left_has_table = match graph_rel.left.as_ref() {
             LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
                 LogicalPlan::Scan(scan) => scan.table_name.is_some(),
                 LogicalPlan::ViewScan(_) => true,
@@ -801,7 +803,7 @@ impl GraphJoinInference {
             _ => true,
         };
 
-        let right_has_table = match graph_rel.right.as_ref() {
+        let _right_has_table = match graph_rel.right.as_ref() {
             LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
                 LogicalPlan::Scan(scan) => scan.table_name.is_some(),
                 LogicalPlan::ViewScan(_) => true,
@@ -810,12 +812,16 @@ impl GraphJoinInference {
             _ => true,
         };
 
-        // Skip join inference if BOTH nodes are anonymous (no table names)
-        // This handles edge-driven queries like ()-[r:FOLLOWS]->()
-        // Only the relationship table should be queried, without node joins
-        if !left_has_table && !right_has_table {
-            return Ok(());
-        }
+        // FIX: Don't skip anonymous nodes - they need table/ViewScan for JOIN generation
+        // Anonymous nodes like `()` in `()-[r:FOLLOWS]->()` will have:
+        // - Generated aliases (ab19d09e4b)
+        // - ViewScans created from schema
+        // - No explicit table_name but ViewScan provides it
+        // Old logic: Skip if BOTH nodes have no table names
+        // New logic: Always proceed - ViewScan will provide table info
+        // if (!left_has_table && !right_has_table) {
+        //     return Ok(());
+        // }
 
         // Clone the optional_aliases set before calling get_graph_context
         // to avoid borrow checker issues
@@ -1224,10 +1230,11 @@ impl GraphJoinInference {
                     joined_entities, left_alias
                 );
 
-                // Reverse order if LEFT is not yet joined (must join LEFT before rel that references it)
-                let reverse_join_order =
-                    !joined_entities.contains(left_alias) && left_is_referenced;
+                // FIX: Always join LEFT if rel references it (even for anonymous nodes)
+                // The relationship JOIN condition references left_alias, so it MUST be in scope
+                let reverse_join_order = !joined_entities.contains(left_alias);
                 eprintln!("    � ?? DEBUG: reverse_join_order={}", reverse_join_order);
+                eprintln!("    � ?? FIX: Joining LEFT regardless of is_referenced for JOIN scope");
 
                 if reverse_join_order {
                     eprintln!(
@@ -1751,8 +1758,10 @@ impl GraphJoinInference {
                 // Left is already joined
                 joined_entities.insert(left_alias.to_string());
 
-                // Only join the right node if it's actually referenced in the query
-                if right_is_referenced {
+                // FIX: Always join RIGHT if rel references it (even for anonymous nodes)
+                // The relationship JOIN condition references right_alias, so it MUST be in scope
+                eprintln!("    � ?? FIX: Joining RIGHT regardless of is_referenced for JOIN scope");
+                if true {  // Was: right_is_referenced
                     let right_graph_join = Join {
                         table_name: right_cte_name,
                         table_alias: right_alias.to_string(),

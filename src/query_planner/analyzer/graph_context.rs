@@ -84,12 +84,8 @@ pub fn get_graph_context<'a>(
                 source: e,
             })?;
 
-    let left_label = left_ctx
-        .get_label_str()
-        .map_err(|e| AnalyzerError::PlanCtx {
-            pass: pass.clone(),
-            source: e,
-        })?;
+    // FIX: For anonymous nodes, infer labels from relationship schema
+    // Get relationship label first to use for inference
     let rel_label = rel_ctx
         .get_label_str()
         .map_err(|e| AnalyzerError::PlanCtx {
@@ -100,12 +96,36 @@ pub fn get_graph_context<'a>(
         .replace(format!("_{}", Direction::Incoming).as_str(), "")
         .replace(format!("_{}", Direction::Outgoing).as_str(), "")
         .replace(format!("_{}", Direction::Either).as_str(), "");
-    let right_label = right_ctx
-        .get_label_str()
-        .map_err(|e| AnalyzerError::PlanCtx {
-            pass: pass.clone(),
-            source: e,
-        })?;
+    
+    // Try to get left label, or infer from relationship if anonymous
+    let left_label = match left_ctx.get_label_str() {
+        Ok(label) => label,
+        Err(_) => {
+            // Anonymous node - infer from relationship schema
+            let rel_schema = graph_schema
+                .get_rel_schema(&original_rel_label)
+                .map_err(|e| AnalyzerError::GraphSchema {
+                    pass: pass.clone(),
+                    source: e,
+                })?;
+            rel_schema.from_node.clone()
+        }
+    };
+    
+    // Try to get right label, or infer from relationship if anonymous
+    let right_label = match right_ctx.get_label_str() {
+        Ok(label) => label,
+        Err(_) => {
+            // Anonymous node - infer from relationship schema
+            let rel_schema = graph_schema
+                .get_rel_schema(&original_rel_label)
+                .map_err(|e| AnalyzerError::GraphSchema {
+                    pass: pass.clone(),
+                    source: e,
+                })?;
+            rel_schema.to_node.clone()
+        }
+    };
 
     let left_schema =
         graph_schema

@@ -409,6 +409,18 @@ fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<Variabl
         },
     );
 
+    // *N.. (lower bound only, max unbounded)
+    let lower_bound_parser = map(
+        nom::sequence::terminated(
+            map(digit1, |s: &str| s.parse::<u32>().ok()),
+            tag("..")
+        ),
+        |min| VariableLengthSpec {
+            min_hops: min,
+            max_hops: None,  // Unbounded
+        },
+    );
+
     // *N (fixed length)
     let fixed_length_parser = map(map(digit1, |s: &str| s.parse::<u32>().ok()), |n| {
         VariableLengthSpec {
@@ -432,6 +444,7 @@ fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<Variabl
     let (input, spec_opt) = alt((
         range_parser,
         upper_bound_parser,
+        lower_bound_parser,  // Must come before fixed_length_parser
         fixed_length_parser,
         unbounded_parser,
     ))
