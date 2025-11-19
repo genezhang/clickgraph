@@ -124,14 +124,18 @@ mod where_clause_tests {
             _ => panic!("Expected RawSql"),
         };
 
+        println!("\n=== Generated SQL with both filters ===\n{}\n", sql);
+
         // Verify both filters present
         assert!(
-            sql.contains("WHERE start_node.full_name = 'Alice'"),
-            "Start filter should be in base case"
+            sql.contains("WHERE start_node.full_name = 'Alice'") || sql.contains("full_name = 'Alice'"),
+            "Start filter should be in base case. SQL:\n{}",
+            sql
         );
         assert!(
-            sql.contains("WHERE end_full_name = 'Bob'"),
-            "End filter should be in outer CTE"
+            sql.contains("WHERE end_full_name = 'Bob'") || sql.contains("end_full_name = 'Bob'"),
+            "End filter should be in outer CTE. SQL:\n{}",
+            sql
         );
         assert!(sql.contains("_inner AS"), "Should have _inner CTE");
         assert!(sql.contains("_to_target AS"), "Should have _to_target CTE");

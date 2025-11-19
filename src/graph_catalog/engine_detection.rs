@@ -33,34 +33,28 @@ pub type Result<T> = std::result::Result<T, EngineDetectionError>;
 pub enum TableEngine {
     /// Regular MergeTree (no FINAL needed)
     MergeTree,
-    
+
     /// ReplacingMergeTree - deduplicates rows with same sorting key
-    ReplacingMergeTree {
-        version_column: Option<String>,
-    },
-    
+    ReplacingMergeTree { version_column: Option<String> },
+
     /// CollapsingMergeTree - collapses rows using sign column (-1/+1)
-    CollapsingMergeTree {
-        sign_column: String,
-    },
-    
+    CollapsingMergeTree { sign_column: String },
+
     /// VersionedCollapsingMergeTree - like Collapsing but with version ordering
     VersionedCollapsingMergeTree {
         sign_column: String,
         version_column: String,
     },
-    
+
     /// CoalescingMergeTree - newer variant (needs verification)
     CoalescingMergeTree,
-    
+
     /// AggregatingMergeTree - finalizes pre-aggregated state
     AggregatingMergeTree,
-    
+
     /// SummingMergeTree - sums numeric columns
-    SummingMergeTree {
-        sum_columns: Vec<String>,
-    },
-    
+    SummingMergeTree { sum_columns: Vec<String> },
+
     /// Unknown or unsupported engine
     Other(String),
 }
@@ -133,25 +127,23 @@ pub async fn detect_table_engine(
     database: &str,
     table: &str,
 ) -> Result<TableEngine> {
-    debug!(
-        "Detecting engine for table {}.{}",
-        database, table
-    );
+    debug!("Detecting engine for table {}.{}", database, table);
 
     let query = format!(
         "SELECT engine, engine_full FROM system.tables WHERE database = '{}' AND name = '{}'",
         database, table
     );
 
-    let row: (String, String) = client
-        .query(&query)
-        .fetch_one()
-        .await
-        .map_err(|e| EngineDetectionError::QueryError {
-            database: database.to_string(),
-            table: table.to_string(),
-            source: e,
-        })?;
+    let row: (String, String) =
+        client
+            .query(&query)
+            .fetch_one()
+            .await
+            .map_err(|e| EngineDetectionError::QueryError {
+                database: database.to_string(),
+                table: table.to_string(),
+                source: e,
+            })?;
 
     let engine_name = row.0;
     let engine_full = row.1;
@@ -164,7 +156,10 @@ pub async fn detect_table_engine(
     let engine = parse_engine(&engine_name, &engine_full)?;
 
     // For unknown engines or new variants, verify FINAL support dynamically
-    if matches!(&engine, TableEngine::Other(_) | TableEngine::CoalescingMergeTree) {
+    if matches!(
+        &engine,
+        TableEngine::Other(_) | TableEngine::CoalescingMergeTree
+    ) {
         let supports_final = verify_final_support(client, database, table).await?;
         info!(
             "Table {}.{} engine {:?} FINAL support verified: {}",
@@ -256,7 +251,7 @@ async fn verify_final_support(client: &Client, database: &str, table: &str) -> R
 
 /// Extracts version column from engine_full specification
 ///
-/// Examples: 
+/// Examples:
 /// - "ReplacingMergeTree(version)" -> Some("version")
 /// - "VersionedCollapsingMergeTree(sign, version)" -> Some("version")
 fn extract_version_column(engine_full: &str) -> Option<String> {
@@ -288,16 +283,16 @@ fn extract_version_column(engine_full: &str) -> Option<String> {
 ///
 /// Example: "CollapsingMergeTree(sign)" -> "sign"
 fn extract_sign_column(engine_full: &str) -> Result<String> {
-    let start = engine_full.find('(').ok_or_else(|| {
-        EngineDetectionError::ParseError {
+    let start = engine_full
+        .find('(')
+        .ok_or_else(|| EngineDetectionError::ParseError {
             message: "Missing opening parenthesis in engine_full".to_string(),
-        }
-    })?;
-    let end = engine_full.find(')').ok_or_else(|| {
-        EngineDetectionError::ParseError {
+        })?;
+    let end = engine_full
+        .find(')')
+        .ok_or_else(|| EngineDetectionError::ParseError {
             message: "Missing closing parenthesis in engine_full".to_string(),
-        }
-    })?;
+        })?;
     let content = &engine_full[start + 1..end];
 
     // For CollapsingMergeTree, first parameter is sign column

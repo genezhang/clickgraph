@@ -26,7 +26,7 @@ use super::{
 };
 
 /// Merge view_parameters and query parameters into a single HashMap
-/// 
+///
 /// Both view_parameters and parameters can contain values that need to be substituted
 /// in the SQL template. View parameters (like tenant_id) and query parameters (like $userId)
 /// are merged, with query parameters taking precedence in case of conflicts.
@@ -40,7 +40,7 @@ fn merge_parameters(
         (None, Some(v)) => Some(v.clone()),
         (Some(p), Some(v)) => {
             let mut merged = v.clone();
-            merged.extend(p.clone());  // Query params override view params
+            merged.extend(p.clone()); // Query params override view params
             Some(merged)
         }
     }
@@ -254,7 +254,7 @@ pub async fn query_handler(
             app_state,
             ch_sql_queries,
             output_format,
-            all_params,  // Use merged parameters
+            all_params, // Use merged parameters
             payload.role.clone(),
         )
         .await;
@@ -530,16 +530,16 @@ pub async fn query_handler(
     // Phase 5: Execute query
     let execution_start = Instant::now();
     let sql_queries_count = ch_sql_queries.len();
-    
+
     // Merge view_parameters and query parameters for substitution
     let all_params = merge_parameters(&payload.parameters, &payload.view_parameters);
-    
+
     let response = if is_read {
         execute_cte_queries(
             app_state,
             ch_sql_queries,
             output_format,
-            all_params,  // Use merged parameters
+            all_params, // Use merged parameters
             payload.role.clone(),
         )
         .await
@@ -677,18 +677,15 @@ async fn execute_cte_queries(
 
     // Apply role for ClickHouse RBAC (Phase 2)
     if let Some(ref role_name) = role {
-        crate::server::clickhouse_client::set_role(
-            &app_state.clickhouse_client,
-            role_name,
-        )
-        .await
-        .map_err(|e| {
-            log::error!("Failed to set ClickHouse role: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("SET ROLE error: {}. Ensure role is granted to user.", e),
-            )
-        })?;
+        crate::server::clickhouse_client::set_role(&app_state.clickhouse_client, role_name)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to set ClickHouse role: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("SET ROLE error: {}. Ensure role is granted to user.", e),
+                )
+            })?;
     }
 
     if output_format == OutputFormat::Pretty

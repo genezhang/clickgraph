@@ -149,18 +149,18 @@ mod validation_tests {
 
     #[test]
     fn test_reject_zero_hops() {
-        // *0 should fail
+        // *0 is now allowed (for shortest path self-loops) with a warning
         let cypher = "MATCH (u1:User)-[:FOLLOWS*0]->(u2:User) RETURN u2";
         let result = open_cypher_parser::parse_query(cypher);
-        assert!(result.is_err(), "Should reject zero hops *0");
+        assert!(result.is_ok(), "Zero hops *0 should be allowed with warning");
     }
 
     #[test]
     fn test_reject_zero_min() {
-        // *0..5 should fail
+        // *0..5 is now allowed (for shortest path self-loops) with a warning
         let cypher = "MATCH (u1:User)-[:FOLLOWS*0..5]->(u2:User) RETURN u2";
         let result = open_cypher_parser::parse_query(cypher);
-        assert!(result.is_err(), "Should reject zero min *0..5");
+        assert!(result.is_ok(), "Zero min *0..5 should be allowed with warning");
     }
 
     #[test]

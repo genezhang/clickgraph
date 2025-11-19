@@ -22,11 +22,8 @@ pub fn build_logical_plan(
     view_parameter_values: Option<HashMap<String, String>>,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
     let mut logical_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Empty);
-    let mut plan_ctx = PlanCtx::with_parameters(
-        Arc::new(schema.clone()),
-        tenant_id,
-        view_parameter_values,
-    );
+    let mut plan_ctx =
+        PlanCtx::with_parameters(Arc::new(schema.clone()), tenant_id, view_parameter_values);
 
     log::debug!(
         "build_logical_plan: Processing query with {} optional_match_clauses",

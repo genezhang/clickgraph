@@ -31,11 +31,11 @@ pub fn get_client() -> Client {
 }
 
 /// Set ClickHouse role for RBAC enforcement via SET ROLE command
-/// 
+///
 /// Requires:
 /// - Database-managed user (not users.xml)
 /// - Role must be granted to the user
-/// 
+///
 /// Example usage:
 /// ```sql
 /// -- Setup (by admin):
@@ -44,19 +44,13 @@ pub fn get_client() -> Client {
 /// CREATE USER app_user IDENTIFIED WITH plaintext_password BY 'password';
 /// GRANT admin_role TO app_user;
 /// GRANT viewer_role TO app_user;
-/// 
+///
 /// -- View definition:
-/// CREATE VIEW secure_data AS 
-/// SELECT * FROM data 
+/// CREATE VIEW secure_data AS
+/// SELECT * FROM data
 /// WHERE required_role IN (SELECT role_name FROM system.current_roles);
 /// ```
-pub async fn set_role(
-    client: &Client,
-    role: &str,
-) -> Result<(), clickhouse::error::Error> {
+pub async fn set_role(client: &Client, role: &str) -> Result<(), clickhouse::error::Error> {
     log::debug!("Setting ClickHouse role: {}", role);
-    client
-        .query(&format!("SET ROLE {}", role))
-        .execute()
-        .await
+    client.query(&format!("SET ROLE {}", role)).execute().await
 }

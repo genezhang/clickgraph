@@ -47,7 +47,9 @@ fn setup_test_schema() {
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
-            view_parameters: None, engine: None, use_final: None,
+            view_parameters: None,
+            engine: None,
+            use_final: None,
         },
     );
 
@@ -65,7 +67,9 @@ fn setup_test_schema() {
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
-            view_parameters: None, engine: None, use_final: None,
+            view_parameters: None,
+            engine: None,
+            use_final: None,
         },
     );
 
@@ -83,7 +87,9 @@ fn setup_test_schema() {
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
-            view_parameters: None, engine: None, use_final: None,
+            view_parameters: None,
+            engine: None,
+            use_final: None,
         },
     );
 
@@ -101,7 +107,9 @@ fn setup_test_schema() {
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
-            view_parameters: None, engine: None, use_final: None,
+            view_parameters: None,
+            engine: None,
+            use_final: None,
         },
     );
 
@@ -119,7 +127,9 @@ fn setup_test_schema() {
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
-            view_parameters: None, engine: None, use_final: None,
+            view_parameters: None,
+            engine: None,
+            use_final: None,
         },
     );
 
@@ -702,5 +712,3 @@ mod multiple_relationship_tests {
         }
     }
 }
-
-

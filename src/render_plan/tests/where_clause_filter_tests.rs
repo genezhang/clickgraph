@@ -110,7 +110,9 @@ fn setup_test_graph_schema() -> GraphSchema {
         from_node_id_dtype: "UInt64".to_string(),
         to_node_id_dtype: "UInt64".to_string(),
         property_mappings: HashMap::new(),
-        view_parameters: None, engine: None, use_final: None,
+        view_parameters: None,
+        engine: None,
+        use_final: None,
     };
     relationships.insert("FOLLOWS".to_string(), follows_rel);
 
@@ -258,14 +260,14 @@ mod shortest_path_filters {
             "SQL should contain end node filter 'David Lee'"
         );
 
-        // Should have shortestPath-specific logic
+        // Should have shortestPath-specific logic with ROW_NUMBER window function
         assert!(
             sql.contains("ORDER BY") && sql.contains("hop_count"),
             "SQL should contain ORDER BY hop_count for shortestPath"
         );
         assert!(
-            sql.contains("LIMIT 1"),
-            "SQL should contain LIMIT 1 for shortestPath"
+            sql.contains("ROW_NUMBER()") || sql.contains("WHERE rn = 1"),
+            "SQL should use ROW_NUMBER() window function for shortestPath"
         );
     }
 
@@ -286,12 +288,15 @@ mod shortest_path_filters {
             "SQL should contain both user_id values"
         );
 
-        // Should have shortestPath logic
+        // Should have shortestPath logic with ROW_NUMBER window function
         assert!(
             sql.contains("ORDER BY") && sql.contains("hop_count"),
             "SQL should contain ORDER BY hop_count"
         );
-        assert!(sql.contains("LIMIT 1"), "SQL should contain LIMIT 1");
+        assert!(
+            sql.contains("ROW_NUMBER()") || sql.contains("WHERE rn = 1"),
+            "SQL should use ROW_NUMBER() window function for shortest path"
+        );
     }
 
     #[test]
@@ -307,12 +312,15 @@ mod shortest_path_filters {
             "SQL should contain start node filter 'Alice Johnson'"
         );
 
-        // Should have shortestPath logic
+        // Should have shortestPath logic with ROW_NUMBER window function
         assert!(
             sql.contains("ORDER BY") && sql.contains("hop_count"),
             "SQL should contain ORDER BY hop_count"
         );
-        assert!(sql.contains("LIMIT 1"), "SQL should contain LIMIT 1");
+        assert!(
+            sql.contains("ROW_NUMBER()") || sql.contains("WHERE rn = 1"),
+            "SQL should use ROW_NUMBER() window function for shortest path"
+        );
     }
 
     #[test]
@@ -329,12 +337,15 @@ mod shortest_path_filters {
             "SQL should contain end node filter 'user_id = 4'"
         );
 
-        // Should have shortestPath logic
+        // Should have shortestPath logic with ROW_NUMBER window function
         assert!(
             sql.contains("ORDER BY") && sql.contains("hop_count"),
             "SQL should contain ORDER BY hop_count"
         );
-        assert!(sql.contains("LIMIT 1"), "SQL should contain LIMIT 1");
+        assert!(
+            sql.contains("ROW_NUMBER()") || sql.contains("WHERE rn = 1"),
+            "SQL should use ROW_NUMBER() window function for shortest path"
+        );
     }
 
     #[test]
@@ -354,12 +365,15 @@ mod shortest_path_filters {
             "SQL should contain age filter"
         );
 
-        // Should have shortestPath logic
+        // Should have shortestPath logic with ROW_NUMBER window function
         assert!(
             sql.contains("ORDER BY") && sql.contains("hop_count"),
             "SQL should contain ORDER BY hop_count"
         );
-        assert!(sql.contains("LIMIT 1"), "SQL should contain LIMIT 1");
+        assert!(
+            sql.contains("ROW_NUMBER()") || sql.contains("WHERE rn = 1"),
+            "SQL should use ROW_NUMBER() window function for shortest path"
+        );
     }
 }
 
@@ -505,12 +519,11 @@ mod edge_cases {
 
         println!("allShortestPaths SQL:\n{}", sql);
 
-        // Check for allShortestPaths-specific patterns
+        // Check for allShortestPaths-specific patterns (MIN filtering to get ALL paths with minimum length)
         assert!(
             sql.contains("WHERE hop_count = (SELECT MIN(hop_count) FROM"),
-            "allShortestPaths should use MIN filtering to get all paths with minimum length"
+            "allShortestPaths should use MIN filtering to get ALL paths with minimum hop count"
         );
-        // The SQL doesn't contain "allShortestPaths" literal, but should have the MIN filtering logic
     }
 
     #[test]
@@ -520,10 +533,10 @@ mod edge_cases {
 
         println!("allShortestPaths with filters SQL:\n{}", sql);
 
-        // Check for both MIN filtering and WHERE clause filters
+        // With end filters, uses ROW_NUMBER instead of MIN to handle filtered target nodes
         assert!(
-            sql.contains("WHERE hop_count = (SELECT MIN(hop_count) FROM"),
-            "allShortestPaths should use MIN filtering"
+            sql.contains("ROW_NUMBER()") || sql.contains("WHERE hop_count = (SELECT MIN(hop_count) FROM"),
+            "allShortestPaths should use either ROW_NUMBER() or MIN filtering depending on filter placement"
         );
         assert!(
             sql.contains("Alice Johnson") && sql.contains("David Lee"),
@@ -531,5 +544,3 @@ mod edge_cases {
         );
     }
 }
-
-

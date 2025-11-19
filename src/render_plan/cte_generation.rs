@@ -260,7 +260,7 @@ fn extract_properties_from_expr_recursive(
                 // Map Cypher property to ClickHouse column
                 let column_name = map_property_to_column_with_schema(property_name, node_label)
                     .unwrap_or_else(|_| property_name.clone());
-                
+
                 // Add if not already in the list
                 if !properties.iter().any(|p| p.alias == *property_name) {
                     properties.push(NodeProperty {
@@ -295,15 +295,26 @@ fn extract_properties_from_expr_recursive(
                 extract_properties_from_expr_recursive(expr, node_alias, node_label, properties);
             }
             for (when_expr, then_expr) in &case_expr.when_then {
-                extract_properties_from_expr_recursive(when_expr, node_alias, node_label, properties);
-                extract_properties_from_expr_recursive(then_expr, node_alias, node_label, properties);
+                extract_properties_from_expr_recursive(
+                    when_expr, node_alias, node_label, properties,
+                );
+                extract_properties_from_expr_recursive(
+                    then_expr, node_alias, node_label, properties,
+                );
             }
             if let Some(else_expr) = &case_expr.else_expr {
-                extract_properties_from_expr_recursive(else_expr, node_alias, node_label, properties);
+                extract_properties_from_expr_recursive(
+                    else_expr, node_alias, node_label, properties,
+                );
             }
         }
         RenderExpr::InSubquery(subquery) => {
-            extract_properties_from_expr_recursive(&subquery.expr, node_alias, node_label, properties);
+            extract_properties_from_expr_recursive(
+                &subquery.expr,
+                node_alias,
+                node_label,
+                properties,
+            );
         }
         // Base cases: literals, columns, etc. don't contain property accesses
         _ => {}

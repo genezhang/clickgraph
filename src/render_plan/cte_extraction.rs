@@ -630,9 +630,9 @@ pub fn extract_ctes_with_context(
                 // Even in SQL_ONLY mode, we need properties that appear in filters
                 let filter_properties = if graph_rel.shortest_path_mode.is_some() {
                     use crate::render_plan::cte_generation::extract_properties_from_filter;
-                    
+
                     let mut props = Vec::new();
-                    
+
                     if let Some(categorized) = categorized_filters_opt {
                         // Extract from start filters
                         if let Some(ref filter_expr) = categorized.start_node_filters {
@@ -643,18 +643,15 @@ pub fn extract_ctes_with_context(
                             );
                             props.extend(start_props);
                         }
-                        
+
                         // Extract from end filters
                         if let Some(ref filter_expr) = categorized.end_node_filters {
-                            let end_props = extract_properties_from_filter(
-                                filter_expr,
-                                &end_alias,
-                                &end_label,
-                            );
+                            let end_props =
+                                extract_properties_from_filter(filter_expr, &end_alias, &end_label);
                             props.extend(end_props);
                         }
                     }
-                    
+
                     props
                 } else {
                     vec![]
@@ -663,9 +660,9 @@ pub fn extract_ctes_with_context(
                 // Generate CTE with filters
                 // For shortest path queries, always use recursive CTE (even for exact hops)
                 // because we need proper filtering and shortest path selection logic
-                let use_chained_join = spec.exact_hop_count().is_some() 
-                    && graph_rel.shortest_path_mode.is_none();
-                
+                let use_chained_join =
+                    spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
+
                 let var_len_cte = if use_chained_join {
                     // Exact hop count, non-shortest-path: use optimized chained JOINs
                     let exact_hops = spec.exact_hop_count().unwrap();

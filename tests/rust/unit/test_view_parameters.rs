@@ -24,8 +24,11 @@ property_mappings:
 "#;
 
         let node_def: Result<NodeDefinition, _> = serde_yaml::from_str(yaml);
-        assert!(node_def.is_ok(), "Failed to parse NodeDefinition with view_parameters");
-        
+        assert!(
+            node_def.is_ok(),
+            "Failed to parse NodeDefinition with view_parameters"
+        );
+
         let node = node_def.unwrap();
         assert_eq!(node.label, "User");
         assert_eq!(node.view_parameters, Some(vec!["tenant_id".to_string()]));
@@ -45,8 +48,11 @@ property_mappings:
 "#;
 
         let node_def: Result<NodeDefinition, _> = serde_yaml::from_str(yaml);
-        assert!(node_def.is_ok(), "Failed to parse NodeDefinition without view_parameters");
-        
+        assert!(
+            node_def.is_ok(),
+            "Failed to parse NodeDefinition without view_parameters"
+        );
+
         let node = node_def.unwrap();
         assert_eq!(node.label, "User");
         assert_eq!(node.view_parameters, None);
@@ -69,11 +75,17 @@ property_mappings:
 "#;
 
         let rel_def: Result<RelationshipDefinition, _> = serde_yaml::from_str(yaml);
-        assert!(rel_def.is_ok(), "Failed to parse RelationshipDefinition with view_parameters");
-        
+        assert!(
+            rel_def.is_ok(),
+            "Failed to parse RelationshipDefinition with view_parameters"
+        );
+
         let rel = rel_def.unwrap();
         assert_eq!(rel.type_name, "FRIENDS_WITH");
-        assert_eq!(rel.view_parameters, Some(vec!["tenant_id".to_string(), "region".to_string()]));
+        assert_eq!(
+            rel.view_parameters,
+            Some(vec!["tenant_id".to_string(), "region".to_string()])
+        );
     }
 
     /// Test RelationshipDefinition without view_parameters (backward compatibility)
@@ -92,8 +104,11 @@ property_mappings:
 "#;
 
         let rel_def: Result<RelationshipDefinition, _> = serde_yaml::from_str(yaml);
-        assert!(rel_def.is_ok(), "Failed to parse RelationshipDefinition without view_parameters");
-        
+        assert!(
+            rel_def.is_ok(),
+            "Failed to parse RelationshipDefinition without view_parameters"
+        );
+
         let rel = rel_def.unwrap();
         assert_eq!(rel.type_name, "FOLLOWS");
         assert_eq!(rel.view_parameters, None);
@@ -115,11 +130,15 @@ property_mappings:
 
         let node_def: Result<NodeDefinition, _> = serde_yaml::from_str(yaml);
         assert!(node_def.is_ok());
-        
+
         let node = node_def.unwrap();
         assert_eq!(
-            node.view_parameters, 
-            Some(vec!["tenant_id".to_string(), "region".to_string(), "department".to_string()])
+            node.view_parameters,
+            Some(vec![
+                "tenant_id".to_string(),
+                "region".to_string(),
+                "department".to_string()
+            ])
         );
     }
 
@@ -141,11 +160,14 @@ property_mappings:
 
         // Serialize to YAML
         let yaml = serde_yaml::to_string(&node_def).unwrap();
-        
+
         // Deserialize back
         let deserialized: NodeDefinition = serde_yaml::from_str(&yaml).unwrap();
-        
-        assert_eq!(deserialized.view_parameters, Some(vec!["tenant_id".to_string()]));
+
+        assert_eq!(
+            deserialized.view_parameters,
+            Some(vec!["tenant_id".to_string()])
+        );
         assert_eq!(deserialized.label, "User");
     }
 
@@ -164,7 +186,7 @@ property_mappings:
 
         let node_def: Result<NodeDefinition, _> = serde_yaml::from_str(yaml);
         assert!(node_def.is_ok());
-        
+
         let node = node_def.unwrap();
         // Empty array should deserialize as Some(vec![])
         assert_eq!(node.view_parameters, Some(vec![]));

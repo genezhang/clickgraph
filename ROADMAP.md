@@ -1,13 +1,23 @@
 # ClickGraph Roadmap
 
-**Last Updated**: November 17, 2025  
-**Current Version**: v0.4.0 → **v0.5.0 (Phase 2 Complete! 🎉)**
+**Last Updated**: November 18, 2025  
+**Current Version**: v0.5.0 (Phase 2 Complete! 🎉)
 
 This document outlines planned features, enhancements, and benchmark tasks for ClickGraph development.
 
 ---
 
 ## 🎯 Current Status
+
+**Phase 2 Complete** ✅ (November 18, 2025):
+- ✅ Multi-tenancy with parameterized views (99% cache memory reduction)
+- ✅ SET ROLE RBAC support (ClickHouse native column-level security)
+- ✅ Auto-schema discovery via `system.columns`
+- ✅ ReplacingMergeTree + FINAL support
+- ✅ HTTP schema loading API (`POST /schemas/load`)
+- ✅ Bolt Protocol 5.8 query execution (all 4 E2E tests passing)
+- ✅ Anonymous pattern support (`()-[r]->()` and `MATCH (a)-[]->(b)`)
+- ✅ Complete documentation (19 wiki pages, comprehensive API reference)
 
 **Phase 1 Complete** ✅ (November 15, 2025):
 - ✅ Parameter support & query cache (10-100x speedup)
@@ -29,18 +39,22 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 - ✅ View-based graph model (YAML configuration)
 - ✅ **Query Cache with LRU eviction (10-100x speedup)** - Nov 10, 2025
 - ✅ **Undirected relationships** (`(a)-[r]-(b)` patterns) - Nov 15, 2025
+- ✅ **Multi-tenancy & RBAC** (parameterized views + SET ROLE) - Nov 17, 2025
+- ✅ **Auto-schema discovery** (zero-config column mapping) - Nov 17, 2025
 
 **Test Coverage**:
-- 406/407 Rust unit tests passing (99.8%, 1 known flaky cache test)
-- 197/308 Python integration tests passing (64%)
+- 422/422 Rust unit tests passing (100%) ✨
+- 236/400 Python integration tests passing (59% for implemented features)
 - 14/14 benchmark queries passing (100%)
 - 6/6 query cache unit tests + 5/5 e2e tests (100%)
 - 4/4 Bolt 5.8 E2E tests passing (100%)
+- 11 multi-tenancy test classes (comprehensive coverage)
 
 **Performance Baseline** (Nov 13, 2025):
 - Scale 1 (1K users, 100K edges): 2077ms mean
 - Scale 10 (10K users, 1M edges): 2088ms mean
 - Overhead: Only 0.5% for 10x data scale
+- Multi-tenant cache: 2x speedup (18ms → 9ms)
 
 ---
 
@@ -92,8 +106,8 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 | ~~1️⃣~~ | ~~**#5 RBAC & Row-Level Security**~~ | ~~3-4 weeks~~ | ~~🔥 Critical~~ | ✅ **COMPLETE** (Nov 15-17, 2025) |
 | ~~2️⃣~~ | ~~**#1 Multi-Tenant Support**~~ | ~~2-3 weeks~~ | ~~🔥 Critical~~ | ✅ **COMPLETE** (Nov 15-17, 2025) |
 | ~~3️⃣~~ | ~~**Wiki Documentation (Foundation)**~~ | ~~1 week~~ | ~~🔥 High~~ | ✅ **COMPLETE** (Nov 17, 2025) |
-| ~~4️⃣~~ | ~~**#6 ReplacingMergeTree & FINAL**~~ | ~~1-2 weeks~~ | ~~🌟 Medium-High~~ | ✅ **COMPLETE** (Nov 2025) |
-| ~~5️⃣~~ | ~~**Auto-Schema Discovery**~~ | ~~1-2 weeks~~ | ~~🌟 Medium~~ | ✅ **COMPLETE** (Nov 2025) |
+| ~~4️⃣~~ | ~~**#6 ReplacingMergeTree & FINAL**~~ | ~~1-2 weeks~~ | ~~🌟 Medium-High~~ | ✅ **COMPLETE** (Nov 16, 2025) |
+| ~~5️⃣~~ | ~~**Auto-Schema Discovery**~~ | ~~1-2 weeks~~ | ~~🌟 Medium~~ | ✅ **COMPLETE** (Nov 16, 2025) |
 
 **Phase 2 Deliverables**:
 - ✅ Complete RBAC system with role definitions (SET ROLE support)
@@ -147,13 +161,13 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 - **Quality assurance**: PowerShell scripts for wiki validation workflow
 - Commits: cc5bd6f (bug fix), b9b09f5 (docs), b10be71 (scripts)
 
-**4. ReplacingMergeTree & FINAL Support** ✅ (Nov 2025):
+**4. ReplacingMergeTree & FINAL Support** ✅ (Nov 16, 2025):
 - Support for mutable ClickHouse tables with `ReplacingMergeTree` engine
 - Automatic `FINAL` clause generation for deduplicated reads
 - Enables graph data updates and deletions
 - Compatible with CDC patterns
 
-**5. Auto-Schema Discovery** ✅ (Nov 2025):
+**5. Auto-Schema Discovery** ✅ (Nov 16, 2025):
 - Automatic schema detection from ClickHouse `DESCRIBE TABLE`
 - Schema caching for performance
 - Reduces manual YAML configuration

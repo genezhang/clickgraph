@@ -411,13 +411,10 @@ fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<Variabl
 
     // *N.. (lower bound only, max unbounded)
     let lower_bound_parser = map(
-        nom::sequence::terminated(
-            map(digit1, |s: &str| s.parse::<u32>().ok()),
-            tag("..")
-        ),
+        nom::sequence::terminated(map(digit1, |s: &str| s.parse::<u32>().ok()), tag("..")),
         |min| VariableLengthSpec {
             min_hops: min,
-            max_hops: None,  // Unbounded
+            max_hops: None, // Unbounded
         },
     );
 
@@ -444,7 +441,7 @@ fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<Variabl
     let (input, spec_opt) = alt((
         range_parser,
         upper_bound_parser,
-        lower_bound_parser,  // Must come before fixed_length_parser
+        lower_bound_parser, // Must come before fixed_length_parser
         fixed_length_parser,
         unbounded_parser,
     ))
@@ -877,38 +874,26 @@ mod tests {
 
     #[test]
     fn test_invalid_range_with_zero_min() {
-        // *0..5 should fail validation (zero hops invalid)
+        // *0..5 is now allowed (for shortest path self-loops) with a warning
         let input = "()-[*0..5]->()";
         let result = parse_path_pattern(input);
-        match result {
-            Err(Err::Failure(Error { code, .. })) => {
-                assert_eq!(code, ErrorKind::Verify); // Validation error
-            }
-            Ok(_) => {
-                panic!("Expected validation error for *0..5 (zero hops)");
-            }
-            Err(e) => {
-                panic!("Expected Failure with Verify, got: {:?}", e);
-            }
-        }
+        assert!(
+            result.is_ok(),
+            "Expected *0..5 to be allowed (with warning), but got: {:?}",
+            result
+        );
     }
 
     #[test]
     fn test_invalid_range_with_zero_max() {
-        // *0 should fail validation (zero hops invalid)
+        // *0 is now allowed (for shortest path self-loops) with a warning
         let input = "()-[*0]->()";
         let result = parse_path_pattern(input);
-        match result {
-            Err(Err::Failure(Error { code, .. })) => {
-                assert_eq!(code, ErrorKind::Verify); // Validation error
-            }
-            Ok(_) => {
-                panic!("Expected validation error for *0 (zero hops)");
-            }
-            Err(e) => {
-                panic!("Expected Failure with Verify, got: {:?}", e);
-            }
-        }
+        assert!(
+            result.is_ok(),
+            "Expected *0 to be allowed (with warning), but got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -952,14 +937,12 @@ mod tests {
         let err_msg = invalid_spec.validate().unwrap_err();
         assert!(err_msg.contains("minimum hops (5) cannot be greater than maximum hops (2)"));
 
-        // Invalid case: zero hops
+        // Zero hops is now allowed (for shortest path self-loops) - prints warning
         let zero_spec = VariableLengthSpec {
             min_hops: Some(0),
             max_hops: Some(5),
         };
-        assert!(zero_spec.validate().is_err());
-        let err_msg = zero_spec.validate().unwrap_err();
-        assert!(err_msg.contains("hop count cannot be 0"));
+        assert!(zero_spec.validate().is_ok(), "Zero hops should be allowed with warning");
     }
 
     #[test]

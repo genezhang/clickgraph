@@ -184,7 +184,7 @@ pub struct RelationshipDefinition {
 fn snake_to_camel_case(s: &str) -> String {
     let mut result = String::new();
     let mut capitalize_next = false;
-    
+
     for c in s.chars() {
         if c == '_' {
             capitalize_next = true;
@@ -195,7 +195,7 @@ fn snake_to_camel_case(s: &str) -> String {
             result.push(c);
         }
     }
-    
+
     result
 }
 
@@ -378,7 +378,8 @@ impl GraphSchemaConfig {
                 for col in columns {
                     if !node_def.exclude_columns.contains(&col) {
                         // Apply naming convention to property name
-                        let property_name = apply_naming_convention(&col, &node_def.naming_convention);
+                        let property_name =
+                            apply_naming_convention(&col, &node_def.naming_convention);
                         mappings.insert(property_name, col);
                     }
                 }
@@ -393,18 +394,14 @@ impl GraphSchemaConfig {
             };
 
             // Auto-detect engine type
-            let engine =
-                detect_table_engine(client, &node_def.database, &node_def.table)
-                    .await
-                    .ok(); // Gracefully handle detection failures
+            let engine = detect_table_engine(client, &node_def.database, &node_def.table)
+                .await
+                .ok(); // Gracefully handle detection failures
 
             // Determine use_final: manual override > engine detection > false
-            let use_final = node_def.use_final.unwrap_or_else(|| {
-                engine
-                    .as_ref()
-                    .map(|e| e.supports_final())
-                    .unwrap_or(false)
-            });
+            let use_final = node_def
+                .use_final
+                .unwrap_or_else(|| engine.as_ref().map(|e| e.supports_final()).unwrap_or(false));
 
             let node_schema = NodeSchema {
                 database: node_def.database.clone(),
@@ -438,7 +435,8 @@ impl GraphSchemaConfig {
                 for col in columns {
                     if !rel_def.exclude_columns.contains(&col) {
                         // Apply naming convention to property name
-                        let property_name = apply_naming_convention(&col, &rel_def.naming_convention);
+                        let property_name =
+                            apply_naming_convention(&col, &rel_def.naming_convention);
                         mappings.insert(property_name, col);
                     }
                 }
@@ -452,17 +450,13 @@ impl GraphSchemaConfig {
             };
 
             // Auto-detect engine type
-            let engine =
-                detect_table_engine(client, &rel_def.database, &rel_def.table)
-                    .await
-                    .ok();
+            let engine = detect_table_engine(client, &rel_def.database, &rel_def.table)
+                .await
+                .ok();
 
-            let use_final = rel_def.use_final.unwrap_or_else(|| {
-                engine
-                    .as_ref()
-                    .map(|e| e.supports_final())
-                    .unwrap_or(false)
-            });
+            let use_final = rel_def
+                .use_final
+                .unwrap_or_else(|| engine.as_ref().map(|e| e.supports_final()).unwrap_or(false));
 
             let default_node_type = self
                 .graph_schema
@@ -520,8 +514,11 @@ mod tests {
         assert_eq!(snake_to_camel_case("first_name"), "firstName");
         assert_eq!(snake_to_camel_case("created_at"), "createdAt");
         assert_eq!(snake_to_camel_case("is_active"), "isActive");
-        assert_eq!(snake_to_camel_case("full_name_with_title"), "fullNameWithTitle");
-        
+        assert_eq!(
+            snake_to_camel_case("full_name_with_title"),
+            "fullNameWithTitle"
+        );
+
         // Edge cases
         assert_eq!(snake_to_camel_case("id"), "id"); // No underscore
         assert_eq!(snake_to_camel_case("_internal"), "Internal"); // Leading underscore
@@ -532,12 +529,18 @@ mod tests {
     fn test_apply_naming_convention() {
         // camelCase conversion
         assert_eq!(apply_naming_convention("user_id", "camelCase"), "userId");
-        assert_eq!(apply_naming_convention("email_address", "camelCase"), "emailAddress");
-        
+        assert_eq!(
+            apply_naming_convention("email_address", "camelCase"),
+            "emailAddress"
+        );
+
         // snake_case (default - no conversion)
         assert_eq!(apply_naming_convention("user_id", "snake_case"), "user_id");
-        assert_eq!(apply_naming_convention("email_address", "snake_case"), "email_address");
-        
+        assert_eq!(
+            apply_naming_convention("email_address", "snake_case"),
+            "email_address"
+        );
+
         // Unknown convention (defaults to no conversion)
         assert_eq!(apply_naming_convention("user_id", "kebab-case"), "user_id");
     }

@@ -118,5 +118,3 @@ fn test_non_path_variable_unchanged() {
     // Just make sure it compiles and runs
     assert!(!sql.is_empty(), "SQL should not be empty");
 }
-
-

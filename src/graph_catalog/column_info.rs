@@ -71,15 +71,16 @@ pub async fn query_table_columns(
         database, table, query
     );
 
-    let rows: Vec<ColumnName> = client
-        .query(&query)
-        .fetch_all()
-        .await
-        .map_err(|e| ColumnQueryError::QueryError {
-            database: database.to_string(),
-            table: table.to_string(),
-            source: e,
-        })?;
+    let rows: Vec<ColumnName> =
+        client
+            .query(&query)
+            .fetch_all()
+            .await
+            .map_err(|e| ColumnQueryError::QueryError {
+                database: database.to_string(),
+                table: table.to_string(),
+                source: e,
+            })?;
 
     let columns: Vec<String> = rows.into_iter().map(|row| row.name).collect();
 

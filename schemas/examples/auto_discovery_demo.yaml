@@ -1,3 +1,15 @@
+# Auto-Discovery Demo Schema
+#
+# This schema demonstrates the auto_discover_columns feature which automatically
+# queries ClickHouse system.columns to create property mappings.
+#
+# NOTE: This is a DEMO schema for testing the auto-discovery feature.
+# The actual tables (users_bench, posts_bench with demo data) don't exist in the test database.
+# To use this schema, you need to create these tables with appropriate columns.
+#
+# Status: Schema loading and API endpoints work correctly (Nov 18, 2025)
+# Tests are marked as skipped until demo data is set up.
+
 name: auto_discovery_demo
 
 graph_schema:
@@ -48,8 +60,7 @@ graph_schema:
       # Auto-discover relationship properties
       auto_discover_columns: true
       exclude_columns: [_internal_seq]
-      
-      # No property_mappings needed - use identity mapping
+      property_mappings: {}  # Empty - identity mapping
 
     - type: LIKES
       database: brahmand
@@ -61,3 +72,4 @@ graph_schema:
       
       # Auto-discover all columns
       auto_discover_columns: true
+      property_mappings: {}  # Empty mappings - all identity

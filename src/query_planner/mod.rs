@@ -40,8 +40,12 @@ pub fn evaluate_read_query(
     tenant_id: Option<String>,
     view_parameter_values: Option<HashMap<String, String>>,
 ) -> Result<LogicalPlan, QueryPlannerError> {
-    let (logical_plan, mut plan_ctx) =
-        logical_plan::evaluate_query(query_ast, current_graph_schema, tenant_id, view_parameter_values)?;
+    let (logical_plan, mut plan_ctx) = logical_plan::evaluate_query(
+        query_ast,
+        current_graph_schema,
+        tenant_id,
+        view_parameter_values,
+    )?;
 
     let logical_plan =
         analyzer::initial_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;

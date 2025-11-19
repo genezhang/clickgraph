@@ -86,7 +86,8 @@ pub async fn initialize_global_schema(
     if let Ok(yaml_config_path) = std::env::var("GRAPH_CONFIG_PATH") {
         println!("Found GRAPH_CONFIG_PATH: {}", yaml_config_path);
 
-        match load_schema_and_config_from_yaml(&yaml_config_path, clickhouse_client.as_ref()).await {
+        match load_schema_and_config_from_yaml(&yaml_config_path, clickhouse_client.as_ref()).await
+        {
             Ok((schema, config)) => {
                 println!(
                     "✓ Successfully loaded schema from YAML config: {}",

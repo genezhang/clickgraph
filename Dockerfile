@@ -12,7 +12,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 # Build application
 COPY . .
 RUN cargo build --release --bin clickgraph \
-    && cargo build --release --bin clickgraph-client
+    && cargo build --release -p clickgraph-client --bin clickgraph-client
 
 # We do not need the Rust toolchain to run the binary!
 FROM debian:bullseye-slim AS runtime

@@ -7,7 +7,7 @@ use axum::{
 };
 use clickhouse::Client;
 use handlers::{
-    health_check, list_schemas_handler, load_schema_handler, query_handler, simple_test_handler,
+    health_check, get_schema_handler, list_schemas_handler, load_schema_handler, query_handler, simple_test_handler,
 };
 
 use dotenv::dotenv;
@@ -173,6 +173,7 @@ pub async fn run_with_config(config: ServerConfig) {
         .route("/query", post(query_handler))
         .route("/schemas", get(list_schemas_handler))
         .route("/schemas/load", post(load_schema_handler))
+        .route("/schemas/{name}", get(get_schema_handler))
         .with_state(Arc::new(app_state.clone()));
 
     println!("DEBUG: Routes registered:");

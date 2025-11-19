@@ -63,7 +63,7 @@ impl ViewScan {
             input: None,
             view_parameter_names: None,
             view_parameter_values: None,
-            use_final: false,  // Default: no FINAL
+            use_final: false, // Default: no FINAL
         }
     }
 
@@ -89,7 +89,7 @@ impl ViewScan {
             input: Some(input),
             view_parameter_names: None,
             view_parameter_values: None,
-            use_final: false,  // Default: no FINAL
+            use_final: false, // Default: no FINAL
         }
     }
 
@@ -116,7 +116,7 @@ impl ViewScan {
             input: None,
             view_parameter_names: None,
             view_parameter_values: None,
-            use_final: false,  // Default: no FINAL
+            use_final: false, // Default: no FINAL
         }
     }
 
@@ -144,7 +144,7 @@ impl ViewScan {
             input: Some(input),
             view_parameter_names: None,
             view_parameter_values: None,
-            use_final: false,  // Default: no FINAL
+            use_final: false, // Default: no FINAL
         }
     }
 
@@ -180,7 +180,7 @@ impl ViewScan {
             input: self.input.clone(),
             view_parameter_names: self.view_parameter_names.clone(),
             view_parameter_values: self.view_parameter_values.clone(),
-            use_final: self.use_final,  // Preserve use_final setting
+            use_final: self.use_final, // Preserve use_final setting
         }
     }
 

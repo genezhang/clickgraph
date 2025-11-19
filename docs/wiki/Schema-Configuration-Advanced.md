@@ -310,12 +310,21 @@ clickgraph \
   --schema schemas/knowledge.yaml
 ```
 
-**Dynamic Registration** (via API - planned):
+**Dynamic Registration** (via HTTP API):
 ```bash
-# Register new schema at runtime
-curl -X POST http://localhost:8080/schema \
-  -H "Content-Type: application/yaml" \
-  --data-binary @new_schema.yaml
+# Load schema from file
+curl -X POST http://localhost:8080/schemas/load \
+  -H "Content-Type: application/json" \
+  -d "$(jq -Rs '{schema_name: "new_graph", config_content: ., validate_schema: true}' new_schema.yaml)"
+
+# Or with inline YAML content
+curl -X POST http://localhost:8080/schemas/load \
+  -H "Content-Type: application/json" \
+  -d '{
+    "schema_name": "new_graph",
+    "config_content": "name: new_graph\ngraph_schema:\n  nodes: ...",
+    "validate_schema": true
+  }'
 ```
 
 ---

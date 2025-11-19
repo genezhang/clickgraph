@@ -276,9 +276,10 @@ pub(super) fn get_all_relationship_connections(
 /// When mixing MATCH and OPTIONAL MATCH, the required node should be the anchor (FROM table)
 ///
 /// Algorithm:
-/// 1. Collect all unique nodes (from both left and right connections)
-/// 2. Prefer nodes that are NOT in optional_aliases (required nodes)
-/// 3. Fall back to traditional anchor pattern (left-but-not-right) if no required nodes found
+/// 1. PRIORITY: Find ANY required node (handles MATCH (n) + OPTIONAL MATCH patterns around n)
+/// 2. Find true leftmost node (left-only) among required nodes
+/// 3. Fall back to any required node if no leftmost required found
+/// 4. Fall back to traditional anchor pattern for all-optional cases
 pub(super) fn find_anchor_node(
     connections: &[(String, String, String)],
     optional_aliases: &std::collections::HashSet<String>,
@@ -287,75 +288,74 @@ pub(super) fn find_anchor_node(
         return None;
     }
 
-    // CRITICAL FIX: For multi-hop patterns like (a)-[]->(b)-[]->(c), the anchor is the node
-    // that appears as LEFT but NEVER as RIGHT in any relationship. This is the true starting point.
-    // We must find this FIRST before considering optional status!
-    
-    // Strategy 1: Find the true leftmost node (appears in left_connections but NOT in right_connections)
-    // This is the chain's starting point regardless of optional status
+    // CRITICAL FIX FOR OPTIONAL MATCH BUG:
+    // When we have MATCH (n:User) OPTIONAL MATCH (n)-[:FOLLOWS]->(out) OPTIONAL MATCH (in)-[:FOLLOWS]->(n)
+    // The connections are: [(n, out, FOLLOWS), (in, n, FOLLOWS)]
+    // Traditional leftmost logic would choose 'in' (left-only), but 'in' is optional!
+    // We must prioritize 'n' (required) even though it appears on both sides.
+
+    // Strategy 0: Collect all unique nodes (left and right)
+    let mut all_nodes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (left, right, _) in connections {
+        all_nodes.insert(left.clone());
+        all_nodes.insert(right.clone());
+    }
+
+    // Strategy 1: Find ANY required node - this handles the OPTIONAL MATCH around required node case
+    // If there's a required node anywhere in the pattern, use it as anchor
+    let required_nodes: Vec<String> = all_nodes
+        .iter()
+        .filter(|node| !optional_aliases.contains(*node))
+        .cloned()
+        .collect();
+
+    if !required_nodes.is_empty() {
+        // We have required nodes - prefer one that's truly leftmost (left-only)
+        let right_nodes: std::collections::HashSet<_> = connections
+            .iter()
+            .map(|(_, right, _)| right.clone())
+            .collect();
+
+        // Check if any required node is leftmost (left-only)
+        for (left, _, _) in connections {
+            if !right_nodes.contains(left) && !optional_aliases.contains(left) {
+                log::info!(
+                    "✓ Found REQUIRED leftmost anchor: {} (required + left-only)",
+                    left
+                );
+                return Some(left.clone());
+            }
+        }
+
+        // No required node is leftmost, just use the first required node we find
+        let anchor = required_nodes[0].clone();
+        log::info!(
+            "✓ Found REQUIRED anchor (not leftmost): {} (required node in mixed pattern)",
+            anchor
+        );
+        return Some(anchor);
+    }
+
+    // Strategy 2: No required nodes found - all optional. Use traditional leftmost logic.
     let right_nodes: std::collections::HashSet<_> = connections
         .iter()
         .map(|(_, right, _)| right.clone())
         .collect();
 
-    // Among nodes that are LEFT-only, prefer required (non-optional) ones
-    let mut leftmost_required = None;
-    let mut leftmost_any = None;
-
     for (left, _, _) in connections {
         if !right_nodes.contains(left) {
-            // This node is only on the left side (true leftmost/anchor)
-            if leftmost_any.is_none() {
-                leftmost_any = Some(left.clone());
-            }
-            if !optional_aliases.contains(left) && leftmost_required.is_none() {
-                leftmost_required = Some(left.clone());
-            }
-        }
-    }
-
-    if let Some(anchor) = leftmost_required {
-        log::info!(
-            "✓ Found REQUIRED leftmost anchor node: {} (left-only, not optional)",
-            anchor
-        );
-        return Some(anchor);
-    }
-
-    if let Some(anchor) = leftmost_any {
-        log::info!(
-            "✓ Found leftmost anchor node: {} (left-only, may be optional)",
-            anchor
-        );
-        return Some(anchor);
-    }
-
-    // Strategy 2: No true leftmost node found (circular pattern?). Prefer any required LEFT node.
-    for (left, _, _) in connections {
-        if !optional_aliases.contains(left) {
-            log::warn!(
-                "⚠️ No leftmost node found, using first REQUIRED LEFT: {}",
+            log::info!(
+                "✓ Found leftmost anchor (all optional): {} (left-only)",
                 left
             );
             return Some(left.clone());
         }
     }
 
-    // Strategy 3: All LEFT nodes are optional, try required RIGHT nodes
-    for (_, right, _) in connections {
-        if !optional_aliases.contains(right) {
-            log::warn!(
-                "⚠️ All LEFT nodes optional, using REQUIRED RIGHT: {}",
-                right
-            );
-            return Some(right.clone());
-        }
-    }
-
-    // Strategy 4: Fallback to first left_connection
+    // Strategy 3: Fallback to first left_connection (circular or complex pattern)
     let fallback = connections.first().map(|(left, _, _)| left.clone());
     if let Some(ref alias) = fallback {
-        log::warn!("⚠️ All nodes optional, using fallback: {}", alias);
+        log::warn!("⚠️ No clear anchor, using fallback: {}", alias);
     }
     fallback
 }

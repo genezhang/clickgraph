@@ -2,9 +2,9 @@
 
 ClickGraph provides two API interfaces: 
 - **HTTP REST API** ✅ **Fully functional** - Recommended for production use
-- **Neo4j Bolt Protocol** ⏳ Wire protocol complete, query execution pending
+- **Neo4j Bolt Protocol 5.8** ✅ **Fully functional** - Compatible with Neo4j drivers
 
-> **📌 Recommendation**: Use HTTP API for production queries. Bolt protocol wire protocol is implemented (connection, authentication), but query execution is not yet available. See [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) for details.
+> **📌 Recommendation**: Both APIs are production-ready. Use HTTP API for simple integrations or Bolt protocol for Neo4j ecosystem compatibility (Neo4j Browser, cypher-shell, official drivers).
 
 ## HTTP REST API
 
@@ -138,8 +138,55 @@ Content-Type: application/json
 curl http://localhost:8080/schemas
 ```
 
+#### GET /schemas/{name}
+Get detailed information about a specific schema.
+
+**Request Format:**
+```http
+GET /schemas/{name}
+```
+
+**Path Parameters:**
+- `name` (string, required): The schema name to retrieve
+
+**Response Format:**
+```http
+200 OK
+Content-Type: application/json
+
+{
+  "schema_name": "social_network",
+  "node_types": 3,
+  "relationship_types": 2,
+  "nodes": ["User", "Post", "Comment"],
+  "relationships": ["FOLLOWS", "AUTHORED"]
+}
+```
+
+**Response Fields:**
+- `schema_name` (string): The requested schema name
+- `node_types` (integer): Number of node type labels defined
+- `relationship_types` (integer): Number of relationship types defined
+- `nodes` (array): List of node labels in this schema
+- `relationships` (array): List of relationship types in this schema
+
+**Error Response:**
+```http
+404 Not Found
+Content-Type: application/json
+
+{
+  "error": "Schema 'unknown_schema' not found"
+}
+```
+
+**Example:**
+```bash
+curl http://localhost:8080/schemas/social_network
+```
+
 #### POST /schemas/load
-Load a new graph schema from a YAML configuration file at runtime.
+Load a new graph schema from YAML content at runtime.
 
 **Request Format:**
 ```http
@@ -148,14 +195,14 @@ Content-Type: application/json
 
 {
   "schema_name": "social_network",
-  "config_path": "/path/to/social_network.yaml",
+  "config_content": "name: social_network\ngraph_schema:\n  nodes: ...",
   "validate_schema": true
 }
 ```
 
 **Parameters:**
 - `schema_name` (string, required): Name to register the schema under. This name will be used in `USE` clauses and `schema_name` query parameters.
-- `config_path` (string, required): Absolute or relative path to the YAML schema configuration file.
+- `config_content` (string, required): Full YAML schema configuration as a string. Supports all schema features including auto-discovery (`auto_discover_columns: true`).
 - `validate_schema` (boolean, optional): Whether to validate that tables and columns exist in ClickHouse. Defaults to `false`.
 
 **Response Format:**
@@ -185,23 +232,40 @@ Content-Type: application/json
 - Loading a schema does not affect the "default" schema (set at startup via `GRAPH_CONFIG_PATH`)
 - Multiple schemas can coexist and be queried using `USE <schema_name>` or the `schema_name` parameter
 - Schema validation (`validate_schema: true`) checks that referenced tables and columns exist in ClickHouse
+- Supports auto-discovery: Set `auto_discover_columns: true` in node/relationship definitions to automatically query ClickHouse `system.columns` for property mappings
 
-**Example:**
+**Example (Loading from File):**
+```bash
+# Read YAML file and send as string
+curl -X POST http://localhost:8080/schemas/load \
+  -H "Content-Type: application/json" \
+  -d "$(jq -Rs '{schema_name: "ecommerce", config_content: ., validate_schema: true}' schemas/ecommerce.yaml)"
+```
+
+**Example (Direct YAML Content):**
 ```bash
 curl -X POST http://localhost:8080/schemas/load \
   -H "Content-Type: application/json" \
   -d '{
     "schema_name": "ecommerce",
-    "config_path": "schemas/ecommerce.yaml",
+    "config_content": "name: ecommerce\ngraph_schema:\n  nodes:\n    - label: Product\n      table: products\n      id_column: product_id\n      property_mappings:\n        name: product_name\n",
     "validate_schema": true
   }'
 ```
 
 **PowerShell Example (Windows):**
 ```powershell
+# Load YAML from file
+$yamlContent = Get-Content "schemas/ecommerce.yaml" -Raw
+$body = @{
+    schema_name = "ecommerce"
+    config_content = $yamlContent
+    validate_schema = $true
+} | ConvertTo-Json
+
 Invoke-RestMethod -Method POST -Uri "http://localhost:8080/schemas/load" `
   -ContentType "application/json" `
-  -Body '{"schema_name": "ecommerce", "config_path": "schemas/ecommerce.yaml", "validate_schema": true}'
+  -Body $body
 ```
 
 #### GET /health
@@ -329,30 +393,33 @@ Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query" `
 
 ## Neo4j Bolt Protocol
 
-⚠️ **Important Note**: Bolt protocol wire protocol is implemented (handshake, authentication, message parsing, multi-database support), but query execution is pending. **Use HTTP API for production queries**. See [KNOWN_ISSUES.md](../KNOWN_ISSUES.md) for details and roadmap.
+✅ **Production Ready**: Bolt Protocol 5.8 fully implemented with complete query execution, authentication, and multi-database support. All E2E tests passing (4/4). Compatible with Neo4j official drivers, cypher-shell, and Neo4j Browser.
 
 ### Connection Details
-- **Protocol**: Bolt v4.4 wire protocol
+- **Protocol**: Bolt v5.8 (backward compatible with 4.4, 5.0-5.7)
 - **Default Port**: 7687
 - **URI Format**: `bolt://localhost:7687`
-- **Status**: Wire protocol complete ✅, Query execution pending ⏳
+- **Status**: ✅ **Fully Functional** - All features working
 
-### Multi-Database Support (Wire Protocol Only)
-ClickGraph supports Neo4j 4.0+ multi-database selection via the Bolt protocol wire protocol:
+### Multi-Database Support
+ClickGraph supports Neo4j 4.0+ multi-database selection via the Bolt protocol:
 
 ```python
 from neo4j import GraphDatabase
 
 driver = GraphDatabase.driver("bolt://localhost:7687")
 
-# Connection and authentication work, but queries return empty results
+# Query specific schema
 with driver.session(database="social_network") as session:
-    result = session.run("MATCH (u:User) RETURN u.name")
-    # Currently returns empty results - query execution pending
+    result = session.run("MATCH (u:User) RETURN u.name LIMIT 10")
+    for record in result:
+        print(record["u.name"])
     
-# Use default schema (same limitation)
+# Use default schema
 with driver.session() as session:  # Defaults to "default" schema
-    result = session.run("MATCH (p:Product) RETURN p.name")
+    result = session.run("MATCH (p:Product) RETURN p.name LIMIT 10")
+    for record in result:
+        print(record["p.name"])
 ```
 
 The `database` parameter in the session is sent via the Bolt HELLO message and maps to ClickGraph's `schema_name` configuration. This provides the same multi-schema capability as the HTTP API's `schema_name` parameter.
@@ -432,6 +499,25 @@ curl -X POST http://localhost:8080/query \
 ### Bolt Protocol with USE Clause
 
 The `USE` clause overrides the session database parameter:
+
+```python
+from neo4j import GraphDatabase
+
+driver = GraphDatabase.driver("bolt://localhost:7687")
+
+# USE clause takes precedence over session database
+with driver.session(database="ecommerce") as session:
+    # This will use 'social_network', not 'ecommerce'
+    result = session.run("USE social_network MATCH (u:User) RETURN u.name LIMIT 5")
+    for record in result:
+        print(record["u.name"])
+
+driver.close()
+```
+
+### Authentication
+
+Bolt protocol supports multiple authentication schemes:
 
 ```python
 from neo4j import GraphDatabase

@@ -1,7 +1,7 @@
 use clap::Parser;
 use reqwest::Client;
-use rustyline::{DefaultEditor, error::ReadlineError};
-use serde_json::{Value, json};
+use rustyline::{error::ReadlineError, DefaultEditor};
+use serde_json::{json, Value};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]

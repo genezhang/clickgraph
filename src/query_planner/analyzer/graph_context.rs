@@ -96,7 +96,7 @@ pub fn get_graph_context<'a>(
         .replace(format!("_{}", Direction::Incoming).as_str(), "")
         .replace(format!("_{}", Direction::Outgoing).as_str(), "")
         .replace(format!("_{}", Direction::Either).as_str(), "");
-    
+
     // Try to get left label, or infer from relationship if anonymous
     let left_label = match left_ctx.get_label_str() {
         Ok(label) => label,
@@ -111,7 +111,7 @@ pub fn get_graph_context<'a>(
             rel_schema.from_node.clone()
         }
     };
-    
+
     // Try to get right label, or infer from relationship if anonymous
     let right_label = match right_ctx.get_label_str() {
         Ok(label) => label,

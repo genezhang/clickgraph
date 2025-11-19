@@ -171,7 +171,7 @@ impl VariableLengthCteGenerator {
                 let pattern_col = format!("{}.{}", self.end_node_alias, prop.column_name);
                 let replacement = format!("end_{}", prop.alias);
                 rewritten = rewritten.replace(&pattern_col, &replacement);
-                
+
                 // Also try Cypher alias (e.g., end_node.name → end_name)
                 let pattern_alias = format!("{}.{}", self.end_node_alias, prop.alias);
                 rewritten = rewritten.replace(&pattern_alias, &replacement);
@@ -204,7 +204,7 @@ impl VariableLengthCteGenerator {
             // If max_hops is Some(0), we're done - only zero hops allowed
             // Continue to wrapping logic at the end (don't return early)
             // For shortest path self-loops, we also skip the UNION since we won't add more cases
-            let is_shortest_self_loop = self.shortest_path_mode.is_some() 
+            let is_shortest_self_loop = self.shortest_path_mode.is_some()
                 && self.start_cypher_alias == self.end_cypher_alias;
             if max_hops != Some(0) && !is_shortest_self_loop {
                 // Otherwise, continue with regular hops starting from 1
@@ -218,16 +218,16 @@ impl VariableLengthCteGenerator {
         // - If min=0 and max>0: Need 1-hop base case for recursion to work
         // - If min>0: Generate base cases 1..min_hops as usual
         // - SPECIAL: For shortest path self-loops with min=0, skip 1-hop/recursion
-        let is_shortest_self_loop = self.shortest_path_mode.is_some() 
-            && min_hops == 0 
+        let is_shortest_self_loop = self.shortest_path_mode.is_some()
+            && min_hops == 0
             && self.start_cypher_alias == self.end_cypher_alias;
 
         let needs_regular_base_cases = if is_shortest_self_loop {
-            false  // Skip regular hops for shortest path self-loops - zero-hop is always shortest
+            false // Skip regular hops for shortest path self-loops - zero-hop is always shortest
         } else if min_hops == 0 {
-            max_hops != Some(0)  // Only skip if explicitly *0 (not *0.. or *0..N where N>0)
+            max_hops != Some(0) // Only skip if explicitly *0 (not *0.. or *0..N where N>0)
         } else {
-            true  // Always need regular base cases when min > 0
+            true // Always need regular base cases when min > 0
         };
 
         if needs_regular_base_cases {
@@ -242,22 +242,26 @@ impl VariableLengthCteGenerator {
         // CRITICAL FIX: Pass the actual recursive CTE name (with _inner if needed)
         // Skip recursion for shortest path self-loops (zero-hop is always the answer)
         if !is_shortest_self_loop {
-            let effective_min_for_recursion = min_hops.max(1);  // Recursion always starts after at least 1 hop
+            let effective_min_for_recursion = min_hops.max(1); // Recursion always starts after at least 1 hop
             if let Some(max) = max_hops {
                 if max > effective_min_for_recursion {
                     query_body.push_str("\n    UNION ALL\n");
-                    query_body.push_str(&self.generate_recursive_case_with_cte_name(max, &recursive_cte_name));
+                    query_body.push_str(
+                        &self.generate_recursive_case_with_cte_name(max, &recursive_cte_name),
+                    );
                 }
             } else {
                 // Unbounded case: add recursive traversal with reasonable default limit
                 // For shortest path queries with zero-hop patterns, use lower limit to avoid timeout
                 let default_depth = if self.shortest_path_mode.is_some() && min_hops == 0 {
-                    3  // Lower limit for shortest path from a to a queries
+                    3 // Lower limit for shortest path from a to a queries
                 } else {
-                    10  // Standard default
+                    10 // Standard default
                 };
                 query_body.push_str("\n    UNION ALL\n");
-                query_body.push_str(&self.generate_recursive_case_with_cte_name(default_depth, &recursive_cte_name));
+                query_body.push_str(
+                    &self.generate_recursive_case_with_cte_name(default_depth, &recursive_cte_name),
+                );
             }
         }
 
@@ -269,17 +273,19 @@ impl VariableLengthCteGenerator {
                 // Rewrite end filter for use in intermediate CTE
                 // Replace "end_node.property" with "end_property" (column names in CTE)
                 let rewritten_filter = self.rewrite_end_filter_for_cte(end_filters);
-                
+
                 // Add min_hops and max_hops constraints if needed
                 let min_hops = self.spec.effective_min_hops();
                 let max_hops = self.spec.max_hops;
-                
+
                 let mut filter_with_bounds = rewritten_filter.clone();
                 if min_hops > 1 {
-                    filter_with_bounds = format!("({}) AND hop_count >= {}", filter_with_bounds, min_hops);
+                    filter_with_bounds =
+                        format!("({}) AND hop_count >= {}", filter_with_bounds, min_hops);
                 }
                 if let Some(max) = max_hops {
-                    filter_with_bounds = format!("({}) AND hop_count <= {}", filter_with_bounds, max);
+                    filter_with_bounds =
+                        format!("({}) AND hop_count <= {}", filter_with_bounds, max);
                 }
 
                 // CORRECT ORDER: Filter to target FIRST (with min/max_hops), then find shortest path from EACH start node
@@ -298,17 +304,19 @@ impl VariableLengthCteGenerator {
             (Some(ShortestPathMode::AllShortest), Some(end_filters)) => {
                 // Rewrite end filter for use in intermediate CTE
                 let rewritten_filter = self.rewrite_end_filter_for_cte(end_filters);
-                
+
                 // Add min_hops and max_hops constraints if needed
                 let min_hops = self.spec.effective_min_hops();
                 let max_hops = self.spec.max_hops;
-                
+
                 let mut filter_with_bounds = rewritten_filter.clone();
                 if min_hops > 1 {
-                    filter_with_bounds = format!("({}) AND hop_count >= {}", filter_with_bounds, min_hops);
+                    filter_with_bounds =
+                        format!("({}) AND hop_count >= {}", filter_with_bounds, min_hops);
                 }
                 if let Some(max) = max_hops {
-                    filter_with_bounds = format!("({}) AND hop_count <= {}", filter_with_bounds, max);
+                    filter_with_bounds =
+                        format!("({}) AND hop_count <= {}", filter_with_bounds, max);
                 }
 
                 // CORRECT ORDER: Filter to target FIRST (with min/max_hops), then find shortest path from EACH start node
@@ -370,11 +378,12 @@ impl VariableLengthCteGenerator {
             ),
             format!(
                 "{}.{} as end_id",
-                self.start_node_alias, self.start_node_id_column  // Same node for self-loop
+                self.start_node_alias,
+                self.start_node_id_column // Same node for self-loop
             ),
-            "0 as hop_count".to_string(),  // Zero hops
-            "CAST([] AS Array(UInt32)) as path_nodes".to_string(),  // Empty array with explicit type
-            "CAST([] AS Array(String)) as path_relationships".to_string(),  // Empty array with explicit type
+            "0 as hop_count".to_string(), // Zero hops
+            "CAST([] AS Array(UInt32)) as path_nodes".to_string(), // Empty array with explicit type
+            "CAST([] AS Array(String)) as path_relationships".to_string(), // Empty array with explicit type
         ];
 
         // Add properties for start node (which is also the end node)
@@ -414,8 +423,10 @@ impl VariableLengthCteGenerator {
         // So end_node_filters should also be applied, but rewritten for start node
         if let Some(ref filters) = self.end_node_filters {
             // Rewrite end_node references to start_node references
-            let rewritten = filters.replace(&format!("{}.", self.end_node_alias), 
-                                          &format!("{}.", self.start_node_alias));
+            let rewritten = filters.replace(
+                &format!("{}.", self.end_node_alias),
+                &format!("{}.", self.start_node_alias),
+            );
             where_conditions.push(rewritten);
         }
 
@@ -595,7 +606,7 @@ impl VariableLengthCteGenerator {
             end = self.end_node_alias,
             end_id_col = self.end_node_id_column,
             current_id_col = self.end_node_id_column,
-            cte_name = cte_name,  // Use the passed parameter instead of self.cte_name
+            cte_name = cte_name, // Use the passed parameter instead of self.cte_name
             current_table = self.format_table_name(&self.end_node_table),
             rel_table = self.format_table_name(&self.relationship_table),
             from_col = self.relationship_from_column,

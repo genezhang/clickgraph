@@ -1,12 +1,12 @@
 # ClickGraph Status
 
-*Updated: November 17, 2025*
+*Updated: November 18, 2025*
 
 ## 🔄 **Phase 2: Enterprise Readiness** - **In Progress (2/5 Complete)**
 
-**Status**: 🚧 **Core Features Done, Advanced Features Remaining**  
+**Status**: 🚧 **Core Features + Documentation Complete, Advanced Features Remaining**  
 **Started**: November 15, 2025  
-**Updated**: November 17, 2025  
+**Updated**: November 18, 2025  
 **Target**: v0.5.0 (January-February 2026)
 
 ### 🚀 Delivered Features (2/5)
@@ -75,6 +75,45 @@ SELECT name FROM users_by_tenant(tenant_id = $tenant_id)
 - ✅ **E2E Validation**: ACME/GLOBEX tenant isolation verified
 - ✅ **Cache Behavior**: Validated template sharing across tenants
 
+#### ✅ 2. **Documentation Consistency & Completeness** (Complete - Nov 18)
+
+**HTTP API & Schema Loading**:
+- ✅ **Fixed Endpoint Routing**: Wired `GET /schemas/{name}` to router
+- ✅ **Auto-Discovery Tests**: Updated from `/register_schema` to `/schemas/load`
+- ✅ **Aspirational Test Marking**: 9 tests properly skipped with explanations
+- ✅ **API Documentation**: Fixed parameter names (`config_content` not `config_path`)
+- ✅ **Cross-Platform Examples**: Added PowerShell examples throughout
+
+**Wiki Reference Pages** (3 new comprehensive pages):
+- ✅ **API-Reference-HTTP.md**: Complete HTTP API reference (450+ lines)
+  - All endpoints documented with examples
+  - curl, Python, PowerShell examples
+  - Multi-tenancy and RBAC usage
+  - Performance tips and error handling
+  
+- ✅ **Cypher-Language-Reference.md**: Complete Cypher syntax guide (600+ lines)
+  - All clauses: MATCH, WHERE, RETURN, WITH, ORDER BY, etc.
+  - Variable-length paths, OPTIONAL MATCH, path functions
+  - Aggregations, functions, operators
+  - Real-world query examples
+  
+- ✅ **Known-Limitations.md**: Comprehensive limitations guide (500+ lines)
+  - Feature support matrix (supported/partial/not implemented)
+  - ClickHouse-specific constraints
+  - Workarounds and best practices
+  - Platform-specific issues (Windows)
+
+**Fixed Broken Links**:
+- ✅ Home.md reference section fully functional
+- ✅ All internal wiki cross-references working
+- ✅ No broken links in documentation
+
+**Impact**:
+- Professional documentation standards
+- Complete API reference for developers
+- Clear feature status and limitations
+- Better user experience with wiki navigation
+
 ### 📊 Performance Metrics
 
 | Metric | Before | After | Improvement |
@@ -108,8 +147,14 @@ SELECT name FROM users_by_tenant(tenant_id = $tenant_id)
 
 **Documentation**:
 - `docs/multi-tenancy.md` - Complete user guide
+- `docs/api.md` - Complete HTTP API reference ✅ Updated Nov 18
+- `docs/wiki/API-Reference-HTTP.md` - Wiki API reference ✅ NEW Nov 18
+- `docs/wiki/Cypher-Language-Reference.md` - Complete Cypher syntax ✅ NEW Nov 18
+- `docs/wiki/Known-Limitations.md` - Limitations & workarounds ✅ NEW Nov 18
+- `docs/wiki/Schema-Configuration-Advanced.md` - Updated with working API ✅ Nov 18
 - `notes/parameterized-views.md` - Technical implementation
 - `notes/phase2-minimal-rbac.md` - Design document
+- `AUTO_DISCOVERY_STATUS.md` - HTTP schema loading reference ✅ NEW Nov 18
 
 **Examples**:
 - `schemas/examples/multi_tenant_simple.yaml`
@@ -251,10 +296,14 @@ nodes:
 
 ## 🎉 Major Achievements
 
-- ✅ **250+ tests passing** - Comprehensive test coverage
+- ✅ **422/422 unit tests passing** - 100% pass rate (Nov 18, 2025)
+- ✅ **236/400 integration tests passing** - 59% real features tested (aspirational tests for unimplemented features)
+- ✅ **Bolt Protocol 5.8 complete** - Full Neo4j driver compatibility with all E2E tests passing (4/4) (Nov 12-15, 2025)
 - ✅ **All 4 YAML relationship types working** - AUTHORED, FOLLOWS, LIKED, PURCHASED
-- ✅ **Multi-hop graph traversals** - Complex JOIN generation
-- ✅ **Dual protocol support** - HTTP + Bolt simultaneously
+- ✅ **Multi-hop graph traversals** - Variable-length paths with recursive CTEs
+- ✅ **Dual protocol support** - HTTP + Bolt both production-ready
+- ✅ **Multi-tenancy & RBAC** - Parameterized views + SET ROLE support
+- ✅ **Auto-schema discovery** - Zero-configuration column mapping
 - ✅ **Cross-platform** - Linux, macOS, Windows support
 
 ---

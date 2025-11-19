@@ -127,12 +127,12 @@ impl ToSql for FromTableItem {
 
             sql.push_str(" AS ");
             sql.push_str(&alias);
-            
+
             // Add FINAL keyword AFTER alias if needed (ClickHouse syntax: FROM table AS alias FINAL)
             if view_ref.use_final {
                 sql.push_str(" FINAL");
             }
-            
+
             sql.push('\n');
             sql
         } else {
@@ -337,7 +337,7 @@ impl ToSql for Join {
             "{} {} AS {}",
             join_type_str, self.table_name, self.table_alias
         );
-        
+
         // Note: FINAL keyword for joins would need to be added here if Join struct
         // is enhanced to track use_final. For now, joins don't support FINAL.
 

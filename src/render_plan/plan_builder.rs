@@ -58,10 +58,13 @@ pub(crate) trait RenderPlanBuilder {
 
     /// Find the ID column for a given table alias by traversing the logical plan
     fn find_id_column_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<String>;
-    
+
     /// Get all properties for a table alias by traversing the logical plan
     /// Returns a vector of (property_name, column_name) tuples
-    fn get_all_properties_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<Vec<(String, String)>>;
+    fn get_all_properties_for_alias(
+        &self,
+        alias: &str,
+    ) -> RenderPlanBuilderResult<Vec<(String, String)>>;
 
     /// Normalize aggregate function arguments: convert TableAlias(a) to PropertyAccess(a.id_column)
     /// This is needed for queries like COUNT(b) where b is a node alias
@@ -144,7 +147,10 @@ impl RenderPlanBuilder for LogicalPlan {
 
     /// Get all properties for a table alias by traversing the logical plan
     /// Returns a vector of (property_name, column_name) tuples
-    fn get_all_properties_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<Vec<(String, String)>> {
+    fn get_all_properties_for_alias(
+        &self,
+        alias: &str,
+    ) -> RenderPlanBuilderResult<Vec<(String, String)>> {
         // Traverse the plan tree to find a GraphNode or ViewScan with matching alias
         match self {
             LogicalPlan::GraphNode(node) if node.alias == alias => {
@@ -427,9 +433,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Choose between chained JOINs (for exact hop counts) or recursive CTE (for ranges)
                     // For shortest path queries, always use recursive CTE (even for exact hops)
                     // because we need proper filtering and shortest path selection logic
-                    let use_chained_join = spec.exact_hop_count().is_some() 
-                        && graph_rel.shortest_path_mode.is_none();
-                    
+                    let use_chained_join =
+                        spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
+
                     let var_len_cte = if use_chained_join {
                         // Exact hop count, non-shortest-path: use optimized chained JOINs
                         let exact_hops = spec.exact_hop_count().unwrap();
@@ -784,21 +790,30 @@ impl RenderPlanBuilder for LogicalPlan {
                 };
 
                 let path_var = get_path_variable(&projection.input);
-                
+
                 // EXPANDED NODE FIX: Check if we need to expand node variables to all properties
                 // This happens when users write `RETURN u` (returning whole node)
                 // The ProjectionTagging analyzer may convert this to `u.*`, OR it may leave it as TableAlias
                 let mut expanded_items = Vec::new();
                 for item in &projection.items {
                     // Check for TableAlias (u) - expand to all properties
-                    if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) = &item.expression {
-                        println!("DEBUG: Found TableAlias {} - checking if should expand to properties", alias.0);
-                        
+                    if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) =
+                        &item.expression
+                    {
+                        println!(
+                            "DEBUG: Found TableAlias {} - checking if should expand to properties",
+                            alias.0
+                        );
+
                         // Get all properties for this table alias from the schema
                         if let Ok(properties) = self.get_all_properties_for_alias(&alias.0) {
                             if !properties.is_empty() {
-                                println!("DEBUG: Expanding TableAlias {} to {} properties", alias.0, properties.len());
-                                
+                                println!(
+                                    "DEBUG: Expanding TableAlias {} to {} properties",
+                                    alias.0,
+                                    properties.len()
+                                );
+
                                 // Create a separate ProjectionItem for each property
                                 for (prop_name, col_name) in properties {
                                     expanded_items.push(ProjectionItem {
@@ -815,17 +830,29 @@ impl RenderPlanBuilder for LogicalPlan {
                             }
                         }
                     }
-                    
+
                     // Check for PropertyAccessExp with wildcard (u.*) - expand to all properties
-                    if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop) = &item.expression {
+                    if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
+                        prop,
+                    ) = &item.expression
+                    {
                         if prop.column.0 == "*" {
                             // This is u.* - need to expand to all properties from schema
-                            println!("DEBUG: Found wildcard property access {}.* - expanding to all properties", prop.table_alias.0);
-                            
+                            println!(
+                                "DEBUG: Found wildcard property access {}.* - expanding to all properties",
+                                prop.table_alias.0
+                            );
+
                             // Get all properties for this table alias from the schema
-                            if let Ok(properties) = self.get_all_properties_for_alias(&prop.table_alias.0) {
-                                println!("DEBUG: Expanding {}.* to {} properties", prop.table_alias.0, properties.len());
-                                
+                            if let Ok(properties) =
+                                self.get_all_properties_for_alias(&prop.table_alias.0)
+                            {
+                                println!(
+                                    "DEBUG: Expanding {}.* to {} properties",
+                                    prop.table_alias.0,
+                                    properties.len()
+                                );
+
                                 // Create a separate ProjectionItem for each property
                                 for (prop_name, col_name) in properties {
                                     expanded_items.push(ProjectionItem {
@@ -840,15 +867,18 @@ impl RenderPlanBuilder for LogicalPlan {
                                 }
                                 continue; // Skip adding the wildcard item itself
                             } else {
-                                println!("DEBUG: Could not expand {}.* - falling back to wildcard", prop.table_alias.0);
+                                println!(
+                                    "DEBUG: Could not expand {}.* - falling back to wildcard",
+                                    prop.table_alias.0
+                                );
                             }
                         }
                     }
-                    
+
                     // Not a node variable or wildcard expansion failed - keep the item as-is
                     expanded_items.push(item.clone());
                 }
-                
+
                 let items = expanded_items.iter().map(|item| {
                     // Resolve TableAlias references to WITH aliases BEFORE conversion
                     let resolved_expr =
@@ -1229,8 +1259,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                         source: std::sync::Arc::new(LogicalPlan::Empty),
                                         name: table_name,
                                         alias: Some(anchor_alias),
-                                    use_final: false,
-                                })
+                                        use_final: false,
+                                    })
                                 } else {
                                     println!(
                                         "DEBUG: GraphJoins.extract_from() - could not find table_name for anchor '{}', falling back to first join",
@@ -1242,8 +1272,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                             source: std::sync::Arc::new(LogicalPlan::Empty),
                                             name: first_join.table_name.clone(),
                                             alias: Some(first_join.table_alias.clone()),
-                                    use_final: false,
-                                })
+                                            use_final: false,
+                                        })
                                     } else {
                                         None
                                     }
@@ -1255,8 +1285,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                         source: std::sync::Arc::new(LogicalPlan::Empty),
                                         name: first_join.table_name.clone(),
                                         alias: Some(first_join.table_alias.clone()),
-                                    use_final: false,
-                                })
+                                        use_final: false,
+                                    })
                                 } else {
                                     None
                                 }
@@ -1286,8 +1316,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                         source: std::sync::Arc::new(LogicalPlan::Empty),
                                         name: first_join.table_name.clone(),
                                         alias: Some(first_join.table_alias.clone()),
-                                    use_final: false,
-                                })
+                                        use_final: false,
+                                    })
                                 } else {
                                     None
                                 }
@@ -1320,8 +1350,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 source: std::sync::Arc::new(LogicalPlan::Empty),
                                 name: first_join.table_name.clone(),
                                 alias: Some(first_join.table_alias.clone()),
-                                    use_final: false,
-                                })
+                                use_final: false,
+                            })
                         } else {
                             None
                         }
@@ -2424,7 +2454,7 @@ impl RenderPlanBuilder for LogicalPlan {
             ctes: CteItems(vec![]),
             select: SelectItems(final_select_items),
             from: FromTableItem(from_table_to_view_ref(final_from)),
-            joins: JoinItems(filtered_joins),  // GraphJoinInference already ordered these correctly
+            joins: JoinItems(filtered_joins), // GraphJoinInference already ordered these correctly
             filters: FilterItems(final_filters),
             group_by: GroupByExpressions(self.extract_group_by()?),
             having_clause: self.extract_having()?,
@@ -2540,7 +2570,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     ),
                     name: var_len_cte.cte_name.clone(),
                     alias: Some("t".to_string()), // CTE uses 't' as alias
-                    use_final: false, // CTEs don't use FINAL
+                    use_final: false,             // CTEs don't use FINAL
                 })));
 
                 // Check if there are end filters stored in the context that need to be applied to the outer query
@@ -2607,7 +2637,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     ),
                     name: var_len_cte.cte_name.clone(),
                     alias: Some("t".to_string()), // CTE uses 't' as alias
-                    use_final: false, // CTEs don't use FINAL
+                    use_final: false,             // CTEs don't use FINAL
                 })));
                 // For variable-length paths, apply end filters in the outer query
                 if let Some((_start_alias, _end_alias)) = has_variable_length_rel(self) {
@@ -2916,8 +2946,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
                 name: "system.one".to_string(),
                 alias: None,
-                                    use_final: false,
-                                })));
+                use_final: false,
+            })));
         }
 
         // Validate FROM clause exists (after potentially adding system.one for standalone queries)

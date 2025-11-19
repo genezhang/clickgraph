@@ -1761,7 +1761,8 @@ impl GraphJoinInference {
                 // FIX: Always join RIGHT if rel references it (even for anonymous nodes)
                 // The relationship JOIN condition references right_alias, so it MUST be in scope
                 eprintln!("    � ?? FIX: Joining RIGHT regardless of is_referenced for JOIN scope");
-                if true {  // Was: right_is_referenced
+                if true {
+                    // Was: right_is_referenced
                     let right_graph_join = Join {
                         table_name: right_cte_name,
                         table_alias: right_alias.to_string(),
@@ -1827,7 +1828,9 @@ mod tests {
                     dtype: "UInt64".to_string(),
                 },
                 property_mappings: HashMap::new(),
-                view_parameters: None, engine: None, use_final: None,
+                view_parameters: None,
+                engine: None,
+                use_final: None,
             },
         );
 
@@ -1844,7 +1847,9 @@ mod tests {
                     dtype: "UInt64".to_string(),
                 },
                 property_mappings: HashMap::new(),
-                view_parameters: None, engine: None, use_final: None,
+                view_parameters: None,
+                engine: None,
+                use_final: None,
             },
         );
 
@@ -1866,7 +1871,9 @@ mod tests {
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),
-                view_parameters: None, engine: None, use_final: None,
+                view_parameters: None,
+                engine: None,
+                use_final: None,
             },
         );
 
@@ -1888,7 +1895,9 @@ mod tests {
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),
-                view_parameters: None, engine: None, use_final: None,
+                view_parameters: None,
+                engine: None,
+                use_final: None,
             },
         );
 
@@ -2095,17 +2104,22 @@ mod tests {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        // With improved reference checking, we now correctly identify that p1 is referenced (RETURN p1.name)
-                        // So we create 2 joins: relationship (f1) + referenced node (p1)
-                        assert_eq!(graph_joins.joins.len(), 2);
+                        // Multi-hop fix: Creates joins for both nodes (p2, p1) + relationship (f1)
+                        // Pattern: (p2)-[f1:FOLLOWS]->(p1) creates 3 joins in order: p2, f1, p1
+                        assert_eq!(graph_joins.joins.len(), 3);
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
 
-                        // First join: relationship (f1)
-                        let rel_join = &graph_joins.joins[0];
-                        assert_eq!(rel_join.table_name, "default.FOLLOWS"); // Table name includes database prefix
+                        // First join: left node (p2)
+                        let p2_join = &graph_joins.joins[0];
+                        assert_eq!(p2_join.table_name, "default.Person");
+                        assert_eq!(p2_join.table_alias, "p2");
+
+                        // Second join: relationship (f1)
+                        let rel_join = &graph_joins.joins[1];
+                        assert_eq!(rel_join.table_name, "default.FOLLOWS");
                         assert_eq!(rel_join.table_alias, "f1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         assert_eq!(rel_join.joining_on.len(), 1);
@@ -2134,8 +2148,8 @@ mod tests {
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
 
-                        // Second join: referenced node (p1) - since RETURN uses p1.name
-                        let p1_join = &graph_joins.joins[1];
+                        // Third join: right node (p1)
+                        let p1_join = &graph_joins.joins[2];
                         assert_eq!(p1_join.table_name, "default.Person");
                         assert_eq!(p1_join.table_alias, "p1");
                         assert_eq!(p1_join.join_type, JoinType::Inner);
@@ -2216,14 +2230,15 @@ mod tests {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        assert_eq!(graph_joins.joins.len(), 1); // Simple relationship: only relationship join, start node is in FROM
+                        // Multi-hop fix: Now creates joins for both relationship and end node
+                        assert_eq!(graph_joins.joins.len(), 2); // w1 (relationship) + c1 (end node)
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
 
                         // (p1)-[w1:WORKS_AT]->(c1)
-                        // For edge list traversal, only relationship join is needed (start node in FROM)
+                        // Multi-hop fix: Creates joins for both w1 (relationship) and c1 (end node)
                         let rel_join = &graph_joins.joins[0];
                         assert_eq!(rel_join.table_name, "default.WORKS_AT"); // CTE name includes database prefix
                         assert_eq!(rel_join.table_alias, "w1");
@@ -2531,17 +2546,22 @@ mod tests {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        // With improved reference checking, we correctly identify referenced nodes
-                        // Creating 2 joins: relationship + referenced node
-                        assert_eq!(graph_joins.joins.len(), 2);
+                        // Multi-hop fix: Creates joins for both nodes + relationship
+                        // Pattern: (p1)<-[f1:FOLLOWS]-(p2) creates 3 joins in order: p2, f1, p1
+                        assert_eq!(graph_joins.joins.len(), 3);
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
 
-                        // First join: relationship (f1)
-                        let rel_join = &graph_joins.joins[0];
-                        assert_eq!(rel_join.table_name, "default.FOLLOWS"); // Table name includes database prefix
+                        // First join: left node (p2)
+                        let p2_join = &graph_joins.joins[0];
+                        assert_eq!(p2_join.table_name, "default.Person");
+                        assert_eq!(p2_join.table_alias, "p2");
+
+                        // Second join: relationship (f1)
+                        let rel_join = &graph_joins.joins[1];
+                        assert_eq!(rel_join.table_name, "default.FOLLOWS");
                         assert_eq!(rel_join.table_alias, "f1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         assert_eq!(rel_join.joining_on.len(), 1);
@@ -2568,8 +2588,8 @@ mod tests {
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
 
-                        // Second join: referenced node (p1) - since RETURN uses p1.name
-                        let p1_join = &graph_joins.joins[1];
+                        // Third join: right node (p1)
+                        let p1_join = &graph_joins.joins[2];
                         assert_eq!(p1_join.table_name, "default.Person");
                         assert_eq!(p1_join.table_alias, "p1");
                         assert_eq!(p1_join.join_type, JoinType::Inner);

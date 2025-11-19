@@ -13,10 +13,10 @@ use crate::query_planner::{
 /// Build a SQL query for a ViewScan operation
 pub fn build_view_scan(scan: &ViewScan, plan: &LogicalPlan) -> String {
     let mut sql = String::new();
-    
+
     // Build table reference with parameters if this is a parameterized view
-    let table_ref = if let (Some(param_names), Some(param_values)) = 
-        (&scan.view_parameter_names, &scan.view_parameter_values) 
+    let table_ref = if let (Some(param_names), Some(param_values)) =
+        (&scan.view_parameter_names, &scan.view_parameter_values)
     {
         // This is a parameterized view - generate view(param=value, ...) syntax
         let param_pairs: Vec<String> = param_names
@@ -46,13 +46,13 @@ pub fn build_view_scan(scan: &ViewScan, plan: &LogicalPlan) -> String {
         // Not a parameterized view - use plain table/view name
         scan.source_table.clone()
     };
-    
+
     // Add FINAL keyword if enabled for this table
     if scan.use_final {
         sql.push_str(&format!("SELECT * FROM {} FINAL", table_ref));
     } else {
         sql.push_str(&format!("SELECT * FROM {}", table_ref));
     }
-    
+
     sql
 }

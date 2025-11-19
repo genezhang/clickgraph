@@ -191,5 +191,3 @@ fn test_function_on_parameter_in_return() {
     // Verify function applied to parameter
     assert!(sql.to_lowercase().contains("upper(") || sql.to_lowercase().contains("ucase("));
 }
-
-

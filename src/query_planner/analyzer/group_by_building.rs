@@ -60,6 +60,28 @@ impl GroupByBuilding {
                 func.args.iter().any(|arg| Self::contains_aggregate(arg))
             }
             LogicalExpr::List(list) => list.iter().any(|item| Self::contains_aggregate(item)),
+            LogicalExpr::Case(case_expr) => {
+                // Check if CASE expression contains aggregates in:
+                // 1. The optional simple CASE expression
+                // 2. Any WHEN condition or THEN value
+                // 3. The optional ELSE expression
+                if let Some(expr) = &case_expr.expr {
+                    if Self::contains_aggregate(expr) {
+                        return true;
+                    }
+                }
+                for (when_cond, then_val) in &case_expr.when_then {
+                    if Self::contains_aggregate(when_cond) || Self::contains_aggregate(then_val) {
+                        return true;
+                    }
+                }
+                if let Some(else_expr) = &case_expr.else_expr {
+                    if Self::contains_aggregate(else_expr) {
+                        return true;
+                    }
+                }
+                false
+            }
             _ => false,
         }
     }

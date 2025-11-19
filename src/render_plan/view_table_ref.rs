@@ -33,7 +33,7 @@ impl ViewTableRef {
                 return format!("{}({})", base_name, param_pairs.join(", "));
             }
         }
-        
+
         // Not a parameterized view - use plain table name
         base_name.to_string()
     }
@@ -41,7 +41,7 @@ impl ViewTableRef {
     /// Create a new table reference
     pub fn new_table(scan: ViewScan, name: String) -> Self {
         let table_ref = Self::build_table_reference(&scan, &name);
-        let use_final = scan.use_final;  // Extract before moving scan
+        let use_final = scan.use_final; // Extract before moving scan
         Self {
             source: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),
             name: table_ref,
@@ -53,7 +53,7 @@ impl ViewTableRef {
     /// Create a new table reference with an explicit alias
     pub fn new_table_with_alias(scan: ViewScan, name: String, alias: String) -> Self {
         let table_ref = Self::build_table_reference(&scan, &name);
-        let use_final = scan.use_final;  // Extract before moving scan
+        let use_final = scan.use_final; // Extract before moving scan
         Self {
             source: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),
             name: table_ref,
@@ -70,7 +70,7 @@ impl ViewTableRef {
         } else {
             false
         };
-        
+
         Self {
             source,
             name,
@@ -87,7 +87,7 @@ impl ViewTableRef {
         } else {
             false
         };
-        
+
         Self {
             source,
             name,

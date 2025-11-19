@@ -499,7 +499,14 @@ impl BoltHandler {
 
         // Parse and execute the query
         match self
-            .execute_cypher_query(query, parameters, schema_name, tenant_id, role, view_parameters)
+            .execute_cypher_query(
+                query,
+                parameters,
+                schema_name,
+                tenant_id,
+                role,
+                view_parameters,
+            )
             .await
         {
             Ok(result_metadata) => {
@@ -735,14 +742,14 @@ impl BoltHandler {
             tenant_id,
             view_parameters,
         ) {
-                Ok(plan) => plan,
-                Err(e) => {
-                    return Err(BoltError::query_error(format!(
-                        "Query planning failed: {}",
-                        e
-                    )));
-                }
-            };
+            Ok(plan) => plan,
+            Err(e) => {
+                return Err(BoltError::query_error(format!(
+                    "Query planning failed: {}",
+                    e
+                )));
+            }
+        };
         // parsed_query is now dropped - no more Rc<RefCell<>> held!
 
         // Generate render plan
@@ -779,17 +786,14 @@ impl BoltHandler {
 
         // Apply role for ClickHouse RBAC (Phase 2)
         if let Some(ref role_name) = role {
-            crate::server::clickhouse_client::set_role(
-                &self.clickhouse_client,
-                role_name,
-            )
-            .await
-            .map_err(|e| {
-                BoltError::query_error(format!(
-                    "Failed to set ClickHouse role: {}. Ensure role is granted to user.", 
-                    e
-                ))
-            })?;
+            crate::server::clickhouse_client::set_role(&self.clickhouse_client, role_name)
+                .await
+                .map_err(|e| {
+                    BoltError::query_error(format!(
+                        "Failed to set ClickHouse role: {}. Ensure role is granted to user.",
+                        e
+                    ))
+                })?;
         }
 
         // Execute the query and fetch results as JSON bytes
