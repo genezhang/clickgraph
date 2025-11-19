@@ -1,307 +1,70 @@
-## [Unreleased]
-
----
-
-## [0.5.0] - 2025-11-18
-
-**Release Name**: Enterprise Readiness  
-**Test Status**: 422/422 unit tests (100%), 236/400 integration tests (59% for implemented features)  
-**Documentation**: Complete wiki (19 pages), all APIs documented, zero broken links
+## [0.5.0] - 2025-11-19
 
 ### 🚀 Features
 
-#### Phase 2 Complete: Multi-Tenancy & RBAC
-
-- **Anonymous edge pattern support (untyped relationships)**
-  - Queries like `MATCH (a)-[r]->(b)` now automatically expand to UNION of all relationship types
-  - Schema-based automatic expansion: `[]` → `[:TYPE1|TYPE2|TYPE3]` 
-  - Leverages existing multiple relationship type UNION logic
-  - Example: `MATCH (a)-[]->(b)` generates CTE with `UNION ALL` across all relationship tables
-  - Implementation: `match_clause.rs` lines 406-434 (Nov 18, 2025)
-  - Enables more flexible graph queries without explicit relationship typing
-
-- **Multi-tenant parameterized views with cache optimization**
-  - SQL generation with `$paramName` placeholders for efficient caching
-  - Single cache entry shared across all tenants (99% memory reduction)
-  - Runtime parameter substitution maintains tenant isolation
-  - Cache hit rate improved to ~100% for multi-tenant workloads
-  - 2x performance improvement on cache hits (18ms → 9ms)
-  - Commits: 805db43 (cache optimization), fa215e3 (docs), 2d1cb04-a639049 (core feature)
-
-- **Comprehensive multi-tenancy support**
-  - Schema configuration: `view_parameters: [tenant_id, region, ...]`
-  - HTTP API: `view_parameters` field in query requests
-  - Bolt protocol: Extract from RUN message metadata
-  - Multi-parameter support: Unlimited parameters per view
-  - Parameter merging: view_parameters + query parameters
-  - Full documentation: `docs/multi-tenancy.md` with 5 patterns
-
-- **SET ROLE RBAC support**
-  - ClickHouse native RBAC via `SET ROLE 'viewer'`
-  - HTTP API: `role` field in requests
-  - Bolt protocol: Role extraction from metadata
-  - Column-level security: Combine with row-level (parameterized views)
-  - Commit: 5d0f712
-
-- **ReplacingMergeTree FINAL support (complete)**
-  - Engine detection: Identify ReplacingMergeTree tables (commit 8694728)
-  - Schema configuration: `use_final: bool` fields (commit 2334633)
-  - SQL generation: Correct FINAL placement (`FROM table AS alias FINAL`) (commits c4a6c95, 2ae16fd)
-  - ViewTableRef pipeline: Propagates use_final through query execution
-  - Schema loading integration: Auto-detect engines via `to_graph_schema_with_client()` (commit 97d67fd)
-  - Auto-set use_final based on engine type with manual override support
-
-- **Auto-schema discovery (complete)** (commit 97d67fd)
-  - Column auto-discovery via `system.columns` query
-  - Identity property mappings: `column_name → column_name` by default
-  - Selective column exclusion: `exclude_columns: [_version, _internal]`
-  - Manual override system: `property_mappings` wins over auto-discovery
-  - Automatic engine detection + FINAL support
-  - 90% YAML reduction for wide tables (50 columns → 5 lines)
-  - Backward compatible: Manual schemas still work
-  - Example: `schemas/examples/auto_discovery_demo.yaml`
-  - Tests: `tests/integration/test_auto_discovery.py`
-  - Documentation: `notes/auto-schema-discovery.md`
-
-- **HTTP Schema Loading API**
-  - Runtime schema registration: `POST /schemas/load`
-  - List schemas: `GET /schemas`
-  - Get schema details: `GET /schemas/{name}`
-  - Full YAML content support with `config_content` parameter
-  - Auto-discovery compatible
-  - No server restart required
+- *(phase2)* Add tenant_id and view_parameters to request context
+- *(phase2)* Thread tenant_id through HTTP/Bolt to query planner
+- Implement SET ROLE RBAC support for single-tenant deployments
+- *(multi-tenancy)* Add view_parameters field to schema config
+- *(multi-tenancy)* Implement parameterized view SQL generation
+- *(multi-tenancy)* Add Bolt protocol view_parameters extraction
+- *(phase2)* Add engine detection for FINAL keyword support
+- *(phase2)* Add use_final field to schema configuration
+- *(phase2)* Add FINAL keyword support to SQL generation
+- *(phase2)* Auto-schema discovery with column auto-detection
+- *(auto-discovery)* Add camelCase naming convention support
+- Add PowerShell scripts for wiki validation workflow
+- Add Helm chart for Kubernetes deployment
 
 ### 🐛 Bug Fixes
 
-- **Anonymous node pattern support**
-  - Fixed `MATCH ()-[r:FOLLOWS]->()` pattern SQL generation (Nov 17, 2025)
-  - Automatic label inference from relationship schema
-  - Removed early-return skips for nodes without labels
-  - JOIN creation now based on graph structure, not just SELECT references
-  - Affected queries: `()-[r]->()`, `(a)-[r]->()`  
-  - Fix locations: `graph_join_inference.rs` (lines 777-818, 1228), `graph_context.rs` (lines 87-127)
+- *(phase2)* Correct FINAL keyword placement - after alias
+- *(tests)* Add missing engine and use_final fields to test schemas
+- Implement property expansion for RETURN whole node queries
+- Update clickgraph-client and add documentation
 
-- **COUNT aggregation in OPTIONAL MATCH contexts** (Nov 18, 2025)
-  - Fixed anchor node selection to prioritize required nodes
-  - Fixed recursive expression tagging for transformations
-  - Added CASE expression support in projection tagging
-  - Added CASE expression detection in GROUP BY
-  - All aggregation tests passing (29/29)
+### 🚜 Refactor
 
-- **Correct FINAL keyword syntax** (commit 2ae16fd)
-  - Fixed placement: FINAL must come AFTER table alias
-  - Verified with actual ClickHouse instance
-  - Updated all 13 ViewTableRef construction sites
-  - Proper syntax: `FROM table AS t FINAL` (not `FROM table FINAL AS t`)
+- Minor code improvements in parser and planner
 
 ### 📚 Documentation
 
-- **Complete Wiki Documentation** (19 pages, 3 new reference pages)
-  - Created `API-Reference-HTTP.md` (450+ lines) - Complete HTTP API reference
-  - Created `Cypher-Language-Reference.md` (600+ lines) - Full Cypher syntax guide
-  - Created `Known-Limitations.md` (500+ lines) - Limitations and workarounds
-  - Updated `Schema-Configuration-Advanced.md` with working schema loading API
-  - Fixed all broken reference links (0 broken links)
-  - Cross-platform examples (curl, Python, PowerShell)
-
-- **Bolt Protocol Documentation Updates**
-  - Updated all docs to reflect Bolt Protocol 5.8 is fully functional
-  - Removed outdated "query execution pending" warnings
-  - Added working examples with Neo4j drivers
-  - Updated README.md, docs/api.md, wiki pages
-  - Clarified production-ready status
-
-- **Multi-Tenancy & RBAC**
-  - Complete guide: `docs/multi-tenancy.md` with 5 patterns
-  - Example schemas: Simple + encrypted multi-tenancy
-  - Technical notes: `notes/parameterized-views.md`
-  - Migration guide for existing deployments
-
-- **Auto-Discovery**
-  - Feature documentation: `AUTO_DISCOVERY_STATUS.md`
-  - HTTP API usage examples
-  - Schema configuration patterns
-
-### 🧪 Testing
-
-- **Unit Tests**: 422/422 passing (100%)
-  - Fixed 16 test failures from aggregation bugs
-  - All test categories passing
-  - Comprehensive coverage
-
-- **Integration Tests**: 236/400 passing (59%)
-  - 59% = tests for implemented features
-  - Fixed ClickHouse credential issues
-  - Marked 9 aspirational tests as skipped
-  - Real bug fixed: COUNT in OPTIONAL MATCH
-
-- **E2E Tests**
-  - 11 test classes for multi-tenancy
-  - ACME/GLOBEX tenant isolation validated
-  - Cache behavior verified
-  - Performance validated (<100ms)
-
-### 🎯 Production Readiness
-
-- ✅ All core features complete and tested
-- ✅ Bolt Protocol 5.8 fully functional with all E2E tests passing (4/4)
-- ✅ E2E validation with multiple tenants
-- ✅ Cache optimization validated (2x performance)
-- ✅ Security patterns documented
-- ✅ Migration path for existing deployments
-- ✅ Professional documentation standards
-- ✅ Zero broken links in documentation
-
----
-
-## [0.5.0-beta] - 2025-11-17
-
-### 🚀 Features - Phase 2: Multi-Tenancy & RBAC Complete
-
-- **Multi-tenant parameterized views with cache optimization**
-  - SQL generation with `$paramName` placeholders for efficient caching
-  - Single cache entry shared across all tenants (99% memory reduction)
-  - Runtime parameter substitution maintains tenant isolation
-  - Cache hit rate improved to ~100% for multi-tenant workloads
-  - 2x performance improvement on cache hits (18ms → 9ms)
-  - Commits: 805db43 (cache optimization), fa215e3 (docs), 2d1cb04-a639049 (core feature)
-
-- **Comprehensive multi-tenancy support**
-  - Schema configuration: `view_parameters: [tenant_id, region, ...]`
-  - HTTP API: `view_parameters` field in query requests
-  - Bolt protocol: Extract from RUN message metadata
-  - Multi-parameter support: Unlimited parameters per view
-  - Parameter merging: view_parameters + query parameters
-  - Full documentation: `docs/multi-tenancy.md` with 5 patterns
-
-- **SET ROLE RBAC support**
-  - ClickHouse native RBAC via `SET ROLE 'viewer'`
-  - HTTP API: `role` field in requests
-  - Bolt protocol: Role extraction from metadata
-  - Column-level security: Combine with row-level (parameterized views)
-  - Commit: 5d0f712
-
-- **ReplacingMergeTree FINAL support (complete)**
-  - Engine detection: Identify ReplacingMergeTree tables (commit 8694728)
-  - Schema configuration: `use_final: bool` fields (commit 2334633)
-  - SQL generation: Correct FINAL placement (`FROM table AS alias FINAL`) (commits c4a6c95, 2ae16fd)
-  - ViewTableRef pipeline: Propagates use_final through query execution
-  - Schema loading integration: Auto-detect engines via `to_graph_schema_with_client()` (commit 97d67fd)
-  - Auto-set use_final based on engine type with manual override support
-
-- **Auto-schema discovery (complete)** (commit 97d67fd)
-  - Column auto-discovery via `system.columns` query
-  - Identity property mappings: `column_name → column_name` by default
-  - Selective column exclusion: `exclude_columns: [_version, _internal]`
-  - Manual override system: `property_mappings` wins over auto-discovery
-  - Automatic engine detection + FINAL support
-  - 90% YAML reduction for wide tables (50 columns → 5 lines)
-  - Backward compatible: Manual schemas still work
-  - Example: `schemas/examples/auto_discovery_demo.yaml`
-  - Tests: `tests/integration/test_auto_discovery.py`
-  - Documentation: `notes/auto-schema-discovery.md`
-
-- **Example schemas and patterns**
-  - Simple tenant isolation: `schemas/examples/multi_tenant_simple.yaml`
-  - Per-tenant encryption: `schemas/examples/multi_tenant_encrypted.yaml`
-  - Auto-discovery demo: `schemas/examples/auto_discovery_demo.yaml`
-  - Multi-parameter views (tenant + region + date)
-  - Hierarchical tenant trees
-  - Role-based + row-level security
-
-### 🐛 Bug Fixes
-
-- **Correct FINAL keyword syntax** (commit 2ae16fd)
-  - Fixed placement: FINAL must come AFTER table alias
-  - Verified with actual ClickHouse instance
-  - Updated all 13 ViewTableRef construction sites
-  - Proper syntax: `FROM table AS t FINAL` (not `FROM table FINAL AS t`)
-
-### 🧪 Testing
-
-- **Comprehensive integration test suite**
-  - 11 test classes covering tenant isolation, SQL generation, caching
-  - E2E validation: ACME/GLOBEX tenant isolation verified
-  - Cache behavior tests: Template sharing validated
-  - Performance tests: <100ms query time validated
-  - File: `tests/integration/test_multi_tenant_parameterized_views.py`
-
-- **Unit test coverage**
-  - 7/7 schema parsing tests passing
-  - Backward compatibility validated
-  - Multi-parameter support tested
-  - Edge cases covered
-
-### 📚 Documentation
-
-- **Complete user guide**: `docs/multi-tenancy.md`
-  - Quick start tutorial
-  - 5 multi-tenant patterns (isolation, encryption, hierarchical, etc.)
-  - Security best practices
-  - Performance tuning guide
-  - Migration guide for existing schemas
-  - Troubleshooting section
-  - API reference
-
-- **Technical documentation**: `notes/parameterized-views.md`
-  - Implementation details
-  - Data flow diagrams
-  - Cache architecture
-  - Design decisions
-
-- **Design document**: `notes/phase2-minimal-rbac.md`
-  - Philosophy: Maximum power, minimum code
-  - 5 security patterns with complete SQL examples
-  - 4-week implementation timeline
+- Phase 2 minimal RBAC - parameterized views with multi-parameter support
+- Fix Pattern 2 RBAC examples to use SET ROLE approach
+- Add Phase 2 progress to STATUS.md
+- Add comprehensive Phase 2 multi-tenancy status report
+- *(multi-tenancy)* Complete parameterized views documentation + cleanup
+- Update parameterized views note with cache optimization details
+- *(phase2)* Complete Phase 2 multi-tenancy documentation and tests
+- Correct Phase 2 status - 2/5 complete, not fully done
+- Update ROADMAP.md Phase 2 progress - 2/5 complete
+- *(phase2)* Update STATUS and CHANGELOG for FINAL syntax fix
+- *(phase2)* Update STATUS and CHANGELOG for auto-schema discovery
+- Align wiki examples with benchmark schema and add validation
+- Add session documentation and planning notes
+- Update STATUS, CHANGELOG, and KNOWN_ISSUES
+- Update ROADMAP with wiki documentation and bug fix progress
+- Mark Phase 2 complete - v0.5.0 release ready!
 
 ### ⚡ Performance
 
-- **Cache optimization metrics**:
-  - Memory: 99% reduction for 100-tenant scenario (1 entry vs 100)
-  - Cache hit rate: ~100% (all tenants share template)
-  - Query time: 2x faster on cache hit (18ms → 9ms)
-  - Scalability: O(1) cache entries regardless of tenant count
+- *(cache)* Optimize multi-tenant caching with SQL placeholders
 
-### 🔐 Security
+### 🧪 Testing
 
-- **Row-level security**: Tenant isolation at database level via parameterized views
-- **Column-level security**: Role-based permissions via SET ROLE
-- **Per-tenant encryption**: Unique encryption keys per tenant
-- **Time-based access**: Date-range filtering in parameterized views
-- **Hierarchical tenants**: Parent sees child data via recursive CTEs
-- **Audit ready**: All security patterns support audit logging
+- Add comprehensive SET ROLE RBAC test suite
+- *(multi-tenancy)* Add parameterized views test infrastructure
+- *(multi-tenancy)* Add unit tests for view_parameters
+- Add integration test utilities and schema
 
-### 📦 Deliverables
+### ⚙️ Miscellaneous Tasks
 
-- **Code**: Schema parsing, SQL generation, cache optimization, HTTP/Bolt support
-- **Tests**: Comprehensive pytest suite + unit tests
-- **Docs**: User guide + technical notes + design document
-- **Examples**: 2 complete example schemas (simple + encrypted)
-- **Migration**: Guide for adding multi-tenancy to existing schemas
-
-### 🎯 Production Readiness
-
-- ✅ All core features complete and tested
-- ✅ E2E validation with multiple tenants
-- ✅ Cache optimization validated (2x performance)
-- ✅ Security patterns documented
-- ✅ Migration path for existing deployments
-- ⏳ Beta user feedback pending
-
----
-
+- Update CHANGELOG.md [skip ci]
+- Clean up temporary test output and debug files
 ## [0.4.0] - 2025-11-15
 
 ### 🚀 Features
 
-- **Add parameterized views for multi-tenancy** (Tasks 7-11 complete)
-  - Schema configuration: `view_parameters` field in NodeDefinition/RelationshipDefinition
-  - SQL generation: Generates `view_name(param='value')` syntax with injection protection
-  - Bolt protocol support: Extract view_parameters from RUN message extra field
-  - Unit tests: 7/7 passing (schema parsing, backward compat, multi-param, edge cases)
-  - Test infrastructure: ClickHouse parameterized views + test data + Python test script
-  - Documentation: Complete guide in `notes/parameterized-views.md`
-  - Commits: 2d1cb04, 7ea4a05, 4ad7563, 8c21fca, a639049
 - Add parameter support via HTTP API + identity fallback for properties
 - Add production-ready query cache with LRU eviction
 - Complete Bolt 5.8 protocol implementation with E2E tests passing
