@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let client = Client::new();
 
-    println!("\nConnected to brahamnd server at {}.\n", args.url);
+    println!("\nConnected to ClickGraph server at {}.\n", args.url);
 
     let mut rl = DefaultEditor::new()?;
 

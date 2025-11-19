@@ -272,6 +272,53 @@ Both protocols share the same underlying query engine and ClickHouse backend.
 
 📖 **[Complete Setup Guide →](docs/getting-started.md)**
 
+---
+
+## 💻 Interactive CLI Client
+
+ClickGraph includes an interactive command-line client for easy querying:
+
+### Build and Run
+
+```bash
+# Build the client
+cargo build --release -p clickgraph-client
+
+# Run with default settings (connects to http://localhost:8080)
+./target/release/clickgraph-client
+
+# Or connect to a custom server
+./target/release/clickgraph-client --url http://your-server:8080
+```
+
+### Usage
+
+```
+clickgraph-client :) MATCH (u:User) RETURN u.name LIMIT 5
+
+Tim Duncan
+Tony Parker
+LaMarcus Aldridge
+Manu Ginobili
+Boris Diaw
+
+clickgraph-client :) MATCH (u:User)-[:FOLLOWS]->(friend) WHERE u.user_id = 101 RETURN friend.name
+
+Tim Duncan
+LaMarcus Aldridge
+
+clickgraph-client :) <Ctrl+C or Ctrl+D to exit>
+I'll be back:)
+```
+
+**Features**:
+- Interactive REPL with history support
+- Automatic result formatting (JSON or text)
+- Command history (up/down arrows)
+- Simple connection to any ClickGraph server
+
+---
+
 ## 📊 View-Based Graph Model
 
 Transform existing relational data into graph format through YAML configuration:
