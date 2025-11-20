@@ -1,0 +1,369 @@
+use std::{sync::Arc, time::Instant};
+
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Json},
+};
+
+use crate::{
+    clickhouse_query_generator, open_cypher_parser,
+    query_planner::{self, types::QueryType},
+    render_plan::plan_builder::RenderPlanBuilder,
+};
+
+use super::{
+    graph_catalog,
+    models::{ErrorDetails, SqlDialect, SqlGenerationError, SqlGenerationMetadata, SqlGenerationRequest, SqlGenerationResponse},
+    query_cache::QueryCacheKey,
+    AppState, GLOBAL_QUERY_CACHE,
+};
+
+/// Handler for POST /query/sql - Generate SQL without execution (production API)
+pub async fn sql_generation_handler(
+    State(app_state): State<Arc<AppState>>,
+    Json(payload): Json<SqlGenerationRequest>,
+) -> Result<Json<SqlGenerationResponse>, (StatusCode, Json<SqlGenerationError>)> {
+    let start_time = Instant::now();
+
+    // Validate target database - only ClickHouse is currently supported
+    if !payload.target_database.is_supported() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(SqlGenerationError {
+                cypher_query: payload.query.clone(),
+                error: format!(
+                    "Unsupported target database: '{}'. Currently only 'clickhouse' is supported.",
+                    payload.target_database.as_str()
+                ),
+                error_type: "UnsupportedDialectError".to_string(),
+                error_details: Some(ErrorDetails {
+                    position: None,
+                    line: None,
+                    column: None,
+                    hint: Some("Supported dialects: clickhouse. Future: postgresql, duckdb, mysql, sqlite".to_string()),
+                }),
+            }),
+        ));
+    }
+
+    // Parse and validate schema name
+    let schema_name = payload.schema_name.as_deref().unwrap_or("default");
+
+    // Check query cache first
+    let cache_key = QueryCacheKey::new(&payload.query, schema_name);
+
+    let mut cache_status = "MISS";
+    let cached_sql = if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
+        if let Some(sql) = cache.get(&cache_key) {
+            cache_status = "HIT";
+            Some(sql)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // If we have cached SQL, return it immediately
+    if let Some(ch_query) = cached_sql {
+        let mut sql_statements = Vec::new();
+        
+        // Add SET ROLE if specified
+        if let Some(role) = &payload.role {
+            sql_statements.push(format!("SET ROLE {}", role));
+        }
+        
+        // Add the cached query
+        sql_statements.push(ch_query);
+
+        let elapsed = start_time.elapsed();
+        
+        return Ok(Json(SqlGenerationResponse {
+            cypher_query: payload.query.clone(),
+            target_database: payload.target_database.as_str().to_string(),
+            sql: sql_statements,
+            parameters: payload.parameters.clone(),
+            view_parameters: payload.view_parameters.clone(),
+            role: payload.role.clone(),
+            metadata: SqlGenerationMetadata {
+                query_type: "unknown".to_string(),
+                cache_status: cache_status.to_string(),
+                parse_time_ms: 0.0,
+                planning_time_ms: 0.0,
+                sql_generation_time_ms: 0.0,
+                total_time_ms: elapsed.as_secs_f64() * 1000.0,
+            },
+            logical_plan: None,
+            dialect_notes: None,
+        }));
+    }
+
+    // Get graph schema
+    let graph_schema = match graph_catalog::get_graph_schema_by_name(schema_name).await {
+        Ok(schema) => schema,
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(SqlGenerationError {
+                    cypher_query: payload.query.clone(),
+                    error: format!("Schema error: {}", e),
+                    error_type: "SchemaError".to_string(),
+                    error_details: Some(ErrorDetails {
+                        position: None,
+                        line: None,
+                        column: None,
+                        hint: Some(format!("Available schemas can be listed via GET /schemas")),
+                    }),
+                }),
+            ));
+        }
+    };
+
+    // Clean query (remove CYPHER prefix if present)
+    let clean_query = payload.query.trim();
+    let clean_query = if clean_query.to_uppercase().starts_with("CYPHER") {
+        clean_query.split_once(char::is_whitespace).map_or(clean_query, |(_, rest)| rest)
+    } else {
+        clean_query
+    };
+
+    // Phase 1: Parse query
+    let parse_start = Instant::now();
+    let cypher_ast = match open_cypher_parser::parse_query(clean_query) {
+        Ok(ast) => ast,
+        Err(e) => {
+            let parse_time = parse_start.elapsed().as_secs_f64() * 1000.0;
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(SqlGenerationError {
+                    cypher_query: payload.query.clone(),
+                    error: format!("{}", e),
+                    error_type: "ParseError".to_string(),
+                    error_details: Some(ErrorDetails {
+                        position: None,
+                        line: None,
+                        column: None,
+                        hint: Some("Check Cypher syntax. See docs/wiki/Cypher-Language-Reference.md".to_string()),
+                    }),
+                }),
+            ));
+        }
+    };
+    let parse_time = parse_start.elapsed().as_secs_f64() * 1000.0;
+
+    let query_type = query_planner::get_query_type(&cypher_ast);
+    let query_type_str = match query_type {
+        QueryType::Read => "read",
+        QueryType::Ddl => "ddl",
+        QueryType::Update => "update",
+        QueryType::Delete => "delete",
+        QueryType::Call => "call",
+    }
+    .to_string();
+
+    let is_read = query_type == QueryType::Read;
+    let is_call = query_type == QueryType::Call;
+
+    let (ch_query, logical_plan_str, planning_time, sql_gen_time) = if is_call {
+        // Handle CALL queries (like PageRank)
+        let planning_start = Instant::now();
+        let logical_plan = match query_planner::evaluate_call_query(cypher_ast, &graph_schema) {
+            Ok(plan) => plan,
+            Err(e) => {
+                let planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(SqlGenerationError {
+                        cypher_query: payload.query.clone(),
+                        error: format!("{}", e),
+                        error_type: "PlanningError".to_string(),
+                        error_details: None,
+                    }),
+                ));
+            }
+        };
+        let planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
+
+        let sql_gen_start = Instant::now();
+        let ch_sql = match &logical_plan {
+            crate::query_planner::logical_plan::LogicalPlan::PageRank(pagerank) => {
+                use crate::clickhouse_query_generator::pagerank::{PageRankConfig, PageRankGenerator};
+
+                let config = PageRankConfig {
+                    iterations: pagerank.iterations as usize,
+                    damping_factor: pagerank.damping_factor,
+                    convergence_threshold: None,
+                };
+
+                let generator = PageRankGenerator::new(
+                    &graph_schema,
+                    config,
+                    pagerank.graph_name.clone(),
+                    pagerank.node_labels.clone(),
+                    pagerank.relationship_types.clone(),
+                );
+                match generator.generate_pagerank_sql() {
+                    Ok(sql) => sql,
+                    Err(e) => {
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(SqlGenerationError {
+                                cypher_query: payload.query.clone(),
+                                error: format!("{}", e),
+                                error_type: "SqlGenerationError".to_string(),
+                                error_details: None,
+                            }),
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err((
+                    StatusCode::NOT_IMPLEMENTED,
+                    Json(SqlGenerationError {
+                        cypher_query: payload.query.clone(),
+                        error: "Unsupported CALL query type".to_string(),
+                        error_type: "NotImplementedError".to_string(),
+                        error_details: None,
+                    }),
+                ));
+            }
+        };
+        let sql_gen_time = sql_gen_start.elapsed().as_secs_f64() * 1000.0;
+
+        let plan_str = if payload.include_plan.unwrap_or(false) {
+            Some(format!("{:#?}", logical_plan))
+        } else {
+            None
+        };
+
+        (ch_sql, plan_str, planning_time, sql_gen_time)
+    } else if is_read {
+        // Phase 2: Plan query
+        let planning_start = Instant::now();
+
+        // Convert view_parameters from Option<HashMap<String, Value>> to Option<HashMap<String, String>>
+        let view_parameter_values = payload.view_parameters.as_ref().map(|params| {
+            params
+                .iter()
+                .map(|(k, v)| {
+                    let string_value = match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        _ => v.to_string(),
+                    };
+                    (k.clone(), string_value)
+                })
+                .collect()
+        });
+
+        let logical_plan = match query_planner::evaluate_read_query(
+            cypher_ast,
+            &graph_schema,
+            None, // tenant_id not needed for SQL generation
+            view_parameter_values,
+        ) {
+            Ok(plan) => plan,
+            Err(e) => {
+                let planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(SqlGenerationError {
+                        cypher_query: payload.query.clone(),
+                        error: format!("{}", e),
+                        error_type: "PlanningError".to_string(),
+                        error_details: None,
+                    }),
+                ));
+            }
+        };
+        let planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Phase 3: Render plan generation
+        let render_start = Instant::now();
+        let render_plan = match logical_plan.to_render_plan(&graph_schema) {
+            Ok(plan) => plan,
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(SqlGenerationError {
+                        cypher_query: payload.query.clone(),
+                        error: format!("{}", e),
+                        error_type: "RenderError".to_string(),
+                        error_details: None,
+                    }),
+                ));
+            }
+        };
+
+        // Phase 4: SQL generation
+        let ch_query = clickhouse_query_generator::generate_sql(
+            render_plan,
+            app_state.config.max_cte_depth,
+        );
+        let sql_gen_time = render_start.elapsed().as_secs_f64() * 1000.0;
+
+        let plan_str = if payload.include_plan.unwrap_or(false) {
+            Some(format!("{:#?}", logical_plan))
+        } else {
+            None
+        };
+
+        (ch_query, plan_str, planning_time, sql_gen_time)
+    } else {
+        // DDL/Update/Delete operations not supported
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(SqlGenerationError {
+                cypher_query: payload.query.clone(),
+                error: "ClickGraph is read-only. Write operations (CREATE, SET, DELETE, MERGE) are not supported.".to_string(),
+                error_type: "ReadOnlyError".to_string(),
+                error_details: Some(ErrorDetails {
+                    position: None,
+                    line: None,
+                    column: None,
+                    hint: Some("Use ClickHouse INSERT/UPDATE for data modifications".to_string()),
+                }),
+            }),
+        ));
+    };
+
+    // Store in cache
+    if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
+        cache.insert(cache_key, ch_query.clone());
+    }
+
+    // Build SQL statements array
+    let mut sql_statements = Vec::new();
+    
+    // Add SET ROLE if specified
+    if let Some(role) = &payload.role {
+        sql_statements.push(format!("SET ROLE {}", role));
+    }
+    
+    // Add the main query
+    sql_statements.push(ch_query);
+
+    let total_time = start_time.elapsed().as_secs_f64() * 1000.0;
+
+    Ok(Json(SqlGenerationResponse {
+        cypher_query: payload.query.clone(),
+        target_database: payload.target_database.as_str().to_string(),
+        sql: sql_statements,
+        parameters: payload.parameters.clone(),
+        view_parameters: payload.view_parameters.clone(),
+        role: payload.role.clone(),
+        metadata: SqlGenerationMetadata {
+            query_type: query_type_str,
+            cache_status: cache_status.to_string(),
+            parse_time_ms: parse_time,
+            planning_time_ms: planning_time,
+            sql_generation_time_ms: sql_gen_time,
+            total_time_ms: total_time,
+        },
+        logical_plan: logical_plan_str,
+        dialect_notes: None, // Future: Add ClickHouse-specific optimization hints
+    }))
+}

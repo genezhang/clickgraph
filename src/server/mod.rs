@@ -9,6 +9,7 @@ use clickhouse::Client;
 use handlers::{
     health_check, get_schema_handler, list_schemas_handler, load_schema_handler, query_handler, simple_test_handler,
 };
+use sql_generation_handler::sql_generation_handler;
 
 use dotenv::dotenv;
 use tokio::net::TcpListener;
@@ -30,6 +31,7 @@ pub mod handlers;
 mod models;
 mod parameter_substitution;
 mod query_cache;
+mod sql_generation_handler;
 
 // #[derive(Clone)]
 #[derive(Clone)]
@@ -171,6 +173,7 @@ pub async fn run_with_config(config: ServerConfig) {
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/query", post(query_handler))
+        .route("/query/sql", post(sql_generation_handler))
         .route("/schemas", get(list_schemas_handler))
         .route("/schemas/load", post(load_schema_handler))
         .route("/schemas/{name}", get(get_schema_handler))

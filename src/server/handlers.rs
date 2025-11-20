@@ -21,7 +21,7 @@ use crate::{
 
 use super::{
     AppState, GLOBAL_QUERY_CACHE, graph_catalog,
-    models::{OutputFormat, QueryRequest, SqlOnlyResponse},
+    models::{OutputFormat, QueryRequest, SqlOnlyResponse, SqlGenerationRequest, SqlGenerationResponse, SqlGenerationMetadata, SqlGenerationError, ErrorDetails},
     parameter_substitution, query_cache,
 };
 
