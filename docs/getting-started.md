@@ -32,6 +32,9 @@ export CLICKHOUSE_URL="http://localhost:8123"
 export CLICKHOUSE_USER="test_user"
 export CLICKHOUSE_PASSWORD="test_pass"
 export CLICKHOUSE_DATABASE="brahmand"
+
+# Point to your graph schema YAML (required for graph queries)
+export GRAPH_CONFIG_PATH="./schemas/demo/social_network.yaml"
 ```
 
 ### 3. Build and Run ClickGraph
@@ -40,17 +43,17 @@ export CLICKHOUSE_DATABASE="brahmand"
 cargo build --release
 
 # Start with default configuration (HTTP:8080, Bolt:7687)
-cargo run --bin brahmand
+cargo run --bin clickgraph
 ```
 
 You should see output like:
 ```
-ClickGraph v0.0.1 (fork of Brahmand)
+ClickGraph v0.5.0 (fork of Brahmand)
 
 Starting HTTP server on 0.0.0.0:8080
 Starting Bolt server on 0.0.0.0:7687
 Successfully bound Bolt listener to 0.0.0.0:7687
-Brahmand server is running
+ClickGraph server is running
   HTTP API: http://0.0.0.0:8080
   Bolt Protocol: bolt://0.0.0.0:7687
 Bolt server loop starting, listening for connections...
@@ -148,33 +151,40 @@ name: social_network
 version: "1.0"
 description: "Social network analysis"
 
-views:
-  - name: main_graph
-    nodes:
-      User:
-        source_table: users
-        id_column: user_id
-        property_mappings:
-          name: name
-          age: age
-          country: country
-        filters:
-          - "active = 1"
+graph_schema:
+  nodes:
+    - label: User
+      database: brahmand
+      table: users
+      id_column: user_id
+      property_mappings:
+        name: name
+        age: age
+        country: country
+      filters:
+        - "active = 1"
           
-    relationships:
-      FOLLOWS:
-        source_table: user_follows
-        from_node: User
-        to_node: User
-        from_id: follower_id
-        to_id: followed_id
-        property_mappings:
-          since: created_date
+  relationships:
+    - type: FOLLOWS
+      database: brahmand
+      table: user_follows
+      from_node: User
+      to_node: User
+      from_id: follower_id
+      to_id: followed_id
+      property_mappings:
+        since: created_date
 ```
 
-#### 3. Run Graph Queries
+#### 3. Load Schema and Run Graph Queries
 ```bash
-# Find Alice's friends
+# Set schema path
+export GRAPH_CONFIG_PATH="./social_network.yaml"
+
+# Restart ClickGraph to load the schema
+cargo run --bin clickgraph
+
+# Find Alice's friends (in a new terminal)
 curl -X POST http://localhost:8080/query \
   -H "Content-Type: application/json" \
   -d '{
@@ -201,13 +211,13 @@ curl -X POST http://localhost:8080/query \
 ### Command-Line Configuration
 ```bash
 # Custom ports
-cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
+cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 
 # Disable Bolt protocol (HTTP only)
-cargo run --bin brahmand -- --disable-bolt
+cargo run --bin clickgraph -- --disable-bolt
 
 # Custom host binding
-cargo run --bin brahmand -- --http-host 127.0.0.1
+cargo run --bin clickgraph -- --http-host 127.0.0.1
 
 # Show all options
 cargo run --bin clickgraph -- --help
@@ -227,6 +237,9 @@ export CLICKHOUSE_URL="http://your-clickhouse:8123"
 export CLICKHOUSE_USER="your_user"
 export CLICKHOUSE_PASSWORD="your_password"
 export CLICKHOUSE_DATABASE="your_database"
+
+# Graph schema (required for graph queries)
+export GRAPH_CONFIG_PATH="/path/to/your/schema.yaml"
 ```
 
 ## Neo4j Tool Integration
@@ -303,13 +316,13 @@ curl "http://localhost:8123/?user=test_user&password=test_pass" -d "SELECT 1"
 **Port conflicts:**
 ```bash
 # Use different ports
-cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
+cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 ```
 
 ### Debug Mode
 ```bash
 # Enable debug logging
-RUST_LOG=debug cargo run --bin brahmand
+RUST_LOG=debug cargo run --bin clickgraph
 ```
 
 ## Troubleshooting Common Issues
@@ -339,7 +352,7 @@ export CLICKHOUSE_PASSWORD="test_pass"
 ### Connection Issues
 **Issue**: `Unable to connect to the remote server`
 **Cause**: ClickGraph server not fully initialized  
-**Solution**: Wait 5-10 seconds after seeing "Brahmand server is running"
+**Solution**: Wait 5-10 seconds after seeing "ClickGraph server is running"
 
 ### File Permission Errors
 **Issue**: `filesystem error: in rename: Permission denied`
@@ -368,7 +381,7 @@ CREATE TABLE users (...) ENGINE = MergeTree() ORDER BY id;
 **Issue**: `Address already in use`
 **Solution**: Use different ports
 ```bash
-cargo run --bin brahmand -- --http-port 8081 --bolt-port 7688
+cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 ```
 
 ## Next Steps
