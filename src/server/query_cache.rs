@@ -386,7 +386,7 @@ fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs()
+        .as_millis() as u64
 }
 
 #[cfg(test)]
@@ -467,19 +467,24 @@ mod tests {
         let key2 = QueryCacheKey::new("MATCH (n)-[r]->(m) RETURN n,m", "default");
         let key3 = QueryCacheKey::new("MATCH (n) WHERE n.age > 25 RETURN n", "default");
 
+        // Insert first two entries
         cache.insert(key1.clone(), "SQL1".to_string());
+        std::thread::sleep(std::time::Duration::from_millis(5)); // Small delay ensures distinct timestamps
         cache.insert(key2.clone(), "SQL2".to_string());
+        std::thread::sleep(std::time::Duration::from_millis(5));
 
-        // Access key1 to make key2 LRU
-        cache.get(&key1);
+        // Access key1 to update its timestamp (making key2 LRU)
+        assert!(cache.get(&key1).is_some());
+        std::thread::sleep(std::time::Duration::from_millis(5));
 
-        // Insert key3 should evict key2
+        // Insert key3 should evict key2 (oldest last_accessed)
         cache.insert(key3.clone(), "SQL3".to_string());
 
-        assert!(cache.get(&key1).is_some());
-        assert!(cache.get(&key2).is_none());
-        assert!(cache.get(&key3).is_some());
-        assert_eq!(cache.metrics().evictions, 1);
+        // Verify: key1 and key3 should be present, key2 should be evicted
+        assert!(cache.get(&key1).is_some(), "key1 should still be in cache (recently accessed)");
+        assert!(cache.get(&key2).is_none(), "key2 should be evicted (least recently used)");
+        assert!(cache.get(&key3).is_some(), "key3 should be in cache (just inserted)");
+        assert_eq!(cache.metrics().evictions, 1, "exactly one eviction should have occurred");
     }
 
     #[test]
