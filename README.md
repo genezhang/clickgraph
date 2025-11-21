@@ -12,7 +12,40 @@
 
 ---
 
-## 🚀 What's New in v0.5.0 (November 2025)
+## 🚀 What's New in v0.5.1 (November 21, 2025)
+
+### Official Docker Hub Release! 🐳
+
+**ClickGraph is now available as a pre-built Docker image on Docker Hub for instant deployment!**
+
+- 🐳 **Docker Hub**: `docker pull genezhang/clickgraph:latest`
+- 📦 **Pre-built images**: No compilation required, instant startup
+- 🌐 **Multi-platform**: linux/amd64, linux/arm64 support
+- ⚡ **Quick start**: Get running in under 2 minutes
+- 🔄 **Auto-updates**: Tagged releases (`:latest`, `:v0.5.1`, `:0.5.1`)
+- ✅ **Fully tested**: 17/17 validation tests passing
+
+**Quick Start with Docker**:
+```bash
+# Pull and run with docker-compose
+docker-compose up -d
+
+# Or run directly
+docker pull genezhang/clickgraph:latest
+docker run -d -p 8080:8080 -p 7687:7687 \
+  -e CLICKHOUSE_URL="http://clickhouse:8123" \
+  genezhang/clickgraph:latest
+```
+
+### New Features ✨
+
+- 🆕 **RETURN DISTINCT**: Deduplication support in query results
+- 🧪 **Comprehensive testing**: Added Docker image validation suite
+- 📚 **Improved docs**: Docker-first getting started guide
+
+---
+
+## 📦 What's in v0.5.0 (November 2025)
 
 ### Phase 2 Complete: Enterprise Readiness 🎉
 
