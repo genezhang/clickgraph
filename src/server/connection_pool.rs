@@ -115,11 +115,11 @@ impl ConnectionConfig {
             .with_option("input_format_binary_read_json_as_string", "1")
             .with_option("output_format_binary_write_json_as_string", "1");
 
-        // Set default role for this pool if specified
-        if let Some(role) = role {
-            // Note: SET ROLE needs to be executed per connection, not per Client config
-            // We'll handle this in the first query execution
-            client = client.with_option("role", role);
+        // Set role for this connection pool via ClickHouse option
+        // This adds the role parameter to all HTTP requests from this client
+        if let Some(role_name) = role {
+            log::debug!("Creating connection pool with role: {}", role_name);
+            client = client.with_option("role", role_name);
         }
 
         client
