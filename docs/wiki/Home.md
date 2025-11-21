@@ -24,21 +24,42 @@
 
 ## ⚡ Quick Start (5 Minutes)
 
-Get ClickGraph running in 5 minutes with Docker:
+Get ClickGraph running in 5 minutes with our pre-built Docker image:
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/genezhang/clickgraph.git
-cd clickgraph
+# 1. Pull the latest Docker image
+docker pull genezhang/clickgraph:latest
 
-# 2. Start ClickHouse and ClickGraph
-docker-compose up -d
+# 2. Start ClickHouse
+docker run -d --name clickhouse \
+  -p 8123:8123 \
+  -e CLICKHOUSE_DB=brahmand \
+  -e CLICKHOUSE_USER=test_user \
+  -e CLICKHOUSE_PASSWORD=test_pass \
+  clickhouse/clickhouse-server:latest
 
-# 3. Run your first query
+# 3. Run ClickGraph with ClickHouse credentials
+docker run -d --name clickgraph \
+  --link clickhouse:clickhouse \
+  -p 8080:8080 \
+  -p 7687:7687 \
+  -e CLICKHOUSE_URL="http://clickhouse:8123" \
+  -e CLICKHOUSE_USER="test_user" \
+  -e CLICKHOUSE_PASSWORD="test_pass" \
+  -e CLICKHOUSE_DATABASE="brahmand" \
+  genezhang/clickgraph:latest
+
+# 4. Run your first query
 curl -X POST http://localhost:8080/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User) RETURN u.name LIMIT 5"}'
 ```
+
+**📌 Important**: ClickGraph requires ClickHouse credentials via environment variables:
+- `CLICKHOUSE_URL` - ClickHouse server URL
+- `CLICKHOUSE_USER` - Database username
+- `CLICKHOUSE_PASSWORD` - Database password
+- `CLICKHOUSE_DATABASE` - Default database name
 
 **Result**: Your first graph query in 5 minutes! 🎉
 
