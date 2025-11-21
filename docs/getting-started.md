@@ -5,20 +5,60 @@ This guide will help you get ClickGraph up and running quickly for your first gr
 ## Prerequisites
 
 - **ClickHouse**: Version 21.3+ running locally or accessible via network
-- **Rust**: Version 1.85+ for building from source
-- **Docker**: (Optional) For running ClickHouse via Docker Compose
+- **Docker**: For running ClickHouse and ClickGraph (recommended)
+- **Rust**: Version 1.85+ (only if building from source)
 
-## Quick Setup (5 minutes)
+## Quick Setup (2 minutes)
 
-### 1. Start ClickHouse
+### Option 1: Docker Compose (Recommended - Fastest)
 
-**Option A: Using Docker (Recommended)**
+Pull pre-built images and start everything:
+
 ```bash
-# Clone ClickGraph repository
+# Download docker-compose.yaml
+curl -o docker-compose.yaml https://raw.githubusercontent.com/genezhang/clickgraph/main/docker-compose.yaml
+
+# Start all services (ClickHouse + ClickGraph)
+docker-compose up -d
+
+# Check logs
+docker-compose logs -f clickgraph
+```
+
+You should see:
+```
+ClickGraph v0.5.1 (fork of Brahmand)
+
+Starting HTTP server on 0.0.0.0:8080
+Starting Bolt server on 0.0.0.0:7687
+ClickGraph server is running
+  HTTP API: http://0.0.0.0:8080
+  Bolt Protocol: bolt://0.0.0.0:7687
+```
+
+🎉 **ClickGraph is now running!**
+
+**What just happened?**
+- ✅ ClickHouse downloaded and started (ports 8123/9000)
+- ✅ ClickGraph image pulled from Docker Hub (`genezhang/clickgraph:latest`)
+- ✅ Pre-configured schema loaded (`test_integration.yaml`)
+- ✅ HTTP API ready at http://localhost:8080
+- ✅ Bolt protocol ready at bolt://localhost:7687
+
+Skip to [First Graph Query](#first-graph-query) to start querying!
+
+---
+
+### Option 2: Build from Source (For Contributors)
+
+**Prerequisites**: Rust toolchain 1.85+ and Docker for ClickHouse
+
+```bash
+# 1. Clone repository
 git clone https://github.com/genezhang/clickgraph
 cd clickgraph
 
-# Start ONLY ClickHouse (not the clickgraph service)
+# 2. Start ONLY ClickHouse (not the clickgraph service)
 docker-compose up -d clickhouse-service
 
 # Note: If you accidentally started all services with 'docker-compose up -d',
@@ -31,10 +71,7 @@ docker-compose up -d clickhouse-service
 > If you run `docker-compose up -d` (all services), both the containerized ClickGraph 
 > and your local `cargo run` will try to bind to port 8080, causing a conflict.
 
-**Option B: Existing ClickHouse**
-Ensure your ClickHouse instance is accessible and you have credentials.
-
-### 2. Configure Environment
+**Configure Environment**:
 ```bash
 # Set ClickHouse connection details
 export CLICKHOUSE_URL="http://localhost:8123"
@@ -46,7 +83,7 @@ export CLICKHOUSE_DATABASE="brahmand"
 export GRAPH_CONFIG_PATH="./schemas/demo/social_network.yaml"
 ```
 
-### 3. Build and Run ClickGraph
+**Build and Run**:
 ```bash
 # Build ClickGraph
 cargo build --release
@@ -60,7 +97,7 @@ cargo run --bin clickgraph
 
 You should see output like:
 ```
-ClickGraph v0.5.0 (fork of Brahmand)
+ClickGraph v0.5.1 (fork of Brahmand)
 
 Starting HTTP server on 0.0.0.0:8080
 Starting Bolt server on 0.0.0.0:7687
@@ -73,17 +110,22 @@ Bolt server loop starting, listening for connections...
 
 🎉 **ClickGraph is now running!**
 
-> **⚠️ Port Conflict?** If you see `Address already in use` error:
+---
+
+### Troubleshooting (Build from Source only)
+
+> **⚠️ Port Conflict?** If you see `Address already in use` error when running `cargo run`:
 > ```
 > Error: Address already in use (os error 10048)
 > ```
-> **Option 1:** Stop the conflicting container:
+> **Cause:** The Docker Compose ClickGraph container is running (competes for port 8080).
+> 
+> **Solution 1:** Stop the containerized ClickGraph:
 > ```bash
 > docker-compose stop clickgraph
-> # Or: docker stop clickgraph (if running standalone)
 > ```
 > 
-> **Option 2:** Use a different port:
+> **Solution 2:** Use a different port:
 > ```bash
 > cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 > # Then access at: http://localhost:8081
@@ -95,6 +137,8 @@ Bolt server loop starting, listening for connections...
 > Error fetching remote schema: no rows returned by a query
 > ```
 > These are **expected warnings** about ClickGraph's internal catalog system. They don't affect functionality - your queries will work correctly!
+
+---
 
 ## First Graph Query
 
