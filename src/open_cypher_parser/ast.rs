@@ -65,6 +65,7 @@ pub struct WhereClause<'a> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ReturnClause<'a> {
+    pub distinct: bool,
     pub return_items: Vec<ReturnItem<'a>>,
 }
 

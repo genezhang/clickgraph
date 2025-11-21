@@ -73,13 +73,17 @@ impl ToSql for SelectItems {
     fn to_sql(&self) -> String {
         let mut sql: String = String::new();
 
-        if self.0.is_empty() {
+        if self.items.is_empty() {
             return sql;
         }
 
-        sql.push_str("SELECT \n");
+        if self.distinct {
+            sql.push_str("SELECT DISTINCT \n");
+        } else {
+            sql.push_str("SELECT \n");
+        }
 
-        for (i, item) in self.0.iter().enumerate() {
+        for (i, item) in self.items.iter().enumerate() {
             sql.push_str("      ");
             sql.push_str(&item.expression.to_sql());
             if let Some(alias) = &item.col_alias {
@@ -87,7 +91,7 @@ impl ToSql for SelectItems {
                 sql.push_str(&alias.0);
                 sql.push('"');
             }
-            if i + 1 < self.0.len() {
+            if i + 1 < self.items.len() {
                 sql.push_str(", ");
             }
             sql.push('\n');
@@ -242,7 +246,7 @@ impl ToSql for Cte {
                 let mut cte_body = String::new();
 
                 // If there are no explicit SELECT items, default to SELECT *
-                if plan.select.0.is_empty() {
+                if plan.select.items.is_empty() {
                     cte_body.push_str("SELECT *\n");
                 } else {
                     cte_body.push_str(&plan.select.to_sql());

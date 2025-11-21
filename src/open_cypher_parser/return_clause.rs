@@ -30,6 +30,10 @@ pub fn parse_return_clause(
 
     let (input, _) = ws(tag_no_case("RETURN")).parse(input)?;
 
+    // Check for optional DISTINCT keyword
+    let (input, distinct) = opt(ws(tag_no_case("DISTINCT"))).parse(input)?;
+    let distinct = distinct.is_some();
+
     let (input, return_items) = context(
         "Error in return clause",
         separated_list1(
@@ -39,7 +43,7 @@ pub fn parse_return_clause(
     )
     .parse(input)?;
 
-    let return_clause = ReturnClause { return_items };
+    let return_clause = ReturnClause { distinct, return_items };
 
     Ok((input, return_clause))
 }
@@ -88,6 +92,34 @@ mod tests {
                     alias: Some("alias"),
                 };
                 assert_eq!(&return_item, &expected);
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_return_clause_with_distinct() {
+        let input = "RETURN DISTINCT a.name";
+        let res = parse_return_clause(input);
+        match res {
+            Ok((remaining, return_clause)) => {
+                assert_eq!(remaining, "");
+                assert!(return_clause.distinct, "DISTINCT flag should be true");
+                assert_eq!(return_clause.return_items.len(), 1);
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_return_clause_without_distinct() {
+        let input = "RETURN a.name";
+        let res = parse_return_clause(input);
+        match res {
+            Ok((remaining, return_clause)) => {
+                assert_eq!(remaining, "");
+                assert!(!return_clause.distinct, "DISTINCT flag should be false");
+                assert_eq!(return_clause.return_items.len(), 1);
             }
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
         }

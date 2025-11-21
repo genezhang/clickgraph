@@ -59,7 +59,10 @@ pub struct RenderPlan {
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct SelectItems(pub Vec<SelectItem>);
+pub struct SelectItems {
+    pub items: Vec<SelectItem>,
+    pub distinct: bool,
+}
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct SelectItem {
