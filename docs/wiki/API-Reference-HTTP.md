@@ -173,6 +173,130 @@ Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query" `
 
 ---
 
+### POST /query/sql
+
+**SQL Generation Endpoint** - Translate Cypher to ClickHouse SQL without execution.
+
+This production endpoint returns SQL statements as an array, including role management commands when applicable.
+
+**Request:**
+```http
+POST /query/sql HTTP/1.1
+Content-Type: application/json
+
+{
+  "query": "MATCH (u:User)-[:FOLLOWS]->(f:User) WHERE u.name = 'Alice' RETURN f.name",
+  "schema_name": "social_network",
+  "role": "analyst"
+}
+```
+
+**Parameters:**
+- `query` (string, required): Cypher query to translate
+- `schema_name` (string, optional): Schema to use (defaults to "default")
+- `target_database` (string, optional): Target SQL dialect - "clickhouse" (default) or "postgresql" (future)
+- `parameters` (object, optional): Query parameters for `$param` placeholders
+- `view_parameters` (object, optional): Parameters for parameterized views
+- `role` (string, optional): ClickHouse role for RBAC
+- `include_plan` (boolean, optional): Include logical plan in response (default: false)
+
+**Response:**
+```json
+{
+  "cypher_query": "MATCH (u:User)-[:FOLLOWS]->(f:User) WHERE u.name = 'Alice' RETURN f.name",
+  "target_database": "clickhouse",
+  "sql": [
+    "SET ROLE analyst",
+    "SELECT f.full_name AS \"f.name\" FROM users AS u INNER JOIN follows ON follows.follower_id = u.user_id INNER JOIN users AS f ON f.user_id = follows.followed_id WHERE u.full_name = 'Alice'"
+  ],
+  "role": "analyst",
+  "metadata": {
+    "query_type": "read",
+    "cache_status": "HIT",
+    "parse_time_ms": 0.152,
+    "planning_time_ms": 2.341,
+    "sql_generation_time_ms": 0.892,
+    "total_time_ms": 3.385
+  }
+}
+```
+
+**Key Features:**
+- **Array Format**: SQL returned as array of statements to execute in order
+- **Role Management**: Includes `SET ROLE` statement when role parameter provided
+- **No Execution**: SQL is generated but not executed against ClickHouse
+- **Performance Metrics**: Detailed timing breakdown for optimization
+- **Cache Status**: Shows if SQL was retrieved from query cache
+
+**Use Cases:**
+- **Query Debugging**: Inspect generated SQL before execution
+- **External Execution**: Use SQL in other tools or pipelines
+- **Performance Analysis**: Understand query planning decisions
+- **Integration**: Embed ClickGraph translation in existing workflows
+
+**Examples:**
+
+**curl:**
+```bash
+# Basic SQL generation
+curl -X POST http://localhost:8080/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "MATCH (u:User) RETURN u.name LIMIT 10"}'
+
+# With role (includes SET ROLE in array)
+curl -X POST http://localhost:8080/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User) WHERE u.age > 25 RETURN u.name",
+    "role": "analyst"
+  }'
+
+# With logical plan
+curl -X POST http://localhost:8080/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User)-[:FOLLOWS*1..3]->(f) RETURN f.name",
+    "include_plan": true
+  }'
+```
+
+**Python:**
+```python
+import requests
+
+# Generate SQL with role
+response = requests.post('http://localhost:8080/query/sql', json={
+    'query': 'MATCH (u:User)-[:FOLLOWS]->(f) WHERE u.name = $name RETURN f.name',
+    'parameters': {'name': 'Alice'},
+    'role': 'analyst'
+})
+
+data = response.json()
+print(f"SQL Statements: {data['sql']}")
+print(f"Generation Time: {data['metadata']['total_time_ms']}ms")
+
+# Execute SQL externally (without SET ROLE)
+from clickhouse_driver import Client
+ch_client = Client(host='localhost')
+for stmt in data['sql']:
+    if not stmt.startswith('SET ROLE'):
+        result = ch_client.execute(stmt)
+```
+
+**PowerShell:**
+```powershell
+# Generate SQL
+$response = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query/sql" `
+  -ContentType "application/json" `
+  -Body '{"query":"MATCH (u:User) RETURN u.name LIMIT 10"}'
+
+$response.sql
+```
+
+> **Note**: The older `/query?sql_only=true` endpoint returns SQL as a single string in `generated_sql` field. The `/query/sql` endpoint is preferred as it returns an array and includes role management statements.
+
+---
+
 ## Schema Management
 
 ### GET /schemas

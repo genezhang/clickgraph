@@ -254,6 +254,51 @@ WHERE (a)-[:FOLLOWS*1..2]->(b)
 
 Specify what to return from the query.
 
+### RETURN DISTINCT
+
+De-duplicate results when multiple paths lead to the same node.
+
+**Syntax:**
+```cypher
+RETURN DISTINCT expression [AS alias]
+```
+
+**When to Use:**
+- Multi-hop traversals where multiple paths reach the same node
+- Avoiding duplicate results in complex graph patterns
+- Queries with multiple relationship types to the same target
+
+**Examples:**
+
+```cypher
+// Friend-of-friend with de-duplication
+MATCH (me:User)-[:FOLLOWS]->(friend)-[:FOLLOWS]->(fof:User)
+WHERE me.name = 'Alice'
+RETURN DISTINCT fof.name
+// Without DISTINCT: May return same person multiple times (via different friends)
+// With DISTINCT: Each person appears once
+
+// Find all users connected within 2 hops
+MATCH (start:User)-[:FOLLOWS*1..2]->(connected:User)
+WHERE start.user_id = 1
+RETURN DISTINCT connected.name
+
+// Multiple relationship types
+MATCH (a:User)-[:FOLLOWS|FRIENDS_WITH]->(b:User)
+RETURN DISTINCT b.name
+```
+
+**Implementation:**
+- Generates `SELECT DISTINCT` in ClickHouse SQL
+- Applied after all filters and joins
+- Works with expressions, not just node properties
+
+```cypher
+// DISTINCT on computed values
+MATCH (u:User)
+RETURN DISTINCT u.age / 10 AS age_decade
+```
+
 ### Basic Returns
 
 ```cypher
