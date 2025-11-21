@@ -1,34 +1,30 @@
-## [0.5.1] - 2025-11-20
+## [0.5.1] - 2025-11-21
 
 ### 🚀 Features
 
-- **RETURN DISTINCT**: Add support for `RETURN DISTINCT` to de-duplicate query results
-  - Eliminates duplicate results in multi-path graph traversals
-  - Fully integrated: parser, AST, logical plan, SQL generation
-  - Generates `SELECT DISTINCT` in ClickHouse SQL
-- **Role-Based Connection Pool**: Implement per-role connection pooling for ClickHouse RBAC
-  - Maintains separate connection pools per role for performance
-  - Eliminates `SET ROLE` execution overhead on every query
-  - Prevents race conditions with concurrent role usage
-  - Uses ClickHouse HTTP `role` parameter for proper role context
-  - Works without role (uses default connection pool)
+- Add SQL Generation API (v0.5.1)
+- Implement RETURN DISTINCT for de-duplication
+- Add role-based connection pool for ClickHouse RBAC
 
 ### 🐛 Bug Fixes
 
-- Fix WHERE filter application in complex graph patterns (addresses user-reported duplicate results)
 - Eliminate flaky cache LRU eviction test with millisecond timestamps
+
+### 📚 Documentation
+
+- Fix getting-started guide issues
+- Update STATUS.md with fixed flaky test achievement (423/423 passing)
+- Add /query/sql endpoint and RETURN DISTINCT documentation
+- Add /query/sql endpoint and RETURN DISTINCT to wiki
 
 ### 🧪 Testing
 
-- Add comprehensive role-based connection pool integration tests
-- Verify RETURN DISTINCT de-duplication behavior
-- SQL generation endpoint correctly returns `["SET ROLE role", "SELECT ..."]` array
+- Add role-based connection pool integration tests
 
-### 📊 Test Coverage
+### ⚙️ Miscellaneous Tasks
 
-- **423/423 integration tests passing** (100%)
-- Role-based query tests: 4/6 passing (2 require ClickHouse roles setup)
-
+- Update CHANGELOG.md [skip ci]
+- Release v0.5.1
 ## [0.5.0] - 2025-11-19
 
 ### 🚀 Features
