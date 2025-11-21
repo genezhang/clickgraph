@@ -139,6 +139,7 @@ impl AnalyzerPass for GroupByBuilding {
                             input: child_tf.get_plan(),
                             items: projection.items.clone(),
                             kind: ProjectionKind::Return, // Inner projection is like RETURN
+                            distinct: false,
                         }));
 
                         // Wrap in GroupBy
@@ -156,13 +157,15 @@ impl AnalyzerPass for GroupByBuilding {
                             input: child_tf.get_plan(),
                             items: projection.items.clone(),
                             kind: ProjectionKind::Return,
+                            distinct: false,
                         })))
                     }
                 } else {
                     // This is a RETURN projection - check for aggregations
                     println!(
-                        "GroupByBuilding: Processing Projection(kind=Return) with {} items",
-                        projection.items.len()
+                        "GroupByBuilding: Processing Projection(kind=Return) with {} items, distinct={}",
+                        projection.items.len(),
+                        projection.distinct
                     );
 
                     // Use contains_aggregate to properly detect aggregates including computed expressions
@@ -408,6 +411,7 @@ mod tests {
                 },
             ],
             kind: ProjectionKind::Return,
+            distinct: false,
         }));
 
         let result = analyzer.analyze(projection.clone(), &mut plan_ctx).unwrap();
@@ -457,6 +461,7 @@ mod tests {
                 },
             ],
             kind: ProjectionKind::Return,
+            distinct: false,
         }));
 
         let result = analyzer.analyze(projection.clone(), &mut plan_ctx).unwrap();
@@ -490,6 +495,7 @@ mod tests {
                 },
             ],
             kind: ProjectionKind::Return,
+            distinct: false,
         }));
 
         let result = analyzer.analyze(projection.clone(), &mut plan_ctx).unwrap();
@@ -527,6 +533,7 @@ mod tests {
                 },
             ],
             kind: ProjectionKind::Return,
+            distinct: false,
         }));
 
         let result = analyzer.analyze(projection.clone(), &mut plan_ctx).unwrap();
@@ -572,6 +579,7 @@ mod tests {
             input: scan,
             items: vec![],
             kind: ProjectionKind::Return,
+            distinct: false,
         }));
 
         let result = analyzer.analyze(projection.clone(), &mut plan_ctx).unwrap();

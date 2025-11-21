@@ -319,6 +319,8 @@ pub struct Projection {
     pub items: Vec<ProjectionItem>,
     /// Indicates whether this projection comes from WITH or RETURN clause
     pub kind: ProjectionKind,
+    /// Whether DISTINCT should be applied to results
+    pub distinct: bool,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -395,16 +397,22 @@ impl Projection {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
+        println!("DEBUG Projection::rebuild_or_clone: self.distinct = {}", self.distinct);
         match input_tf {
             Transformed::Yes(new_input) => {
                 let new_node = LogicalPlan::Projection(Projection {
                     input: new_input.clone(),
                     items: self.items.clone(),
                     kind: self.kind.clone(),
+                    distinct: self.distinct,
                 });
+                println!("DEBUG Projection::rebuild_or_clone: Created new Projection with distinct = {}", self.distinct);
                 Transformed::Yes(Arc::new(new_node))
             }
-            Transformed::No(_) => Transformed::No(old_plan.clone()),
+            Transformed::No(_) => {
+                println!("DEBUG Projection::rebuild_or_clone: No transformation, returning old plan");
+                Transformed::No(old_plan.clone())
+            }
         }
     }
 }
@@ -697,6 +705,7 @@ impl LogicalPlan {
                 col_alias: None,
             }],
             kind: ProjectionKind::Return,
+            distinct: false,
         })
     }
 }
@@ -925,6 +934,7 @@ mod tests {
             input: original_input.clone(),
             items: projection_items.clone(),
             kind: ProjectionKind::Return,
+            distinct: false,
         };
 
         let old_plan = Arc::new(LogicalPlan::Projection(projection.clone()));
@@ -1135,6 +1145,7 @@ mod tests {
                 },
             ],
             kind: ProjectionKind::Return,
+            distinct: false,
         });
 
         // Verify the structure

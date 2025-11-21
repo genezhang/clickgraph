@@ -1,33 +1,66 @@
 # Rust/Cargo build artifacts
 target/
 **/target/
+Cargo.lock
 
 # Cargo-Chef recipe (caching layers)
 recipe.json
 
 # Docker build files
 Dockerfile
+Dockerfile.test
 .dockerignore
+docker-compose*.yaml
 
 # Git metadata
 .git
 .gitignore
+.gitattributes
 
 # CI/CD configs
 .github/
 
 # Environment files (secrets, creds)
 .env
+.env.*
 
 # IDE/editor settings
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
 
 # OS files
 .DS_Store
+Thumbs.db
 
-# Local ClickHouse data
+# Development/test data
 clickhouse_data/
-
 test_data/
+neo4j_data/
+neo4j_logs/
+
+# Documentation (not needed in runtime image)
+docs/
+archive/
+notes/
+*.md
+!README.md
+
+# Scripts (development only)
+scripts/
+*.py
+*.sh
+*.bat
+*.ps1
+
+# Test files
+tests/
+benchmarks/
+examples/
+
+# Backup files
+*.backup
+*.bak
+*.tmp

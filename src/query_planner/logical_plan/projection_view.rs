@@ -10,6 +10,7 @@ impl Projection {
             input: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),
             items,
             kind: super::ProjectionKind::Return,
+            distinct: false,
         }))
     }
 

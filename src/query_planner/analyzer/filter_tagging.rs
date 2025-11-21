@@ -147,6 +147,7 @@ impl AnalyzerPass for FilterTagging {
                 }
             }
             LogicalPlan::Projection(projection) => {
+                println!("🔍 FilterTagging: BEFORE processing Projection - distinct={}", projection.distinct);
                 println!("FilterTagging: Processing Projection, analyzing child input");
                 println!(
                     "FilterTagging: Projection input type: {:?}",
@@ -192,13 +193,16 @@ impl AnalyzerPass for FilterTagging {
                         plan_ctx.register_projection_alias(col_alias.0.clone(), mapped_expr);
                     }
                 }
-                Transformed::Yes(Arc::new(LogicalPlan::Projection(
+                let result = Transformed::Yes(Arc::new(LogicalPlan::Projection(
                     crate::query_planner::logical_plan::Projection {
                         input: child_tf.get_plan(),
                         items: mapped_items,
                         kind: projection.kind.clone(),
+                        distinct: projection.distinct,  // PRESERVE distinct flag from original projection
                     },
-                )))
+                )));
+                println!("🔍 FilterTagging: AFTER creating new Projection - distinct={}", projection.distinct);
+                result
             }
             LogicalPlan::GroupBy(group_by) => {
                 let child_tf =

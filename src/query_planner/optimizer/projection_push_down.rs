@@ -73,6 +73,7 @@ impl OptimizerPass for ProjectionPushDown {
                             input: logical_plan.clone(),
                             items: projections,
                             kind: crate::query_planner::logical_plan::ProjectionKind::Return,
+                            distinct: false,
                         }));
                         Transformed::Yes(new_proj)
                     } else {

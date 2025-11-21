@@ -18,9 +18,18 @@ This guide will help you get ClickGraph up and running quickly for your first gr
 git clone https://github.com/genezhang/clickgraph
 cd clickgraph
 
-# Start ClickHouse with pre-configured settings
-docker-compose up -d
+# Start ONLY ClickHouse (not the clickgraph service)
+docker-compose up -d clickhouse-service
+
+# Note: If you accidentally started all services with 'docker-compose up -d',
+# stop the clickgraph container first:
+# docker-compose stop clickgraph
 ```
+
+> **💡 Why `clickhouse-service` only?** 
+> This starts just ClickHouse, allowing you to run ClickGraph from source with `cargo run`. 
+> If you run `docker-compose up -d` (all services), both the containerized ClickGraph 
+> and your local `cargo run` will try to bind to port 8080, causing a conflict.
 
 **Option B: Existing ClickHouse**
 Ensure your ClickHouse instance is accessible and you have credentials.
@@ -44,6 +53,9 @@ cargo build --release
 
 # Start with default configuration (HTTP:8080, Bolt:7687)
 cargo run --bin clickgraph
+
+# Or use custom ports if 8080 is already in use:
+# cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 ```
 
 You should see output like:
@@ -60,6 +72,22 @@ Bolt server loop starting, listening for connections...
 ```
 
 🎉 **ClickGraph is now running!**
+
+> **⚠️ Port Conflict?** If you see `Address already in use` error:
+> ```
+> Error: Address already in use (os error 10048)
+> ```
+> **Option 1:** Stop the conflicting container:
+> ```bash
+> docker-compose stop clickgraph
+> # Or: docker stop clickgraph (if running standalone)
+> ```
+> 
+> **Option 2:** Use a different port:
+> ```bash
+> cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
+> # Then access at: http://localhost:8081
+> ```
 
 > **⚠️ Normal Startup Warnings**: You may see warnings like:
 > ```

@@ -18,6 +18,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.85
+
     - name: Code format check
       run: cargo fmt -- --check
 

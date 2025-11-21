@@ -73,6 +73,7 @@ impl PlanSanitization {
                         input: sanitized_input.get_plan(),
                         items: sanitized_projection,
                         kind: projection.kind.clone(),
+                        distinct: projection.distinct,
                     });
                     Transformed::Yes(Arc::new(sanitized_projection_plan))
                 } else {

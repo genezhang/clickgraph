@@ -1,10 +1,581 @@
 # Known Issues
 
-**Current Status**: Major functionality working, 1 feature limitation  
+**Current Status**: Major functionality working, 3 active issues identified  
 **Test Results**: 423/423 unit tests passing (100%), 197/308 integration tests passing (64%)  
-**Active Issues**: None blocking
+**Active Issues**: 2 bugs (relationship uniqueness, disconnected patterns), 1 enhancement (polymorphic schema)
+
+**Date Updated**: November 20, 2025
 
 **Note**: Some integration tests have incorrect expectations or test unimplemented features. Known feature gaps documented below.
+
+---
+
+## 🐛 BUG: Node Uniqueness Not Enforced Within MATCH Pattern
+
+**Status**: 🐛 **BUG** (Discovered November 20, 2025)  
+**Severity**: Medium - Violates Neo4j/OpenCypher semantics  
+**Impact**: Friends-of-friends queries can return the original user
+
+### Summary
+According to OpenCypher specification, **relationship uniqueness** is enforced (same relationship cannot appear twice), but **node uniqueness within a pattern** is also expected. Currently, ClickGraph allows the start node to appear as the end node in the same pattern match.
+
+**Neo4j/OpenCypher Behavior** (from spec):
+> "Looking for a user's friends of friends should not return said user"
+
+### Test Case
+```cypher
+MATCH (user:User)-[r1:FOLLOWS]-()-[r2:FOLLOWS]-(fof:User)
+WHERE user.user_id = 1
+RETURN DISTINCT fof.user_id
+ORDER BY fof.user_id
+```
+
+**Current Behavior** ❌:
+- Returns: `[0, 1, 2, 3, ...]`  
+- **User_id 1 appears in its own friends-of-friends results!**
+
+**Expected Behavior** ✅:
+- Returns: `[0, 2, 3, ...]`
+- User_id 1 should NOT appear (it's the start node)
+
+### Technical Details
+
+**Current SQL** (allows node reuse):
+```sql
+FROM users_bench AS user
+INNER JOIN user_follows_bench AS r1 ON r1.from_id = user.user_id
+INNER JOIN users_bench AS intermediate ON intermediate.user_id = r1.to_id
+INNER JOIN user_follows_bench AS r2 ON r2.from_id = intermediate.user_id  
+INNER JOIN users_bench AS fof ON fof.user_id = r2.to_id
+WHERE user.user_id = 1
+-- Missing: AND fof.user_id <> user.user_id
+```
+
+**What Works** ✅:
+- ✅ Relationship uniqueness: r1 and r2 are different relationship instances
+- ✅ Different table aliases ensure no relationship reuse
+
+**What Does NOT Work** ❌:
+- ❌ Node uniqueness: Same node can appear as different aliases in pattern
+- ❌ Start node can be returned as end node
+
+### Scope: Single MATCH vs Multiple MATCH
+
+**Neo4j Semantics**:
+1. **Within single MATCH**: Uniqueness enforced for relationships (✅ working) AND nodes (❌ not working)
+2. **Across multiple MATCH clauses**: NO uniqueness constraint (✅ working correctly)
+
+**Evidence from testing**:
+```cypher
+-- Single MATCH with comma (uniqueness should apply):
+MATCH (user:User)-[r1:FOLLOWS]-(friend), (friend)-[r2:FOLLOWS]-(fof:User)
+WHERE user.user_id = 1
+RETURN DISTINCT fof.user_id
+-- Current: Returns 5 results, user_id 1 included ❌
+-- Expected: Should exclude user_id 1
+
+-- Two separate MATCH clauses (NO uniqueness):
+MATCH (user:User)-[r1:FOLLOWS]-(friend)
+MATCH (friend)-[r2:FOLLOWS]-(fof:User)
+WHERE user.user_id = 1  
+RETURN DISTINCT fof.user_id
+-- Current: Returns 99,906 results, user_id 1 NOT included ✅
+-- This is CORRECT - no uniqueness across MATCH clauses
+```
+
+### Solution Options
+
+**Option A: Automatic Node Exclusion** (Neo4j-compatible) ⭐ **RECOMMENDED**
+- Add implicit WHERE clause: `WHERE fof.user_id <> user.user_id`
+- Track all node aliases in pattern
+- Generate exclusion predicates for all node pairs
+- **Benefits**: Neo4j-compatible, users expect this behavior
+- **Complexity**: Medium (2-3 days)
+
+**Option B: Explicit User Responsibility** (current behavior)
+- Require users to add: `WHERE fof <> user` manually
+- Document this requirement clearly
+- **Benefits**: Simple, no code changes
+- **Drawbacks**: Not Neo4j-compatible, confusing to users
+
+**Option C: Configuration Flag** (flexible)
+- Add config option: `enforce_node_uniqueness: bool`
+- Default to `true` for Neo4j compatibility
+- Allow disabling for performance
+- **Benefits**: Flexibility, gradual migration
+- **Complexity**: High (needs configuration infrastructure)
+
+### Implementation Plan (Option A)
+
+**Phase 1: Query Planning** (track node aliases)
+```rust
+// In match_clause.rs evaluation
+struct PatternContext {
+    node_aliases: HashSet<String>,  // NEW: Track all nodes in pattern
+    // ... existing fields
+}
+
+// Collect aliases during pattern traversal
+pattern_ctx.node_aliases.insert(start_node_alias);
+pattern_ctx.node_aliases.insert(end_node_alias);
+```
+
+**Phase 2: SQL Generation** (add exclusion predicates)
+```rust
+// In plan_builder.rs extract_where()
+fn generate_node_exclusion_predicates(
+    node_aliases: &HashSet<String>,
+    plan: &LogicalPlan
+) -> Vec<RenderExpr> {
+    let mut predicates = vec![];
+    let aliases: Vec<_> = node_aliases.iter().collect();
+    
+    // Generate exclusions for all pairs: a <> b, a <> c, b <> c
+    for i in 0..aliases.len() {
+        for j in (i+1)..aliases.len() {
+            predicates.push(RenderExpr::BinaryOp {
+                left: column_ref(aliases[i], "id"),
+                op: Operator::NotEq,
+                right: column_ref(aliases[j], "id"),
+            });
+        }
+    }
+    predicates
+}
+```
+
+### Files to Modify
+1. `src/query_planner/logical_plan/match_clause.rs` - Track node aliases
+2. `src/query_planner/plan_ctx/mod.rs` - Store pattern context
+3. `src/render_plan/plan_builder.rs` - Generate exclusion predicates
+4. `src/clickhouse_query_generator/` - Ensure predicates in WHERE clause
+
+### Testing Requirements
+1. Add test: Single MATCH with start node as end node
+2. Add test: Multiple node pairs require all exclusions
+3. Add test: Comma-separated patterns enforce uniqueness
+4. Add test: Multiple MATCH clauses do NOT enforce uniqueness
+5. Add Neo4j comparison test (requires Neo4j container)
+
+### References
+- OpenCypher Spec: "Uniqueness" section under "Patterns"
+- Neo4j Documentation: https://neo4j.com/docs/cypher-manual/current/patterns/concepts/
+- Related: `test_bolt_simple.py` - Found while testing friends-of-friends query
+
+---
+
+## 🐛 BUG: Disconnected Patterns Generate Invalid SQL
+
+**Status**: 🐛 **BUG** (Discovered November 20, 2025)  
+**Severity**: Medium - Generates invalid SQL instead of proper error  
+**Impact**: Comma-separated patterns without connection create broken queries
+
+### Summary
+When using comma-separated patterns in a single MATCH clause where the patterns are NOT connected (no shared node aliases), the SQL generator creates invalid SQL instead of throwing the expected `DisconnectedPatternFound` error.
+
+### Test Case
+```cypher
+MATCH (user:User), (other:User) 
+WHERE user.user_id = 1 
+RETURN other.user_id
+```
+
+**Current Behavior** ❌:
+- Generates invalid SQL
+- ClickHouse error: `Unknown expression identifier 'user.user_id'`
+
+**Generated SQL** (Invalid):
+```sql
+SELECT other.user_id AS "other.user_id"
+FROM brahmand.users_bench AS other
+WHERE user.user_id = 1   -- ❌ 'user' not in FROM clause!
+```
+
+**Expected Behavior** ✅:
+- Should throw error: `LogicalPlanError::DisconnectedPatternFound`
+- OR generate CROSS JOIN if that's the intent
+
+### Technical Details
+
+**Code Location**: `src/query_planner/logical_plan/match_clause.rs` lines 683-686
+
+**Existing Check** (not working):
+```rust
+// if two comma separated patterns found and they are not connected 
+// i.e. there is no common node alias between them then throw error.
+if path_pattern_idx > 0 {
+    return Err(LogicalPlanError::DisconnectedPatternFound);
+}
+```
+
+**Why It Fails**:
+The check is in the right place but not being triggered. Likely causes:
+1. Logic to detect "not connected" is incorrect
+2. Check happens too late after FROM table already selected
+3. Path traversal doesn't properly identify disconnected patterns
+
+### What Should Happen
+
+**Option A: Error** (strict Neo4j compatibility):
+```
+Error: Disconnected pattern found. 
+Query: MATCH (user:User), (other:User) WHERE user.user_id = 1
+```
+
+**Option B: CROSS JOIN** (SQL-like semantics):
+```sql
+SELECT other.user_id
+FROM users AS user
+CROSS JOIN users AS other
+WHERE user.user_id = 1
+```
+
+### Comparison: Connected vs Disconnected
+
+**Connected Pattern** (works correctly ✅):
+```cypher
+MATCH (user:User)-[r:FOLLOWS]-(friend), (friend)-[r2:FOLLOWS]-(fof:User)
+WHERE user.user_id = 1
+```
+- Shared node: `friend` appears in both patterns
+- SQL correctly joins all tables
+
+**Disconnected Pattern** (broken ❌):
+```cypher
+MATCH (user:User), (other:User)
+WHERE user.user_id = 1
+```
+- NO shared nodes between patterns
+- Should error OR generate CROSS JOIN
+
+### Solution
+
+**Phase 1: Fix Detection Logic**
+```rust
+fn patterns_are_connected(
+    pattern1_aliases: &HashSet<String>,
+    pattern2_aliases: &HashSet<String>
+) -> bool {
+    // Check if any node alias appears in both patterns
+    pattern1_aliases.intersection(pattern2_aliases).count() > 0
+}
+
+// During pattern evaluation:
+if path_pattern_idx > 0 {
+    let prev_aliases = collect_aliases_from_previous_patterns();
+    let curr_aliases = collect_aliases_from_current_pattern();
+    
+    if !patterns_are_connected(&prev_aliases, &curr_aliases) {
+        return Err(LogicalPlanError::DisconnectedPatternFound);
+    }
+}
+```
+
+**Phase 2: Better Error Message**
+```rust
+#[error("Disconnected patterns found in MATCH clause. Patterns must share at least one node variable. Query: {0}")]
+DisconnectedPatternFound(String),
+```
+
+### Files to Modify
+1. `src/query_planner/logical_plan/match_clause.rs` - Fix detection logic
+2. `src/query_planner/logical_plan/errors.rs` - Improve error message
+3. Add test: `test_disconnected_pattern_error`
+
+### Testing Requirements
+1. ✅ Test already exists: `test_traverse_disconnected_pattern` (line 1342)
+2. Add E2E test with actual query execution
+3. Verify proper error message returned to client
+4. Test with 3+ disconnected patterns
+
+### References
+- Existing test: `match_clause.rs` line 1320-1345
+- Error enum: `errors.rs` line 12
+- Related: Comma-separated pattern support (fully working for connected patterns)
+
+---
+
+## 💡 ENHANCEMENT: Polymorphic Schema Support (Ultra-Simplified)
+
+**Status**: 💡 **PROPOSED** (November 20, 2025)  
+**Severity**: Low - Enhancement for simpler schemas  
+**Impact**: **Extreme simplification** for users with single polymorphic relationship table
+
+### Summary
+For schemas with **one polymorphic relationship table storing most relationships**, support a **single relationship spec** that works for unlimited relationship types. Relationship types are derived from query, not configured.
+
+**Hybrid Support**: Explicit relationships can coexist as exceptions with higher priority.
+
+**Key Innovation**: Since there's ONE polymorphic table handling most cases, no need to list every relationship type - they're data-driven!
+
+**Benefits**:
+- ✅ **7-10 lines total config** for unlimited types (vs 100+ for 10 types)
+- ✅ **Low maintenance** - Add type to `type_values` list (prevents expensive typo queries)
+- ✅ **Data-driven** - Relationship types come from data
+- ✅ **Typo protection** - Fast validation errors vs expensive empty queries
+- ✅ **Hybrid flexibility** - Explicit relationships as exceptions (higher priority)
+- ✅ **Works with separate node tables** (users, posts, comments, etc.)
+- ✅ **Automatic type inference** from query labels
+
+**Recommended Configuration**:
+```yaml
+relationships:
+  - polymorphic: true
+    table: relationships
+    from_id: from_id
+    to_id: to_id
+    type_column: relation_type
+    type_values: [FOLLOWS, LIKES, AUTHORED, COMMENTED]  # ⭐ Values in type_column
+    from_label_column: from_type
+    to_label_column: to_type
+```
+
+### Current Schema Pattern
+```yaml
+relationships:
+  - name: FOLLOWS
+    table: user_follows # Dedicated table
+  - name: LIKES
+    table: user_likes   # Different table
+  # ... 10 lines per type × N types = 100+ lines
+```
+
+### Proposed Ultra-Simple Pattern
+```yaml
+nodes:
+  - label: User
+    table: users
+    # ... standard config
+  - label: Post
+    table: posts
+    # ... standard config
+
+relationships:
+  - polymorphic: true              # ✨ Single spec for ALL relationships!
+    table: relationships
+    from_id: from_id
+    to_id: to_id
+    type_column: relation_type     # 'FOLLOWS', 'LIKES', 'AUTHORED', etc.
+    from_label_column: from_type   # 'User', 'Post', 'Comment', etc.
+    to_label_column: to_type       # 'User', 'Post', 'Comment', etc.
+```
+
+**Configuration Reduction**: 7 lines total (vs 10× N lines before) = **93% reduction for 10 types**
+
+**Hybrid Configuration Example**:
+```yaml
+relationships:
+  # Polymorphic catch-all (handles 95% of relationships)
+  - polymorphic: true
+    table: relationships
+    from_id: from_id
+    to_id: to_id
+    type_column: relation_type
+    from_label_column: from_type
+    to_label_column: to_type
+  
+  # Exception: High-priority dedicated table
+  - name: RECOMMENDS
+    table: recommendations_optimized
+    from_id: user_id
+    to_id: product_id
+```
+
+**Resolution Priority**: Explicit (RECOMMENDS) → Polymorphic (everything else) → Error
+
+### Database Schema (with Heterogeneous Relationship Support)
+```sql
+-- Single node table with type discriminator
+CREATE TABLE entities (
+    id UInt64,
+    node_type LowCardinality(String),  -- 'User', 'Post', 'Comment'
+    name String,
+    properties String  -- JSON for flexible properties
+) ENGINE = MergeTree()
+ORDER BY (node_type, id);
+
+-- Single relationship table with type discriminators for endpoints
+CREATE TABLE relationships (
+    from_id UInt64,
+    to_id UInt64,
+    from_type LowCardinality(String),    -- NEW: Source type ('User', 'Admin')
+    to_type LowCardinality(String),      -- NEW: Target type ('User', 'Post')
+    relation_type LowCardinality(String), -- 'FOLLOWS', 'LIKES', 'AUTHORED'
+    properties String
+) ENGINE = MergeTree()
+ORDER BY (relation_type, from_type, to_type, from_id);
+```
+
+### Query Translation with Type Filtering
+```cypher
+MATCH (u:User)-[:LIKES]->(p:Post)
+WHERE u.user_id = 1
+RETURN p.name
+```
+
+Becomes:
+### Query Translation with Automatic Type Inference
+```cypher
+MATCH (u:User)-[:LIKES]->(p:Post)
+WHERE u.user_id = 1
+RETURN p.name
+```
+
+Query planner automatically extracts:
+- Source label: `User` (from `u:User`)
+- Target label: `Post` (from `p:Post`)
+- Relationship type: `LIKES` (from `[:LIKES]`)
+
+Generated SQL:
+```sql
+SELECT p.name
+FROM entities AS u
+WHERE u.node_type = 'User' AND u.user_id = 1
+INNER JOIN relationships AS r
+  ON r.from_id = u.id
+  AND r.relation_type = 'LIKES'
+  AND r.from_type = 'User'    -- ✨ INFERRED from u:User
+  AND r.to_type = 'Post'      -- ✨ INFERRED from p:Post
+INNER JOIN entities AS p
+  ON p.id = r.to_id
+  AND p.node_type = 'Post'
+```
+
+### The Heterogeneous Relationship Challenge
+
+**Problem**: A single polymorphic `relationships` table handles different endpoint types:
+- FOLLOWS: User → User (homogeneous)
+- LIKES: User → Post (heterogeneous!)
+- AUTHORED: User → Post
+
+**Solution**: Store endpoint types in relationship rows (`from_type`, `to_type` columns) + **automatically infer from query labels**
+
+**Benefits**:
+- ✅ **Zero config maintenance** - No from_type/to_type in YAML!
+- ✅ **Automatic inference** - Extract types from query labels  
+- ✅ Query optimization via type-based partitioning
+- ✅ Data validation at insert time
+- ✅ Handles any type→type combination
+
+**Important Constraint**:
+- ⚠️ **Labeled nodes recommended** for optimal performance
+- Works with unlabeled nodes but scans all types (slower)
+- Example: `(u:User)-[:LIKES]->(p:Post)` ✅ fast vs `(u)-[:LIKES]->(p)` ⚠️ slow
+
+### Implementation
+See detailed design: `notes/polymorphic-schema.md`
+
+**Key Changes**:
+1. Add `type_column` and `type_value` fields to RelationshipSchema config (only 2 fields per relationship!)
+2. **Extract node labels from query patterns** in match_clause analyzer
+3. Include inferred `from_type`/`to_type` predicates in JOIN conditions
+4. Database still stores `from_type`/`to_type` columns for filtering
+
+**Estimated Effort**: 2-3 days
+
+**Configuration Simplicity**:
+- ❌ **OLD**: 6 fields per relationship (type_column, type_value, from_type_column, from_type_value, to_type_column, to_type_value)
+- ✅ **NEW**: 2 fields per relationship (type_column, type_value) - **67% reduction!**
+
+### References
+- Design doc: `notes/polymorphic-schema.md`
+- Single Table Inheritance pattern (Rails, Django ORMs)
+- ClickHouse LowCardinality optimization
+
+---
+
+## 💡 ENHANCEMENT: Role-Based Connection Pooling
+
+**Status**: 💡 **PROPOSED** (November 20, 2025)  
+**Severity**: Low - Performance optimization for RBAC  
+**Impact**: Eliminates `SET ROLE` overhead per query
+
+### Summary
+Current `SET ROLE` approach has overhead and state management issues. Implement dedicated connection pools per role to avoid `SET ROLE` per query and ensure proper role isolation.
+
+**Current Problem**:
+```
+Query 1: SET ROLE analyst; SELECT ... → Uses connection C1
+Query 2: SELECT ... (default role)    → Picks C1, but role is still 'analyst'!
+```
+
+**Proposed Solution**:
+```rust
+struct RoleConnectionPool {
+    default_pool: Pool<ClickHouseConnection>,
+    role_pools: HashMap<String, Pool<ClickHouseConnection>>,
+}
+```
+
+### Benefits
+- ✅ No `SET ROLE` overhead per query
+- ✅ No reset needed - connections stay in their role
+- ✅ Thread-safe isolation between roles
+- ✅ Connection reuse within same role
+
+### Implementation
+See: `src/server/connection_pool.rs` (already created!)
+
+**Files Modified**:
+1. ✅ `src/server/connection_pool.rs` - Role pool manager (created)
+2. ✅ `src/server/mod.rs` - Module added
+3. TODO: `src/server/handlers.rs` - Use pool instead of SET ROLE
+4. TODO: Remove `set_role()` from `clickhouse_client.rs`
+
+**Estimated Effort**: 1-2 hours (already 70% complete)
+
+### References
+- Implementation: `src/server/connection_pool.rs`
+- Related: `src/server/clickhouse_client.rs` (has SET ROLE function to remove)
+
+---
+
+## 💡 ENHANCEMENT: Neo4j Container for Compatibility Testing
+
+**Status**: 💡 **IMPLEMENTED** (November 20, 2025)  
+**Severity**: Low - Testing infrastructure  
+**Impact**: Better Neo4j compatibility verification
+
+### Summary
+Added Neo4j container to `docker-compose.yaml` to enable side-by-side compatibility testing with actual Neo4j behavior.
+
+**Benefits**:
+- ✅ Verify Neo4j query semantics
+- ✅ Test node/relationship uniqueness behavior
+- ✅ Validate Cypher parsing compatibility
+- ✅ Benchmark query result differences
+
+### Configuration
+```yaml
+neo4j:
+  image: neo4j:5.15-community
+  ports:
+    - "7474:7474"  # HTTP UI
+    - "7687:7687"  # Bolt protocol
+  environment:
+    NEO4J_AUTH: neo4j/test_password
+```
+
+### Access
+- HTTP UI: http://localhost:7474
+- Bolt: `bolt://localhost:7687`
+- Auth: `neo4j` / `test_password`
+
+### Usage
+```bash
+docker-compose up neo4j
+# Access browser UI at http://localhost:7474
+# Or connect via Python: GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "test_password"))
+```
+
+### Testing Strategy
+1. Load same data into Neo4j and ClickGraph
+2. Run identical queries
+3. Compare results
+4. Document differences in KNOWN_ISSUES.md
+
+### Files Modified
+- ✅ `docker-compose.yaml` - Added Neo4j service
 
 ---
 

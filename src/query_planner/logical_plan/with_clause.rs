@@ -44,5 +44,6 @@ pub fn evaluate_with_clause<'a>(
         input: plan,
         items: projection_items,
         kind: ProjectionKind::With,
+        distinct: false,
     }))
 }

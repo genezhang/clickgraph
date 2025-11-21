@@ -681,6 +681,7 @@ impl GraphTRaversalPlanning {
                 col_alias: None,
             }],
             kind: crate::query_planner::logical_plan::ProjectionKind::Return,
+            distinct: false,
         }))
     }
 }

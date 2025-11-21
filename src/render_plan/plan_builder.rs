@@ -72,6 +72,8 @@ pub(crate) trait RenderPlanBuilder {
 
     fn extract_select_items(&self) -> RenderPlanBuilderResult<Vec<SelectItem>>;
 
+    fn extract_distinct(&self) -> bool;
+
     fn extract_from(&self) -> RenderPlanBuilderResult<Option<FromTable>>;
 
     fn extract_filters(&self) -> RenderPlanBuilderResult<Option<RenderExpr>>;
@@ -92,7 +94,7 @@ pub(crate) trait RenderPlanBuilder {
 
     fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan>;
 
-    fn build_simple_relationship_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan>;
+    fn build_simple_relationship_render_plan(&self, distinct_override: Option<bool>) -> RenderPlanBuilderResult<RenderPlan>;
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan>;
 }
@@ -958,6 +960,46 @@ impl RenderPlanBuilder for LogicalPlan {
         Ok(select_items)
     }
 
+    fn extract_distinct(&self) -> bool {
+        // Extract distinct flag from Projection nodes
+        let result = match &self {
+            LogicalPlan::Projection(projection) => {
+                println!("DEBUG extract_distinct: Found Projection, distinct={}", projection.distinct);
+                projection.distinct
+            }
+            LogicalPlan::OrderBy(order_by) => {
+                println!("DEBUG extract_distinct: OrderBy, recursing");
+                order_by.input.extract_distinct()
+            }
+            LogicalPlan::Skip(skip) => {
+                println!("DEBUG extract_distinct: Skip, recursing");
+                skip.input.extract_distinct()
+            }
+            LogicalPlan::Limit(limit) => {
+                println!("DEBUG extract_distinct: Limit, recursing");
+                limit.input.extract_distinct()
+            }
+            LogicalPlan::GroupBy(group_by) => {
+                println!("DEBUG extract_distinct: GroupBy, recursing");
+                group_by.input.extract_distinct()
+            }
+            LogicalPlan::GraphJoins(graph_joins) => {
+                println!("DEBUG extract_distinct: GraphJoins, recursing");
+                graph_joins.input.extract_distinct()
+            }
+            LogicalPlan::Filter(filter) => {
+                println!("DEBUG extract_distinct: Filter, recursing");
+                filter.input.extract_distinct()
+            }
+            _ => {
+                println!("DEBUG extract_distinct: Other variant, returning false");
+                false
+            }
+        };
+        println!("DEBUG extract_distinct: Returning {}", result);
+        result
+    }
+
     fn extract_from(&self) -> RenderPlanBuilderResult<Option<FromTable>> {
         let from_ref = match &self {
             LogicalPlan::Empty => None,
@@ -1390,26 +1432,51 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_filters()?,
             LogicalPlan::GraphRel(graph_rel) => {
-                log::trace!("GraphRel node detected, extracting filters from where_predicate only");
+                log::trace!("GraphRel node detected, collecting filters from ALL nested where_predicates");
 
-                // For GraphRel, check where_predicate first
-                // If present, use it (these are predicates that should go in final WHERE clause)
-                if let Some(ref predicate) = graph_rel.where_predicate {
-                    let filter_expr: RenderExpr = predicate.clone().try_into()?;
-                    log::trace!("GraphRel where_predicate filter: {:?}", filter_expr);
-                    Some(filter_expr)
+                // Collect all where_predicates from this GraphRel and nested GraphRel nodes
+                // This fixes the bug where only ONE GraphRel's predicate was being used
+                fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr> {
+                    let mut predicates = Vec::new();
+                    match plan {
+                        LogicalPlan::GraphRel(gr) => {
+                            // Add this GraphRel's predicate
+                            if let Some(ref pred) = gr.where_predicate {
+                                if let Ok(render_expr) = RenderExpr::try_from(pred.clone()) {
+                                    predicates.push(render_expr);
+                                }
+                            }
+                            // Recursively collect from children (to get nested GraphRel predicates)
+                            predicates.extend(collect_graphrel_predicates(&gr.left));
+                            predicates.extend(collect_graphrel_predicates(&gr.center));
+                            predicates.extend(collect_graphrel_predicates(&gr.right));
+                        }
+                        LogicalPlan::GraphNode(gn) => {
+                            predicates.extend(collect_graphrel_predicates(&gn.input));
+                        }
+                        // Don't recurse into other node types - only GraphRel/GraphNode
+                        _ => {}
+                    }
+                    predicates
+                }
+
+                let all_predicates = collect_graphrel_predicates(&LogicalPlan::GraphRel(graph_rel.clone()));
+                
+                if all_predicates.is_empty() {
+                    None
+                } else if all_predicates.len() == 1 {
+                    log::trace!("Found 1 GraphRel predicate");
+                    Some(all_predicates.into_iter().next().unwrap())
                 } else {
-                    // If no where_predicate, recursively check children for Filter nodes
-                    // This handles cases where Filter is nested under GraphRel
-                    // (e.g., multiple OPTIONAL MATCH wrapping a WHERE clause)
-                    log::trace!("GraphRel has no where_predicate, checking children");
-
-                    // Try left, center, right in order
-                    graph_rel
-                        .left
-                        .extract_filters()?
-                        .or_else(|| graph_rel.center.extract_filters().ok().flatten())
-                        .or_else(|| graph_rel.right.extract_filters().ok().flatten())
+                    // Combine with AND
+                    log::trace!("Found {} GraphRel predicates, combining with AND", all_predicates.len());
+                    let combined = all_predicates.into_iter().reduce(|acc, pred| {
+                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![acc, pred],
+                        })
+                    }).unwrap();
+                    Some(combined)
                 }
             }
             LogicalPlan::Filter(filter) => {
@@ -1825,6 +1892,10 @@ impl RenderPlanBuilder for LogicalPlan {
     fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
         println!("DEBUG: try_build_join_based_plan called");
 
+        // Extract DISTINCT flag BEFORE unwrapping OrderBy/Limit/Skip
+        let distinct = self.extract_distinct();
+        println!("DEBUG: try_build_join_based_plan - extracted distinct: {}", distinct);
+
         // First, extract ORDER BY/LIMIT/SKIP if present
         let (core_plan, order_by_items, limit_val, skip_val) = match self {
             LogicalPlan::Limit(limit_node) => match limit_node.input.as_ref() {
@@ -1954,15 +2025,24 @@ impl RenderPlanBuilder for LogicalPlan {
         // - Complex nested queries
         // - Queries that don't have extractable JOINs
 
-        println!("DEBUG: Calling build_simple_relationship_render_plan");
-        self.build_simple_relationship_render_plan()
+        println!("DEBUG: Calling build_simple_relationship_render_plan with distinct: {}", distinct);
+        self.build_simple_relationship_render_plan(Some(distinct))
     }
 
     /// Build render plan for simple relationship queries using direct JOINs
-    fn build_simple_relationship_render_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
+    fn build_simple_relationship_render_plan(&self, distinct_override: Option<bool>) -> RenderPlanBuilderResult<RenderPlan> {
         println!(
             "DEBUG: build_simple_relationship_render_plan START - plan type: {:?}",
             std::mem::discriminant(self)
+        );
+
+        // Extract distinct flag from the outermost Projection BEFORE unwrapping
+        // This must be done first because unwrapping will replace self with core_plan
+        // However, if distinct_override is provided, use that instead
+        let distinct = distinct_override.unwrap_or_else(|| self.extract_distinct());
+        println!(
+            "DEBUG: build_simple_relationship_render_plan - extracted distinct (early): {}",
+            distinct
         );
 
         // Special case: Detect Projection(kind=Return) over GroupBy
@@ -2186,7 +2266,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 .collect::<Result<Vec<super::SelectItem>, RenderBuildError>>()?
                         } else {
                             // Fallback to original select items
-                            inner_render_plan.select.0.clone()
+                            inner_render_plan.select.items.clone()
                         };
 
                         // Step 3: Create CTE with GROUP BY + HAVING
@@ -2195,7 +2275,10 @@ impl RenderPlanBuilder for LogicalPlan {
                             cte_name: cte_name.clone(),
                             content: super::CteContent::Structured(RenderPlan {
                                 ctes: CteItems(vec![]),
-                                select: SelectItems(cte_select_items),
+                                select: SelectItems {
+                                    items: cte_select_items,
+                                    distinct: false,
+                                },
                                 from: inner_render_plan.from.clone(),
                                 joins: inner_render_plan.joins.clone(),
                                 filters: inner_render_plan.filters.clone(),
@@ -2340,7 +2423,10 @@ impl RenderPlanBuilder for LogicalPlan {
                         // Return the CTE-based plan with proper JOIN, ORDER BY, and LIMIT
                         return Ok(RenderPlan {
                             ctes: CteItems(vec![cte]),
-                            select: SelectItems(outer_select_items),
+                            select: SelectItems {
+                                items: outer_select_items,
+                                distinct: false,
+                            },
                             from: outer_from,
                             joins: JoinItems(vec![cte_join]),
                             filters: FilterItems(None),
@@ -2450,9 +2536,18 @@ impl RenderPlanBuilder for LogicalPlan {
             filtered_joins
         );
 
+        // distinct was already extracted at the beginning of this function
+        println!(
+            "DEBUG: build_simple_relationship_render_plan - using pre-extracted distinct: {}",
+            distinct
+        );
+
         Ok(RenderPlan {
             ctes: CteItems(vec![]),
-            select: SelectItems(final_select_items),
+            select: SelectItems {
+                items: final_select_items,
+                distinct,
+            },
             from: FromTableItem(from_table_to_view_ref(final_from)),
             joins: JoinItems(filtered_joins), // GraphJoinInference already ordered these correctly
             filters: FilterItems(final_filters),
@@ -2477,7 +2572,10 @@ impl RenderPlanBuilder for LogicalPlan {
             // The actual SQL generation happens in the server handler
             return Ok(RenderPlan {
                 ctes: CteItems(vec![]),
-                select: SelectItems(vec![]),
+                select: SelectItems {
+                    items: vec![],
+                    distinct: false,
+                },
                 from: FromTableItem(None),
                 joins: JoinItems(vec![]),
                 filters: FilterItems(None),
@@ -2968,7 +3066,10 @@ impl RenderPlanBuilder for LogicalPlan {
 
         Ok(RenderPlan {
             ctes: CteItems(extracted_ctes),
-            select: SelectItems(final_select_items),
+            select: SelectItems {
+                items: final_select_items,
+                distinct: self.extract_distinct(),
+            },
             from: FromTableItem(from_table_to_view_ref(final_from)),
             joins: JoinItems(extracted_joins),
             filters: FilterItems(final_filters),

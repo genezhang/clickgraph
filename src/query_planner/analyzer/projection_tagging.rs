@@ -32,6 +32,7 @@ impl AnalyzerPass for ProjectionTagging {
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Projection(projection) => {
+                println!("🔍 ProjectionTagging: BEFORE processing Projection - distinct={}", projection.distinct);
                 // First, recursively process the input child to preserve transformations
                 // from previous analyzer passes (like FilterTagging)
                 let child_tf = self.analyze_with_graph_schema(
@@ -73,11 +74,14 @@ impl AnalyzerPass for ProjectionTagging {
                     Self::tag_projection(item, plan_ctx, graph_schema)?;
                 }
 
-                Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
+                let result = Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
                     input: child_tf.get_plan(), // Use transformed child instead of original
                     items: proj_items_to_mutate,
                     kind: projection.kind.clone(),
-                })))
+                    distinct: projection.distinct,
+                })));
+                println!("🔍 ProjectionTagging: AFTER creating new Projection - distinct={}", projection.distinct);
+                result
             }
             LogicalPlan::GraphNode(graph_node) => {
                 let child_tf = self.analyze_with_graph_schema(

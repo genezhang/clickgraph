@@ -29,6 +29,47 @@ fn qualify_columns_with_alias(expr: LogicalExpr, alias: &str) -> LogicalExpr {
     }
 }
 
+/// Helper function to extract all table aliases referenced in an expression
+fn extract_referenced_aliases(expr: &LogicalExpr, aliases: &mut std::collections::HashSet<String>) {
+    match expr {
+        LogicalExpr::PropertyAccessExp(prop_access) => {
+            aliases.insert(prop_access.table_alias.0.clone());
+        }
+        LogicalExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                extract_referenced_aliases(operand, aliases);
+            }
+        }
+        LogicalExpr::ScalarFnCall(func) => {
+            for arg in &func.args {
+                extract_referenced_aliases(arg, aliases);
+            }
+        }
+        LogicalExpr::Case(case) => {
+            if let Some(expr) = &case.expr {
+                extract_referenced_aliases(expr, aliases);
+            }
+            for (when, then) in &case.when_then {
+                extract_referenced_aliases(when, aliases);
+                extract_referenced_aliases(then, aliases);
+            }
+            if let Some(else_expr) = &case.else_expr {
+                extract_referenced_aliases(else_expr, aliases);
+            }
+        }
+        LogicalExpr::List(list) => {
+            for item in list {
+                extract_referenced_aliases(item, aliases);
+            }
+        }
+        LogicalExpr::InSubquery(in_sub) => {
+            extract_referenced_aliases(&in_sub.expr, aliases);
+        }
+        // For other expression types, no action needed
+        _ => {}
+    }
+}
+
 /// Optimizer pass that pushes Filter predicates into GraphRel.where_predicate
 ///
 /// This pass looks for patterns like:
@@ -98,6 +139,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: new_graph_rel,
                                 items: proj.items.clone(),
                                 kind: proj.kind.clone(),
+                                distinct: proj.distinct,  // PRESERVE distinct flag
                             },
                         ));
 
@@ -182,6 +224,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: new_view_scan,
                                 items: proj.items.clone(),
                                 kind: proj.kind.clone(),
+                                distinct: proj.distinct,  // PRESERVE distinct flag
                             },
                         ));
 
@@ -263,6 +306,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: child_plan.clone(),
                                 items: proj.items.clone(),
                                 kind: proj.kind.clone(),
+                                distinct: proj.distinct,  // PRESERVE distinct flag
                             },
                         ))));
                     }
@@ -383,6 +427,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: new_view_scan,
                                 items: proj.items.clone(),
                                 kind: proj.kind.clone(),
+                                distinct: proj.distinct,  // PRESERVE distinct flag
                             }));
 
                             println!(
@@ -405,68 +450,88 @@ impl OptimizerPass for FilterIntoGraphRel {
                             input: new_input,
                             items: proj.items.clone(),
                             kind: proj.kind.clone(),
+                            distinct: proj.distinct,  // PRESERVE distinct flag
                         })))
                     }
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
             LogicalPlan::GraphRel(graph_rel) => {
-                // Skip if already has filters injected
-                if graph_rel.where_predicate.is_some() {
-                    log::debug!(
-                        "FilterIntoGraphRel: GraphRel already has where_predicate, skipping"
-                    );
-                    return Ok(Transformed::No(logical_plan.clone()));
-                }
-
                 println!(
                     "FilterIntoGraphRel: Processing GraphRel with left_connection='{}', right_connection='{}'",
                     graph_rel.left_connection, graph_rel.right_connection
                 );
+                
                 // Extract filters from plan_ctx for this GraphRel's aliases
-                let mut combined_filters: Vec<LogicalExpr> = vec![]; // Check left connection for filters
-                if let Ok(table_ctx) =
-                    plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_rel.left_connection.clone()))
-                {
-                    let filters = table_ctx.get_filters().clone();
-                    if !filters.is_empty() {
-                        log::debug!(
-                            "FilterIntoGraphRel: Found {} filters for left connection alias '{}' in GraphRel",
-                            filters.len(),
-                            graph_rel.left_connection
-                        );
-                        log::trace!("FilterIntoGraphRel: Left alias filters: {:?}", filters);
-                        // Qualify filters with the left alias
-                        let qualified_filters: Vec<LogicalExpr> = filters
-                            .into_iter()
-                            .map(|f| qualify_columns_with_alias(f, &graph_rel.left_connection))
-                            .collect();
-                        combined_filters.extend(qualified_filters);
+                let mut combined_filters: Vec<LogicalExpr> = vec![];
+                
+                // Track which aliases we've collected filters for (from existing predicate)
+                let mut collected_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+                
+                // Analyze existing predicate to find which aliases are already covered
+                if let Some(existing_pred) = &graph_rel.where_predicate {
+                    log::debug!(
+                        "FilterIntoGraphRel: GraphRel already has where_predicate, analyzing covered aliases"
+                    );
+                    // Extract aliases referenced in existing predicate
+                    extract_referenced_aliases(existing_pred, &mut collected_aliases);
+                    log::debug!("FilterIntoGraphRel: Existing predicate covers aliases: {:?}", collected_aliases);
+                    combined_filters.push(existing_pred.clone());
+                }
+                
+                // Check left connection for filters (only if not already collected)
+                if !collected_aliases.contains(&graph_rel.left_connection) {
+                    if let Ok(table_ctx) =
+                        plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_rel.left_connection.clone()))
+                    {
+                        let filters = table_ctx.get_filters().clone();
+                        if !filters.is_empty() {
+                            log::debug!(
+                                "FilterIntoGraphRel: Found {} filters for left connection alias '{}' in GraphRel",
+                                filters.len(),
+                                graph_rel.left_connection
+                            );
+                            log::trace!("FilterIntoGraphRel: Left alias filters: {:?}", filters);
+                            // Qualify filters with the left alias
+                            let qualified_filters: Vec<LogicalExpr> = filters
+                                .into_iter()
+                                .map(|f| qualify_columns_with_alias(f, &graph_rel.left_connection))
+                                .collect();
+                            combined_filters.extend(qualified_filters);
+                            collected_aliases.insert(graph_rel.left_connection.clone());
+                        }
                     }
+                } else {
+                    log::debug!("FilterIntoGraphRel: Skipping left alias '{}' - already collected", graph_rel.left_connection);
                 }
 
-                // Check right connection for filters
-                if let Ok(table_ctx) =
-                    plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_rel.right_connection.clone()))
-                {
-                    let filters = table_ctx.get_filters().clone();
-                    if !filters.is_empty() {
-                        println!(
-                            "FilterIntoGraphRel: Found {} filters for right connection alias '{}' in GraphRel",
-                            filters.len(),
-                            graph_rel.right_connection
-                        );
-                        println!("FilterIntoGraphRel: Right alias filters: {:?}", filters);
-                        // Qualify filters with the right alias
-                        let qualified_filters: Vec<LogicalExpr> = filters
-                            .into_iter()
-                            .map(|f| qualify_columns_with_alias(f, &graph_rel.right_connection))
-                            .collect();
-                        combined_filters.extend(qualified_filters);
+                // Check right connection for filters (only if not already collected)
+                if !collected_aliases.contains(&graph_rel.right_connection) {
+                    if let Ok(table_ctx) =
+                        plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_rel.right_connection.clone()))
+                    {
+                        let filters = table_ctx.get_filters().clone();
+                        if !filters.is_empty() {
+                            println!(
+                                "FilterIntoGraphRel: Found {} filters for right connection alias '{}' in GraphRel",
+                                filters.len(),
+                                graph_rel.right_connection
+                            );
+                            println!("FilterIntoGraphRel: Right alias filters: {:?}", filters);
+                            // Qualify filters with the right alias
+                            let qualified_filters: Vec<LogicalExpr> = filters
+                                .into_iter()
+                                .map(|f| qualify_columns_with_alias(f, &graph_rel.right_connection))
+                                .collect();
+                            combined_filters.extend(qualified_filters);
+                            collected_aliases.insert(graph_rel.right_connection.clone());
+                        }
                     }
+                } else {
+                    log::debug!("FilterIntoGraphRel: Skipping right alias '{}' - already collected", graph_rel.right_connection);
                 }
 
-                // If we found filters, create new GraphRel with them
+                // If we found filters, combine them with existing predicate
                 if !combined_filters.is_empty() {
                     use crate::query_planner::logical_expr::{Operator, OperatorApplication};
 
@@ -484,10 +549,27 @@ impl OptimizerPass for FilterIntoGraphRel {
                         );
                         println!("FilterIntoGraphRel: Combined predicate: {:?}", predicate);
 
+                        // Still need to process children for nested GraphRel nodes
+                        let left_tf = self.optimize(graph_rel.left.clone(), plan_ctx)?;
+                        let center_tf = self.optimize(graph_rel.center.clone(), plan_ctx)?;
+                        let right_tf = self.optimize(graph_rel.right.clone(), plan_ctx)?;
+
+                        // Rebuild with new filters and optimized children
+                        let (new_left, new_center, new_right) = match (left_tf, center_tf, right_tf) {
+                            (Transformed::Yes(l), Transformed::Yes(c), Transformed::Yes(r)) => (l, c, r),
+                            (Transformed::Yes(l), Transformed::Yes(c), Transformed::No(r)) => (l, c, r),
+                            (Transformed::Yes(l), Transformed::No(c), Transformed::Yes(r)) => (l, c, r),
+                            (Transformed::No(l), Transformed::Yes(c), Transformed::Yes(r)) => (l, c, r),
+                            (Transformed::Yes(l), Transformed::No(c), Transformed::No(r)) => (l, c, r),
+                            (Transformed::No(l), Transformed::Yes(c), Transformed::No(r)) => (l, c, r),
+                            (Transformed::No(l), Transformed::No(c), Transformed::Yes(r)) => (l, c, r),
+                            (Transformed::No(l), Transformed::No(c), Transformed::No(r)) => (l, c, r),
+                        };
+
                         let new_graph_rel = Arc::new(LogicalPlan::GraphRel(GraphRel {
-                            left: graph_rel.left.clone(),
-                            center: graph_rel.center.clone(),
-                            right: graph_rel.right.clone(),
+                            left: new_left,
+                            center: new_center,
+                            right: new_right,
                             alias: graph_rel.alias.clone(),
                             direction: graph_rel.direction.clone(),
                             left_connection: graph_rel.left_connection.clone(),
@@ -498,14 +580,14 @@ impl OptimizerPass for FilterIntoGraphRel {
                             path_variable: graph_rel.path_variable.clone(),
                             where_predicate: Some(predicate),
                             labels: graph_rel.labels.clone(),
-                            is_optional: graph_rel.is_optional, // Preserve optional flag
+                            is_optional: graph_rel.is_optional,
                         }));
 
                         return Ok(Transformed::Yes(new_graph_rel));
                     }
                 }
 
-                // No filters found, process children normally
+                // No new filters found at this level, still process children for nested filters
                 let left_tf = self.optimize(graph_rel.left.clone(), plan_ctx)?;
                 let center_tf = self.optimize(graph_rel.center.clone(), plan_ctx)?;
                 let right_tf = self.optimize(graph_rel.right.clone(), plan_ctx)?;

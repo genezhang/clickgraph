@@ -8,7 +8,7 @@
 
 **A high-performance, stateless, read-only graph query engine for ClickHouse with Neo4j ecosystem compatibility.**
 
-> **Note: ClickGraph is production-ready for view-based graph analysis with full Neo4j Bolt Protocol 5.8 support. This is a read-only analytical query engine - write operations are not supported. Codebase has diverged from the upstream with DDL/writes feature removal and other structure/code refactoring to follow Rust idiomatic style.**
+> **Note: ClickGraph is development-ready for view-based graph analysis with full Neo4j Bolt Protocol 5.8 support. This is a read-only analytical query engine - write operations are not supported. Codebase has diverged from the upstream with DDL/writes feature removal and other structure/code refactoring to follow Rust idiomatic style.**
 
 ---
 
@@ -75,7 +75,7 @@ curl -X POST http://localhost:8080/query \
 - ✅ **22% code reduction**: Modularized `plan_builder.rs` (769 lines removed) for better maintainability
 - ✅ **Undirected relationships**: `(a)-[r]-(b)` patterns with bidirectional matching via OR JOIN logic
 - ✅ **Bug fixes**: Anonymous node limitation documented, ChainedJoin CTE wrapping, WHERE clause filtering
-- ✅ **Test coverage**: 406/407 Rust unit tests (99.8%), 197/308 integration tests (64%)
+- ✅ **Test coverage**: 424/424 Rust unit tests (100%), integration tests pending
 - ✅ **Benchmark validation**: 14/14 queries passing (100%) across 3 scale levels (1K-5M nodes)
 
 **Performance Validated at Scale**
@@ -198,43 +198,74 @@ Both protocols share the same underlying query engine and ClickHouse backend. Bo
 
 **New to ClickGraph?** See the **[Getting Started Guide](docs/getting-started.md)** for a complete walkthrough.
 
+### Option 1: Docker (Recommended - No Build Required)
+
+Pull and run the pre-built image:
+
+```bash
+# Pull the latest image
+docker pull genezhang/clickgraph:latest
+
+# Start ClickHouse only
+docker-compose up -d clickhouse-service
+
+# Run ClickGraph from Docker Hub image
+docker run -d \
+  --name clickgraph \
+  --network clickgraph_default \
+  -p 8080:8080 \
+  -p 7687:7687 \
+  -e CLICKHOUSE_URL="http://clickhouse-service:8123" \
+  -e CLICKHOUSE_USER="test_user" \
+  -e CLICKHOUSE_PASSWORD="test_pass" \
+  -e CLICKHOUSE_DATABASE="brahmand" \
+  -v $(pwd)/schemas:/app/schemas:ro \
+  genezhang/clickgraph:latest
+```
+
+Or use docker-compose (uses published image by default):
+
+```bash
+docker-compose up -d
+```
+
+### Option 2: Build from Source
+
+Build and run locally with Rust:
+
+```bash
+# Prerequisites: Rust toolchain (1.85+) and Docker for ClickHouse
+
+# 1. Clone and start ClickHouse
+git clone https://github.com/genezhang/clickgraph
+cd clickgraph
+docker-compose up -d clickhouse-service
+
+# 2. Build and run ClickGraph
+cargo build --release
+cargo run --bin clickgraph
+
+# Or with custom ports
+cargo run --bin clickgraph -- --http-port 8080 --bolt-port 7687
+```
+
 > **⚠️ Windows Users**: The HTTP server has a known issue on Windows. Use Docker or WSL for development. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 
-### 5-Minute Setup (Docker - Recommended)
+### Test Your Setup
 
-1. **Clone and start services**:
-   ```bash
-   git clone https://github.com/genezhang/clickgraph
-   cd clickgraph
-   docker-compose up -d
-   ```
-   This starts both ClickHouse and ClickGraph with test data pre-loaded.
+Query via HTTP API:
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "MATCH (u:User) RETURN u.full_name LIMIT 5"}'
+```
 
-2. **Test the setup**:
-   ```bash
-   curl -X POST http://localhost:8080/query \
-     -H "Content-Type: application/json" \
-     -d '{"query": "MATCH (u:User) RETURN u.full_name LIMIT 5"}'
-   ```
+Or connect with Neo4j tools (cypher-shell, Neo4j Browser):
+```bash
+cypher-shell -a bolt://localhost:7687 -u neo4j -p password
+```
 
-### Native Build (Linux/macOS/WSL)
-
-1. **Start ClickHouse**:
-   ```bash
-   docker-compose up -d clickhouse
-   ```
-
-2. **Configure and run**:
-   ```bash
-   export CLICKHOUSE_URL="http://localhost:8123"
-   export CLICKHOUSE_USER="test_user"
-   export CLICKHOUSE_PASSWORD="test_pass"
-   export CLICKHOUSE_DATABASE="brahmand"
-   
-   cargo run --bin clickgraph
-   ```
-
-3. **Test with HTTP API (Recommended)**:
+---
    ```bash
    # Simple query
    curl -X POST http://localhost:8080/query \
@@ -528,7 +559,7 @@ First [Benchmark Results](notes/benchmarking.md)
   - Aggregation: `count()`, `sum()`, `avg()`, `min()`, `max()`, `collect()`
 - ✅ **Code Quality**: Major refactoring and bug fixes
   - 22% code reduction in core modules
-  - Comprehensive test coverage (99.8% Rust, 64% integration)
+  - Comprehensive test coverage (100% Rust unit tests)
   - Clean architecture with single source of truth
   - Windows compatibility fixes
 - ✅ **View-Based Graph Model**: Transform existing tables to graphs via YAML configuration  
@@ -536,7 +567,7 @@ First [Benchmark Results](notes/benchmarking.md)
 - ✅ **Flexible Configuration**: CLI options, environment variables, Docker deployment
 
 ### Test Coverage (November 15, 2025)
-- ✅ **Rust Unit Tests**: 406/407 passing (99.8%)
+- ✅ **Rust Unit Tests**: 424/424 passing (100%)
 - ✅ **Integration Tests**: 197/308 passing (64% - improved from 54%)
 - ✅ **Benchmarks**: 14/14 passing (100%)
 - ✅ **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
