@@ -1,3 +1,8 @@
+## [unreleased]
+
+### ⚙️ Miscellaneous Tasks
+
+- Update CHANGELOG.md [skip ci]
 ## [0.5.1] - 2025-11-21
 
 ### 🚀 Features
