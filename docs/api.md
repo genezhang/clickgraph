@@ -35,10 +35,17 @@ Content-Type: application/json
 
 **Parameters:**
 - `query` (string, required): Cypher query to execute
+  - Supports `RETURN DISTINCT` for de-duplicating results ✅ **[ADDED: v0.5.1]**
+  - Use when multiple graph paths lead to the same node (e.g., friend-of-friend queries)
+  - Example: `MATCH (a)-[:FOLLOWS]->(f)-[:FOLLOWS]->(fof) RETURN DISTINCT fof.name`
 - `parameters` (object, optional): Query parameters for parameterized queries ✅ **[COMPLETED: Nov 10, 2025]**
   - Supports all JSON data types: String, Int, Float, Bool, Array, Null
   - Use `$paramName` syntax in queries (e.g., `WHERE n.age >= $minAge`)
   - SQL injection prevention built-in
+- `role` (string, optional): ClickHouse RBAC role name for query execution ✅ **[ADDED: v0.5.1]**
+  - Uses role-based connection pools for optimal performance
+  - No `SET ROLE` overhead on query execution
+  - Example: `"analyst"`, `"admin"`
 - `schema_name` (string, optional): Graph schema/database name to use for this query. Defaults to `"default"`. Enables multi-database support for queries. **Note**: The `USE` clause in the query itself takes precedence over this parameter.
 
 **Response Format:**
@@ -97,6 +104,153 @@ Content-Type: application/json
   }
 }
 ```
+
+#### POST /query/sql
+Generate SQL from Cypher query without executing it. ✅ **Production-Ready**
+
+This endpoint translates Cypher queries to ClickHouse SQL and returns the generated SQL statements as an array, along with query metadata. Useful for:
+- Debugging query translation
+- Integrating ClickGraph translation into other tools
+- Understanding how Cypher patterns map to SQL
+- Testing RBAC role handling (includes `SET ROLE` statements when applicable)
+
+**Request Format:**
+```http
+POST /query/sql
+Content-Type: application/json
+
+{
+  "query": "MATCH (u:User) WHERE u.age > $minAge RETURN u.name, u.age",
+  "parameters": {"minAge": 25},
+  "role": "analyst",
+  "schema_name": "default",
+  "include_plan": false
+}
+```
+
+**Parameters:**
+- `query` (string, required): Cypher query to translate
+- `parameters` (object, optional): Query parameters (shown in SQL as `$paramName` placeholders)
+- `view_parameters` (object, optional): ClickHouse view parameters (ClickHouse-specific)
+- `role` (string, optional): ClickHouse RBAC role name (adds `SET ROLE` to SQL array)
+- `schema_name` (string, optional): Graph schema to use (defaults to `"default"`)
+- `target_database` (string, optional): Target SQL dialect (defaults to `"clickhouse"`)
+- `include_plan` (boolean, optional): Include logical plan in response (defaults to `false`)
+
+**Response Format:**
+```http
+200 OK
+Content-Type: application/json
+
+{
+  "cypher_query": "MATCH (u:User) WHERE u.age > $minAge RETURN u.name, u.age",
+  "target_database": "clickhouse",
+  "sql": [
+    "SET ROLE analyst",
+    "SELECT \n      u.name AS \"u.name\", \n      u.age AS \"u.age\"\nFROM users AS u\nWHERE u.age > $minAge"
+  ],
+  "parameters": {
+    "minAge": 25
+  },
+  "role": "analyst",
+  "metadata": {
+    "query_type": "read",
+    "cache_status": "HIT",
+    "parse_time_ms": 1.234,
+    "planning_time_ms": 5.678,
+    "sql_generation_time_ms": 0.456,
+    "total_time_ms": 7.368
+  },
+  "logical_plan": null
+}
+```
+
+**Response Fields:**
+- `cypher_query` (string): Original Cypher query
+- `target_database` (string): Target SQL dialect (`"clickhouse"`, `"postgresql"`, etc.)
+- `sql` (array of strings): Generated SQL statements to execute in order
+  - Example: `["SET ROLE analyst", "SELECT ..."]` when role is specified
+  - Example: `["SELECT ..."]` when no role specified
+  - Future: May include multi-statement queries like `["CREATE TEMP TABLE ...", "SELECT ...", "DROP TABLE ..."]`
+- `parameters` (object, optional): Query parameters (if provided in request)
+- `view_parameters` (object, optional): View parameters (if provided in request)
+- `role` (string, optional): Role name (if provided in request)
+- `metadata` (object): Query translation metadata
+  - `query_type` (string): Type of query (`"read"`, `"write"`, `"call"`, `"ddl"`)
+  - `cache_status` (string): Whether SQL was cached (`"HIT"`, `"MISS"`)
+  - `parse_time_ms` (number): Time to parse Cypher
+  - `planning_time_ms` (number): Time to plan query
+  - `sql_generation_time_ms` (number): Time to generate SQL
+  - `total_time_ms` (number): Total translation time
+- `logical_plan` (string, optional): Logical plan representation (when `include_plan=true`)
+
+**Example Usage:**
+
+```bash
+# Basic SQL generation
+curl -X POST http://localhost:8080/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "MATCH (u:User) RETURN u.name LIMIT 10"}'
+
+# With role (includes SET ROLE in SQL array)
+curl -X POST http://localhost:8080/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User) WHERE u.age > 25 RETURN u.name",
+    "role": "analyst"
+  }'
+
+# With parameters and logical plan
+curl -X POST http://localhost:8080/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User) WHERE u.age > $minAge RETURN u.name",
+    "parameters": {"minAge": 25},
+    "include_plan": true
+  }'
+```
+
+**Python Example:**
+```python
+import requests
+
+response = requests.post('http://localhost:8080/query/sql', json={
+    'query': 'MATCH (u:User)-[:FOLLOWS]->(f:User) WHERE u.name = $name RETURN f.name',
+    'parameters': {'name': 'Alice'},
+    'role': 'analyst',
+    'include_plan': True
+})
+
+data = response.json()
+print("SQL Statements:")
+for i, stmt in enumerate(data['sql'], 1):
+    print(f"{i}. {stmt}")
+
+print(f"\nTranslation time: {data['metadata']['total_time_ms']:.2f}ms")
+print(f"Cache: {data['metadata']['cache_status']}")
+```
+
+**Error Response:**
+```http
+400 Bad Request
+Content-Type: application/json
+
+{
+  "error": "Cypher syntax error",
+  "details": {
+    "query": "MATCH (u:User WHERE u.age > 25",
+    "position": 15,
+    "message": "Expected ')' but found 'WHERE'"
+  }
+}
+```
+
+**Notes:**
+- SQL generation is **very fast** (typically <10ms) because it doesn't execute queries
+- Results are **cached** - identical queries return cached SQL instantly
+- The `sql` array format allows representing complex multi-statement operations
+- When `role` is specified, `SET ROLE` is included in the SQL array for visibility, but actual query execution uses role-based connection pools (no SET ROLE overhead)
+- Parameter placeholders (`$paramName`) are NOT substituted in the generated SQL - they remain as placeholders for you to substitute when executing
 
 #### GET /schemas
 List all available graph schemas.
