@@ -26,6 +26,7 @@ use bolt_protocol::{BoltConfig, BoltServer};
 
 pub mod bolt_protocol;
 mod clickhouse_client;
+pub mod connection_pool;
 pub mod graph_catalog;
 pub mod handlers;
 mod models;
@@ -37,6 +38,7 @@ mod sql_generation_handler;
 #[derive(Clone)]
 pub struct AppState {
     pub clickhouse_client: Client,
+    pub connection_pool: Arc<connection_pool::RoleConnectionPool>,
     pub config: ServerConfig,
 }
 
@@ -97,10 +99,23 @@ pub async fn run_with_config(config: ServerConfig) {
 
     // Try to create ClickHouse client (optional for YAML-only mode)
     let client_opt = clickhouse_client::try_get_client();
+    
+    // Create connection pool (uses same env vars as client)
+    let connection_pool = match connection_pool::RoleConnectionPool::new() {
+        Ok(pool) => Arc::new(pool),
+        Err(e) => {
+            eprintln!("Warning: Failed to create connection pool: {}. Using default client.", e);
+            // Create a minimal pool for YAML-only mode
+            Arc::new(connection_pool::RoleConnectionPool::new().unwrap_or_else(|_| {
+                panic!("Failed to create connection pool even with defaults")
+            }))
+        }
+    };
 
     let app_state = if let Some(client) = client_opt.as_ref() {
         AppState {
             clickhouse_client: client.clone(),
+            connection_pool: connection_pool.clone(),
             config: config.clone(),
         }
     } else {
@@ -113,6 +128,7 @@ pub async fn run_with_config(config: ServerConfig) {
         let dummy_client = clickhouse::Client::default().with_url("http://localhost:8123");
         AppState {
             clickhouse_client: dummy_client,
+            connection_pool: connection_pool.clone(),
             config: config.clone(),
         }
     };

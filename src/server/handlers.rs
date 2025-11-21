@@ -675,27 +675,17 @@ async fn execute_cte_queries(
     // Log full SQL for debugging (especially helpful when ClickHouse truncates errors)
     log::debug!("Executing SQL:\n{}", final_sql);
 
-    // Apply role for ClickHouse RBAC (Phase 2)
-    if let Some(ref role_name) = role {
-        crate::server::clickhouse_client::set_role(&app_state.clickhouse_client, role_name)
-            .await
-            .map_err(|e| {
-                log::error!("Failed to set ClickHouse role: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("SET ROLE error: {}. Ensure role is granted to user.", e),
-                )
-            })?;
-    }
+    // Get role-based connection from pool
+    // Note: We use role-specific connection pools instead of SET ROLE for better performance
+    // and to avoid race conditions. The connection pool maintains separate pools per role.
+    let client = app_state.connection_pool.get_client(role.as_deref()).await;
 
     if output_format == OutputFormat::Pretty
         || output_format == OutputFormat::PrettyCompact
         || output_format == OutputFormat::Csv
         || output_format == OutputFormat::CSVWithNames
     {
-        let mut lines = app_state
-            .clickhouse_client
-            .clone()
+        let mut lines = client
             .query(&final_sql)
             .fetch_bytes(output_format)
             .map_err(|e| {
@@ -731,9 +721,7 @@ async fn execute_cte_queries(
             .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
         Ok(response)
     } else {
-        let mut lines = app_state
-            .clickhouse_client
-            .clone()
+        let mut lines = client
             .query(&final_sql)
             .fetch_bytes("JSONEachRow")
             .map_err(|e| {
