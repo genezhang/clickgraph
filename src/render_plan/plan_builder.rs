@@ -30,8 +30,8 @@ use super::{
 use crate::render_plan::cte_extraction::extract_ctes_with_context;
 use crate::render_plan::cte_extraction::{
     RelationshipColumns, extract_node_label_from_viewscan, extract_relationship_columns,
-    get_path_variable, has_variable_length_rel, label_to_table_name, rel_type_to_table_name,
-    rel_types_to_table_names, table_to_id_column,
+    get_path_variable, get_shortest_path_mode, get_variable_length_spec, has_variable_length_rel,
+    label_to_table_name, rel_type_to_table_name, rel_types_to_table_names, table_to_id_column,
 };
 
 // Import ALL helper functions from the dedicated helpers module using glob import
@@ -2997,21 +2997,33 @@ impl RenderPlanBuilder for LogicalPlan {
 
         let mut extracted_order_by = self.extract_order_by()?;
 
-        // Rewrite ORDER BY expressions for variable-length paths
+        // Rewrite ORDER BY expressions ONLY for recursive CTEs (not chained JOINs)
+        // Chained JOINs have proper table joins (a, b) in outer query, so a.name, b.name work fine
+        // Recursive CTEs use CTE columns (t.start_id, t.end_id), so we need to rewrite to t.start_name
         if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
-            let path_var = get_path_variable(self);
-            extracted_order_by = extracted_order_by
-                .into_iter()
-                .map(|item| OrderByItem {
-                    expression: rewrite_expr_for_var_len_cte(
-                        &item.expression,
-                        &left_alias,
-                        &right_alias,
-                        path_var.as_deref(),
-                    ),
-                    order: item.order,
-                })
-                .collect();
+            // Check if this uses chained JOINs (exact hop count, non-shortest-path)
+            let uses_chained_join = if let Some(spec) = get_variable_length_spec(self) {
+                spec.exact_hop_count().is_some() && get_shortest_path_mode(self).is_none()
+            } else {
+                false
+            };
+
+            // Only rewrite ORDER BY for recursive CTEs
+            if !uses_chained_join {
+                let path_var = get_path_variable(self);
+                extracted_order_by = extracted_order_by
+                    .into_iter()
+                    .map(|item| OrderByItem {
+                        expression: rewrite_expr_for_var_len_cte(
+                            &item.expression,
+                            &left_alias,
+                            &right_alias,
+                            path_var.as_deref(),
+                        ),
+                        order: item.order,
+                    })
+                    .collect();
+            }
         }
 
         let extracted_limit_item = self.extract_limit();

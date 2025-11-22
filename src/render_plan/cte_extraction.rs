@@ -904,6 +904,40 @@ pub fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
     }
 }
 
+/// Extract variable length spec from the plan
+pub fn get_variable_length_spec(plan: &LogicalPlan) -> Option<crate::query_planner::logical_plan::VariableLengthSpec> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => rel.variable_length.clone(),
+        LogicalPlan::GraphNode(node) => get_variable_length_spec(&node.input),
+        LogicalPlan::Filter(filter) => get_variable_length_spec(&filter.input),
+        LogicalPlan::Projection(proj) => get_variable_length_spec(&proj.input),
+        LogicalPlan::GraphJoins(joins) => get_variable_length_spec(&joins.input),
+        LogicalPlan::GroupBy(gb) => get_variable_length_spec(&gb.input),
+        LogicalPlan::OrderBy(ob) => get_variable_length_spec(&ob.input),
+        LogicalPlan::Skip(skip) => get_variable_length_spec(&skip.input),
+        LogicalPlan::Limit(limit) => get_variable_length_spec(&limit.input),
+        LogicalPlan::Cte(cte) => get_variable_length_spec(&cte.input),
+        _ => None,
+    }
+}
+
+/// Extract shortest path mode from the plan
+pub fn get_shortest_path_mode(plan: &LogicalPlan) -> Option<crate::query_planner::logical_plan::ShortestPathMode> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => rel.shortest_path_mode.clone(),
+        LogicalPlan::GraphNode(node) => get_shortest_path_mode(&node.input),
+        LogicalPlan::Filter(filter) => get_shortest_path_mode(&filter.input),
+        LogicalPlan::Projection(proj) => get_shortest_path_mode(&proj.input),
+        LogicalPlan::GraphJoins(joins) => get_shortest_path_mode(&joins.input),
+        LogicalPlan::GroupBy(gb) => get_shortest_path_mode(&gb.input),
+        LogicalPlan::OrderBy(ob) => get_shortest_path_mode(&ob.input),
+        LogicalPlan::Skip(skip) => get_shortest_path_mode(&skip.input),
+        LogicalPlan::Limit(limit) => get_shortest_path_mode(&limit.input),
+        LogicalPlan::Cte(cte) => get_shortest_path_mode(&cte.input),
+        _ => None,
+    }
+}
+
 /// Extract node label from ViewScan in the plan
 pub fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
     match plan {
