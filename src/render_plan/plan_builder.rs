@@ -1601,6 +1601,68 @@ impl RenderPlanBuilder for LogicalPlan {
                 // FIX: GraphRel must generate JOINs for the relationship traversal
                 // This fixes OPTIONAL MATCH queries by creating proper JOIN clauses
 
+                // 🚀 FIXED-LENGTH OPTIMIZATION: Check if this is a fixed-length pattern
+                if let Some(spec) = &graph_rel.variable_length {
+                    if let Some(exact_hops) = spec.exact_hop_count() {
+                        if graph_rel.shortest_path_mode.is_none() {
+                            println!(
+                                "DEBUG: extract_joins - Fixed-length pattern (*{}) - generating inline JOINs",
+                                exact_hops
+                            );
+                            
+                            // Extract table information
+                            let start_label = extract_node_label_from_viewscan(&graph_rel.left)
+                                .unwrap_or_else(|| "User".to_string());
+                            let end_label = extract_node_label_from_viewscan(&graph_rel.right)
+                                .unwrap_or_else(|| "User".to_string());
+                            let start_table = label_to_table_name(&start_label);
+                            let end_table = label_to_table_name(&end_label);
+                            
+                            let rel_table = if let Some(labels) = &graph_rel.labels {
+                                if !labels.is_empty() {
+                                    rel_type_to_table_name(&labels[0])
+                                } else {
+                                    extract_table_name(&graph_rel.center)
+                                        .unwrap_or_else(|| graph_rel.alias.clone())
+                                }
+                            } else {
+                                extract_table_name(&graph_rel.center)
+                                    .unwrap_or_else(|| graph_rel.alias.clone())
+                            };
+                            
+                            // Extract ID columns
+                            let start_id_col = extract_id_column(&graph_rel.left)
+                                .unwrap_or_else(|| table_to_id_column(&start_table));
+                            let end_id_col = extract_id_column(&graph_rel.right)
+                                .unwrap_or_else(|| table_to_id_column(&end_table));
+                            
+                            // Get relationship columns
+                            let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
+                                RelationshipColumns {
+                                    from_id: "from_node_id".to_string(),
+                                    to_id: "to_node_id".to_string(),
+                                },
+                            );
+                            
+                            // Generate inline JOINs using the new function
+                            let fixed_length_joins = crate::render_plan::cte_extraction::expand_fixed_length_joins(
+                                exact_hops,
+                                &start_table,
+                                &start_id_col,
+                                &rel_table,
+                                &rel_cols.from_id,
+                                &rel_cols.to_id,
+                                &end_table,
+                                &end_id_col,
+                                &graph_rel.left_connection,
+                                &graph_rel.right_connection,
+                            );
+                            
+                            return Ok(fixed_length_joins);
+                        }
+                    }
+                }
+
                 // MULTI-HOP FIX: If left side is another GraphRel, recursively extract its joins first
                 // This handles patterns like (a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)
                 let mut joins = vec![];
@@ -1991,12 +2053,25 @@ impl RenderPlanBuilder for LogicalPlan {
         // Check if this query needs CTE-based processing
         if let LogicalPlan::Projection(proj) = self {
             if let LogicalPlan::GraphRel(graph_rel) = proj.input.as_ref() {
-                // Variable-length paths need recursive CTEs
-                if graph_rel.variable_length.is_some() {
-                    println!("DEBUG: Variable-length path detected, returning Err to use CTE path");
-                    return Err(RenderBuildError::InvalidRenderPlan(
-                        "Variable-length paths require CTE-based processing".to_string(),
-                    ));
+                // Variable-length paths: check if truly variable or just fixed-length
+                if let Some(spec) = &graph_rel.variable_length {
+                    let is_fixed_length = spec.exact_hop_count().is_some() 
+                        && graph_rel.shortest_path_mode.is_none();
+                    
+                    if is_fixed_length {
+                        // 🚀 Fixed-length pattern (*2, *3) - can use inline JOINs!
+                        println!(
+                            "DEBUG: Fixed-length pattern (*{}) detected - will use inline JOINs",
+                            spec.exact_hop_count().unwrap()
+                        );
+                        // Continue to extract_joins() path
+                    } else {
+                        // Truly variable-length (*1.., *0..5) or shortest path - needs CTE
+                        println!("DEBUG: Variable-length pattern detected, returning Err to use CTE path");
+                        return Err(RenderBuildError::InvalidRenderPlan(
+                            "Variable-length paths require CTE-based processing".to_string(),
+                        ));
+                    }
                 }
 
                 // Multiple relationship types need UNION CTEs
