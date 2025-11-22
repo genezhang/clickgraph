@@ -1453,7 +1453,50 @@ impl RenderPlanBuilder for LogicalPlan {
                     predicates
                 }
 
-                let all_predicates = collect_graphrel_predicates(&LogicalPlan::GraphRel(graph_rel.clone()));
+                let mut all_predicates = collect_graphrel_predicates(&LogicalPlan::GraphRel(graph_rel.clone()));
+                
+                // 🚀 ADD CYCLE PREVENTION for fixed-length paths
+                if let Some(spec) = &graph_rel.variable_length {
+                    if let Some(exact_hops) = spec.exact_hop_count() {
+                        if graph_rel.shortest_path_mode.is_none() {
+                            println!("DEBUG: extract_filters - Adding cycle prevention for fixed-length *{}", exact_hops);
+                            
+                            // Extract table/column info for cycle prevention
+                            let start_label = extract_node_label_from_viewscan(&graph_rel.left)
+                                .unwrap_or_else(|| "User".to_string());
+                            let end_label = extract_node_label_from_viewscan(&graph_rel.right)
+                                .unwrap_or_else(|| "User".to_string());
+                            let start_table = label_to_table_name(&start_label);
+                            let end_table = label_to_table_name(&end_label);
+                            
+                            let start_id_col = extract_id_column(&graph_rel.left)
+                                .unwrap_or_else(|| table_to_id_column(&start_table));
+                            let end_id_col = extract_id_column(&graph_rel.right)
+                                .unwrap_or_else(|| table_to_id_column(&end_table));
+                            
+                            let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
+                                RelationshipColumns {
+                                    from_id: "from_node_id".to_string(),
+                                    to_id: "to_node_id".to_string(),
+                                },
+                            );
+                            
+                            // Generate cycle prevention filters
+                            if let Some(cycle_filter) = crate::render_plan::cte_extraction::generate_cycle_prevention_filters(
+                                exact_hops,
+                                &start_id_col,
+                                &rel_cols.to_id,
+                                &rel_cols.from_id,
+                                &end_id_col,
+                                &graph_rel.left_connection,
+                                &graph_rel.right_connection,
+                            ) {
+                                println!("DEBUG: extract_filters - Generated cycle prevention filter");
+                                all_predicates.push(cycle_filter);
+                            }
+                        }
+                    }
+                }
                 
                 if all_predicates.is_empty() {
                     None

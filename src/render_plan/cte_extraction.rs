@@ -1102,3 +1102,92 @@ pub fn expand_fixed_length_joins(
     
     joins
 }
+
+/// Generate cycle prevention filters for fixed-length paths
+/// 
+/// Prevents nodes from being revisited in a path by ensuring:
+/// 1. Start node != End node
+/// 2. All intermediate relationship endpoints are unique
+/// 
+/// For *2: `a.user_id != c.user_id AND r1.followed_id != r2.follower_id`
+/// For *3: `a.user_id != d.user_id AND r1.followed_id != r2.follower_id AND r2.followed_id != r3.follower_id`
+///
+/// # Arguments
+/// * `exact_hops` - Number of relationship hops
+/// * `start_id_col` - ID column name for start node
+/// * `to_col` - "to" ID column name for relationships
+/// * `from_col` - "from" ID column name for relationships
+/// * `end_id_col` - ID column name for end node
+/// * `start_alias` - Alias for start node (e.g., "a")
+/// * `end_alias` - Alias for end node (e.g., "c")
+///
+/// # Returns
+/// RenderExpr combining all cycle prevention conditions with AND
+pub fn generate_cycle_prevention_filters(
+    exact_hops: u32,
+    start_id_col: &str,
+    to_col: &str,
+    from_col: &str,
+    end_id_col: &str,
+    start_alias: &str,
+    end_alias: &str,
+) -> Option<RenderExpr> {
+    use super::render_expr::{Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias};
+    
+    if exact_hops == 0 {
+        return None;
+    }
+    
+    let mut filters = Vec::new();
+    
+    // 1. Start node != End node
+    filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+        operator: Operator::NotEqual,
+        operands: vec![
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(start_alias.to_string()),
+                column: Column(start_id_col.to_string()),
+            }),
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(end_alias.to_string()),
+                column: Column(end_id_col.to_string()),
+            }),
+        ],
+    }));
+    
+    // 2. For each pair of consecutive relationships, ensure different intermediate nodes
+    // r1.to_id != r2.from_id, r2.to_id != r3.from_id, etc.
+    for hop in 1..exact_hops {
+        let curr_rel = format!("r{}", hop);
+        let next_rel = format!("r{}", hop + 1);
+        
+        filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::NotEqual,
+            operands: vec![
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(curr_rel),
+                    column: Column(to_col.to_string()),
+                }),
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(next_rel),
+                    column: Column(from_col.to_string()),
+                }),
+            ],
+        }));
+    }
+    
+    // Combine all filters with AND
+    if filters.is_empty() {
+        None
+    } else if filters.len() == 1 {
+        Some(filters.into_iter().next().unwrap())
+    } else {
+        // Combine with AND
+        Some(filters.into_iter().reduce(|acc, filter| {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::And,
+                operands: vec![acc, filter],
+            })
+        }).unwrap())
+    }
+}
