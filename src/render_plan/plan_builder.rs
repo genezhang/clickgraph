@@ -3108,19 +3108,20 @@ impl RenderPlanBuilder for LogicalPlan {
 
         let mut extracted_order_by = self.extract_order_by()?;
 
-        // Rewrite ORDER BY expressions ONLY for recursive CTEs (not chained JOINs)
-        // Chained JOINs have proper table joins (a, b) in outer query, so a.name, b.name work fine
-        // Recursive CTEs use CTE columns (t.start_id, t.end_id), so we need to rewrite to t.start_name
+        // Rewrite ORDER BY expressions for variable-length paths that use recursive CTEs
+        // Fixed-length patterns use inline JOINs, so rewriting is not needed (a.name, c.name work fine)
+        // Variable-length patterns use recursive CTEs (t.start_id, t.end_id), so rewrite to t.start_name
         if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
-            // Check if this uses chained JOINs (exact hop count, non-shortest-path)
-            let uses_chained_join = if let Some(spec) = get_variable_length_spec(self) {
-                spec.exact_hop_count().is_some() && get_shortest_path_mode(self).is_none()
+            // Check if this is truly variable-length (needs recursive CTE)
+            // Fixed-length (*2, *3) use inline JOINs and don't need rewriting
+            let needs_cte = if let Some(spec) = get_variable_length_spec(self) {
+                spec.exact_hop_count().is_none() || get_shortest_path_mode(self).is_some()
             } else {
                 false
             };
 
-            // Only rewrite ORDER BY for recursive CTEs
-            if !uses_chained_join {
+            // Only rewrite ORDER BY for patterns that use recursive CTEs
+            if needs_cte {
                 let path_var = get_path_variable(self);
                 extracted_order_by = extracted_order_by
                     .into_iter()
