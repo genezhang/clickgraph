@@ -1,0 +1,79 @@
+# Development Docker Compose configuration
+# Uses local build instead of pre-built image
+# Allows setting higher CTE depth for complex graph queries during testing
+#
+# Usage: docker-compose -f docker-compose.dev.yaml up
+
+version: '3.8'
+
+services:
+  clickhouse-service:
+    image: clickhouse/clickhouse-server:25.8.11
+    container_name: clickhouse-dev
+    environment:
+      CLICKHOUSE_DB: "brahmand"
+      CLICKHOUSE_USER: "test_user"
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      CLICKHOUSE_PASSWORD: "test_pass"
+    ports:
+      - "9000:9000"
+      - "8123:8123"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: neo4j-dev
+    environment:
+      NEO4J_AUTH: neo4j/test_password
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_apoc_export_file_enabled: "true"
+      NEO4J_apoc_import_file_enabled: "true"
+      NEO4J_apoc_import_file_use__neo4j__config: "true"
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "test_password", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  clickgraph:
+    # Build from local source for development
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clickgraph-dev
+    depends_on:
+      clickhouse-service:
+        condition: service_healthy
+    environment:
+      CLICKHOUSE_URL: "http://clickhouse-service:8123"
+      CLICKHOUSE_USER: "test_user"
+      CLICKHOUSE_PASSWORD: "test_pass"
+      CLICKHOUSE_DATABASE: "test_integration"
+      GRAPH_CONFIG_PATH: "/app/test_integration.yaml"
+      # Override max CTE depth for complex variable-length path testing
+      # Default is 100, increase if you get "CTE depth limit exceeded" errors
+      CLICKGRAPH_MAX_CTE_DEPTH: "1000"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./tests/integration/test_integration.yaml:/app/test_integration.yaml:ro
+      - ./schemas:/app/schemas:ro
+
+volumes:
+  clickhouse_data:
+  neo4j_data:
+  neo4j_logs:
