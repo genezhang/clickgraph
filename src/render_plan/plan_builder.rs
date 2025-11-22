@@ -1,6 +1,4 @@
-use crate::clickhouse_query_generator::variable_length_cte::{
-    ChainedJoinGenerator, VariableLengthCteGenerator,
-};
+use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::{GraphRel, LogicalPlan, ProjectionItem};
@@ -432,30 +430,25 @@ impl RenderPlanBuilder for LogicalPlan {
                         &end_label,
                     );
 
-                    // Choose between chained JOINs (for exact hop counts) or recursive CTE (for ranges)
+                    // Choose between inline JOINs (for exact hop counts) or recursive CTE (for ranges)
                     // For shortest path queries, always use recursive CTE (even for exact hops)
                     // because we need proper filtering and shortest path selection logic
-                    let use_chained_join =
+                    let use_inline_joins =
                         spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
 
-                    let var_len_cte = if use_chained_join {
-                        // Exact hop count, non-shortest-path: use optimized chained JOINs
-                        let exact_hops = spec.exact_hop_count().unwrap();
-                        let generator = ChainedJoinGenerator::new(
-                            exact_hops,
-                            &start_table,
-                            &start_id_col,
-                            &rel_table,
-                            &from_col,
-                            &to_col,
-                            &end_table,
-                            &end_id_col,
-                            &graph_rel.left_connection,
-                            &graph_rel.right_connection,
-                            properties,
-                        );
-                        generator.generate_cte()
-                    } else {
+                    if use_inline_joins {
+                        // Fixed-length patterns (*2, *3, etc) - NO CTE needed!
+                        // extract_joins() will handle inline JOIN generation
+                        println!("DEBUG extract_ctes: Fixed-length pattern - skipping CTE, will use inline JOINs");
+                        
+                        // Continue extracting CTEs from child nodes
+                        let mut child_ctes = graph_rel.left.extract_ctes(last_node_alias)?;
+                        child_ctes.extend(graph_rel.right.extract_ctes(last_node_alias)?);
+                        return Ok(child_ctes);
+                    }
+                    
+                    // Variable-length or shortest path - generate recursive CTE
+                    let var_len_cte = {
                         // Range, unbounded, or shortest path: use recursive CTE
                         let generator = VariableLengthCteGenerator::new(
                             spec.clone(),
@@ -476,7 +469,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             graph_rel.labels.clone(), // relationship type labels
                         );
                         generator.generate_cte()
-                    };
+                    }; // Close the var_len_cte block
 
                     // Also extract CTEs from child plans
                     let mut child_ctes = graph_rel.right.extract_ctes(last_node_alias)?;
