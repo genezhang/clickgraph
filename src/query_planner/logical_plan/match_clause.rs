@@ -551,7 +551,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 left_connection: left_conn,
                 right_connection: right_conn,
                 is_rel_anchor: false,
-                variable_length: None, // Single-hop relationship by default
+                variable_length: rel.variable_length.clone().map(|v| v.into()),
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization

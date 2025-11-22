@@ -198,71 +198,45 @@ impl VariableLengthCteGenerator {
         // Generate the core recursive query body (without CTE name wrapper)
         let mut query_body = String::new();
 
-        // Special case: Zero-hop paths (self-loops) - used with shortest path functions
-        if min_hops == 0 {
-            query_body.push_str(&self.generate_zero_hop_base_case());
-            // If max_hops is Some(0), we're done - only zero hops allowed
-            // Continue to wrapping logic at the end (don't return early)
-            // For shortest path self-loops, we also skip the UNION since we won't add more cases
-            let is_shortest_self_loop = self.shortest_path_mode.is_some()
-                && self.start_cypher_alias == self.end_cypher_alias;
-            if max_hops != Some(0) && !is_shortest_self_loop {
-                // Otherwise, continue with regular hops starting from 1
-                query_body.push_str("\n    UNION ALL\n");
-            }
-        }
-
-        // Base case: Generate for each required hop level from 1 to min_hops
-        // Special handling for zero-hop case:
-        // - If min=0 and max=Some(0): Only zero-hop (no regular hops needed)
-        // - If min=0 and max>0: Need 1-hop base case for recursion to work
-        // - If min>0: Generate base cases 1..min_hops as usual
-        // - SPECIAL: For shortest path self-loops with min=0, skip 1-hop/recursion
+        // Special case: For shortest path self-loops (a to a), only zero-hop is needed
         let is_shortest_self_loop = self.shortest_path_mode.is_some()
             && min_hops == 0
             && self.start_cypher_alias == self.end_cypher_alias;
 
-        let needs_regular_base_cases = if is_shortest_self_loop {
-            false // Skip regular hops for shortest path self-loops - zero-hop is always shortest
-        } else if min_hops == 0 {
-            max_hops != Some(0) // Only skip if explicitly *0 (not *0.. or *0..N where N>0)
+        // Base case: ONE base case, either zero-hop or 1-hop depending on min_hops
+        if min_hops == 0 {
+            // Zero-hop base case for patterns like *0.., *0..5
+            query_body.push_str(&self.generate_zero_hop_base_case());
         } else {
-            true // Always need regular base cases when min > 0
-        };
-
-        if needs_regular_base_cases {
-            // Always generate 1-hop base case (needed as starting point for recursion)
-            // For patterns like *2.., the recursion will extend the 1-hop base to 2+ hops
-            // and we filter by min_hops in the outer query or via WHERE hop_count >= min
+            // 1-hop base case for patterns like *, *1.., *2..
+            // (recursion will extend to 2+ hops)
             query_body.push_str(&self.generate_base_case(1));
         }
 
-        // Recursive case: If max_hops > effective min, add recursive traversal
-        // For zero-hop case, recursive starts at 1 (0 is handled in zero-hop base case)
-        // CRITICAL FIX: Pass the actual recursive CTE name (with _inner if needed)
-        // Skip recursion for shortest path self-loops (zero-hop is always the answer)
-        if !is_shortest_self_loop {
-            let effective_min_for_recursion = min_hops.max(1); // Recursion always starts after at least 1 hop
-            if let Some(max) = max_hops {
-                if max > effective_min_for_recursion {
-                    query_body.push_str("\n    UNION ALL\n");
-                    query_body.push_str(
-                        &self.generate_recursive_case_with_cte_name(max, &recursive_cte_name),
-                    );
-                }
-            } else {
-                // Unbounded case: add recursive traversal with reasonable default limit
-                // For shortest path queries with zero-hop patterns, use lower limit to avoid timeout
-                let default_depth = if self.shortest_path_mode.is_some() && min_hops == 0 {
+        // Recursive case: Add if we need more than just the base case
+        // Skip for shortest path self-loops (zero-hop is always the answer)
+        // Skip if max_hops == Some(0) (only zero-hop allowed)
+        let needs_recursion = !is_shortest_self_loop 
+            && max_hops != Some(0)
+            && (max_hops.is_none() || max_hops.unwrap() > min_hops);
+
+        if needs_recursion {
+            query_body.push_str("\n    UNION ALL\n");
+            
+            let default_depth = if max_hops.is_none() {
+                // Unbounded case: use reasonable default
+                if self.shortest_path_mode.is_some() && min_hops == 0 {
                     3 // Lower limit for shortest path from a to a queries
                 } else {
                     10 // Standard default
-                };
-                query_body.push_str("\n    UNION ALL\n");
-                query_body.push_str(
-                    &self.generate_recursive_case_with_cte_name(default_depth, &recursive_cte_name),
-                );
-            }
+                }
+            } else {
+                max_hops.unwrap()
+            };
+            
+            query_body.push_str(
+                &self.generate_recursive_case_with_cte_name(default_depth, &recursive_cte_name),
+            );
         }
 
         // Build CTE structure based on shortest path mode and filters
@@ -584,10 +558,9 @@ impl VariableLengthCteGenerator {
             ), // Cycle detection
         ];
 
-        // If zero-hop paths exist, don't extend them (they represent finding the node itself)
-        if self.spec.effective_min_hops() == 0 {
-            where_conditions.push("vp.hop_count > 0".to_string());
-        }
+        // Note: We no longer skip zero-hop rows in recursion.
+        // The recursion can now start from zero-hop base case and expand from there.
+        // Cycle detection (NOT has) prevents infinite loops.
 
         // For shortest path queries, do NOT add end_node_filters in recursive case
         // End filters are applied in the _to_target wrapper CTE after recursion completes
