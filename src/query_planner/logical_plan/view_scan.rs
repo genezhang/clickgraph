@@ -39,6 +39,9 @@ pub struct ViewScan {
     /// - true: Use FINAL (for ReplacingMergeTree, CollapsingMergeTree, etc.)
     /// - false: Don't use FINAL
     pub use_final: bool,
+    /// Whether this node is denormalized (stored on edge table)
+    /// Set from schema during ViewScan creation
+    pub is_denormalized: bool,
 }
 
 impl ViewScan {
@@ -64,6 +67,7 @@ impl ViewScan {
             view_parameter_names: None,
             view_parameter_values: None,
             use_final: false, // Default: no FINAL
+            is_denormalized: false, // Default: not denormalized
         }
     }
 
@@ -90,6 +94,7 @@ impl ViewScan {
             view_parameter_names: None,
             view_parameter_values: None,
             use_final: false, // Default: no FINAL
+            is_denormalized: false, // Default: not denormalized
         }
     }
 
@@ -117,6 +122,7 @@ impl ViewScan {
             view_parameter_names: None,
             view_parameter_values: None,
             use_final: false, // Default: no FINAL
+            is_denormalized: false, // Default: not denormalized (for edges)
         }
     }
 
@@ -145,6 +151,7 @@ impl ViewScan {
             view_parameter_names: None,
             view_parameter_values: None,
             use_final: false, // Default: no FINAL
+            is_denormalized: false, // Default: not denormalized (for edges)
         }
     }
 
@@ -181,6 +188,7 @@ impl ViewScan {
             view_parameter_names: self.view_parameter_names.clone(),
             view_parameter_values: self.view_parameter_values.clone(),
             use_final: self.use_final, // Preserve use_final setting
+            is_denormalized: self.is_denormalized, // Preserve denormalized flag
         }
     }
 

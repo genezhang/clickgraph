@@ -288,6 +288,9 @@ impl GraphSchemaConfig {
                 view_parameters: node_def.view_parameters.clone(),
                 engine: None, // Will be populated during schema loading with ClickHouse client
                 use_final: node_def.use_final,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
             };
             nodes.insert(node_def.label.clone(), node_schema);
         }
@@ -328,6 +331,8 @@ impl GraphSchemaConfig {
                 view_parameters: rel_def.view_parameters.clone(),
                 engine: None, // Will be populated during schema loading with ClickHouse client
                 use_final: rel_def.use_final,
+                from_node_properties: None,
+                to_node_properties: None,
             };
             relationships.insert(rel_def.type_name.clone(), rel_schema);
         }
@@ -416,6 +421,9 @@ impl GraphSchemaConfig {
                 view_parameters: node_def.view_parameters.clone(),
                 engine,
                 use_final: Some(use_final),
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
             };
             nodes.insert(node_def.label.clone(), node_schema);
         }
@@ -490,6 +498,8 @@ impl GraphSchemaConfig {
                 view_parameters: rel_def.view_parameters.clone(),
                 engine,
                 use_final: Some(use_final),
+                from_node_properties: None,
+                to_node_properties: None,
             };
             relationships.insert(rel_def.type_name.clone(), rel_schema);
         }

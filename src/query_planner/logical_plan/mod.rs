@@ -110,6 +110,9 @@ pub struct GraphNode {
     #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub alias: String,
+    /// Whether this node is denormalized (stored on edge table)
+    /// Set from schema during GraphNode creation
+    pub is_denormalized: bool,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -512,6 +515,7 @@ impl GraphNode {
                     input: new_input.clone(),
                     // self_plan: self_tf.get_plan(),
                     alias: self.alias.clone(),
+                    is_denormalized: self.is_denormalized,
                 });
                 Transformed::Yes(Arc::new(new_graph_node))
             }
@@ -971,6 +975,7 @@ mod tests {
         let graph_node = GraphNode {
             input: original_input.clone(),
             alias: "person".to_string(),
+            is_denormalized: false,
         };
 
         let old_plan = Arc::new(LogicalPlan::GraphNode(graph_node.clone()));
@@ -1116,6 +1121,7 @@ mod tests {
         let graph_node = LogicalPlan::GraphNode(GraphNode {
             input: Arc::new(scan),
             alias: "user".to_string(),
+            is_denormalized: false,
         });
 
         let filter = LogicalPlan::Filter(Filter {

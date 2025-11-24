@@ -24,6 +24,25 @@ pub struct NodeSchema {
     /// - Some(true): Always use FINAL
     /// - Some(false): Never use FINAL
     pub use_final: Option<bool>,
+
+    // ===== Denormalized node support =====
+
+    /// If true, this node is denormalized on one or more edge tables
+    /// (no physical node table exists)
+    #[serde(skip)]
+    pub is_denormalized: bool,
+
+    /// Property mappings when this node appears as from_node in a relationship
+    /// Only used for denormalized nodes
+    /// Example: {"code": "Origin", "city": "OriginCity"}
+    #[serde(skip)]
+    pub from_properties: Option<HashMap<String, String>>,
+
+    /// Property mappings when this node appears as to_node in a relationship
+    /// Only used for denormalized nodes
+    /// Example: {"code": "Dest", "city": "DestCity"}
+    #[serde(skip)]
+    pub to_properties: Option<HashMap<String, String>>,
 }
 
 impl NodeSchema {
@@ -76,6 +95,20 @@ pub struct RelationshipSchema {
     /// - Some(true): Always use FINAL
     /// - Some(false): Never use FINAL
     pub use_final: Option<bool>,
+
+    // ===== Denormalized node properties on edge tables =====
+
+    /// Optional: Denormalized node properties (source node)
+    /// Maps graph property names to table columns
+    /// Example: {"city": "OriginCityName", "state": "OriginState"}
+    #[serde(skip)]
+    pub from_node_properties: Option<HashMap<String, String>>,
+
+    /// Optional: Denormalized node properties (target node)
+    /// Maps graph property names to table columns
+    /// Example: {"city": "DestCityName", "state": "DestState"}
+    #[serde(skip)]
+    pub to_node_properties: Option<HashMap<String, String>>,
 }
 
 impl RelationshipSchema {

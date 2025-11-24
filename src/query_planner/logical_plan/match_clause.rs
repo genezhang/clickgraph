@@ -503,6 +503,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 plan_ctx,
                             )?,
                             alias: end_node_alias.clone(),
+                            is_denormalized: false,
                         })),
                     )
                 }
@@ -516,6 +517,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 plan_ctx,
                             )?,
                             alias: end_node_alias.clone(),
+                            is_denormalized: false,
                         })),
                         plan.clone(),
                     )
@@ -531,6 +533,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 plan_ctx,
                             )?,
                             alias: end_node_alias.clone(),
+                            is_denormalized: false,
                         })),
                     )
                 }
@@ -601,6 +604,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             let start_graph_node = GraphNode {
                 input: generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?,
                 alias: start_node_alias.clone(),
+                is_denormalized: false,
             };
             plan_ctx.insert_table_ctx(
                 start_node_alias.clone(),
@@ -690,6 +694,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             let start_graph_node = GraphNode {
                 input: generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?,
                 alias: start_node_alias.clone(),
+                is_denormalized: false,
             };
             plan_ctx.insert_table_ctx(
                 start_node_alias.clone(),
@@ -705,6 +710,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             let end_graph_node = GraphNode {
                 input: generate_scan(end_node_alias.clone(), end_node_label.clone(), plan_ctx)?,
                 alias: end_node_alias.clone(),
+                is_denormalized: false,
             };
             plan_ctx.insert_table_ctx(
                 end_node_alias.clone(),
@@ -843,6 +849,7 @@ fn traverse_node_pattern(
         let graph_node = GraphNode {
             input: generate_scan(node_alias.clone(), node_label, plan_ctx)?, // Pass the label here!
             alias: node_alias,
+            is_denormalized: false,
         };
         Ok(Arc::new(LogicalPlan::GraphNode(graph_node)))
     }
