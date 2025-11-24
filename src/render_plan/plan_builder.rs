@@ -1,5 +1,6 @@
 use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
 use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::{GraphRel, LogicalPlan, ProjectionItem};
 use crate::query_planner::plan_ctx::PlanCtx;
@@ -160,7 +161,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     let properties: Vec<(String, String)> = scan
                         .property_mapping
                         .iter()
-                        .map(|(prop_name, col_name)| (prop_name.clone(), col_name.clone()))
+                        .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
                         .collect();
                     return Ok(properties);
                 }
@@ -220,7 +221,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 Ok(RenderExpr::PropertyAccessExp(
                     super::render_expr::PropertyAccess {
                         table_alias: alias,
-                        column: super::render_expr::Column(id_col),
+                        column: super::render_expr::Column(PropertyValue::Column(id_col)),
                     },
                 ))
             }
@@ -428,6 +429,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         &end_alias,
                         &start_label,
                         &end_label,
+                        graph_rel.labels.as_ref().and_then(|labels| labels.first().map(|s| s.as_str())),
                     );
 
                     // Choose between inline JOINs (for exact hop counts) or recursive CTE (for ranges)
@@ -467,6 +469,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             end_filters_sql,   // end node filters for CTE
                             graph_rel.path_variable.clone(), // path variable name
                             graph_rel.labels.clone(), // relationship type labels
+                            None, // edge_id - no edge ID tracking for now
                         );
                         generator.generate_cte()
                     }; // Close the var_len_cte block
@@ -815,7 +818,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                         expression: crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                             crate::query_planner::logical_expr::PropertyAccess {
                                                 table_alias: alias.clone(),
-                                                column: crate::query_planner::logical_expr::Column(col_name),
+                                                column: PropertyValue::Column(col_name),
                                             }
                                         ),
                                         col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(prop_name)),
@@ -831,7 +834,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         prop,
                     ) = &item.expression
                     {
-                        if prop.column.0 == "*" {
+                        if prop.column.raw() == "*" {
                             // This is u.* - need to expand to all properties from schema
                             println!(
                                 "DEBUG: Found wildcard property access {}.* - expanding to all properties",
@@ -854,7 +857,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                         expression: crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                             crate::query_planner::logical_expr::PropertyAccess {
                                                 table_alias: prop.table_alias.clone(),
-                                                column: crate::query_planner::logical_expr::Column(col_name),
+                                                column: PropertyValue::Column(col_name),
                                             }
                                         ),
                                         col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(prop_name)),
@@ -906,9 +909,9 @@ impl RenderPlanBuilder for LogicalPlan {
                             expr = RenderExpr::ScalarFnCall(ScalarFnCall {
                                 name: "tuple".to_string(),
                                 args: vec![
-                                    RenderExpr::Column(Column("path_nodes".to_string())),
-                                    RenderExpr::Column(Column("hop_count".to_string())),
-                                    RenderExpr::Column(Column("path_relationships".to_string())),
+                                    RenderExpr::Column(Column(PropertyValue::Column("path_nodes".to_string()))),
+                                    RenderExpr::Column(Column(PropertyValue::Column("hop_count".to_string()))),
+                                    RenderExpr::Column(Column(PropertyValue::Column("path_relationships".to_string()))),
                                 ],
                             });
                         }
@@ -1200,9 +1203,10 @@ impl RenderPlanBuilder for LogicalPlan {
                             // Use find_anchor_node logic to choose the correct anchor
                             let all_connections = get_all_relationship_connections(&self);
                             let optional_aliases = std::collections::HashSet::new();
+                            let denormalized_aliases = std::collections::HashSet::new();
 
                             if let Some(anchor_alias) =
-                                find_anchor_node(&all_connections, &optional_aliases)
+                                find_anchor_node(&all_connections, &optional_aliases, &denormalized_aliases)
                             {
                                 // Determine which node (left or right) the anchor corresponds to
                                 let (table_plan, connection_alias) =
@@ -1271,10 +1275,10 @@ impl RenderPlanBuilder for LogicalPlan {
                                 alias: Some(graph_rel.alias.clone()),
                                 use_final: false,
                             };
-                            return from_table_to_view_ref(Some(FromTable::new(Some(view_ref))));
+                            return Ok(from_table_to_view_ref(Some(FromTable::new(Some(view_ref)))).map(|vr| FromTable::new(Some(vr))));
                         }
                     }
-                    return from_table_to_view_ref(None);
+                    return Ok(from_table_to_view_ref(None).map(|vr| FromTable::new(Some(vr))));
                 }
 
                 // NORMAL PATH: JOINs exist, use existing anchor logic
@@ -1824,11 +1828,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(graph_rel.left_connection.clone()),
-                                    column: Column(start_id_col.clone()),
+                                    column: Column(PropertyValue::Column(start_id_col.clone())),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(graph_rel.alias.clone()),
-                                    column: Column(rel_cols.from_id.clone()),
+                                    column: Column(PropertyValue::Column(rel_cols.from_id.clone())),
                                 }),
                             ],
                         }],
@@ -1846,11 +1850,11 @@ impl RenderPlanBuilder for LogicalPlan {
                                 operands: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: Column(rel_cols.from_id.clone()),
+                                        column: Column(PropertyValue::Column(rel_cols.from_id.clone())),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(graph_rel.left_connection.clone()),
-                                        column: Column(start_id_col),
+                                        column: Column(PropertyValue::Column(start_id_col.clone())),
                                     }),
                                 ],
                             },
@@ -1859,11 +1863,11 @@ impl RenderPlanBuilder for LogicalPlan {
                                 operands: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: Column(rel_cols.to_id.clone()),
+                                        column: Column(PropertyValue::Column(rel_cols.to_id.clone())),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(graph_rel.right_connection.clone()),
-                                        column: Column(end_id_col.clone()),
+                                        column: Column(PropertyValue::Column(end_id_col.clone())),
                                     }),
                                 ],
                             },
@@ -1882,11 +1886,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(graph_rel.alias.clone()),
-                                    column: Column(rel_cols.from_id.clone()),
+                                    column: Column(PropertyValue::Column(rel_cols.from_id.clone())),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(graph_rel.left_connection.clone()),
-                                    column: Column(start_id_col),
+                                    column: Column(PropertyValue::Column(start_id_col.clone())),
                                 }),
                             ],
                         }],
@@ -1903,11 +1907,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(graph_rel.right_connection.clone()),
-                                    column: Column(end_id_col),
+                                    column: Column(PropertyValue::Column(end_id_col.clone())),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(graph_rel.alias.clone()),
-                                    column: Column(rel_cols.to_id),
+                                    column: Column(PropertyValue::Column(rel_cols.to_id.clone())),
                                 }),
                             ],
                         }],
@@ -2088,7 +2092,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                             RenderExpr::PropertyAccessExp(
                                                 PropertyAccess {
                                                     table_alias: TableAlias("grouped_data".to_string()),
-                                                    column: Column(col_alias.0.clone()),
+                                                    column: Column(PropertyValue::Column(col_alias.0.clone())),
                                                 }
                                             )
                                         }
@@ -2294,7 +2298,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         || outer_proj.items.iter().any(|item| match &item.expression {
                             crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                 prop,
-                            ) if prop.column.0 == "*" => true,
+                            ) if prop.column.raw() == "*" => true,
                             _ => false,
                         });
 
@@ -2323,14 +2327,14 @@ impl RenderPlanBuilder for LogicalPlan {
                             .map(|expr| {
                                 // Check if this is a wildcard (PropertyAccess with column="*" or TableAlias)
                                 let fixed_expr = match &expr {
-                                    crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop) if prop.column.0 == "*" => {
+                                    crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop) if prop.column.raw() == "*" => {
                                         // Replace a.* with a.{id_column}
                                         // Extract ID column from the schema
                                         let id_column = self.find_id_column_for_alias(&prop.table_alias.0)?;
                                         crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                             crate::query_planner::logical_expr::PropertyAccess {
                                                 table_alias: prop.table_alias.clone(),
-                                                column: crate::query_planner::logical_expr::Column(id_column),
+                                                column: PropertyValue::Column(id_column),
                                             }
                                         )
                                     }
@@ -2340,7 +2344,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                         crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                             crate::query_planner::logical_expr::PropertyAccess {
                                                 table_alias: alias.clone(),
-                                                column: crate::query_planner::logical_expr::Column(id_column),
+                                                column: PropertyValue::Column(id_column),
                                             }
                                         )
                                     }
@@ -2377,7 +2381,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     // Replace wildcard expressions with the specific ID column
                                     let (fixed_expr, auto_alias) = match &normalized_expr {
                                         RenderExpr::PropertyAccessExp(prop)
-                                            if prop.column.0 == "*" =>
+                                            if prop.column.0.raw() == "*" =>
                                         {
                                             // Find the ID column for this alias
                                             let id_col =
@@ -2386,7 +2390,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                                 super::render_expr::PropertyAccess {
                                                     table_alias: prop.table_alias.clone(),
                                                     column: super::render_expr::Column(
-                                                        id_col.clone(),
+                                                        PropertyValue::Column(id_col.clone()),
                                                     ),
                                                 },
                                             );
@@ -2482,7 +2486,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                                         cte_name.clone(),
                                                     ),
                                                     column: super::render_expr::Column(
-                                                        alias.0.clone(),
+                                                        PropertyValue::Column(alias.0.clone()),
                                                     ),
                                                 },
                                             )
@@ -2528,7 +2532,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                         println!(
                             "DEBUG: Created GroupBy CTE pattern with table_alias={}, key_column={}",
-                            table_alias, key_column
+                            table_alias, key_column.raw().clone()
                         );
 
                         // Build ORDER BY items, rewriting WITH alias references to CTE references
@@ -2543,7 +2547,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                             if with_aliases.contains(&alias.0) {
                                                 RenderExpr::PropertyAccessExp(super::render_expr::PropertyAccess {
                                                     table_alias: super::render_expr::TableAlias(cte_name.clone()),
-                                                    column: super::render_expr::Column(alias.0.clone()),
+                                                    column: super::render_expr::Column(PropertyValue::Column(alias.0.clone())),
                                                 })
                                             } else {
                                                 expr
@@ -2621,7 +2625,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
-        let mut final_from = self.extract_from()?;
+        let final_from = self.extract_from()?;
         println!(
             "DEBUG: build_simple_relationship_render_plan - final_from: {:?}",
             final_from
@@ -2928,11 +2932,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias("t".to_string()),
-                                    column: Column("start_id".to_string()),
+                                    column: Column(PropertyValue::Column("start_id".to_string())),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(start_alias.clone()),
-                                    column: Column(start_id_col.clone()),
+                                    column: Column(PropertyValue::Column(start_id_col.clone())),
                                 }),
                             ],
                         },
@@ -2941,11 +2945,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias("t".to_string()),
-                                    column: Column("end_id".to_string()),
+                                    column: Column(PropertyValue::Column("end_id".to_string())),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(start_alias.clone()),
-                                    column: Column(start_id_col),
+                                    column: Column(PropertyValue::Column(start_id_col.clone())),
                                 }),
                             ],
                         },
@@ -2962,11 +2966,11 @@ impl RenderPlanBuilder for LogicalPlan {
                         operands: vec![
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias("t".to_string()),
-                                column: Column("start_id".to_string()),
+                                column: Column(PropertyValue::Column("start_id".to_string())),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(start_alias.clone()),
-                                column: Column(start_id_col),
+                                column: Column(PropertyValue::Column(start_id_col.clone())),
                             }),
                         ],
                     }],
@@ -2980,11 +2984,11 @@ impl RenderPlanBuilder for LogicalPlan {
                         operands: vec![
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias("t".to_string()),
-                                column: Column("end_id".to_string()),
+                                column: Column(PropertyValue::Column("end_id".to_string())),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(end_alias.clone()),
-                                column: Column(end_id_col),
+                                column: Column(PropertyValue::Column(end_id_col.clone())),
                             }),
                         ],
                     }],
@@ -3041,11 +3045,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(cte_alias.clone()),
-                                    column: Column("from_node_id".to_string()),
+                                    column: Column(PropertyValue::Column("from_node_id".to_string())),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(source_alias.clone()),
-                                    column: Column(source_id_col.clone()),
+                                    column: Column(PropertyValue::Column(source_id_col.clone())),
                                 }),
                             ],
                         }],
@@ -3061,11 +3065,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(cte_alias.clone()),
-                                    column: Column("to_node_id".to_string()),
+                                    column: Column(PropertyValue::Column("to_node_id".to_string())),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(target_alias.clone()),
-                                    column: Column(target_id_col),
+                                    column: Column(PropertyValue::Column(target_id_col.clone())),
                                 }),
                             ],
                         }],
@@ -3496,7 +3500,7 @@ fn references_union_cte_in_operand(operand: &RenderExpr, cte_name: &str) -> bool
             // Check if this property access references the union CTE
             // We can't easily check table alias here, but we can check if it references the CTE name
             // For now, just check if it's a property access that might need updating
-            prop_access.column.0 == "from_id" || prop_access.column.0 == "to_id"
+            prop_access.column.0.raw() == "from_id" || prop_access.column.0.raw() == "to_id"
         }
         RenderExpr::OperatorApplicationExp(op_app) => {
             references_union_cte_in_join(&[op_app.clone()], cte_name)
@@ -3516,18 +3520,18 @@ fn update_operand_for_union_cte(operand: &mut RenderExpr, table_alias: &str) {
     match operand {
         RenderExpr::Column(col) => {
             // Update column references to use standardized names
-            if col.0 == "from_id" {
-                *operand = RenderExpr::Column(Column("from_node_id".to_string()));
-            } else if col.0 == "to_id" {
-                *operand = RenderExpr::Column(Column("to_node_id".to_string()));
+            if col.0.raw() == "from_id" {
+                *operand = RenderExpr::Column(Column(PropertyValue::Column("from_node_id".to_string())));
+            } else if col.0.raw() == "to_id" {
+                *operand = RenderExpr::Column(Column(PropertyValue::Column("to_node_id".to_string())));
             }
         }
         RenderExpr::PropertyAccessExp(prop_access) => {
             // Update property access column references
-            if prop_access.column.0 == "from_id" {
-                prop_access.column = Column("from_node_id".to_string());
-            } else if prop_access.column.0 == "to_id" {
-                prop_access.column = Column("to_node_id".to_string());
+            if prop_access.column.0.raw() == "from_id" {
+                prop_access.column = Column(PropertyValue::Column("from_node_id".to_string()));
+            } else if prop_access.column.0.raw() == "to_id" {
+                prop_access.column = Column(PropertyValue::Column("to_node_id".to_string()));
             }
         }
         RenderExpr::OperatorApplicationExp(inner_op_app) => {
