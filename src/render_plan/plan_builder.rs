@@ -1258,7 +1258,25 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 }
 
-                // Try to find GraphRel through any Projection/Filter wrappers
+                // DENORMALIZED: If no joins, just use the relationship table
+                if graph_joins.joins.is_empty() {
+                    if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
+                        if let Some(rel_table) = extract_table_name(&graph_rel.center) {
+                            log::info!("🎯 DENORMALIZED: No JOINs, using relationship table '{}' as '{}'", rel_table, graph_rel.alias);
+                            Some(super::ViewTableRef {
+                                source: std::sync::Arc::new(LogicalPlan::Empty),
+                                name: rel_table,
+                                alias: Some(graph_rel.alias.clone()),
+                                use_final: false,
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                // NORMAL PATH with JOINs: Try to find GraphRel through any Projection/Filter wrappers
                 if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
                     if let Some(labels) = &graph_rel.labels {
                         if labels.len() > 1 {
@@ -1392,6 +1410,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         }
                     }
                 }
+                } // close the else block for joins.is_empty() check
             }
             LogicalPlan::GroupBy(group_by) => {
                 from_table_to_view_ref(group_by.input.extract_from()?)
