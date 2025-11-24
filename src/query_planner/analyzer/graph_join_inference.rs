@@ -11,7 +11,7 @@ use crate::{
         logical_expr::{
             LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
         },
-        logical_plan::{GraphJoins, GraphRel, Join, JoinType, LogicalPlan},
+        logical_plan::{GraphJoins, GraphNode, GraphRel, Join, JoinType, LogicalPlan},
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
@@ -442,7 +442,20 @@ impl GraphJoinInference {
                     optional_aliases.clone(),
                     plan_ctx,
                 )?;
-                graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
+                
+                // Check if this node is denormalized and set the flag
+                let is_denormalized = plan_ctx.is_denormalized_alias(&graph_node.alias);
+                if is_denormalized && !graph_node.is_denormalized {
+                    // Need to transform the node to set the flag
+                    let new_graph_node = GraphNode {
+                        input: child_tf.get_plan(),
+                        alias: graph_node.alias.clone(),
+                        is_denormalized: true,
+                    };
+                    Transformed::Yes(Arc::new(LogicalPlan::GraphNode(new_graph_node)))
+                } else {
+                    graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
+                }
             }
             LogicalPlan::GraphRel(graph_rel) => {
                 let left_tf = Self::build_graph_joins(
@@ -2080,7 +2093,7 @@ mod tests {
     use crate::{
         graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
         query_planner::{
-            logical_expr::{Column, Direction, LogicalExpr, Operator, PropertyAccess, TableAlias},
+            logical_expr::{Direction, LogicalExpr, Operator, PropertyAccess, TableAlias},
             logical_plan::{
                 GraphNode, GraphRel, JoinType, LogicalPlan, Projection, ProjectionItem, Scan,
             },
@@ -2293,11 +2306,11 @@ mod tests {
         }))
     }
 
-    fn create_graph_node(input: Arc<LogicalPlan>, alias: &str) -> Arc<LogicalPlan> {
+    fn create_graph_node(input: Arc<LogicalPlan>, alias: &str, is_denormalized: bool) -> Arc<LogicalPlan> {
         Arc::new(LogicalPlan::GraphNode(GraphNode {
             input,
             alias: alias.to_string(),
-            is_denormalized: false,
+            is_denormalized,
         }))
     }
 
@@ -2336,7 +2349,7 @@ mod tests {
 
         // Create a plan with only a graph node (no relationships)
         let scan = create_scan_plan("p1", "person");
-        let graph_node = create_graph_node(scan, "p1");
+        let graph_node = create_graph_node(scan, "p1", false);
 
         let result = analyzer
             .analyze_with_graph_schema(graph_node.clone(), &mut plan_ctx, &graph_schema)
@@ -2362,12 +2375,12 @@ mod tests {
 
         // Create plan: (p1)-[f1:FOLLOWS]->(p2)
         let p1_scan = create_scan_plan("p1", "Person");
-        let p1_node = create_graph_node(p1_scan, "p1");
+        let p1_node = create_graph_node(p1_scan, "p1", false);
 
         let f1_scan = create_scan_plan("f1", "FOLLOWS");
 
         let p2_scan = create_scan_plan("p2", "Person");
-        let p2_node = create_graph_node(p2_scan, "p2");
+        let p2_node = create_graph_node(p2_scan, "p2", false);
 
         let graph_rel = create_graph_rel(
             p2_node,
@@ -2491,12 +2504,12 @@ mod tests {
 
         // Create plan: (p1)-[w1:WORKS_AT]->(c1)
         let p1_scan = create_scan_plan("p1", "Person");
-        let p1_node = create_graph_node(p1_scan, "p1");
+        let p1_node = create_graph_node(p1_scan, "p1", false);
 
         let w1_scan = create_scan_plan("w1", "WORKS_AT");
 
         let c1_scan = create_scan_plan("c1", "Company");
-        let c1_node = create_graph_node(c1_scan, "c1");
+        let c1_node = create_graph_node(c1_scan, "c1", false);
 
         let graph_rel = create_graph_rel(
             p1_node,
@@ -2589,7 +2602,7 @@ mod tests {
 
         // Create plan: (p1)-[f1:FOLLOWS]->(p2)
         let p1_scan = create_scan_plan("p1", "Person");
-        let p1_node = create_graph_node(p1_scan, "p1");
+        let p1_node = create_graph_node(p1_scan, "p1", false);
 
         let f1_scan = create_scan_plan("f1", "FOLLOWS");
 
@@ -2606,7 +2619,7 @@ mod tests {
         );
 
         let p2_scan = create_scan_plan("p2", "Person");
-        let p2_node = create_graph_node(p2_scan, "p2");
+        let p2_node = create_graph_node(p2_scan, "p2", false);
 
         let graph_rel = create_graph_rel(
             p2_node,
@@ -2698,7 +2711,7 @@ mod tests {
         let empty_left = Arc::new(LogicalPlan::Empty);
         let f2_scan = create_scan_plan("f2", "FOLLOWS");
         let p3_scan = create_scan_plan("p3", "Person");
-        let p3_node = create_graph_node(p3_scan, "p3");
+        let p3_node = create_graph_node(p3_scan, "p3", false);
 
         let graph_rel = create_graph_rel(
             empty_left,
@@ -2811,12 +2824,12 @@ mod tests {
 
         // Create plan: (p1)<-[f1:FOLLOWS]-(p2)
         let p1_scan = create_scan_plan("p1", "Person");
-        let p1_node = create_graph_node(p1_scan, "p1");
+        let p1_node = create_graph_node(p1_scan, "p1", false);
 
         let f1_scan = create_scan_plan("f1", "FOLLOWS");
 
         let p2_scan = create_scan_plan("p2", "Person");
-        let p2_node = create_graph_node(p2_scan, "p2");
+        let p2_node = create_graph_node(p2_scan, "p2", false);
 
         let graph_rel = create_graph_rel(
             p2_node,
@@ -2936,12 +2949,12 @@ mod tests {
 
         // Create complex plan: (p1)-[f1:FOLLOWS]->(p2)-[w1:WORKS_AT]->(c1)
         let p1_scan = create_scan_plan("p1", "Person");
-        let p1_node = create_graph_node(p1_scan, "p1");
+        let p1_node = create_graph_node(p1_scan, "p1", false);
 
         let f1_scan = create_scan_plan("f1", "FOLLOWS");
 
         let p2_scan = create_scan_plan("p2", "Person");
-        let p2_node = create_graph_node(p2_scan, "p2");
+        let p2_node = create_graph_node(p2_scan, "p2", false);
 
         let first_rel = create_graph_rel(
             p2_node,
@@ -2956,7 +2969,7 @@ mod tests {
         let w1_scan = create_scan_plan("w1", "WORKS_AT");
 
         let c1_scan = create_scan_plan("c1", "Company");
-        let c1_node = create_graph_node(c1_scan, "c1");
+        let c1_node = create_graph_node(c1_scan, "c1", false);
 
         // (p1)-[f1:FOLLOWS]->(p2)-[w1:WORKS_AT]->(c1)
 
