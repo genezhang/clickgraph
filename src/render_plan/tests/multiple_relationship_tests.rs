@@ -10,6 +10,7 @@ use crate::{
 };
 use std::collections::HashMap;
 use tokio::sync::RwLock;
+use serial_test::serial;
 
 // Helper to create empty schema for tests
 fn empty_test_schema() -> GraphSchema {
@@ -21,14 +22,8 @@ fn setup_test_schema() {
     use crate::graph_catalog::graph_schema::{GraphSchema, RelationshipSchema};
     use crate::server::GLOBAL_SCHEMAS;
 
-    // Check if already set
-    if let Some(schemas_lock) = GLOBAL_SCHEMAS.get() {
-        if let Ok(schemas) = schemas_lock.try_read() {
-            if schemas.contains_key("default") {
-                return;
-            }
-        }
-    }
+    // Always recreate the schema for proper test isolation
+    const SCHEMA_NAME: &str = "default";
 
     // Create test relationship schemas
     let mut relationships = HashMap::new();
@@ -50,6 +45,12 @@ fn setup_test_schema() {
             view_parameters: None,
             engine: None,
             use_final: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
         },
     );
 
@@ -70,6 +71,12 @@ fn setup_test_schema() {
             view_parameters: None,
             engine: None,
             use_final: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
         },
     );
 
@@ -90,6 +97,12 @@ fn setup_test_schema() {
             view_parameters: None,
             engine: None,
             use_final: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
         },
     );
 
@@ -110,6 +123,12 @@ fn setup_test_schema() {
             view_parameters: None,
             engine: None,
             use_final: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
         },
     );
 
@@ -130,6 +149,12 @@ fn setup_test_schema() {
             view_parameters: None,
             engine: None,
             use_final: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
         },
     );
 
@@ -141,12 +166,12 @@ fn setup_test_schema() {
     // Try to set the schema in registry, ignore if already set
     if let Some(schemas_lock) = GLOBAL_SCHEMAS.get() {
         if let Ok(mut schemas) = schemas_lock.try_write() {
-            schemas.insert("default".to_string(), schema);
+            schemas.insert(SCHEMA_NAME.to_string(), schema);
         }
     } else {
         // Initialize the registry if not set
         let mut schemas_map = HashMap::new();
-        schemas_map.insert("default".to_string(), schema);
+        schemas_map.insert(SCHEMA_NAME.to_string(), schema);
         let _ = GLOBAL_SCHEMAS.set(RwLock::new(schemas_map));
     }
 }
@@ -156,6 +181,7 @@ mod multiple_relationship_tests {
     use super::*;
 
     #[test]
+    #[serial]
     fn test_multiple_relationship_types_union() {
         // Setup test schema
         setup_test_schema();
@@ -226,6 +252,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
+    #[serial]
     fn test_three_relationship_types_union() {
         // Setup test schema
         setup_test_schema();
@@ -318,6 +345,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
+    #[serial]
     fn test_single_relationship_type_no_union() {
         // Setup test schema
         setup_test_schema();
@@ -362,6 +390,7 @@ mod multiple_relationship_tests {
     // relationship's ON clause was being incorrectly filtered out.
 
     #[test]
+    #[serial]
     fn test_two_hop_traversal_has_all_on_clauses() {
         // Setup test schema
         setup_test_schema();
@@ -451,6 +480,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
+    #[serial]
     fn test_three_hop_traversal_has_all_on_clauses() {
         // Setup test schema
         setup_test_schema();
@@ -511,6 +541,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
+    #[serial]
     fn test_multi_hop_intermediate_nodes_referenced() {
         // Setup test schema
         setup_test_schema();
@@ -563,6 +594,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
+    #[serial]
     fn test_multi_hop_mixed_directions() {
         // Setup test schema
         setup_test_schema();
@@ -608,6 +640,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
+    #[serial]
     fn test_multi_hop_with_where_clause() {
         // Setup test schema
         setup_test_schema();
@@ -659,6 +692,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
+    #[serial]
     fn test_multi_hop_different_relationship_types() {
         // Setup test schema
         setup_test_schema();
@@ -712,3 +746,6 @@ mod multiple_relationship_tests {
         }
     }
 }
+
+
+

@@ -127,6 +127,17 @@ impl TableCtx {
     }
 }
 
+/// Metadata for denormalized node aliases
+#[derive(Debug, Clone)]
+pub struct DenormalizedAliasInfo {
+    /// The relationship alias this node is denormalized onto
+    pub rel_alias: String,
+    /// Whether this is the from_node (true) or to_node (false)
+    pub is_from_node: bool,
+    /// The node label (for schema lookup)
+    pub node_label: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct PlanCtx {
     alias_table_ctx_map: HashMap<String, TableCtx>,
@@ -145,6 +156,10 @@ pub struct PlanCtx {
     /// View parameter values for parameterized views (e.g., {"region": "US", "tier": "premium"})
     /// These are passed to table functions: table(region = 'US', tier = 'premium')
     view_parameter_values: Option<HashMap<String, String>>,
+    /// Denormalized node aliases: Maps node alias → relationship it's denormalized onto
+    /// Example: "origin" → { rel_alias: "f", is_from_node: true, node_label: "Airport" }
+    /// This tells the renderer to use relationship table columns for node properties
+    denormalized_aliases: HashMap<String, DenormalizedAliasInfo>,
 }
 
 impl PlanCtx {
@@ -201,6 +216,41 @@ impl PlanCtx {
     /// Get a reference to the set of optional aliases
     pub fn get_optional_aliases(&self) -> &HashSet<String> {
         &self.optional_aliases
+    }
+
+    /// Register a denormalized node alias
+    /// This tells the planner that this node alias doesn't need a separate JOIN -
+    /// its properties come from the relationship table
+    pub fn register_denormalized_alias(
+        &mut self,
+        node_alias: String,
+        rel_alias: String,
+        is_from_node: bool,
+        node_label: String,
+    ) {
+        self.denormalized_aliases.insert(
+            node_alias,
+            DenormalizedAliasInfo {
+                rel_alias,
+                is_from_node,
+                node_label,
+            },
+        );
+    }
+
+    /// Check if an alias is denormalized (mapped to a relationship table)
+    pub fn is_denormalized_alias(&self, alias: &str) -> bool {
+        self.denormalized_aliases.contains_key(alias)
+    }
+
+    /// Get denormalized alias info for a node
+    pub fn get_denormalized_info(&self, alias: &str) -> Option<&DenormalizedAliasInfo> {
+        self.denormalized_aliases.get(alias)
+    }
+
+    /// Get all denormalized aliases
+    pub fn get_denormalized_aliases(&self) -> &HashMap<String, DenormalizedAliasInfo> {
+        &self.denormalized_aliases
     }
 
     pub fn get_alias_table_ctx_map(&self) -> &HashMap<String, TableCtx> {
@@ -302,6 +352,7 @@ impl PlanCtx {
             schema,
             tenant_id: None,
             view_parameter_values: None,
+            denormalized_aliases: HashMap::new(),
         }
     }
 
@@ -315,6 +366,7 @@ impl PlanCtx {
             schema,
             tenant_id,
             view_parameter_values: None,
+            denormalized_aliases: HashMap::new(),
         }
     }
 
@@ -332,6 +384,7 @@ impl PlanCtx {
             schema,
             tenant_id,
             view_parameter_values,
+            denormalized_aliases: HashMap::new(),
         }
     }
 
@@ -348,6 +401,7 @@ impl PlanCtx {
             schema: Arc::new(empty_schema),
             tenant_id: None,
             view_parameter_values: None,
+            denormalized_aliases: HashMap::new(),
         }
     }
 

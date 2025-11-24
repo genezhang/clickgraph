@@ -110,8 +110,9 @@ pub struct GraphNode {
     #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub alias: String,
-    /// Whether this node is denormalized (stored on edge table)
-    /// Set from schema during GraphNode creation
+    /// True if this node is denormalized onto an edge table (set by optimizer)
+    /// When true, RenderPlan should skip creating CTEs/JOINs for this node
+    #[serde(default)]
     pub is_denormalized: bool,
 }
 
@@ -280,9 +281,9 @@ pub struct GraphJoins {
     /// Aliases that came from OPTIONAL MATCH clauses (for correct FROM table selection)
     pub optional_aliases: std::collections::HashSet<String>,
 
-    /// The anchor table for the FROM clause (computed during join reordering)
-    /// This is the table referenced by joins but not in the joins list itself
-    /// For denormalized patterns with no joins, this will be None (use relationship table)
+    /// The computed anchor table (FROM clause table)
+    /// Computed during join reordering in graph_join_inference
+    /// None = denormalized pattern (use relationship table directly)
     pub anchor_table: Option<String>,
 }
 
@@ -935,7 +936,7 @@ mod tests {
         let projection_items = vec![ProjectionItem {
             expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                 table_alias: TableAlias("customer".to_string()),
-                column: Column("name".to_string()),
+                column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
             }),
             col_alias: None,
         }];
@@ -1131,7 +1132,7 @@ mod tests {
                 operands: vec![
                     LogicalExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias("user".to_string()),
-                        column: Column("age".to_string()),
+                        column: crate::graph_catalog::expression_parser::PropertyValue::Column("age".to_string()),
                     }),
                     LogicalExpr::Literal(Literal::Integer(18)),
                 ],
@@ -1144,14 +1145,14 @@ mod tests {
                 ProjectionItem {
                     expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias("user".to_string()),
-                        column: Column("email".to_string()),
+                        column: crate::graph_catalog::expression_parser::PropertyValue::Column("email".to_string()),
                     }),
                     col_alias: Some(ColumnAlias("email_address".to_string())),
                 },
                 ProjectionItem {
                     expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias("user".to_string()),
-                        column: Column("first_name".to_string()),
+                        column: crate::graph_catalog::expression_parser::PropertyValue::Column("first_name".to_string()),
                     }),
                     col_alias: None,
                 },

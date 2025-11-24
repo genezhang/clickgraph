@@ -1,26 +1,157 @@
 # Known Issues
 
-**Current Status**: Major functionality working, 3 active issues identified  
+**Current Status**: 🚨 **CRITICAL: Undirected patterns need relationship ID support**  
 **Test Results**: 423/423 unit tests passing (100%), 197/308 integration tests passing (64%)  
-**Active Issues**: 2 bugs (relationship uniqueness, disconnected patterns), 1 enhancement (polymorphic schema)
+**Active Issues**: 3 bugs (undirected uniqueness, disconnected patterns), 1 enhancement (polymorphic schema)
 
-**Date Updated**: November 20, 2025
+**Date Updated**: November 22, 2025  
+**Neo4j Semantics Verified**: November 22, 2025 (see `notes/CRITICAL_relationship_vs_node_uniqueness.md`)
+
+**CRITICAL DISCOVERIES**: 
+1. Neo4j only enforces **relationship uniqueness**, NOT node uniqueness! 
+2. **Undirected patterns need relationship IDs** - `(from_id, to_id)` alone is NOT sufficient!
 
 **Note**: Some integration tests have incorrect expectations or test unimplemented features. Known feature gaps documented below.
 
 ---
 
-## 🐛 BUG: Node Uniqueness Not Enforced Within MATCH Pattern
+## 🚨 CRITICAL: Relationship Uniqueness for Undirected Patterns
 
-**Status**: 🐛 **BUG** (Discovered November 20, 2025)  
-**Severity**: Medium - Violates Neo4j/OpenCypher semantics  
-**Impact**: Friends-of-friends queries can return the original user
+**Status**: 🚨 **INCOMPLETE** - Requires schema enhancement (November 22, 2025)  
+**Severity**: **HIGH** - Affects correctness of undirected multi-hop queries  
+**Neo4j Verified**: Neo4j enforces this, we currently don't
+
+### The Problem
+
+**Directed patterns work correctly** ✅:
+```cypher
+MATCH (a)-[r1:F]->(b)-[r2:F]->(c)
+```
+Join conditions prevent same row reuse because r1 and r2 have different join predicates.
+
+**Undirected patterns are BROKEN** ❌:
+```cypher
+MATCH (a)-[r1]-(b)-[r2]-(c)
+```
+Same physical row can be used twice (forward and backward direction) without proper relationship ID checks!
+
+### Root Cause
+
+**`(from_id, to_id)` is NOT always a unique key for relationships!**
+
+Examples where duplicates exist:
+1. **Temporal relationships**: Alice follows Bob at different times → multiple rows
+2. **Message graphs**: Alice sends Bob multiple messages → multiple rows  
+3. **Transaction graphs**: Account A transfers to Account B multiple times → multiple rows
+
+**What we need**: A true **relationship ID** (like Neo4j's `id(r)`)
+
+### Solution: Add `relationship_id` to Schema
+
+**Schema YAML enhancement**:
+```yaml
+relationships:
+  - name: FOLLOWS
+    table: user_follows
+    from_id: follower_id
+    to_id: followed_id
+    relationship_id: id  # ← NEW: Unique identifier for relationship instances
+```
+
+**SQL generation with relationship ID**:
+```sql
+WHERE NOT (r1.id = r2.id)  -- Simple, correct, fast! ✅
+```
+
+**Fallback without relationship ID** (risky):
+```sql
+WHERE NOT (
+    (r1.from_id = r2.from_id AND r1.to_id = r2.to_id) OR
+    (r1.from_id = r2.to_id AND r1.to_id = r2.from_id)
+)
+-- Only works if (from_id, to_id) is truly unique! ⚠️
+```
+
+### Implementation Plan
+
+1. **Schema Enhancement**: Add optional `relationship_id` field to RelationshipConfig
+2. **SQL Generation**: Use relationship IDs in uniqueness filters for undirected patterns
+3. **Validation**: Warn if `relationship_id` omitted for undirected relationships
+4. **Testing**: Verify with graphs containing duplicate `(from, to)` pairs
+
+### References
+- **Design Document**: `notes/CRITICAL_relationship_id_requirement.md`
+- **Undirected Test**: `scripts/test/test_undirected_relationship_uniqueness.py`
+- **Implementation Needed In**: 
+  - `brahmand/src/graph_catalog/graph_schema.rs` (schema parsing)
+  - `src/render_plan/plan_builder.rs` (SQL generation)
+
+---
+
+## ✅ CORRECT: Relationship Uniqueness for Directed Patterns
+
+**Status**: ✅ **WORKING CORRECTLY** (November 22, 2025)  
+**Severity**: N/A - This is working as designed  
+**Neo4j Verified**: Same behavior as Neo4j
 
 ### Summary
-According to OpenCypher specification, **relationship uniqueness** is enforced (same relationship cannot appear twice), but **node uniqueness within a pattern** is also expected. Currently, ClickGraph allows the start node to appear as the end node in the same pattern match.
+**Neo4j enforces RELATIONSHIP uniqueness only** - the same relationship instance cannot appear twice in a pattern. However, **the same NODE can appear multiple times** as long as the relationships are different!
 
-**Neo4j/OpenCypher Behavior** (from spec):
-> "Looking for a user's friends of friends should not return said user"
+**Critical Test Case** (Neo4j verified):
+```cypher
+-- Graph: Alice -> Bob -> Alice (cycle with two different FOLLOWS relationships)
+
+MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)
+WHERE a.user_id = 1
+RETURN a.name, b.name, c.name
+```
+
+**Neo4j Result**: `Alice -> Bob -> Alice` **IS ALLOWED** ✅  
+**Reason**: The two FOLLOWS relationships have different IDs (r1 != r2)
+
+**ClickGraph Behavior**: ✅ **MATCHES NEO4J**  
+Our SQL structure automatically enforces relationship uniqueness through different table aliases and JOINs.
+
+### How ClickGraph Enforces Relationship Uniqueness
+
+**Generated SQL**:
+```sql
+FROM users_bench AS a
+INNER JOIN user_follows_bench AS r1 ON r1.follower_id = a.user_id
+INNER JOIN users_bench AS b ON b.user_id = r1.followed_id
+INNER JOIN user_follows_bench AS r2 ON r2.follower_id = b.user_id  
+INNER JOIN users_bench AS c ON c.user_id = r2.followed_id
+```
+
+**Why this works**:
+- `r1` and `r2` are different table aliases
+- Each JOIN pulls a different row from `user_follows_bench`
+- **Relationship uniqueness automatically satisfied!** ✅
+
+### What We Do NOT Enforce (Correctly!)
+
+**We do NOT add filters like** `WHERE a.user_id <> c.user_id`
+
+This would be WRONG! Neo4j allows the same node to appear multiple times in a pattern.
+
+### Variable-Length Paths - Different Rules
+
+For variable-length paths (`*2`, `*3`, etc.), we DO need cycle prevention in CTEs:
+
+```cypher
+MATCH (a)-[:F*2]->(c)
+```
+
+Our CTE implementation correctly prevents:
+- ✅ Node cycles: `WHERE start_id <> end_id`
+- ✅ Relationship reuse: Proper CTE structure prevents same edge twice
+
+This is **correct** and matches Neo4j behavior for variable-length patterns.
+
+### References
+- **Critical Discovery**: `notes/CRITICAL_relationship_vs_node_uniqueness.md`
+- **Test Script**: `scripts/test/test_relationship_vs_node_uniqueness.py`
+- **Neo4j Test**: Creates `Alice -> Bob -> Alice` cycle, confirms Neo4j allows it
 
 ### Test Case
 ```cypher
@@ -39,75 +170,89 @@ ORDER BY fof.user_id
 - User_id 1 should NOT appear (it's the start node)
 
 ### Technical Details
+### Test Case - Friends-of-Friends
+```cypher
+MATCH (user:User)-[:FOLLOWS]-(friend:User)-[:FOLLOWS]-(fof:User)
+WHERE user.user_id = 1
+RETURN DISTINCT fof.user_id
+ORDER BY fof.user_id
+```
 
-**Current SQL** (allows node reuse):
+**Neo4j Verified Behavior** (from actual Neo4j 5.x test):
+```
+Results: [2, 3]  (Charlie, David)
+NOT returned: 1 (Alice - the start node)
+```
+
+**ClickGraph Current Behavior**:
+- Single-hop `(a)-(b)`: ✅ Adds `a.user_id <> b.user_id` (WORKING)
+- Friends-of-friends `(u)-(f)-(fof)`: ⚠️ Only adds `f <> fof`, missing `u <> fof` (PARTIAL)
+
+### Technical Details
+
+**Current SQL** (partial uniqueness):
 ```sql
 FROM users_bench AS user
 INNER JOIN user_follows_bench AS r1 ON r1.from_id = user.user_id
-INNER JOIN users_bench AS intermediate ON intermediate.user_id = r1.to_id
-INNER JOIN user_follows_bench AS r2 ON r2.from_id = intermediate.user_id  
+INNER JOIN users_bench AS friend ON friend.user_id = r1.to_id
+INNER JOIN user_follows_bench AS r2 ON r2.from_id = friend.user_id  
 INNER JOIN users_bench AS fof ON fof.user_id = r2.to_id
 WHERE user.user_id = 1
--- Missing: AND fof.user_id <> user.user_id
+  AND friend.follower_id <> fof.user_id  -- ✅ Adjacent nodes
+-- Missing: AND user.user_id <> fof.user_id  -- ❌ Overall start != end
 ```
 
-**What Works** ✅:
-- ✅ Relationship uniqueness: r1 and r2 are different relationship instances
-- ✅ Different table aliases ensure no relationship reuse
-
-**What Does NOT Work** ❌:
-- ❌ Node uniqueness: Same node can appear as different aliases in pattern
-- ❌ Start node can be returned as end node
-
-### Scope: Single MATCH vs Multiple MATCH
-
-**Neo4j Semantics**:
-1. **Within single MATCH**: Uniqueness enforced for relationships (✅ working) AND nodes (❌ not working)
-2. **Across multiple MATCH clauses**: NO uniqueness constraint (✅ working correctly)
-
-**Evidence from testing**:
-```cypher
--- Single MATCH with comma (uniqueness should apply):
-MATCH (user:User)-[r1:FOLLOWS]-(friend), (friend)-[r2:FOLLOWS]-(fof:User)
+**Needed SQL** (full pairwise uniqueness):
+```sql
 WHERE user.user_id = 1
-RETURN DISTINCT fof.user_id
--- Current: Returns 5 results, user_id 1 included ❌
--- Expected: Should exclude user_id 1
-
--- Two separate MATCH clauses (NO uniqueness):
-MATCH (user:User)-[r1:FOLLOWS]-(friend)
-MATCH (friend)-[r2:FOLLOWS]-(fof:User)
-WHERE user.user_id = 1  
-RETURN DISTINCT fof.user_id
--- Current: Returns 99,906 results, user_id 1 NOT included ✅
--- This is CORRECT - no uniqueness across MATCH clauses
+  AND user.user_id <> friend.user_id      -- Adjacent pair 1
+  AND friend.follower_id <> fof.user_id   -- Adjacent pair 2
+  AND user.user_id <> fof.user_id         -- Overall start != end
 ```
 
-### Solution Options
+**Neo4j Verified Requirements**:
+- ✅ Relationship uniqueness: `r1 != r2` (always enforced by Neo4j)
+- ✅ Adjacent node uniqueness: `user != friend`, `friend != fof`
+- ⚠️ Full pairwise uniqueness: `user != fof` (MISSING in ClickGraph)
 
-**Option A: Automatic Node Exclusion** (Neo4j-compatible) ⭐ **RECOMMENDED**
-- Add implicit WHERE clause: `WHERE fof.user_id <> user.user_id`
-- Track all node aliases in pattern
-- Generate exclusion predicates for all node pairs
-- **Benefits**: Neo4j-compatible, users expect this behavior
-- **Complexity**: Medium (2-3 days)
+### What Works ✅
 
-**Option B: Explicit User Responsibility** (current behavior)
-- Require users to add: `WHERE fof <> user` manually
-- Document this requirement clearly
-- **Benefits**: Simple, no code changes
-- **Drawbacks**: Not Neo4j-compatible, confusing to users
+- ✅ Single-hop undirected: `(a)-(b)` generates `a != b`
+- ✅ Variable-length undirected: `(a)-[*2]-(c)` generates `a != c`
+- ✅ No unnecessary filters on directed patterns
+- ✅ Cycle prevention for variable-length paths
 
-**Option C: Configuration Flag** (flexible)
-- Add config option: `enforce_node_uniqueness: bool`
-- Default to `true` for Neo4j compatibility
-- Allow disabling for performance
-- **Benefits**: Flexibility, gradual migration
-- **Complexity**: High (needs configuration infrastructure)
+### What Needs Fixing ⚠️
 
-### Implementation Plan (Option A)
+**Priority 1: Multi-Hop Undirected Chains** (2-3 hours)
+- **Problem**: Only filters adjacent pairs, not entire chain
+- **Example**: `(a)-(b)-(c)` generates `a!=b, b!=c` but missing `a!=c`
+- **Solution**: Track pattern start and add overall `start != end` filter
 
-**Phase 1: Query Planning** (track node aliases)
+**Priority 2: Full Pairwise Uniqueness** (4-6 hours)
+- **Problem**: Need O(N²) filters for N-node chains
+- **Example**: `(a)-(b)-(c)-(d)` needs 6 filters (all pairs different)
+- **Solution**: Generate all pairwise uniqueness predicates
+- **Cost**: For N nodes: N*(N-1)/2 filters
+
+### Neo4j Verification Results
+
+**Test Script**: `scripts/test/neo4j_semantics_test_ascii.py`  
+**Date**: November 22, 2025  
+**Results**: 10/10 tests passed
+
+**Key Findings**:
+1. ✅ Neo4j prevents cycles in ALL patterns (directed *2, explicit 2-hop, undirected *2)
+2. ✅ Neo4j enforces node uniqueness for undirected patterns (no self-matches)
+3. ✅ Neo4j enforces FULL pairwise uniqueness for named intermediate nodes
+4. ✅ Neo4j always enforces relationship uniqueness (same rel can't be used twice)
+5. ✅ Uniqueness does NOT apply across multiple MATCH clauses
+
+**See**: `notes/neo4j-verified-semantics.md` for full test results and analysis.
+
+### Implementation Plan
+
+**Code Location**: `src/render_plan/plan_builder.rs` - `extract_filters()` function (lines ~1430-1505)
 ```rust
 // In match_clause.rs evaluation
 struct PatternContext {
@@ -120,41 +265,62 @@ pattern_ctx.node_aliases.insert(start_node_alias);
 pattern_ctx.node_aliases.insert(end_node_alias);
 ```
 
-**Phase 2: SQL Generation** (add exclusion predicates)
+**Approach 1: Track Pattern Start** (Quick fix for Priority 1)
 ```rust
-// In plan_builder.rs extract_where()
-fn generate_node_exclusion_predicates(
-    node_aliases: &HashSet<String>,
-    plan: &LogicalPlan
-) -> Vec<RenderExpr> {
-    let mut predicates = vec![];
-    let aliases: Vec<_> = node_aliases.iter().collect();
-    
-    // Generate exclusions for all pairs: a <> b, a <> c, b <> c
-    for i in 0..aliases.len() {
-        for j in (i+1)..aliases.len() {
-            predicates.push(RenderExpr::BinaryOp {
-                left: column_ref(aliases[i], "id"),
-                op: Operator::NotEq,
-                right: column_ref(aliases[j], "id"),
-            });
-        }
+// In extract_filters() for GraphRel chains
+let pattern_start = graph_rel_chain.first().left_connection.clone();
+let pattern_end = graph_rel_chain.last().right_connection.clone();
+
+if has_undirected_segment(&graph_rel_chain) {
+    // Add overall start != end filter
+    let overall_filter = RenderExpr::OperatorApplicationExp(OperatorApplication {
+        operator: Operator::NotEqual,
+        operands: vec![
+            property_access(pattern_start, id_column),
+            property_access(pattern_end, id_column),
+        ],
+    });
+    all_predicates.push(overall_filter);
+}
+```
+
+**Approach 2: Full Pairwise** (Complete fix for Priority 2)
+```rust
+// Collect all node aliases in undirected chain
+let mut node_aliases = vec![pattern_start];
+for rel in &graph_rel_chain {
+    node_aliases.push(rel.right_connection.clone());
+}
+
+// Generate all pairwise uniqueness filters
+for i in 0..node_aliases.len() {
+    for j in (i+1)..node_aliases.len() {
+        let filter = generate_not_equal_filter(&node_aliases[i], &node_aliases[j]);
+        all_predicates.push(filter);
     }
-    predicates
 }
 ```
 
 ### Files to Modify
-1. `src/query_planner/logical_plan/match_clause.rs` - Track node aliases
-2. `src/query_planner/plan_ctx/mod.rs` - Store pattern context
-3. `src/render_plan/plan_builder.rs` - Generate exclusion predicates
-4. `src/clickhouse_query_generator/` - Ensure predicates in WHERE clause
+1. `src/render_plan/plan_builder.rs` - `extract_filters()` function (~1430-1505)
+   - Add pattern start/end tracking
+   - Add pairwise uniqueness generation for undirected chains
+2. Integration tests - Add Neo4j-verified test cases
 
 ### Testing Requirements
-1. Add test: Single MATCH with start node as end node
-2. Add test: Multiple node pairs require all exclusions
-3. Add test: Comma-separated patterns enforce uniqueness
-4. Add test: Multiple MATCH clauses do NOT enforce uniqueness
+1. ✅ Single-hop undirected: `(a)-(b)` - Already working
+2. ⚠️ Friends-of-friends: `(u)-(f)-(fof)` - Needs overall `u != fof`
+3. ⚠️ 3-node chain: `(a)-(b)-(c)` - Needs all three pairs
+4. ✅ Variable-length: `(a)-[*2]-(c)` - Already working
+5. ✅ Directed patterns: Should NOT add unnecessary filters
+
+### References
+- **Neo4j Verified Behavior**: `notes/neo4j-verified-semantics.md`
+- **Test Script**: `scripts/test/neo4j_semantics_test_ascii.py`
+- **Test Results**: `scripts/test/test_undirected_uniqueness_fix.py`
+- **OpenCypher Spec**: Friends-of-friends requirement
+- **Code**: `src/render_plan/plan_builder.rs` lines ~1430-1505
+
 5. Add Neo4j comparison test (requires Neo4j container)
 
 ### References

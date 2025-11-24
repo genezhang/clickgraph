@@ -98,6 +98,17 @@ pub fn final_optimization(
     let transformed_plan = view_optimizer.optimize(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
 
+    // NEW: Mark denormalized nodes based on analyzer's detection
+    // This must run AFTER analysis but BEFORE rendering
+    // Handles all 4 edge table patterns:
+    //   1. Traditional (both separate tables) → no changes
+    //   2. FullyDenormalized (both on edge) → mark both
+    //   3. Mixed (from denormalized) → mark left
+    //   4. Mixed (to denormalized) → mark right
+    let denormalized_optimizer = DenormalizedEdgeOptimizer::new();
+    let transformed_plan = denormalized_optimizer.optimize(plan.clone(), plan_ctx)?;
+    let plan = transformed_plan.get_plan();
+
     // println!("\n plan_ctx After {} \n\n", plan_ctx);
     // println!("\n PLAN After {} \n\n", plan);
 

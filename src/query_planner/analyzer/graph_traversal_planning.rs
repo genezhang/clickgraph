@@ -241,7 +241,7 @@ impl GraphTRaversalPlanning {
                     col.as_str() == graph_context.left.id_column.as_str()
                 }
                 LogicalExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
-                    column.0 == graph_context.left.id_column
+                    column.raw() == graph_context.left.id_column
                 }
                 _ => false,
             });
@@ -269,7 +269,7 @@ impl GraphTRaversalPlanning {
                     col.as_str() == graph_context.right.id_column.as_str()
                 }
                 LogicalExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
-                    column.0 == graph_context.right.id_column
+                    column.raw() == graph_context.right.id_column
                 }
                 _ => false,
             });

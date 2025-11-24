@@ -62,7 +62,7 @@ impl OptimizerPass for ProjectionPushDown {
                             if let LogicalExpr::PropertyAccessExp(pa) = &item.expression {
                                 println!(
                                     "ProjectionPushDown: Item {} is PropertyAccessExp(alias={}, column={})",
-                                    i, pa.table_alias, pa.column
+                                    i, pa.table_alias, pa.column.raw()
                                 );
                             } else if let LogicalExpr::Literal(_) = &item.expression {
                                 println!("ProjectionPushDown: Item {} is Literal!!!", i);

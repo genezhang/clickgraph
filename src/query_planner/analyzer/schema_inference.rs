@@ -880,7 +880,7 @@ impl SchemaInference {
                 None
             }
             LogicalExpr::PropertyAccessExp(property_access) => {
-                Some(property_access.column.0.clone())
+                Some(property_access.column.raw().to_string())
             }
             LogicalExpr::Column(col) => Some(col.to_string()),
             _ => None,

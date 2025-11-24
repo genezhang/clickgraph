@@ -1,3 +1,5 @@
+mod denormalized_property_tests;
 mod multiple_relationship_tests;
+mod polymorphic_edge_tests;
 mod variable_length_tests;
 mod where_clause_filter_tests;

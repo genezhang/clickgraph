@@ -2,6 +2,7 @@ use crate::clickhouse_query_generator::variable_length_cte::{
     VariableLengthCteGenerator,
 };
 use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::query_planner::plan_ctx::PlanCtx;
@@ -58,7 +59,7 @@ fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
 fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> String {
     match expr {
-        RenderExpr::Column(col) => col.0.clone(),
+        RenderExpr::Column(col) => col.0.raw().to_string(),
         RenderExpr::TableAlias(alias) => alias.0.clone(),
         RenderExpr::ColumnAlias(alias) => alias.0.clone(),
         RenderExpr::Literal(lit) => match lit {
@@ -77,7 +78,7 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
                 .find(|(cypher, _)| *cypher == prop.table_alias.0)
                 .map(|(_, cte)| cte.clone())
                 .unwrap_or_else(|| prop.table_alias.0.clone());
-            format!("{}.{}", table_alias, prop.column.0)
+            format!("{}.{}", table_alias, prop.column.0.raw())
         }
         RenderExpr::OperatorApplicationExp(op) => {
             let operands: Vec<String> = op
@@ -402,19 +403,19 @@ fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
             // Get the node label for this table alias
             if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
                 // Map the property to the correct column
-                let mapped_column = map_property_to_column_with_schema(&prop.column.0, &node_label)
-                    .unwrap_or_else(|_| prop.column.0.clone());
-                prop.column = super::render_expr::Column(mapped_column);
+                let mapped_column = map_property_to_column_with_schema(&prop.column.0.raw(), &node_label)
+                    .unwrap_or_else(|_| prop.column.0.raw().to_string());
+                prop.column = super::render_expr::Column(PropertyValue::Column(mapped_column));
             }
         }
         RenderExpr::Column(col) => {
             // Check if this column name is actually an alias
-            if let Some(node_label) = get_node_label_for_alias(&col.0, plan) {
+            if let Some(node_label) = get_node_label_for_alias(&col.0.raw(), plan) {
                 // Convert Column(alias) to PropertyAccess(alias, "id")
                 let id_column = table_to_id_column(&label_to_table_name(&node_label));
                 *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: super::render_expr::TableAlias(col.0.clone()),
-                    column: super::render_expr::Column(id_column),
+                    table_alias: super::render_expr::TableAlias(col.0.raw().to_string()),
+                    column: super::render_expr::Column(PropertyValue::Column(id_column)),
                 });
             }
         }
@@ -510,6 +511,14 @@ pub fn extract_ctes_with_context(
             }
         }
         LogicalPlan::GraphNode(graph_node) => {
+            // Skip CTE creation for denormalized nodes - their properties are on the relationship table
+            if graph_node.is_denormalized {
+                log::debug!(
+                    "Skipping CTE for denormalized node '{}' (properties stored on relationship table)",
+                    graph_node.alias
+                );
+                return Ok(vec![]);
+            }
             extract_ctes_with_context(&graph_node.input, last_node_alias, context)
         }
         LogicalPlan::GraphRel(graph_rel) => {
@@ -685,6 +694,27 @@ pub fn extract_ctes_with_context(
                         "CTE BRANCH: Variable-length pattern detected - using recursive CTE"
                     );
                     
+                    // Get edge_id from relationship schema if available
+                    // Use the first relationship label to look up the schema
+                    let edge_id = if let Some(schema) = context.schema() {
+                        if let Some(labels) = &graph_rel.labels {
+                            if let Some(first_label) = labels.first() {
+                                // Try to get relationship schema by label (not table name)
+                                if let Ok(rel_schema) = schema.get_rel_schema(first_label) {
+                                    rel_schema.edge_id.clone()
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    
                     let generator = VariableLengthCteGenerator::new(
                         spec.clone(),
                         &start_table,
@@ -706,6 +736,7 @@ pub fn extract_ctes_with_context(
                         }, // End filters only for shortest path
                         graph_rel.path_variable.clone(),
                         graph_rel.labels.clone(),
+                        edge_id, // Pass edge_id from schema
                     );
                     let var_len_cte = generator.generate_cte();
                     
@@ -1059,11 +1090,11 @@ pub fn expand_fixed_length_joins(
                 operands: vec![
                     RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias(prev_alias),
-                        column: Column(prev_id_col),
+                        column: Column(PropertyValue::Column(prev_id_col)),
                     }),
                     RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias(rel_alias.clone()),
-                        column: Column(from_col.to_string()),
+                        column: Column(PropertyValue::Column(from_col.to_string())),
                     }),
                 ],
             }],
@@ -1084,11 +1115,11 @@ pub fn expand_fixed_length_joins(
             operands: vec![
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(last_rel),
-                    column: Column(to_col.to_string()),
+                    column: Column(PropertyValue::Column(to_col.to_string())),
                 }),
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(end_alias.to_string()),
-                    column: Column(end_id_col.to_string()),
+                    column: Column(PropertyValue::Column(end_id_col.to_string())),
                 }),
             ],
         }],
@@ -1132,6 +1163,49 @@ pub fn generate_cycle_prevention_filters(
     start_alias: &str,
     end_alias: &str,
 ) -> Option<RenderExpr> {
+    // Delegate to composite version with single-column IDs
+    generate_cycle_prevention_filters_composite(
+        exact_hops,
+        &[start_id_col],
+        &[to_col],
+        &[from_col],
+        &[end_id_col],
+        start_alias,
+        end_alias,
+    )
+}
+
+/// Generate cycle prevention filters for fixed-length paths with composite IDs
+/// 
+/// Supports both simple and composite primary keys. For composite keys, generates
+/// NOT (col1=col1 AND col2=col2 AND ...) conditions.
+///
+/// # Examples
+///
+/// Simple ID: `a.user_id != c.user_id`
+///
+/// Composite ID: `NOT (a.flight_date = c.flight_date AND a.flight_num = c.flight_num)`
+///
+/// # Arguments
+/// * `exact_hops` - Number of relationship hops
+/// * `start_id_cols` - ID column names for start node
+/// * `to_cols` - "to" ID column names for relationships
+/// * `from_cols` - "from" ID column names for relationships  
+/// * `end_id_cols` - ID column names for end node
+/// * `start_alias` - Alias for start node (e.g., "a")
+/// * `end_alias` - Alias for end node (e.g., "c")
+///
+/// # Returns
+/// RenderExpr combining all cycle prevention conditions with AND
+pub fn generate_cycle_prevention_filters_composite(
+    exact_hops: u32,
+    start_id_cols: &[&str],
+    to_cols: &[&str],
+    from_cols: &[&str],
+    end_id_cols: &[&str],
+    start_alias: &str,
+    end_alias: &str,
+) -> Option<RenderExpr> {
     use super::render_expr::{Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias};
     
     if exact_hops == 0 {
@@ -1140,20 +1214,69 @@ pub fn generate_cycle_prevention_filters(
     
     let mut filters = Vec::new();
     
+    // Helper to generate composite equality check: NOT (col1=col1 AND col2=col2 AND ...)
+    let generate_composite_not_equal = |left_alias: &str, left_cols: &[&str], 
+                                       right_alias: &str, right_cols: &[&str]| -> RenderExpr {
+        if left_cols.len() == 1 {
+            // Simple ID: a.user_id != c.user_id
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::NotEqual,
+                operands: vec![
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(left_alias.to_string()),
+                        column: Column(PropertyValue::Column(left_cols[0].to_string())),
+                    }),
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(right_alias.to_string()),
+                        column: Column(PropertyValue::Column(right_cols[0].to_string())),
+                    }),
+                ],
+            })
+        } else {
+            // Composite ID: NOT (a.col1 = c.col1 AND a.col2 = c.col2 AND ...)
+            let equality_checks: Vec<RenderExpr> = left_cols.iter().zip(right_cols.iter())
+                .map(|(left_col, right_col)| {
+                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(left_alias.to_string()),
+                                column: Column(PropertyValue::Column(left_col.to_string())),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(right_alias.to_string()),
+                                column: Column(PropertyValue::Column(right_col.to_string())),
+                            }),
+                        ],
+                    })
+                })
+                .collect();
+            
+            // Combine equality checks with AND
+            let combined_equality = if equality_checks.len() == 1 {
+                equality_checks.into_iter().next().unwrap()
+            } else {
+                equality_checks.into_iter().reduce(|acc, expr| {
+                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::And,
+                        operands: vec![acc, expr],
+                    })
+                }).unwrap()
+            };
+            
+            // Wrap in NOT
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Not,
+                operands: vec![combined_equality],
+            })
+        }
+    };
+    
     // 1. Start node != End node
-    filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-        operator: Operator::NotEqual,
-        operands: vec![
-            RenderExpr::PropertyAccessExp(PropertyAccess {
-                table_alias: TableAlias(start_alias.to_string()),
-                column: Column(start_id_col.to_string()),
-            }),
-            RenderExpr::PropertyAccessExp(PropertyAccess {
-                table_alias: TableAlias(end_alias.to_string()),
-                column: Column(end_id_col.to_string()),
-            }),
-        ],
-    }));
+    filters.push(generate_composite_not_equal(
+        start_alias, start_id_cols,
+        end_alias, end_id_cols,
+    ));
     
     // 2. For each pair of consecutive relationships, ensure different intermediate nodes
     // r1.to_id != r2.from_id, r2.to_id != r3.from_id, etc.
@@ -1161,19 +1284,10 @@ pub fn generate_cycle_prevention_filters(
         let curr_rel = format!("r{}", hop);
         let next_rel = format!("r{}", hop + 1);
         
-        filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-            operator: Operator::NotEqual,
-            operands: vec![
-                RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(curr_rel),
-                    column: Column(to_col.to_string()),
-                }),
-                RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(next_rel),
-                    column: Column(from_col.to_string()),
-                }),
-            ],
-        }));
+        filters.push(generate_composite_not_equal(
+            &curr_rel, to_cols,
+            &next_rel, from_cols,
+        ));
     }
     
     // Combine all filters with AND

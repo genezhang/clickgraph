@@ -31,7 +31,7 @@ RETURN friend.name AS friend, fof.name AS friend_of_friend
 **Use cases**:
 - Friend recommendations (people you might know)
 - Second-degree connections
-- Indirect relationships
+- Indirect connections
 
 **⚠️ Important**: Always name intermediate nodes in multi-hop patterns:
 ```cypher
@@ -73,10 +73,10 @@ MATCH (me:User {name: 'Alice'})
 RETURN 'Hop 1' AS level, count(DISTINCT hop1) AS count
 ```
 
-### Mixed Relationship Types
+### Mixed Edge Types
 
 ```cypher
--- Different relationships at each hop
+-- Different edge types at each hop
 MATCH (user:User)-[:AUTHORED]->(post:Post)<-[:LIKES]-(liker:User)
 RETURN user.name AS author, post.title, liker.name AS fan
 
@@ -96,14 +96,14 @@ Variable-length paths match patterns with flexible hop counts.
 **Pattern**: `-[:TYPE*min..max]->`
 
 | Pattern | Meaning | Example |
-|---------|---------|---------|
+|---------|---------|---------|  
 | `*` | Any number of hops (1 or more) | `-[:FOLLOWS*]->` |
+| `*0..` | Zero or more hops (includes starting node) | `-[:FOLLOWS*0..]->` |
+| `*0..5` | Zero to 5 hops | `-[:FOLLOWS*0..5]->` |
 | `*2` | Exactly 2 hops | `-[:FOLLOWS*2]->` |
 | `*1..3` | 1 to 3 hops | `-[:FOLLOWS*1..3]->` |
 | `*..5` | Up to 5 hops (1-5) | `-[:FOLLOWS*..5]->` |
-| `*2..` | 2 or more hops | `-[:FOLLOWS*2..]->` |
-
-### Any Number of Hops (`*`)
+| `*2..` | 2 or more hops | `-[:FOLLOWS*2..]->` |### Any Number of Hops (`*`)
 
 ```cypher
 -- All reachable users (any distance)
@@ -127,6 +127,30 @@ LIMIT 100
 MATCH (me:User {name: 'Alice'})-[:FOLLOWS*]->(reachable)
 RETURN DISTINCT reachable.name
 ```
+
+### Zero or More Hops (`*0..`)
+
+```cypher
+-- Include starting node (zero hops) plus all reachable nodes
+MATCH (me:User {name: 'Alice'})-[:FOLLOWS*0..]->(reachable)
+RETURN DISTINCT reachable.name
+LIMIT 100
+
+-- Zero to 3 hops (includes starting node)
+MATCH (me:User {name: 'Alice'})-[:FOLLOWS*0..3]->(nearby)
+RETURN DISTINCT nearby.name, nearby.country
+
+-- Useful for "this node and its neighbors"
+MATCH (me:User {name: 'Alice'})-[:FOLLOWS*0..1]->(immediate)
+RETURN immediate.name
+```
+
+**Use cases**:
+- Include the starting node in results
+- "This entity and all related entities"
+- Self-referential patterns
+
+**⚠️ Important**: `*0..` includes the starting node with zero hops!
 
 ### Exact Hop Count (`*N`)
 
@@ -182,17 +206,17 @@ LIMIT 100
 
 **⚠️ Performance**: Open-ended ranges (*2..) can be expensive. Always use LIMIT!
 
-### Variable-Length with Relationship Variable
+### Variable-Length with Edge Variable
 
 ```cypher
--- Access relationships in the path
-MATCH (a:User)-[rels:FOLLOWS*1..3]->(b:User)
+-- Access edges in the path
+MATCH (a:User)-[edges:FOLLOWS*1..3]->(b:User)
 WHERE a.name = 'Alice'
-RETURN b.name, length(rels) AS hops
+RETURN b.name, length(edges) AS hops
 
--- Filter on relationship properties
-MATCH (a:User)-[rels:FOLLOWS*1..3]->(b:User)
-WHERE a.name = 'Alice' AND all(r IN rels WHERE r.since > '2024-01-01')
+-- Filter on edge properties
+MATCH (a:User)-[edges:FOLLOWS*1..3]->(b:User)
+WHERE a.name = 'Alice' AND all(e IN edges WHERE e.since > '2024-01-01')
 RETURN b.name
 ```
 
@@ -267,7 +291,7 @@ RETURN path
 ### Directed Shortest Path
 
 ```cypher
--- Shortest path following relationship direction (-> not -)
+-- Shortest path following edge direction (-> not -)
 MATCH path = shortestPath((a:User {name: 'Alice'})-[:FOLLOWS*]->(b:User {name: 'Bob'}))
 RETURN length(path), [node IN nodes(path) | node.name]
 
@@ -324,7 +348,7 @@ RETURN path
 
 ### `length()` Function
 
-Returns number of **relationships** in path (not nodes).
+Returns number of **edges** in path (not nodes).
 
 ```cypher
 -- Path length (number of hops)
@@ -337,9 +361,9 @@ RETURN length(path) AS distance, count(DISTINCT b) AS num_users
 ORDER BY distance
 ```
 
-**Note**: `length(path)` counts relationships, not nodes
-- 1 hop = 1 relationship = 2 nodes
-- 2 hops = 2 relationships = 3 nodes
+**Note**: `length(path)` counts edges, not nodes
+- 1 hop = 1 edge = 2 nodes
+- 2 hops = 2 edges = 3 nodes
 
 ### `nodes()` Function
 
@@ -359,22 +383,22 @@ MATCH path = (a:User {name: 'Alice'})-[:FOLLOWS*1..3]->(b:User)
 RETURN b.name, size(nodes(path)) AS num_nodes
 ```
 
-### `relationships()` Function
+### `edges()` Function
 
-Returns all relationships in a path as a list.
+Returns all edges in a path as a list.
 
 ```cypher
--- Extract all relationships
+-- Extract all edges
 MATCH path = (a:User {name: 'Alice'})-[:FOLLOWS*1..3]->(b:User)
-RETURN relationships(path)
+RETURN edges(path)
 
--- Get relationship properties
+-- Get edge properties
 MATCH path = (a:User {name: 'Alice'})-[*1..3]->(b:User)
-RETURN b.name, [rel IN relationships(path) | rel.since] AS follow_dates
+RETURN b.name, [e IN edges(path) | e.since] AS follow_dates
 
--- Check all relationships meet condition
+-- Check all edges meet condition
 MATCH path = (a:User {name: 'Alice'})-[*1..3]->(b:User)
-WHERE all(rel IN relationships(path) WHERE rel.since > '2024-01-01')
+WHERE all(e IN edges(path) WHERE e.since > '2024-01-01')
 RETURN b.name
 ```
 
@@ -389,9 +413,9 @@ RETURN [node IN nodes(path) | node.name + ' (' + node.country + ')'] AS path_inf
 MATCH path = (a:User {name: 'Alice'})-[:FOLLOWS*1..3]->(b:User)
 RETURN [node IN nodes(path) WHERE node.country = 'USA' | node.name] AS usa_users_in_path
 
--- Transform relationship properties
+-- Transform edge properties
 MATCH path = (a:User {name: 'Alice'})-[*1..3]->(b:User)
-RETURN [rel IN relationships(path) | {type: type(rel), since: rel.since}] AS rel_info
+RETURN [e IN edges(path) | {type: type(e), since: e.since}] AS edge_info
 ```
 
 ---
@@ -584,12 +608,12 @@ LIMIT 10
 ### Multi-Type Variable-Length
 
 ```cypher
--- Follow chains through different relationship types
+-- Follow chains through different edge types
 MATCH (user:User)-[:FOLLOWS|:FRIENDS_WITH*1..3]->(connected)
 WHERE user.name = 'Alice'
 RETURN DISTINCT connected.name
 
--- Mixed relationship path
+-- Mixed edge types in path
 MATCH path = (user:User)-[:FOLLOWS|:AUTHORED*1..3]->(endpoint)
 WHERE user.name = 'Alice'
 RETURN endpoint, length(path)
@@ -641,7 +665,7 @@ ORDER BY avg_age_in_path DESC
 ```cypher
 -- 1. List all node names in shortest path Alice→Bob
 -- 2. Find paths where all users are from USA
--- 3. Count relationships in paths of length 3
+-- 3. Count edges in paths of length 3
 ```
 
 ### Exercise 4: Recommendations

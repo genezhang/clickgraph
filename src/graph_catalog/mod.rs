@@ -2,6 +2,7 @@ pub mod column_info;
 pub mod config;
 pub mod engine_detection;
 pub mod errors;
+pub mod expression_parser;
 pub mod graph_schema;
 pub mod schema_validator;
 

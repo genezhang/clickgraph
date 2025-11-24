@@ -14,7 +14,7 @@ fn qualify_columns_with_alias(expr: LogicalExpr, alias: &str) -> LogicalExpr {
     match expr {
         LogicalExpr::Column(col) => LogicalExpr::PropertyAccessExp(PropertyAccess {
             table_alias: TableAlias(alias.to_string()),
-            column: col,
+            column: crate::graph_catalog::expression_parser::PropertyValue::Column(col.0),
         }),
         LogicalExpr::OperatorApplicationExp(mut op) => {
             op.operands = op
@@ -215,6 +215,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 view_parameter_names: view_scan.view_parameter_names.clone(),
                                 view_parameter_values: view_scan.view_parameter_values.clone(),
                                 use_final: view_scan.use_final,
+                                is_denormalized: view_scan.is_denormalized,
                             },
                         )));
 
@@ -261,6 +262,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             view_parameter_names: view_scan.view_parameter_names.clone(),
                             view_parameter_values: view_scan.view_parameter_values.clone(),
                             use_final: view_scan.use_final,
+                            is_denormalized: view_scan.is_denormalized,
                         },
                     )));
 
@@ -419,6 +421,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                     view_parameter_names: view_scan.view_parameter_names.clone(),
                                     view_parameter_values: view_scan.view_parameter_values.clone(),
                                     use_final: view_scan.use_final,
+                                    is_denormalized: view_scan.is_denormalized,
                                 },
                             )));
 
@@ -703,6 +706,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 view_parameter_names: view_scan.view_parameter_names.clone(),
                                 view_parameter_values: view_scan.view_parameter_values.clone(),
                                 use_final: view_scan.use_final,
+                                is_denormalized: view_scan.is_denormalized,
                             },
                         )));
 

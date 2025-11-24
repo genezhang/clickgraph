@@ -193,7 +193,44 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 
 ---
 
-### 🎯 Phase 3: AI/ML Integration (v0.6.0 - March-April 2026)
+### 🎯 Phase 3: Industry Benchmarks & Correctness (v0.6.0 - January-February 2026) 🆕
+**Focus**: LDBC SNB integration, validation, performance baselines  
+**Duration**: 4-6 weeks  
+**Started**: November 22, 2025
+
+**Why This Phase?**
+- ✅ **Credibility**: Industry-standard benchmarks for competitive analysis
+- ✅ **Correctness**: Validate against Neo4j reference implementation
+- ✅ **Performance**: Establish measurable baselines vs Neo4j, PostgreSQL
+- ✅ **Marketing**: Auditable results for enterprise adoption
+
+| Priority | Feature | Effort | Impact | Status |
+|----------|---------|--------|--------|--------|
+| 1️⃣ | **LDBC SNB Schema & Data Loading** | 1 week | 🔥 Critical | 📋 Planned |
+| 2️⃣ | **LDBC SNB Read Queries (IC1-IC14)** | 2 weeks | 🔥 Critical | 📋 Planned |
+| 3️⃣ | **Validation Against Neo4j** | 3 days | 🔥 High | 📋 Planned |
+| 4️⃣ | **Performance Benchmarking (SF1-SF10)** | 1 week | 🔥 High | 📋 Planned |
+| 5️⃣ | **GraphBenchmark Microbenchmarks** | 1 week | 🌟 Medium | 📋 Planned |
+| 6️⃣ | **CI Benchmark Automation** | 3 days | 🌟 Medium | 📋 Planned |
+
+**Phase 3 Deliverables**:
+- [ ] LDBC SNB SF0.1-SF10 datasets loaded in ClickHouse
+- [ ] All 14 LDBC complex read queries (IC1-IC14) implemented
+- [ ] Results validated against Neo4j (within 1% tolerance)
+- [ ] Performance report: ClickGraph vs Neo4j vs PostgreSQL
+- [ ] GraphBenchmark primitive operations (10+ benchmarks)
+- [ ] Automated benchmark runs in CI pipeline
+- [ ] Published performance dashboard
+
+**Resources**:
+- 📄 Implementation plan: `docs/LDBC_BENCHMARK_PLAN.md`
+- 📊 LDBC data: [SURF/CWI Repository](https://ldbcouncil.org/data-sets-surf-repository/)
+- 📚 Reference queries: [GitHub - ldbc_snb_interactive_v1_impls](https://github.com/ldbc/ldbc_snb_interactive_v1_impls)
+- 🔬 Microbenchmarks: [GraphBenchmark.com](https://graphbenchmark.com/)
+
+---
+
+### 🎯 Phase 4: AI/ML Integration (v0.7.0 - March-April 2026)
 **Focus**: Vector search, GraphRAG, advanced functions  
 **Duration**: 6-8 weeks
 
@@ -1419,6 +1456,82 @@ RETURN u.name
 - [ ] **Contributing Guide**: How to add new features
 - [ ] **Testing Guide**: Expansion of current testing documentation
 - [ ] **Debugging Guide**: Troubleshooting query issues
+
+---
+
+## 📦 Backlog (Future Consideration)
+
+**Additional Benchmarks** (Post-Phase 3):
+
+### OnTime Flight Data Benchmark ✈️
+**Status**: Research phase  
+**Effort**: 3-5 days (schema mapping only - data already available!)  
+**Priority**: 💡 Low (after LDBC SNB)
+
+**Overview**:
+- **Dataset**: US Bureau of Transportation Statistics (1987-present, 200M+ rows)
+- **Domain**: Flight routes, delays, carriers, airports
+- **Similar to**: PuppyGraph benchmark (but queries not public)
+- **Data**: ✅ Already available in ClickHouse format (1-line import!)
+- **Schema**: ✅ Pre-defined by ClickHouse (110+ columns)
+
+**Quick Setup**:
+```sql
+-- Create table (schema provided by ClickHouse)
+-- See: https://clickhouse.com/docs/getting-started/example-datasets/ontime
+
+-- Load data (single command - no ETL needed!)
+INSERT INTO ontime 
+SELECT * FROM s3('https://clickhouse-public-datasets.s3.amazonaws.com/ontime/csv_by_year/*.csv.gz', CSVWithNames) 
+SETTINGS max_insert_threads = 40;
+```
+
+**Graph Schema Mapping** (YAML only - no data transformation!):
+- **Nodes**: Airport (from Origin/Dest), Carrier, City, State
+- **Edges**: FLIGHT (Origin→Dest with composite edge_id)
+- **Properties**: Map existing columns (FlightDate, DepDelay, ArrDelay, Distance, etc.)
+
+**Sample Graph Analytics Queries**:
+1. **Multi-hop Route Analysis**: 
+   - "Find all 2-hop connections from LAX to JFK"
+   - "Which city pairs have the most connecting flight options?"
+2. **Delay Propagation**:
+   - "Trace delay cascades through flight networks"
+   - "Which airports are most affected by upstream delays?"
+3. **Hub Analysis**:
+   - "Find most-connected airports (degree centrality)"
+   - "Identify carrier hubs by route concentration"
+4. **Route Optimization**:
+   - "Find shortest path between cities by total flight time"
+   - "Compare direct vs multi-hop trip durations"
+5. **Network Resilience**:
+   - "What happens if hub X closes? (alternative routes)"
+   - "Carrier connectivity: which airlines offer most destination coverage?"
+6. **Temporal Patterns**:
+   - "How do route networks change over time (1987-present)?"
+   - "Seasonal variation in city connectivity"
+
+**Why Backlog?**:
+- ✅ **Zero ETL effort** - ClickHouse provides schema + 1-line data import
+- ✅ Interesting analytics use case (200M+ rows, real-world complexity)
+- ✅ Complements LDBC SNB (different domain: logistics vs social)
+- ✅ **Good candidate for community contribution** (just needs YAML schema)
+- ⚠️ Lower priority: LDBC SNB is industry standard
+- ⚠️ Query generation needed (no reference Cypher implementation)
+- ⏱️ **Actual effort**: 3-5 days (mostly query design, not data setup!)
+
+**Implementation Checklist** (when prioritized):
+- [ ] Create `benchmarks/schemas/ontime_flights.yaml` (map CH columns to graph)
+- [ ] Define edge_id strategy for FLIGHT edges (composite: FlightDate + FlightNum + Origin + Dest)
+- [ ] Write 10+ graph analytics queries (multi-hop routes, delay propagation, hub analysis)
+- [ ] Load data with ClickHouse's 1-line import (no custom ETL!)
+- [ ] Run benchmark suite and document results
+
+**Resources**:
+- 📊 **ClickHouse OnTime Schema**: [Official Documentation](https://clickhouse.com/docs/en/getting-started/example-datasets/ontime)
+- 📥 **Pre-loaded Data**: S3 bucket ready (no download/transform needed!)
+- 📚 **Sample SQL Queries**: ClickHouse provides 10+ analytics queries to adapt
+- 📖 [BTS Data Dictionary](https://www.transtats.bts.gov/Fields.asp?gnoyr_VQ=FGJ)
 
 ---
 

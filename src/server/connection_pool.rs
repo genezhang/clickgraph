@@ -97,8 +97,9 @@ impl ConnectionConfig {
                 .map_err(|_| "CLICKHOUSE_URL not set".to_string())?,
             user: env::var("CLICKHOUSE_USER")
                 .map_err(|_| "CLICKHOUSE_USER not set".to_string())?,
+            // Allow empty password for local development
             password: env::var("CLICKHOUSE_PASSWORD")
-                .map_err(|_| "CLICKHOUSE_PASSWORD not set".to_string())?,
+                .unwrap_or_default(),
             database: env::var("CLICKHOUSE_DATABASE")
                 .map_err(|_| "CLICKHOUSE_DATABASE not set".to_string())?,
         })

@@ -517,15 +517,36 @@ cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 
 ### Documentation Workflow
 
-**After completing a feature**:
-1. Update `STATUS.md` (2 min):
+**After completing a feature** (⚠️ CRITICAL - Use checklist!):
+
+**See `docs/FEATURE_DOCUMENTATION_CHECKLIST.md` for complete requirements.**
+
+**Minimum Requirements**:
+1. **Cypher Language Reference** (5-10 min):
+   - Add to Table of Contents
+   - Create dedicated section with syntax, examples, common errors
+   - **This is PRIMARY documentation - feature not complete without it!**
+
+2. **STATUS.md** (2 min):
    - Move feature from "In Progress" to "What Works"
    - Update test count
    - Update "Next Priorities"
-2. Create feature note in `notes/<feature>.md` (5 min):
+
+3. **Feature note** in `notes/<feature>.md` (5 min):
    - Document key decisions and gotchas
    - Note limitations and future work
-3. Commit: `git commit -m "docs: Update STATUS with <feature>"`
+
+4. **API docs** (if API-exposed) (3 min):
+   - Update `docs/api.md` with new parameters
+   - Add request/response examples
+
+5. **Commit**: `git commit -m "docs: Update STATUS with <feature>"`
+
+**⚠️ Documentation Debt = Technical Debt**
+- Never merge features without documentation
+- Cypher Language Reference MUST be complete
+- Use `docs/FEATURE_DOCUMENTATION_CHECKLIST.md` before marking feature complete
+- Reference: November 22, 2025 incident (missing USE clause docs led to incorrect regression assessment)
 
 **When releasing** (merging to main):
 1. Update `CHANGELOG.md`:

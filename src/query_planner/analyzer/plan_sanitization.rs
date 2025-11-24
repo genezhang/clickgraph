@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::query_planner::{
     analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult},
-    logical_expr::LogicalExpr,
+    logical_expr::{Column, LogicalExpr},
     logical_plan::{LogicalPlan, Projection, ProjectionItem, Scan},
     plan_ctx::PlanCtx,
     transformed::Transformed,
@@ -133,7 +133,7 @@ impl PlanSanitization {
         for proj_item in projection_items.iter() {
             if let LogicalExpr::PropertyAccessExp(pro_acc) = &proj_item.expression {
                 let sanitized_proj_item = ProjectionItem {
-                    expression: LogicalExpr::Column(pro_acc.column.clone()),
+                    expression: LogicalExpr::Column(Column(pro_acc.column.raw().to_string())),
                     col_alias: None,
                 };
                 sanitized_projection_items.push(sanitized_proj_item);

@@ -43,6 +43,7 @@ tempfile = "3.8"
 async-trait = "0.1"
 anyhow = "1.0"
 test-case = "3.3"  # For PackStream tests
+serial_test = "3.2"  # For serializing tests that modify global state
 
 [[test]]
 name = "unit"

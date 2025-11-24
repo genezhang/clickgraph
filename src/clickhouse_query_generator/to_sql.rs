@@ -50,7 +50,9 @@ impl ToSql for LogicalExpr {
                 translate_scalar_function(fn_call)
             }
             LogicalExpr::PropertyAccessExp(prop) => {
-                Ok(format!("{}.{}", prop.table_alias.0, prop.column.0))
+                // PropertyValue already knows if it's an expression or simple column
+                // Use its to_sql() method which handles both cases efficiently
+                Ok(prop.column.to_sql(&prop.table_alias.0))
             }
             LogicalExpr::OperatorApplicationExp(op) => {
                 let operands_sql: Vec<String> = op

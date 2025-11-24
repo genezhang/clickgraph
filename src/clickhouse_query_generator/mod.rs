@@ -12,6 +12,8 @@ mod view_query;
 mod view_scan;
 #[cfg(test)]
 mod where_clause_tests;
+#[cfg(test)]
+mod edge_uniqueness_tests;
 
 pub use errors::ClickhouseQueryGeneratorError;
 pub use function_translator::{

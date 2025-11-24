@@ -1248,6 +1248,36 @@ impl RenderPlanBuilder for LogicalPlan {
                 from_table_to_view_ref(projection.input.extract_from()?)
             }
             LogicalPlan::GraphJoins(graph_joins) => {
+                // SIMPLE RULE: No joins = use relationship table, otherwise use first join
+                if graph_joins.joins.is_empty() {
+                    // DENORMALIZED: No physical node tables, only the relationship table exists
+                    fn find_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
+                        match plan {
+                            LogicalPlan::GraphRel(gr) => Some(gr),
+                            LogicalPlan::Projection(proj) => find_graph_rel(&proj.input),
+                            LogicalPlan::Filter(filter) => find_graph_rel(&filter.input),
+                            _ => None,
+                        }
+                    }
+                    if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
+                        if let Some(rel_table) = extract_table_name(&graph_rel.center) {
+                            log::info!(
+                                "🎯 DENORMALIZED: No JOINs, using relationship table '{}' as '{}'",
+                                rel_table, graph_rel.alias
+                            );
+                            let view_ref = super::ViewTableRef {
+                                source: std::sync::Arc::new(LogicalPlan::Empty),
+                                name: rel_table,
+                                alias: Some(graph_rel.alias.clone()),
+                                use_final: false,
+                            };
+                            return from_table_to_view_ref(Some(FromTable::new(Some(view_ref))));
+                        }
+                    }
+                    return from_table_to_view_ref(None);
+                }
+
+                // NORMAL PATH: JOINs exist, use existing anchor logic
                 // Helper function to unwrap Projection/Filter layers to find GraphRel
                 fn find_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
                     match plan {

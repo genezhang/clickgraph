@@ -198,6 +198,7 @@ pub async fn initialize_global_schema(
                     graph_schema: crate::graph_catalog::config::GraphSchemaDefinition {
                         nodes: Vec::new(),
                         relationships: Vec::new(),
+                        edges: Vec::new(),
                     },
                 };
                 view_configs.insert("default".to_string(), empty_config);
@@ -238,6 +239,7 @@ pub async fn initialize_global_schema(
                             graph_schema: GraphSchemaDefinition {
                                 nodes: Vec::new(),
                                 relationships: Vec::new(),
+                                edges: Vec::new(),
                             },
                         };
                         view_configs.insert("default".to_string(), empty_config);
@@ -286,6 +288,7 @@ pub async fn initialize_global_schema(
             graph_schema: GraphSchemaDefinition {
                 nodes: Vec::new(),
                 relationships: Vec::new(),
+                edges: Vec::new(),
             },
         };
         view_configs.insert("default".to_string(), empty_config);

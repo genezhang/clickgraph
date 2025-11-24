@@ -49,7 +49,7 @@ impl<'a> ViewResolver<'a> {
         &self,
         label: &str,
         property: &str,
-    ) -> Result<String, AnalyzerError> {
+    ) -> Result<crate::graph_catalog::expression_parser::PropertyValue, AnalyzerError> {
         // Try to get the node schema and look up the property mapping
         let node_schema = self
             .schema
@@ -62,7 +62,7 @@ impl<'a> ViewResolver<'a> {
             .property_mappings
             .get(property)
             .cloned()
-            .unwrap_or_else(|| property.to_string()))
+            .unwrap_or_else(|| crate::graph_catalog::expression_parser::PropertyValue::Column(property.to_string())))
     }
 
     /// Resolve a relationship property to its underlying column
@@ -70,7 +70,7 @@ impl<'a> ViewResolver<'a> {
         &self,
         type_name: &str,
         property: &str,
-    ) -> Result<String, AnalyzerError> {
+    ) -> Result<crate::graph_catalog::expression_parser::PropertyValue, AnalyzerError> {
         // Try to get the relationship schema and look up the property mapping
         let rel_schema = self
             .schema
@@ -83,6 +83,6 @@ impl<'a> ViewResolver<'a> {
             .property_mappings
             .get(property)
             .cloned()
-            .unwrap_or_else(|| property.to_string()))
+            .unwrap_or_else(|| crate::graph_catalog::expression_parser::PropertyValue::Column(property.to_string())))
     }
 }

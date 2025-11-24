@@ -3,6 +3,7 @@ use super::render_expr::{
     AggregateFnCall, Column, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
     ScalarFnCall, TableAlias,
 };
+use crate::graph_catalog::expression_parser::PropertyValue;
 
 /// Represents categorized filters for different parts of a query
 #[derive(Debug, Clone)]
@@ -250,7 +251,7 @@ pub fn filter_expr_to_sql(expr: &RenderExpr, alias: &str, prefix: &str) -> Strin
                 (&op_app.operands[0], &op_app.operands[1])
             {
                 if prop.table_alias.0 == alias {
-                    let column = format!("{}{}", prefix, prop.column.0);
+                    let column = format!("{}{}", prefix, prop.column.0.raw());
                     match lit {
                         Literal::String(s) => format!("{} = '{}'", column, s),
                         Literal::Integer(n) => format!("{} = {}", column, n),
@@ -288,31 +289,31 @@ pub fn render_end_filter_to_column_alias(
             let column = &prop.column.0;
             println!(
                 "DEBUG: PropertyAccessExp: table_alias='{}', column='{}', start_cypher_alias='{}', end_cypher_alias='{}'",
-                table_alias, column, start_cypher_alias, end_cypher_alias
+                table_alias, column.raw(), start_cypher_alias, end_cypher_alias
             );
 
             // Map Cypher aliases to database column references
             if table_alias == end_cypher_alias {
                 let mapped_column = super::cte_generation::map_property_to_column_with_schema(
-                    column,
+                    column.raw(),
                     end_node_label,
                 )
-                .unwrap_or_else(|_| column.to_string());
+                .unwrap_or_else(|_| column.raw().to_string());
                 let result = format!("end_node.{}", mapped_column);
                 println!("DEBUG: Mapped to end column reference: {}", result);
                 result
             } else if table_alias == start_cypher_alias {
                 let mapped_column = super::cte_generation::map_property_to_column_with_schema(
-                    column,
+                    column.raw(),
                     start_node_label,
                 )
-                .unwrap_or_else(|_| column.to_string());
+                .unwrap_or_else(|_| column.raw().to_string());
                 let result = format!("start_node.{}", mapped_column);
                 println!("DEBUG: Mapped to start column reference: {}", result);
                 result
             } else {
                 // Fallback: use as-is
-                let result = format!("{}.{}", table_alias, column);
+                let result = format!("{}.{}", table_alias, column.raw());
                 println!("DEBUG: Fallback: {}", result);
                 result
             }
@@ -429,13 +430,13 @@ pub fn rewrite_end_filters_for_variable_length_cte(
                 // b.name -> t.end_name
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(cte_table_alias.to_string()),
-                    column: Column(format!("end_{}", column)),
+                    column: Column(PropertyValue::Column(format!("end_{}", column.raw()))),
                 })
             } else if table_alias == start_cypher_alias {
                 // a.name -> t.start_name
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(cte_table_alias.to_string()),
-                    column: Column(format!("start_{}", column)),
+                    column: Column(PropertyValue::Column(format!("start_{}", column.raw()))),
                 })
             } else {
                 // Fallback: keep as-is
@@ -608,10 +609,14 @@ pub fn rewrite_expr_for_var_len_cte(
             let mut new_prop = prop.clone();
             if prop.table_alias.0 == start_cypher_alias {
                 new_prop.table_alias = TableAlias("t".to_string());
-                if prop.column.0 == "*" {
+                if prop.column.0.raw() == "*" {
                     new_prop.column = prop.column.clone();
                 } else {
-                    new_prop.column = Column(format!("start_{}", prop.column.0));
+                    new_prop.column = Column(
+                        PropertyValue::Column(
+                            format!("start_{}", prop.column.0.raw())
+                        )
+                    );
                 }
             } else if prop.table_alias.0 == end_cypher_alias {
                 // End node properties stay as is

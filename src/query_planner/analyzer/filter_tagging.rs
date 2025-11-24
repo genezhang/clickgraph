@@ -272,7 +272,7 @@ impl FilterTagging {
             LogicalExpr::PropertyAccessExp(property_access) => {
                 println!(
                     "FilterTagging: apply_property_mapping for alias '{}', property '{}'",
-                    property_access.table_alias.0, property_access.column.0
+                    property_access.table_alias.0, property_access.column.raw()
                 );
                 // Get the table context for this alias
                 let table_ctx = plan_ctx
@@ -304,7 +304,7 @@ impl FilterTagging {
                     AnalyzerError::PropertyNotFound {
                         entity_type: "node".to_string(),
                         entity_name: property_access.table_alias.0.clone(),
-                        property: property_access.column.0.clone(),
+                        property: property_access.column.raw().to_string(),
                     }
                 })?;
 
@@ -317,11 +317,11 @@ impl FilterTagging {
                     "FilterTagging: About to call resolve_node_property, is_relation={}, label={}, property={}",
                     table_ctx.is_relation(),
                     label,
-                    property_access.column.0
+                    property_access.column.raw()
                 );
                 let mapped_column = if table_ctx.is_relation() {
                     let result = view_resolver
-                        .resolve_relationship_property(&label, &property_access.column.0);
+                        .resolve_relationship_property(&label, &property_access.column.raw());
                     println!(
                         "FilterTagging: resolve_relationship_property result: {:?}",
                         result
@@ -329,18 +329,18 @@ impl FilterTagging {
                     result?
                 } else {
                     let result =
-                        view_resolver.resolve_node_property(&label, &property_access.column.0);
+                        view_resolver.resolve_node_property(&label, &property_access.column.raw());
                     println!("FilterTagging: resolve_node_property result: {:?}", result);
                     result?
                 };
                 println!(
                     "FilterTagging: Successfully mapped property '{}' to column '{}'",
-                    property_access.column.0, mapped_column
+                    property_access.column.raw(), mapped_column.raw()
                 );
 
                 Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: property_access.table_alias,
-                    column: Column(mapped_column),
+                    column: mapped_column,
                 }))
             }
             LogicalExpr::OperatorApplicationExp(mut op) => {
@@ -490,7 +490,7 @@ impl FilterTagging {
     fn convert_prop_acc_to_column(expr: LogicalExpr) -> LogicalExpr {
         match expr {
             LogicalExpr::PropertyAccessExp(property_access) => {
-                LogicalExpr::Column(property_access.column)
+                LogicalExpr::Column(Column(property_access.column.raw().to_string()))
             }
             LogicalExpr::OperatorApplicationExp(op_app) => {
                 let mut new_operands: Vec<LogicalExpr> = vec![];
@@ -780,7 +780,7 @@ mod tests {
     fn create_property_access(table: &str, column: &str) -> LogicalExpr {
         LogicalExpr::PropertyAccessExp(PropertyAccess {
             table_alias: TableAlias(table.to_string()),
-            column: Column(column.to_string()),
+            column: crate::graph_catalog::expression_parser::PropertyValue::Column(column.to_string()),
         })
     }
 
@@ -845,9 +845,9 @@ mod tests {
 
         // Person node with properties
         let mut person_props = HashMap::new();
-        person_props.insert("age".to_string(), "age".to_string());
-        person_props.insert("status".to_string(), "status".to_string());
-        person_props.insert("name".to_string(), "name".to_string());
+        person_props.insert("age".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("age".to_string()));
+        person_props.insert("status".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("status".to_string()));
+        person_props.insert("name".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()));
 
         node_schemas.insert(
             "Person".to_string(),
@@ -869,13 +869,17 @@ mod tests {
                 view_parameters: None,
                 engine: None,
                 use_final: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
             },
         );
 
         // Company node
         let mut company_props = HashMap::new();
-        company_props.insert("name".to_string(), "name".to_string());
-        company_props.insert("owner_id".to_string(), "owner_id".to_string());
+        company_props.insert("name".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()));
+        company_props.insert("owner_id".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("owner_id".to_string()));
 
         node_schemas.insert(
             "Company".to_string(),
@@ -896,12 +900,16 @@ mod tests {
                 view_parameters: None,
                 engine: None,
                 use_final: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
             },
         );
 
         // FOLLOWS relationship
         let mut follows_props = HashMap::new();
-        follows_props.insert("since".to_string(), "created_at".to_string());
+        follows_props.insert("since".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("created_at".to_string()));
 
         rel_schemas.insert(
             "FOLLOWS".to_string(),
@@ -923,6 +931,12 @@ mod tests {
                 view_parameters: None,
                 engine: None,
                 use_final: None,
+                edge_id: None,
+                type_column: None,
+                from_label_column: None,
+                to_label_column: None,
+                from_node_properties: None,
+                to_node_properties: None,
             },
         );
 
@@ -953,7 +967,7 @@ mod tests {
                 match &op_app.operands[0] {
                     LogicalExpr::PropertyAccessExp(prop_acc) => {
                         assert_eq!(prop_acc.table_alias.0, "user");
-                        assert_eq!(prop_acc.column.0, "age");
+                        assert_eq!(prop_acc.column.raw(), "age");
                     }
                     _ => panic!("Expected PropertyAccessExp (not Column) to preserve table_alias"),
                 }
@@ -1179,7 +1193,7 @@ mod tests {
                         match &fc.args[0] {
                             LogicalExpr::PropertyAccessExp(prop_acc) => {
                                 assert_eq!(prop_acc.table_alias.0, "user");
-                                assert_eq!(prop_acc.column.0, "name");
+                                assert_eq!(prop_acc.column.raw(), "name");
                             }
                             _ => panic!("Expected PropertyAccessExp to preserve table_alias"),
                         }
@@ -1290,6 +1304,7 @@ mod tests {
         let graph_node = Arc::new(LogicalPlan::GraphNode(GraphNode {
             input: filter,
             alias: "user".to_string(),
+            is_denormalized: false,
         }));
 
         let result = analyzer

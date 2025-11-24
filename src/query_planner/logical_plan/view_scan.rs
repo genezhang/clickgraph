@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::LogicalPlan;
+use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_expr::LogicalExpr;
 
 /// A scan operation on a view-based table
@@ -14,8 +15,8 @@ pub struct ViewScan {
     pub source_table: String,
     /// The view-specific filter conditions
     pub view_filter: Option<LogicalExpr>,
-    /// Mapping from graph properties to source columns
-    pub property_mapping: HashMap<String, String>,
+    /// Mapping from graph properties to source columns or expressions
+    pub property_mapping: HashMap<String, PropertyValue>,
     /// The column containing node/relationship IDs
     pub id_column: String,
     /// Output schema (property names)
@@ -49,7 +50,7 @@ impl ViewScan {
     pub fn new(
         source_table: String,
         view_filter: Option<LogicalExpr>,
-        property_mapping: HashMap<String, String>,
+        property_mapping: HashMap<String, PropertyValue>,
         id_column: String,
         output_schema: Vec<String>,
         projections: Vec<LogicalExpr>,
@@ -75,7 +76,7 @@ impl ViewScan {
     pub fn with_input(
         source_table: String,
         view_filter: Option<LogicalExpr>,
-        property_mapping: HashMap<String, String>,
+        property_mapping: HashMap<String, PropertyValue>,
         id_column: String,
         output_schema: Vec<String>,
         projections: Vec<LogicalExpr>,
@@ -102,7 +103,7 @@ impl ViewScan {
     pub fn new_relationship(
         source_table: String,
         view_filter: Option<LogicalExpr>,
-        property_mapping: HashMap<String, String>,
+        property_mapping: HashMap<String, PropertyValue>,
         id_column: String,
         output_schema: Vec<String>,
         projections: Vec<LogicalExpr>,
@@ -130,7 +131,7 @@ impl ViewScan {
     pub fn relationship_with_input(
         source_table: String,
         view_filter: Option<LogicalExpr>,
-        property_mapping: HashMap<String, String>,
+        property_mapping: HashMap<String, PropertyValue>,
         id_column: String,
         output_schema: Vec<String>,
         projections: Vec<LogicalExpr>,
@@ -156,8 +157,8 @@ impl ViewScan {
     }
 
     /// Get the mapped column name for a property
-    pub fn get_mapped_column(&self, property: &str) -> Option<&str> {
-        self.property_mapping.get(property).map(|s| s.as_str())
+    pub fn get_mapped_column(&self, property: &str) -> Option<&PropertyValue> {
+        self.property_mapping.get(property)
     }
 
     /// Add a filter to this ViewScan, combining with existing filters

@@ -73,15 +73,19 @@ curl -X POST http://localhost:8080/query \
 - **[Your First Graph](Your-First-Graph.md)** - Build a simple social network graph
 
 ### Learning Cypher
-- **[Basic Patterns](Cypher-Basic-Patterns.md)** - Node and relationship matching
+- **[Basic Patterns](Cypher-Basic-Patterns.md)** - Node and edge matching patterns
 - **[Multi-Hop Traversals](Cypher-Multi-Hop-Traversals.md)** - Variable-length paths and shortest paths
 - **[Aggregations & Functions](Cypher-Functions.md)** - COUNT, SUM, string functions, and more
-- **[Advanced Patterns](Cypher-Advanced-Patterns.md)** - OPTIONAL MATCH, CASE, UNION
+- **[Optional Match](Cypher-Optional-Match.md)** - LEFT JOIN semantics for optional patterns
+- **[Advanced Patterns](Cypher-Advanced-Patterns.md)** - CASE, UNION, complex queries
 
 ### Schema Configuration
 - **[Schema Basics](Schema-Basics.md)** - YAML schema configuration
-- **[Advanced Schema Features](Schema-Advanced-Features.md)** - Auto-discovery, FINAL, view parameters
-- **[Multi-Tenancy Patterns](../multi-tenancy.md)** - Tenant isolation and RBAC
+- **[Schema Configuration Advanced](Schema-Configuration-Advanced.md)** - Auto-discovery, FINAL, view parameters
+- **[Edge ID Best Practices](Edge-ID-Best-Practices.md)** - Optimize edge uniqueness tracking (v0.5.2+)
+- **[Schema Polymorphic Edges](Schema-Polymorphic-Edges.md)** - Multiple edge types in single table (v0.5.2+)
+- **[Schema Denormalized Properties](Schema-Denormalized-Properties.md)** - 10-100x faster queries without JOINs (v0.5.2+)
+- **[Multi-Tenancy Patterns](Multi-Tenancy-Patterns.md)** - Tenant isolation and RBAC (v0.5.0+)
 
 ### Production Deployment
 - **[Docker Deployment](Docker-Deployment.md)** - Production Docker setup

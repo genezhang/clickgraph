@@ -386,8 +386,9 @@ impl RenderExpr {
             RenderExpr::Column(Column(a)) => {
                 // For column references, we need to add the table alias prefix
                 // to match our FROM clause alias generation
-                if a.contains('.') {
-                    a.clone() // Already has table prefix
+                let raw_value = a.raw();
+                if raw_value.contains('.') {
+                    raw_value.to_string() // Already has table prefix
                 } else {
                     // COMPREHENSIVE FIX: Enhanced heuristic for table alias determination
                     // This handles ALL column names by inferring from column patterns and table context
@@ -396,40 +397,40 @@ impl RenderExpr {
                     // This covers the vast majority of real-world cases until we can implement
                     // proper context propagation for multi-table queries
 
-                    let alias = if a.contains("user")
-                        || a.contains("username")
-                        || a.contains("last_login")
-                        || a.contains("registration")
-                        || a == "name"
-                        || a == "age"
-                        || a == "active"
-                        || a.starts_with("u_")
+                    let alias = if raw_value.contains("user")
+                        || raw_value.contains("username")
+                        || raw_value.contains("last_login")
+                        || raw_value.contains("registration")
+                        || raw_value == "name"
+                        || raw_value == "age"
+                        || raw_value == "active"
+                        || raw_value.starts_with("u_")
                     {
                         "u" // User-related columns use 'u' alias
-                    } else if a.contains("post")
-                        || a.contains("article")
-                        || a.contains("published")
-                        || a == "title"
-                        || a == "views"
-                        || a == "status"
-                        || a == "author"
-                        || a == "category"
-                        || a.starts_with("p_")
+                    } else if raw_value.contains("post")
+                        || raw_value.contains("article")
+                        || raw_value.contains("published")
+                        || raw_value == "title"
+                        || raw_value == "views"
+                        || raw_value == "status"
+                        || raw_value == "author"
+                        || raw_value == "category"
+                        || raw_value.starts_with("p_")
                     {
                         "p" // Post-related columns use 'p' alias
-                    } else if a.contains("customer")
-                        || a.contains("rating")
-                        || a == "email"
-                        || a.starts_with("customer_")
-                        || a.starts_with("c_")
+                    } else if raw_value.contains("customer")
+                        || raw_value.contains("rating")
+                        || raw_value == "email"
+                        || raw_value.starts_with("customer_")
+                        || raw_value.starts_with("c_")
                     {
                         // CRITICAL FIX: Use 'c' to match FROM clause, not 'customer'
                         // The FROM clause uses original Cypher variable names (c, not customer)
                         "c" // Customer-related columns use 'c' alias to match FROM Customer AS c
-                    } else if a.contains("product")
-                        || a.contains("price")
-                        || a.contains("inventory")
-                        || a.starts_with("prod_")
+                    } else if raw_value.contains("product")
+                        || raw_value.contains("price")
+                        || raw_value.contains("inventory")
+                        || raw_value.starts_with("prod_")
                     {
                         "product" // Product-related columns
                     } else {
@@ -438,7 +439,7 @@ impl RenderExpr {
                         "t"
                     };
 
-                    format!("{}.{}", alias, a)
+                    format!("{}.{}", alias, raw_value)
                 }
             }
             RenderExpr::List(items) => {
@@ -497,9 +498,8 @@ impl RenderExpr {
                 table_alias,
                 column,
             }) => {
-                // Property mapping should already be done in the analyzer phase
-                // Just use the column name as-is
-                format!("{}.{}", table_alias.0, column.0)
+                // Use PropertyValue.to_sql() to handle both simple columns and expressions
+                column.0.to_sql(&table_alias.0)
             }
             RenderExpr::OperatorApplicationExp(op) => {
                 fn op_str(o: Operator) -> &'static str {

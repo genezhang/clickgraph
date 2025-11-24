@@ -1,10 +1,10 @@
 # Cypher Basic Patterns
 
-Master the fundamentals of Cypher query language with practical examples. This guide covers node patterns, relationship patterns, filtering, and returning results.
+Master the fundamentals of Cypher query language with practical examples. This guide covers node patterns, edge patterns, filtering, and returning results.
 
 ## Table of Contents
 - [Node Patterns](#node-patterns)
-- [Relationship Patterns](#relationship-patterns)
+- [Edge Patterns](#edge-patterns)
 - [Property Filtering](#property-filtering)
 - [Return Statements](#return-statements)
 - [Ordering and Limiting](#ordering-and-limiting)
@@ -130,45 +130,45 @@ RETURN friend.name
 
 ---
 
-## Relationship Patterns
+## Edge Patterns
 
-Relationship patterns connect nodes with edges. They use square brackets `[]` and arrows `->`, `<-`, or `-` for direction.
+Edge patterns connect nodes. They use square brackets `[]` and arrows `->`, `<-`, or `-` for direction.
 
-### Basic Relationship
+### Basic Edge
 
 ```cypher
--- Directed relationship (left to right)
+-- Directed edge (left to right)
 MATCH (a:User)-[:FOLLOWS]->(b:User)
 RETURN a.name, b.name
 
--- Directed relationship (right to left)
+-- Directed edge (right to left)
 MATCH (a:User)<-[:FOLLOWS]-(b:User)
 RETURN a.name, b.name
 
--- Undirected relationship (either direction)
+-- Undirected edge (either direction)
 MATCH (a:User)-[:FOLLOWS]-(b:User)
 RETURN a.name, b.name
 ```
 
-**Direction semantics**:
-- `->` : Relationship goes from left to right
-- `<-` : Relationship goes from right to left
-- `-` : Relationship in either direction (generates OR logic)
+**Directions:**
+- `->` : Edge goes from left to right
+- `<-` : Edge goes from right to left
+- `-` : Edge in either direction (generates OR logic)
 
-### Relationship with Variable
+### Edge with Variable
 
 ```cypher
--- Assign relationship to variable
-MATCH (a:User)-[r:FOLLOWS]->(b:User)
-RETURN a.name, b.name, r.since
+-- Assign edge to variable
+MATCH (a:User)-[e:FOLLOWS]->(b:User)
+RETURN a.name, e.since, b.name
 ```
 
-**When to use**: Access relationship properties or return relationship details
+**When to use**: Access edge properties or return edge details
 
-### Multiple Relationship Types
+### Multiple Edge Types
 
 ```cypher
--- Match any of several relationship types
+-- Match any of several edge types
 MATCH (a:User)-[:FOLLOWS|:FRIENDS_WITH]->(b:User)
 RETURN a.name, b.name
 
@@ -177,61 +177,60 @@ MATCH (a:User)-[:FOLLOWS|:FRIENDS_WITH|:LIKES]->(b)
 RETURN a.name, b.name, type(b) as node_type
 ```
 
-**SQL generation**: Creates UNION of all relationship tables for optimal performance
+**SQL generation**: Creates UNION of all edge tables for optimal performance
 
 **When to use**: Query multiple types of connections between nodes
 
-### Anonymous Relationships
+### Anonymous Edges
 
 ```cypher
--- Anonymous relationship (no type specified)
+-- Anonymous edge (no type specified)
 MATCH (a:User)-[]->(b:User)
 RETURN a.name, b.name
 
 -- With variable but no type
-MATCH (a:User)-[r]->(b:User)
-RETURN a.name, b.name, type(r)
+MATCH (a:User)-[e]->(b:User)
+RETURN a.name, b.name, type(e)
 ```
 
-**Behavior**: Auto-expands to ALL relationship types in schema (UNION generation)
+**Behavior**: Auto-expands to ALL edge types in schema (UNION generation)
 
-**When to use**: Explore all connections, discover relationship types
+**When to use**: Explore all connections, discover edge types
 
 **⚠️ Performance**: Can be expensive on large graphs - prefer explicit types when possible
 
-### Relationship Property Filtering
+### Edge Property Filtering
+
+### Edge Property Filtering
 
 ```cypher
-### Relationship Property Filtering
-
-```cypher
--- Filter by relationship property (use WHERE clause)
+-- Filter by edge property (use WHERE clause)
 
 <!--
-⚠️ FUTURE FEATURE: Inline relationship property filters not yet supported
+⚠️ FUTURE FEATURE: Inline edge property filters not yet supported
 MATCH (a:User)-[:FOLLOWS {follow_date: '2024-01-01'}]->(b:User)
 RETURN a.name, b.name
 
-Reason: Parser needs enhancement for inline property syntax on relationships.
+Reason: Parser needs enhancement for inline property syntax on edges.
 Use WHERE clause instead.
 -->
-MATCH (a:User)-[r:FOLLOWS]->(b:User)
-WHERE r.follow_date > '2024-01-01'
-RETURN a.name, b.name, r.follow_date
+MATCH (a:User)-[e:FOLLOWS]->(b:User)
+WHERE e.follow_date > '2024-01-01'
+RETURN a.name, b.name, e.follow_date
 
--- Multiple relationship property conditions
-MATCH (a:User)-[r:FOLLOWS]->(b:User)
-WHERE r.follow_date >= '2024-01-01' AND r.follow_date <= '2024-12-31'
-RETURN a.name, b.name, r.follow_date
+-- Multiple edge property conditions
+MATCH (a:User)-[e:FOLLOWS]->(b:User)
+WHERE e.follow_date >= '2024-01-01' AND e.follow_date <= '2024-12-31'
+RETURN a.name, b.name, e.follow_date
 ```
 
 <!-- 
-⚠️ FUTURE FEATURE - Commented out until inline relationship property filters are supported
+⚠️ FUTURE FEATURE - Commented out until inline edge property filters are supported
 
-To implement: Extend relationship pattern parser to handle property maps.
+To implement: Extend edge pattern parser to handle property maps.
 
 ```cypher
--- Inline relationship property filter - NOT YET SUPPORTED
+-- Inline edge property filter - NOT YET SUPPORTED
 MATCH (a:User)-[:FOLLOWS {follow_date: '2024-01-01'}]->(b:User)
 RETURN a.name, b.name
 ```
@@ -558,7 +557,7 @@ LIMIT 10
 
 ## Anonymous Patterns
 
-Anonymous patterns omit variable names when you don't need to reference nodes or relationships.
+Anonymous patterns omit variable names when you don't need to reference nodes or edges.
 
 ### Anonymous Nodes
 
@@ -568,7 +567,7 @@ MATCH (alice:User)-[:FOLLOWS]->(friend:User)
 WHERE alice.name = 'Alice'
 RETURN friend.name
 
--- Count relationships without naming nodes
+-- Count edges without naming nodes
 MATCH (:User)-[:FOLLOWS]->(:User)
 RETURN count(*) AS total_follows
 ```
@@ -589,20 +588,20 @@ WHERE u1.name = 'Alice'
 RETURN u2.name
 ```
 
-### Anonymous Relationships
+### Anonymous Edges
 
 ```cypher
--- No relationship variable needed
+-- No edge variable needed
 MATCH (a:User)-[:FOLLOWS]->(b:User)
 RETURN a.name, b.name
 
--- Anonymous relationship (no type specified) - expands to all types
+-- Anonymous edge (no type specified) - expands to all types
 MATCH (a:User)-[]->(b:User)
 RETURN a.name, b.name
 
--- Count all relationships
-MATCH ()-[r]->()
-RETURN count(r) AS total_relationships
+-- Count all edges
+MATCH ()-[e]->()
+RETURN count(e) AS total_edges
 ```
 
 ---
@@ -634,7 +633,7 @@ MATCH (u:User)-[:FOLLOWS]->(friend)
 WHERE u.name = 'Alice'
 RETURN friend.name
 
--- Reverse relationships
+-- Reverse edges
 MATCH (u:User)<-[:FOLLOWS]-(follower)
 WHERE u.name = 'Alice'
 RETURN follower.name
@@ -645,23 +644,23 @@ WHERE u.name = 'Alice'
 RETURN connected.name
 ```
 
-### Count Relationships
+### Count Edges
 
 ```cypher
--- Count outgoing relationships
+-- Count outgoing edges
 MATCH (u:User)-[:FOLLOWS]->()
 RETURN u.name, count(*) AS following_count
 
--- Count incoming relationships
+-- Count incoming edges
 MATCH (u:User)<-[:FOLLOWS]-()
 RETURN u.name, count(*) AS follower_count
 
--- Total relationship count
-MATCH ()-[r:FOLLOWS]->()
-RETURN count(r) AS total_follows
+-- Total edge count
+MATCH ()-[e:FOLLOWS]->()
+RETURN count(e) AS total_follows
 ```
 
-### Filter by Relationship Existence
+### Filter by Edge Existence
 
 ```cypher
 -- Users who follow someone
@@ -714,13 +713,13 @@ MATCH (u:User) WHERE u.age > 30 RETURN u.name
 MATCH (n) WHERE n.age > 30 RETURN n.name
 ```
 
-### Use Explicit Relationship Types
+### Use Explicit Edge Types
 
 ```cypher
 -- ✅ Good: Explicit type
 MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a.name, b.name
 
--- ❌ Avoid: Anonymous relationship (scans all relationship types)
+-- ❌ Avoid: Anonymous edge (scans all edge types)
 MATCH (a:User)-[]->(b:User) RETURN a.name, b.name
 ```
 
@@ -800,7 +799,7 @@ RETURN u.country, count(*) AS user_count
 ORDER BY user_count DESC
 ```
 
-### Exercise 2: Relationship Queries
+### Exercise 2: Edge Queries
 ```cypher
 -- 1. Find who Alice follows
 MATCH (alice:User)-[:FOLLOWS]->(friend:User)
@@ -812,14 +811,14 @@ MATCH (follower:User)-[:FOLLOWS]->(alice:User)
 WHERE alice.name = 'Alice'
 RETURN follower.name
 
--- 3. Find all FOLLOWS relationships
+-- 3. Find all FOLLOWS edges
 MATCH (a:User)-[:FOLLOWS]->(b:User)
 RETURN a.name AS follower, b.name AS followed
 LIMIT 100
 
--- 4. Count total relationships
-MATCH ()-[r:FOLLOWS]->()
-RETURN count(r) AS total_follows
+-- 4. Count total edges
+MATCH ()-[e:FOLLOWS]->()
+RETURN count(e) AS total_follows
 
 -- 5. Find users with no followers
 MATCH (u:User)

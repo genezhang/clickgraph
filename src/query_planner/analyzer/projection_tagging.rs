@@ -234,7 +234,7 @@ impl ProjectionTagging {
                     // update the overall projection
                     item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: table_alias.clone(),
-                        column: Column("*".to_string()),
+                        column: crate::graph_catalog::expression_parser::PropertyValue::Column("*".to_string()),
                     });
                     Ok(())
                 }
@@ -352,14 +352,14 @@ impl ProjectionTagging {
                                         operands: vec![LogicalExpr::PropertyAccessExp(
                                             PropertyAccess {
                                                 table_alias: TableAlias(t_alias.to_string()),
-                                                column: Column(table_node_id),
+                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(table_node_id),
                                             },
                                         )],
                                     })
                                 } else {
                                     LogicalExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(t_alias.to_string()),
-                                        column: Column(table_node_id),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(table_node_id),
                                     })
                                 };
 

@@ -34,7 +34,9 @@ impl Projection {
                 if let LogicalExpr::ColumnAlias(col) = &mut item.expression {
                     // Try to map property to source column
                     if let Some(source_col) = scan.get_mapped_column(&col.0) {
-                        col.0 = source_col.to_string();
+                        // Store the raw column/expression string
+                        // Actual PropertyValue-aware SQL generation happens later
+                        col.0 = source_col.raw().to_string();
                     }
                 }
             }

@@ -22,7 +22,7 @@ ClickGraph uses a **view-based architecture** - it doesn't require special graph
 
 ```mermaid
 graph TD
-    A[ClickGraph Schema YAML] -->|Defines| B[Nodes, Relationships, Properties]
+    A[ClickGraph Schema YAML] -->|Defines| B[Nodes, Edges, Properties]
     B -->|Translates| C[Query Planner & Optimizer]
     C -->|Generates| D[ClickHouse SQL]
     D -->|Executes on| E[ClickHouse Tables]
@@ -122,7 +122,8 @@ nodes:
       account_age: "dateDiff('day', registration_date, today())"
       
       # Computed: Active status
-      is_active: "last_login_date >= today() - INTERVAL 30 DAY"
+      # ⚠️ Conditionals not yet supported - use query time:
+      # is_active: "last_login_date >= today() - INTERVAL 30 DAY"
 ```
 
 **Usage**:
@@ -165,6 +166,12 @@ nodes:
 
 ### 3. Conditional Mappings
 
+<!-- ⚠️ NOT YET SUPPORTED - Planned for future release
+     Conditional expressions (CASE WHEN, multiIf) in property mappings
+     are not currently supported. Use query-time expressions instead.
+     
+     For now, use: WHERE CASE WHEN ... or multiIf() in RETURN clause
+
 ```yaml
 nodes:
   User:
@@ -186,11 +193,12 @@ nodes:
                  'active'
                )"
 ```
+-->
 
-### 4. Relationship Properties
+### 4. Edge Properties
 
 ```yaml
-relationships:
+relationships:  # YAML key remains 'relationships:' for backward compatibility
   FOLLOWS:
     source_table: "user_follows"
     from_node: "User"
@@ -201,9 +209,10 @@ relationships:
     property_mappings:
       since: "follow_date"
       duration: "dateDiff('day', follow_date, today())"
-      is_recent: "follow_date >= today() - INTERVAL 30 DAY"
+      # ⚠️ Conditionals not yet supported:
+      # is_recent: "follow_date >= today() - INTERVAL 30 DAY"
       
-      # Strength based on interactions
+      # Mathematical expressions are supported:
       strength: "interaction_count / 100.0"
 ```
 
@@ -453,13 +462,13 @@ cargo run --bin clickgraph
 
 # Output if valid:
 [INFO] Schema loaded successfully: my_schema
-[INFO] Nodes: 5, Relationships: 8
+[INFO] Nodes: 5, Edges: 8
 [INFO] Validation: PASSED
 
 # Output if invalid:
 [ERROR] Schema validation failed: my_schema
 [ERROR] Node 'User' references undefined source_table 'users_table'
-[ERROR] Relationship 'FOLLOWS' references undefined node 'UserProfile'
+[ERROR] Edge 'FOLLOWS' references undefined node 'UserProfile'
 ```
 
 ### 2. Common Validation Errors
@@ -577,13 +586,13 @@ MATCH (u:User {user_id: 1}) RETURN u.name
 MATCH (u:User {email: 'alice@example.com'}) RETURN u.name
 ```
 
-### 2. Bidirectional Relationship Optimization
+### 2. Bidirectional Edge Optimization
 
 **Create Reverse Indexes**:
 
 ```yaml
-# Forward relationship
-relationships:
+# Forward edge
+relationships:  # YAML key remains 'relationships:' for backward compatibility
   FOLLOWS:
     source_table: "user_follows"
     from_node: "User"
@@ -591,7 +600,7 @@ relationships:
     from_property: "follower_id"  # Indexed
     to_property: "followed_id"
 
-# Reverse relationship (uses materialized view)
+# Reverse edge (uses materialized view)
   FOLLOWED_BY:
     source_table: "user_follows_reverse"  # Materialized view
     from_node: "User"
@@ -674,10 +683,10 @@ views:
 
 ### 1. Temporal Graphs
 
-**Model time-varying relationships**:
+**Model time-varying connections**:
 
 ```yaml
-relationships:
+relationships:  # YAML key remains 'relationships:' for backward compatibility
   EMPLOYED_BY:
     source_table: "employment_history"
     from_node: "Person"
@@ -735,10 +744,10 @@ RETURN [n IN nodes(path) | n.name] AS chain
 
 ### 3. Weighted Graphs
 
-**Model relationship strength**:
+**Model edge weights**:
 
 ```yaml
-relationships:
+relationships:  # YAML key remains 'relationships:' for backward compatibility
   SIMILAR_TO:
     source_table: "product_similarity"
     from_node: "Product"
@@ -830,7 +839,7 @@ schema:
 
 **✅ Safe Changes** (non-breaking):
 - Add new nodes
-- Add new relationships
+- Add new edges
 - Add new properties to existing nodes
 - Add new views
 
@@ -847,10 +856,10 @@ nodes:
 ```
 
 **❌ Breaking Changes**:
-- Rename nodes or relationships
+- Rename nodes or edge types
 - Remove properties
 - Change identifier_property
-- Change relationship direction
+- Change edge direction
 
 ```yaml
 # v1.0 → v2.0 (breaking!)
@@ -908,13 +917,13 @@ if __name__ == '__main__':
 
 **Planning**:
 - [ ] Identify core entities (become nodes)
-- [ ] Identify relationships (foreign keys → relationships)
+- [ ] Identify edges (foreign keys → edges)
 - [ ] Choose meaningful identifier properties (primary keys)
 - [ ] Document schema purpose and version
 
 **Performance**:
 - [ ] Use indexed columns as identifier_property
-- [ ] Create reverse indexes for bidirectional relationships
+- [ ] Create reverse indexes for bidirectional edges
 - [ ] Map only commonly used properties
 - [ ] Add filters for common query patterns
 - [ ] Use parameterized views for multi-tenancy

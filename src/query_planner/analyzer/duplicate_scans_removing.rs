@@ -170,6 +170,7 @@ mod tests {
         Arc::new(LogicalPlan::GraphNode(GraphNode {
             input,
             alias: alias.to_string(),
+            is_denormalized: false,
         }))
     }
 

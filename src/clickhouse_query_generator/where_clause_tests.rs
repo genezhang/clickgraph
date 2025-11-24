@@ -32,6 +32,7 @@ mod where_clause_tests {
             None,
             None, // no path variable
             None, // no relationship types
+            None, // no edge_id (use default from_id, to_id)
         );
 
         let cte = generator.generate_cte();
@@ -71,6 +72,7 @@ mod where_clause_tests {
             end_filter,
             None, // no path variable
             None, // no relationship types
+            None, // no edge_id (use default from_id, to_id)
         );
 
         let cte = generator.generate_cte();
@@ -116,6 +118,7 @@ mod where_clause_tests {
             end_filter,
             None, // no path variable
             None, // no relationship types
+            None, // no edge_id (use default from_id, to_id)
         );
 
         let cte = generator.generate_cte();
@@ -164,6 +167,7 @@ mod where_clause_tests {
             None, // No end filter
             None, // No path variable
             None, // no relationship types
+            None, // no edge_id (use default from_id, to_id)
         );
 
         let cte = generator.generate_cte();

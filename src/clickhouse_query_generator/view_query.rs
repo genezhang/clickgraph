@@ -23,7 +23,9 @@ impl ToSql for PlanViewScan {
         // Add property mappings
         for (prop, col) in &self.property_mapping {
             if prop != "id" {
-                projections.push(format!("{}.{} AS {}", self.source_table, col, prop));
+                // Use PropertyValue.to_sql() to handle both simple columns and expressions
+                let column_sql = col.to_sql(&self.source_table);
+                projections.push(format!("{} AS {}", column_sql, prop));
             }
         }
 

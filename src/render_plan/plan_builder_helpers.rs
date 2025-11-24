@@ -7,11 +7,13 @@
 //! - Relationship and node information lookup
 //! - Path function rewriting
 //! - Schema lookups
+//! - Polymorphic edge filter generation
 
 use super::render_expr::{
     AggregateFnCall, Column, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
     ScalarFnCall, TableAlias,
 };
+use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_plan::LogicalPlan;
 
 /// Helper function to extract the actual table name from a LogicalPlan node
@@ -63,7 +65,7 @@ pub(super) fn render_expr_to_sql_string(
     alias_mapping: &[(String, String)],
 ) -> String {
     match expr {
-        RenderExpr::Column(col) => col.0.clone(),
+        RenderExpr::Column(col) => col.0.raw().to_string(),
         RenderExpr::TableAlias(alias) => alias.0.clone(),
         RenderExpr::ColumnAlias(alias) => alias.0.clone(),
         RenderExpr::Literal(lit) => match lit {
@@ -82,7 +84,7 @@ pub(super) fn render_expr_to_sql_string(
                 .find(|(cypher, _)| *cypher == prop.table_alias.0)
                 .map(|(_, cte)| cte.clone())
                 .unwrap_or_else(|| prop.table_alias.0.clone());
-            format!("{}.{}", table_alias, prop.column.0)
+            format!("{}.{}", table_alias, prop.column.0.raw())
         }
         RenderExpr::OperatorApplicationExp(op) => {
             let operands: Vec<String> = op
@@ -270,6 +272,50 @@ pub(super) fn get_all_relationship_connections(
     connections
 }
 
+/// Helper function to collect all denormalized node aliases from a plan tree
+/// Queries ViewScan's is_denormalized flag (set from schema during ViewScan creation)
+/// Returns a set of aliases where the node is stored on the relationship table
+pub(super) fn get_denormalized_aliases(plan: &LogicalPlan) -> std::collections::HashSet<String> {
+    let mut denormalized = std::collections::HashSet::new();
+
+    fn collect_denormalized(
+        plan: &LogicalPlan,
+        denormalized: &mut std::collections::HashSet<String>,
+    ) {
+        match plan {
+            LogicalPlan::GraphNode(node) => {
+                // Check if the ViewScan has is_denormalized flag set
+                if let LogicalPlan::ViewScan(view_scan) = node.input.as_ref() {
+                    if view_scan.is_denormalized {
+                        println!(
+                            "DEBUG: Node '{}' is denormalized (table: {})",
+                            node.alias, view_scan.source_table
+                        );
+                        denormalized.insert(node.alias.clone());
+                    }
+                }
+                collect_denormalized(&node.input, denormalized);
+            }
+            LogicalPlan::GraphRel(rel) => {
+                collect_denormalized(&rel.left, denormalized);
+                collect_denormalized(&rel.center, denormalized);
+                collect_denormalized(&rel.right, denormalized);
+            }
+            LogicalPlan::Projection(proj) => collect_denormalized(&proj.input, denormalized),
+            LogicalPlan::Filter(filter) => collect_denormalized(&filter.input, denormalized),
+            LogicalPlan::GraphJoins(joins) => collect_denormalized(&joins.input, denormalized),
+            LogicalPlan::OrderBy(order) => collect_denormalized(&order.input, denormalized),
+            LogicalPlan::Limit(limit) => collect_denormalized(&limit.input, denormalized),
+            LogicalPlan::Skip(skip) => collect_denormalized(&skip.input, denormalized),
+            _ => {}
+        }
+    }
+
+    collect_denormalized(plan, &mut denormalized);
+    println!("DEBUG: get_denormalized_aliases found: {:?}", denormalized);
+    denormalized
+}
+
 /// Helper function to find the anchor/first node in a multi-hop pattern
 /// The anchor is the node that should be in the FROM clause
 /// Strategy: Prefer required (non-optional) nodes over optional nodes
@@ -280,9 +326,11 @@ pub(super) fn get_all_relationship_connections(
 /// 2. Find true leftmost node (left-only) among required nodes
 /// 3. Fall back to any required node if no leftmost required found
 /// 4. Fall back to traditional anchor pattern for all-optional cases
+/// 5. CRITICAL: Skip denormalized aliases (extracted from GraphNode.is_denormalized in plan tree)
 pub(super) fn find_anchor_node(
     connections: &[(String, String, String)],
     optional_aliases: &std::collections::HashSet<String>,
+    denormalized_aliases: &std::collections::HashSet<String>,
 ) -> Option<String> {
     if connections.is_empty() {
         return None;
@@ -303,11 +351,25 @@ pub(super) fn find_anchor_node(
 
     // Strategy 1: Find ANY required node - this handles the OPTIONAL MATCH around required node case
     // If there's a required node anywhere in the pattern, use it as anchor
+    // CRITICAL: Filter out denormalized aliases (virtual nodes on edge tables)
     let required_nodes: Vec<String> = all_nodes
         .iter()
-        .filter(|node| !optional_aliases.contains(*node))
+        .filter(|node| {
+            let is_optional = optional_aliases.contains(*node);
+            let is_denormalized = denormalized_aliases.contains(*node);
+            log::debug!(
+                "🔍 find_anchor_node: node='{}' optional={} denormalized={}",
+                node, is_optional, is_denormalized
+            );
+            !is_optional && !is_denormalized
+        })
         .cloned()
         .collect();
+
+    log::info!(
+        "🔍 find_anchor_node: required_nodes after filtering: {:?}",
+        required_nodes
+    );
 
     if !required_nodes.is_empty() {
         // We have required nodes - prefer one that's truly leftmost (left-only)
@@ -317,8 +379,12 @@ pub(super) fn find_anchor_node(
             .collect();
 
         // Check if any required node is leftmost (left-only)
+        // CRITICAL: Also skip denormalized aliases
         for (left, _, _) in connections {
-            if !right_nodes.contains(left) && !optional_aliases.contains(left) {
+            if !right_nodes.contains(left)
+                && !optional_aliases.contains(left)
+                && !denormalized_aliases.contains(left)
+            {
                 log::info!(
                     "✓ Found REQUIRED leftmost anchor: {} (required + left-only)",
                     left
@@ -336,6 +402,14 @@ pub(super) fn find_anchor_node(
         return Some(anchor);
     }
 
+    // CRITICAL: If required_nodes is EMPTY (all nodes are denormalized or optional),
+    // return None to signal that the relationship table should be used as anchor!
+    log::warn!("🔍 find_anchor_node: All nodes filtered out (denormalized/optional), returning None");
+    if all_nodes.iter().all(|n| denormalized_aliases.contains(n)) {
+        log::warn!("🔍 find_anchor_node: All nodes are denormalized - use relationship table as FROM!");
+        return None;
+    }
+
     // Strategy 2: No required nodes found - all optional. Use traditional leftmost logic.
     let right_nodes: std::collections::HashSet<_> = connections
         .iter()
@@ -343,7 +417,7 @@ pub(super) fn find_anchor_node(
         .collect();
 
     for (left, _, _) in connections {
-        if !right_nodes.contains(left) {
+        if !right_nodes.contains(left) && !denormalized_aliases.contains(left) {
             log::info!(
                 "✓ Found leftmost anchor (all optional): {} (left-only)",
                 left
@@ -414,11 +488,11 @@ pub(super) fn rewrite_path_functions_with_table(
 
                         if let Some(col_name) = column_name {
                             return if table_alias.is_empty() {
-                                RenderExpr::Column(Column(col_name.to_string()))
+                                RenderExpr::Column(Column(PropertyValue::Column(col_name.to_string())))
                             } else {
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(table_alias.to_string()),
-                                    column: Column(col_name.to_string()),
+                                    column: Column(PropertyValue::Column(col_name.to_string())),
                                 })
                             };
                         }
@@ -621,12 +695,12 @@ pub(super) fn render_expr_to_sql_for_cte(
 
             // Map Cypher alias to SQL table alias
             if table_alias == start_cypher_alias {
-                format!("start_node.{}", column)
+                format!("start_node.{}", column.raw())
             } else if table_alias == end_cypher_alias {
-                format!("end_node.{}", column) // end_node.name, end_node.email, etc.
+                format!("end_node.{}", column.raw()) // end_node.name, end_node.email, etc.
             } else {
                 // Fallback: use as-is
-                format!("{}.{}", table_alias, column)
+                format!("{}.{}", table_alias, column.raw())
             }
         }
         RenderExpr::OperatorApplicationExp(op) => {
@@ -688,5 +762,110 @@ pub(super) fn render_expr_to_sql_for_cte(
             Literal::Null => "NULL".to_string(),
         },
         _ => expr.to_sql(), // Fallback to default to_sql()
+    }
+}
+
+/// Generate polymorphic edge type filters for a GraphRel
+///
+/// When a relationship table uses type discrimination columns (type_column, from_label_column,
+/// to_label_column), this function generates filters to select the correct edge types.
+///
+/// # Arguments
+/// * `rel_alias` - The alias for the relationship table (e.g., "r", "f")
+/// * `rel_type` - The Cypher relationship type (e.g., "FOLLOWS")
+/// * `from_label` - The source node label (e.g., "User")
+/// * `to_label` - The target node label (e.g., "Post")
+///
+/// # Returns
+/// A RenderExpr representing the combined filters, or None if not a polymorphic edge
+///
+/// # Example
+/// For a polymorphic relationship table:
+/// ```yaml
+/// relationships:
+///   - polymorphic: true
+///     table: interactions
+///     type_column: interaction_type
+///     from_label_column: from_type
+///     to_label_column: to_type
+/// ```
+///
+/// Query: `MATCH (u:User)-[:FOLLOWS]->(other:User)`
+///
+/// Generates: `r.interaction_type = 'FOLLOWS' AND r.from_type = 'User' AND r.to_type = 'User'`
+pub(super) fn generate_polymorphic_edge_filters(
+    rel_alias: &str,
+    rel_type: &str,
+    from_label: &str,
+    to_label: &str,
+) -> Option<RenderExpr> {
+    use crate::server::GLOBAL_SCHEMAS;
+    
+    // Get the relationship schema to check if it's polymorphic
+    let schema_lock = GLOBAL_SCHEMAS.get()?;
+    let schemas = schema_lock.try_read().ok()?;
+    let schema = schemas.get("default")?;
+    let rel_schema = schema.get_rel_schema(rel_type).ok()?;
+    
+    // Check if this is a polymorphic edge
+    let type_col = rel_schema.type_column.as_ref()?;
+    let from_label_col = rel_schema.from_label_column.as_ref();
+    let to_label_col = rel_schema.to_label_column.as_ref();
+    
+    let mut filters = Vec::new();
+    
+    // Filter 1: type_column = 'FOLLOWS'
+    let type_filter = RenderExpr::OperatorApplicationExp(OperatorApplication {
+        operator: Operator::Equal,
+        operands: vec![
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(rel_alias.to_string()),
+                column: Column(PropertyValue::Column(type_col.clone())),
+            }),
+            RenderExpr::Literal(Literal::String(rel_type.to_string())),
+        ],
+    });
+    filters.push(type_filter);
+    
+    // Filter 2: from_label_column = 'User' (if present)
+    if let Some(from_col) = from_label_col {
+        let from_filter = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(rel_alias.to_string()),
+                    column: Column(PropertyValue::Column(from_col.clone())),
+                }),
+                RenderExpr::Literal(Literal::String(from_label.to_string())),
+            ],
+        });
+        filters.push(from_filter);
+    }
+    
+    // Filter 3: to_label_column = 'Post' (if present)
+    if let Some(to_col) = to_label_col {
+        let to_filter = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(rel_alias.to_string()),
+                    column: Column(PropertyValue::Column(to_col.clone())),
+                }),
+                RenderExpr::Literal(Literal::String(to_label.to_string())),
+            ],
+        });
+        filters.push(to_filter);
+    }
+    
+    // Combine filters with AND
+    if filters.is_empty() {
+        None
+    } else if filters.len() == 1 {
+        Some(filters.into_iter().next().unwrap())
+    } else {
+        Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: filters,
+        }))
     }
 }

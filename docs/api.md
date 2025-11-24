@@ -270,12 +270,12 @@ Content-Type: application/json
     {
       "name": "default",
       "node_count": 3,
-      "relationship_count": 2
+      "edge_count": 2
     },
     {
       "name": "social_network",
       "node_count": 5,
-      "relationship_count": 4
+      "edge_count": 4
     }
   ]
 }
@@ -285,7 +285,7 @@ Content-Type: application/json
 - `schemas` (array): List of available schemas
   - `name` (string): Schema identifier used in queries
   - `node_count` (integer): Number of node types defined in this schema
-  - `relationship_count` (integer): Number of relationship types defined in this schema
+  - `edge_count` (integer): Number of edge types defined in this schema
 
 **Example:**
 ```bash
@@ -311,18 +311,18 @@ Content-Type: application/json
 {
   "schema_name": "social_network",
   "node_types": 3,
-  "relationship_types": 2,
+  "edge_types": 2,
   "nodes": ["User", "Post", "Comment"],
-  "relationships": ["FOLLOWS", "AUTHORED"]
+  "edges": ["FOLLOWS", "AUTHORED"]
 }
 ```
 
 **Response Fields:**
 - `schema_name` (string): The requested schema name
 - `node_types` (integer): Number of node type labels defined
-- `relationship_types` (integer): Number of relationship types defined
+- `edge_types` (integer): Number of edge types defined
 - `nodes` (array): List of node labels in this schema
-- `relationships` (array): List of relationship types in this schema
+- `edges` (array): List of edge types in this schema
 
 **Error Response:**
 ```http
@@ -386,7 +386,7 @@ Content-Type: application/json
 - Loading a schema does not affect the "default" schema (set at startup via `GRAPH_CONFIG_PATH`)
 - Multiple schemas can coexist and be queried using `USE <schema_name>` or the `schema_name` parameter
 - Schema validation (`validate_schema: true`) checks that referenced tables and columns exist in ClickHouse
-- Supports auto-discovery: Set `auto_discover_columns: true` in node/relationship definitions to automatically query ClickHouse `system.columns` for property mappings
+- Supports auto-discovery: Set `auto_discover_columns: true` in node/edge definitions to automatically query ClickHouse `system.columns` for property mappings
 
 **Example (Loading from File):**
 ```bash
@@ -454,7 +454,7 @@ curl -X POST http://localhost:8080/query \
   }'
 ```
 
-#### Relationship Traversal
+#### Edge Traversal
 ```bash
 curl -X POST http://localhost:8080/query \
   -H "Content-Type: application/json" \
@@ -848,7 +848,7 @@ class Program
 }
 ```
 
-### Relationship Format
+### Edge Format
 ```json
 {
   "id": 456,
@@ -873,7 +873,7 @@ class Program
     {"id": 456, "labels": ["User"], "properties": {"name": "Bob"}},
     {"id": 789, "labels": ["User"], "properties": {"name": "Charlie"}}
   ],
-  "relationships": [
+  "edges": [
     {"id": 111, "type": "FOLLOWS", "start": 123, "end": 456},
     {"id": 222, "type": "FOLLOWS", "start": 456, "end": 789}
   ]

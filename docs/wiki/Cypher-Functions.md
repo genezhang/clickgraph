@@ -36,9 +36,9 @@ RETURN count(u) AS users_over_30
 MATCH (u:User)
 RETURN count(DISTINCT u.country) AS num_countries
 
--- Count relationships
-MATCH (:User)-[r:FOLLOWS]->(:User)
-RETURN count(r) AS total_follows
+-- Count edges
+MATCH (:User)-[e:FOLLOWS]->(:User)
+RETURN count(e) AS total_follows
 
 -- Count with grouping
 MATCH (u:User)
@@ -723,10 +723,10 @@ RETURN CASE
   ELSE 'Other'
 END AS node_type
 
--- Check relationship type
-MATCH ()-[r]->()
-RETURN type(r) AS relationship_type, count(*) AS count
-GROUP BY type(r)
+-- Check edge type
+MATCH ()-[e]->()
+RETURN type(e) AS edge_type, count(*) AS count
+GROUP BY type(e)
 ```
 
 ### ID Functions
@@ -825,22 +825,18 @@ RETURN u.user_id AS business_id, u.name
 ### Path Functions
 
 | Function | Description | Example |
-|----------|-------------|---------|
-| `length(path)` | Number of relationships | `length(path)` |
+|----------|-------------|---------|  
+| `length(path)` | Number of edges | `length(path)` |
 | `nodes(path)` | List of nodes | `nodes(path)` |
-| `relationships(path)` | List of relationships | `relationships(path)` |
+| `edges(path)` | List of edges | `edges(path)` |
 | `shortestPath(...)` | Find shortest path | `shortestPath((a)-[*]-(b))` |
-| `allShortestPaths(...)` | All shortest paths | `allShortestPaths((a)-[*]-(b))` |
-
-### Scalar Functions
+| `allShortestPaths(...)` | All shortest paths | `allShortestPaths((a)-[*]-(b))` |### Scalar Functions
 
 | Function | Description | Example |
-|----------|-------------|---------|
+|----------|-------------|---------|  
 | `COALESCE(expr1, ...)` | First non-null | `COALESCE(u.email, 'none')` |
-| `type(rel)` | Relationship type | `type(r)` → `'FOLLOWS'` |
-| `id(node)` | Node/relationship ID | `id(u)` |
-
----
+| `type(edge)` | Edge type | `type(e)` → `'FOLLOWS'` |
+| `id(node)` | Node/edge ID | `id(u)` |---
 
 ## Practice Exercises
 

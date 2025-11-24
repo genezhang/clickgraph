@@ -1,3 +1,4 @@
+use crate::graph_catalog::config::Identifier;
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::Cte;
 
@@ -32,6 +33,7 @@ pub struct VariableLengthCteGenerator {
     pub end_node_filters: Option<String>, // WHERE clause for end node (e.g., "end_full_name = 'Bob'")
     pub path_variable: Option<String>, // Path variable name from MATCH clause (e.g., "p" in "MATCH p = ...")
     pub relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
+    pub edge_id: Option<Identifier>, // Edge ID columns for relationship uniqueness (None = use from_id, to_id)
 }
 
 /// Mode for shortest path queries
@@ -72,6 +74,7 @@ impl VariableLengthCteGenerator {
         end_node_filters: Option<String>, // WHERE clause for end node
         path_variable: Option<String>, // Path variable name (e.g., "p")
         relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
+        edge_id: Option<Identifier>,   // Edge ID for relationship uniqueness
     ) -> Self {
         // Try to get database from environment
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
@@ -98,6 +101,7 @@ impl VariableLengthCteGenerator {
             end_node_filters,
             path_variable,
             relationship_types,
+            edge_id,
         }
     }
 
@@ -140,6 +144,83 @@ impl VariableLengthCteGenerator {
             }
         } else {
             "[]".to_string()
+        }
+    }
+
+    /// Build edge tuple expression for the base case (first hop)
+    /// Returns SQL expression like: `tuple(rel.from_id, rel.to_id)` or `tuple(rel.date, rel.num, ...)`
+    fn build_edge_tuple_base(&self) -> String {
+        match &self.edge_id {
+            Some(Identifier::Single(col)) => {
+                // Single column edge ID: just use that column
+                format!("{}.{}", self.relationship_alias, col)
+            }
+            Some(Identifier::Composite(cols)) => {
+                // Multi-column composite key: build tuple
+                let tuple_elements: Vec<String> = cols
+                    .iter()
+                    .map(|col| format!("{}.{}", self.relationship_alias, col))
+                    .collect();
+                format!("tuple({})", tuple_elements.join(", "))
+            }
+            None => {
+                // Default: use (from_id, to_id) as edge identity
+                format!(
+                    "tuple({}.{}, {}.{})",
+                    self.relationship_alias,
+                    self.relationship_from_column,
+                    self.relationship_alias,
+                    self.relationship_to_column
+                )
+            }
+        }
+    }
+
+    /// Build edge tuple expression for recursive case
+    /// Returns SQL expression like: `tuple(r.from_id, r.to_id)` or `tuple(r.date, r.num, ...)`
+    fn build_edge_tuple_recursive(&self, rel_alias: &str) -> String {
+        match &self.edge_id {
+            Some(Identifier::Single(col)) => {
+                format!("{}.{}", rel_alias, col)
+            }
+            Some(Identifier::Composite(cols)) => {
+                let tuple_elements: Vec<String> = cols
+                    .iter()
+                    .map(|col| format!("{}.{}", rel_alias, col))
+                    .collect();
+                format!("tuple({})", tuple_elements.join(", "))
+            }
+            None => {
+                format!(
+                    "tuple({}.{}, {}.{})",
+                    rel_alias,
+                    self.relationship_from_column,
+                    rel_alias,
+                    self.relationship_to_column
+                )
+            }
+        }
+    }
+
+    /// Get the ClickHouse array type for path_edges
+    /// Returns type like: `Array(Tuple(UInt32, UInt32))` or `Array(Tuple(String, String, ...))`
+    fn get_path_edges_array_type(&self) -> String {
+        match &self.edge_id {
+            Some(Identifier::Single(_)) => {
+                // For single column, we don't know the type - assume UInt64 for now
+                // TODO: Get actual column type from schema
+                "Array(UInt64)".to_string()
+            }
+            Some(Identifier::Composite(cols)) => {
+                // For composite keys, build tuple type
+                // TODO: Get actual column types from schema - assuming String for now
+                let type_elements = vec!["String"; cols.len()].join(", ");
+                format!("Array(Tuple({}))", type_elements)
+            }
+            None => {
+                // Default (from_id, to_id) - assume both are UInt64
+                "Array(Tuple(UInt64, UInt64))".to_string()
+            }
         }
     }
 
@@ -345,6 +426,8 @@ impl VariableLengthCteGenerator {
     /// Generate base case for zero hops (self-loop)
     /// Used with shortest path functions when pattern is *0..
     fn generate_zero_hop_base_case(&self) -> String {
+        let path_edges_type = self.get_path_edges_array_type();
+        
         let mut select_items = vec![
             format!(
                 "{}.{} as start_id",
@@ -356,7 +439,7 @@ impl VariableLengthCteGenerator {
                 self.start_node_id_column // Same node for self-loop
             ),
             "0 as hop_count".to_string(), // Zero hops
-            "CAST([] AS Array(UInt32)) as path_nodes".to_string(), // Empty array with explicit type
+            format!("CAST([] AS {}) as path_edges", path_edges_type), // Empty edge array
             "CAST([] AS Array(String)) as path_relationships".to_string(), // Empty array with explicit type
         ];
 
@@ -414,6 +497,9 @@ impl VariableLengthCteGenerator {
 
     fn generate_base_case(&self, hop_count: u32) -> String {
         if hop_count == 1 {
+            // Build edge tuple for the base case
+            let edge_tuple = self.build_edge_tuple_base();
+            
             // Build property selections
             let mut select_items = vec![
                 format!(
@@ -425,10 +511,7 @@ impl VariableLengthCteGenerator {
                     self.end_node_alias, self.end_node_id_column
                 ),
                 "1 as hop_count".to_string(),
-                format!(
-                    "[{}.{}] as path_nodes",
-                    self.start_node_alias, self.start_node_id_column
-                ),
+                format!("[{}] as path_edges", edge_tuple), // Track edge IDs, not node IDs
                 self.generate_relationship_type_for_hop(1), // path_relationships for single hop
             ];
 
@@ -500,11 +583,10 @@ impl VariableLengthCteGenerator {
         // This is a simplified version - in practice, we'd need to handle
         // different relationship types and intermediate node types
         format!(
-            "    -- Multi-hop base case for {} hops (simplified)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_nodes, [] as path_relationships\n    WHERE false  -- Placeholder",
+            "    -- Multi-hop base case for {} hops (simplified)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_edges, [] as path_relationships\n    WHERE false  -- Placeholder",
             hop_count, hop_count
         )
     }
-
     /// Generate recursive case that extends existing paths
     fn generate_recursive_case(&self, max_hops: u32) -> String {
         // Delegate to the version that accepts CTE name
@@ -513,6 +595,9 @@ impl VariableLengthCteGenerator {
     }
 
     fn generate_recursive_case_with_cte_name(&self, max_hops: u32, cte_name: &str) -> String {
+        // Build edge tuple for recursive case
+        let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
+        
         // Build property selections for recursive case
         let mut select_items = vec![
             "vp.start_id".to_string(),
@@ -522,9 +607,9 @@ impl VariableLengthCteGenerator {
             ),
             "vp.hop_count + 1 as hop_count".to_string(),
             format!(
-                "arrayConcat(vp.path_nodes, [current_node.{}]) as path_nodes",
-                self.end_node_id_column
-            ),
+                "arrayConcat(vp.path_edges, [{}]) as path_edges",
+                edge_tuple_recursive
+            ), // Append edge ID/tuple, not node ID
             format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
@@ -549,13 +634,16 @@ impl VariableLengthCteGenerator {
         }
 
         let select_clause = select_items.join(",\n        ");
+        
+        // Build edge tuple check for cycle prevention
+        let edge_tuple_check = self.build_edge_tuple_recursive(&self.relationship_alias);
 
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
             format!(
-                "NOT has(vp.path_nodes, current_node.{})",
-                self.end_node_id_column
-            ), // Cycle detection
+                "NOT has(vp.path_edges, {})",
+                edge_tuple_check
+            ), // Edge uniqueness check (Neo4j semantics)
         ];
 
         // Note: We no longer skip zero-hop rows in recursion.
@@ -615,6 +703,7 @@ mod tests {
             None,        // no end node filters
             None,        // no path variable
             None,        // no relationship types
+            None,        // no edge_id (use default from_id, to_id)
         );
 
         let cte = generator.generate_cte();
@@ -645,6 +734,7 @@ mod tests {
             None,          // no end node filters
             None,          // no path variable
             None,          // no relationship types
+            None,          // no edge_id (use default from_id, to_id)
         );
 
         let sql = generator.generate_recursive_sql();

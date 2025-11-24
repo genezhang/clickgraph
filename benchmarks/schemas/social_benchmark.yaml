@@ -30,6 +30,7 @@ graph_schema:
       table: user_follows_bench
       from_id: follower_id
       to_id: followed_id
+      edge_id: follow_id
       from_node: User
       to_node: User
       property_mappings:
@@ -40,6 +41,7 @@ graph_schema:
       table: posts_bench
       from_id: author_id
       to_id: post_id
+      edge_id: post_id
       from_node: User
       to_node: Post
       property_mappings:
@@ -50,6 +52,7 @@ graph_schema:
       table: friendships
       from_id: user1_id
       to_id: user2_id
+      edge_id: friendship_id
       from_node: User
       to_node: User
       property_mappings:

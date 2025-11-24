@@ -4,9 +4,12 @@ Complete syntax reference for Cypher queries supported by ClickGraph.
 
 > **Note**: ClickGraph is a **read-only** graph query engine. Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are not supported.
 
+> **Terminology (v0.5.2+)**: ClickGraph uses **"node"** and **"edge"** terminology following ISO standards (SQL/PGQ ISO/IEC 9075-16:2023, GQL ISO/IEC 39075:2024). The term "relationship" is deprecated but still supported for backward compatibility with Neo4j Cypher. In this documentation, we use "edge" to refer to connections between nodes.
+
 ---
 
 ## Table of Contents
+- [USE Clause](#use-clause)
 - [MATCH Clause](#match-clause)
 - [WHERE Clause](#where-clause)
 - [RETURN Clause](#return-clause)
@@ -18,6 +21,99 @@ Complete syntax reference for Cypher queries supported by ClickGraph.
 - [Operators](#operators)
 - [Data Types](#data-types)
 - [Parameters](#parameters)
+- [Enterprise Features](#enterprise-features)
+
+---
+
+## USE Clause
+
+The `USE` clause selects which graph schema to query. This is essential for multi-schema deployments where different logical graphs are mapped to different ClickHouse tables.
+
+> **Critical**: USE clause takes a **graph schema name** (logical identifier), NOT a database name (physical storage).
+
+### Syntax
+
+```cypher
+USE schema_name;
+MATCH (n:User) RETURN n;
+```
+
+### Schema Name vs Database Name
+
+**Graph Schema Name** (used in USE clause):
+- Defined in YAML configuration files
+- Logical identifier for a graph model
+- Example: `social_graph`, `commerce_graph`, `test_graph_schema`
+
+**Database Name** (ClickHouse physical storage):
+- Physical ClickHouse database containing tables
+- Example: `social_db`, `test_integration`
+- **NOT** used in USE clause
+
+### Examples
+
+```cypher
+-- Select social network schema
+USE social_graph;
+MATCH (u:User)-[:FOLLOWS]->(friend)
+RETURN u.name, friend.name;
+
+-- Select commerce schema
+USE commerce_graph;
+MATCH (p:Product)<-[:PURCHASED]-(customer:Customer)
+RETURN p.name, count(customer) AS buyers;
+
+-- Schema selection persists for session
+USE test_graph_schema;
+MATCH (n) RETURN count(n);  -- Uses test_graph_schema
+MATCH (u:User) RETURN u;    -- Still uses test_graph_schema
+```
+
+### Schema Selection Priority
+
+1. **USE clause** (highest priority)
+2. **schema_name API parameter**
+3. **"default" schema** (fallback)
+
+```bash
+# USE clause overrides schema_name parameter
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "USE social_graph; MATCH (n) RETURN count(n)",
+    "schema_name": "commerce_graph"
+  }'
+# Query uses social_graph (from USE clause)
+```
+
+### Multi-Tenant Usage
+
+Combine USE clause with view_parameters for tenant isolation:
+
+```bash
+curl -X POST http://localhost:8080/query \
+  -d '{
+    "query": "USE tenant_graph; MATCH (u:User) RETURN u",
+    "view_parameters": {"tenant_id": "acme_corp"}
+  }'
+```
+
+See [Multi-Tenancy & RBAC](Multi-Tenancy-RBAC.md) for complete documentation.
+
+### Common Errors
+
+**❌ Using database name instead of schema name:**
+```cypher
+USE test_integration;  -- WRONG: this is a database name
+MATCH (n) RETURN n;
+-- Error: Schema 'test_integration' not found
+```
+
+**✅ Correct usage:**
+```cypher
+USE test_graph_schema;  -- CORRECT: this is a schema name
+MATCH (n) RETURN n;
+```
 
 ---
 
@@ -42,29 +138,29 @@ MATCH (u:User:Active) RETURN u
 MATCH () RETURN count(*)
 ```
 
-**Relationship Patterns:**
+**Edge Patterns:**
 ```cypher
--- Match relationship with type
-MATCH (a)-[r:FOLLOWS]->(b) RETURN a, r, b
+-- Match edge with type
+MATCH (a)-[e:FOLLOWS]->(b) RETURN a, e, b
 
 -- Match any direction
-MATCH (a)-[r:FOLLOWS]-(b) RETURN a, b
+MATCH (a)-[e:FOLLOWS]-(b) RETURN a, b
 
 -- Match left direction
-MATCH (a)<-[r:FOLLOWS]-(b) RETURN a, b
+MATCH (a)<-[e:FOLLOWS]-(b) RETURN a, b
 
--- Anonymous relationship (any type)
-MATCH (a)-[r]->(b) RETURN a, b
+-- Anonymous edge (any type)
+MATCH (a)-[e]->(b) RETURN a, b
 
--- Untyped anonymous relationship
+-- Untyped anonymous edge
 MATCH (a)-->(b) RETURN a, b
 ```
 
-**Multiple Relationship Types:**
+**Multiple Edge Types:**
 ```cypher
 -- Match either FOLLOWS or FRIENDS_WITH
-MATCH (a)-[r:FOLLOWS|FRIENDS_WITH]->(b)
-RETURN a.name, type(r), b.name
+MATCH (a)-[e:FOLLOWS|FRIENDS_WITH]->(b)
+RETURN a.name, type(e), b.name
 
 -- Three or more types
 MATCH (a)-[:TYPE1|TYPE2|TYPE3]->(b)
@@ -123,7 +219,7 @@ RETURN p, length(p)
 
 -- Use path functions
 MATCH p = (a)-[:FOLLOWS*]->(b)
-RETURN nodes(p), relationships(p), length(p)
+RETURN nodes(p), edges(p), length(p)
 ```
 
 ### OPTIONAL MATCH
@@ -133,7 +229,7 @@ Match patterns optionally (LEFT JOIN semantics):
 ```cypher
 -- Return users even if they don't follow anyone
 MATCH (u:User)
-OPTIONAL MATCH (u)-[r:FOLLOWS]->(friend)
+OPTIONAL MATCH (u)-[e:FOLLOWS]->(friend)
 RETURN u.name, friend.name
 
 -- Multiple optional patterns
@@ -158,7 +254,7 @@ RETURN u.name,
 Use patterns in WHERE clause:
 
 ```cypher
--- Filter by relationship existence
+-- Filter by edge existence
 MATCH (u:User)
 WHERE (u)-[:FOLLOWS]->(:User {name: 'Alice'})
 RETURN u.name
@@ -238,7 +334,7 @@ WHERE (u.age > 25 OR u.verified) AND u.country = 'USA'
 ### Pattern Predicates in WHERE
 
 ```cypher
--- Relationship existence
+-- Edge existence
 WHERE (a)-[:FOLLOWS]->(b)
 
 -- Negation
@@ -266,7 +362,7 @@ RETURN DISTINCT expression [AS alias]
 **When to Use:**
 - Multi-hop traversals where multiple paths reach the same node
 - Avoiding duplicate results in complex graph patterns
-- Queries with multiple relationship types to the same target
+- Queries with multiple edge types to the same target
 
 **Examples:**
 
@@ -283,7 +379,7 @@ MATCH (start:User)-[:FOLLOWS*1..2]->(connected:User)
 WHERE start.user_id = 1
 RETURN DISTINCT connected.name
 
-// Multiple relationship types
+// Multiple edge types
 MATCH (a:User)-[:FOLLOWS|FRIENDS_WITH]->(b:User)
 RETURN DISTINCT b.name
 ```
@@ -308,11 +404,11 @@ RETURN u
 -- Return properties
 RETURN u.name, u.email
 
--- Return relationships
-RETURN r
+-- Return edges
+RETURN e
 
--- Return relationship properties
-RETURN type(r), r.since
+-- Return edge properties
+RETURN type(e), e.since
 ```
 
 ### Expressions
@@ -543,15 +639,15 @@ RETURN length(p)
 MATCH p = (a)-[*1..3]->(b)
 RETURN nodes(p)
 
--- Relationships in path
+-- Edges in path
 MATCH p = (a)-[*]->(b)
-RETURN relationships(p)
+RETURN edges(p)
 
 -- Combined
 MATCH p = (a:User {user_id: 1})-[:FOLLOWS*]->(b)
 RETURN length(p) AS hops,
        [n IN nodes(p) | n.name] AS names,
-       [r IN relationships(p) | type(r)] AS rel_types
+       [e IN edges(p) | type(e)] AS edge_types
 ```
 
 ---
@@ -595,9 +691,9 @@ RETURN sign(42)                      -- 1
 ### Type Functions
 
 ```cypher
--- Relationship type
-MATCH (a)-[r]->(b)
-RETURN type(r)
+-- Edge type
+MATCH (a)-[e]->(b)
+RETURN type(e)
 
 -- Node labels
 MATCH (n)
@@ -719,8 +815,8 @@ null
 -- Nodes
 (u:User)
 
--- Relationships
--[r:FOLLOWS]->
+-- Edges
+-[e:FOLLOWS]->
 
 -- Paths
 p = (a)-[*]->(b)
@@ -782,6 +878,148 @@ RETURN u.name, u.age
 
 ---
 
+## Enterprise Features
+
+ClickGraph provides enterprise-grade features for multi-tenancy, security, and production deployments.
+
+### Multi-Tenancy with view_parameters
+
+**View Parameters** enable row-level security and tenant isolation by passing parameters to ClickHouse parameterized views.
+
+**Schema Configuration:**
+```yaml
+name: tenant_graph
+nodes:
+  - label: User
+    view: users_view
+    view_parameters: [tenant_id]  # Define parameter
+    properties:
+      user_id:
+        column: user_id
+        type: integer
+```
+
+**ClickHouse View:**
+```sql
+CREATE VIEW users_view AS
+SELECT * FROM users
+WHERE tenant_id = {tenant_id:String};  -- Parameterized filter
+```
+
+**Query with Tenant Isolation:**
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User) RETURN u",
+    "schema_name": "tenant_graph",
+    "view_parameters": {
+      "tenant_id": "acme_corp"
+    }
+  }'
+# Only returns users for acme_corp tenant
+```
+
+### RBAC with Role Passthrough
+
+**Role passthrough** enables ClickHouse role-based access control (RBAC) for fine-grained permissions.
+
+**HTTP API:**
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User) RETURN u",
+    "role": "analyst_role"
+  }'
+```
+
+**ClickHouse Setup:**
+```sql
+-- Create role with limited permissions
+CREATE ROLE analyst_role;
+GRANT SELECT ON database.users TO analyst_role;
+GRANT SELECT ON database.posts TO analyst_role;
+-- No access to sensitive tables
+
+-- Assign role to user
+GRANT analyst_role TO analyst_user;
+```
+
+**Query Execution:**
+- ClickGraph impersonates specified role when executing queries
+- ClickHouse enforces role permissions
+- Unauthorized access returns permission denied errors
+
+### Schema Selection Methods
+
+**Method 1: USE Clause (Cypher)**
+```cypher
+USE social_graph;
+MATCH (u:User) RETURN u;
+```
+
+**Method 2: schema_name Parameter (API)**
+```bash
+curl -X POST http://localhost:8080/query \
+  -d '{"query":"...", "schema_name":"social_graph"}'
+```
+
+**Method 3: Environment Variable (Server Default)**
+```bash
+export DEFAULT_SCHEMA=social_graph
+clickgraph --http-port 8080
+```
+
+### Complete API Request Example
+
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "USE tenant_graph; MATCH (u:User) WHERE u.age > $minAge RETURN u",
+    "parameters": {
+      "minAge": 18
+    },
+    "view_parameters": {
+      "tenant_id": "acme_corp"
+    },
+    "role": "analyst_role",
+    "schema_name": "fallback_schema"
+  }'
+```
+
+**Feature Interaction:**
+1. `USE tenant_graph` selects schema (overrides schema_name parameter)
+2. `parameters` substitutes `$minAge` → `18`
+3. `view_parameters` passes `tenant_id` to ClickHouse views (tenant isolation)
+4. `role` impersonates analyst_role (RBAC enforcement)
+5. Query returns only acme_corp users aged > 18 with analyst_role permissions
+
+### Production Best Practices
+
+**Multi-Tenancy:**
+- ✅ Always use view_parameters for tenant isolation
+- ✅ Validate tenant_id at API gateway layer
+- ✅ Use parameterized views with WHERE clauses
+- ✅ Test cross-tenant data leakage scenarios
+
+**Security:**
+- ✅ Use RBAC roles for all production queries
+- ✅ Never use admin/default role in application code
+- ✅ Implement least-privilege access policies
+- ✅ Audit role assignments regularly
+
+**Schema Management:**
+- ✅ Use descriptive schema names (social_graph, not db1)
+- ✅ Version schema configurations in git
+- ✅ Test schema changes in staging first
+- ✅ Document schema → database mappings
+
+See [Multi-Tenancy & RBAC](Multi-Tenancy-RBAC.md) for complete documentation.
+
+---
+
 ## Advanced Features
 
 ### Graph Algorithms
@@ -790,7 +1028,7 @@ RETURN u.name, u.age
 ```cypher
 CALL pagerank(
   'User',              -- node label
-  'FOLLOWS',           -- relationship type
+  'FOLLOWS',           -- edge type
   'outgoing',          -- direction
   {
     iterations: 20,
@@ -801,21 +1039,6 @@ CALL pagerank(
 RETURN nodeId, rank
 ORDER BY rank DESC
 LIMIT 10
-```
-
-### Multi-Schema Queries
-
-```cypher
--- Select schema via USE clause
-USE social_network;
-MATCH (u:User) RETURN count(*);
-
--- Or via API parameter
-```
-
-```bash
-curl -X POST http://localhost:8080/query \
-  -d '{"query":"...", "schema_name":"social_network"}'
 ```
 
 ---
@@ -830,9 +1053,9 @@ MATCH (u:User)
 RETURN u.name, u.email
 LIMIT 10
 
--- Count relationships
-MATCH ()-[r:FOLLOWS]->()
-RETURN count(r) AS total_follows
+-- Count edges
+MATCH ()-[e:FOLLOWS]->()
+RETURN count(e) AS total_follows
 
 -- User details
 MATCH (u:User {user_id: 1})

@@ -107,7 +107,7 @@ fn try_generate_view_scan(
         node_schema.table_name
     );
 
-    // Create property mapping from schema
+    // Use property mapping from schema directly (already PropertyValue)
     let property_mapping = node_schema.property_mappings.clone();
 
     // Create fully qualified table name (database.table)
@@ -150,6 +150,15 @@ fn try_generate_view_scan(
     // Set view parameters if this is a parameterized view
     view_scan.view_parameter_names = view_parameter_names;
     view_scan.view_parameter_values = view_parameter_values;
+    
+    // Set denormalized flag from schema
+    view_scan.is_denormalized = node_schema.is_denormalized;
+    log::debug!(
+        "ViewScan: Set is_denormalized={} for node label '{}' (table: {})",
+        node_schema.is_denormalized,
+        label,
+        node_schema.table_name
+    );
 
     Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))))
 }

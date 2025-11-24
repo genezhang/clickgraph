@@ -84,17 +84,21 @@ fn setup_test_graph_schema() -> GraphSchema {
             dtype: "UInt64".to_string(),
         },
         property_mappings: [
-            ("name".to_string(), "name".to_string()),
-            ("age".to_string(), "age".to_string()),
-            ("status".to_string(), "status".to_string()),
-            ("user_id".to_string(), "user_id".to_string()),
-            ("full_name".to_string(), "name".to_string()), // Alias for name
+            ("name".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string())),
+            ("age".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("age".to_string())),
+            ("status".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("status".to_string())),
+            ("user_id".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("user_id".to_string())),
+            ("full_name".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string())), // Alias for name
         ]
         .into_iter()
         .collect(),
         view_parameters: None,
         engine: None,
         use_final: None,
+        is_denormalized: false,
+        from_properties: None,
+        to_properties: None,
+        denormalized_source_table: None,
     };
     nodes.insert("User".to_string(), user_node);
 
@@ -113,6 +117,12 @@ fn setup_test_graph_schema() -> GraphSchema {
         view_parameters: None,
         engine: None,
         use_final: None,
+        edge_id: None,
+        type_column: None,
+        from_label_column: None,
+        to_label_column: None,
+        from_node_properties: None,
+        to_node_properties: None,
     };
     relationships.insert("FOLLOWS".to_string(), follows_rel);
 

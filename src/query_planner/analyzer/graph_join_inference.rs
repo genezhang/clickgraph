@@ -1,15 +1,15 @@
 use std::{collections::HashSet, sync::Arc};
 
 use crate::{
-    graph_catalog::graph_schema::GraphSchema,
+    graph_catalog::graph_schema::{GraphSchema, is_node_denormalized_on_edge, NodeSchema, RelationshipSchema},
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::Pass,
-            graph_context::{self, GraphContext},
+            graph_context,
         },
         logical_expr::{
-            Column, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
+            LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
         },
         logical_plan::{GraphJoins, GraphRel, Join, JoinType, LogicalPlan},
         plan_ctx::PlanCtx,
@@ -48,14 +48,11 @@ impl AnalyzerPass for GraphJoinInference {
             collected_graph_joins.len()
         );
 
-        if !collected_graph_joins.is_empty() {
-            // Get optional_aliases from plan_ctx to pass to GraphJoins
-            let optional_aliases = plan_ctx.get_optional_aliases().clone();
-            Self::build_graph_joins(logical_plan, &mut collected_graph_joins, optional_aliases)
-        } else {
-            println!("DEBUG GraphJoinInference: No joins collected, returning original plan");
-            Ok(Transformed::No(logical_plan.clone()))
-        }
+        // CRITICAL: Always wrap in GraphJoins, even if empty!
+        // Empty joins vector = fully denormalized pattern (no JOINs needed)
+        // Without this wrapper, RenderPlan will try to generate JOINs from raw GraphRel
+        let optional_aliases = plan_ctx.get_optional_aliases().clone();
+        Self::build_graph_joins(logical_plan, &mut collected_graph_joins, optional_aliases, plan_ctx)
     }
 }
 
@@ -234,6 +231,7 @@ impl GraphJoinInference {
     fn reorder_joins_by_dependencies(
         joins: Vec<Join>,
         optional_aliases: &std::collections::HashSet<String>,
+        plan_ctx: &PlanCtx,
     ) -> (Option<String>, Vec<Join>) {
         if joins.is_empty() {
             // No joins means denormalized pattern - no anchor needed (will use relationship table)
@@ -277,11 +275,17 @@ impl GraphJoinInference {
         }
 
         // Tables that are referenced but not in joins list are anchors
+        // CRITICAL: Skip denormalized aliases - they're virtual, not physical tables
         for table in &referenced_tables {
-            if !join_aliases.contains(table) {
+            if !join_aliases.contains(table) && !plan_ctx.is_denormalized_alias(table) {
                 available_tables.insert(table.clone());
                 eprintln!(
                     "  ?? Found ANCHOR table (referenced but not joined): {}",
+                    table
+                );
+            } else if plan_ctx.is_denormalized_alias(table) {
+                eprintln!(
+                    "  ?? Skipping denormalized alias '{}' as anchor (virtual node on edge table)",
                     table
                 );
             }
@@ -412,6 +416,7 @@ impl GraphJoinInference {
         logical_plan: Arc<LogicalPlan>,
         collected_graph_joins: &mut Vec<Join>,
         optional_aliases: std::collections::HashSet<String>,
+        plan_ctx: &PlanCtx,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Projection(_) => {
@@ -419,6 +424,7 @@ impl GraphJoinInference {
                 let (anchor_table, reordered_joins) = Self::reorder_joins_by_dependencies(
                     collected_graph_joins.clone(),
                     &optional_aliases,
+                    plan_ctx,
                 );
 
                 // wrap the outer projection i.e. first occurance in the tree walk with Graph joins
@@ -434,6 +440,7 @@ impl GraphJoinInference {
                     graph_node.input.clone(),
                     collected_graph_joins,
                     optional_aliases.clone(),
+                    plan_ctx,
                 )?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -442,16 +449,19 @@ impl GraphJoinInference {
                     graph_rel.left.clone(),
                     collected_graph_joins,
                     optional_aliases.clone(),
+                    plan_ctx,
                 )?;
                 let center_tf = Self::build_graph_joins(
                     graph_rel.center.clone(),
                     collected_graph_joins,
                     optional_aliases.clone(),
+                    plan_ctx,
                 )?;
                 let right_tf = Self::build_graph_joins(
                     graph_rel.right.clone(),
                     collected_graph_joins,
                     optional_aliases.clone(),
+                    plan_ctx,
                 )?;
 
                 graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
@@ -461,6 +471,7 @@ impl GraphJoinInference {
                     cte.input.clone(),
                     collected_graph_joins,
                     optional_aliases,
+                    plan_ctx,
                 )?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -471,6 +482,7 @@ impl GraphJoinInference {
                     graph_joins.input.clone(),
                     collected_graph_joins,
                     optional_aliases,
+                    plan_ctx,
                 )?;
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -479,6 +491,7 @@ impl GraphJoinInference {
                     filter.input.clone(),
                     collected_graph_joins,
                     optional_aliases,
+                    plan_ctx,
                 )?;
                 filter.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -487,6 +500,7 @@ impl GraphJoinInference {
                     group_by.input.clone(),
                     collected_graph_joins,
                     optional_aliases,
+                    plan_ctx,
                 )?;
                 group_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -495,6 +509,7 @@ impl GraphJoinInference {
                     order_by.input.clone(),
                     collected_graph_joins,
                     optional_aliases,
+                    plan_ctx,
                 )?;
                 order_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -503,6 +518,7 @@ impl GraphJoinInference {
                     skip.input.clone(),
                     collected_graph_joins,
                     optional_aliases,
+                    plan_ctx,
                 )?;
                 skip.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -511,6 +527,7 @@ impl GraphJoinInference {
                     limit.input.clone(),
                     collected_graph_joins,
                     optional_aliases,
+                    plan_ctx,
                 )?;
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -521,6 +538,7 @@ impl GraphJoinInference {
                         input_plan.clone(),
                         collected_graph_joins,
                         optional_aliases.clone(),
+                        plan_ctx,
                     )?;
                     inputs_tf.push(child_tf);
                 }
@@ -863,17 +881,52 @@ impl GraphJoinInference {
             graph_rel.right_connection, right_is_referenced
         );
 
-        let graph_context = graph_context::get_graph_context(
-            graph_rel,
-            plan_ctx,
-            graph_schema,
-            Pass::GraphJoinInference,
-        )?;
-
-        // Extract alias strings
-        let left_alias_str = graph_context.left.alias.to_string();
-        let rel_alias_str = graph_context.rel.alias.to_string();
-        let right_alias_str = graph_context.right.alias.to_string();
+        // Extract all necessary data from graph_context BEFORE passing plan_ctx mutably
+        let (
+            left_alias_str,
+            rel_alias_str,
+            right_alias_str,
+            left_node_id_column,
+            right_node_id_column,
+            left_label,
+            right_label,
+            left_node_schema,
+            right_node_schema,
+            rel_schema,
+            left_alias,
+            rel_alias,
+            right_alias,
+            left_cte_name,
+            rel_cte_name,
+            right_cte_name,
+        ) = {
+            let graph_context = graph_context::get_graph_context(
+                graph_rel,
+                plan_ctx,
+                graph_schema,
+                Pass::GraphJoinInference,
+            )?;
+            
+            (
+                graph_context.left.alias.to_string(),
+                graph_context.rel.alias.to_string(),
+                graph_context.right.alias.to_string(),
+                graph_context.left.schema.node_id.column.clone(),
+                graph_context.right.schema.node_id.column.clone(),
+                graph_context.left.label.clone(),
+                graph_context.right.label.clone(),
+                graph_context.left.schema.clone(),
+                graph_context.right.schema.clone(),
+                graph_context.rel.schema.clone(),
+                graph_context.left.alias.clone(),
+                graph_context.rel.alias.clone(),
+                graph_context.right.alias.clone(),
+                graph_context.left.cte_name.clone(),
+                graph_context.rel.cte_name.clone(),
+                graph_context.right.cte_name.clone(),
+            )
+            // graph_context drops here, releasing the borrow of plan_ctx
+        };
 
         // Check which aliases are optional
         // Check BOTH plan_ctx (for pre-marked optionals) AND graph_rel.is_optional (for marked patterns)
@@ -901,9 +954,6 @@ impl GraphJoinInference {
         // In case of f3, both of its nodes a and b are already joined. So just join f3 on both a and b's joining keys.
         let is_standalone_rel: bool = matches!(graph_rel.left.as_ref(), LogicalPlan::Empty);
 
-        let left_node_id_column = graph_context.left.schema.node_id.column.clone(); //  left_schema.node_id.column.clone();
-        let right_node_id_column = graph_context.right.schema.node_id.column.clone(); //right_schema.node_id.column.clone();
-
         eprintln!("    � Creating joins for relationship...");
         let joins_before = collected_graph_joins.len();
 
@@ -912,7 +962,15 @@ impl GraphJoinInference {
         eprintln!("    � ? Processing graph pattern");
         let result = self.handle_graph_pattern(
             graph_rel,
-            graph_context,
+            &left_alias,
+            &rel_alias,
+            &right_alias,
+            &left_cte_name,
+            &rel_cte_name,
+            &right_cte_name,
+            &left_node_schema,
+            &rel_schema,
+            &right_node_schema,
             left_node_id_column,
             right_node_id_column,
             is_standalone_rel,
@@ -921,6 +979,9 @@ impl GraphJoinInference {
             right_is_optional,
             left_is_referenced,
             right_is_referenced,
+            left_label,
+            right_label,
+            plan_ctx,
             collected_graph_joins,
             joined_entities,
         );
@@ -942,7 +1003,15 @@ impl GraphJoinInference {
     fn handle_graph_pattern(
         &self,
         graph_rel: &GraphRel,
-        graph_context: GraphContext,
+        left_alias: &String,
+        rel_alias: &String,
+        right_alias: &String,
+        left_cte_name: &String,
+        rel_cte_name: &String,
+        right_cte_name: &String,
+        left_node_schema: &NodeSchema,
+        rel_schema: &RelationshipSchema,
+        right_node_schema: &NodeSchema,
         left_node_id_column: String,
         right_node_id_column: String,
         is_standalone_rel: bool,
@@ -951,17 +1020,14 @@ impl GraphJoinInference {
         right_is_optional: bool,
         left_is_referenced: bool,
         right_is_referenced: bool,
+        left_label: String,
+        right_label: String,
+        plan_ctx: &mut PlanCtx,
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
-        let left_alias = graph_context.left.alias;
-        let rel_alias = graph_context.rel.alias;
-        let right_alias = graph_context.right.alias;
-
-        let left_cte_name = graph_context.left.cte_name;
-        let rel_cte_name = graph_context.rel.cte_name;
-        let right_cte_name = graph_context.right.cte_name;
-
+        // Aliases and CTE names are now passed as parameters
+        
         // Extract relationship column names from the ViewScan
         let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
             crate::render_plan::cte_extraction::RelationshipColumns {
@@ -978,10 +1044,10 @@ impl GraphJoinInference {
         );
 
         // If both nodes are of the same type then check the direction to determine where are the left and right nodes present in the edgelist.
-        if graph_context.left.schema.table_name == graph_context.right.schema.table_name {
+        if left_node_schema.table_name == right_node_schema.table_name {
             eprintln!(
                 "    � ?? SAME-TYPE NODES PATH (left={}, right={})",
-                graph_context.left.schema.table_name, graph_context.right.schema.table_name
+                left_node_schema.table_name, right_node_schema.table_name
             );
             if joined_entities.contains(right_alias) {
                 eprintln!("    � ?? Branch: RIGHT already joined");
@@ -991,18 +1057,18 @@ impl GraphJoinInference {
                 let rel_conn_with_right_node = rel_to_col.clone();
                 let left_conn_with_rel = rel_from_col.clone();
                 let mut rel_graph_join = Join {
-                    table_name: rel_cte_name,
+                    table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
                     joining_on: vec![OperatorApplication {
                         operator: Operator::Equal,
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_conn_with_right_node),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_conn_with_right_node),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
-                                column: Column(right_node_id_column.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column.clone()),
                             }),
                         ],
                     }],
@@ -1018,11 +1084,11 @@ impl GraphJoinInference {
                 //         operands: vec![
                 //             LogicalExpr::PropertyAccessExp(PropertyAccess {
                 //                 table_alias: TableAlias(left_alias.to_string()),
-                //                 column: Column(left_node_id_column.clone()),
+                //                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
                 //             }),
                 //             LogicalExpr::PropertyAccessExp(PropertyAccess {
                 //                 table_alias: TableAlias(rel_alias.to_string()),
-                //                 column: Column(left_conn_with_rel.clone()),
+                //                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_conn_with_rel.clone()),
                 //             }),
                 //         ],
                 //     }],
@@ -1035,11 +1101,11 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(left_conn_with_rel),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_conn_with_rel),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
-                                column: Column(left_node_id_column),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column),
                             }),
                         ],
                     };
@@ -1057,25 +1123,51 @@ impl GraphJoinInference {
 
                 // MULTI-HOP FIX: Always join LEFT node for same-type patterns
                 // The relationship JOIN references LEFT, so it must be in the FROM/JOIN chain
-                let left_graph_join = Join {
-                    table_name: left_cte_name.clone(),
-                    table_alias: left_alias.to_string(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(left_alias.to_string()),
-                                column: Column(left_node_id_column.clone()),
-                            }),
-                            LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(left_conn_with_rel.clone()),
-                            }),
-                        ],
-                    }],
-                    join_type: Self::determine_join_type(left_is_optional),
-                };
-                collected_graph_joins.push(left_graph_join);
+                
+                // DENORMALIZED EDGE CHECK: Register alias if node is on edge table
+                let left_is_denormalized = is_node_denormalized_on_edge(
+                    &left_node_schema,
+                    &rel_schema,
+                    true  // is_from_node = true
+                );
+                
+                if left_is_denormalized {
+                    // Register denormalized alias so renderer can resolve properties correctly
+                    plan_ctx.register_denormalized_alias(
+                        left_alias.to_string(),
+                        rel_alias.to_string(),
+                        true,  // is_from_node
+                        left_label.clone()
+                    );
+                    eprintln!(
+                        "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (from_node)",
+                        left_alias, rel_alias
+                    );
+                    // DON'T add to joined_entities - denormalized nodes don't exist as physical tables
+                    // The relationship table will be the physical table
+                } else {
+                    // Traditional: create JOIN
+                    let left_graph_join = Join {
+                        table_name: left_cte_name.clone(),
+                        table_alias: left_alias.to_string(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(left_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
+                                }),
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(rel_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_conn_with_rel.clone()),
+                                }),
+                            ],
+                        }],
+                        join_type: Self::determine_join_type(left_is_optional),
+                    };
+                    collected_graph_joins.push(left_graph_join);
+                    eprintln!("    TRADITIONAL: Created JOIN for LEFT alias '{}'", left_alias);
+                }
                 joined_entities.insert(left_alias.to_string());
 
                 // Right is already joined (see condition above)
@@ -1143,18 +1235,18 @@ impl GraphJoinInference {
                 };
 
                 let mut rel_graph_join = Join {
-                    table_name: rel_cte_name,
+                    table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
                     joining_on: vec![OperatorApplication {
                         operator: Operator::Equal,
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_connect_column),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_connect_column),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(node_alias),
-                                column: Column(node_id_column),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(node_id_column),
                             }),
                         ],
                     }],
@@ -1176,11 +1268,11 @@ impl GraphJoinInference {
                 //         operands: vec![
                 //             LogicalExpr::PropertyAccessExp(PropertyAccess {
                 //                 table_alias: TableAlias(right_alias.to_string()),
-                //                 column: Column(right_node_id_column.clone()),
+                //                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column.clone()),
                 //             }),
                 //             LogicalExpr::PropertyAccessExp(PropertyAccess {
                 //                 table_alias: TableAlias(rel_alias.to_string()),
-                //                 column: Column(right_conn_with_rel.clone()),
+                //                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_conn_with_rel.clone()),
                 //             }),
                 //         ],
                 //     }],
@@ -1193,11 +1285,11 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(right_conn_with_rel),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_conn_with_rel),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
-                                column: Column(right_node_id_column),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column),
                             }),
                         ],
                     };
@@ -1253,33 +1345,80 @@ impl GraphJoinInference {
                         "    � ?? REVERSING JOIN ORDER: Joining LEFT node '{}' BEFORE relationship",
                         left_alias
                     );
-                    // Join LEFT node first
-                    let left_graph_join = Join {
-                        table_name: left_cte_name.clone(),
-                        table_alias: left_alias.to_string(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(left_alias.to_string()),
-                                    column: Column(left_node_id_column.clone()),
-                                }),
-                                LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(rel_alias.to_string()),
-                                    column: Column(rel_from_col.clone()),
-                                }),
-                            ],
-                        }],
-                        join_type: Self::determine_join_type(left_is_optional),
-                    };
-                    collected_graph_joins.push(left_graph_join);
-                    joined_entities.insert(left_alias.to_string());
-                    eprintln!("    � ? LEFT node '{}' joined first", left_alias);
+                    
+                    // DENORMALIZED EDGE CHECK: Register alias if node is on edge table
+                    let left_is_denormalized = is_node_denormalized_on_edge(
+                        &left_node_schema,
+                        &rel_schema,
+                        true  // is_from_node = true (LEFT connects to rel's from_node)
+                    );
+                    
+                    if left_is_denormalized {
+                        // Register denormalized alias so renderer can resolve properties correctly
+                        plan_ctx.register_denormalized_alias(
+                            left_alias.to_string(),
+                            rel_alias.to_string(),
+                            true,  // is_from_node
+                            left_label.clone()
+                        );
+                        eprintln!(
+                            "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (from_node)",
+                            left_alias, rel_alias
+                        );
+                        // DON'T mark as joined - denormalized nodes are virtual, not physical tables
+                    } else {
+                        // Traditional: Join LEFT node first
+                        let left_graph_join = Join {
+                            table_name: left_cte_name.clone(),
+                            table_alias: left_alias.to_string(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(left_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
+                                    }),
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(rel_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_from_col.clone()),
+                                    }),
+                                ],
+                            }],
+                            join_type: Self::determine_join_type(left_is_optional),
+                        };
+                        collected_graph_joins.push(left_graph_join);
+                        joined_entities.insert(left_alias.to_string());
+                        eprintln!("    � ? LEFT node '{}' joined first", left_alias);
+                    }
                 }
 
-                // Now push the relationship JOIN
-                collected_graph_joins.push(rel_graph_join);
-                joined_entities.insert(rel_alias.to_string());
+                // DENORMALIZED EDGE PATTERN: Check if BOTH nodes are denormalized
+                // If so, the relationship table IS the entire pattern (no JOINs needed!)
+                let left_is_denormalized = is_node_denormalized_on_edge(
+                    &left_node_schema,
+                    &rel_schema,
+                    true  // is_from_node
+                );
+                let right_is_denormalized = is_node_denormalized_on_edge(
+                    &right_node_schema,
+                    &rel_schema,
+                    false  // is_from_node
+                );
+                
+                if left_is_denormalized && right_is_denormalized {
+                    // FULLY DENORMALIZED: Both nodes are on the edge table!
+                    // No JOINs needed - relationship table is the complete pattern
+                    eprintln!(
+                        "    ✓ FULLY DENORMALIZED: Both '{}' and '{}' are on edge '{}' - NO JOINs needed!",
+                        left_alias, right_alias, rel_alias
+                    );
+                    // Mark relationship as joined (it will be the FROM anchor)
+                    joined_entities.insert(rel_alias.to_string());
+                } else {
+                    // Traditional or Mixed: Push the relationship JOIN
+                    collected_graph_joins.push(rel_graph_join);
+                    joined_entities.insert(rel_alias.to_string());
+                }
 
                 // Check if left node needs to be joined (if we didn't already do it above)
                 if !reverse_join_order {
@@ -1312,26 +1451,48 @@ impl GraphJoinInference {
                                 "    � ? LEFT is referenced but not joined, creating JOIN for '{}'",
                                 left_alias
                             );
-                            let left_graph_join = Join {
-                                table_name: left_cte_name.clone(),
-                                table_alias: left_alias.to_string(),
-                                joining_on: vec![OperatorApplication {
-                                    operator: Operator::Equal,
-                                    operands: vec![
-                                        LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: TableAlias(left_alias.to_string()),
-                                            column: Column(left_node_id_column.clone()),
-                                        }),
-                                        LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: TableAlias(rel_alias.to_string()),
-                                            column: Column(rel_from_col.clone()),
-                                        }),
-                                    ],
-                                }],
-                                join_type: Self::determine_join_type(left_is_optional),
-                            };
-                            collected_graph_joins.push(left_graph_join);
-                            joined_entities.insert(left_alias.to_string());
+                            
+                            // DENORMALIZED EDGE CHECK: Register alias if node is on edge table
+                            let left_is_denormalized = is_node_denormalized_on_edge(
+                                &left_node_schema,
+                                &rel_schema,
+                                true  // is_from_node = true
+                            );
+                            
+                            if left_is_denormalized {
+                                plan_ctx.register_denormalized_alias(
+                                    left_alias.to_string(),
+                                    rel_alias.to_string(),
+                                    true,  // is_from_node
+                                    left_label.clone()
+                                );
+                                eprintln!(
+                                    "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (from_node)",
+                                    left_alias, rel_alias
+                                );
+                                joined_entities.insert(left_alias.to_string());
+                            } else {
+                                let left_graph_join = Join {
+                                    table_name: left_cte_name.clone(),
+                                    table_alias: left_alias.to_string(),
+                                    joining_on: vec![OperatorApplication {
+                                        operator: Operator::Equal,
+                                        operands: vec![
+                                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(left_alias.to_string()),
+                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
+                                            }),
+                                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(rel_alias.to_string()),
+                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_from_col.clone()),
+                                            }),
+                                        ],
+                                    }],
+                                    join_type: Self::determine_join_type(left_is_optional),
+                                };
+                                collected_graph_joins.push(left_graph_join);
+                                joined_entities.insert(left_alias.to_string());
+                            }
                         }
                     } else {
                         // Left is already joined (from FROM clause or previous JOIN)
@@ -1361,32 +1522,54 @@ impl GraphJoinInference {
                     joined_entities.insert(right_alias.to_string());
                 } else {
                     eprintln!("    � ? Creating JOIN for RIGHT '{}'", right_alias);
-                    let right_graph_join = Join {
-                        table_name: right_cte_name.clone(),
-                        table_alias: right_alias.to_string(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(right_alias.to_string()),
-                                    column: Column(right_node_id_column.clone()),
-                                }),
-                                LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(rel_alias.to_string()),
-                                    column: Column(right_conn_with_rel.clone()),
-                                }),
-                            ],
-                        }],
-                        join_type: Self::determine_join_type(right_is_optional),
-                    };
-                    collected_graph_joins.push(right_graph_join);
-                    joined_entities.insert(right_alias.to_string());
+                    
+                    // DENORMALIZED EDGE CHECK: Register alias if node is on edge table
+                    let right_is_denormalized = is_node_denormalized_on_edge(
+                        &right_node_schema,
+                        &rel_schema,
+                        false  // is_from_node = false (RIGHT connects to rel's to_node)
+                    );
+                    
+                    if right_is_denormalized {
+                        plan_ctx.register_denormalized_alias(
+                            right_alias.to_string(),
+                            rel_alias.to_string(),
+                            false,  // is_from_node
+                            right_label.clone()
+                        );
+                        eprintln!(
+                            "    DENORMALIZED: Registered RIGHT alias '{}' → rel '{}' (to_node)",
+                            right_alias, rel_alias
+                        );
+                        joined_entities.insert(right_alias.to_string());
+                    } else {
+                        let right_graph_join = Join {
+                            table_name: right_cte_name.clone(),
+                            table_alias: right_alias.to_string(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(right_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column.clone()),
+                                    }),
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(rel_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_conn_with_rel.clone()),
+                                    }),
+                                ],
+                            }],
+                            join_type: Self::determine_join_type(right_is_optional),
+                        };
+                        collected_graph_joins.push(right_graph_join);
+                        joined_entities.insert(right_alias.to_string());
+                    }
                 }
                 Ok(())
             }
         } else
         // check if right is connected with edge list's from_node
-        if graph_context.rel.schema.from_node == graph_context.right.schema.table_name {
+        if rel_schema.from_node == right_node_schema.table_name {
             // this means rel.from_node = right and to_node = left
 
             // check if right is already joined
@@ -1399,18 +1582,18 @@ impl GraphJoinInference {
                 // No need to check direction here - it's already encoded in left_conn/right_conn!
 
                 let mut rel_graph_join = Join {
-                    table_name: rel_cte_name,
+                    table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
                     joining_on: vec![OperatorApplication {
                         operator: Operator::Equal,
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_to_col.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_to_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
-                                column: Column(right_node_id_column.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column.clone()),
                             }),
                         ],
                     }],
@@ -1426,11 +1609,11 @@ impl GraphJoinInference {
                 //         operands: vec![
                 //             LogicalExpr::PropertyAccessExp(PropertyAccess {
                 //                 table_alias: TableAlias(left_alias.to_string()),
-                //                 column: Column(left_node_id_column.clone()),
+                //                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
                 //             }),
                 //             LogicalExpr::PropertyAccessExp(PropertyAccess {
                 //                 table_alias: TableAlias(rel_alias.to_string()),
-                //                 column: Column(rel_to_col.clone()),
+                //                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_to_col.clone()),
                 //             }),
                 //         ],
                 //     }],
@@ -1443,11 +1626,11 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_from_col.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_from_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
-                                column: Column(left_node_id_column),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column),
                             }),
                         ],
                     };
@@ -1471,25 +1654,46 @@ impl GraphJoinInference {
                 // No need to insert again
 
                 // Always create JOIN for LEFT since the relationship references it
-                let left_graph_join = Join {
-                    table_name: left_cte_name.clone(),
-                    table_alias: left_alias.to_string(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(left_alias.to_string()),
-                                column: Column(left_node_id_column.clone()),
-                            }),
-                            LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_from_col),
-                            }),
-                        ],
-                    }],
-                    join_type: Self::determine_join_type(left_is_optional),
-                };
-                collected_graph_joins.push(left_graph_join);
+                
+                // DENORMALIZED EDGE CHECK: Register alias if node is on edge table
+                let left_is_denormalized = is_node_denormalized_on_edge(
+                    &left_node_schema,
+                    &rel_schema,
+                    true  // is_from_node = true
+                );
+                
+                if left_is_denormalized {
+                    plan_ctx.register_denormalized_alias(
+                        left_alias.to_string(),
+                        rel_alias.to_string(),
+                        true,  // is_from_node
+                        left_label.clone()
+                    );
+                    eprintln!(
+                        "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (from_node)",
+                        left_alias, rel_alias
+                    );
+                } else {
+                    let left_graph_join = Join {
+                        table_name: left_cte_name.clone(),
+                        table_alias: left_alias.to_string(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(left_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
+                                }),
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(rel_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_from_col),
+                                }),
+                            ],
+                        }],
+                        join_type: Self::determine_join_type(left_is_optional),
+                    };
+                    collected_graph_joins.push(left_graph_join);
+                }
                 joined_entities.insert(left_alias.to_string());
                 Ok(())
             } else {
@@ -1504,18 +1708,18 @@ impl GraphJoinInference {
                 // No need to check direction here - it's already encoded in left_conn/right_conn!
 
                 let mut rel_graph_join = Join {
-                    table_name: rel_cte_name,
+                    table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
                     joining_on: vec![OperatorApplication {
                         operator: Operator::Equal,
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_from_col.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_from_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
-                                column: Column(left_node_id_column.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
                             }),
                         ],
                     }],
@@ -1531,11 +1735,11 @@ impl GraphJoinInference {
                 //         operands: vec![
                 //             LogicalExpr::PropertyAccessExp(PropertyAccess {
                 //                 table_alias: TableAlias(right_alias.to_string()),
-                //                 column: Column(right_node_id_column.clone()),
+                //                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column.clone()),
                 //             }),
                 //             LogicalExpr::PropertyAccessExp(PropertyAccess {
                 //                 table_alias: TableAlias(rel_alias.to_string()),
-                //                 column: Column(rel_from_col.clone()),
+                //                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_from_col.clone()),
                 //             }),
                 //         ],
                 //     }],
@@ -1548,11 +1752,11 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_to_col.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_to_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
-                                column: Column(right_node_id_column),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column),
                             }),
                         ],
                     };
@@ -1574,25 +1778,46 @@ impl GraphJoinInference {
                 // No need to insert again
 
                 // Always create JOIN for RIGHT to complete the relationship chain
-                let right_graph_join = Join {
-                    table_name: right_cte_name.clone(),
-                    table_alias: right_alias.to_string(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(right_alias.to_string()),
-                                column: Column(right_node_id_column.clone()),
-                            }),
-                            LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_to_col),
-                            }),
-                        ],
-                    }],
-                    join_type: Self::determine_join_type(right_is_optional),
-                };
-                collected_graph_joins.push(right_graph_join);
+                
+                // DENORMALIZED EDGE CHECK: Register alias if node is on edge table
+                let right_is_denormalized = is_node_denormalized_on_edge(
+                    &right_node_schema,
+                    &rel_schema,
+                    true  // is_from_node = true (reversed branch: right connects to from_node)
+                );
+                
+                if right_is_denormalized {
+                    plan_ctx.register_denormalized_alias(
+                        right_alias.to_string(),
+                        rel_alias.to_string(),
+                        true,  // is_from_node (reversed)
+                        right_label.clone()
+                    );
+                    eprintln!(
+                        "    DENORMALIZED: Registered RIGHT alias '{}' → rel '{}' (from_node, reversed)",
+                        right_alias, rel_alias
+                    );
+                } else {
+                    let right_graph_join = Join {
+                        table_name: right_cte_name.clone(),
+                        table_alias: right_alias.to_string(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(right_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column.clone()),
+                                }),
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(rel_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_to_col),
+                                }),
+                            ],
+                        }],
+                        join_type: Self::determine_join_type(right_is_optional),
+                    };
+                    collected_graph_joins.push(right_graph_join);
+                }
                 joined_entities.insert(right_alias.to_string());
                 Ok(())
             }
@@ -1603,18 +1828,18 @@ impl GraphJoinInference {
             if joined_entities.contains(right_alias) {
                 // join the rel with right first and then join the left with rel
                 let mut rel_graph_join = Join {
-                    table_name: rel_cte_name,
+                    table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
                     joining_on: vec![OperatorApplication {
                         operator: Operator::Equal,
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column("to_id".to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column("to_id".to_string()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
-                                column: Column(right_node_id_column.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column.clone()),
                             }),
                         ],
                     }],
@@ -1630,11 +1855,11 @@ impl GraphJoinInference {
                 //         operands: vec![
                 //             LogicalExpr::PropertyAccessExp(PropertyAccess {
                 //                 table_alias: TableAlias(left_alias.to_string()),
-                //                 column: Column(left_node_id_column.clone()),
+                //                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
                 //             }),
                 //             LogicalExpr::PropertyAccessExp(PropertyAccess {
                 //                 table_alias: TableAlias(rel_alias.to_string()),
-                //                 column: Column(rel_from_col.clone()),
+                //                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_from_col.clone()),
                 //             }),
                 //         ],
                 //     }],
@@ -1647,11 +1872,11 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_from_col.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_from_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
-                                column: Column(left_node_id_column),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column),
                             }),
                         ],
                     };
@@ -1672,25 +1897,45 @@ impl GraphJoinInference {
 
                 // Only join the left node if it's actually referenced in the query
                 if left_is_referenced {
-                    let left_graph_join = Join {
-                        table_name: left_cte_name.clone(),
-                        table_alias: left_alias.to_string(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(left_alias.to_string()),
-                                    column: Column(left_node_id_column.clone()),
-                                }),
-                                LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(rel_alias.to_string()),
-                                    column: Column(rel_from_col.clone()),
-                                }),
-                            ],
-                        }],
-                        join_type: Self::determine_join_type(left_is_optional),
-                    };
-                    collected_graph_joins.push(left_graph_join);
+                    // DENORMALIZED EDGE CHECK: Register alias if node is on edge table
+                    let left_is_denormalized = is_node_denormalized_on_edge(
+                        &left_node_schema,
+                        &rel_schema,
+                        false  // is_from_node = false (since this is the reversed direction branch)
+                    );
+                    
+                    if left_is_denormalized {
+                        plan_ctx.register_denormalized_alias(
+                            left_alias.to_string(),
+                            rel_alias.to_string(),
+                            false,  // is_from_node (reversed)
+                            left_label.clone()
+                        );
+                        eprintln!(
+                            "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (to_node, reversed)",
+                            left_alias, rel_alias
+                        );
+                    } else {
+                        let left_graph_join = Join {
+                            table_name: left_cte_name.clone(),
+                            table_alias: left_alias.to_string(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(left_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
+                                    }),
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(rel_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_from_col.clone()),
+                                    }),
+                                ],
+                            }],
+                            join_type: Self::determine_join_type(left_is_optional),
+                        };
+                        collected_graph_joins.push(left_graph_join);
+                    }
                     joined_entities.insert(left_alias.to_string());
                 } else {
                     // Mark as joined even though we didn't create a JOIN
@@ -1703,18 +1948,18 @@ impl GraphJoinInference {
                 // join the relation with left side first and then
                 // the join the right side with relation
                 let mut rel_graph_join = Join {
-                    table_name: rel_cte_name,
+                    table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
                     joining_on: vec![OperatorApplication {
                         operator: Operator::Equal,
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column(rel_from_col.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_from_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
-                                column: Column(left_node_id_column.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
                             }),
                         ],
                     }],
@@ -1730,11 +1975,11 @@ impl GraphJoinInference {
                 //         operands: vec![
                 //             LogicalExpr::PropertyAccessExp(PropertyAccess {
                 //                 table_alias: TableAlias(right_alias.to_string()),
-                //                 column: Column(right_node_id_column.clone()),
+                //                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column.clone()),
                 //             }),
                 //             LogicalExpr::PropertyAccessExp(PropertyAccess {
                 //                 table_alias: TableAlias(rel_alias.to_string()),
-                //                 column: Column(rel_to_col.clone()),
+                //                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_to_col.clone()),
                 //             }),
                 //         ],
                 //     }],
@@ -1747,11 +1992,11 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: Column("to_id".to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column("to_id".to_string()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
-                                column: Column(right_node_id_column),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column),
                             }),
                         ],
                     };
@@ -1775,25 +2020,46 @@ impl GraphJoinInference {
                 eprintln!("    � ?? FIX: Joining RIGHT regardless of is_referenced for JOIN scope");
                 if true {
                     // Was: right_is_referenced
-                    let right_graph_join = Join {
-                        table_name: right_cte_name,
-                        table_alias: right_alias.to_string(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(right_alias.to_string()),
-                                    column: Column(right_node_id_column.clone()),
-                                }),
-                                LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(rel_alias.to_string()),
-                                    column: Column(rel_to_col.clone()),
-                                }),
-                            ],
-                        }],
-                        join_type: Self::determine_join_type(right_is_optional),
-                    };
-                    collected_graph_joins.push(right_graph_join);
+                    
+                    // DENORMALIZED EDGE CHECK: Register alias if node is on edge table
+                    let right_is_denormalized = is_node_denormalized_on_edge(
+                        &right_node_schema,
+                        &rel_schema,
+                        false  // is_from_node = false (RIGHT connects to to_node)
+                    );
+                    
+                    if right_is_denormalized {
+                        plan_ctx.register_denormalized_alias(
+                            right_alias.to_string(),
+                            rel_alias.to_string(),
+                            false,  // is_from_node
+                            right_label.clone()
+                        );
+                        eprintln!(
+                            "    DENORMALIZED: Registered RIGHT alias '{}' → rel '{}' (to_node)",
+                            right_alias, rel_alias
+                        );
+                    } else {
+                        let right_graph_join = Join {
+                            table_name: right_cte_name.clone(),
+                            table_alias: right_alias.to_string(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(right_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column.clone()),
+                                    }),
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(rel_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_to_col.clone()),
+                                    }),
+                                ],
+                            }],
+                            join_type: Self::determine_join_type(right_is_optional),
+                        };
+                        collected_graph_joins.push(right_graph_join);
+                    }
                     joined_entities.insert(right_alias.to_string());
                 } else {
                     // Mark as joined even though we didn't create a JOIN
@@ -1843,6 +2109,10 @@ mod tests {
                 view_parameters: None,
                 engine: None,
                 use_final: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
             },
         );
 
@@ -1862,6 +2132,10 @@ mod tests {
                 view_parameters: None,
                 engine: None,
                 use_final: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
             },
         );
 
@@ -1886,6 +2160,12 @@ mod tests {
                 view_parameters: None,
                 engine: None,
                 use_final: None,
+                edge_id: None,
+                type_column: None,
+                from_label_column: None,
+                to_label_column: None,
+                from_node_properties: None,
+                to_node_properties: None,
             },
         );
 
@@ -1910,6 +2190,12 @@ mod tests {
                 view_parameters: None,
                 engine: None,
                 use_final: None,
+                edge_id: None,
+                type_column: None,
+                from_label_column: None,
+                to_label_column: None,
+                from_node_properties: None,
+                to_node_properties: None,
             },
         );
 
@@ -2011,6 +2297,7 @@ mod tests {
         Arc::new(LogicalPlan::GraphNode(GraphNode {
             input,
             alias: alias.to_string(),
+            is_denormalized: false,
         }))
     }
 
@@ -2097,7 +2384,7 @@ mod tests {
             items: vec![ProjectionItem {
                 expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias("p1".to_string()),
-                    column: Column("name".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
                 }),
                 col_alias: None,
             }],
@@ -2154,9 +2441,9 @@ mod tests {
                                 assert_eq!(rel_prop.table_alias.0, "f1");
                                 // For outgoing relationship (p2)-[:FOLLOWS]->(p1),
                                 // p2 is the source (left), so it connects to from_id
-                                assert_eq!(rel_prop.column.0, "from_id");
+                                assert_eq!(rel_prop.column.raw(), "from_id");
                                 assert_eq!(left_prop.table_alias.0, "p2");
-                                assert_eq!(left_prop.column.0, "id");
+                                assert_eq!(left_prop.column.raw(), "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
@@ -2179,9 +2466,9 @@ mod tests {
                                 LogicalExpr::PropertyAccessExp(rel_prop),
                             ) => {
                                 assert_eq!(p1_prop.table_alias.0, "p1");
-                                assert_eq!(p1_prop.column.0, "id");
+                                assert_eq!(p1_prop.column.raw(), "id");
                                 assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.0, "to_id");
+                                assert_eq!(rel_prop.column.raw(), "to_id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands for p1 join"),
                         }
@@ -2226,7 +2513,7 @@ mod tests {
             items: vec![ProjectionItem {
                 expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias("p1".to_string()),
-                    column: Column("name".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
                 }),
                 col_alias: None,
             }],
@@ -2276,9 +2563,9 @@ mod tests {
                                 LogicalExpr::PropertyAccessExp(left_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "w1");
-                                assert_eq!(rel_prop.column.0, "from_id");
+                                assert_eq!(rel_prop.column.raw(), "from_id");
                                 assert_eq!(left_prop.table_alias.0, "p1");
-                                assert_eq!(left_prop.column.0, "id");
+                                assert_eq!(left_prop.column.raw(), "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
@@ -2336,7 +2623,7 @@ mod tests {
             items: vec![ProjectionItem {
                 expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias("p1".to_string()),
-                    column: Column("name".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
                 }),
                 col_alias: None,
             }],
@@ -2383,9 +2670,9 @@ mod tests {
                                 LogicalExpr::PropertyAccessExp(right_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.0, "to_id");
+                                assert_eq!(rel_prop.column.raw(), "to_id");
                                 assert_eq!(right_prop.table_alias.0, "p2");
-                                assert_eq!(right_prop.column.0, "id");
+                                assert_eq!(right_prop.column.raw(), "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
@@ -2428,7 +2715,7 @@ mod tests {
             items: vec![ProjectionItem {
                 expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias("p1".to_string()),
-                    column: Column("name".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
                 }),
                 col_alias: None,
             }],
@@ -2475,9 +2762,9 @@ mod tests {
                                 assert_eq!(rel_prop.table_alias.0, "f2");
                                 // For outgoing relationship (p1)-[:FOLLOWS]->(p3),
                                 // p1 is the source (left_connection), so it connects to from_id
-                                assert_eq!(rel_prop.column.0, "from_id");
+                                assert_eq!(rel_prop.column.raw(), "from_id");
                                 assert_eq!(left_prop.table_alias.0, "p1");
-                                assert_eq!(left_prop.column.0, "id");
+                                assert_eq!(left_prop.column.raw(), "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
@@ -2498,9 +2785,9 @@ mod tests {
                                 assert_eq!(rel_prop.table_alias.0, "f2");
                                 // For outgoing relationship (p1)-[:FOLLOWS]->(p3),
                                 // p3 is the target (right_connection), so it connects to to_id
-                                assert_eq!(rel_prop.column.0, "to_id");
+                                assert_eq!(rel_prop.column.raw(), "to_id");
                                 assert_eq!(right_prop.table_alias.0, "p3");
-                                assert_eq!(right_prop.column.0, "id");
+                                assert_eq!(right_prop.column.raw(), "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
@@ -2545,7 +2832,7 @@ mod tests {
             items: vec![ProjectionItem {
                 expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias("p1".to_string()),
-                    column: Column("name".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
                 }),
                 col_alias: None,
             }],
@@ -2598,9 +2885,9 @@ mod tests {
                                 LogicalExpr::PropertyAccessExp(right_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.0, "from_id");
+                                assert_eq!(rel_prop.column.raw(), "from_id");
                                 assert_eq!(right_prop.table_alias.0, "p2");
-                                assert_eq!(right_prop.column.0, "id");
+                                assert_eq!(right_prop.column.raw(), "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
@@ -2623,9 +2910,9 @@ mod tests {
                                 LogicalExpr::PropertyAccessExp(rel_prop),
                             ) => {
                                 assert_eq!(p1_prop.table_alias.0, "p1");
-                                assert_eq!(p1_prop.column.0, "id");
+                                assert_eq!(p1_prop.column.raw(), "id");
                                 assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.0, "to_id");
+                                assert_eq!(rel_prop.column.raw(), "to_id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands for p1 join"),
                         }
@@ -2688,7 +2975,7 @@ mod tests {
             items: vec![ProjectionItem {
                 expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias("p1".to_string()),
-                    column: Column("name".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
                 }),
                 col_alias: None,
             }],
@@ -2776,9 +3063,9 @@ mod tests {
                                             LogicalExpr::PropertyAccessExp(left_prop),
                                         ) => {
                                             assert_eq!(rel_prop.table_alias.0, "w1");
-                                            assert_eq!(rel_prop.column.0, "from_id");
+                                            assert_eq!(rel_prop.column.raw(), "from_id");
                                             assert_eq!(left_prop.table_alias.0, "c1");
-                                            assert_eq!(left_prop.column.0, "id");
+                                            assert_eq!(left_prop.column.raw(), "id");
                                         }
                                         _ => panic!(
                                             "Expected PropertyAccessExp operands for w1 join"
@@ -2807,9 +3094,9 @@ mod tests {
                                             LogicalExpr::PropertyAccessExp(rel_prop),
                                         ) => {
                                             assert_eq!(left_prop.table_alias.0, "p2");
-                                            assert_eq!(left_prop.column.0, "id");
+                                            assert_eq!(left_prop.column.raw(), "id");
                                             assert_eq!(rel_prop.table_alias.0, "w1");
-                                            assert_eq!(rel_prop.column.0, "to_id");
+                                            assert_eq!(rel_prop.column.raw(), "to_id");
                                         }
                                         _ => panic!(
                                             "Expected PropertyAccessExp operands for p2 join"
@@ -2834,9 +3121,9 @@ mod tests {
                                             assert_eq!(rel_prop.table_alias.0, "f1");
                                             // For (p2)-[f1:FOLLOWS]->(p1) with Direction::Outgoing,
                                             // p2 is the source, so it connects to from_id
-                                            assert_eq!(rel_prop.column.0, "from_id");
+                                            assert_eq!(rel_prop.column.raw(), "from_id");
                                             assert_eq!(left_prop.table_alias.0, "p2");
-                                            assert_eq!(left_prop.column.0, "id");
+                                            assert_eq!(left_prop.column.raw(), "id");
                                         }
                                         _ => panic!(
                                             "Expected PropertyAccessExp operands for f1 join"
@@ -2859,11 +3146,11 @@ mod tests {
                                             LogicalExpr::PropertyAccessExp(rel_prop),
                                         ) => {
                                             assert_eq!(left_prop.table_alias.0, "p1");
-                                            assert_eq!(left_prop.column.0, "id");
+                                            assert_eq!(left_prop.column.raw(), "id");
                                             assert_eq!(rel_prop.table_alias.0, "f1");
                                             // For (p2)-[f1:FOLLOWS]->(p1) with Direction::Outgoing,
                                             // p1 is the target, so it connects to to_id
-                                            assert_eq!(rel_prop.column.0, "to_id");
+                                            assert_eq!(rel_prop.column.raw(), "to_id");
                                         }
                                         _ => panic!(
                                             "Expected PropertyAccessExp operands for p1 join"

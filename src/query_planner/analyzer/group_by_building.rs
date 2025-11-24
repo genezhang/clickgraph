@@ -373,7 +373,7 @@ mod tests {
     fn create_property_access(table: &str, column: &str) -> LogicalExpr {
         LogicalExpr::PropertyAccessExp(PropertyAccess {
             table_alias: TableAlias(table.to_string()),
-            column: Column(column.to_string()),
+            column: crate::graph_catalog::expression_parser::PropertyValue::Column(column.to_string()),
         })
     }
 
@@ -429,7 +429,7 @@ mod tests {
                         match &group_by.expressions[0] {
                             LogicalExpr::PropertyAccessExp(prop_acc) => {
                                 assert_eq!(prop_acc.table_alias.0, "user");
-                                assert_eq!(prop_acc.column.0, "name");
+                                assert_eq!(prop_acc.column.raw(), "name");
                             }
                             _ => panic!("Expected PropertyAccess in group expressions"),
                         }
@@ -548,7 +548,7 @@ mod tests {
                         // First group expression: user.name
                         match &group_by.expressions[0] {
                             LogicalExpr::PropertyAccessExp(prop_acc) => {
-                                assert_eq!(prop_acc.column.0, "name");
+                                assert_eq!(prop_acc.column.raw(), "name");
                             }
                             _ => panic!("Expected PropertyAccess"),
                         }
@@ -556,7 +556,7 @@ mod tests {
                         // Second group expression: user.city
                         match &group_by.expressions[1] {
                             LogicalExpr::PropertyAccessExp(prop_acc) => {
-                                assert_eq!(prop_acc.column.0, "city");
+                                assert_eq!(prop_acc.column.raw(), "city");
                             }
                             _ => panic!("Expected PropertyAccess"),
                         }

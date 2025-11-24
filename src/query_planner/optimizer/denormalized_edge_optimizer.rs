@@ -132,6 +132,7 @@ impl DenormalizedEdgeOptimizer {
                     input: input.get_plan(),
                     joins: joins.joins.clone(),
                     optional_aliases: joins.optional_aliases.clone(),
+                    anchor_table: joins.anchor_table.clone(),
                 };
                 Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphJoins(
                     new_joins,

@@ -143,7 +143,7 @@ pub struct OperatorApplication {
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PropertyAccess {
     pub table_alias: TableAlias,
-    pub column: Column,
+    pub column: crate::graph_catalog::expression_parser::PropertyValue,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -261,7 +261,7 @@ impl<'a> From<open_cypher_parser::ast::PropertyAccess<'a>> for PropertyAccess {
         );
         PropertyAccess {
             table_alias: TableAlias(alias),
-            column: Column(column),
+            column: crate::graph_catalog::expression_parser::PropertyValue::Column(column),
         }
     }
 }

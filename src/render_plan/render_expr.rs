@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::plan_builder::RenderPlanBuilder;
+use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::render_plan::RenderPlan;
 
 use crate::query_planner::logical_expr::LogicalExpr;
@@ -79,7 +80,7 @@ pub struct TableAlias(pub String);
 pub struct ColumnAlias(pub String);
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct Column(pub String);
+pub struct Column(pub PropertyValue);
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Operator {
@@ -156,13 +157,7 @@ impl TryFrom<LogicalExpr> for RenderExpr {
             ),
             LogicalExpr::AggregateFnCall(agg) => RenderExpr::AggregateFnCall(agg.try_into()?),
             LogicalExpr::ScalarFnCall(fn_call) => RenderExpr::ScalarFnCall(fn_call.try_into()?),
-            LogicalExpr::PropertyAccessExp(pa) => {
-                println!(
-                    "DEBUG TryFrom: Converting PropertyAccessExp variant - alias={}, column={}",
-                    pa.table_alias.0, pa.column.0
-                );
-                RenderExpr::PropertyAccessExp(pa.try_into()?)
-            }
+            LogicalExpr::PropertyAccessExp(pa) => RenderExpr::PropertyAccessExp(pa.try_into()?),
             LogicalExpr::OperatorApplicationExp(op) => {
                 RenderExpr::OperatorApplicationExp(op.try_into()?)
             }
@@ -236,7 +231,7 @@ impl TryFrom<LogicalColumn> for Column {
     type Error = RenderBuildError;
 
     fn try_from(col: LogicalColumn) -> Result<Self, Self::Error> {
-        Ok(Column(col.0))
+        Ok(Column(PropertyValue::Column(col.0.clone())))
     }
 }
 
@@ -244,16 +239,10 @@ impl TryFrom<LogicalPropertyAccess> for PropertyAccess {
     type Error = RenderBuildError;
 
     fn try_from(pa: LogicalPropertyAccess) -> Result<Self, Self::Error> {
-        println!(
-            "DEBUG TryFrom PropertyAccess: Converting LogicalPropertyAccess - table_alias={}, column={}",
-            pa.table_alias.0, pa.column.0
-        );
-        let prop_acc = PropertyAccess {
+        Ok(PropertyAccess {
             table_alias: pa.table_alias.try_into()?,
-            column: pa.column.try_into()?,
-        };
-        println!("DEBUG TryFrom PropertyAccess: Successfully converted to PropertyAccess");
-        Ok(prop_acc)
+            column: Column(pa.column), // Wrap PropertyValue in Column
+        })
     }
 }
 
