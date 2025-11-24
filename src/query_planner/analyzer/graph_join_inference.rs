@@ -234,9 +234,10 @@ impl GraphJoinInference {
     fn reorder_joins_by_dependencies(
         joins: Vec<Join>,
         optional_aliases: &std::collections::HashSet<String>,
-    ) -> Vec<Join> {
+    ) -> (Option<String>, Vec<Join>) {
         if joins.is_empty() {
-            return joins;
+            // No joins means denormalized pattern - no anchor needed (will use relationship table)
+            return (None, joins);
         }
 
         eprintln!("\n?? REORDERING {} JOINS by dependencies", joins.len());
@@ -362,7 +363,17 @@ impl GraphJoinInference {
                 .map(|j| &j.table_alias)
                 .collect::<Vec<_>>()
         );
-        ordered_joins
+
+        // Return the anchor table (first one found, or None if all optional)
+        let anchor = if available_tables.is_empty() {
+            None
+        } else {
+            // Prefer a required table if available
+            available_tables.iter().next().cloned()
+        };
+
+        eprintln!("  ?? ANCHOR TABLE for FROM clause: {:?}\n", anchor);
+        (anchor, ordered_joins)
     }
 
     /// Extract table aliases referenced in an expression
@@ -405,7 +416,7 @@ impl GraphJoinInference {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Projection(_) => {
                 // Reorder JOINs before creating GraphJoins to ensure proper dependency order
-                let reordered_joins = Self::reorder_joins_by_dependencies(
+                let (anchor_table, reordered_joins) = Self::reorder_joins_by_dependencies(
                     collected_graph_joins.clone(),
                     &optional_aliases,
                 );
@@ -415,6 +426,7 @@ impl GraphJoinInference {
                     input: logical_plan.clone(),
                     joins: reordered_joins,
                     optional_aliases,
+                    anchor_table,
                 })))
             }
             LogicalPlan::GraphNode(graph_node) => {

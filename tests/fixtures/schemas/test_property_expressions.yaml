@@ -1,0 +1,62 @@
+graph_schema:
+  nodes:
+    - label: User
+      database: brahmand
+      table: users_expressions_test
+      id_column: user_id
+      property_mappings:
+        user_id: user_id
+        
+        # String concatenation
+        full_name: "concat(first_name, ' ', last_name)"
+        display_name: "concat(first_name, ' (', city, ')')"
+        
+        # Date calculations
+        account_age_days: "dateDiff('day', registration_date, today())"
+        is_recent_user: "registration_date >= today() - INTERVAL 30 DAY"
+        
+        # Type conversions
+        birth_date: "toDate(birth_date_str)"
+        age_int: "toUInt8(age_str)"
+        score_float: "toFloat64(score_str)"
+        
+        # Conditional logic - CASE WHEN
+        tier: "CASE WHEN score >= 1000 THEN 'gold' WHEN score >= 500 THEN 'silver' ELSE 'bronze' END"
+        age_group: "CASE WHEN age < 18 THEN 'minor' WHEN age < 65 THEN 'adult' ELSE 'senior' END"
+        
+        # Conditional logic - multiIf (ClickHouse optimized)
+        status: "multiIf(is_deleted = 1, 'deleted', is_banned = 1, 'banned', is_active = 0, 'inactive', 'active')"
+        priority: "multiIf(score >= 1000, 'high', score >= 500, 'medium', 'low')"
+        
+        # JSON extraction
+        metadata_key: "JSONExtractString(metadata_json, 'subscription_type')"
+        
+        # Array operations
+        tags_array: "splitByChar(',', tags_str)"
+        tag_count: "length(splitByChar(',', tags_str))"
+        
+        # Mathematical operations
+        score_normalized: "score / 1000.0"
+        bonus_score: "score + 100"
+        
+        # Boolean conversions
+        is_premium_bool: "is_premium = 1"
+        has_metadata: "metadata_json != ''"
+
+  relationships:
+    - type: FOLLOWS
+      database: brahmand
+      table: follows_expressions_test
+      from_id: follower_id
+      to_id: followed_id
+      edge_id: follow_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        follow_date: follow_date
+        
+        # Edge property expressions
+        follow_age_days: "dateDiff('day', follow_date, today())"
+        is_recent_follow: "follow_date >= today() - INTERVAL 7 DAY"
+        relationship_strength: "interaction_count / 100.0"
+        strength_tier: "CASE WHEN interaction_count >= 100 THEN 'strong' WHEN interaction_count >= 10 THEN 'moderate' ELSE 'weak' END"

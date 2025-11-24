@@ -1,0 +1,56 @@
+# Polymorphic Edge Table Example
+# This schema demonstrates a single table containing multiple edge types
+
+name: social_polymorphic
+version: "1.0"
+
+graph_schema:
+  nodes:
+    - label: User
+      database: brahmand
+      table: users
+      id_column: user_id
+      property_mappings:
+        name: username
+        email: email
+        joined: created_at
+
+    - label: Post
+      database: brahmand
+      table: posts
+      id_column: post_id
+      property_mappings:
+        title: title
+        content: body
+        created: created_at
+
+  edges:
+    # Polymorphic edge - generates one EdgeSchema per type_value
+    - polymorphic: true
+      database: brahmand
+      table: interactions
+      from_id: from_id
+      to_id: to_id
+      
+      # Discovery columns (matched at query time)
+      type_column: interaction_type
+      from_label_column: from_type
+      to_label_column: to_type
+      
+      # Explicit list of edge types (REQUIRED - no DB scan!)
+      # One EdgeSchema generated per type
+      # Node types matched at query time via from_type/to_type columns
+      type_values:
+        - FOLLOWS
+        - LIKES
+        - AUTHORED
+        - COMMENTED
+        - SHARED
+      
+      # Composite edge ID (allow multiple interactions of same type)
+      edge_id: [from_id, to_id, interaction_type, timestamp]
+      
+      # Shared properties across all edge types
+      property_mappings:
+        created_at: timestamp
+        weight: interaction_weight

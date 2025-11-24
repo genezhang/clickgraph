@@ -1287,38 +1287,26 @@ impl RenderPlanBuilder for LogicalPlan {
                             // Return the end node - start node will be added as CROSS JOIN
                             from_table_to_view_ref(end_from)
                         } else {
-                            // Single relationship type: Use anchor node logic for multi-hop
-                            // FIX: For multi-hop queries, find the anchor node
-                            // Collect all relationship connections to find which node is the anchor
-                            let all_connections =
-                                get_all_relationship_connections(&graph_joins.input);
+                            // Single relationship type: Use anchor table from GraphJoins
+                            // The anchor was already computed during join reordering
+                            let anchor_alias = &graph_joins.anchor_table;
 
-                            if let Some(anchor_alias) =
-                                find_anchor_node(&all_connections, &graph_joins.optional_aliases)
-                            {
-                                println!(
-                                    "DEBUG: GraphJoins.extract_from() - found anchor node: {}",
+                            if let Some(anchor_alias) = anchor_alias {
+                                log::info!(
+                                    "Using anchor table from GraphJoins: {}",
                                     anchor_alias
                                 );
                                 // Get the table name for the anchor node by recursively finding the GraphNode with matching alias
                                 if let Some(table_name) =
-                                    find_table_name_for_alias(&graph_joins.input, &anchor_alias)
+                                    find_table_name_for_alias(&graph_joins.input, anchor_alias)
                                 {
-                                    println!(
-                                        "DEBUG: GraphJoins.extract_from() - found table_name for anchor '{}': {}",
-                                        anchor_alias, table_name
-                                    );
                                     Some(super::ViewTableRef {
                                         source: std::sync::Arc::new(LogicalPlan::Empty),
                                         name: table_name,
-                                        alias: Some(anchor_alias),
+                                        alias: Some(anchor_alias.clone()),
                                         use_final: false,
                                     })
                                 } else {
-                                    println!(
-                                        "DEBUG: GraphJoins.extract_from() - could not find table_name for anchor '{}', falling back to first join",
-                                        anchor_alias
-                                    );
                                     // Fallback to first join
                                     if let Some(first_join) = graph_joins.joins.first() {
                                         Some(super::ViewTableRef {
@@ -1332,7 +1320,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     }
                                 }
                             } else {
-                                // No connections found, use first join
+                                // No anchor found, use first join
                                 if let Some(first_join) = graph_joins.joins.first() {
                                     Some(super::ViewTableRef {
                                         source: std::sync::Arc::new(LogicalPlan::Empty),
@@ -1346,21 +1334,18 @@ impl RenderPlanBuilder for LogicalPlan {
                             }
                         }
                     } else {
-                        // No labels: Use anchor node logic for multi-hop
-                        // FIX: Same logic - find anchor node for multi-hop
-                        let all_connections = get_all_relationship_connections(&graph_joins.input);
+                        // No labels: Use anchor table from GraphJoins
+                        let anchor_alias = &graph_joins.anchor_table;
 
-                        if let Some(anchor_alias) =
-                            find_anchor_node(&all_connections, &graph_joins.optional_aliases)
-                        {
+                        if let Some(anchor_alias) = anchor_alias {
                             // Get the table name for the anchor node
                             if let Some(table_name) =
-                                find_table_name_for_alias(&graph_joins.input, &anchor_alias)
+                                find_table_name_for_alias(&graph_joins.input, anchor_alias)
                             {
                                 Some(super::ViewTableRef {
                                     source: std::sync::Arc::new(LogicalPlan::Empty),
                                     name: table_name,
-                                    alias: Some(anchor_alias),
+                                    alias: Some(anchor_alias.clone()),
                                     use_final: false,
                                 })
                             } else {

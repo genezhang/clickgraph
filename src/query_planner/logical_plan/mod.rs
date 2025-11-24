@@ -276,6 +276,11 @@ pub struct GraphJoins {
 
     /// Aliases that came from OPTIONAL MATCH clauses (for correct FROM table selection)
     pub optional_aliases: std::collections::HashSet<String>,
+
+    /// The anchor table for the FROM clause (computed during join reordering)
+    /// This is the table referenced by joins but not in the joins list itself
+    /// For denormalized patterns with no joins, this will be None (use relationship table)
+    pub anchor_table: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -588,6 +593,7 @@ impl GraphJoins {
                     input: new_input.clone(),
                     joins: self.joins.clone(),
                     optional_aliases: self.optional_aliases.clone(),
+                    anchor_table: self.anchor_table.clone(),
                 });
                 Transformed::Yes(Arc::new(new_graph_joins))
             }

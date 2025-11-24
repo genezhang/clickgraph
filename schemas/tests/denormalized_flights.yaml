@@ -1,0 +1,48 @@
+# Test Schema for Denormalized Edge Table Integration Tests
+# Demonstrates denormalized node properties in edge table (OnTime-style)
+
+name: denormalized_flights_test
+version: "1.0"
+
+graph_schema:
+  nodes:
+    # Airport is a virtual node - all data comes from the flights table
+    - label: Airport
+      database: test_integration
+      table: flights
+      id_column: code  # Logical property name for the ID
+      property_mappings: {}  # Empty - all properties are denormalized
+      
+      # Denormalized origin (from_node) properties
+      from_node_properties:
+        code: origin_code  # Airport.code (the ID) → flights.origin_code
+        city: origin_city
+        state: origin_state
+      
+      # Denormalized destination (to_node) properties
+      to_node_properties:
+        code: dest_code  # Airport.code (the ID) → flights.dest_code
+        city: dest_city
+        state: dest_state
+
+  relationships:
+    # FLIGHT relationship - node properties declared above
+    - type: FLIGHT
+      database: test_integration
+      table: flights
+      from_id: origin_code
+      to_id: dest_code
+      from_node: Airport
+      to_node: Airport
+      
+      # Composite edge ID (flights can have same route multiple times per day)
+      # This demonstrates cycle prevention with composite IDs
+      edge_id: [flight_id, flight_number]
+      
+      # Edge properties
+      property_mappings:
+        flight_num: flight_number
+        carrier: airline
+        departure_time: dep_time
+        arrival_time: arr_time
+        distance: distance_miles

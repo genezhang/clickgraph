@@ -1,0 +1,32 @@
+database: "brahmand"
+node_views:
+  User:
+    table: "users_bench"
+    node_id:
+      column: "user_id"
+    property_mappings:
+      user_id: "user_id"
+      name: "full_name"  # Simple column mapping
+      email: "email_address"
+      registration_date: "registration_date"
+      is_active: "is_active"
+      country: "country"
+      city: "city"
+      # Expression: concat first and last name
+      full_display_name: "concat(first_name, ' ', last_name)"
+      # Expression: Math operation
+      age_in_months: "age_years * 12"
+      # Expression: Array indexing
+      primary_tag: "tags[1]"
+
+relationship_views:
+  FOLLOWS:
+    table: "user_follows_bench"
+    from_node: "User"
+    to_node: "User"
+    from_id:
+      column: "follower_id"
+    to_id:
+      column: "followed_id"
+    property_mappings:
+      follow_date: "follow_date"

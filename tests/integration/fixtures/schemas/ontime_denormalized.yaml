@@ -1,0 +1,22 @@
+graph_schema:
+  database: test_integration
+  nodes:
+    - label: Airport
+      table: flights
+      is_denormalized: true
+      from_node_properties:
+        code: Origin
+        city: OriginCityName
+      to_node_properties:
+        code: Dest
+        city: DestCityName
+      node_id:
+        column: Origin
+
+  edges:
+    - type: FLIGHT
+      table: flights
+      from_node: Airport
+      to_node: Airport
+      from_id: Origin
+      to_id: Dest
