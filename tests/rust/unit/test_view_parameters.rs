@@ -156,6 +156,12 @@ property_mappings:
             id_column: "user_id".to_string(),
             properties: props,
             view_parameters: Some(vec!["tenant_id".to_string()]),
+            use_final: None,
+            auto_discover_columns: false,
+            exclude_columns: vec![],
+            naming_convention: "snake_case".to_string(),
+            from_node_properties: None,
+            to_node_properties: None,
         };
 
         // Serialize to YAML

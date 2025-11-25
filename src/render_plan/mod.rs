@@ -1,3 +1,4 @@
+pub mod alias_resolver;
 pub mod cte_extraction;
 pub mod cte_generation;
 mod expression_utils;

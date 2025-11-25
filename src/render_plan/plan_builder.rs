@@ -1452,7 +1452,9 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Empty => None,
             LogicalPlan::Scan(_) => None,
             LogicalPlan::ViewScan(scan) => {
-                // Extract view_filter if present (filters injected by optimizer)
+                // ViewScan.view_filter should be None after CleanupViewScanFilters optimizer.
+                // All filters are consolidated in GraphRel.where_predicate.
+                // This case handles standalone ViewScans outside of GraphRel contexts.
                 if let Some(ref filter) = scan.view_filter {
                     let mut expr: RenderExpr = filter.clone().try_into()?;
                     // Apply property mapping to the filter expression
@@ -1462,7 +1464,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     None
                 }
             }
-            LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_filters()?,
+            LogicalPlan::GraphNode(graph_node) => {
+                // GraphNode's filters are handled by the parent GraphRel.
+                // Don't extract from the input ViewScan to avoid duplicates.
+                None
+            }
             LogicalPlan::GraphRel(graph_rel) => {
                 log::trace!("GraphRel node detected, collecting filters from ALL nested where_predicates");
 
@@ -1486,14 +1492,9 @@ impl RenderPlanBuilder for LogicalPlan {
                         LogicalPlan::GraphNode(gn) => {
                             predicates.extend(collect_graphrel_predicates(&gn.input));
                         }
-                        LogicalPlan::ViewScan(scan) => {
-                            // 🔧 FIX: Collect view_filter from ViewScan for denormalized queries
-                            if let Some(ref filter) = scan.view_filter {
-                                if let Ok(render_expr) = RenderExpr::try_from(filter.clone()) {
-                                    println!("DEBUG: collect_graphrel_predicates - Found ViewScan filter: {:?}", filter);
-                                    predicates.push(render_expr);
-                                }
-                            }
+                        LogicalPlan::ViewScan(_scan) => {
+                            // ViewScan.view_filter should be empty after CleanupViewScanFilters optimizer
+                            // All filters come from GraphRel.where_predicate
                         }
                         // Don't recurse into other node types - only GraphRel/GraphNode/ViewScan
                         _ => {}
@@ -1501,7 +1502,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     predicates
                 }
 
-                let mut all_predicates = collect_graphrel_predicates(&LogicalPlan::GraphRel(graph_rel.clone()));
+                let all_predicates = collect_graphrel_predicates(&LogicalPlan::GraphRel(graph_rel.clone()));
+                
+                let mut all_predicates = all_predicates;
                 
                 // 🚀 ADD CYCLE PREVENTION for fixed-length paths
                 if let Some(spec) = &graph_rel.variable_length {
@@ -2725,8 +2728,16 @@ impl RenderPlanBuilder for LogicalPlan {
             std::mem::discriminant(self)
         );
 
+        // CRITICAL: Apply alias transformation BEFORE rendering
+        // This rewrites denormalized node aliases to use relationship table aliases
+        let transformed_plan = {
+            use crate::render_plan::alias_resolver::AliasResolverContext;
+            let alias_context = AliasResolverContext::from_logical_plan(self);
+            alias_context.transform_plan(self.clone())
+        };
+
         // Special case for PageRank - it generates complete SQL directly
-        if let LogicalPlan::PageRank(_pagerank) = self {
+        if let LogicalPlan::PageRank(_pagerank) = &transformed_plan {
             // For PageRank, we create a minimal RenderPlan that will be handled specially
             // The actual SQL generation happens in the server handler
             return Ok(RenderPlan {
@@ -2751,7 +2762,7 @@ impl RenderPlanBuilder for LogicalPlan {
         // Only use CTEs for variable-length paths and complex cases
         // Try to build a simple JOIN-based plan first
         println!("DEBUG: Trying try_build_join_based_plan");
-        match self.try_build_join_based_plan() {
+        match transformed_plan.try_build_join_based_plan() {
             Ok(plan) => {
                 println!("DEBUG: try_build_join_based_plan succeeded");
                 return Ok(plan);
@@ -2768,7 +2779,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
         log::trace!(
             "Starting render plan generation for plan type: {}",
-            match self {
+            match &transformed_plan {
                 LogicalPlan::Empty => "Empty",
                 LogicalPlan::Scan(_) => "Scan",
                 LogicalPlan::ViewScan(_) => "ViewScan",
@@ -2788,13 +2799,13 @@ impl RenderPlanBuilder for LogicalPlan {
         );
 
         // First pass: analyze what properties are needed
-        let mut context = analyze_property_requirements(self, schema);
+        let mut context = analyze_property_requirements(&transformed_plan, schema);
 
         let extracted_ctes: Vec<Cte>;
         let mut final_from: Option<FromTable>;
         let final_filters: Option<RenderExpr>;
 
-        let last_node_cte_opt = self.extract_last_node_cte()?;
+        let last_node_cte_opt = transformed_plan.extract_last_node_cte()?;
 
         if let Some(last_node_cte) = last_node_cte_opt {
             // Extract the last part after splitting by '_'
@@ -2803,7 +2814,7 @@ impl RenderPlanBuilder for LogicalPlan {
             let last_node_alias = parts.last().ok_or(RenderBuildError::MalformedCTEName)?;
 
             // Second pass: generate CTEs with full context
-            extracted_ctes = self.extract_ctes_with_context(last_node_alias, &mut context)?;
+            extracted_ctes = transformed_plan.extract_ctes_with_context(last_node_alias, &mut context)?;
 
             // Check if we have a variable-length CTE (it will be a recursive RawSql CTE)
             let has_variable_length_cte = extracted_ctes.iter().any(|cte| {
@@ -2845,7 +2856,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 let last_node_filters_opt = clean_last_node_filters(cte_filters);
 
-                let final_filters_opt = self.extract_final_filters()?;
+                let final_filters_opt = transformed_plan.extract_final_filters()?;
 
                 let final_combined_filters = if let (Some(final_filters), Some(last_node_filters)) =
                     (&final_filters_opt, &last_node_filters_opt)
@@ -2867,7 +2878,7 @@ impl RenderPlanBuilder for LogicalPlan {
         } else {
             // No CTE wrapper, but check for variable-length paths which generate CTEs directly
             // Extract CTEs with a dummy alias and context (variable-length doesn't use the alias)
-            extracted_ctes = self.extract_ctes_with_context("_", &mut context)?;
+            extracted_ctes = transformed_plan.extract_ctes_with_context("_", &mut context)?;
 
             // Check if we have a variable-length CTE (recursive or chained join)
             // Both types use RawSql content and need special FROM clause handling
@@ -2904,19 +2915,19 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             } else {
                 // Normal case: no CTEs, extract FROM, joins, and filters normally
-                final_from = self.extract_from()?;
-                final_filters = self.extract_filters()?;
+                final_from = transformed_plan.extract_from()?;
+                final_filters = transformed_plan.extract_filters()?;
             }
         }
 
-        let final_select_items = self.extract_select_items()?;
+        let final_select_items = transformed_plan.extract_select_items()?;
 
         // NOTE: Removed rewrite for select_items in variable-length paths to keep a.*, b.*
 
-        let mut extracted_joins = self.extract_joins()?;
+        let mut extracted_joins = transformed_plan.extract_joins()?;
 
         // For variable-length paths, add joins to get full user data
-        if let Some((start_alias, end_alias)) = has_variable_length_rel(self) {
+        if let Some((start_alias, end_alias)) = has_variable_length_rel(&transformed_plan) {
             // IMPORTANT: Remove any joins that were extracted from the GraphRel itself
             // The CTE already handles the path traversal, so we only want to join the
             // endpoint nodes to the CTE result. Keeping the GraphRel joins causes
@@ -3014,7 +3025,7 @@ impl RenderPlanBuilder for LogicalPlan {
             .find(|cte| cte.cte_name.starts_with("rel_") && !cte.is_recursive)
         {
             // Check if this is actually a multi-relationship query (has UNION in plan)
-            if has_multiple_relationship_types(self) {
+            if has_multiple_relationship_types(&transformed_plan) {
                 eprintln!(
                     "DEBUG: Multi-relationship query detected! Clearing extracted joins and rebuilding..."
                 );
@@ -3124,7 +3135,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
         // For variable-length (recursive) CTEs, keep previous logic
-        if let Some(last_node_cte) = self.extract_last_node_cte().ok().flatten() {
+        if let Some(last_node_cte) = transformed_plan.extract_last_node_cte().ok().flatten() {
             if let super::CteContent::RawSql(_) = &last_node_cte.content {
                 let cte_name = last_node_cte.cte_name.clone();
                 if cte_name.starts_with("rel_") {
@@ -3136,11 +3147,11 @@ impl RenderPlanBuilder for LogicalPlan {
         }
         extracted_joins.sort_by_key(|join| join.joining_on.len());
 
-        let mut extracted_group_by_exprs = self.extract_group_by()?;
+        let mut extracted_group_by_exprs = transformed_plan.extract_group_by()?;
 
         // Rewrite GROUP BY expressions for variable-length paths
-        if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
-            let path_var = get_path_variable(self);
+        if let Some((left_alias, right_alias)) = has_variable_length_rel(&transformed_plan) {
+            let path_var = get_path_variable(&transformed_plan);
             extracted_group_by_exprs = extracted_group_by_exprs
                 .into_iter()
                 .map(|expr| {
@@ -3154,15 +3165,15 @@ impl RenderPlanBuilder for LogicalPlan {
                 .collect();
         }
 
-        let mut extracted_order_by = self.extract_order_by()?;
+        let mut extracted_order_by = transformed_plan.extract_order_by()?;
 
         // Rewrite ORDER BY expressions for variable-length paths that use recursive CTEs
         // Fixed-length patterns use inline JOINs, so rewriting is not needed (a.name, c.name work fine)
         // Variable-length patterns use recursive CTEs (t.start_id, t.end_id), so rewrite to t.start_name
-        if let Some((left_alias, right_alias)) = has_variable_length_rel(self) {
+        if let Some((left_alias, right_alias)) = has_variable_length_rel(&transformed_plan) {
             // Check if this is truly variable-length (needs recursive CTE)
             // Fixed-length (*2, *3) use inline JOINs and don't need rewriting
-            let needs_cte = if let Some(spec) = get_variable_length_spec(self) {
+            let needs_cte = if let Some(spec) = get_variable_length_spec(&transformed_plan) {
                 spec.exact_hop_count().is_none() || get_shortest_path_mode(self).is_some()
             } else {
                 false
@@ -3170,7 +3181,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
             // Only rewrite ORDER BY for patterns that use recursive CTEs
             if needs_cte {
-                let path_var = get_path_variable(self);
+                let path_var = get_path_variable(&transformed_plan);
                 extracted_order_by = extracted_order_by
                     .into_iter()
                     .map(|item| OrderByItem {
@@ -3186,11 +3197,11 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
-        let extracted_limit_item = self.extract_limit();
+        let extracted_limit_item = transformed_plan.extract_limit();
 
-        let extracted_skip_item = self.extract_skip();
+        let extracted_skip_item = transformed_plan.extract_skip();
 
-        let extracted_union = self.extract_union()?;
+        let extracted_union = transformed_plan.extract_union()?;
 
         // Validate render plan before construction (for CTE path)
         if final_select_items.is_empty() {

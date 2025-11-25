@@ -43,6 +43,36 @@ pub struct ViewScan {
     /// Whether this node is denormalized (stored on edge table)
     /// Set from schema during ViewScan creation
     pub is_denormalized: bool,
+    
+    // ===== Denormalized node support =====
+    
+    /// Property mappings when this node appears as FROM node in a relationship
+    /// Only used for denormalized nodes
+    /// Example: {"code": Column("Origin"), "city": Column("OriginCityName")}
+    pub from_node_properties: Option<HashMap<String, PropertyValue>>,
+    
+    /// Property mappings when this node appears as TO node in a relationship
+    /// Only used for denormalized nodes
+    /// Example: {"code": Column("Dest"), "city": Column("DestCityName")}
+    pub to_node_properties: Option<HashMap<String, PropertyValue>>,
+    
+    // ===== Polymorphic edge support =====
+    
+    /// Column containing edge type discriminator (for polymorphic edges)
+    /// Example: Some("interaction_type")
+    pub type_column: Option<String>,
+    
+    /// Valid type values for this edge (for polymorphic edges)
+    /// Example: Some(vec!["FOLLOWS", "LIKES", "AUTHORED"])
+    pub type_values: Option<Vec<String>>,
+    
+    /// Column containing from-node label (for polymorphic edges)
+    /// Example: Some("from_type")
+    pub from_label_column: Option<String>,
+    
+    /// Column containing to-node label (for polymorphic edges)
+    /// Example: Some("to_type")
+    pub to_label_column: Option<String>,
 }
 
 impl ViewScan {
@@ -69,6 +99,12 @@ impl ViewScan {
             view_parameter_values: None,
             use_final: false, // Default: no FINAL
             is_denormalized: false, // Default: not denormalized
+            from_node_properties: None,
+            to_node_properties: None,
+            type_column: None,
+            type_values: None,
+            from_label_column: None,
+            to_label_column: None,
         }
     }
 
@@ -96,6 +132,12 @@ impl ViewScan {
             view_parameter_values: None,
             use_final: false, // Default: no FINAL
             is_denormalized: false, // Default: not denormalized
+            from_node_properties: None,
+            to_node_properties: None,
+            type_column: None,
+            type_values: None,
+            from_label_column: None,
+            to_label_column: None,
         }
     }
 
@@ -124,6 +166,12 @@ impl ViewScan {
             view_parameter_values: None,
             use_final: false, // Default: no FINAL
             is_denormalized: false, // Default: not denormalized (for edges)
+            from_node_properties: None,
+            to_node_properties: None,
+            type_column: None,
+            type_values: None,
+            from_label_column: None,
+            to_label_column: None,
         }
     }
 
@@ -153,6 +201,12 @@ impl ViewScan {
             view_parameter_values: None,
             use_final: false, // Default: no FINAL
             is_denormalized: false, // Default: not denormalized (for edges)
+            from_node_properties: None,
+            to_node_properties: None,
+            type_column: None,
+            type_values: None,
+            from_label_column: None,
+            to_label_column: None,
         }
     }
 
@@ -190,6 +244,12 @@ impl ViewScan {
             view_parameter_values: self.view_parameter_values.clone(),
             use_final: self.use_final, // Preserve use_final setting
             is_denormalized: self.is_denormalized, // Preserve denormalized flag
+            from_node_properties: self.from_node_properties.clone(),
+            to_node_properties: self.to_node_properties.clone(),
+            type_column: self.type_column.clone(),
+            type_values: self.type_values.clone(),
+            from_label_column: self.from_label_column.clone(),
+            to_label_column: self.to_label_column.clone(),
         }
     }
 

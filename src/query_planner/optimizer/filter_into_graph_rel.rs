@@ -216,6 +216,12 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 view_parameter_values: view_scan.view_parameter_values.clone(),
                                 use_final: view_scan.use_final,
                                 is_denormalized: view_scan.is_denormalized,
+                                from_node_properties: view_scan.from_node_properties.clone(),
+                                to_node_properties: view_scan.to_node_properties.clone(),
+                                type_column: view_scan.type_column.clone(),
+                                type_values: view_scan.type_values.clone(),
+                                from_label_column: view_scan.from_label_column.clone(),
+                                to_label_column: view_scan.to_label_column.clone(),
                             },
                         )));
 
@@ -263,6 +269,12 @@ impl OptimizerPass for FilterIntoGraphRel {
                             view_parameter_values: view_scan.view_parameter_values.clone(),
                             use_final: view_scan.use_final,
                             is_denormalized: view_scan.is_denormalized,
+                            from_node_properties: view_scan.from_node_properties.clone(),
+                            to_node_properties: view_scan.to_node_properties.clone(),
+                            type_column: view_scan.type_column.clone(),
+                            type_values: view_scan.type_values.clone(),
+                            from_label_column: view_scan.from_label_column.clone(),
+                            to_label_column: view_scan.to_label_column.clone(),
                         },
                     )));
 
@@ -422,6 +434,12 @@ impl OptimizerPass for FilterIntoGraphRel {
                                     view_parameter_values: view_scan.view_parameter_values.clone(),
                                     use_final: view_scan.use_final,
                                     is_denormalized: view_scan.is_denormalized,
+                                    from_node_properties: view_scan.from_node_properties.clone(),
+                                    to_node_properties: view_scan.to_node_properties.clone(),
+                                    type_column: view_scan.type_column.clone(),
+                                    type_values: view_scan.type_values.clone(),
+                                    from_label_column: view_scan.from_label_column.clone(),
+                                    to_label_column: view_scan.to_label_column.clone(),
                                 },
                             )));
 
@@ -532,6 +550,32 @@ impl OptimizerPass for FilterIntoGraphRel {
                     }
                 } else {
                     log::debug!("FilterIntoGraphRel: Skipping right alias '{}' - already collected", graph_rel.right_connection);
+                }
+
+                // Check edge/relationship alias for filters (only if not already collected)
+                if !collected_aliases.contains(&graph_rel.alias) {
+                    if let Ok(table_ctx) =
+                        plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_rel.alias.clone()))
+                    {
+                        let filters = table_ctx.get_filters().clone();
+                        if !filters.is_empty() {
+                            println!(
+                                "FilterIntoGraphRel: Found {} filters for edge alias '{}' in GraphRel",
+                                filters.len(),
+                                graph_rel.alias
+                            );
+                            println!("FilterIntoGraphRel: Edge alias filters: {:?}", filters);
+                            // Qualify filters with the edge alias
+                            let qualified_filters: Vec<LogicalExpr> = filters
+                                .into_iter()
+                                .map(|f| qualify_columns_with_alias(f, &graph_rel.alias))
+                                .collect();
+                            combined_filters.extend(qualified_filters);
+                            collected_aliases.insert(graph_rel.alias.clone());
+                        }
+                    }
+                } else {
+                    log::debug!("FilterIntoGraphRel: Skipping edge alias '{}' - already collected", graph_rel.alias);
                 }
 
                 // If we found filters, combine them with existing predicate
@@ -707,6 +751,12 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 view_parameter_values: view_scan.view_parameter_values.clone(),
                                 use_final: view_scan.use_final,
                                 is_denormalized: view_scan.is_denormalized,
+                                from_node_properties: view_scan.from_node_properties.clone(),
+                                to_node_properties: view_scan.to_node_properties.clone(),
+                                type_column: view_scan.type_column.clone(),
+                                type_values: view_scan.type_values.clone(),
+                                from_label_column: view_scan.from_label_column.clone(),
+                                to_label_column: view_scan.to_label_column.clone(),
                             },
                         )));
 

@@ -11,6 +11,16 @@
 > **Note: ClickGraph is development-ready for view-based graph analysis with full Neo4j Bolt Protocol 5.8 support. This is a read-only analytical query engine - write operations are not supported. Codebase has diverged from the upstream with DDL/writes feature removal and other structure/code refactoring to follow Rust idiomatic style.**
 
 ---
+## Work in Progress towards Next Release
+
+> **Note: we are standardizing on using `Node` and `Edge` externally following ISO GQL terminology**
+
+The next release will be big enhancements to the schema patterns, including
+- **Edge ID**: it can be a single column or a composite key with multiple columns for a unique edge instance. Default to (from_id, to_id)
+- **Denormalized edge table**: nodes are part of the edge table with denormalized node property columns. Either from_node or to_node or both can be denormalized.
+- **Polymorphic edge table**: multiple edge types share the same edge table with a type column to indicate its edge type. The edge table also contains `from_label_column` and `to_label_column` to indicate the node labels that are standalone tables.
+
+While the schema config loading is complete, query support is still being developed.
 
 ## 🚀 What's New in v0.5.1 (November 21, 2025)
 

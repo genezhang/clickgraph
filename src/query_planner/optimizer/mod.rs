@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::query_planner::{
     logical_plan::LogicalPlan,
     optimizer::{
+        cleanup_viewscan_filters::CleanupViewScanFilters,
         filter_into_graph_rel::FilterIntoGraphRel,
         filter_push_down::FilterPushDown,
         optimizer_pass::{OptimizerPass, OptimizerResult},
@@ -13,6 +14,7 @@ use crate::query_planner::{
 
 use super::plan_ctx::PlanCtx;
 pub mod errors;
+mod cleanup_viewscan_filters;
 mod filter_into_graph_rel;
 mod filter_push_down;
 mod optimizer_pass;
@@ -75,10 +77,13 @@ pub fn final_optimization(
     let transformed_plan = projection_push_down.optimize(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
 
-    // IMPORTANT: Push filters into GraphRel.where_predicate BEFORE FilterPushDown runs
-    // This ensures we catch Filter nodes that wrap GraphRel patterns
-    let filter_into_graph_rel = FilterIntoGraphRel::new();
-    let transformed_plan = filter_into_graph_rel.optimize(plan.clone(), plan_ctx)?;
+    // FilterIntoGraphRel already ran in initial_optimization - don't run it again!
+    // Running it twice causes duplicate filters.
+
+    // CRITICAL: Clean up ViewScan.view_filter after FilterIntoGraphRel (from initial_optimization)
+    // This prevents duplicate filter collection during rendering
+    let cleanup_viewscan = CleanupViewScanFilters;
+    let transformed_plan = cleanup_viewscan.optimize(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
 
     let filter_push_down = FilterPushDown::new();

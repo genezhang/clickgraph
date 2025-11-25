@@ -10,79 +10,35 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 - Refactor code to be clear and maintainable whenever appropriate, before, during, or after implementing features
 - Follow Rust's official style guidelines: https://doc.rust-lang.org/1.0.0/style/
 
-## Windows Environment Constraints
+## Development Environment
 
-**⚠️ CRITICAL: Known Windows-Specific Issues - CHECK THESE FIRST!**
+**Current Platform**: WSL Ubuntu 24.04 (migrated from Windows, November 2025)
 
-### 1. PowerShell Background Process Handling ⚠️ **[FREQUENT ISSUE - WASTES TIME]**
-- **Issue**: Running Rust servers directly in PowerShell (`cargo run`) exits immediately when script ends
-- **Problem**: Server terminates as soon as PowerShell script finishes, even if marked as background
-- **Solution**: **ALWAYS use `Start-Job` for background server processes in PowerShell scripts**
-- **Example**:
-  ```powershell
-  # ❌ DO NOT USE (server exits immediately when script ends)
-  cargo run --release --bin clickgraph
-  
-  # ❌ ALSO WRONG (still exits when script ends)
-  Start-Process powershell -ArgumentList "cargo run --release --bin clickgraph"
-  
-  # ✅ USE THIS INSTEAD (properly backgrounds the job)
-  $job = Start-Job -ScriptBlock {
-      param($env_vars...)
-      # Set environment variables in job context
-      $env:CLICKHOUSE_URL = $url
-      Set-Location $using:PWD
-      cargo run --release --bin clickgraph
-  } -ArgumentList $env:CLICKHOUSE_URL, ...
-  
-  # Check output: Receive-Job -Id $job.Id -Keep
-  # Stop server: Stop-Job -Id $job.Id; Remove-Job -Id $job.Id
+### Shell and Script Guidelines
+- **Default Shell**: Bash (use bash scripts, not PowerShell)
+- **Background Processes**: Use standard bash backgrounding (`nohup`, `&`, `disown`)
+- **Server Scripts**: Located in `scripts/server/` (bash versions)
+  - `start_server_background.sh` - Start ClickGraph server in background
+  - `stop_server.sh` - Stop background server
+  - `server_status.sh` - Check server health
+
+### ClickHouse Docker Setup
+- **Engine Choice**: Use `ENGINE = Memory` for development/testing
+  - Simpler setup, faster restarts
+  - Acceptable for non-persistent test data
+  - For production schemas, use `MergeTree()` or appropriate engine
+
+### HTTP Testing
+- **Use `curl`**: Available and works correctly on Linux
+  ```bash
+  # ✅ Standard curl syntax works
+  curl -X POST http://localhost:8080/query \
+    -H "Content-Type: application/json" \
+    -d '{"query":"MATCH (n) RETURN n"}'
   ```
-- **Impact**: **Server appears to start but exits silently, causing confusion and wasted debugging time**
-- **When to Remember**: 
-  - **ANY PowerShell script that starts the ClickGraph server**
-  - Creating new server startup scripts
-  - Testing or debugging server behavior
-  - **This has wasted time MULTIPLE times - always check this first!**
+- **Alternative**: Python `requests` library for complex test scenarios
 
-### 2. ClickHouse Docker Volume Write Permission Problem
-- **Issue**: ClickHouse container on Windows cannot write to mounted volumes due to permission restrictions
-- **Solution**: **Always create tables using `ENGINE = Memory` instead of persistent engines**
-- **Example**:
-  ```sql
-  -- ❌ DO NOT USE (will fail on Windows)
-  CREATE TABLE users (...) ENGINE = MergeTree() ORDER BY id;
-  
-  -- ✅ USE THIS INSTEAD
-  CREATE TABLE users (...) ENGINE = Memory;
-  ```
-- **Impact**: Data is not persisted between container restarts, but this is acceptable for development/testing
-- **When to Remember**: Any SQL script creating tables (`setup_demo_data.sql`, test data creation, etc.)
-
-### 3. curl Command Not Available in PowerShell
-- **Issue**: `curl` is not available or behaves differently in Windows PowerShell environment
-- **Solution**: **Use `Invoke-RestMethod` or `Invoke-WebRequest` PowerShell cmdlets instead**
-- **Examples**:
-  ```powershell
-  # ❌ DO NOT USE (curl doesn't work)
-  curl -X POST http://localhost:8080/query -d '{"query":"MATCH (n) RETURN n"}'
-  
-  # ✅ USE THIS INSTEAD
-  Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query" `
-    -ContentType "application/json" `
-    -Body '{"query":"MATCH (n) RETURN n"}'
-  
-  # ✅ OR USE Python requests library
-  python -c "import requests; print(requests.post('http://localhost:8080/query', json={'query':'MATCH (n) RETURN n'}).json())"
-  ```
-- **When to Remember**: Testing HTTP endpoints, manual query testing, CI/CD scripts
-- **Alternative**: Use Python scripts with `requests` library for cross-platform testing
-
-**Development Reminder**: These constraints have been encountered multiple times. Always check for these patterns when:
-- Writing SQL setup scripts → Use `ENGINE = Memory`
-- Testing HTTP APIs → Use `Invoke-RestMethod` or Python
-- Creating documentation examples → Show both PowerShell and cross-platform alternatives.
-- Use Mermaid diagrams for architecture explanations where possible
+**Documentation Style**: Use Mermaid diagrams for architecture explanations
 
 ---
 
@@ -129,12 +85,12 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 - Custom schemas - Only when testing schema-specific features
 
 **Testing Discipline**:
-```powershell
+```bash
 # ✅ CORRECT: Always set GRAPH_CONFIG_PATH to benchmark schema
-$env:GRAPH_CONFIG_PATH = ".\benchmarks\schemas\social_benchmark.yaml"
+export GRAPH_CONFIG_PATH="./benchmarks/schemas/social_benchmark.yaml"
 
 # ❌ WRONG: Using inconsistent schema
-$env:GRAPH_CONFIG_PATH = ".\schemas\demo\users.yaml"  # Different property mappings!
+export GRAPH_CONFIG_PATH="./schemas/demo/users.yaml"  # Different property mappings!
 ```
 
 **Use consistent commands with fewer variations so auto-approval can work without waiting for manual approval**

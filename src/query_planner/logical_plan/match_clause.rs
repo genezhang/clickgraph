@@ -100,6 +100,23 @@ fn is_denormalized_scan(plan: &Arc<LogicalPlan>) -> bool {
     result
 }
 
+/// Check if a node label is denormalized by looking up the schema
+/// Returns true if the node is denormalized (exists only in edge context)
+fn is_label_denormalized(label: &Option<String>, plan_ctx: &PlanCtx) -> bool {
+    if let Some(label_str) = label {
+        let schema = plan_ctx.schema();
+        if let Ok(node_schema) = schema.get_node_schema(label_str) {
+            eprintln!(
+                "is_label_denormalized: label '{}' is_denormalized = {}",
+                label_str, node_schema.is_denormalized
+            );
+            return node_schema.is_denormalized;
+        }
+    }
+    eprintln!("is_label_denormalized: label {:?} not found or no label, returning false", label);
+    false
+}
+
 /// Try to generate a ViewScan for a node by looking up the label in the schema from plan_ctx
 /// Returns None if schema is not available or label not found.
 fn try_generate_view_scan(
@@ -120,6 +137,20 @@ fn try_generate_view_scan(
             return None;
         }
     };
+
+    // Check if this is a denormalized node
+    if node_schema.is_denormalized {
+        // Denormalized nodes are VIRTUAL - they don't exist as standalone tables
+        // They can ONLY appear in relationship patterns like (a:Airport)-[r:FLIGHT]->(b:Airport)
+        // where the properties come from the edge table (flights)
+        log::warn!(
+            "Cannot create standalone ViewScan for denormalized node label '{}'. \
+             Denormalized nodes must appear in relationship patterns. \
+             Example: MATCH (a:{})-[r]->(b) instead of MATCH (a:{})",
+            label, label, label
+        );
+        return None;
+    }
 
     // Log successful resolution
     log::info!(
@@ -172,8 +203,32 @@ fn try_generate_view_scan(
     view_scan.view_parameter_names = view_parameter_names;
     view_scan.view_parameter_values = view_parameter_values;
     
-    // Set denormalized flag from schema
+    // Set denormalized flag and properties from schema
     view_scan.is_denormalized = node_schema.is_denormalized;
+    
+    // Populate denormalized node properties (for role-based mapping)
+    if node_schema.is_denormalized {
+        // Convert from HashMap<String, String> to HashMap<String, PropertyValue>
+        view_scan.from_node_properties = node_schema.from_properties.as_ref().map(|props| {
+            props.iter()
+                .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+                .collect()
+        });
+        
+        view_scan.to_node_properties = node_schema.to_properties.as_ref().map(|props| {
+            props.iter()
+                .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+                .collect()
+        });
+        
+        log::debug!(
+            "ViewScan: Populated denormalized properties for label '{}' - from_props={:?}, to_props={:?}",
+            label,
+            view_scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
+            view_scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>())
+        );
+    }
+    
     log::debug!(
         "ViewScan: Set is_denormalized={} for node label '{}' (table: {})",
         node_schema.is_denormalized,
@@ -269,6 +324,19 @@ fn try_generate_relationship_view_scan(
     // Set view parameters if this is a parameterized view
     view_scan.view_parameter_names = view_parameter_names;
     view_scan.view_parameter_values = view_parameter_values;
+    
+    // Populate polymorphic edge fields from schema
+    if rel_schema.type_column.is_some() {
+        view_scan.type_column = rel_schema.type_column.clone();
+        view_scan.from_label_column = rel_schema.from_label_column.clone();
+        view_scan.to_label_column = rel_schema.to_label_column.clone();
+        
+        log::debug!(
+            "ViewScan: Populated polymorphic fields for rel '{}' - type_column={:?}",
+            rel_type,
+            view_scan.type_column
+        );
+    }
 
     Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))))
 }
@@ -524,12 +592,21 @@ fn traverse_connected_pattern_with_mode<'a>(
             let (left_node, right_node) = match rel.direction {
                 ast::Direction::Outgoing => {
                     // (a)-[:r1]->(b)-[:r2]->(c): existing plan (a-r1-b) on left, new node (c) on right
-                    let scan = generate_scan(
-                        end_node_alias.clone(),
-                        end_node_label.clone(),
-                        plan_ctx,
-                    )?;
-                    let is_denorm = is_denormalized_scan(&scan);
+                    
+                    // Check if end_node is denormalized - if so, don't create a separate scan
+                    let (scan, is_denorm) = if is_label_denormalized(&end_node_label, plan_ctx) {
+                        eprintln!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
+                        (Arc::new(LogicalPlan::Empty), true)
+                    } else {
+                        let scan = generate_scan(
+                            end_node_alias.clone(),
+                            end_node_label.clone(),
+                            plan_ctx,
+                        )?;
+                        let is_d = is_denormalized_scan(&scan);
+                        (scan, is_d)
+                    };
+                    
                     (
                         plan.clone(),
                         Arc::new(LogicalPlan::GraphNode(GraphNode {
@@ -542,12 +619,21 @@ fn traverse_connected_pattern_with_mode<'a>(
                 }
                 ast::Direction::Incoming => {
                     // (c)<-[:r2]-(b)<-[:r1]-(a): new node (c) on left, existing plan (b-r1-a) on right
-                    let scan = generate_scan(
-                        end_node_alias.clone(),
-                        end_node_label.clone(),
-                        plan_ctx,
-                    )?;
-                    let is_denorm = is_denormalized_scan(&scan);
+                    
+                    // Check if end_node is denormalized - if so, don't create a separate scan
+                    let (scan, is_denorm) = if is_label_denormalized(&end_node_label, plan_ctx) {
+                        eprintln!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
+                        (Arc::new(LogicalPlan::Empty), true)
+                    } else {
+                        let scan = generate_scan(
+                            end_node_alias.clone(),
+                            end_node_label.clone(),
+                            plan_ctx,
+                        )?;
+                        let is_d = is_denormalized_scan(&scan);
+                        (scan, is_d)
+                    };
+                    
                     (
                         Arc::new(LogicalPlan::GraphNode(GraphNode {
                             input: scan,
@@ -560,12 +646,21 @@ fn traverse_connected_pattern_with_mode<'a>(
                 }
                 ast::Direction::Either => {
                     // Either direction: existing plan on left, new node on right
-                    let scan = generate_scan(
-                        end_node_alias.clone(),
-                        end_node_label.clone(),
-                        plan_ctx,
-                    )?;
-                    let is_denorm = is_denormalized_scan(&scan);
+                    
+                    // Check if end_node is denormalized - if so, don't create a separate scan
+                    let (scan, is_denorm) = if is_label_denormalized(&end_node_label, plan_ctx) {
+                        eprintln!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
+                        (Arc::new(LogicalPlan::Empty), true)
+                    } else {
+                        let scan = generate_scan(
+                            end_node_alias.clone(),
+                            end_node_label.clone(),
+                            plan_ctx,
+                        )?;
+                        let is_d = is_denormalized_scan(&scan);
+                        (scan, is_d)
+                    };
+                    
                     (
                         plan.clone(),
                         Arc::new(LogicalPlan::GraphNode(GraphNode {
@@ -640,8 +735,15 @@ fn traverse_connected_pattern_with_mode<'a>(
                 table_ctx.append_properties(end_node_props);
             }
 
-            let start_scan = generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?;
-            let start_is_denorm = is_denormalized_scan(&start_scan);
+            let (start_scan, start_is_denorm) = if is_label_denormalized(&start_node_label, plan_ctx) {
+                eprintln!("=== Start node '{}' is DENORMALIZED, creating Empty scan ===", start_node_alias);
+                (Arc::new(LogicalPlan::Empty), true)
+            } else {
+                let scan = generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?;
+                let is_d = is_denormalized_scan(&scan);
+                (scan, is_d)
+            };
+            
             let start_graph_node = GraphNode {
                 input: start_scan,
                 alias: start_node_alias.clone(),
@@ -734,10 +836,18 @@ fn traverse_connected_pattern_with_mode<'a>(
 
             // we will keep start graph node at the right side and end at the left side
             eprintln!("=== DISCONNECTED PATTERN: About to create start_graph_node ===");
-            let start_scan = generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?;
-            eprintln!("=== DISCONNECTED: start_scan created, calling is_denormalized_scan ===");
-            let start_is_denorm = is_denormalized_scan(&start_scan);
-            eprintln!("=== DISCONNECTED: start_is_denorm = {} ===", start_is_denorm);
+            
+            let (start_scan, start_is_denorm) = if is_label_denormalized(&start_node_label, plan_ctx) {
+                eprintln!("=== Start node '{}' is DENORMALIZED, creating Empty scan ===", start_node_alias);
+                (Arc::new(LogicalPlan::Empty), true)
+            } else {
+                let scan = generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?;
+                eprintln!("=== DISCONNECTED: start_scan created, calling is_denormalized_scan ===");
+                let is_d = is_denormalized_scan(&scan);
+                eprintln!("=== DISCONNECTED: start_is_denorm = {} ===", is_d);
+                (scan, is_d)
+            };
+            
             let start_graph_node = GraphNode {
                 input: start_scan,
                 alias: start_node_alias.clone(),
@@ -756,8 +866,15 @@ fn traverse_connected_pattern_with_mode<'a>(
                 ),
             );
 
-            let end_scan = generate_scan(end_node_alias.clone(), end_node_label.clone(), plan_ctx)?;
-            let end_is_denorm = is_denormalized_scan(&end_scan);
+            let (end_scan, end_is_denorm) = if is_label_denormalized(&end_node_label, plan_ctx) {
+                eprintln!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
+                (Arc::new(LogicalPlan::Empty), true)
+            } else {
+                let scan = generate_scan(end_node_alias.clone(), end_node_label.clone(), plan_ctx)?;
+                let is_d = is_denormalized_scan(&scan);
+                (scan, is_d)
+            };
+            
             let end_graph_node = GraphNode {
                 input: end_scan,
                 alias: end_node_alias.clone(),
