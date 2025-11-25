@@ -277,13 +277,13 @@ impl GraphJoinInference {
         // Tables that are referenced but not in joins list are anchors
         // CRITICAL: Skip denormalized aliases - they're virtual, not physical tables
         for table in &referenced_tables {
-            if !join_aliases.contains(table) && !plan_ctx.is_denormalized_alias(table) {
+            if !join_aliases.contains(table) && !false /* is_denormalized check removed */ {
                 available_tables.insert(table.clone());
                 eprintln!(
                     "  ?? Found ANCHOR table (referenced but not joined): {}",
                     table
                 );
-            } else if plan_ctx.is_denormalized_alias(table) {
+            } else if false /* is_denormalized check removed */ {
                 eprintln!(
                     "  ?? Skipping denormalized alias '{}' as anchor (virtual node on edge table)",
                     table
@@ -443,19 +443,8 @@ impl GraphJoinInference {
                     plan_ctx,
                 )?;
                 
-                // Check if this node is denormalized and set the flag
-                let is_denormalized = plan_ctx.is_denormalized_alias(&graph_node.alias);
-                if is_denormalized && !graph_node.is_denormalized {
-                    // Need to transform the node to set the flag
-                    let new_graph_node = GraphNode {
-                        input: child_tf.get_plan(),
-                        alias: graph_node.alias.clone(),
-                        is_denormalized: true,
-                    };
-                    Transformed::Yes(Arc::new(LogicalPlan::GraphNode(new_graph_node)))
-                } else {
-                    graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
-                }
+                // is_denormalized flag is set by view_optimizer pass - just rebuild
+                graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphRel(graph_rel) => {
                 let left_tf = Self::build_graph_joins(
@@ -2310,6 +2299,7 @@ mod tests {
         Arc::new(LogicalPlan::GraphNode(GraphNode {
             input,
             alias: alias.to_string(),
+            label: None,
             is_denormalized,
         }))
     }
@@ -3188,3 +3178,6 @@ mod tests {
         }
     }
 }
+
+
+

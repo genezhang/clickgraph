@@ -1,5 +1,5 @@
 pub mod cte_extraction;
-mod cte_generation;
+pub mod cte_generation;
 mod expression_utils;
 mod filter_pipeline;
 mod from_table;

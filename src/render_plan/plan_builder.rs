@@ -897,9 +897,8 @@ impl RenderPlanBuilder for LogicalPlan {
                             item.expression.clone()
                         };
 
-                    let mut expr: RenderExpr = resolved_expr.try_into()?;
-
-                    // Check if this is a path variable that needs to be converted to tuple construction
+                    // Apply denormalized property mapping for denormalized nodes
+                    let mut expr: RenderExpr = resolved_expr.try_into()?;                    // Check if this is a path variable that needs to be converted to tuple construction
                     if let (Some(path_var_name), RenderExpr::TableAlias(TableAlias(alias))) =
                         (&path_var, &expr)
                     {
@@ -1269,8 +1268,9 @@ impl RenderPlanBuilder for LogicalPlan {
                                 "🎯 DENORMALIZED: No JOINs, using relationship table '{}' as '{}'",
                                 rel_table, graph_rel.alias
                             );
+                            // CRITICAL FIX: Pass the actual graph_rel as source so extract_filters() can find view_filter
                             let view_ref = super::ViewTableRef {
-                                source: std::sync::Arc::new(LogicalPlan::Empty),
+                                source: std::sync::Arc::new(LogicalPlan::GraphRel(graph_rel.clone())),
                                 name: rel_table,
                                 alias: Some(graph_rel.alias.clone()),
                                 use_final: false,
@@ -1297,8 +1297,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
                         if let Some(rel_table) = extract_table_name(&graph_rel.center) {
                             log::info!("🎯 DENORMALIZED: No JOINs, using relationship table '{}' as '{}'", rel_table, graph_rel.alias);
+                            // CRITICAL FIX: Pass the actual graph_rel as source so extract_filters() can find view_filter
                             Some(super::ViewTableRef {
-                                source: std::sync::Arc::new(LogicalPlan::Empty),
+                                source: std::sync::Arc::new(LogicalPlan::GraphRel(graph_rel.clone())),
                                 name: rel_table,
                                 alias: Some(graph_rel.alias.clone()),
                                 use_final: false,
@@ -1485,7 +1486,16 @@ impl RenderPlanBuilder for LogicalPlan {
                         LogicalPlan::GraphNode(gn) => {
                             predicates.extend(collect_graphrel_predicates(&gn.input));
                         }
-                        // Don't recurse into other node types - only GraphRel/GraphNode
+                        LogicalPlan::ViewScan(scan) => {
+                            // 🔧 FIX: Collect view_filter from ViewScan for denormalized queries
+                            if let Some(ref filter) = scan.view_filter {
+                                if let Ok(render_expr) = RenderExpr::try_from(filter.clone()) {
+                                    println!("DEBUG: collect_graphrel_predicates - Found ViewScan filter: {:?}", filter);
+                                    predicates.push(render_expr);
+                                }
+                            }
+                        }
+                        // Don't recurse into other node types - only GraphRel/GraphNode/ViewScan
                         _ => {}
                     }
                     predicates

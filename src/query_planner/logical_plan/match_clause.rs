@@ -79,6 +79,27 @@ fn generate_scan(
         Ok(Arc::new(LogicalPlan::Scan(scan)))
     }
 }
+
+/// Helper function to check if a plan contains a denormalized ViewScan
+fn is_denormalized_scan(plan: &Arc<LogicalPlan>) -> bool {
+    let result = match plan.as_ref() {
+        LogicalPlan::ViewScan(view_scan) => {
+            eprintln!(
+                "is_denormalized_scan: ViewScan.is_denormalized = {} for table '{}'",
+                view_scan.is_denormalized,
+                view_scan.source_table
+            );
+            view_scan.is_denormalized
+        }
+        _ => {
+            eprintln!("is_denormalized_scan: Not a ViewScan, returning false");
+            false
+        }
+    };
+    eprintln!("is_denormalized_scan: returning {}", result);
+    result
+}
+
 /// Try to generate a ViewScan for a node by looking up the label in the schema from plan_ctx
 /// Returns None if schema is not available or label not found.
 fn try_generate_view_scan(
@@ -503,46 +524,55 @@ fn traverse_connected_pattern_with_mode<'a>(
             let (left_node, right_node) = match rel.direction {
                 ast::Direction::Outgoing => {
                     // (a)-[:r1]->(b)-[:r2]->(c): existing plan (a-r1-b) on left, new node (c) on right
+                    let scan = generate_scan(
+                        end_node_alias.clone(),
+                        end_node_label.clone(),
+                        plan_ctx,
+                    )?;
+                    let is_denorm = is_denormalized_scan(&scan);
                     (
                         plan.clone(),
                         Arc::new(LogicalPlan::GraphNode(GraphNode {
-                            input: generate_scan(
-                                end_node_alias.clone(),
-                                end_node_label.clone(),
-                                plan_ctx,
-                            )?,
+                            input: scan,
                             alias: end_node_alias.clone(),
-                            is_denormalized: false,
+                            label: end_node_label.clone().map(|s| s.to_string()),
+                            is_denormalized: is_denorm,
                         })),
                     )
                 }
                 ast::Direction::Incoming => {
                     // (c)<-[:r2]-(b)<-[:r1]-(a): new node (c) on left, existing plan (b-r1-a) on right
+                    let scan = generate_scan(
+                        end_node_alias.clone(),
+                        end_node_label.clone(),
+                        plan_ctx,
+                    )?;
+                    let is_denorm = is_denormalized_scan(&scan);
                     (
                         Arc::new(LogicalPlan::GraphNode(GraphNode {
-                            input: generate_scan(
-                                end_node_alias.clone(),
-                                end_node_label.clone(),
-                                plan_ctx,
-                            )?,
+                            input: scan,
                             alias: end_node_alias.clone(),
-                            is_denormalized: false,
+                            label: end_node_label.clone().map(|s| s.to_string()),
+                            is_denormalized: is_denorm,
                         })),
                         plan.clone(),
                     )
                 }
                 ast::Direction::Either => {
                     // Either direction: existing plan on left, new node on right
+                    let scan = generate_scan(
+                        end_node_alias.clone(),
+                        end_node_label.clone(),
+                        plan_ctx,
+                    )?;
+                    let is_denorm = is_denormalized_scan(&scan);
                     (
                         plan.clone(),
                         Arc::new(LogicalPlan::GraphNode(GraphNode {
-                            input: generate_scan(
-                                end_node_alias.clone(),
-                                end_node_label.clone(),
-                                plan_ctx,
-                            )?,
+                            input: scan,
                             alias: end_node_alias.clone(),
-                            is_denormalized: false,
+                            label: end_node_label.clone().map(|s| s.to_string()),
+                            is_denormalized: is_denorm,
                         })),
                     )
                 }
@@ -610,10 +640,13 @@ fn traverse_connected_pattern_with_mode<'a>(
                 table_ctx.append_properties(end_node_props);
             }
 
+            let start_scan = generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?;
+            let start_is_denorm = is_denormalized_scan(&start_scan);
             let start_graph_node = GraphNode {
-                input: generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?,
+                input: start_scan,
                 alias: start_node_alias.clone(),
-                is_denormalized: false,
+                label: start_node_label.clone().map(|s| s.to_string()),
+                is_denormalized: start_is_denorm,
             };
             plan_ctx.insert_table_ctx(
                 start_node_alias.clone(),
@@ -700,11 +733,18 @@ fn traverse_connected_pattern_with_mode<'a>(
             }
 
             // we will keep start graph node at the right side and end at the left side
+            eprintln!("=== DISCONNECTED PATTERN: About to create start_graph_node ===");
+            let start_scan = generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?;
+            eprintln!("=== DISCONNECTED: start_scan created, calling is_denormalized_scan ===");
+            let start_is_denorm = is_denormalized_scan(&start_scan);
+            eprintln!("=== DISCONNECTED: start_is_denorm = {} ===", start_is_denorm);
             let start_graph_node = GraphNode {
-                input: generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?,
+                input: start_scan,
                 alias: start_node_alias.clone(),
-                is_denormalized: false,
+                label: start_node_label.clone().map(|s| s.to_string()),
+                is_denormalized: start_is_denorm,
             };
+            eprintln!("=== DISCONNECTED: start_graph_node created with is_denormalized={} ===", start_graph_node.is_denormalized);
             plan_ctx.insert_table_ctx(
                 start_node_alias.clone(),
                 TableCtx::build(
@@ -716,10 +756,13 @@ fn traverse_connected_pattern_with_mode<'a>(
                 ),
             );
 
+            let end_scan = generate_scan(end_node_alias.clone(), end_node_label.clone(), plan_ctx)?;
+            let end_is_denorm = is_denormalized_scan(&end_scan);
             let end_graph_node = GraphNode {
-                input: generate_scan(end_node_alias.clone(), end_node_label.clone(), plan_ctx)?,
+                input: end_scan,
                 alias: end_node_alias.clone(),
-                is_denormalized: false,
+                label: end_node_label.clone().map(|s| s.to_string()),
+                is_denormalized: end_is_denorm,
             };
             plan_ctx.insert_table_ctx(
                 end_node_alias.clone(),
@@ -855,10 +898,13 @@ fn traverse_node_pattern(
             ),
         );
 
+        let scan = generate_scan(node_alias.clone(), node_label.clone(), plan_ctx)?;
+        let is_denorm = is_denormalized_scan(&scan);
         let graph_node = GraphNode {
-            input: generate_scan(node_alias.clone(), node_label, plan_ctx)?, // Pass the label here!
+            input: scan,
             alias: node_alias,
-            is_denormalized: false,
+            label: node_label.map(|s| s.to_string()),
+            is_denormalized: is_denorm,
         };
         Ok(Arc::new(LogicalPlan::GraphNode(graph_node)))
     }

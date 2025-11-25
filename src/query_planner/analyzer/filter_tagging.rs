@@ -101,9 +101,13 @@ impl AnalyzerPass for FilterTagging {
                 );
                 let child_tf =
                     self.analyze_with_graph_schema(filter.input.clone(), plan_ctx, graph_schema)?;
+                // Get a reference to the child plan without moving
+                let child_plan_ref = match &child_tf {
+                    Transformed::Yes(plan) | Transformed::No(plan) => plan.as_ref(),
+                };
                 // Apply property mapping to the filter predicate
                 let mapped_predicate =
-                    self.apply_property_mapping(filter.predicate.clone(), plan_ctx, graph_schema)?;
+                    self.apply_property_mapping(filter.predicate.clone(), plan_ctx, graph_schema, Some(child_plan_ref))?;
                 println!("FilterTagging: Mapped predicate: {:?}", mapped_predicate);
 
                 // Check if this filter references projection aliases (HAVING clause)
@@ -169,6 +173,10 @@ impl AnalyzerPass for FilterTagging {
                 println!(
                     "FilterTagging: Projection child processed, applying property mapping to projection items"
                 );
+                // Get a reference to the child plan without moving
+                let child_plan_ref = match &child_tf {
+                    Transformed::Yes(plan) | Transformed::No(plan) => plan.as_ref(),
+                };
                 // Apply property mapping to projection expressions
                 let mut mapped_items = Vec::new();
                 for item in &projection.items {
@@ -176,6 +184,7 @@ impl AnalyzerPass for FilterTagging {
                         item.expression.clone(),
                         plan_ctx,
                         graph_schema,
+                        Some(child_plan_ref),
                     )?;
                     mapped_items.push(ProjectionItem {
                         expression: mapped_expr.clone(),
@@ -212,6 +221,10 @@ impl AnalyzerPass for FilterTagging {
             LogicalPlan::OrderBy(order_by) => {
                 let child_tf =
                     self.analyze_with_graph_schema(order_by.input.clone(), plan_ctx, graph_schema)?;
+                // Get a reference to the child plan without moving
+                let child_plan_ref = match &child_tf {
+                    Transformed::Yes(plan) | Transformed::No(plan) => plan.as_ref(),
+                };
                 // Apply property mapping to order by expressions
                 let mut mapped_items = Vec::new();
                 for item in &order_by.items {
@@ -219,6 +232,7 @@ impl AnalyzerPass for FilterTagging {
                         item.expression.clone(),
                         plan_ctx,
                         graph_schema,
+                        Some(child_plan_ref),
                     )?;
                     mapped_items.push(crate::query_planner::logical_plan::OrderByItem {
                         expression: mapped_expr,
@@ -267,6 +281,7 @@ impl FilterTagging {
         expr: LogicalExpr,
         plan_ctx: &PlanCtx,
         graph_schema: &GraphSchema,
+        plan: Option<&LogicalPlan>,
     ) -> AnalyzerResult<LogicalExpr> {
         match expr {
             LogicalExpr::PropertyAccessExp(property_access) => {
@@ -308,38 +323,120 @@ impl FilterTagging {
                     }
                 })?;
 
-                // Use view resolver to map the property
-                let view_resolver =
-                    crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(
-                        graph_schema,
-                    );
-                println!(
-                    "FilterTagging: About to call resolve_node_property, is_relation={}, label={}, property={}",
-                    table_ctx.is_relation(),
-                    label,
-                    property_access.column.raw()
-                );
-                let mapped_column = if table_ctx.is_relation() {
-                    let result = view_resolver
-                        .resolve_relationship_property(&label, &property_access.column.raw());
+                // Check if this is a denormalized node that needs role-specific mapping
+                let is_denormalized = if let Some(plan) = plan {
+                    let denorm = Self::is_node_denormalized(plan, &property_access.table_alias.0);
                     println!(
-                        "FilterTagging: resolve_relationship_property result: {:?}",
-                        result
+                        "FilterTagging: Checking is_denormalized for alias='{}' - result={}",
+                        property_access.table_alias.0, denorm
                     );
-                    result?
+                    denorm
                 } else {
-                    let result =
-                        view_resolver.resolve_node_property(&label, &property_access.column.raw());
-                    println!("FilterTagging: resolve_node_property result: {:?}", result);
-                    result?
+                    println!(
+                        "FilterTagging: No plan context provided for alias='{}'",
+                        property_access.table_alias.0
+                    );
+                    false
                 };
+
                 println!(
-                    "FilterTagging: Successfully mapped property '{}' to column '{}'",
-                    property_access.column.raw(), mapped_column.raw()
+                    "FilterTagging: is_denormalized={} for alias='{}', property='{}'",
+                    is_denormalized, property_access.table_alias.0, property_access.column.raw()
+                );
+
+                let mapped_column = if is_denormalized {
+                    // For denormalized nodes, determine role from GraphRel context
+                    if let Some(plan) = plan {
+                        if let Some((rel_type, node_role, rel_alias)) = Self::find_denormalized_context(plan, &property_access.table_alias.0, &label) {
+                            println!(
+                                "FilterTagging: Found denormalized context - rel_type={:?}, node_role={:?}, rel_alias='{}'",
+                                rel_type, node_role, rel_alias
+                            );
+                            // Use relationship-context-aware mapping
+                            use crate::render_plan::cte_generation::map_property_to_column_with_relationship_context;
+                            let mapped = map_property_to_column_with_relationship_context(
+                                property_access.column.raw(),
+                                &label,
+                                rel_type.as_deref(),
+                                Some(node_role),
+                            ).map_err(|e| AnalyzerError::PropertyNotFound {
+                                entity_type: "node".to_string(),
+                                entity_name: property_access.table_alias.0.clone(),
+                                property: e,
+                            })?;
+                            crate::graph_catalog::expression_parser::PropertyValue::Column(mapped)
+                        } else {
+                            // Fallback to standard mapping
+                            let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
+                            view_resolver.resolve_node_property(&label, &property_access.column.raw())?
+                        }
+                    } else {
+                        // No plan context, use standard mapping
+                        let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
+                        view_resolver.resolve_node_property(&label, &property_access.column.raw())?
+                    }
+                } else {
+                    // Use view resolver to map the property (standard path)
+                    let view_resolver =
+                        crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(
+                            graph_schema,
+                        );
+                    println!(
+                        "FilterTagging: About to call resolve_node_property, is_relation={}, label={}, property={}",
+                        table_ctx.is_relation(),
+                        label,
+                        property_access.column.raw()
+                    );
+                    if table_ctx.is_relation() {
+                        let result = view_resolver
+                            .resolve_relationship_property(&label, &property_access.column.raw());
+                        println!(
+                            "FilterTagging: resolve_relationship_property result: {:?}",
+                            result
+                        );
+                        result?
+                    } else {
+                        let result =
+                            view_resolver.resolve_node_property(&label, &property_access.column.raw());
+                        println!("FilterTagging: resolve_node_property result: {:?}", result);
+                        result?
+                    }
+                };
+                // For denormalized nodes, remap table alias to relationship alias
+                let final_table_alias = if is_denormalized {
+                    if let Some(plan) = plan {
+                        if let Ok(tc) = plan_ctx.get_table_ctx(&property_access.table_alias.0) {
+                            if let Some(label) = tc.get_label_opt() {
+                                // Check if this is a denormalized context
+                                if let Some((_rel_type, _node_role, rel_alias)) = Self::find_denormalized_context(plan, &property_access.table_alias.0, &label) {
+                                    println!(
+                                        "FilterTagging: Remapping table alias '{}' → '{}' for denormalized node",
+                                        property_access.table_alias.0, rel_alias
+                                    );
+                                    TableAlias(rel_alias)
+                                } else {
+                                    property_access.table_alias.clone()
+                                }
+                            } else {
+                                property_access.table_alias.clone()
+                            }
+                        } else {
+                            property_access.table_alias.clone()
+                        }
+                    } else {
+                        property_access.table_alias.clone()
+                    }
+                } else {
+                    property_access.table_alias.clone()
+                };
+
+                println!(
+                    "FilterTagging: Successfully mapped property '{}' to column '{}' with table alias '{}'",
+                    property_access.column.raw(), mapped_column.raw(), final_table_alias.0
                 );
 
                 Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: property_access.table_alias,
+                    table_alias: final_table_alias,
                     column: mapped_column,
                 }))
             }
@@ -351,6 +448,7 @@ impl FilterTagging {
                         operand,
                         plan_ctx,
                         graph_schema,
+                        plan,
                     )?);
                 }
                 op.operands = mapped_operands;
@@ -360,7 +458,7 @@ impl FilterTagging {
                 // Recursively apply property mapping to function arguments
                 let mut mapped_args = Vec::new();
                 for arg in fn_call.args {
-                    mapped_args.push(self.apply_property_mapping(arg, plan_ctx, graph_schema)?);
+                    mapped_args.push(self.apply_property_mapping(arg, plan_ctx, graph_schema, plan)?);
                 }
                 fn_call.args = mapped_args;
                 Ok(LogicalExpr::ScalarFnCall(fn_call))
@@ -369,7 +467,7 @@ impl FilterTagging {
                 // Recursively apply property mapping to aggregate function arguments
                 let mut mapped_args = Vec::new();
                 for arg in agg_call.args {
-                    mapped_args.push(self.apply_property_mapping(arg, plan_ctx, graph_schema)?);
+                    mapped_args.push(self.apply_property_mapping(arg, plan_ctx, graph_schema, plan)?);
                 }
                 agg_call.args = mapped_args;
                 Ok(LogicalExpr::AggregateFnCall(agg_call))
@@ -382,6 +480,7 @@ impl FilterTagging {
                         element,
                         plan_ctx,
                         graph_schema,
+                        plan,
                     )?);
                 }
                 Ok(LogicalExpr::List(mapped_elements))
@@ -768,12 +867,89 @@ impl FilterTagging {
             _ => false,
         }
     }
+
+    /// Check if a node is denormalized by walking the plan tree
+    fn is_node_denormalized(plan: &LogicalPlan, alias: &str) -> bool {
+        match plan {
+            LogicalPlan::GraphNode(node) if node.alias == alias => node.is_denormalized,
+            LogicalPlan::GraphNode(node) => Self::is_node_denormalized(&node.input, alias),
+            LogicalPlan::GraphRel(rel) => {
+                Self::is_node_denormalized(&rel.left, alias)
+                    || Self::is_node_denormalized(&rel.right, alias)
+            }
+            LogicalPlan::Filter(filter) => Self::is_node_denormalized(&filter.input, alias),
+            LogicalPlan::Projection(proj) => Self::is_node_denormalized(&proj.input, alias),
+            LogicalPlan::GroupBy(gb) => Self::is_node_denormalized(&gb.input, alias),
+            LogicalPlan::OrderBy(ob) => Self::is_node_denormalized(&ob.input, alias),
+            LogicalPlan::Skip(skip) => Self::is_node_denormalized(&skip.input, alias),
+            LogicalPlan::Limit(limit) => Self::is_node_denormalized(&limit.input, alias),
+            LogicalPlan::Cte(cte) => Self::is_node_denormalized(&cte.input, alias),
+            _ => false,
+        }
+    }
+
+    /// Find denormalized context: relationship type and node role
+    /// Returns (relationship_type, node_role) if the alias is a denormalized node in a GraphRel
+    fn find_denormalized_context(
+        plan: &LogicalPlan,
+        alias: &str,
+        _label: &str,
+    ) -> Option<(Option<String>, crate::render_plan::cte_generation::NodeRole, String)> {
+        use crate::render_plan::cte_generation::NodeRole;
+        
+        match plan {
+            LogicalPlan::GraphRel(rel) => {
+                // Check if this alias is the left or right connection of this relationship
+                let is_left = rel.left_connection == alias;
+                let is_right = rel.right_connection == alias;
+
+                if is_left || is_right {
+                    // Check if the node is actually denormalized
+                    let node_plan = if is_left { &rel.left } else { &rel.right };
+                    if let LogicalPlan::GraphNode(node) = node_plan.as_ref() {
+                        if node.is_denormalized {
+                            let rel_type = rel.labels.as_ref().and_then(|labels| labels.first().cloned());
+                            let role = if is_left { NodeRole::From } else { NodeRole::To };
+                            println!("find_denormalized_context: Returning rel_alias='{}' for node alias='{}'", rel.alias, alias);
+                            return Some((rel_type, role, rel.alias.clone()));
+                        }
+                    }
+                }
+
+                // Recursively search in child plans
+                if let Some(result) = Self::find_denormalized_context(&rel.left, alias, _label) {
+                    return Some(result);
+                }
+                if let Some(result) = Self::find_denormalized_context(&rel.right, alias, _label) {
+                    return Some(result);
+                }
+                None
+            }
+            LogicalPlan::GraphNode(node) => {
+                Self::find_denormalized_context(&node.input, alias, _label)
+            }
+            LogicalPlan::Filter(filter) => {
+                Self::find_denormalized_context(&filter.input, alias, _label)
+            }
+            LogicalPlan::Projection(proj) => {
+                Self::find_denormalized_context(&proj.input, alias, _label)
+            }
+            LogicalPlan::GroupBy(gb) => Self::find_denormalized_context(&gb.input, alias, _label),
+            LogicalPlan::OrderBy(ob) => Self::find_denormalized_context(&ob.input, alias, _label),
+            LogicalPlan::Skip(skip) => Self::find_denormalized_context(&skip.input, alias, _label),
+            LogicalPlan::Limit(limit) => {
+                Self::find_denormalized_context(&limit.input, alias, _label)
+            }
+            LogicalPlan::Cte(cte) => Self::find_denormalized_context(&cte.input, alias, _label),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query_planner::logical_expr::{Column, Literal, PropertyAccess, TableAlias};
+    use crate::query_planner::logical_expr::{Literal, PropertyAccess, TableAlias};
     use crate::query_planner::logical_plan::{Filter, GraphNode, LogicalPlan, Scan};
     use crate::query_planner::plan_ctx::TableCtx;
 
@@ -1304,6 +1480,7 @@ mod tests {
         let graph_node = Arc::new(LogicalPlan::GraphNode(GraphNode {
             input: filter,
             alias: "user".to_string(),
+            label: None,
             is_denormalized: false,
         }));
 

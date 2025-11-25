@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema};
-use crate::render_plan::cte_generation::map_property_to_column_with_relationship_context;
+use crate::render_plan::cte_generation::{map_property_to_column_with_relationship_context, NodeRole};
 use crate::server::GLOBAL_SCHEMAS;
 use serial_test::serial;
 
@@ -130,6 +130,7 @@ fn test_denormalized_from_node_property() {
         "city",
         "Airport",
         Some("FLIGHT"),
+        Some(NodeRole::From),  // FROM node -> use from_node_properties
     );
 
     assert!(result.is_ok());
@@ -147,17 +148,17 @@ fn test_denormalized_to_node_property() {
     // In reality, the query generator determines which side based on the query pattern
     // For this test, we'll manually check the to_node_properties path
     
-    // This is a limitation of the current API - it doesn't distinguish from/to context
-    // TODO: Enhancement needed to pass side information (from/to) explicitly
+    // Now we can explicitly pass TO role
     let result = map_property_to_column_with_relationship_context(
         "city",
         "Airport",
         Some("FLIGHT"),
+        Some(NodeRole::To),  // TO node -> use to_node_properties
     );
 
     assert!(result.is_ok());
-    // This will return origin_city because from_node is checked first
-    assert_eq!(result.unwrap(), "origin_city");
+    // Now correctly returns dest_city because we passed NodeRole::To
+    assert_eq!(result.unwrap(), "dest_city");
 }
 
 #[test]
@@ -171,6 +172,7 @@ fn test_fallback_to_node_property() {
         "code",  // Not denormalized in FLIGHT edges
         "Airport",
         Some("FLIGHT"),
+        None,  // Role doesn't matter for non-denormalized properties
     );
 
     assert!(result.is_ok());
@@ -189,6 +191,7 @@ fn test_no_relationship_context() {
         "city",
         "Airport",
         None,  // No relationship context
+        None,  // No role needed without relationship context
     );
 
     assert!(result.is_ok());
@@ -208,6 +211,7 @@ fn test_relationship_property() {
         "flight_num",  // This is a relationship property, not a node property
         "Airport",
         Some("FLIGHT"),
+        None,  // Role irrelevant for this test
     );
 
     // This should fail because flight_num is not a node property
@@ -259,6 +263,7 @@ fn test_multiple_relationships_same_node() {
         "city",
         "Airport",
         Some("FLIGHT"),
+        Some(NodeRole::From),
     );
     assert!(result1.is_ok());
     assert_eq!(result1.unwrap(), "origin_city");
@@ -268,6 +273,7 @@ fn test_multiple_relationships_same_node() {
         "city",
         "Airport",
         Some("AUTHORED"),  // Wrong relationship
+        None,
     );
     // Should fall back to node property mapping
     assert!(result2.is_ok());
@@ -368,6 +374,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
         "city",
         "Airport",
         Some("FLIGHT"),
+        Some(NodeRole::From),
     );
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "origin_city", 
@@ -378,12 +385,196 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
         "code",
         "Airport",
         Some("FLIGHT"),
+        Some(NodeRole::From),
     );
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "origin_code", 
         "Node ID property should map through from_node_properties");
 }
 
+/// Integration test: Verify analyzer applies denormalized property mapping through public API
+#[test]
+#[serial]
+fn test_analyzer_denormalized_property_integration() {
+    use crate::query_planner::logical_plan::LogicalPlan;
+    use crate::query_planner::logical_expr::{LogicalExpr, PropertyAccess, TableAlias, Operator, OperatorApplication};
+    use crate::query_planner::logical_plan::{Filter, Projection, ProjectionItem, ProjectionKind};
+    use crate::query_planner::plan_ctx::PlanCtx;
+    use crate::query_planner::analyzer;
+    use std::sync::Arc;
+
+    let schema = setup_denormalized_schema();
+    init_test_schema(schema.clone());
+
+    // Create a logical plan with a denormalized property access
+    // Simulates: MATCH (origin:Airport)-[:FLIGHT]->(dest:Airport) WHERE origin.city = 'Los Angeles' RETURN dest.city
+    
+    let origin_scan = Arc::new(LogicalPlan::Scan(crate::query_planner::logical_plan::Scan {
+        table_alias: Some("origin".to_string()),
+        table_name: Some("Airport".to_string()),
+    }));
+
+    let origin_node = Arc::new(LogicalPlan::GraphNode(crate::query_planner::logical_plan::GraphNode {
+        input: origin_scan,
+        alias: "origin".to_string(),
+        label: Some("Airport".to_string()),
+        is_denormalized: true,
+    }));
+
+    let dest_scan = Arc::new(LogicalPlan::Scan(crate::query_planner::logical_plan::Scan {
+        table_alias: Some("dest".to_string()),
+        table_name: Some("Airport".to_string()),
+    }));
+
+    let dest_node = Arc::new(LogicalPlan::GraphNode(crate::query_planner::logical_plan::GraphNode {
+        input: dest_scan,
+        alias: "dest".to_string(),
+        label: Some("Airport".to_string()),
+        is_denormalized: true,
+    }));
+
+    let flight_scan = Arc::new(LogicalPlan::Scan(crate::query_planner::logical_plan::Scan {
+        table_alias: Some("flight".to_string()),
+        table_name: Some("FLIGHT".to_string()),
+    }));
+
+    let graph_rel = Arc::new(LogicalPlan::GraphRel(crate::query_planner::logical_plan::GraphRel {
+        left: origin_node,
+        center: flight_scan,
+        right: dest_node,
+        alias: "flight".to_string(),
+        direction: crate::query_planner::logical_expr::Direction::Outgoing,
+        left_connection: "origin".to_string(),
+        right_connection: "dest".to_string(),
+        is_rel_anchor: false,
+        variable_length: None,
+        shortest_path_mode: None,
+        path_variable: None,
+        where_predicate: None,
+        labels: Some(vec!["FLIGHT".to_string()]),
+        is_optional: None,
+    }));
+
+    // Add a filter on denormalized property: WHERE origin.city = 'Los Angeles'
+    let filter_predicate = LogicalExpr::OperatorApplicationExp(OperatorApplication {
+        operator: Operator::Equal,
+        operands: vec![
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias("origin".to_string()),
+                column: crate::graph_catalog::expression_parser::PropertyValue::Column("city".to_string()),
+            }),
+            LogicalExpr::Literal(crate::query_planner::logical_expr::Literal::String("Los Angeles".to_string())),
+        ],
+    });
+
+    let filtered_plan = Arc::new(LogicalPlan::Filter(Filter {
+        input: graph_rel,
+        predicate: filter_predicate,
+    }));
+
+    // Add projection: RETURN dest.city
+    let projection = Arc::new(LogicalPlan::Projection(Projection {
+        input: filtered_plan,
+        items: vec![ProjectionItem {
+            expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias("dest".to_string()),
+                column: crate::graph_catalog::expression_parser::PropertyValue::Column("city".to_string()),
+            }),
+            col_alias: Some(crate::query_planner::logical_expr::ColumnAlias("dest_city".to_string())),
+        }],
+        kind: ProjectionKind::Return,
+        distinct: false,
+    }));
+
+    // Setup plan context
+    let mut plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
+    plan_ctx.insert_table_ctx(
+        "origin".to_string(),
+        crate::query_planner::plan_ctx::TableCtx::build(
+            "origin".to_string(),
+            Some(vec!["Airport".to_string()]),
+            vec![],
+            false,
+            true,
+        ),
+    );
+    plan_ctx.insert_table_ctx(
+        "dest".to_string(),
+        crate::query_planner::plan_ctx::TableCtx::build(
+            "dest".to_string(),
+            Some(vec!["Airport".to_string()]),
+            vec![],
+            false,
+            true,
+        ),
+    );
+    plan_ctx.insert_table_ctx(
+        "flight".to_string(),
+        crate::query_planner::plan_ctx::TableCtx::build(
+            "flight".to_string(),
+            Some(vec!["FLIGHT".to_string()]),
+            vec![],
+            true,
+            false,
+        ),
+    );
+
+    // Run analyzer passes (this should apply property mapping)
+    let analyzed_plan = analyzer::initial_analyzing(projection, &mut plan_ctx, &schema)
+        .expect("Initial analysis should succeed");
+
+    // The filter is extracted into plan_ctx, so check there instead
+    let origin_ctx = plan_ctx.get_table_ctx("origin")
+        .expect("origin table context should exist");
+    
+    let filters = origin_ctx.get_filters();
+    assert!(!filters.is_empty(), "Filter should be extracted to table context");
+    
+    // Verify the filter was mapped correctly
+    match &filters[0] {
+        LogicalExpr::OperatorApplicationExp(op) => {
+            if let Some(LogicalExpr::PropertyAccessExp(prop)) = op.operands.first() {
+                assert_eq!(
+                    prop.column.raw(),
+                    "origin_city",
+                    "Property 'origin.city' should be mapped to 'origin_city' by analyzer"
+                );
+            } else {
+                panic!("Expected PropertyAccessExp in filter predicate");
+            }
+        }
+        _ => panic!("Expected OperatorApplicationExp"),
+    }
+    
+    // Also verify the projection was mapped correctly
+    // Walk the plan to find the Projection node
+    fn find_projection_items(plan: &LogicalPlan) -> Option<Vec<ProjectionItem>> {
+        match plan {
+            LogicalPlan::Projection(proj) => Some(proj.items.clone()),
+            LogicalPlan::Filter(filter) => find_projection_items(&filter.input),
+            LogicalPlan::GraphRel(rel) => find_projection_items(&rel.left)
+                .or_else(|| find_projection_items(&rel.right)),
+            _ => None,
+        }
+    }
+
+    if let Some(items) = find_projection_items(&analyzed_plan) {
+        if let Some(item) = items.first() {
+            match &item.expression {
+                LogicalExpr::PropertyAccessExp(prop) => {
+                    assert_eq!(
+                        prop.column.raw(),
+                        "dest_city",
+                        "Property 'dest.city' should be mapped to 'dest_city' by analyzer"
+                    );
+                }
+                _ => panic!("Expected PropertyAccessExp in projection"),
+            }
+        }
+    } else {
+        panic!("Projection not found in analyzed plan");
+    }
+}
 
 
 

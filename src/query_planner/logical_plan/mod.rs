@@ -110,6 +110,9 @@ pub struct GraphNode {
     #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub alias: String,
+    /// The node label (e.g., "User", "Airport")
+    /// Needed for denormalized property mapping during SQL generation
+    pub label: Option<String>,
     /// True if this node is denormalized onto an edge table (set by optimizer)
     /// When true, RenderPlan should skip creating CTEs/JOINs for this node
     #[serde(default)]
@@ -516,6 +519,7 @@ impl GraphNode {
                     input: new_input.clone(),
                     // self_plan: self_tf.get_plan(),
                     alias: self.alias.clone(),
+                    label: self.label.clone(),
                     is_denormalized: self.is_denormalized,
                 });
                 Transformed::Yes(Arc::new(new_graph_node))
@@ -976,6 +980,7 @@ mod tests {
         let graph_node = GraphNode {
             input: original_input.clone(),
             alias: "person".to_string(),
+            label: None,
             is_denormalized: false,
         };
 
@@ -1122,6 +1127,7 @@ mod tests {
         let graph_node = LogicalPlan::GraphNode(GraphNode {
             input: Arc::new(scan),
             alias: "user".to_string(),
+            label: None,
             is_denormalized: false,
         });
 

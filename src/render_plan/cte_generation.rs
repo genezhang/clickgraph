@@ -383,7 +383,7 @@ pub(crate) fn extract_var_len_properties(
                         } else {
                             // Regular property - use denormalized-aware mapping
                             let column_name =
-                                map_property_to_column_with_relationship_context(property_name, node_label, relationship_type)
+                                map_property_to_column_with_relationship_context(property_name, node_label, relationship_type, None)
                                     .unwrap_or_else(|_| property_name.to_string());
                             let alias = property_name.to_string();
 
@@ -510,15 +510,25 @@ pub(crate) fn map_property_to_column_with_schema(
     property: &str,
     node_label: &str,
 ) -> Result<String, String> {
-    map_property_to_column_with_relationship_context(property, node_label, None)
+    map_property_to_column_with_relationship_context(property, node_label, None, None)
 }
 
 /// Schema-aware property mapping with relationship context
 /// Checks denormalized properties first, then falls back to node properties
-pub(crate) fn map_property_to_column_with_relationship_context(
+/// Indicates whether a node is on the FROM (left) or TO (right) side of a relationship
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeRole {
+    /// Node is on the FROM side (left_connection in GraphRel)
+    From,
+    /// Node is on the TO side (right_connection in GraphRel)
+    To,
+}
+
+pub fn map_property_to_column_with_relationship_context(
     property: &str,
     node_label: &str,
     relationship_type: Option<&str>,
+    node_role: Option<NodeRole>,
 ) -> Result<String, String> {
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -608,22 +618,39 @@ pub(crate) fn map_property_to_column_with_relationship_context(
     if node_schema.is_denormalized {
         if let Some(rel_type) = relationship_type {
             if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-                // Check if this node is the from_node in this relationship
-                if rel_schema.from_node == node_label {
-                    if let Some(from_props) = &node_schema.from_properties {
-                        if let Some(column) = from_props.get(property) {
-                            // Property found in node-level from_properties!
-                            return Ok(column.clone());
+                // Use the caller-provided role to determine which property map to use
+                match node_role {
+                    Some(NodeRole::From) => {
+                        // Node is on the FROM side - use from_properties
+                        if let Some(from_props) = &node_schema.from_properties {
+                            if let Some(column) = from_props.get(property) {
+                                return Ok(column.clone());
+                            }
                         }
                     }
-                }
-                
-                // Check if this node is the to_node in this relationship
-                if rel_schema.to_node == node_label {
-                    if let Some(to_props) = &node_schema.to_properties {
-                        if let Some(column) = to_props.get(property) {
-                            // Property found in node-level to_properties!
-                            return Ok(column.clone());
+                    Some(NodeRole::To) => {
+                        // Node is on the TO side - use to_properties
+                        if let Some(to_props) = &node_schema.to_properties {
+                            if let Some(column) = to_props.get(property) {
+                                return Ok(column.clone());
+                            }
+                        }
+                    }
+                    None => {
+                        // Fallback: try to infer from schema (works when labels differ)
+                        if rel_schema.from_node == node_label {
+                            if let Some(from_props) = &node_schema.from_properties {
+                                if let Some(column) = from_props.get(property) {
+                                    return Ok(column.clone());
+                                }
+                            }
+                        }
+                        if rel_schema.to_node == node_label {
+                            if let Some(to_props) = &node_schema.to_properties {
+                                if let Some(column) = to_props.get(property) {
+                                    return Ok(column.clone());
+                                }
+                            }
                         }
                     }
                 }
@@ -634,22 +661,39 @@ pub(crate) fn map_property_to_column_with_relationship_context(
     // 🆕 DENORMALIZED EDGE: Check edge-level denormalized properties (for backward compatibility)
     if let Some(rel_type) = relationship_type {
         if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-            // Check from_node_properties (if this node is the source)
-            if rel_schema.from_node == node_label {
-                if let Some(from_props) = &rel_schema.from_node_properties {
-                    if let Some(column) = from_props.get(property) {
-                        // Property is denormalized in edge! Return the edge table column directly
-                        return Ok(column.clone());
+            // Use the caller-provided role to determine which property map to use
+            match node_role {
+                Some(NodeRole::From) => {
+                    // Node is on the FROM side - use from_node_properties
+                    if let Some(from_props) = &rel_schema.from_node_properties {
+                        if let Some(column) = from_props.get(property) {
+                            return Ok(column.clone());
+                        }
                     }
                 }
-            }
-            
-            // Check to_node_properties (if this node is the target)
-            if rel_schema.to_node == node_label {
-                if let Some(to_props) = &rel_schema.to_node_properties {
-                    if let Some(column) = to_props.get(property) {
-                        // Property is denormalized in edge! Return the edge table column directly
-                        return Ok(column.clone());
+                Some(NodeRole::To) => {
+                    // Node is on the TO side - use to_node_properties
+                    if let Some(to_props) = &rel_schema.to_node_properties {
+                        if let Some(column) = to_props.get(property) {
+                            return Ok(column.clone());
+                        }
+                    }
+                }
+                None => {
+                    // Fallback: try to infer from schema (works when labels differ)
+                    if rel_schema.from_node == node_label {
+                        if let Some(from_props) = &rel_schema.from_node_properties {
+                            if let Some(column) = from_props.get(property) {
+                                return Ok(column.clone());
+                            }
+                        }
+                    }
+                    if rel_schema.to_node == node_label {
+                        if let Some(to_props) = &rel_schema.to_node_properties {
+                            if let Some(column) = to_props.get(property) {
+                                return Ok(column.clone());
+                            }
+                        }
                     }
                 }
             }
