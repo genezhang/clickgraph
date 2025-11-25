@@ -368,12 +368,29 @@ impl GraphJoinInference {
                 .collect::<Vec<_>>()
         );
 
-        // Return the anchor table (first one found, or None if all optional)
-        let anchor = if available_tables.is_empty() {
-            None
+        // CRITICAL FIX: The anchor should be a table that is referenced by first JOIN but NOT being joined itself
+        // For queries like: MATCH (u1:User)-[:FOLLOWS]->(u2:User)
+        // The first JOIN will be: u1 ON u1.user_id = <rel>.follower_id
+        // We want u1 to be in FROM, not u2 or the relationship table
+        
+        // Strategy: Get references from first JOIN condition (excluding the JOIN's own alias)
+        // The anchor is a table that is referenced but not being joined
+        let anchor = if let Some(first_join) = ordered_joins.first() {
+            let mut refs = std::collections::HashSet::new();
+            for condition in &first_join.joining_on {
+                for operand in &condition.operands {
+                    Self::extract_table_refs_from_expr(operand, &mut refs);
+                }
+            }
+            // Remove the table being joined (it shouldn't be the anchor)
+            refs.remove(&first_join.table_alias);
+            
+            // Find a reference that is not being joined anywhere else (this is the anchor)
+            refs.into_iter()
+                .find(|r| !ordered_joins.iter().any(|j| &j.table_alias == r))
+                .or_else(|| available_tables.iter().next().cloned())
         } else {
-            // Prefer a required table if available
-            available_tables.iter().next().cloned()
+            None
         };
 
         eprintln!("  ?? ANCHOR TABLE for FROM clause: {:?}\n", anchor);
