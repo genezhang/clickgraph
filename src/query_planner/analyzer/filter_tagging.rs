@@ -402,41 +402,15 @@ impl FilterTagging {
                         result?
                     }
                 };
-                // For denormalized nodes, remap table alias to relationship alias
-                let final_table_alias = if is_denormalized {
-                    if let Some(plan) = plan {
-                        if let Ok(tc) = plan_ctx.get_table_ctx(&property_access.table_alias.0) {
-                            if let Some(label) = tc.get_label_opt() {
-                                // Check if this is a denormalized context
-                                if let Some((_rel_type, _node_role, rel_alias)) = Self::find_denormalized_context(plan, &property_access.table_alias.0, &label) {
-                                    println!(
-                                        "FilterTagging: Remapping table alias '{}' → '{}' for denormalized node",
-                                        property_access.table_alias.0, rel_alias
-                                    );
-                                    TableAlias(rel_alias)
-                                } else {
-                                    property_access.table_alias.clone()
-                                }
-                            } else {
-                                property_access.table_alias.clone()
-                            }
-                        } else {
-                            property_access.table_alias.clone()
-                        }
-                    } else {
-                        property_access.table_alias.clone()
-                    }
-                } else {
-                    property_access.table_alias.clone()
-                };
 
                 println!(
-                    "FilterTagging: Successfully mapped property '{}' to column '{}' with table alias '{}'",
-                    property_access.column.raw(), mapped_column.raw(), final_table_alias.0
+                    "FilterTagging: Successfully mapped property '{}' to column '{}' (keeping original table alias '{}')",
+                    property_access.column.raw(), mapped_column.raw(), property_access.table_alias.0
                 );
 
+                // Keep the original table alias - it will be remapped during SQL generation
                 Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: final_table_alias,
+                    table_alias: property_access.table_alias.clone(),
                     column: mapped_column,
                 }))
             }
