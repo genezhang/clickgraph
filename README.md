@@ -16,7 +16,8 @@
 > **Note: we are standardizing on using `Node` and `Edge` externally following ISO GQL terminology**
 
 The next release will be big enhancements to the schema patterns, including
-- **Edge ID**: it can be a single column or a composite key with multiple columns for a unique edge instance. Default to (from_id, to_id)
+- **Edge ID**: it can be a single column or a composite key with multiple columns for a unique edge instance. Default to (from_id, to_id).
+- **Property mapping to expression**: properties can be mapped to expressions represented in simple SQL expressions.
 - **Denormalized edge table**: nodes are part of the edge table with denormalized node property columns. Either from_node or to_node or both can be denormalized.
 - **Polymorphic edge table**: multiple edge types share the same edge table with a type column to indicate its edge type. The edge table also contains `from_label_column` and `to_label_column` to indicate the node labels that are standalone tables.
 

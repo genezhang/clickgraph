@@ -56,13 +56,32 @@ impl<'a> ViewResolver<'a> {
             .get_node_schema(label)
             .map_err(|_| AnalyzerError::NodeLabelNotFound(label.to_string()))?;
 
-        // Try explicit mapping first, fallback to identity mapping (property name = column name)
+        // Try explicit property_mappings first
+        if let Some(mapped) = node_schema.property_mappings.get(property) {
+            return Ok(mapped.clone());
+        }
+        
+        // For denormalized nodes without explicit property_mappings,
+        // try from_node_properties first (default for node-only queries)
+        // Note: UNION ALL for both positions is handled at a higher level
+        if node_schema.is_denormalized {
+            // Try from_properties first (origin/source position)
+            if let Some(ref from_props) = node_schema.from_properties {
+                if let Some(mapped) = from_props.get(property) {
+                    return Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()));
+                }
+            }
+            // Fallback to to_properties (destination position)
+            if let Some(ref to_props) = node_schema.to_properties {
+                if let Some(mapped) = to_props.get(property) {
+                    return Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()));
+                }
+            }
+        }
+        
+        // Fallback to identity mapping (property name = column name)
         // This supports wide tables without requiring hundreds of explicit mappings
-        Ok(node_schema
-            .property_mappings
-            .get(property)
-            .cloned()
-            .unwrap_or_else(|| crate::graph_catalog::expression_parser::PropertyValue::Column(property.to_string())))
+        Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(property.to_string()))
     }
 
     /// Resolve a relationship property to its underlying column

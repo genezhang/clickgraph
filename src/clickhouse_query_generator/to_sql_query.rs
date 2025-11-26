@@ -22,6 +22,27 @@ use super::function_registry::get_function_mapping;
 /// Generate SQL from RenderPlan with configurable CTE depth limit
 pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     let mut sql = String::new();
+    
+    // If there's a Union, the entire query is the union of sub-queries
+    // Only output CTEs, UNION, and LIMIT (not SELECT/FROM/JOINS for the outer level)
+    if plan.union.0.is_some() {
+        sql.push_str(&plan.ctes.to_sql());
+        sql.push_str(&plan.union.to_sql());
+        
+        // Add LIMIT after UNION if present
+        if let Some(m) = plan.limit.0 {
+            let skip_str = if let Some(n) = plan.skip.0 {
+                format!("{n},")
+            } else {
+                "".to_string()
+            };
+            let limit_str = format!("LIMIT {skip_str} {m}");
+            sql.push_str(&limit_str)
+        }
+        
+        return sql;
+    }
+    
     sql.push_str(&plan.ctes.to_sql());
     sql.push_str(&plan.select.to_sql());
     sql.push_str(&plan.from.to_sql());

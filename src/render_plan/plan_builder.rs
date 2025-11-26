@@ -65,6 +65,13 @@ pub(crate) trait RenderPlanBuilder {
         alias: &str,
     ) -> RenderPlanBuilderResult<Vec<(String, String)>>;
 
+    /// Find denormalized properties for a given alias
+    /// Returns a HashMap of logical property name -> physical column name
+    fn find_denormalized_properties(
+        &self,
+        alias: &str,
+    ) -> Option<std::collections::HashMap<String, String>>;
+
     /// Normalize aggregate function arguments: convert TableAlias(a) to PropertyAccess(a.id_column)
     /// This is needed for queries like COUNT(b) where b is a node alias
     fn normalize_aggregate_args(&self, expr: RenderExpr) -> RenderPlanBuilderResult<RenderExpr>;
@@ -202,6 +209,50 @@ impl RenderPlanBuilder for LogicalPlan {
             "Cannot find properties for alias '{}'",
             alias
         )))
+    }
+
+    /// Find denormalized properties for a given alias
+    /// Returns a HashMap of logical property name -> physical column name
+    /// Only returns Some if the alias refers to a denormalized node
+    fn find_denormalized_properties(
+        &self,
+        alias: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        match self {
+            LogicalPlan::GraphNode(node) if node.alias == alias => {
+                if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                    if scan.is_denormalized {
+                        // Prefer from_node_properties, fall back to to_node_properties
+                        // For UNION ALL case, this will be handled separately
+                        let props = scan.from_node_properties.as_ref()
+                            .or(scan.to_node_properties.as_ref());
+                        
+                        if let Some(prop_map) = props {
+                            return Some(
+                                prop_map.iter()
+                                    .map(|(k, v)| (k.clone(), v.raw().to_string()))
+                                    .collect()
+                            );
+                        }
+                    }
+                }
+                None
+            }
+            LogicalPlan::GraphRel(rel) => {
+                if let Some(props) = rel.left.find_denormalized_properties(alias) {
+                    return Some(props);
+                }
+                rel.right.find_denormalized_properties(alias)
+            }
+            LogicalPlan::Projection(proj) => proj.input.find_denormalized_properties(alias),
+            LogicalPlan::Filter(filter) => filter.input.find_denormalized_properties(alias),
+            LogicalPlan::GroupBy(gb) => gb.input.find_denormalized_properties(alias),
+            LogicalPlan::GraphJoins(joins) => joins.input.find_denormalized_properties(alias),
+            LogicalPlan::OrderBy(order) => order.input.find_denormalized_properties(alias),
+            LogicalPlan::Skip(skip) => skip.input.find_denormalized_properties(alias),
+            LogicalPlan::Limit(limit) => limit.input.find_denormalized_properties(alias),
+            _ => None,
+        }
     }
 
     fn normalize_aggregate_args(&self, expr: RenderExpr) -> RenderPlanBuilderResult<RenderExpr> {
@@ -679,6 +730,39 @@ impl RenderPlanBuilder for LogicalPlan {
                                     })
                                 })
                                 .collect::<Result<Vec<SelectItem>, RenderBuildError>>()?
+                        } else if view_scan.is_denormalized && (view_scan.from_node_properties.is_some() || view_scan.to_node_properties.is_some()) {
+                            // DENORMALIZED NODE-ONLY QUERY
+                            // For denormalized nodes, we need to translate logical property names
+                            // to actual column names from the edge table.
+                            //
+                            // For BOTH positions (from + to), we'll generate UNION ALL later.
+                            // For now, use from_node_properties if available, else to_node_properties.
+                            
+                            let props_to_use = view_scan.from_node_properties.as_ref()
+                                .or(view_scan.to_node_properties.as_ref());
+                            
+                            if let Some(props) = props_to_use {
+                                props
+                                    .iter()
+                                    .map(|(prop_name, prop_value)| {
+                                        // Extract the actual column name from PropertyValue
+                                        let actual_column = match prop_value {
+                                            PropertyValue::Column(col) => col.clone(),
+                                            PropertyValue::Expression(expr) => expr.clone(),
+                                        };
+                                        
+                                        Ok(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(graph_node.alias.clone()),
+                                                column: Column(PropertyValue::Column(actual_column)),
+                                            }),
+                                            col_alias: Some(ColumnAlias(format!("{}.{}", graph_node.alias, prop_name))),
+                                        })
+                                    })
+                                    .collect::<Result<Vec<SelectItem>, RenderBuildError>>()?
+                            } else {
+                                vec![]
+                            }
                         } else {
                             vec![]
                         }
@@ -898,7 +982,39 @@ impl RenderPlanBuilder for LogicalPlan {
                         };
 
                     // Apply denormalized property mapping for denormalized nodes
-                    let mut expr: RenderExpr = resolved_expr.try_into()?;                    // Check if this is a path variable that needs to be converted to tuple construction
+                    let mut expr: RenderExpr = resolved_expr.try_into()?;
+                    
+                    // DENORMALIZED PROPERTY TRANSLATION:
+                    // For denormalized nodes, translate logical property names to physical columns
+                    // e.g., a.code -> a.origin_code (using from_node_properties)
+                    let translated_expr = if let RenderExpr::PropertyAccessExp(ref prop_access) = expr {
+                        // Try to find a denormalized ViewScan for this alias
+                        if let Some(denorm_props) = self.find_denormalized_properties(&prop_access.table_alias.0) {
+                            let prop_name = prop_access.column.0.raw();
+                            if let Some(physical_col) = denorm_props.get(prop_name) {
+                                // Replace with physical column
+                                println!(
+                                    "DEBUG: Translated denormalized property {}.{} -> {}.{}",
+                                    prop_access.table_alias.0, prop_name,
+                                    prop_access.table_alias.0, physical_col
+                                );
+                                Some(RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: prop_access.table_alias.clone(),
+                                    column: Column(PropertyValue::Column(physical_col.clone())),
+                                }))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    
+                    let mut expr = translated_expr.unwrap_or(expr);
+                    
+                    // Check if this is a path variable that needs to be converted to tuple construction
                     if let (Some(path_var_name), RenderExpr::TableAlias(TableAlias(alias))) =
                         (&path_var, &expr)
                     {
@@ -1262,6 +1378,17 @@ impl RenderPlanBuilder for LogicalPlan {
                             _ => None,
                         }
                     }
+                    
+                    // Helper to find GraphNode for node-only queries
+                    fn find_graph_node(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphNode> {
+                        match plan {
+                            LogicalPlan::GraphNode(gn) => Some(gn),
+                            LogicalPlan::Projection(proj) => find_graph_node(&proj.input),
+                            LogicalPlan::Filter(filter) => find_graph_node(&filter.input),
+                            _ => None,
+                        }
+                    }
+                    
                     if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
                         if let Some(rel_table) = extract_table_name(&graph_rel.center) {
                             log::info!(
@@ -1278,6 +1405,29 @@ impl RenderPlanBuilder for LogicalPlan {
                             return Ok(from_table_to_view_ref(Some(FromTable::new(Some(view_ref)))).map(|vr| FromTable::new(Some(vr))));
                         }
                     }
+                    
+                    // NODE-ONLY QUERY: No GraphRel, look for GraphNode
+                    if let Some(graph_node) = find_graph_node(&graph_joins.input) {
+                        log::info!(
+                            "🎯 NODE-ONLY: No JOINs, no GraphRel, using GraphNode alias '{}' for FROM",
+                            graph_node.alias
+                        );
+                        // Get table from GraphNode's ViewScan
+                        if let LogicalPlan::ViewScan(scan) = graph_node.input.as_ref() {
+                            let view_ref = super::ViewTableRef {
+                                source: std::sync::Arc::new(LogicalPlan::GraphNode(graph_node.clone())),
+                                name: scan.source_table.clone(),
+                                alias: Some(graph_node.alias.clone()),
+                                use_final: scan.use_final,
+                            };
+                            log::info!(
+                                "🎯 NODE-ONLY: Created ViewTableRef for table '{}' as '{}'",
+                                scan.source_table, graph_node.alias
+                            );
+                            return Ok(from_table_to_view_ref(Some(FromTable::new(Some(view_ref)))).map(|vr| FromTable::new(Some(vr))));
+                        }
+                    }
+                    
                     return Ok(from_table_to_view_ref(None).map(|vr| FromTable::new(Some(vr))));
                 }
 
@@ -1578,9 +1728,13 @@ impl RenderPlanBuilder for LogicalPlan {
                 let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
                 // Apply property mapping to the filter expression
                 apply_property_mapping_to_expr(&mut expr, &filter.input);
+                println!("DEBUG: extract_filters - Returning Some(expr) from Filter");
                 Some(expr)
             }
-            LogicalPlan::Projection(projection) => projection.input.extract_filters()?,
+            LogicalPlan::Projection(projection) => {
+                println!("DEBUG: extract_filters - Projection, recursing to input type: {:?}", std::mem::discriminant(&*projection.input));
+                projection.input.extract_filters()?
+            }
             LogicalPlan::GroupBy(group_by) => group_by.input.extract_filters()?,
             LogicalPlan::OrderBy(order_by) => order_by.input.extract_filters()?,
             LogicalPlan::Skip(skip) => skip.input.extract_filters()?,
@@ -2067,6 +2221,47 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             other => (other, None, None, None),
         };
+
+        // Check if the core plan contains a Union (denormalized node-only queries)
+        // For Union, we need to build each branch separately and combine them
+        if let Some(union) = find_nested_union(core_plan) {
+            println!("DEBUG: Found nested Union with {} inputs, building UNION ALL plan", union.inputs.len());
+            
+            use crate::graph_catalog::graph_schema::GraphSchema;
+            use std::collections::HashMap;
+            let empty_schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
+            
+            // Build render plan for each Union branch
+            // NOTE: Don't add LIMIT to branches - LIMIT applies to the combined UNION result
+            let union_plans: Result<Vec<RenderPlan>, RenderBuildError> = union.inputs.iter().map(|branch| {
+                branch.to_render_plan(&empty_schema)
+            }).collect();
+            
+            let union_plans = union_plans?;
+            
+            // Create a render plan with the union field populated
+            // The first branch provides the SELECT structure
+            let first_plan = union_plans.first().ok_or_else(|| {
+                RenderBuildError::InvalidRenderPlan("Union has no inputs".to_string())
+            })?;
+            
+            return Ok(RenderPlan {
+                ctes: CteItems(vec![]),
+                select: first_plan.select.clone(),
+                from: FromTableItem(None), // Union doesn't need FROM at top level
+                joins: JoinItems(vec![]),
+                filters: FilterItems(None),
+                group_by: GroupByExpressions(vec![]),
+                having_clause: None,
+                order_by: OrderByItems(vec![]),
+                skip: SkipItem(skip_val),
+                limit: LimitItem(limit_val), // LIMIT applies to entire UNION result
+                union: UnionItems(Some(Union {
+                    input: union_plans,
+                    union_type: union.union_type.clone().try_into()?,
+                })),
+            });
+        }
 
         // Check for GraphJoins wrapping Projection(Return) -> GroupBy pattern
         if let LogicalPlan::GraphJoins(graph_joins) = core_plan {
@@ -3298,6 +3493,17 @@ fn plan_to_string(plan: &LogicalPlan, depth: usize) -> String {
         LogicalPlan::ViewScan(scan) => format!("{}ViewScan(table='{}')", indent, scan.source_table),
         LogicalPlan::Scan(scan) => format!("{}Scan(table={:?})", indent, scan.table_name),
         _ => format!("{}Other({})", indent, plan_type_name(plan)),
+    }
+}
+
+/// Find a Union node nested inside a plan (within Projection, GraphJoins, etc.)
+fn find_nested_union(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::Union> {
+    match plan {
+        LogicalPlan::Union(union) => Some(union),
+        LogicalPlan::GraphJoins(graph_joins) => find_nested_union(&graph_joins.input),
+        LogicalPlan::Projection(projection) => find_nested_union(&projection.input),
+        LogicalPlan::Filter(filter) => find_nested_union(&filter.input),
+        _ => None,
     }
 }
 

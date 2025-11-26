@@ -7,7 +7,7 @@ use crate::{
         logical_plan::{
             errors::LogicalPlanError,
             plan_builder::LogicalPlanResult,
-            {GraphNode, GraphRel, LogicalPlan, Scan, ShortestPathMode},
+            {GraphNode, GraphRel, LogicalPlan, Scan, ShortestPathMode, Union, UnionType},
         },
         plan_ctx::{PlanCtx, TableCtx},
     },
@@ -138,18 +138,124 @@ fn try_generate_view_scan(
         }
     };
 
-    // Check if this is a denormalized node
+    // DENORMALIZED NODE-ONLY QUERIES:
+    // For denormalized nodes (virtual nodes that exist as columns on edge tables),
+    // we need to generate queries from the edge table itself.
+    //
+    // Three cases:
+    // 1. Node only in FROM position → Single ViewScan with from_node_properties
+    // 2. Node only in TO position → Single ViewScan with to_node_properties  
+    // 3. Node in BOTH positions → Union(All) of two ViewScans
     if node_schema.is_denormalized {
-        // Denormalized nodes are VIRTUAL - they don't exist as standalone tables
-        // They can ONLY appear in relationship patterns like (a:Airport)-[r:FLIGHT]->(b:Airport)
-        // where the properties come from the edge table (flights)
-        log::warn!(
-            "Cannot create standalone ViewScan for denormalized node label '{}'. \
-             Denormalized nodes must appear in relationship patterns. \
-             Example: MATCH (a:{})-[r]->(b) instead of MATCH (a:{})",
-            label, label, label
+        log::info!(
+            "✓ Denormalized node-only query for label '{}' - will generate from edge table",
+            label
         );
-        return None;
+        
+        let has_from_props = node_schema.from_properties.is_some();
+        let has_to_props = node_schema.to_properties.is_some();
+        let source_table = node_schema.denormalized_source_table.as_ref()
+            .ok_or_else(|| {
+                log::error!("Denormalized node '{}' missing source table", label);
+            });
+        
+        if source_table.is_err() {
+            log::error!("Cannot create ViewScan for denormalized node without source table");
+            return None;
+        }
+        let source_table = source_table.unwrap();
+        
+        log::debug!(
+            "Denormalized node '{}': has_from_props={}, has_to_props={}, source_table={}",
+            label, has_from_props, has_to_props, source_table
+        );
+        
+        // source_table is already fully qualified (database.table) from config.rs
+        let full_table_name = source_table.clone();
+        
+        // Case 3: BOTH from and to properties → UNION ALL of two ViewScans
+        if has_from_props && has_to_props {
+            log::info!(
+                "✓ Denormalized node '{}' has BOTH positions - creating UNION ALL",
+                label
+            );
+            
+            // Create FROM position ViewScan
+            let mut from_scan = ViewScan::new(
+                full_table_name.clone(),
+                None,
+                HashMap::new(),
+                String::new(),
+                vec![],
+                vec![],
+            );
+            from_scan.is_denormalized = true;
+            from_scan.from_node_properties = node_schema.from_properties.as_ref().map(|props| {
+                props.iter()
+                    .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+                    .collect()
+            });
+            // Note: to_node_properties is None - this is the FROM branch
+            
+            // Create TO position ViewScan  
+            let mut to_scan = ViewScan::new(
+                full_table_name,
+                None,
+                HashMap::new(),
+                String::new(),
+                vec![],
+                vec![],
+            );
+            to_scan.is_denormalized = true;
+            to_scan.to_node_properties = node_schema.to_properties.as_ref().map(|props| {
+                props.iter()
+                    .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+                    .collect()
+            });
+            // Note: from_node_properties is None - this is the TO branch
+            
+            // Create Union of the two ViewScans
+            use crate::query_planner::logical_plan::{Union, UnionType};
+            let union = Union {
+                inputs: vec![
+                    Arc::new(LogicalPlan::ViewScan(Arc::new(from_scan))),
+                    Arc::new(LogicalPlan::ViewScan(Arc::new(to_scan))),
+                ],
+                union_type: UnionType::All,
+            };
+            
+            log::info!("✓ Created UNION ALL for denormalized node '{}'", label);
+            return Some(Arc::new(LogicalPlan::Union(union)));
+        }
+        
+        // Case 1 or 2: Only one position - single ViewScan
+        let mut view_scan = ViewScan::new(
+            full_table_name,
+            None,
+            HashMap::new(),
+            String::new(),
+            vec![],
+            vec![],
+        );
+        
+        view_scan.is_denormalized = true;
+        view_scan.from_node_properties = node_schema.from_properties.as_ref().map(|props| {
+            props.iter()
+                .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+                .collect()
+        });
+        view_scan.to_node_properties = node_schema.to_properties.as_ref().map(|props| {
+            props.iter()
+                .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+                .collect()
+        });
+        
+        log::info!(
+            "✓ Created denormalized ViewScan for '{}' (single position)",
+            label
+        );
+        
+        return Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))));
     }
 
     // Log successful resolution
@@ -1016,6 +1122,29 @@ fn traverse_node_pattern(
         );
 
         let scan = generate_scan(node_alias.clone(), node_label.clone(), plan_ctx)?;
+        
+        // Check if this is a Union (denormalized node with BOTH positions)
+        // In that case, wrap EACH branch in its own GraphNode, then return the Union
+        if let LogicalPlan::Union(union) = scan.as_ref() {
+            log::info!("✓ Wrapping Union branches in GraphNodes for alias '{}'", node_alias);
+            let wrapped_inputs: Vec<Arc<LogicalPlan>> = union.inputs.iter().map(|branch| {
+                let is_denorm = is_denormalized_scan(branch);
+                Arc::new(LogicalPlan::GraphNode(GraphNode {
+                    input: branch.clone(),
+                    alias: node_alias.clone(),
+                    label: node_label.clone().map(|s| s.to_string()),
+                    is_denormalized: is_denorm,
+                }))
+            }).collect();
+            
+            let wrapped_union = Union {
+                inputs: wrapped_inputs,
+                union_type: union.union_type.clone(),
+            };
+            return Ok(Arc::new(LogicalPlan::Union(wrapped_union)));
+        }
+        
+        // Normal case: single ViewScan wrapped in GraphNode
         let is_denorm = is_denormalized_scan(&scan);
         let graph_node = GraphNode {
             input: scan,

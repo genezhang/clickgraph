@@ -257,10 +257,13 @@ impl AnalyzerPass for FilterTagging {
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Union(union) => {
+                // For Union queries, each branch is self-contained.
+                // We need to apply property mapping to filters, but NOT extract them into plan_ctx
+                // because plan_ctx is shared and would incorrectly combine filters from different branches.
+                // Instead, process each branch with property mapping only, keeping Filter nodes in tree.
                 let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
                 for input_plan in union.inputs.iter() {
-                    let child_tf =
-                        self.analyze_with_graph_schema(input_plan.clone(), plan_ctx, graph_schema)?;
+                    let child_tf = self.analyze_union_branch(input_plan.clone(), plan_ctx, graph_schema)?;
                     inputs_tf.push(child_tf);
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
@@ -273,6 +276,80 @@ impl AnalyzerPass for FilterTagging {
 impl FilterTagging {
     pub fn new() -> Self {
         FilterTagging
+    }
+
+    /// Analyze a Union branch with property mapping but WITHOUT filter extraction.
+    /// This keeps Filter nodes in the tree because each Union branch is self-contained
+    /// and should not share filter state through plan_ctx.
+    fn analyze_union_branch(
+        &self,
+        plan: Arc<LogicalPlan>,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
+        match plan.as_ref() {
+            LogicalPlan::Filter(filter) => {
+                // Process child first
+                let child_tf = self.analyze_union_branch(filter.input.clone(), plan_ctx, graph_schema)?;
+                let child_plan_ref = match &child_tf {
+                    Transformed::Yes(p) | Transformed::No(p) => p.as_ref(),
+                };
+                // Apply property mapping to predicate (this maps Cypher props to DB columns)
+                let mapped_predicate = self.apply_property_mapping(
+                    filter.predicate.clone(),
+                    plan_ctx,
+                    graph_schema,
+                    Some(child_plan_ref),
+                )?;
+                // Keep the Filter node in tree - don't extract to plan_ctx
+                Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
+                    input: child_tf.get_plan().clone(),
+                    predicate: mapped_predicate,
+                }))))
+            }
+            LogicalPlan::Projection(projection) => {
+                let child_tf = self.analyze_union_branch(projection.input.clone(), plan_ctx, graph_schema)?;
+                let child_plan_ref = match &child_tf {
+                    Transformed::Yes(p) | Transformed::No(p) => p.as_ref(),
+                };
+                // Apply property mapping to projection items
+                let mut mapped_items = Vec::new();
+                for item in &projection.items {
+                    let mapped_expr = self.apply_property_mapping(
+                        item.expression.clone(),
+                        plan_ctx,
+                        graph_schema,
+                        Some(child_plan_ref),
+                    )?;
+                    mapped_items.push(ProjectionItem {
+                        expression: mapped_expr,
+                        col_alias: item.col_alias.clone(),
+                    });
+                }
+                Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
+                    crate::query_planner::logical_plan::Projection {
+                        input: child_tf.get_plan().clone(),
+                        items: mapped_items,
+                        kind: projection.kind.clone(),
+                        distinct: projection.distinct,
+                    },
+                ))))
+            }
+            LogicalPlan::GraphNode(gn) => {
+                let child_tf = self.analyze_union_branch(gn.input.clone(), plan_ctx, graph_schema)?;
+                Ok(gn.rebuild_or_clone(child_tf, plan.clone()))
+            }
+            LogicalPlan::GraphJoins(gj) => {
+                let child_tf = self.analyze_union_branch(gj.input.clone(), plan_ctx, graph_schema)?;
+                Ok(gj.rebuild_or_clone(child_tf, plan.clone()))
+            }
+            // Leaf nodes - no transformation
+            LogicalPlan::ViewScan(_) | LogicalPlan::Scan(_) | LogicalPlan::Empty => {
+                Ok(Transformed::No(plan.clone()))
+            }
+            // For any other node types, fall back to regular analysis
+            _ => self.analyze_with_graph_schema(plan, plan_ctx, graph_schema),
+        }
     }
 
     /// Apply property mapping to a LogicalExpr, converting Cypher property names to database column names
@@ -345,28 +422,20 @@ impl FilterTagging {
                 );
 
                 let mapped_column = if is_denormalized {
-                    // For denormalized nodes, determine role from GraphRel context
+                    // For denormalized nodes, look directly at the ViewScan's properties
                     if let Some(plan) = plan {
-                        if let Some((rel_type, node_role, rel_alias)) = Self::find_denormalized_context(plan, &property_access.table_alias.0, &label) {
+                        if let Some(column) = Self::find_property_in_viewscan(plan, &property_access.table_alias.0, property_access.column.raw()) {
                             println!(
-                                "FilterTagging: Found denormalized context - rel_type={:?}, node_role={:?}, rel_alias='{}'",
-                                rel_type, node_role, rel_alias
+                                "FilterTagging: Found property '{}' directly in ViewScan -> '{}'",
+                                property_access.column.raw(), column
                             );
-                            // Use relationship-context-aware mapping
-                            use crate::render_plan::cte_generation::map_property_to_column_with_relationship_context;
-                            let mapped = map_property_to_column_with_relationship_context(
-                                property_access.column.raw(),
-                                &label,
-                                rel_type.as_deref(),
-                                Some(node_role),
-                            ).map_err(|e| AnalyzerError::PropertyNotFound {
-                                entity_type: "node".to_string(),
-                                entity_name: property_access.table_alias.0.clone(),
-                                property: e,
-                            })?;
-                            crate::graph_catalog::expression_parser::PropertyValue::Column(mapped)
+                            crate::graph_catalog::expression_parser::PropertyValue::Column(column)
                         } else {
                             // Fallback to standard mapping
+                            println!(
+                                "FilterTagging: Property '{}' not found in ViewScan, falling back to view_resolver",
+                                property_access.column.raw()
+                            );
                             let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
                             view_resolver.resolve_node_property(&label, &property_access.column.raw())?
                         }
@@ -862,6 +931,71 @@ impl FilterTagging {
         }
     }
 
+    /// Find a property mapping directly from a ViewScan in the plan tree
+    /// This is the simplest approach - each Union branch's ViewScan has the correct properties
+    fn find_property_in_viewscan(
+        plan: &LogicalPlan,
+        alias: &str,
+        property: &str,
+    ) -> Option<String> {
+        match plan {
+            LogicalPlan::GraphNode(node) => {
+                if node.alias == alias {
+                    if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                        // Check from_node_properties first
+                        if let Some(from_props) = &scan.from_node_properties {
+                            if let Some(prop_value) = from_props.get(property) {
+                                if let crate::graph_catalog::expression_parser::PropertyValue::Column(col) = prop_value {
+                                    return Some(col.clone());
+                                }
+                            }
+                        }
+                        // Then check to_node_properties
+                        if let Some(to_props) = &scan.to_node_properties {
+                            if let Some(prop_value) = to_props.get(property) {
+                                if let crate::graph_catalog::expression_parser::PropertyValue::Column(col) = prop_value {
+                                    return Some(col.clone());
+                                }
+                            }
+                        }
+                        // Finally check regular property_mapping
+                        if let Some(prop_value) = scan.property_mapping.get(property) {
+                            return Some(prop_value.raw().to_string());
+                        }
+                    }
+                }
+                Self::find_property_in_viewscan(&node.input, alias, property)
+            }
+            LogicalPlan::GraphRel(rel) => {
+                // Check left, center, and right
+                if let Some(col) = Self::find_property_in_viewscan(&rel.left, alias, property) {
+                    return Some(col);
+                }
+                if let Some(col) = Self::find_property_in_viewscan(&rel.center, alias, property) {
+                    return Some(col);
+                }
+                Self::find_property_in_viewscan(&rel.right, alias, property)
+            }
+            LogicalPlan::Filter(filter) => Self::find_property_in_viewscan(&filter.input, alias, property),
+            LogicalPlan::Projection(proj) => Self::find_property_in_viewscan(&proj.input, alias, property),
+            LogicalPlan::GroupBy(gb) => Self::find_property_in_viewscan(&gb.input, alias, property),
+            LogicalPlan::OrderBy(ob) => Self::find_property_in_viewscan(&ob.input, alias, property),
+            LogicalPlan::Skip(skip) => Self::find_property_in_viewscan(&skip.input, alias, property),
+            LogicalPlan::Limit(limit) => Self::find_property_in_viewscan(&limit.input, alias, property),
+            LogicalPlan::Cte(cte) => Self::find_property_in_viewscan(&cte.input, alias, property),
+            LogicalPlan::Union(union) => {
+                // For Union, search in all branches (they should all have the same alias)
+                for branch in &union.inputs {
+                    if let Some(col) = Self::find_property_in_viewscan(branch, alias, property) {
+                        return Some(col);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// Find denormalized context: relationship type and node role
     /// Returns (relationship_type, node_role) if the alias is a denormalized node in a GraphRel
     fn find_denormalized_context(
@@ -900,6 +1034,19 @@ impl FilterTagging {
                 None
             }
             LogicalPlan::GraphNode(node) => {
+                // For node-only queries with denormalized nodes, check ViewScan directly
+                if node.is_denormalized && node.alias == alias {
+                    if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                        // Determine role based on which properties are available
+                        if scan.from_node_properties.is_some() && scan.to_node_properties.is_none() {
+                            println!("find_denormalized_context: Node-only FROM for alias='{}'", alias);
+                            return Some((None, NodeRole::From, alias.to_string()));
+                        } else if scan.to_node_properties.is_some() && scan.from_node_properties.is_none() {
+                            println!("find_denormalized_context: Node-only TO for alias='{}'", alias);
+                            return Some((None, NodeRole::To, alias.to_string()));
+                        }
+                    }
+                }
                 Self::find_denormalized_context(&node.input, alias, _label)
             }
             LogicalPlan::Filter(filter) => {

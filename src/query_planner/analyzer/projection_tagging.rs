@@ -246,10 +246,75 @@ impl ProjectionTagging {
                         pass: Pass::ProjectionTagging,
                         source: e,
                     })?;
-                table_ctx.insert_projection(item.clone());
-
-                // Don't set an alias - let ClickHouse return just the column name
-                // SQL will be: SELECT u.name (returns as "name" not "u.name")
+                
+                // Get label for property resolution
+                let label = table_ctx.get_label_opt().unwrap_or_default();
+                let is_relation = table_ctx.is_relation();
+                
+                // Resolve property to actual column name using ViewResolver
+                // This handles standard property_mappings
+                // TODO: For denormalized nodes, we need to check from_node_properties/to_node_properties
+                let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
+                
+                let mapped_column = if is_relation {
+                    view_resolver.resolve_relationship_property(&label, property_access.column.raw())?
+                } else {
+                    // Check if this node is denormalized by looking up the schema
+                    if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
+                        if node_schema.is_denormalized {
+                            // For denormalized nodes, prefer from_node_properties 
+                            // (TO position would need UNION ALL which we handle separately)
+                            if let Some(ref from_props) = node_schema.from_properties {
+                                if let Some(mapped) = from_props.get(property_access.column.raw()) {
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone())
+                                } else {
+                                    // Property not in from_props, try to_props
+                                    if let Some(ref to_props) = node_schema.to_properties {
+                                        if let Some(mapped) = to_props.get(property_access.column.raw()) {
+                                            crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone())
+                                        } else {
+                                            // Fallback to identity
+                                            crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
+                                        }
+                                    } else {
+                                        crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
+                                    }
+                                }
+                            } else if let Some(ref to_props) = node_schema.to_properties {
+                                if let Some(mapped) = to_props.get(property_access.column.raw()) {
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone())
+                                } else {
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
+                                }
+                            } else {
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
+                            }
+                        } else {
+                            // Standard node - use ViewResolver
+                            view_resolver.resolve_node_property(&label, property_access.column.raw())?
+                        }
+                    } else {
+                        // Label not found in schema - use property as column name (identity mapping)
+                        crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
+                    }
+                };
+                
+                // Update the property access with the mapped column
+                let updated_property_access = PropertyAccess {
+                    table_alias: property_access.table_alias.clone(),
+                    column: mapped_column,
+                };
+                
+                // Create updated projection item with mapped column
+                let updated_item = ProjectionItem {
+                    expression: LogicalExpr::PropertyAccessExp(updated_property_access.clone()),
+                    col_alias: item.col_alias.clone(),
+                };
+                
+                table_ctx.insert_projection(updated_item.clone());
+                
+                // Update the item's expression with the mapped column
+                item.expression = LogicalExpr::PropertyAccessExp(updated_property_access);
 
                 Ok(())
             }

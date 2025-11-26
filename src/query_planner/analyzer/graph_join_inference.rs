@@ -436,6 +436,34 @@ impl GraphJoinInference {
         plan_ctx: &PlanCtx,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
+            // If input is a Union, push GraphJoins into each branch
+            LogicalPlan::Union(union) => {
+                log::info!("🔄 Union detected in build_graph_joins, processing {} branches", union.inputs.len());
+                let mut any_transformed = false;
+                let transformed_branches: Result<Vec<Arc<LogicalPlan>>, _> = union.inputs.iter().map(|branch| {
+                    let mut branch_joins = collected_graph_joins.clone();
+                    let result = Self::build_graph_joins(
+                        branch.clone(),
+                        &mut branch_joins,
+                        optional_aliases.clone(),
+                        plan_ctx,
+                    )?;
+                    if matches!(result, Transformed::Yes(_)) {
+                        any_transformed = true;
+                    }
+                    Ok(result.get_plan())
+                }).collect();
+                
+                let branches = transformed_branches?;
+                if any_transformed {
+                    Transformed::Yes(Arc::new(LogicalPlan::Union(crate::query_planner::logical_plan::Union {
+                        inputs: branches,
+                        union_type: union.union_type.clone(),
+                    })))
+                } else {
+                    Transformed::No(logical_plan.clone())
+                }
+            }
             LogicalPlan::Projection(_) => {
                 // Reorder JOINs before creating GraphJoins to ensure proper dependency order
                 let (anchor_table, reordered_joins) = Self::reorder_joins_by_dependencies(
