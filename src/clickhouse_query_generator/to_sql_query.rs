@@ -309,7 +309,7 @@ impl ToSql for UnionItems {
                 .collect();
 
             let union_type_str = match union.union_type {
-                UnionType::Distinct => "UNION DISTINCT \n",
+                UnionType::Distinct => "UNION \n",
                 UnionType::All => "UNION ALL \n",
             };
 
