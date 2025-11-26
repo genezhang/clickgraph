@@ -22,7 +22,7 @@ use super::render_expr::{
 };
 use super::{
     Cte, CteItems, FilterItems, FromTable, FromTableItem, GroupByExpressions, Join, JoinItems,
-    JoinType, LimitItem, OrderByItem, OrderByItems, RenderPlan, SelectItem, SelectItems, SkipItem,
+    JoinType, LimitItem, OrderByItem, OrderByItems, OrderByOrder, RenderPlan, SelectItem, SelectItems, SkipItem,
     Union, UnionItems, ViewTableRef,
     view_table_ref::{from_table_to_view_ref, view_ref_to_from_table},
 };
@@ -2194,6 +2194,7 @@ impl RenderPlanBuilder for LogicalPlan {
     /// Returns Ok(plan) if successful, Err(_) if this query needs CTE-based processing
     fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
         println!("DEBUG: try_build_join_based_plan called");
+        println!("DEBUG: self plan type = {:?}", std::mem::discriminant(self));
 
         // Extract DISTINCT flag BEFORE unwrapping OrderBy/Limit/Skip
         let distinct = self.extract_distinct();
@@ -2201,15 +2202,24 @@ impl RenderPlanBuilder for LogicalPlan {
 
         // First, extract ORDER BY/LIMIT/SKIP if present
         let (core_plan, order_by_items, limit_val, skip_val) = match self {
-            LogicalPlan::Limit(limit_node) => match limit_node.input.as_ref() {
-                LogicalPlan::OrderBy(order_node) => (
-                    order_node.input.as_ref(),
-                    Some(&order_node.items),
-                    Some(limit_node.count),
-                    None,
-                ),
-                other => (other, None, Some(limit_node.count), None),
-            },
+            LogicalPlan::Limit(limit_node) => {
+                println!("DEBUG: Found Limit node, checking input...");
+                match limit_node.input.as_ref() {
+                    LogicalPlan::OrderBy(order_node) => {
+                        println!("DEBUG: Limit input is OrderBy with {} items", order_node.items.len());
+                        (
+                            order_node.input.as_ref(),
+                            Some(&order_node.items),
+                            Some(limit_node.count),
+                            None,
+                        )
+                    }
+                    other => {
+                        println!("DEBUG: Limit input is NOT OrderBy: {:?}", std::mem::discriminant(other));
+                        (other, None, Some(limit_node.count), None)
+                    }
+                }
+            }
             LogicalPlan::OrderBy(order_node) => (
                 order_node.input.as_ref(),
                 Some(&order_node.items),
@@ -2219,8 +2229,13 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Skip(skip_node) => {
                 (skip_node.input.as_ref(), None, None, Some(skip_node.count))
             }
-            other => (other, None, None, None),
+            other => {
+                println!("DEBUG: self is NOT Limit/OrderBy/Skip: {:?}", std::mem::discriminant(other));
+                (other, None, None, None)
+            }
         };
+        
+        println!("DEBUG: order_by_items present = {}", order_by_items.is_some());
 
         // Check if the core plan contains a Union (denormalized node-only queries)
         // For Union, we need to build each branch separately and combine them
@@ -2245,6 +2260,44 @@ impl RenderPlanBuilder for LogicalPlan {
                 RenderBuildError::InvalidRenderPlan("Union has no inputs".to_string())
             })?;
             
+            // Convert ORDER BY items for UNION - use quoted alias names when possible
+            // For UNION, ORDER BY must reference result column aliases.
+            // If ORDER BY column matches a SELECT alias, use "alias"
+            // If not, apply property mapping (for columns not in SELECT list)
+            let order_by_items_converted: Vec<OrderByItem> = if let Some(items) = order_by_items {
+                items.iter().filter_map(|item| {
+                    use crate::query_planner::logical_expr::LogicalExpr;
+                    
+                    let expr = match &item.expression {
+                        LogicalExpr::PropertyAccessExp(prop) => {
+                            // Try to find matching SELECT item by table alias
+                            let matching_select = first_plan.select.items.iter()
+                                .find(|s| matches!(&s.expression, RenderExpr::PropertyAccessExp(p) if p.table_alias.0 == prop.table_alias.0));
+                            
+                            if let Some(select_item) = matching_select {
+                                // Found matching SELECT item - use its alias
+                                select_item.col_alias.as_ref()
+                                    .map(|a| RenderExpr::Raw(format!("\"{}\"", a.0)))
+                            } else {
+                                // Not in SELECT - apply property mapping
+                                let mut order_item: OrderByItem = item.clone().try_into().ok()?;
+                                apply_property_mapping_to_expr(&mut order_item.expression, core_plan);
+                                Some(order_item.expression)
+                            }
+                        }
+                        LogicalExpr::ColumnAlias(alias) => Some(RenderExpr::Raw(format!("\"{}\"", alias.0))),
+                        _ => None,
+                    };
+                    
+                    expr.map(|e| OrderByItem {
+                        expression: e,
+                        order: item.order.clone().try_into().unwrap_or(OrderByOrder::Asc),
+                    })
+                }).collect()
+            } else {
+                vec![]
+            };
+            
             return Ok(RenderPlan {
                 ctes: CteItems(vec![]),
                 select: first_plan.select.clone(),
@@ -2253,7 +2306,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 filters: FilterItems(None),
                 group_by: GroupByExpressions(vec![]),
                 having_clause: None,
-                order_by: OrderByItems(vec![]),
+                order_by: OrderByItems(order_by_items_converted),
                 skip: SkipItem(skip_val),
                 limit: LimitItem(limit_val), // LIMIT applies to entire UNION result
                 union: UnionItems(Some(Union {
@@ -3504,6 +3557,70 @@ fn find_nested_union(plan: &LogicalPlan) -> Option<&crate::query_planner::logica
         LogicalPlan::Projection(projection) => find_nested_union(&projection.input),
         LogicalPlan::Filter(filter) => find_nested_union(&filter.input),
         _ => None,
+    }
+}
+
+/// Find the 1-based position of a SELECT item that matches an ORDER BY expression.
+/// For denormalized UNION queries, ORDER BY a.code should match SELECT ... AS "a.code".
+/// We match by comparing the property access pattern.
+fn find_select_position_for_order_by(
+    order_expr: &crate::query_planner::logical_expr::LogicalExpr,
+    select_items: &[SelectItem],
+) -> Option<usize> {
+    use crate::query_planner::logical_expr::LogicalExpr;
+    
+    // Extract table alias and property from ORDER BY
+    let (order_table, order_prop) = match order_expr {
+        LogicalExpr::PropertyAccessExp(prop) => {
+            (prop.table_alias.0.as_str(), prop.column.raw())
+        }
+        _ => return None,
+    };
+    
+    // Find matching SELECT item - the one whose expression has same table alias
+    // and whose col_alias matches the pattern "table.property"
+    for (i, item) in select_items.iter().enumerate() {
+        // Check if this SELECT item's expression has the same table alias
+        if let RenderExpr::PropertyAccessExp(ref prop_access) = item.expression {
+            if prop_access.table_alias.0 == order_table {
+                // This SELECT item is for the same table - use its position
+                // The ORDER BY property should map to this SELECT item
+                return Some(i + 1); // 1-based position
+            }
+        }
+    }
+    
+    // Fallback: find by col_alias table prefix
+    for (i, item) in select_items.iter().enumerate() {
+        if let Some(ref alias) = item.col_alias {
+            if alias.0.starts_with(&format!("{}.", order_table)) {
+                return Some(i + 1);
+            }
+        }
+    }
+    
+    None
+}
+
+/// Convert an ORDER BY expression for use in a UNION query.
+/// For UNION, ORDER BY must reference the SELECT alias (e.g., "a.code"), 
+/// not the original table column (e.g., a.origin_code).
+fn convert_order_by_expr_for_union(expr: &crate::query_planner::logical_expr::LogicalExpr) -> RenderExpr {
+    use crate::query_planner::logical_expr::LogicalExpr;
+    
+    match expr {
+        LogicalExpr::PropertyAccessExp(prop_access) => {
+            // Convert property access to quoted alias: a.code -> "a.code"
+            // Use raw() to get the property name from PropertyValue
+            let alias = format!("\"{}.{}\"", prop_access.table_alias.0, prop_access.column.raw());
+            RenderExpr::Raw(alias)
+        }
+        LogicalExpr::ColumnAlias(col_alias) => {
+            // Already an alias, just quote it
+            RenderExpr::Raw(format!("\"{}\"", col_alias.0))
+        }
+        // For other expressions (literals, function calls, etc.), convert normally
+        _ => expr.clone().try_into().unwrap_or_else(|_| RenderExpr::Raw("1".to_string()))
     }
 }
 

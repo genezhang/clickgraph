@@ -24,12 +24,15 @@ pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     let mut sql = String::new();
     
     // If there's a Union, the entire query is the union of sub-queries
-    // Only output CTEs, UNION, and LIMIT (not SELECT/FROM/JOINS for the outer level)
+    // Only output CTEs, UNION, ORDER BY, and LIMIT (not SELECT/FROM/JOINS for the outer level)
     if plan.union.0.is_some() {
         sql.push_str(&plan.ctes.to_sql());
         sql.push_str(&plan.union.to_sql());
         
-        // Add LIMIT after UNION if present
+        // Add ORDER BY after UNION if present
+        sql.push_str(&plan.order_by.to_sql());
+        
+        // Add LIMIT after ORDER BY if present
         if let Some(m) = plan.limit.0 {
             let skip_str = if let Some(n) = plan.skip.0 {
                 format!("{n},")
