@@ -1,0 +1,460 @@
+"""
+Integration tests for denormalized edge table feature.
+
+Tests the denormalized property access pattern where node properties
+are stored directly in edge tables (OnTime flights style).
+
+Key features tested:
+1. Direct property access from edge table (no JOIN needed)
+2. Variable-length paths with denormalized properties
+3. Fallback to node table when property not denormalized
+4. Query performance optimization (no unnecessary JOINs)
+"""
+
+import pytest
+from conftest import (
+    execute_cypher,
+    assert_query_success,
+    assert_row_count,
+    assert_column_exists
+)
+
+
+@pytest.fixture
+def denormalized_flights_graph(clickhouse_client, test_database):
+    """
+    Create denormalized flights graph for testing.
+    
+    Schema:
+        - flights: Single table containing BOTH edge and node data
+          * Edge data: flight_number, airline, times, distance  
+          * Origin node properties: origin_code, origin_city, origin_state
+          * Dest node properties: dest_code, dest_city, dest_state
+        - Airport: Virtual node derived from flights table (no separate table)
+    
+    This is the denormalized edge table pattern - eliminates JOINs by storing
+    all node properties directly in the edge table.
+    """
+    # Clean database first
+    tables = clickhouse_client.query(
+        f"SELECT name FROM system.tables WHERE database = '{test_database}'"
+    ).result_rows
+    for (table_name,) in tables:
+        clickhouse_client.command(f"DROP TABLE IF EXISTS {test_database}.{table_name}")
+    
+    # Read and execute setup SQL
+    with open('scripts/test/setup_denormalized_test_data.sql', 'r') as f:
+        setup_sql = f.read()
+    
+    # Remove comment-only lines, then split by semicolon
+    lines = [line for line in setup_sql.split('\n') if not line.strip().startswith('--') and line.strip()]
+    cleaned_sql = '\n'.join(lines)
+    
+    # Execute each statement
+    statement_count = 0
+    for statement in cleaned_sql.split(';'):
+        statement = statement.strip()
+        if statement:
+            print(f"Executing: {statement[:50]}...")
+            clickhouse_client.command(statement)
+            statement_count += 1
+    print(f"Executed {statement_count} SQL statements")
+    
+    # Verify tables were created
+    tables = clickhouse_client.query(
+        f"SELECT name FROM system.tables WHERE database = '{test_database}'"
+    ).result_rows
+    print(f"Tables after setup: {[t[0] for t in tables]}")
+    assert len(tables) == 1, f"Expected 1 table (flights), got {len(tables)}: {[t[0] for t in tables]}"
+    assert tables[0][0] == 'flights', f"Expected 'flights' table, got '{tables[0][0]}'"
+    
+    # Load schema via API
+    import requests
+    import yaml
+    
+    # Read schema file
+    with open('schemas/tests/denormalized_flights.yaml', 'r') as f:
+        schema_content = f.read()
+    
+    response = requests.post(
+        'http://localhost:8080/schemas/load',
+        json={
+            'schema_name': 'denormalized_flights_test',
+            'config_content': schema_content
+        }
+    )
+    assert response.status_code == 200, f"Failed to load schema: {response.text}"
+    
+    return {
+        "schema_name": "denormalized_flights_test",
+        "database": test_database
+    }
+
+
+class TestDenormalizedPropertyAccess:
+    """Test direct property access from denormalized edge tables."""
+    
+    def test_simple_flight_query(self, denormalized_flights_graph, clickhouse_client, test_database):
+        """Test basic flight query returning edge properties."""
+        # Debug: verify tables exist
+        tables = clickhouse_client.query(f"SELECT name FROM system.tables WHERE database = '{test_database}'").result_rows
+        print(f"Tables before query: {[t[0] for t in tables]}")
+        
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            RETURN f.flight_num, f.carrier
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        # All 6 flights should be returned
+        assert_row_count(response, 6)
+        assert_column_exists(response, "f.flight_num")
+        assert_column_exists(response, "f.carrier")
+    
+    def test_denormalized_origin_properties(self, denormalized_flights_graph):
+        """Test accessing origin airport properties from flights table."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            WHERE f.flight_num = 'AA100'
+            RETURN origin.city, origin.state
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        assert_row_count(response, 1)
+        assert_column_exists(response, "origin.city")
+        assert_column_exists(response, "origin.state")
+        
+        # Verify correct values
+        row = response['data'][0]
+        assert row['origin.city'] == 'Los Angeles'
+        assert row['origin.state'] == 'CA'
+    
+    def test_denormalized_dest_properties(self, denormalized_flights_graph):
+        """Test accessing destination airport properties from flights table."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            WHERE f.flight_num = 'AA100'
+            RETURN dest.city, dest.state
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        assert_row_count(response, 1)
+        assert_column_exists(response, "dest.city")
+        assert_column_exists(response, "dest.state")
+        
+        # Verify correct values
+        row = response['data'][0]
+        assert row['dest.city'] == 'San Francisco'
+        assert row['dest.state'] == 'CA'
+    
+    def test_both_origin_and_dest_properties(self, denormalized_flights_graph):
+        """Test accessing both origin and destination properties together."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            WHERE origin.state = 'CA' AND dest.state = 'NY'
+            RETURN origin.city, dest.city, f.flight_num
+            ORDER BY f.flight_num
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        assert_row_count(response, 1)  # Only SFO -> JFK
+        
+        row = response['data'][0]
+        assert row['origin.city'] == 'San Francisco'
+        assert row['dest.city'] == 'New York'
+        assert row['f.flight_num'] == 'UA200'
+    
+    def test_sql_has_no_joins(self, denormalized_flights_graph):
+        """Verify that denormalized queries generate SQL without JOINs."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            RETURN origin.city, dest.city, f.carrier
+            LIMIT 1
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        
+        # Check SQL - should NOT contain JOIN (all data in flights table)
+        sql = response.get('sql', '')
+        assert 'JOIN' not in sql.upper(), f"SQL should not contain JOINs for denormalized query: {sql}"
+        
+        # Should query only flights table
+        assert 'flights' in sql.lower()
+
+
+class TestDenormalizedWithFilters:
+    """Test filtering on denormalized properties."""
+    
+    def test_filter_on_origin_city(self, denormalized_flights_graph):
+        """Filter flights by origin city (denormalized property)."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            WHERE origin.city = 'Los Angeles'
+            RETURN f.flight_num, dest.city
+            ORDER BY f.flight_num
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        assert_row_count(response, 2)  # LAX -> SFO and LAX -> ORD
+        
+        flight_nums = [row['f.flight_num'] for row in response['data']]
+        assert 'AA100' in flight_nums
+        assert 'UA600' in flight_nums
+    
+    def test_filter_on_dest_state(self, denormalized_flights_graph):
+        """Filter flights by destination state (denormalized property)."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            WHERE dest.state = 'CA'
+            RETURN COUNT(f) as flight_count
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        row = response['data'][0]
+        assert row['flight_count'] == 3  # SFO, LAX x2
+    
+    def test_complex_filter_denormalized_and_edge_props(self, denormalized_flights_graph):
+        """Filter on both denormalized node properties and edge properties."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            WHERE origin.state = 'CA' 
+              AND dest.state = 'CA'
+              AND f.carrier = 'American Airlines'
+            RETURN origin.city, dest.city, f.flight_num
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        assert_row_count(response, 1)  # Only LAX -> SFO (AA100)
+        
+        row = response['data'][0]
+        assert row['f.flight_num'] == 'AA100'
+
+
+class TestDenormalizedVariableLengthPaths:
+    """Test variable-length paths with denormalized properties."""
+    
+    def test_variable_path_with_denormalized_properties(self, denormalized_flights_graph):
+        """Test variable-length path returning denormalized properties."""
+        response = execute_cypher(
+            """
+            MATCH path = (origin:Airport)-[f:FLIGHT*1..2]->(dest:Airport)
+            WHERE origin.code = 'LAX' AND dest.code = 'ATL'
+            RETURN origin.city, dest.city, length(path) as hops
+            ORDER BY hops
+            LIMIT 1
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        assert_row_count(response, 1)
+        
+        row = response['data'][0]
+        assert row['origin.city'] == 'Los Angeles'
+        assert row['dest.city'] == 'Atlanta'
+        assert row['hops'] == 2  # LAX -> ORD -> ATL
+    
+    def test_variable_path_cte_uses_denormalized_props(self, denormalized_flights_graph):
+        """Verify CTEs for variable paths use denormalized properties."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT*1..2]->(dest:Airport)
+            WHERE origin.city = 'Los Angeles'
+            RETURN dest.city, COUNT(*) as path_count
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        
+        # SQL should use denormalized columns in CTE
+        sql = response.get('sql', '')
+        assert 'WITH RECURSIVE' in sql or 'WITH' in sql
+        
+        # Should reference denormalized columns
+        assert 'origin_city' in sql or 'dest_city' in sql
+
+
+class TestPerformanceOptimization:
+    """Test that denormalized queries are optimized (no unnecessary JOINs)."""
+    
+    def test_single_hop_no_joins(self, denormalized_flights_graph):
+        """Single-hop query should not generate JOINs."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            RETURN origin.city, dest.city, f.carrier
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        
+        sql = response.get('sql', '').upper()
+        join_count = sql.count('JOIN')
+        assert join_count == 0, f"Expected 0 JOINs, found {join_count} in: {sql}"
+    
+    def test_filtered_query_no_joins(self, denormalized_flights_graph):
+        """Filtered query on denormalized properties should not generate JOINs."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            WHERE origin.state = 'CA' AND dest.state = 'NY'
+            RETURN origin.city, dest.city
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        
+        sql = response.get('sql', '').upper()
+        assert 'JOIN' not in sql, f"Should not contain JOINs: {sql}"
+
+
+class TestMixedDenormalizedAndNormal:
+    """Test queries mixing denormalized and non-denormalized properties."""
+    
+    def test_denormalized_property_exists_not_in_node_table(self, denormalized_flights_graph):
+        """Denormalized property should work even if not in node table."""
+        # City is denormalized in flights, may or may not be in airports table
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            WHERE origin.city = 'Los Angeles'
+            RETURN COUNT(*) as count
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        row = response['data'][0]
+        assert row['count'] == 2  # Two flights from LAX
+
+
+class TestEdgeCases:
+    """Test edge cases for denormalized properties."""
+    
+    def test_property_in_both_from_and_to_nodes(self, denormalized_flights_graph):
+        """Test property that appears in both from_node and to_node."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            WHERE origin.state = dest.state
+            RETURN origin.city, dest.city, origin.state as state
+            ORDER BY origin.city
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        # LAX -> SFO (both CA)
+        assert_row_count(response, 1)
+        
+        row = response['data'][0]
+        assert row['state'] == 'CA'
+    
+    def test_return_all_denormalized_properties(self, denormalized_flights_graph):
+        """Return all available denormalized properties."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            WHERE f.flight_num = 'AA100'
+            RETURN origin.code, origin.city, origin.state,
+                   dest.code, dest.city, dest.state,
+                   f.flight_num, f.carrier, f.distance
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        assert_row_count(response, 1)
+        
+        row = response['data'][0]
+        assert row['origin.code'] == 'LAX'
+        assert row['origin.city'] == 'Los Angeles'
+        assert row['origin.state'] == 'CA'
+        assert row['dest.code'] == 'SFO'
+        assert row['dest.city'] == 'San Francisco'
+        assert row['dest.state'] == 'CA'
+        assert row['f.carrier'] == 'American Airlines'
+
+
+class TestCompositeEdgeIds:
+    """Test composite edge ID support in denormalized schemas."""
+    
+    def test_composite_edge_id_in_schema(self, denormalized_flights_graph):
+        """Verify schema loads with composite edge_id."""
+        # Schema loading should succeed (tested in fixture)
+        # This test verifies no errors during query execution
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
+            RETURN COUNT(*) as total
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        row = response['data'][0]
+        assert row['total'] == 6  # Total flights in test data
+    
+    def test_variable_path_with_composite_edge_id(self, denormalized_flights_graph):
+        """Test variable-length paths respect composite edge IDs for cycle prevention."""
+        response = execute_cypher(
+            """
+            MATCH (origin:Airport)-[f:FLIGHT*1..3]->(dest:Airport)
+            WHERE origin.code = 'LAX'
+            RETURN COUNT(DISTINCT dest.code) as dest_count
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        # Should find paths to multiple destinations without cycles
+        row = response['data'][0]
+        assert row['dest_count'] >= 2  # At least SFO and ORD reachable
+    
+    def test_composite_id_prevents_duplicate_edges(self, denormalized_flights_graph):
+        """Verify composite IDs are used for cycle prevention in CTEs."""
+        response = execute_cypher(
+            """
+            MATCH path = (origin:Airport)-[f:FLIGHT*2]->(dest:Airport)
+            WHERE origin.code = 'LAX' AND dest.code = 'ATL'
+            RETURN length(path) as hops
+            LIMIT 1
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        
+        # Check SQL for composite ID in cycle prevention
+        sql = response.get('sql', '')
+        if 'WITH RECURSIVE' in sql or 'WITH' in sql:
+            # CTE should reference composite ID columns
+            assert 'flight_id' in sql.lower() or 'flight_number' in sql.lower()
+

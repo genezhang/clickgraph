@@ -21,11 +21,21 @@ pytest_*.txt
 integration_*.txt
 python_test_*.txt
 TEST_SUITE_STATUS.md
+*.sql.txt
 
-# Temporary test/debug scripts
-test_*.py
-debug_*.py
-*_debug.py
+# Temporary test/debug scripts in root (NOT in scripts/ or tests/)
+/test_*.py
+/debug_*.py
+/*_debug.py
+/fix_*.py
+/setup_*.py
+/revert_*.py
+
+# Temporary SQL files in root
+/temp_*.sql
+/debug_*.sql
+/*_investigation.sql
+/*_setup.sql
 
 # Session summaries (archive these manually if needed)
 SESSION_COMPLETE_*.md
@@ -41,12 +51,11 @@ debug_server.log
 # Temporary scripts and files
 cleanup_*.ps1
 start_server_*.bat
-setup_social_*.sql
+setup_large_benchmark_data.sql
+setup_medium_benchmark_data.sql
 
 # VS Code
 .vscode/
-setup_large_benchmark_data.sql
-setup_medium_benchmark_data.sql
 
 # archive files
 archive/
