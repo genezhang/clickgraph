@@ -1,6 +1,6 @@
 use crate::{
     open_cypher_parser::ast::ReturnClause,
-    query_planner::logical_plan::{LogicalPlan, Projection, ProjectionItem, ProjectionKind, Union},
+    query_planner::logical_plan::{LogicalPlan, Projection, ProjectionItem, ProjectionKind, Union, UnionType},
 };
 use std::sync::Arc;
 
@@ -30,9 +30,18 @@ pub fn evaluate_return_clause<'a>(
             }))
         }).collect();
         
+        // For RETURN DISTINCT with Union:
+        // - Use UNION (not UNION ALL) to deduplicate across branches
+        // - Each branch already has distinct=true for SELECT DISTINCT
+        let union_type = if return_clause.distinct {
+            UnionType::Distinct
+        } else {
+            union.union_type.clone()
+        };
+        
         return Arc::new(LogicalPlan::Union(Union {
             inputs: projected_branches,
-            union_type: union.union_type.clone(),
+            union_type,
         }));
     }
     
