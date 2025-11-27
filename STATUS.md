@@ -32,42 +32,59 @@
 
 ## 🎯 **v0.5.2-alpha: In Progress** 🚧
 
-**Status**: 🚧 **Denormalized Edge Implementation - Architecture Redesign Required**  
+**Status**: 🚧 **Denormalized Edge Implementation - Single-Hop Working, Multi-Hop Blocked**  
 **Started**: November 22, 2025  
-**Updated**: November 22, 2025  
-**Next**: Redesign ViewScan/JOIN generation for virtual nodes
+**Updated**: November 27, 2025  
+**Next**: Redesign ViewScan/JOIN generation for multi-hop virtual nodes
 
 ### 🎯 v0.5.2 Goals: Schema Variations
 
 **Purpose**: Add support for advanced schema patterns while maintaining existing quality
 
 **Features in Development**:
-1. 🚧 **Denormalized Edge Tables** (BLOCKED - see below)
+1. 🚧 **Denormalized Edge Tables** (Partially Complete)
    - ✅ Schema structure complete (node-level properties)
    - ✅ Property resolution function enhanced
-   - ❌ SQL generation requires architecture redesign
+   - ✅ **Single-hop patterns working** (fixed Nov 27, 2025)
+   - ✅ Aggregations on denormalized queries working
+   - ❌ Multi-hop patterns require architecture redesign
    
 2. 📋 Polymorphic edges (queued)
 3. 📋 Composite edge IDs (queued)
 
 #### Denormalized Edge Tables - Implementation Status
 
-**✅ Completed**:
+**✅ Completed (Nov 27, 2025)**:
 - Schema architecture refactored to node-level properties
 - YAML schema syntax finalized
-- Property mapping function enhanced
-- Schema loader working correctly
+- Property mapping function enhanced with role-awareness
+- **Single-hop pattern SQL generation working correctly**
+- **Source AND destination node properties correctly mapped**
+- Aggregations (COUNT, SUM, AVG) on denormalized patterns working
 
-**❌ Blocked**: SQL Generation Architecture
-- Current: Creates separate table aliases for virtual nodes (incorrect)
-- Required: Access properties directly from relationship table
-- Impact: Needs ViewScan/JOIN generation redesign
+**Example (Now Working)**:
+```cypher
+MATCH (a:Airport)-[f:FLIGHT]->(b:Airport)
+WHERE a.city = "Seattle"
+RETURN a.code, b.code, f.carrier
+```
+Generates:
+```sql
+SELECT f.Origin AS "a.code", f.Dest AS "b.code", f.Carrier AS "f.carrier"
+FROM flights AS f
+WHERE f.OriginCityName = 'Seattle'
+```
+
+**❌ Blocked**: Multi-hop Pattern SQL Generation
+- Current: 2+ hop patterns missing JOIN clauses
+- Required: Correct FROM/JOIN generation for chained patterns
+- Impact: Needs ViewScan/JOIN generation redesign for multi-hop
 - Details: See `notes/denormalized_blocker.md`
 
 **Next Steps**:
-1. Choose architecture approach (denormalized-aware ViewScan recommended)
-2. Prototype virtual node rendering
-3. Implement JOIN elimination for denormalized patterns
+1. Investigate multi-hop JOIN generation
+2. Fix FROM clause generation for chained relationships
+3. Test multi-hop denormalized patterns
 
 **Quality Target**: Don't regress existing 240 working tests (57.9% baseline)
 
