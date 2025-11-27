@@ -1,0 +1,41 @@
+# Test Schema for Zeek Connection Log
+# Simulates the user's conn_log use case with IP addresses as nodes
+
+name: zeek_conn_test
+version: "1.0"
+
+graph_schema:
+  nodes:
+    - label: IP
+      database: test_zeek
+      table: conn_log
+      id_column: ip
+      property_mappings: {}
+      
+      from_node_properties:
+        ip: orig_h
+        port: orig_p
+      
+      to_node_properties:
+        ip: resp_h
+        port: resp_p
+
+  relationships:
+    - type: ACCESSED
+      database: test_zeek
+      table: conn_log
+      from_id: orig_h
+      to_id: resp_h
+      from_node: IP
+      to_node: IP
+      edge_id: uid
+      
+      property_mappings:
+        uid: uid
+        timestamp: ts
+        protocol: proto
+        service: service
+        duration: duration
+        orig_bytes: orig_bytes
+        resp_bytes: resp_bytes
+        conn_state: conn_state

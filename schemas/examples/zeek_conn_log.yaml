@@ -1,0 +1,71 @@
+# Zeek Connection Log - Denormalized Edge Table Example
+# 
+# This schema demonstrates modeling network connection logs (Zeek/Bro conn.log)
+# as a graph where IP addresses are nodes and connections are edges.
+#
+# Sample conn.log data:
+# {
+#   "ts": 1591367999.305988,
+#   "uid": "CMdzit1AMNsmfAIiQc",
+#   "id.orig_h": "192.168.4.76",      <- Source IP (head node)
+#   "id.orig_p": 36844,
+#   "id.resp_h": "192.168.4.1",       <- Destination IP (tail node)
+#   "id.resp_p": 53,
+#   "proto": "udp",
+#   "service": "dns",
+#   "duration": 0.06685185432434082,
+#   "orig_bytes": 62,
+#   "resp_bytes": 141,
+#   "conn_state": "SF"
+# }
+#
+# Graph model: (source_ip:IP)-[:ACCESSED]->(dest_ip:IP)
+
+name: zeek_conn_log
+version: "1.0"
+
+graph_schema:
+  nodes:
+    # IP is a virtual node - all data comes from the conn_log table
+    - label: IP
+      database: zeek
+      table: conn_log
+      id_column: ip  # Logical property name for the IP address
+      property_mappings: {}  # Empty - node is purely denormalized
+      
+      # Properties when IP appears as source (from_node)
+      from_node_properties:
+        ip: "id.orig_h"      # IP.ip → conn_log."id.orig_h"
+        port: "id.orig_p"    # Can also include port info if needed
+      
+      # Properties when IP appears as destination (to_node)
+      to_node_properties:
+        ip: "id.resp_h"      # IP.ip → conn_log."id.resp_h"
+        port: "id.resp_p"
+
+  relationships:
+    # ACCESSED relationship - "192.168.4.76 accessed 192.168.4.1"
+    - type: ACCESSED
+      database: zeek
+      table: conn_log
+      from_id: "id.orig_h"
+      to_id: "id.resp_h"
+      from_node: IP
+      to_node: IP
+      
+      # Use uid as edge ID (unique per connection)
+      edge_id: uid
+      
+      # Connection properties
+      property_mappings:
+        uid: uid
+        timestamp: ts
+        protocol: proto
+        service: service
+        duration: duration
+        orig_bytes: orig_bytes
+        resp_bytes: resp_bytes
+        conn_state: conn_state
+        orig_pkts: orig_pkts
+        resp_pkts: resp_pkts
+        history: history
