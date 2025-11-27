@@ -16,6 +16,32 @@ use super::render_expr::{
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_plan::LogicalPlan;
 
+/// Helper function to check if a LogicalPlan node represents a denormalized node
+/// For denormalized nodes, the node data lives on the edge table, not a separate node table
+/// For nested GraphRels, we recursively check the leaf nodes
+pub(super) fn is_node_denormalized(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            // Check the GraphNode's own is_denormalized flag first
+            if node.is_denormalized {
+                return true;
+            }
+            // Fall back to checking ViewScan input
+            if let LogicalPlan::ViewScan(view_scan) = node.input.as_ref() {
+                view_scan.is_denormalized
+            } else {
+                false
+            }
+        }
+        // For nested GraphRel, check if the innermost node is denormalized
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Recursively check the left side to find the leftmost GraphNode
+            is_node_denormalized(&graph_rel.left)
+        }
+        _ => false,
+    }
+}
+
 /// Helper function to extract the actual table name from a LogicalPlan node
 /// Recursively traverses the plan tree to find the Scan or ViewScan node
 pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
@@ -47,6 +73,14 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
             }
         }
         LogicalPlan::GraphRel(rel) => {
+            // Check if the target is a relationship alias (e.g., "f1" for denormalized edges)
+            if rel.alias == target_alias {
+                // The relationship alias matches - get table from its center ViewScan
+                match &*rel.center {
+                    LogicalPlan::ViewScan(scan) => return Some(scan.source_table.clone()),
+                    _ => {}
+                }
+            }
             // Search in both left and right branches
             find_table_name_for_alias(&rel.left, target_alias)
                 .or_else(|| find_table_name_for_alias(&rel.right, target_alias))

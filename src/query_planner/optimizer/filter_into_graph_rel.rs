@@ -500,8 +500,12 @@ impl OptimizerPass for FilterIntoGraphRel {
                     combined_filters.push(existing_pred.clone());
                 }
                 
-                // Check left connection for filters (only if not already collected)
-                if !collected_aliases.contains(&graph_rel.left_connection) {
+                // Check if the left child is also a GraphRel (multi-hop pattern)
+                // In that case, the left_connection's filters should be handled by the inner GraphRel
+                let skip_left_connection = matches!(graph_rel.left.as_ref(), LogicalPlan::GraphRel(_));
+                
+                // Check left connection for filters (only if not already collected AND not a multi-hop pattern)
+                if !skip_left_connection && !collected_aliases.contains(&graph_rel.left_connection) {
                     if let Ok(table_ctx) =
                         plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_rel.left_connection.clone()))
                     {
@@ -522,6 +526,8 @@ impl OptimizerPass for FilterIntoGraphRel {
                             collected_aliases.insert(graph_rel.left_connection.clone());
                         }
                     }
+                } else if skip_left_connection {
+                    log::debug!("FilterIntoGraphRel: Skipping left alias '{}' - multi-hop pattern, will be handled by inner GraphRel", graph_rel.left_connection);
                 } else {
                     log::debug!("FilterIntoGraphRel: Skipping left alias '{}' - already collected", graph_rel.left_connection);
                 }

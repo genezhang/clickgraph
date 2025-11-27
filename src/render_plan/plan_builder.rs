@@ -1230,6 +1230,41 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::GraphRel(graph_rel) => {
+                // DENORMALIZED EDGE TABLE CHECK
+                // For denormalized patterns, both nodes are virtual - use relationship table as FROM
+                let left_is_denormalized = is_node_denormalized(&graph_rel.left);
+                let right_is_denormalized = is_node_denormalized(&graph_rel.right);
+                
+                if left_is_denormalized && right_is_denormalized {
+                    println!("DEBUG: extract_from - DENORMALIZED pattern, using relationship table as FROM");
+                    
+                    // For multi-hop denormalized, find the first (leftmost) relationship
+                    // We need to traverse recursively to find the leftmost GraphRel
+                    fn find_first_graph_rel(graph_rel: &crate::query_planner::logical_plan::GraphRel) 
+                        -> &crate::query_planner::logical_plan::GraphRel 
+                    {
+                        match graph_rel.left.as_ref() {
+                            LogicalPlan::GraphRel(left_rel) => find_first_graph_rel(left_rel),
+                            _ => graph_rel,
+                        }
+                    }
+                    
+                    let first_graph_rel = find_first_graph_rel(graph_rel);
+                    
+                    if let LogicalPlan::ViewScan(scan) = first_graph_rel.center.as_ref() {
+                        println!(
+                            "DEBUG: Using relationship table '{}' as FROM with alias '{}'",
+                            scan.source_table, first_graph_rel.alias
+                        );
+                        return Ok(Some(FromTable::new(Some(ViewTableRef {
+                            source: first_graph_rel.center.clone(),
+                            name: scan.source_table.clone(),
+                            alias: Some(first_graph_rel.alias.clone()),
+                            use_final: scan.use_final,
+                        }))));
+                    }
+                }
+                
                 // Check if both nodes are anonymous (edge-driven query)
                 let left_table_name = extract_table_name(&graph_rel.left);
                 let right_table_name = extract_table_name(&graph_rel.right);
@@ -1907,6 +1942,81 @@ impl RenderPlanBuilder for LogicalPlan {
                 // MULTI-HOP FIX: If left side is another GraphRel, recursively extract its joins first
                 // This handles patterns like (a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)
                 let mut joins = vec![];
+                
+                // DENORMALIZED EDGE TABLE CHECK
+                // For denormalized patterns, nodes are virtual (stored on edge table)
+                // We need to JOIN edge tables directly, not node tables
+                let left_is_denormalized = is_node_denormalized(&graph_rel.left);
+                let right_is_denormalized = is_node_denormalized(&graph_rel.right);
+                
+                println!(
+                    "DEBUG: extract_joins - left_is_denormalized={}, right_is_denormalized={}",
+                    left_is_denormalized, right_is_denormalized
+                );
+                
+                // For denormalized patterns, handle specially
+                if left_is_denormalized && right_is_denormalized {
+                    println!("DEBUG: DENORMALIZED multi-hop pattern detected");
+                    
+                    // Get the relationship table 
+                    let rel_table = extract_table_name(&graph_rel.center)
+                        .unwrap_or_else(|| graph_rel.alias.clone());
+                    
+                    // Get relationship columns (from_id and to_id)
+                    let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
+                        RelationshipColumns {
+                            from_id: "from_node_id".to_string(),
+                            to_id: "to_node_id".to_string(),
+                        },
+                    );
+                    
+                    // Check if this is a chained hop (left side is another GraphRel)
+                    if let LogicalPlan::GraphRel(left_rel) = graph_rel.left.as_ref() {
+                        println!(
+                            "DEBUG: DENORMALIZED multi-hop - chaining {} -> {}",
+                            left_rel.alias, graph_rel.alias
+                        );
+                        
+                        // First, recursively get joins from the left GraphRel
+                        let mut left_joins = graph_rel.left.extract_joins()?;
+                        joins.append(&mut left_joins);
+                        
+                        // Get the left relationship's to_id column for joining
+                        let left_rel_cols = extract_relationship_columns(&left_rel.center).unwrap_or(
+                            RelationshipColumns {
+                                from_id: "from_node_id".to_string(),
+                                to_id: "to_node_id".to_string(),
+                            },
+                        );
+                        
+                        // JOIN this relationship table to the previous one
+                        // e.g., INNER JOIN flights AS f2 ON f2.Origin = f1.Dest
+                        joins.push(Join {
+                            table_name: rel_table.clone(),
+                            table_alias: graph_rel.alias.clone(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(graph_rel.alias.clone()),
+                                        column: Column(PropertyValue::Column(rel_cols.from_id.clone())),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(left_rel.alias.clone()),
+                                        column: Column(PropertyValue::Column(left_rel_cols.to_id.clone())),
+                                    }),
+                                ],
+                            }],
+                            join_type: JoinType::Inner,
+                        });
+                    }
+                    // For single-hop denormalized, no JOINs needed - relationship table IS the data
+                    // Just return empty joins, the FROM clause will use the relationship table
+                    
+                    return Ok(joins);
+                }
+                
+                // STANDARD (non-denormalized) multi-hop handling
                 if let LogicalPlan::GraphRel(_) = graph_rel.left.as_ref() {
                     println!(
                         "DEBUG: Multi-hop pattern detected - recursively extracting left GraphRel joins"

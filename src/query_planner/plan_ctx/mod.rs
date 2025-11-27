@@ -125,6 +125,13 @@ impl TableCtx {
         std::mem::take(&mut self.properties)
         // self.properties
     }
+
+    /// Clear the filters after they have been applied to a GraphRel
+    /// This prevents the same filters from being applied multiple times
+    /// in multi-hop patterns
+    pub fn clear_filters(&mut self) {
+        self.filter_predicates.clear();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +152,9 @@ pub struct PlanCtx {
     /// View parameter values for parameterized views (e.g., {"region": "US", "tier": "premium"})
     /// These are passed to table functions: table(region = 'US', tier = 'premium')
     view_parameter_values: Option<HashMap<String, String>>,
+    /// Track denormalized node-to-edge mappings: node_alias -> (edge_alias, is_from_node, label)
+    /// Used for multi-hop denormalized patterns to create edge-to-edge JOINs
+    denormalized_node_edges: HashMap<String, (String, bool, String)>,
 }
 
 impl PlanCtx {
@@ -290,11 +300,15 @@ impl PlanCtx {
         Ok(self.alias_table_ctx_map.get_mut(&alias))
     }
     
-    /// DEPRECATED: Stub for backward compatibility
-    /// The is_denormalized flag is now set directly on GraphNode by view_optimizer
-    #[allow(dead_code)]
-    pub fn register_denormalized_alias(&mut self, _alias: String, _rel_alias: String, _is_from_node: bool, _label: String) {
-        // No-op: flag is set on GraphNode directly
+    /// Register a denormalized node alias with its associated edge
+    /// Used for multi-hop denormalized patterns to create edge-to-edge JOINs
+    pub fn register_denormalized_alias(&mut self, alias: String, rel_alias: String, is_from_node: bool, label: String) {
+        self.denormalized_node_edges.insert(alias, (rel_alias, is_from_node, label));
+    }
+    
+    /// Get denormalized alias info: returns (edge_alias, is_from_node, label) if node is denormalized
+    pub fn get_denormalized_alias_info(&self, node_alias: &str) -> Option<(String, bool, String)> {
+        self.denormalized_node_edges.get(node_alias).cloned()
     }
 }
 
@@ -309,6 +323,7 @@ impl PlanCtx {
             schema,
             tenant_id: None,
             view_parameter_values: None,
+            denormalized_node_edges: HashMap::new(),
         }
     }
 
@@ -322,6 +337,7 @@ impl PlanCtx {
             schema,
             tenant_id,
             view_parameter_values: None,
+            denormalized_node_edges: HashMap::new(),
         }
     }
 
@@ -339,6 +355,7 @@ impl PlanCtx {
             schema,
             tenant_id,
             view_parameter_values,
+            denormalized_node_edges: HashMap::new(),
         }
     }
 
@@ -355,6 +372,7 @@ impl PlanCtx {
             schema: Arc::new(empty_schema),
             tenant_id: None,
             view_parameter_values: None,
+            denormalized_node_edges: HashMap::new(),
         }
     }
 

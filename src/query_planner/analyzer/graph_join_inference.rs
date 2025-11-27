@@ -1453,14 +1453,68 @@ impl GraphJoinInference {
                 );
                 
                 if left_is_denormalized && right_is_denormalized {
-                    // FULLY DENORMALIZED: Both nodes are on the edge table!
-                    // No JOINs needed - relationship table is the complete pattern
-                    eprintln!(
-                        "    ✓ FULLY DENORMALIZED: Both '{}' and '{}' are on edge '{}' - NO JOINs needed!",
-                        left_alias, right_alias, rel_alias
-                    );
-                    // Mark relationship as joined (it will be the FROM anchor)
-                    joined_entities.insert(rel_alias.to_string());
+                    // FULLY DENORMALIZED EDGE: Both nodes are virtual on this edge table
+                    // But we STILL may need a JOIN if the left node was ALREADY on a PREVIOUS edge!
+                    
+                    // Check if left_alias was already registered on a different edge
+                    let prev_edge_info = plan_ctx.get_denormalized_alias_info(left_alias);
+                    
+                    if let Some((prev_rel_alias, is_from_node, _label)) = prev_edge_info {
+                        if prev_rel_alias != *rel_alias {
+                            // MULTI-HOP DENORMALIZED: left node is on a DIFFERENT previous edge
+                            // We need to JOIN this edge to the previous edge
+                            // Join condition: current_edge.from_id = prev_edge.to_id (or from_id depending on role)
+                            eprintln!(
+                                "    🔗 MULTI-HOP DENORMALIZED: '{}' already on edge '{}', now on '{}' - creating edge-to-edge JOIN",
+                                left_alias, prev_rel_alias, rel_alias
+                            );
+                            
+                            // The previous edge's column for this node depends on whether it was from or to
+                            let prev_edge_col = if is_from_node {
+                                rel_from_col.clone()  // node was FROM on prev edge, use from_id
+                            } else {
+                                rel_to_col.clone()    // node was TO on prev edge, use to_id
+                            };
+                            
+                            // This edge's column is from_id (left node connects to from_id)
+                            let current_edge_col = rel_from_col.clone();
+                            
+                            let edge_to_edge_join = Join {
+                                table_name: rel_cte_name.clone(),
+                                table_alias: rel_alias.to_string(),
+                                joining_on: vec![OperatorApplication {
+                                    operator: Operator::Equal,
+                                    operands: vec![
+                                        LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(rel_alias.to_string()),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(current_edge_col),
+                                        }),
+                                        LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(prev_rel_alias.clone()),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(prev_edge_col),
+                                        }),
+                                    ],
+                                }],
+                                join_type: JoinType::Inner,
+                            };
+                            collected_graph_joins.push(edge_to_edge_join);
+                            joined_entities.insert(rel_alias.to_string());
+                        } else {
+                            // Same edge - no additional JOIN needed
+                            eprintln!(
+                                "    ✓ FULLY DENORMALIZED: Both '{}' and '{}' are on edge '{}' - NO JOINs needed!",
+                                left_alias, right_alias, rel_alias
+                            );
+                            joined_entities.insert(rel_alias.to_string());
+                        }
+                    } else {
+                        // First denormalized edge - this becomes the FROM anchor
+                        eprintln!(
+                            "    ✓ FULLY DENORMALIZED: Both '{}' and '{}' are on edge '{}' - NO JOINs needed!",
+                            left_alias, right_alias, rel_alias
+                        );
+                        joined_entities.insert(rel_alias.to_string());
+                    }
                 } else {
                     // Traditional or Mixed: Push the relationship JOIN
                     collected_graph_joins.push(rel_graph_join);
