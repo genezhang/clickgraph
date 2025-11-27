@@ -50,6 +50,20 @@ impl<'a> ViewResolver<'a> {
         label: &str,
         property: &str,
     ) -> Result<crate::graph_catalog::expression_parser::PropertyValue, AnalyzerError> {
+        self.resolve_node_property_with_role(label, property, None)
+    }
+    
+    /// Resolve a node property with explicit role (From or To)
+    /// This is needed for denormalized nodes where the same property maps to different columns
+    /// depending on whether the node is the source or target of the relationship.
+    pub fn resolve_node_property_with_role(
+        &self,
+        label: &str,
+        property: &str,
+        role: Option<crate::render_plan::cte_generation::NodeRole>,
+    ) -> Result<crate::graph_catalog::expression_parser::PropertyValue, AnalyzerError> {
+        use crate::render_plan::cte_generation::NodeRole;
+        
         // Try to get the node schema and look up the property mapping
         let node_schema = self
             .schema
@@ -61,20 +75,39 @@ impl<'a> ViewResolver<'a> {
             return Ok(mapped.clone());
         }
         
-        // For denormalized nodes without explicit property_mappings,
-        // try from_node_properties first (default for node-only queries)
-        // Note: UNION ALL for both positions is handled at a higher level
+        // For denormalized nodes, use the role to select the correct mapping
         if node_schema.is_denormalized {
-            // Try from_properties first (origin/source position)
-            if let Some(ref from_props) = node_schema.from_properties {
-                if let Some(mapped) = from_props.get(property) {
-                    return Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()));
+            match role {
+                Some(NodeRole::From) => {
+                    // Explicitly From role - use from_properties only
+                    if let Some(ref from_props) = node_schema.from_properties {
+                        if let Some(mapped) = from_props.get(property) {
+                            return Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()));
+                        }
+                    }
                 }
-            }
-            // Fallback to to_properties (destination position)
-            if let Some(ref to_props) = node_schema.to_properties {
-                if let Some(mapped) = to_props.get(property) {
-                    return Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()));
+                Some(NodeRole::To) => {
+                    // Explicitly To role - use to_properties only
+                    if let Some(ref to_props) = node_schema.to_properties {
+                        if let Some(mapped) = to_props.get(property) {
+                            return Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()));
+                        }
+                    }
+                }
+                None => {
+                    // No role specified - try from_properties first (default for node-only queries)
+                    // Note: UNION ALL for both positions is handled at a higher level
+                    if let Some(ref from_props) = node_schema.from_properties {
+                        if let Some(mapped) = from_props.get(property) {
+                            return Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()));
+                        }
+                    }
+                    // Fallback to to_properties (destination position)
+                    if let Some(ref to_props) = node_schema.to_properties {
+                        if let Some(mapped) = to_props.get(property) {
+                            return Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()));
+                        }
+                    }
                 }
             }
         }

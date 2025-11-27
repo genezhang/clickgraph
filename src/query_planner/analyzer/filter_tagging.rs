@@ -431,16 +431,23 @@ impl FilterTagging {
                             );
                             crate::graph_catalog::expression_parser::PropertyValue::Column(column)
                         } else {
-                            // Fallback to standard mapping
+                            // Fallback to role-aware mapping
                             println!(
-                                "FilterTagging: Property '{}' not found in ViewScan, falling back to view_resolver",
+                                "FilterTagging: Property '{}' not found in ViewScan, falling back to view_resolver with role",
                                 property_access.column.raw()
                             );
+                            // Get the node's role (From or To) from the plan context
+                            let role = Self::find_denormalized_context(plan, &property_access.table_alias.0, &label)
+                                .map(|(_, node_role, _)| node_role);
+                            println!(
+                                "FilterTagging: Node role for alias '{}': {:?}",
+                                property_access.table_alias.0, role
+                            );
                             let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
-                            view_resolver.resolve_node_property(&label, &property_access.column.raw())?
+                            view_resolver.resolve_node_property_with_role(&label, &property_access.column.raw(), role)?
                         }
                     } else {
-                        // No plan context, use standard mapping
+                        // No plan context, use standard mapping (role unknown)
                         let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
                         view_resolver.resolve_node_property(&label, &property_access.column.raw())?
                     }
