@@ -14,7 +14,7 @@ use super::filter_pipeline::{
     CategorizedFilters, categorize_filters, clean_last_node_filters, extract_start_end_filters,
     filter_expr_to_sql, render_end_filter_to_column_alias,
     rewrite_end_filters_for_variable_length_cte, rewrite_expr_for_outer_query,
-    rewrite_expr_for_var_len_cte,
+    rewrite_expr_for_var_len_cte, rewrite_expr_for_denormalized_cte_with_rel,
 };
 use super::render_expr::{
     AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
@@ -28,9 +28,10 @@ use super::{
 };
 use crate::render_plan::cte_extraction::extract_ctes_with_context;
 use crate::render_plan::cte_extraction::{
-    RelationshipColumns, extract_node_label_from_viewscan, extract_relationship_columns,
-    get_path_variable, get_shortest_path_mode, get_variable_length_spec, has_variable_length_rel,
-    label_to_table_name, rel_type_to_table_name, rel_types_to_table_names, table_to_id_column,
+    RelationshipColumns, VariableLengthRelInfo, extract_node_label_from_viewscan, extract_relationship_columns,
+    get_path_variable, get_shortest_path_mode, get_variable_length_spec, get_variable_length_rel_info,
+    has_variable_length_rel, is_variable_length_denormalized, label_to_table_name, rel_type_to_table_name, 
+    rel_types_to_table_names, table_to_id_column,
 };
 
 // Import ALL helper functions from the dedicated helpers module using glob import
@@ -3498,9 +3499,43 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
-        let final_select_items = transformed_plan.extract_select_items()?;
+        let mut final_select_items = transformed_plan.extract_select_items()?;
 
-        // NOTE: Removed rewrite for select_items in variable-length paths to keep a.*, b.*
+        // For denormalized variable-length paths, rewrite SELECT items to reference CTE columns
+        // Standard patterns keep a.*, b.* since they JOIN to node tables
+        // Denormalized patterns need t.start_id, t.end_id since there are no node table JOINs
+        if let Some((start_alias, end_alias)) = has_variable_length_rel(&transformed_plan) {
+            let is_denormalized = is_variable_length_denormalized(&transformed_plan);
+            let needs_cte = if let Some(spec) = get_variable_length_spec(&transformed_plan) {
+                spec.exact_hop_count().is_none() || get_shortest_path_mode(&transformed_plan).is_some()
+            } else {
+                false
+            };
+            
+            if is_denormalized && needs_cte {
+                // Get relationship info for rewriting f.Origin → t.start_id, f.Dest → t.end_id
+                let rel_info = get_variable_length_rel_info(&transformed_plan);
+                let path_var = get_path_variable(&transformed_plan);
+                final_select_items = final_select_items
+                    .into_iter()
+                    .map(|item| {
+                        let rewritten = rewrite_expr_for_denormalized_cte_with_rel(
+                            &item.expression,
+                            &start_alias,
+                            &end_alias,
+                            rel_info.as_ref().map(|r| r.rel_alias.as_str()),
+                            rel_info.as_ref().map(|r| r.from_col.as_str()),
+                            rel_info.as_ref().map(|r| r.to_col.as_str()),
+                            path_var.as_deref(),
+                        );
+                        SelectItem {
+                            expression: rewritten,
+                            col_alias: item.col_alias,
+                        }
+                    })
+                    .collect();
+            }
+        }
 
         let mut extracted_joins = transformed_plan.extract_joins()?;
 
@@ -3512,21 +3547,60 @@ impl RenderPlanBuilder for LogicalPlan {
             // "Multiple table expressions with same alias" errors.
             extracted_joins.clear();
 
-            // Get the actual table names and ID columns from the schema
-            let start_table = get_node_table_for_alias(&start_alias);
-            let end_table = get_node_table_for_alias(&end_alias);
-            let start_id_col = get_node_id_column_for_alias(&start_alias);
-            let end_id_col = get_node_id_column_for_alias(&end_alias);
+            // For denormalized edges, node properties are embedded in edge table
+            // so we don't need to join to separate node tables
+            if is_variable_length_denormalized(&transformed_plan) {
+                // No joins needed - CTE already has all node properties
+            } else {
+                // Get the actual table names and ID columns from the schema
+                let start_table = get_node_table_for_alias(&start_alias);
+                let end_table = get_node_table_for_alias(&end_alias);
+                let start_id_col = get_node_id_column_for_alias(&start_alias);
+                let end_id_col = get_node_id_column_for_alias(&end_alias);
 
-            // Check for self-loop: start and end are the same node (e.g., (a)-[*0..]->(a))
-            if start_alias == end_alias {
-                // Self-loop: Only add ONE JOIN with compound ON condition
-                // JOIN users AS a ON t.start_id = a.user_id AND t.end_id = a.user_id
-                extracted_joins.push(Join {
-                    table_name: start_table,
-                    table_alias: start_alias.clone(),
-                    joining_on: vec![
-                        OperatorApplication {
+                // Check for self-loop: start and end are the same node (e.g., (a)-[*0..]->(a))
+                if start_alias == end_alias {
+                    // Self-loop: Only add ONE JOIN with compound ON condition
+                    // JOIN users AS a ON t.start_id = a.user_id AND t.end_id = a.user_id
+                    extracted_joins.push(Join {
+                        table_name: start_table,
+                        table_alias: start_alias.clone(),
+                        joining_on: vec![
+                            OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias("t".to_string()),
+                                        column: Column(PropertyValue::Column("start_id".to_string())),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(start_alias.clone()),
+                                        column: Column(PropertyValue::Column(start_id_col.clone())),
+                                    }),
+                                ],
+                            },
+                            OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias("t".to_string()),
+                                        column: Column(PropertyValue::Column("end_id".to_string())),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(start_alias.clone()),
+                                        column: Column(PropertyValue::Column(start_id_col.clone())),
+                                    }),
+                                ],
+                            },
+                        ],
+                        join_type: JoinType::Join,
+                    });
+                } else {
+                    // Different start and end nodes: Add two separate JOINs
+                    extracted_joins.push(Join {
+                        table_name: start_table,
+                        table_alias: start_alias.clone(),
+                        joining_on: vec![OperatorApplication {
                             operator: Operator::Equal,
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -3538,8 +3612,13 @@ impl RenderPlanBuilder for LogicalPlan {
                                     column: Column(PropertyValue::Column(start_id_col.clone())),
                                 }),
                             ],
-                        },
-                        OperatorApplication {
+                        }],
+                        join_type: JoinType::Join,
+                    });
+                    extracted_joins.push(Join {
+                        table_name: end_table,
+                        table_alias: end_alias.clone(),
+                        joining_on: vec![OperatorApplication {
                             operator: Operator::Equal,
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -3547,52 +3626,14 @@ impl RenderPlanBuilder for LogicalPlan {
                                     column: Column(PropertyValue::Column("end_id".to_string())),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(start_alias.clone()),
-                                    column: Column(PropertyValue::Column(start_id_col.clone())),
+                                    table_alias: TableAlias(end_alias.clone()),
+                                    column: Column(PropertyValue::Column(end_id_col.clone())),
                                 }),
                             ],
-                        },
-                    ],
-                    join_type: JoinType::Join,
-                });
-            } else {
-                // Different start and end nodes: Add two separate JOINs
-                extracted_joins.push(Join {
-                    table_name: start_table,
-                    table_alias: start_alias.clone(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias("t".to_string()),
-                                column: Column(PropertyValue::Column("start_id".to_string())),
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(start_alias.clone()),
-                                column: Column(PropertyValue::Column(start_id_col.clone())),
-                            }),
-                        ],
-                    }],
-                    join_type: JoinType::Join,
-                });
-                extracted_joins.push(Join {
-                    table_name: end_table,
-                    table_alias: end_alias.clone(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias("t".to_string()),
-                                column: Column(PropertyValue::Column("end_id".to_string())),
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(end_alias.clone()),
-                                column: Column(PropertyValue::Column(end_id_col.clone())),
-                            }),
-                        ],
-                    }],
-                    join_type: JoinType::Join,
-                });
+                        }],
+                        join_type: JoinType::Join,
+                    });
+                }
             }
         }
 
@@ -3604,11 +3645,6 @@ impl RenderPlanBuilder for LogicalPlan {
         {
             // Check if this is actually a multi-relationship query (has UNION in plan)
             if has_multiple_relationship_types(&transformed_plan) {
-                eprintln!(
-                    "DEBUG: Multi-relationship query detected! Clearing extracted joins and rebuilding..."
-                );
-                eprintln!("DEBUG: Before clear: {} joins", extracted_joins.len());
-
                 // Clear extracted joins like we do for variable-length paths
                 // The GraphRel joins include duplicate source node joins which cause
                 // "Multiple table expressions with same alias" errors
@@ -3678,12 +3714,7 @@ impl RenderPlanBuilder for LogicalPlan {
             } else {
                 // Old PATCH code for non-UNION multi-rel (keep for backward compat)
                 let cte_name = union_cte.cte_name.clone();
-                eprintln!("DEBUG: Found union CTE '{}', updating JOINs", cte_name);
                 for join in extracted_joins.iter_mut() {
-                    eprintln!(
-                        "DEBUG: Checking JOIN table_name='{}' alias='{}'",
-                        join.table_name, join.table_alias
-                    );
                     // Update joins that are relationship tables
                     // Check both with and without schema prefix (e.g., "follows" or "test_integration.follows")
                     let table_lower = join.table_name.to_lowercase();

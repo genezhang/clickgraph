@@ -531,16 +531,25 @@ pub fn extract_ctes_with_context(
                     .unwrap_or_else(|| "User".to_string());
                 let start_table = label_to_table_name(&start_label);
                 let end_table = label_to_table_name(&end_label);
-                let rel_table = if let Some(labels) = &graph_rel.labels {
-                    if let Some(first_label) = labels.first() {
-                        rel_type_to_table_name(first_label)
-                    } else {
-                        // Fallback to alias if no labels (shouldn't happen)
-                        rel_type_to_table_name(&graph_rel.alias)
+                
+                // Get rel_table from ViewScan's source_table (authoritative) or fall back to label lookup
+                let rel_table = match graph_rel.center.as_ref() {
+                    LogicalPlan::ViewScan(vs) => {
+                        // ViewScan has the authoritative table name
+                        vs.source_table.clone()
                     }
-                } else {
-                    // Fallback to alias if no labels
-                    rel_type_to_table_name(&graph_rel.alias)
+                    _ => {
+                        // Fallback to label-based lookup
+                        if let Some(labels) = &graph_rel.labels {
+                            if let Some(first_label) = labels.first() {
+                                rel_type_to_table_name(first_label)
+                            } else {
+                                rel_type_to_table_name(&graph_rel.alias)
+                            }
+                        } else {
+                            rel_type_to_table_name(&graph_rel.alias)
+                        }
+                    }
                 };
 
                 // Extract ID columns
@@ -694,6 +703,15 @@ pub fn extract_ctes_with_context(
                         "CTE BRANCH: Variable-length pattern detected - using recursive CTE"
                     );
                     
+                    // Check if nodes are denormalized (properties embedded in edge table)
+                    let is_denormalized = match graph_rel.left.as_ref() {
+                        LogicalPlan::GraphNode(node) => node.is_denormalized,
+                        _ => false,
+                    } || match graph_rel.right.as_ref() {
+                        LogicalPlan::GraphNode(node) => node.is_denormalized,
+                        _ => false,
+                    };
+                    
                     // Get edge_id from relationship schema if available
                     // Use the first relationship label to look up the schema
                     let edge_id = if let Some(schema) = context.schema() {
@@ -715,29 +733,52 @@ pub fn extract_ctes_with_context(
                         None
                     };
                     
-                    let generator = VariableLengthCteGenerator::new(
-                        spec.clone(),
-                        &start_table,
-                        &start_id_col,
-                        &rel_table,
-                        &from_col,
-                        &to_col,
-                        &end_table,
-                        &end_id_col,
-                        &graph_rel.left_connection,
-                        &graph_rel.right_connection,
-                        filter_properties, // Use filter properties
-                        graph_rel.shortest_path_mode.clone().map(|m| m.into()),
-                        start_filters_sql, // Start filters
-                        if graph_rel.shortest_path_mode.is_some() {
-                            end_filters_sql
-                        } else {
-                            None
-                        }, // End filters only for shortest path
-                        graph_rel.path_variable.clone(),
-                        graph_rel.labels.clone(),
-                        edge_id, // Pass edge_id from schema
-                    );
+                    // Choose generator based on denormalized status
+                    let generator = if is_denormalized {
+                        eprintln!("CTE: Using denormalized generator for variable-length path");
+                        VariableLengthCteGenerator::new_denormalized(
+                            spec.clone(),
+                            &rel_table,   // The only table - edge table
+                            &from_col,    // From column
+                            &to_col,      // To column
+                            &graph_rel.left_connection,
+                            &graph_rel.right_connection,
+                            graph_rel.shortest_path_mode.clone().map(|m| m.into()),
+                            start_filters_sql,
+                            if graph_rel.shortest_path_mode.is_some() {
+                                end_filters_sql
+                            } else {
+                                None
+                            },
+                            graph_rel.path_variable.clone(),
+                            graph_rel.labels.clone(),
+                            edge_id,
+                        )
+                    } else {
+                        VariableLengthCteGenerator::new(
+                            spec.clone(),
+                            &start_table,
+                            &start_id_col,
+                            &rel_table,
+                            &from_col,
+                            &to_col,
+                            &end_table,
+                            &end_id_col,
+                            &graph_rel.left_connection,
+                            &graph_rel.right_connection,
+                            filter_properties, // Use filter properties
+                            graph_rel.shortest_path_mode.clone().map(|m| m.into()),
+                            start_filters_sql, // Start filters
+                            if graph_rel.shortest_path_mode.is_some() {
+                                end_filters_sql
+                            } else {
+                                None
+                            }, // End filters only for shortest path
+                            graph_rel.path_variable.clone(),
+                            graph_rel.labels.clone(),
+                            edge_id, // Pass edge_id from schema
+                        )
+                    };
                     let var_len_cte = generator.generate_cte();
                     
                     // Also extract CTEs from child plans
@@ -921,6 +962,68 @@ pub fn has_variable_length_rel(plan: &LogicalPlan) -> Option<(String, String)> {
     }
 }
 
+/// Check if a variable-length pattern uses denormalized edges
+/// Returns true if nodes are virtual (embedded in edge table)
+pub fn is_variable_length_denormalized(plan: &LogicalPlan) -> bool {
+    fn check_node_denormalized(plan: &LogicalPlan) -> bool {
+        match plan {
+            LogicalPlan::GraphNode(node) => node.is_denormalized,
+            _ => false,
+        }
+    }
+    
+    match plan {
+        LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
+            // Check if either left or right node is denormalized
+            check_node_denormalized(&rel.left) || check_node_denormalized(&rel.right)
+        }
+        LogicalPlan::GraphNode(node) => is_variable_length_denormalized(&node.input),
+        LogicalPlan::Filter(filter) => is_variable_length_denormalized(&filter.input),
+        LogicalPlan::Projection(proj) => is_variable_length_denormalized(&proj.input),
+        LogicalPlan::GraphJoins(joins) => is_variable_length_denormalized(&joins.input),
+        LogicalPlan::GroupBy(gb) => is_variable_length_denormalized(&gb.input),
+        LogicalPlan::OrderBy(ob) => is_variable_length_denormalized(&ob.input),
+        LogicalPlan::Skip(skip) => is_variable_length_denormalized(&skip.input),
+        LogicalPlan::Limit(limit) => is_variable_length_denormalized(&limit.input),
+        LogicalPlan::Cte(cte) => is_variable_length_denormalized(&cte.input),
+        _ => false,
+    }
+}
+
+/// Info about the relationship in a variable-length pattern
+/// Used for SELECT rewriting to map f.Origin → t.start_id, f.Dest → t.end_id
+#[derive(Debug, Clone)]
+pub struct VariableLengthRelInfo {
+    pub rel_alias: String,    // e.g., "f"
+    pub from_col: String,     // e.g., "Origin"  
+    pub to_col: String,       // e.g., "Dest"
+}
+
+/// Extract relationship info (alias, from_col, to_col) from a variable-length path
+pub fn get_variable_length_rel_info(plan: &LogicalPlan) -> Option<VariableLengthRelInfo> {
+    match plan {
+        LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
+            // Get the from/to columns from the ViewScan in the center
+            let cols = extract_relationship_columns(&rel.center)?;
+            Some(VariableLengthRelInfo {
+                rel_alias: rel.alias.clone(),
+                from_col: cols.from_id,
+                to_col: cols.to_id,
+            })
+        }
+        LogicalPlan::GraphNode(node) => get_variable_length_rel_info(&node.input),
+        LogicalPlan::Filter(filter) => get_variable_length_rel_info(&filter.input),
+        LogicalPlan::Projection(proj) => get_variable_length_rel_info(&proj.input),
+        LogicalPlan::GraphJoins(joins) => get_variable_length_rel_info(&joins.input),
+        LogicalPlan::GroupBy(gb) => get_variable_length_rel_info(&gb.input),
+        LogicalPlan::OrderBy(ob) => get_variable_length_rel_info(&ob.input),
+        LogicalPlan::Skip(skip) => get_variable_length_rel_info(&skip.input),
+        LogicalPlan::Limit(limit) => get_variable_length_rel_info(&limit.input),
+        LogicalPlan::Cte(cte) => get_variable_length_rel_info(&cte.input),
+        _ => None,
+    }
+}
+
 /// Extract path variable from the plan
 pub fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
     match plan {
@@ -1005,7 +1108,14 @@ pub fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
                 None
             })
         }
-        LogicalPlan::GraphNode(node) => extract_node_label_from_viewscan(&node.input),
+        LogicalPlan::GraphNode(node) => {
+            // First try to get label directly from the GraphNode (for denormalized nodes)
+            if let Some(label) = &node.label {
+                return Some(label.clone());
+            }
+            // Otherwise, recurse into input
+            extract_node_label_from_viewscan(&node.input)
+        }
         LogicalPlan::Filter(filter) => extract_node_label_from_viewscan(&filter.input),
         _ => None,
     }

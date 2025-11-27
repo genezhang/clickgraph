@@ -34,6 +34,7 @@ pub struct VariableLengthCteGenerator {
     pub path_variable: Option<String>, // Path variable name from MATCH clause (e.g., "p" in "MATCH p = ...")
     pub relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
     pub edge_id: Option<Identifier>, // Edge ID columns for relationship uniqueness (None = use from_id, to_id)
+    pub is_denormalized: bool, // True if nodes are virtual and properties come from edge table
 }
 
 /// Mode for shortest path queries
@@ -102,6 +103,52 @@ impl VariableLengthCteGenerator {
             path_variable,
             relationship_types,
             edge_id,
+            is_denormalized: false, // Default to standard (normalized) mode
+        }
+    }
+
+    /// Create a generator for denormalized edges (node properties embedded in edge table)
+    pub fn new_denormalized(
+        spec: VariableLengthSpec,
+        relationship_table: &str,      // The only table - edge table with node properties
+        rel_from_col: &str,            // From column (e.g., "Origin")
+        rel_to_col: &str,              // To column (e.g., "Dest")
+        start_alias: &str,             // Cypher alias (e.g., "a")
+        end_alias: &str,               // Cypher alias (e.g., "b")
+        shortest_path_mode: Option<ShortestPathMode>,
+        start_node_filters: Option<String>,
+        end_node_filters: Option<String>,
+        path_variable: Option<String>,
+        relationship_types: Option<Vec<String>>,
+        edge_id: Option<Identifier>,
+    ) -> Self {
+        let database = std::env::var("CLICKHOUSE_DATABASE").ok();
+
+        Self {
+            spec,
+            cte_name: format!("variable_path_{}", uuid::Uuid::new_v4().simple()),
+            // For denormalized: node tables are NOT used, only relationship table
+            start_node_table: relationship_table.to_string(), // Will be ignored
+            start_node_id_column: rel_from_col.to_string(),   // Use from_col as start ID
+            start_node_alias: "start_node".to_string(),
+            relationship_table: relationship_table.to_string(),
+            relationship_from_column: rel_from_col.to_string(),
+            relationship_to_column: rel_to_col.to_string(),
+            relationship_alias: "rel".to_string(),
+            end_node_table: relationship_table.to_string(), // Will be ignored
+            end_node_id_column: rel_to_col.to_string(),     // Use to_col as end ID
+            end_node_alias: "end_node".to_string(),
+            start_cypher_alias: start_alias.to_string(),
+            end_cypher_alias: end_alias.to_string(),
+            properties: vec![], // Denormalized doesn't need property mapping
+            database,
+            shortest_path_mode,
+            start_node_filters,
+            end_node_filters,
+            path_variable,
+            relationship_types,
+            edge_id,
+            is_denormalized: true, // Enable denormalized mode
         }
     }
 
@@ -496,6 +543,11 @@ impl VariableLengthCteGenerator {
     }
 
     fn generate_base_case(&self, hop_count: u32) -> String {
+        // For denormalized edges, use simplified generation
+        if self.is_denormalized {
+            return self.generate_denormalized_base_case(hop_count);
+        }
+        
         if hop_count == 1 {
             // Build edge tuple for the base case
             let edge_tuple = self.build_edge_tuple_base();
@@ -595,6 +647,11 @@ impl VariableLengthCteGenerator {
     }
 
     fn generate_recursive_case_with_cte_name(&self, max_hops: u32, cte_name: &str) -> String {
+        // For denormalized edges, use simplified generation
+        if self.is_denormalized {
+            return self.generate_denormalized_recursive_case(max_hops, cte_name);
+        }
+        
         // Build edge tuple for recursive case
         let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
         
@@ -674,6 +731,111 @@ impl VariableLengthCteGenerator {
             to_col = self.relationship_to_column,
             rel = self.relationship_alias,
             end_table = self.format_table_name(&self.end_node_table),
+            where_clause = where_clause
+        )
+    }
+
+    // ======================================================================
+    // DENORMALIZED EDGE GENERATION
+    // ======================================================================
+    // For denormalized edges, node properties are embedded in the edge table.
+    // No separate node tables exist - all data comes from the relationship table.
+    
+    /// Generate base case for denormalized edges (first hop)
+    /// For denormalized: FROM rel_table only (no node tables)
+    fn generate_denormalized_base_case(&self, hop_count: u32) -> String {
+        if hop_count != 1 {
+            // Multi-hop base case not yet supported for denormalized
+            return format!(
+                "    -- Multi-hop base case for {} hops (denormalized - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_edges, [] as path_relationships\n    WHERE false",
+                hop_count, hop_count
+            );
+        }
+
+        // Build edge tuple for cycle detection
+        let edge_tuple = self.build_edge_tuple_base();
+
+        // For denormalized, start_id and end_id come directly from the relationship columns
+        let select_clause = format!(
+            "{rel}.{from_col} as start_id,\n        {rel}.{to_col} as end_id,\n        1 as hop_count,\n        [{edge_tuple}] as path_edges,\n        {path_rels}",
+            rel = self.relationship_alias,
+            from_col = self.relationship_from_column,
+            to_col = self.relationship_to_column,
+            edge_tuple = edge_tuple,
+            path_rels = self.generate_relationship_type_for_hop(1)
+        );
+
+        // Simple FROM - just the relationship table, no node tables
+        let mut query = format!(
+            "    SELECT \n        {select}\n    FROM {rel_table} {rel}",
+            select = select_clause,
+            rel_table = self.format_table_name(&self.relationship_table),
+            rel = self.relationship_alias
+        );
+
+        // Add WHERE clause for start node filters (rewritten for rel table)
+        let mut where_conditions = Vec::new();
+        if let Some(ref filters) = self.start_node_filters {
+            // Rewrite start_node references to rel references
+            let rewritten = filters.replace("start_node.", &format!("{}.", self.relationship_alias));
+            where_conditions.push(rewritten);
+        }
+        
+        if self.shortest_path_mode.is_none() {
+            if let Some(ref filters) = self.end_node_filters {
+                // Rewrite end_node references to rel references
+                let rewritten = filters.replace("end_node.", &format!("{}.", self.relationship_alias));
+                where_conditions.push(rewritten);
+            }
+        }
+
+        if !where_conditions.is_empty() {
+            query.push_str(&format!("\n    WHERE {}", where_conditions.join(" AND ")));
+        }
+
+        query
+    }
+
+    /// Generate recursive case for denormalized edges
+    /// For denormalized: JOIN rel_table only (no node tables in between)
+    fn generate_denormalized_recursive_case(&self, max_hops: u32, cte_name: &str) -> String {
+        // Build edge tuple for cycle detection
+        let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
+
+        // For denormalized, the recursive case:
+        // - Takes start_id from the CTE (previous path start)
+        // - Takes end_id from the new relationship's to_col
+        let select_clause = format!(
+            "vp.start_id,\n        {rel}.{to_col} as end_id,\n        vp.hop_count + 1 as hop_count,\n        arrayConcat(vp.path_edges, [{edge_tuple}]) as path_edges,\n        arrayConcat(vp.path_relationships, {path_rels}) as path_relationships",
+            rel = self.relationship_alias,
+            to_col = self.relationship_to_column,
+            edge_tuple = edge_tuple_recursive,
+            path_rels = self.get_relationship_type_array()
+        );
+
+        let mut where_conditions = vec![
+            format!("vp.hop_count < {}", max_hops),
+            format!("NOT has(vp.path_edges, {})", edge_tuple_recursive),
+        ];
+
+        if self.shortest_path_mode.is_none() {
+            if let Some(ref filters) = self.end_node_filters {
+                let rewritten = filters.replace("end_node.", &format!("{}.", self.relationship_alias));
+                where_conditions.push(rewritten);
+            }
+        }
+
+        let where_clause = where_conditions.join("\n      AND ");
+
+        // For denormalized: join directly from CTE end_id to new rel's from_col
+        // No intermediate node table needed
+        format!(
+            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {rel_table} {rel} ON vp.end_id = {rel}.{from_col}\n    WHERE {where_clause}",
+            select = select_clause,
+            cte_name = cte_name,
+            rel_table = self.format_table_name(&self.relationship_table),
+            rel = self.relationship_alias,
+            from_col = self.relationship_from_column,
             where_clause = where_clause
         )
     }

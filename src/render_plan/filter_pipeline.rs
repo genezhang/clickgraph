@@ -664,3 +664,124 @@ pub fn rewrite_expr_for_var_len_cte(
         _ => expr.clone(),
     }
 }
+
+/// Rewrite expressions for denormalized variable-length CTE outer query
+/// For denormalized CTEs, there are no node table JOINs, so we select directly from CTE
+/// - start_alias.property → t.start_id (or t.start_property if property captured)
+/// - end_alias.property → t.end_id (or t.end_property if property captured)
+/// - rel_alias.from_col → t.start_id  (e.g., f.Origin → t.start_id)
+/// - rel_alias.to_col → t.end_id  (e.g., f.Dest → t.end_id)
+pub fn rewrite_expr_for_denormalized_cte(
+    expr: &RenderExpr,
+    start_cypher_alias: &str,
+    end_cypher_alias: &str,
+    _path_var: Option<&str>,
+) -> RenderExpr {
+    rewrite_expr_for_denormalized_cte_with_rel(
+        expr,
+        start_cypher_alias,
+        end_cypher_alias,
+        None, // No relationship alias info
+        None,
+        None,
+        _path_var,
+    )
+}
+
+/// Extended version that also handles relationship alias mappings
+pub fn rewrite_expr_for_denormalized_cte_with_rel(
+    expr: &RenderExpr,
+    start_cypher_alias: &str,
+    end_cypher_alias: &str,
+    rel_alias: Option<&str>,
+    from_col: Option<&str>,
+    to_col: Option<&str>,
+    _path_var: Option<&str>,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            let mut new_prop = prop.clone();
+            let raw_col = prop.column.0.raw();
+            
+            // Check if this is a relationship alias access (e.g., f.Origin, f.Dest)
+            if let (Some(rel), Some(from), Some(to)) = (rel_alias, from_col, to_col) {
+                if prop.table_alias.0 == rel {
+                    new_prop.table_alias = TableAlias("t".to_string());
+                    if raw_col == from {
+                        // from_col (e.g., Origin) → start_id
+                        new_prop.column = Column(PropertyValue::Column("start_id".to_string()));
+                    } else if raw_col == to {
+                        // to_col (e.g., Dest) → end_id
+                        new_prop.column = Column(PropertyValue::Column("end_id".to_string()));
+                    }
+                    // Other columns on rel table stay as t.<col>
+                    return RenderExpr::PropertyAccessExp(new_prop);
+                }
+            }
+            
+            // Check node aliases
+            if prop.table_alias.0 == start_cypher_alias {
+                // Start node property → t.start_id (or t.start_propertyname)
+                new_prop.table_alias = TableAlias("t".to_string());
+                if raw_col == "*" {
+                    new_prop.column = prop.column.clone();
+                } else {
+                    new_prop.column = Column(PropertyValue::Column("start_id".to_string()));
+                }
+            } else if prop.table_alias.0 == end_cypher_alias {
+                // End node property → t.end_id (or t.end_propertyname)
+                new_prop.table_alias = TableAlias("t".to_string());
+                if raw_col == "*" {
+                    new_prop.column = prop.column.clone();
+                } else {
+                    new_prop.column = Column(PropertyValue::Column("end_id".to_string()));
+                }
+            }
+            // Other aliases stay as-is
+            RenderExpr::PropertyAccessExp(new_prop)
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            let rewritten_operands = op
+                .operands
+                .iter()
+                .map(|operand| {
+                    rewrite_expr_for_denormalized_cte_with_rel(
+                        operand,
+                        start_cypher_alias,
+                        end_cypher_alias,
+                        rel_alias,
+                        from_col,
+                        to_col,
+                        _path_var,
+                    )
+                })
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator.clone(),
+                operands: rewritten_operands,
+            })
+        }
+        RenderExpr::ScalarFnCall(fn_call) => {
+            let rewritten_args = fn_call
+                .args
+                .iter()
+                .map(|arg| {
+                    rewrite_expr_for_denormalized_cte_with_rel(
+                        arg,
+                        start_cypher_alias,
+                        end_cypher_alias,
+                        rel_alias,
+                        from_col,
+                        to_col,
+                        _path_var,
+                    )
+                })
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: fn_call.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        _ => expr.clone(),
+    }
+}

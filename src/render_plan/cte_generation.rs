@@ -208,6 +208,14 @@ fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
             }
             None
         }
+        LogicalPlan::GraphNode(node) => {
+            // First try to get label directly from the GraphNode (for denormalized nodes)
+            if let Some(label) = &node.label {
+                return Some(label.clone());
+            }
+            // Otherwise, recurse into input
+            extract_node_label_from_viewscan(&node.input)
+        }
         LogicalPlan::Filter(filter) => extract_node_label_from_viewscan(&filter.input),
         LogicalPlan::Projection(proj) => extract_node_label_from_viewscan(&proj.input),
         _ => None,
