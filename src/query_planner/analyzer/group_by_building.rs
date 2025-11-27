@@ -183,7 +183,15 @@ impl AnalyzerPass for GroupByBuilding {
                         non_agg_projections.len()
                     );
 
-                    if non_agg_projections.len() < projection.items.len()
+                    // Check if input is already a GroupBy (e.g., from UNION + aggregation handling in return_clause.rs)
+                    // In this case, don't create another GroupBy - just recurse
+                    if matches!(projection.input.as_ref(), LogicalPlan::GroupBy(_)) {
+                        println!(
+                            "GroupByBuilding: Input is already GroupBy, skipping duplicate GroupBy creation"
+                        );
+                        let child_tf = self.analyze(projection.input.clone(), _plan_ctx)?;
+                        projection.rebuild_or_clone(child_tf, logical_plan.clone())
+                    } else if non_agg_projections.len() < projection.items.len()
                         && !non_agg_projections.is_empty()
                     {
                         // aggregate fns found. Build the groupby plan here

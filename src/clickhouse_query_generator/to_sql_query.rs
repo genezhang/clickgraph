@@ -23,24 +23,56 @@ use super::function_registry::get_function_mapping;
 pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     let mut sql = String::new();
     
-    // If there's a Union, the entire query is the union of sub-queries
-    // Only output CTEs, UNION, ORDER BY, and LIMIT (not SELECT/FROM/JOINS for the outer level)
+    // If there's a Union, wrap it in a subquery for correct ClickHouse behavior.
+    // ClickHouse has a quirk where LIMIT/ORDER BY on bare UNION ALL only applies to
+    // the last branch, not the combined result. Wrapping in a subquery fixes this.
     if plan.union.0.is_some() {
         sql.push_str(&plan.ctes.to_sql());
-        sql.push_str(&plan.union.to_sql());
         
-        // Add ORDER BY after UNION if present
-        sql.push_str(&plan.order_by.to_sql());
+        // Check if SELECT items contain aggregation (e.g., count(*), sum(), etc.)
+        let has_aggregation = plan.select.items.iter().any(|item| {
+            matches!(&item.expression, RenderExpr::AggregateFnCall(_))
+        });
         
-        // Add LIMIT after ORDER BY if present
-        if let Some(m) = plan.limit.0 {
-            let skip_str = if let Some(n) = plan.skip.0 {
-                format!("{n},")
+        // Check if we need the subquery wrapper (when there's ORDER BY, LIMIT, GROUP BY, or aggregation)
+        let needs_subquery = !plan.order_by.0.is_empty() 
+            || plan.limit.0.is_some() 
+            || plan.skip.0.is_some()
+            || !plan.group_by.0.is_empty()
+            || has_aggregation;
+        
+        if needs_subquery {
+            // Wrap UNION in a subquery
+            // If there are specific SELECT items (aggregation case), use them
+            // Otherwise default to SELECT *
+            if !plan.select.items.is_empty() {
+                sql.push_str(&plan.select.to_sql());
+                sql.push_str("FROM (\n");
             } else {
-                "".to_string()
-            };
-            let limit_str = format!("LIMIT {skip_str} {m}");
-            sql.push_str(&limit_str)
+                sql.push_str("SELECT * FROM (\n");
+            }
+            sql.push_str(&plan.union.to_sql());
+            sql.push_str(") AS __union\n");
+            
+            // Add GROUP BY if present
+            sql.push_str(&plan.group_by.to_sql());
+            
+            // Add ORDER BY after GROUP BY if present
+            sql.push_str(&plan.order_by.to_sql());
+            
+            // Add LIMIT after ORDER BY if present
+            if let Some(m) = plan.limit.0 {
+                let skip_str = if let Some(n) = plan.skip.0 {
+                    format!("{n},")
+                } else {
+                    "".to_string()
+                };
+                let limit_str = format!("LIMIT {skip_str} {m}");
+                sql.push_str(&limit_str)
+            }
+        } else {
+            // No ordering/limiting - bare UNION is fine
+            sql.push_str(&plan.union.to_sql());
         }
         
         return sql;
@@ -312,7 +344,7 @@ impl ToSql for UnionItems {
                 .collect();
 
             let union_type_str = match union.union_type {
-                UnionType::Distinct => "UNION \n",
+                UnionType::Distinct => "UNION DISTINCT \n",  // ClickHouse requires explicit DISTINCT
                 UnionType::All => "UNION ALL \n",
             };
 

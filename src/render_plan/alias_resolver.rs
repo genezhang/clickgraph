@@ -418,7 +418,7 @@ mod tests {
     
     #[test]
     fn test_denormalized_node_resolution() {
-        use crate::query_planner::logical_plan::Direction;
+        use crate::query_planner::logical_expr::Direction;
         
         let left_node = LogicalPlan::GraphNode(GraphNode {
             input: Arc::new(LogicalPlan::Empty),

@@ -2239,6 +2239,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
         // Check if the core plan contains a Union (denormalized node-only queries)
         // For Union, we need to build each branch separately and combine them
+        // If branches have aggregation, we'll handle it specially (subquery + outer GROUP BY)
         if let Some(union) = find_nested_union(core_plan) {
             println!("DEBUG: Found nested Union with {} inputs, building UNION ALL plan", union.inputs.len());
             
@@ -2254,6 +2255,213 @@ impl RenderPlanBuilder for LogicalPlan {
             
             let union_plans = union_plans?;
             
+            // Check if the OUTER plan has GROUP BY or aggregation
+            // This happens when return_clause.rs keeps aggregation at the outer level
+            // We need to extract this info from core_plan (which wraps the Union)
+            let outer_aggregation_info = extract_outer_aggregation_info(core_plan);
+            
+            println!("DEBUG: outer_aggregation_info = {:?}", outer_aggregation_info.is_some());
+            
+            if let Some((outer_select, outer_group_by)) = outer_aggregation_info {
+                println!("DEBUG: Creating aggregation-aware UNION plan with {} outer SELECT items, {} GROUP BY", 
+                    outer_select.len(), outer_group_by.len());
+                
+                // The union branches already have the correct base columns (no aggregation)
+                // We just need to apply outer SELECT and GROUP BY on top
+                
+                // Convert ORDER BY for outer query
+                let order_by_items_converted: Vec<OrderByItem> = if let Some(items) = order_by_items {
+                    items.iter().filter_map(|item| {
+                        use crate::query_planner::logical_expr::LogicalExpr;
+                        match &item.expression {
+                            LogicalExpr::PropertyAccessExp(prop) => {
+                                Some(OrderByItem {
+                                    expression: RenderExpr::Raw(format!("\"{}.{}\"", prop.table_alias.0, prop.column.raw())),
+                                    order: item.order.clone().try_into().unwrap_or(OrderByOrder::Asc),
+                                })
+                            }
+                            LogicalExpr::ColumnAlias(alias) => {
+                                Some(OrderByItem {
+                                    expression: RenderExpr::Raw(format!("\"{}\"", alias.0)),
+                                    order: item.order.clone().try_into().unwrap_or(OrderByOrder::Asc),
+                                })
+                            }
+                            _ => None,
+                        }
+                    }).collect()
+                } else {
+                    vec![]
+                };
+                
+                return Ok(RenderPlan {
+                    ctes: CteItems(vec![]),
+                    select: SelectItems {
+                        items: outer_select,
+                        distinct: distinct,
+                    },
+                    from: FromTableItem(None),
+                    joins: JoinItems(vec![]),
+                    filters: FilterItems(None),
+                    group_by: GroupByExpressions(outer_group_by),
+                    having_clause: None,
+                    order_by: OrderByItems(order_by_items_converted),
+                    skip: SkipItem(skip_val),
+                    limit: LimitItem(limit_val),
+                    union: UnionItems(Some(Union {
+                        input: union_plans,
+                        union_type: union.union_type.clone().try_into()?,
+                    })),
+                });
+            }
+            
+            // Also check if branches have GROUP BY with aggregation (legacy case where analyzers pushed it down)
+            let branches_have_aggregation = union_plans.iter().any(|plan| {
+                !plan.group_by.0.is_empty() || 
+                plan.select.items.iter().any(|item| matches!(&item.expression, RenderExpr::AggregateFnCall(_)))
+            });
+            
+            println!("DEBUG: branches_have_aggregation = {}", branches_have_aggregation);
+            
+            if branches_have_aggregation {
+                // Extract GROUP BY and aggregation from first branch (all branches should be similar)
+                let first_plan = union_plans.first().ok_or_else(|| {
+                    RenderBuildError::InvalidRenderPlan("Union has no inputs".to_string())
+                })?;
+                
+                // Collect non-aggregate SELECT items (these become GROUP BY columns)
+                let base_select_items: Vec<SelectItem> = first_plan.select.items.iter()
+                    .filter(|item| !matches!(&item.expression, RenderExpr::AggregateFnCall(_)))
+                    .cloned()
+                    .collect();
+                
+                // If there are no base columns but there are aggregates, use constant 1
+                let branch_select = if base_select_items.is_empty() {
+                    SelectItems {
+                        items: vec![SelectItem {
+                            expression: RenderExpr::Literal(Literal::Integer(1)),
+                            col_alias: Some(ColumnAlias("__dummy".to_string())),
+                        }],
+                        distinct: false,
+                    }
+                } else {
+                    SelectItems {
+                        items: base_select_items.clone(),
+                        distinct: first_plan.select.distinct,
+                    }
+                };
+                
+                // Create stripped branch plans (no GROUP BY, no aggregation)
+                let stripped_union_plans: Vec<RenderPlan> = union_plans.iter().map(|plan| {
+                    // Extract only the non-aggregate SELECT items from this branch
+                    let branch_items: Vec<SelectItem> = if base_select_items.is_empty() {
+                        vec![SelectItem {
+                            expression: RenderExpr::Literal(Literal::Integer(1)),
+                            col_alias: Some(ColumnAlias("__dummy".to_string())),
+                        }]
+                    } else {
+                        plan.select.items.iter()
+                            .filter(|item| !matches!(&item.expression, RenderExpr::AggregateFnCall(_)))
+                            .cloned()
+                            .collect()
+                    };
+                    
+                    RenderPlan {
+                        ctes: CteItems(vec![]),
+                        select: SelectItems {
+                            items: branch_items,
+                            distinct: plan.select.distinct,
+                        },
+                        from: plan.from.clone(),
+                        joins: plan.joins.clone(),
+                        filters: plan.filters.clone(),
+                        group_by: GroupByExpressions(vec![]), // No GROUP BY in branches
+                        having_clause: None,
+                        order_by: OrderByItems(vec![]),
+                        skip: SkipItem(None),
+                        limit: LimitItem(None),
+                        union: UnionItems(None),
+                    }
+                }).collect();
+                
+                // Build outer GROUP BY expressions (use column aliases from SELECT)
+                let outer_group_by: Vec<RenderExpr> = base_select_items.iter()
+                    .filter_map(|item| {
+                        item.col_alias.as_ref().map(|alias| {
+                            RenderExpr::Raw(format!("\"{}\"", alias.0))
+                        })
+                    })
+                    .collect();
+                
+                // Build outer SELECT with aggregations referencing column aliases
+                let outer_select_items: Vec<SelectItem> = first_plan.select.items.iter()
+                    .map(|item| {
+                        // For non-aggregates, reference the column alias
+                        // For aggregates, keep as-is (they'll reference subquery columns)
+                        if matches!(&item.expression, RenderExpr::AggregateFnCall(_)) {
+                            item.clone()
+                        } else {
+                            // Use the column alias as the expression
+                            if let Some(alias) = &item.col_alias {
+                                SelectItem {
+                                    expression: RenderExpr::Raw(format!("\"{}\"", alias.0)),
+                                    col_alias: item.col_alias.clone(),
+                                }
+                            } else {
+                                item.clone()
+                            }
+                        }
+                    })
+                    .collect();
+                
+                // Convert ORDER BY for outer query
+                let order_by_items_converted: Vec<OrderByItem> = if let Some(items) = order_by_items {
+                    items.iter().filter_map(|item| {
+                        use crate::query_planner::logical_expr::LogicalExpr;
+                        match &item.expression {
+                            LogicalExpr::PropertyAccessExp(prop) => {
+                                Some(OrderByItem {
+                                    expression: RenderExpr::Raw(format!("\"{}.{}\"", prop.table_alias.0, prop.column.raw())),
+                                    order: item.order.clone().try_into().unwrap_or(OrderByOrder::Asc),
+                                })
+                            }
+                            LogicalExpr::ColumnAlias(alias) => {
+                                Some(OrderByItem {
+                                    expression: RenderExpr::Raw(format!("\"{}\"", alias.0)),
+                                    order: item.order.clone().try_into().unwrap_or(OrderByOrder::Asc),
+                                })
+                            }
+                            _ => None,
+                        }
+                    }).collect()
+                } else {
+                    vec![]
+                };
+                
+                println!("DEBUG: Creating aggregation-aware UNION plan with {} outer SELECT items, {} GROUP BY", 
+                    outer_select_items.len(), outer_group_by.len());
+                
+                return Ok(RenderPlan {
+                    ctes: CteItems(vec![]),
+                    select: SelectItems {
+                        items: outer_select_items,
+                        distinct: first_plan.select.distinct,
+                    },
+                    from: FromTableItem(None),
+                    joins: JoinItems(vec![]),
+                    filters: FilterItems(None),
+                    group_by: GroupByExpressions(outer_group_by),
+                    having_clause: first_plan.having_clause.clone(),
+                    order_by: OrderByItems(order_by_items_converted),
+                    skip: SkipItem(skip_val),
+                    limit: LimitItem(limit_val),
+                    union: UnionItems(Some(Union {
+                        input: stripped_union_plans,
+                        union_type: union.union_type.clone().try_into()?,
+                    })),
+                });
+            }
+            
+            // Non-aggregation case: use original logic
             // Create a render plan with the union field populated
             // The first branch provides the SELECT structure
             let first_plan = union_plans.first().ok_or_else(|| {
@@ -2300,7 +2508,7 @@ impl RenderPlanBuilder for LogicalPlan {
             
             return Ok(RenderPlan {
                 ctes: CteItems(vec![]),
-                select: first_plan.select.clone(),
+                select: SelectItems { items: vec![], distinct: false }, // Empty - let to_sql use SELECT *
                 from: FromTableItem(None), // Union doesn't need FROM at top level
                 joins: JoinItems(vec![]),
                 filters: FilterItems(None),
@@ -3549,13 +3757,119 @@ fn plan_to_string(plan: &LogicalPlan, depth: usize) -> String {
     }
 }
 
-/// Find a Union node nested inside a plan (within Projection, GraphJoins, etc.)
+/// Extract outer aggregation info from a plan that wraps a Union
+/// Returns (select_items, group_by_exprs) if the plan has Projection → GroupBy → Union pattern
+fn extract_outer_aggregation_info(plan: &LogicalPlan) -> Option<(Vec<SelectItem>, Vec<RenderExpr>)> {
+    // Look for patterns like:
+    // - GraphJoins → Projection(Return) → GroupBy → Union
+    // - Projection(Return) → GroupBy → Union
+    
+    println!("DEBUG: extract_outer_aggregation_info called with plan type: {:?}", plan_type_name(plan));
+    
+    let (projection, group_by) = match plan {
+        LogicalPlan::GraphJoins(graph_joins) => {
+            println!("DEBUG: GraphJoins input type: {:?}", plan_type_name(&graph_joins.input));
+            if let LogicalPlan::Projection(proj) = graph_joins.input.as_ref() {
+                println!("DEBUG: Projection input type: {:?}", plan_type_name(&proj.input));
+                if let LogicalPlan::GroupBy(gb) = proj.input.as_ref() {
+                    println!("DEBUG: GroupBy input type: {:?}, has union: {}", 
+                        plan_type_name(&gb.input), find_nested_union(&gb.input).is_some());
+                    if find_nested_union(&gb.input).is_some() {
+                        (Some(proj), Some(gb))
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            }
+        }
+        LogicalPlan::Projection(proj) => {
+            if let LogicalPlan::GroupBy(gb) = proj.input.as_ref() {
+                if find_nested_union(&gb.input).is_some() {
+                    (Some(proj), Some(gb))
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            }
+        }
+        _ => (None, None),
+    };
+    
+    let (projection, group_by) = match (projection, group_by) {
+        (Some(p), Some(g)) => (p, g),
+        _ => return None,
+    };
+    
+    // Check if projection has aggregation
+    let has_aggregation = projection.items.iter().any(|item| {
+        matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_))
+    });
+    
+    if !has_aggregation {
+        return None;
+    }
+    
+    println!("DEBUG: extract_outer_aggregation_info found aggregation pattern");
+    
+    // Convert outer SELECT items
+    let outer_select: Vec<SelectItem> = projection.items.iter().map(|item| {
+        let expr: RenderExpr = match &item.expression {
+            crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
+                // Reference the column alias from the subquery
+                RenderExpr::Raw(format!("\"{}\"", alias.0))
+            }
+            crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(agg) => {
+                // Keep aggregation function, but rewrite args to reference aliases
+                let args: Vec<RenderExpr> = agg.args.iter().map(|arg| {
+                    match arg {
+                        crate::query_planner::logical_expr::LogicalExpr::Star => RenderExpr::Raw("*".to_string()),
+                        crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
+                            RenderExpr::Raw(format!("\"{}\"", alias.0))
+                        }
+                        other => other.clone().try_into().unwrap_or(RenderExpr::Raw("?".to_string()))
+                    }
+                }).collect();
+                
+                RenderExpr::AggregateFnCall(AggregateFnCall {
+                    name: agg.name.clone(),
+                    args,
+                })
+            }
+            other => other.clone().try_into().unwrap_or(RenderExpr::Raw("?".to_string()))
+        };
+        
+        SelectItem {
+            expression: expr,
+            col_alias: item.col_alias.as_ref().map(|a| ColumnAlias(a.0.clone())),
+        }
+    }).collect();
+    
+    // Convert GROUP BY expressions
+    let outer_group_by: Vec<RenderExpr> = group_by.expressions.iter().map(|expr| {
+        match expr {
+            crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
+                RenderExpr::Raw(format!("\"{}\"", alias.0))
+            }
+            other => other.clone().try_into().unwrap_or(RenderExpr::Raw("?".to_string()))
+        }
+    }).collect();
+    
+    Some((outer_select, outer_group_by))
+}
+
+/// Find a Union node nested inside a plan (within Projection, GraphJoins, GroupBy, etc.)
 fn find_nested_union(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::Union> {
     match plan {
         LogicalPlan::Union(union) => Some(union),
         LogicalPlan::GraphJoins(graph_joins) => find_nested_union(&graph_joins.input),
         LogicalPlan::Projection(projection) => find_nested_union(&projection.input),
         LogicalPlan::Filter(filter) => find_nested_union(&filter.input),
+        LogicalPlan::GroupBy(group_by) => find_nested_union(&group_by.input),
         _ => None,
     }
 }

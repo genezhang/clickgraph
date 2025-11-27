@@ -15,23 +15,23 @@ graph_schema:
       
       # Denormalized origin (from_node) properties
       from_node_properties:
-        code: origin_code  # Airport.code (the ID) → flights.origin_code
-        city: origin_city
-        state: origin_state
+        code: Origin  # Airport.code (the ID) → flights.Origin
+        city: OriginCityName
+        state: OriginState
       
       # Denormalized destination (to_node) properties
       to_node_properties:
-        code: dest_code  # Airport.code (the ID) → flights.dest_code
-        city: dest_city
-        state: dest_state
+        code: Dest  # Airport.code (the ID) → flights.Dest
+        city: DestCityName
+        state: DestState
 
   relationships:
     # FLIGHT relationship - node properties declared above
     - type: FLIGHT
       database: test_integration
       table: flights
-      from_id: origin_code
-      to_id: dest_code
+      from_id: Origin
+      to_id: Dest
       from_node: Airport
       to_node: Airport
       
