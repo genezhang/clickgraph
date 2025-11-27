@@ -681,6 +681,42 @@ pub(super) fn has_multiple_relationship_types(plan: &LogicalPlan) -> bool {
     }
 }
 
+/// Check if a logical plan contains any variable-length path or shortest path pattern
+/// These require CTE-based processing (recursive CTEs)
+pub(super) fn has_variable_length_or_shortest_path(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Check for variable-length patterns that need CTEs
+            if let Some(spec) = &graph_rel.variable_length {
+                // Fixed-length (exact hops, no shortest path) can use inline JOINs
+                let is_fixed_length = spec.exact_hop_count().is_some() 
+                    && graph_rel.shortest_path_mode.is_none();
+                
+                if !is_fixed_length {
+                    // Variable-length or shortest path needs CTE
+                    return true;
+                }
+            }
+            // Also check shortest path without variable_length (edge case)
+            if graph_rel.shortest_path_mode.is_some() {
+                return true;
+            }
+            // Check child plans
+            has_variable_length_or_shortest_path(&graph_rel.left)
+                || has_variable_length_or_shortest_path(&graph_rel.right)
+        }
+        LogicalPlan::GraphJoins(joins) => has_variable_length_or_shortest_path(&joins.input),
+        LogicalPlan::Projection(proj) => has_variable_length_or_shortest_path(&proj.input),
+        LogicalPlan::Filter(filter) => has_variable_length_or_shortest_path(&filter.input),
+        LogicalPlan::GraphNode(node) => has_variable_length_or_shortest_path(&node.input),
+        LogicalPlan::GroupBy(gb) => has_variable_length_or_shortest_path(&gb.input),
+        LogicalPlan::OrderBy(ob) => has_variable_length_or_shortest_path(&ob.input),
+        LogicalPlan::Limit(limit) => has_variable_length_or_shortest_path(&limit.input),
+        LogicalPlan::Skip(skip) => has_variable_length_or_shortest_path(&skip.input),
+        _ => false,
+    }
+}
+
 /// Convert RenderExpr to SQL string with node alias mapping for CTE generation
 /// Maps Cypher aliases (e.g., "a", "b") to SQL table aliases (e.g., "start_node", "end_node")
 pub(super) fn render_expr_to_sql_for_cte(

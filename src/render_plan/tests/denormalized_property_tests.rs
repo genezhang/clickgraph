@@ -393,12 +393,16 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
 }
 
 /// Integration test: Verify analyzer applies denormalized property mapping through public API
+/// 
+/// This test uses ViewScan nodes with from_node_properties/to_node_properties
+/// to match the real query execution path for denormalized edge schemas.
 #[test]
 #[serial]
 fn test_analyzer_denormalized_property_integration() {
     use crate::query_planner::logical_plan::LogicalPlan;
     use crate::query_planner::logical_expr::{LogicalExpr, PropertyAccess, TableAlias, Operator, OperatorApplication};
     use crate::query_planner::logical_plan::{Filter, Projection, ProjectionItem, ProjectionKind};
+    use crate::query_planner::logical_plan::ViewScan;
     use crate::query_planner::plan_ctx::PlanCtx;
     use crate::query_planner::analyzer;
     use std::sync::Arc;
@@ -409,25 +413,71 @@ fn test_analyzer_denormalized_property_integration() {
     // Create a logical plan with a denormalized property access
     // Simulates: MATCH (origin:Airport)-[:FLIGHT]->(dest:Airport) WHERE origin.city = 'Los Angeles' RETURN dest.city
     
-    let origin_scan = Arc::new(LogicalPlan::Scan(crate::query_planner::logical_plan::Scan {
-        table_alias: Some("origin".to_string()),
-        table_name: Some("Airport".to_string()),
-    }));
+    // Build from_node_properties for origin (same as relationship schema)
+    let mut from_node_props = HashMap::new();
+    from_node_props.insert("city".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("origin_city".to_string()));
+    from_node_props.insert("state".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("origin_state".to_string()));
+    
+    // Build to_node_properties for destination
+    let mut to_node_props = HashMap::new();
+    to_node_props.insert("city".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("dest_city".to_string()));
+    to_node_props.insert("state".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("dest_state".to_string()));
+    
+    // Origin node using ViewScan with from_node_properties
+    let origin_view_scan = Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan {
+        source_table: "flights".to_string(),
+        view_filter: None,
+        property_mapping: HashMap::new(),
+        id_column: "origin_id".to_string(),
+        output_schema: vec![],
+        projections: vec![],
+        from_id: Some("origin_id".to_string()),
+        to_id: Some("dest_id".to_string()),
+        input: None,
+        view_parameter_names: None,
+        view_parameter_values: None,
+        use_final: false,
+        is_denormalized: true,
+        from_node_properties: Some(from_node_props.clone()),
+        to_node_properties: None,
+        type_column: None,
+        type_values: None,
+        from_label_column: None,
+        to_label_column: None,
+    })));
 
     let origin_node = Arc::new(LogicalPlan::GraphNode(crate::query_planner::logical_plan::GraphNode {
-        input: origin_scan,
+        input: origin_view_scan,
         alias: "origin".to_string(),
         label: Some("Airport".to_string()),
         is_denormalized: true,
     }));
 
-    let dest_scan = Arc::new(LogicalPlan::Scan(crate::query_planner::logical_plan::Scan {
-        table_alias: Some("dest".to_string()),
-        table_name: Some("Airport".to_string()),
-    }));
+    // Destination node using ViewScan with to_node_properties
+    let dest_view_scan = Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan {
+        source_table: "flights".to_string(),
+        view_filter: None,
+        property_mapping: HashMap::new(),
+        id_column: "dest_id".to_string(),
+        output_schema: vec![],
+        projections: vec![],
+        from_id: Some("origin_id".to_string()),
+        to_id: Some("dest_id".to_string()),
+        input: None,
+        view_parameter_names: None,
+        view_parameter_values: None,
+        use_final: false,
+        is_denormalized: true,
+        from_node_properties: None,
+        to_node_properties: Some(to_node_props.clone()),
+        type_column: None,
+        type_values: None,
+        from_label_column: None,
+        to_label_column: None,
+    })));
 
     let dest_node = Arc::new(LogicalPlan::GraphNode(crate::query_planner::logical_plan::GraphNode {
-        input: dest_scan,
+        input: dest_view_scan,
         alias: "dest".to_string(),
         label: Some("Airport".to_string()),
         is_denormalized: true,

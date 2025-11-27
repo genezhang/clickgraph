@@ -2526,6 +2526,18 @@ impl RenderPlanBuilder for LogicalPlan {
 
         // Check for GraphJoins wrapping Projection(Return) -> GroupBy pattern
         if let LogicalPlan::GraphJoins(graph_joins) = core_plan {
+            // Check if there's a variable-length or shortest path pattern in the tree
+            // These require recursive CTEs and cannot use inline JOINs
+            if has_variable_length_or_shortest_path(&graph_joins.input) {
+                println!(
+                    "DEBUG: Variable-length or shortest path detected in GraphJoins tree, returning Err to use CTE path"
+                );
+                return Err(RenderBuildError::InvalidRenderPlan(
+                    "Variable-length or shortest path patterns require CTE-based processing"
+                        .to_string(),
+                ));
+            }
+
             // Check if there's a multiple-relationship GraphRel anywhere in the tree
             if has_multiple_relationship_types(&graph_joins.input) {
                 println!(
