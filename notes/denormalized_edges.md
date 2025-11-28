@@ -12,10 +12,11 @@
 4. **Schema Lookup**: Fixed to search all loaded schemas (not just "default")
 5. **Single-Hop Patterns**: ✅ Working correctly
 6. **Multi-Hop Patterns**: ✅ Working correctly (2-hop, 3-hop, etc.)
-7. **Variable-Length Paths**: ✅ Working correctly (`*1..2`, `*`, etc.)
-8. **Aggregations**: COUNT, SUM, AVG, etc. work correctly on denormalized patterns
-9. **shortestPath / allShortestPaths**: ✅ Working correctly
-10. **PageRank**: ✅ Working correctly (requires named argument syntax)
+7. **Variable-Length Paths**: ✅ Working correctly (`*`, `*1..2`, `*0..3`, etc.)
+8. **Zero-Hop Patterns**: ✅ Working correctly (`*0..`, `*0..N`)
+9. **Aggregations**: COUNT, SUM, AVG, etc. work correctly on denormalized patterns
+10. **shortestPath / allShortestPaths**: ✅ Working correctly
+11. **PageRank**: ✅ Working correctly (requires named argument syntax)
 
 ### Verified End-to-End Test Results (Nov 27, 2025)
 
@@ -25,6 +26,8 @@
 | Multi-hop (2) | ✅ | `FROM flights AS f1 INNER JOIN flights AS f2 ON f2.Origin = f1.Dest` |
 | Multi-hop (3) | ✅ | Correct chain of 3 JOINs |
 | Variable-length `*1..2` | ✅ | Recursive CTE with correct table |
+| Zero-hop `*0..2` | ✅ | Recursive CTE with 0-hop base case |
+| Unbounded `*` | ✅ | Recursive CTE with max depth limit |
 | WHERE on source node | ✅ | `f.OriginCityName = 'Seattle'` |
 | shortestPath | ✅ | Recursive CTE with correct table |
 | PageRank | ✅ | Full PageRank SQL with correct tables |
