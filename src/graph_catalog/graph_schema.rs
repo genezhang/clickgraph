@@ -6,6 +6,7 @@ use super::config::Identifier;
 use super::engine_detection::TableEngine;
 use super::errors::GraphSchemaError;
 use super::expression_parser::PropertyValue;
+use super::filter_parser::SchemaFilter;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NodeSchema {
@@ -26,6 +27,11 @@ pub struct NodeSchema {
     /// - Some(true): Always use FINAL
     /// - Some(false): Never use FINAL
     pub use_final: Option<bool>,
+    
+    /// Optional: SQL predicate filter applied to all queries on this node
+    /// Column references are prefixed with table alias at query time
+    #[serde(skip)]
+    pub filter: Option<SchemaFilter>,
     
     // ===== Denormalized node support =====
     
@@ -103,6 +109,7 @@ impl NodeSchema {
             view_parameters,
             engine,
             use_final,
+            filter: None,
             is_denormalized: false,
             from_properties: None,
             to_properties: None,
@@ -133,6 +140,11 @@ pub struct RelationshipSchema {
     /// - Some(true): Always use FINAL
     /// - Some(false): Never use FINAL
     pub use_final: Option<bool>,
+    
+    /// Optional: SQL predicate filter applied to all queries on this relationship
+    /// Column references are prefixed with table alias at query time
+    #[serde(skip)]
+    pub filter: Option<SchemaFilter>,
     
     // ===== New fields for enhanced schema support =====
     
@@ -602,6 +614,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             edge_id: Some(Identifier::Composite(vec![
                 "FlightDate".to_string(),
                 "FlightNum".to_string(),
@@ -664,6 +677,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             edge_id: None,
             type_column: None,
             from_label_column: None,
@@ -713,6 +727,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             is_denormalized: true,
             from_properties: Some(from_props.clone()),
             to_properties: Some(to_props.clone()),
@@ -733,6 +748,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             edge_id: None,
             type_column: None,
             from_label_column: None,
@@ -771,6 +787,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             is_denormalized: false,
             from_properties: None,
             to_properties: None,
@@ -791,6 +808,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             edge_id: None,
             type_column: None,
             from_label_column: None,
@@ -828,6 +846,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             is_denormalized: true,
             from_properties: Some(from_props_airport.clone()),
             to_properties: None,
@@ -852,6 +871,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             is_denormalized: false,
             from_properties: None,
             to_properties: None,
@@ -876,6 +896,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             edge_id: None,
             type_column: None,
             from_label_column: None,
@@ -916,6 +937,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             is_denormalized: false,
             from_properties: None,
             to_properties: None,
@@ -939,6 +961,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             is_denormalized: true,
             from_properties: None,
             to_properties: Some(to_props_post.clone()),
@@ -963,6 +986,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             edge_id: None,
             type_column: None,
             from_label_column: None,
@@ -1011,6 +1035,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             is_denormalized: true,
             from_properties: Some(from_props_min.clone()),
             to_properties: Some(to_props_min.clone()),
@@ -1038,6 +1063,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             edge_id: None,
             type_column: None,
             from_label_column: None,
@@ -1068,6 +1094,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             is_denormalized: false,
             from_properties: None,
             to_properties: None,
@@ -1088,6 +1115,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             edge_id: None,
             type_column: None,
             from_label_column: None,
@@ -1122,6 +1150,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             is_denormalized: false,
             from_properties: None,
             to_properties: None,
@@ -1145,6 +1174,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             edge_id: None,
             type_column: None,
             from_label_column: None,
@@ -1185,6 +1215,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
         };
         
         let mut from_props = HashMap::new();
@@ -1204,6 +1235,7 @@ mod tests {
             view_parameters: None,
             engine: None,
             use_final: None,
+            filter: None,
             edge_id: None,
             type_column: None,
             from_label_column: None,

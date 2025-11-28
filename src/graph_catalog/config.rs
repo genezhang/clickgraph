@@ -1,5 +1,6 @@
 use super::errors::GraphSchemaError;
 use super::expression_parser::{parse_property_value, PropertyValue};
+use super::filter_parser::SchemaFilter;
 use super::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema};
 use super::schema_validator::SchemaValidator;
 use serde::{Deserialize, Serialize};
@@ -192,6 +193,12 @@ pub struct NodeDefinition {
     /// Example: {"code": "dest_code", "city": "dest_city"}
     #[serde(default)]
     pub to_node_properties: Option<HashMap<String, String>>,
+    
+    /// Optional: SQL predicate filter applied to all queries on this node
+    /// Column references are prefixed with table alias at query time
+    /// Example: "is_active = 1 AND created_at >= now() - INTERVAL 30 DAY"
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 fn default_naming_convention() -> String {
@@ -253,6 +260,11 @@ pub struct RelationshipDefinition {
     /// Default: [from_id, to_id]
     #[serde(default)]
     pub edge_id: Option<Identifier>,
+    /// Optional: SQL predicate filter applied to all queries on this relationship
+    /// Column references are prefixed with table alias at query time
+    /// Example: "is_active = 1 AND created_at >= now() - INTERVAL 30 DAY"
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 /// Edge definition - supporting both standard and polymorphic patterns
@@ -327,6 +339,12 @@ pub struct StandardEdgeDefinition {
     /// Optional: Naming convention for auto-discovered properties
     #[serde(default = "default_naming_convention")]
     pub naming_convention: String,
+    
+    /// Optional: SQL predicate filter applied to all queries on this edge
+    /// Column references are prefixed with table alias at query time
+    /// Example: "is_active = 1 AND created_at >= now() - INTERVAL 30 DAY"
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 /// Polymorphic edge definition (one config → many edge types from explicit list)
@@ -376,6 +394,12 @@ pub struct PolymorphicEdgeDefinition {
     /// Optional: Whether to use FINAL keyword
     #[serde(default)]
     pub use_final: Option<bool>,
+    
+    /// Optional: SQL predicate filter applied to all queries on this edge
+    /// Column references are prefixed with table alias at query time
+    /// Example: "is_active = 1 AND created_at >= now() - INTERVAL 30 DAY"
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 /// Convert snake_case to camelCase
@@ -617,6 +641,17 @@ impl GraphSchemaConfig {
             let is_denormalized = node_def.from_node_properties.is_some() 
                 || node_def.to_node_properties.is_some();
             
+            // Parse filter if provided
+            let filter = if let Some(filter_str) = &node_def.filter {
+                Some(SchemaFilter::new(filter_str).map_err(|e| {
+                    GraphSchemaError::ConfigReadError {
+                        error: format!("Invalid filter for node '{}': {}", node_def.label, e),
+                    }
+                })?)
+            } else {
+                None
+            };
+            
             let node_schema = NodeSchema {
                 database: node_def.database.clone(),
                 table_name: node_def.table.clone(),
@@ -633,6 +668,7 @@ impl GraphSchemaConfig {
                 view_parameters: node_def.view_parameters.clone(),
                 engine: None, // Will be populated during schema loading with ClickHouse client
                 use_final: node_def.use_final,
+                filter,
                 // Denormalized fields from node definition
                 is_denormalized,
                 from_properties: node_def.from_node_properties.clone(),
@@ -671,6 +707,17 @@ impl GraphSchemaConfig {
                 .unwrap_or(&default_node_type)
                 .clone();
 
+            // Parse filter if provided
+            let filter = if let Some(filter_str) = &rel_def.filter {
+                Some(SchemaFilter::new(filter_str).map_err(|e| {
+                    GraphSchemaError::ConfigReadError {
+                        error: format!("Invalid filter for relationship '{}': {}", rel_def.type_name, e),
+                    }
+                })?)
+            } else {
+                None
+            };
+
             let rel_schema = RelationshipSchema {
                 database: rel_def.database.clone(),
                 table_name: rel_def.table.clone(),
@@ -688,6 +735,7 @@ impl GraphSchemaConfig {
                 view_parameters: rel_def.view_parameters.clone(),
                 engine: None, // Will be populated during schema loading with ClickHouse client
                 use_final: rel_def.use_final,
+                filter,
                 // New fields
                 edge_id: rel_def.edge_id.clone(),
                 type_column: None,
@@ -705,6 +753,17 @@ impl GraphSchemaConfig {
                 EdgeDefinition::Standard(std_edge) => {
                     // Parse property mappings
                     let property_mappings = parse_property_mappings(std_edge.properties.clone())?;
+                    
+                    // Parse filter if provided
+                    let filter = if let Some(filter_str) = &std_edge.filter {
+                        Some(SchemaFilter::new(filter_str).map_err(|e| {
+                            GraphSchemaError::ConfigReadError {
+                                error: format!("Invalid filter for edge '{}': {}", std_edge.type_name, e),
+                            }
+                        })?)
+                    } else {
+                        None
+                    };
                     
                     // Convert standard edge definition to RelationshipSchema
                     let rel_schema = RelationshipSchema {
@@ -724,6 +783,7 @@ impl GraphSchemaConfig {
                         view_parameters: std_edge.view_parameters.clone(),
                         engine: None,
                         use_final: std_edge.use_final,
+                        filter,
                         // New fields
                         edge_id: std_edge.edge_id.clone(),
                         type_column: None,
@@ -737,6 +797,17 @@ impl GraphSchemaConfig {
                 EdgeDefinition::Polymorphic(poly_edge) => {
                     // Parse property mappings
                     let property_mappings = parse_property_mappings(poly_edge.properties.clone())?;
+                    
+                    // Parse filter if provided
+                    let filter = if let Some(filter_str) = &poly_edge.filter {
+                        Some(SchemaFilter::new(filter_str).map_err(|e| {
+                            GraphSchemaError::ConfigReadError {
+                                error: format!("Invalid filter for polymorphic edge: {}", e),
+                            }
+                        })?)
+                    } else {
+                        None
+                    };
                     
                     // Expand polymorphic edge: one config → N schemas (one per type_value)
                     // No ClickHouse query needed - types are explicit in config
@@ -761,6 +832,7 @@ impl GraphSchemaConfig {
                             view_parameters: poly_edge.view_parameters.clone(),
                             engine: None,
                             use_final: poly_edge.use_final,
+                            filter: filter.clone(),
                             // New fields - polymorphic specific
                             edge_id: poly_edge.edge_id.clone(),
                             type_column: Some(poly_edge.type_column.clone()),
@@ -853,6 +925,17 @@ impl GraphSchemaConfig {
             let is_denormalized = node_def.from_node_properties.is_some() 
                 || node_def.to_node_properties.is_some();
 
+            // Parse filter if provided
+            let filter = if let Some(filter_str) = &node_def.filter {
+                Some(SchemaFilter::new(filter_str).map_err(|e| {
+                    GraphSchemaError::ConfigReadError {
+                        error: format!("Invalid filter for node '{}': {}", node_def.label, e),
+                    }
+                })?)
+            } else {
+                None
+            };
+
             let node_schema = NodeSchema {
                 database: node_def.database.clone(),
                 table_name: node_def.table.clone(),
@@ -869,6 +952,7 @@ impl GraphSchemaConfig {
                 view_parameters: node_def.view_parameters.clone(),
                 engine,
                 use_final: Some(use_final),
+                filter,
                 // Denormalized fields from node definition
                 is_denormalized,
                 from_properties: node_def.from_node_properties.clone(),
@@ -941,6 +1025,17 @@ impl GraphSchemaConfig {
                 .unwrap_or(&default_node_type)
                 .clone();
 
+            // Parse filter if provided
+            let filter = if let Some(filter_str) = &rel_def.filter {
+                Some(SchemaFilter::new(filter_str).map_err(|e| {
+                    GraphSchemaError::ConfigReadError {
+                        error: format!("Invalid filter for relationship '{}': {}", rel_def.type_name, e),
+                    }
+                })?)
+            } else {
+                None
+            };
+
             let rel_schema = RelationshipSchema {
                 database: rel_def.database.clone(),
                 table_name: rel_def.table.clone(),
@@ -958,6 +1053,7 @@ impl GraphSchemaConfig {
                 view_parameters: rel_def.view_parameters.clone(),
                 engine,
                 use_final: Some(use_final),
+                filter,
                 edge_id: rel_def.edge_id.clone(),
                 type_column: None,
                 from_label_column: None,
@@ -1107,6 +1203,7 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
+            filter: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1143,6 +1240,7 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
+            filter: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1168,6 +1266,7 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
+            filter: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1193,6 +1292,7 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
+            filter: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1222,6 +1322,7 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
+            filter: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1248,6 +1349,7 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
+            filter: None,
                 })],
             },
         };
@@ -1269,6 +1371,7 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
+            filter: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1290,6 +1393,7 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
+            filter: None,
                 })],
             },
         };
