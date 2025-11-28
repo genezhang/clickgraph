@@ -89,6 +89,11 @@ pub struct Join {
     pub table_alias: String,
     pub joining_on: Vec<OperatorApplication>,
     pub join_type: JoinType,
+    /// Pre-filter for LEFT JOIN subquery form:
+    /// `LEFT JOIN (SELECT * FROM table WHERE pre_filter) AS alias ON ...`
+    /// This is used for schema filters and OPTIONAL MATCH WHERE clauses
+    /// to ensure correct LEFT JOIN semantics (filter BEFORE join, not after).
+    pub pre_filter: Option<RenderExpr>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -117,6 +122,13 @@ impl TryFrom<LogicalJoin> for Join {
     type Error = RenderBuildError;
 
     fn try_from(value: LogicalJoin) -> Result<Self, Self::Error> {
+        // Convert pre_filter from LogicalExpr to RenderExpr if present
+        let pre_filter = if let Some(logical_pre_filter) = value.pre_filter {
+            RenderExpr::try_from(logical_pre_filter).ok()
+        } else {
+            None
+        };
+        
         let join = Join {
             table_alias: value.table_alias,
             table_name: value.table_name,
@@ -127,6 +139,7 @@ impl TryFrom<LogicalJoin> for Join {
                 .map(OperatorApplication::try_from)
                 .collect::<Result<Vec<OperatorApplication>, RenderBuildError>>()?,
             join_type: value.join_type.clone().try_into()?,
+            pre_filter,
         };
         Ok(join)
     }

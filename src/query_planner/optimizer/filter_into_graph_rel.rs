@@ -222,6 +222,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 type_values: view_scan.type_values.clone(),
                                 from_label_column: view_scan.from_label_column.clone(),
                                 to_label_column: view_scan.to_label_column.clone(),
+                                schema_filter: view_scan.schema_filter.clone(),
                             },
                         )));
 
@@ -275,6 +276,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             type_values: view_scan.type_values.clone(),
                             from_label_column: view_scan.from_label_column.clone(),
                             to_label_column: view_scan.to_label_column.clone(),
+                            schema_filter: view_scan.schema_filter.clone(),
                         },
                     )));
 
@@ -440,6 +442,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                     type_values: view_scan.type_values.clone(),
                                     from_label_column: view_scan.from_label_column.clone(),
                                     to_label_column: view_scan.to_label_column.clone(),
+                                    schema_filter: view_scan.schema_filter.clone(),
                                 },
                             )));
 
@@ -461,6 +464,114 @@ impl OptimizerPass for FilterIntoGraphRel {
                             "FilterIntoGraphRel: No matching filters found for ViewScan table '{}'",
                             view_scan.source_table
                         );
+                    }
+                }
+                
+                // Check if child is a GraphNode containing a ViewScan that needs filters injected
+                if let LogicalPlan::GraphNode(graph_node) = child_plan.as_ref() {
+                    if let LogicalPlan::ViewScan(view_scan) = graph_node.input.as_ref() {
+                        println!(
+                            "FilterIntoGraphRel: Projection has GraphNode('{}') → ViewScan child, source_table='{}'",
+                            graph_node.alias, view_scan.source_table
+                        );
+                        
+                        // Skip if ViewScan already has filters
+                        if view_scan.view_filter.is_some() {
+                            println!("FilterIntoGraphRel: GraphNode's ViewScan already has view_filter, skipping");
+                        } else {
+                            // Look for filters in plan_ctx for the GraphNode's alias
+                            let mut filters_to_apply: Vec<LogicalExpr> = Vec::new();
+                            
+                            if let Ok(table_ctx) = plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_node.alias.clone())) {
+                                let filters = table_ctx.get_filters();
+                                if !filters.is_empty() {
+                                    println!(
+                                        "FilterIntoGraphRel: Found {} filters for GraphNode alias '{}': {:?}",
+                                        filters.len(),
+                                        graph_node.alias,
+                                        filters
+                                    );
+                                    filters_to_apply.extend(filters.clone());
+                                }
+                            }
+                            
+                            // If we found filters, inject them into ViewScan
+                            if !filters_to_apply.is_empty() {
+                                println!(
+                                    "FilterIntoGraphRel: Injecting {} filters into GraphNode's ViewScan.view_filter",
+                                    filters_to_apply.len()
+                                );
+                                
+                                use crate::query_planner::logical_expr::{Operator, OperatorApplication};
+                                
+                                // Combine all filters with AND
+                                let combined_predicate =
+                                    filters_to_apply.into_iter().reduce(|acc, filter| {
+                                        LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                            operator: Operator::And,
+                                            operands: vec![acc, filter],
+                                        })
+                                    });
+                                
+                                if let Some(predicate) = combined_predicate {
+                                    println!("FilterIntoGraphRel: Combined predicate for GraphNode: {:?}", predicate);
+                                    
+                                    // Create new ViewScan with the filter
+                                    let new_view_scan = Arc::new(LogicalPlan::ViewScan(Arc::new(
+                                        crate::query_planner::logical_plan::ViewScan {
+                                            source_table: view_scan.source_table.clone(),
+                                            view_filter: Some(predicate),
+                                            property_mapping: view_scan.property_mapping.clone(),
+                                            id_column: view_scan.id_column.clone(),
+                                            output_schema: view_scan.output_schema.clone(),
+                                            projections: view_scan.projections.clone(),
+                                            from_id: view_scan.from_id.clone(),
+                                            to_id: view_scan.to_id.clone(),
+                                            input: view_scan.input.clone(),
+                                            view_parameter_names: view_scan.view_parameter_names.clone(),
+                                            view_parameter_values: view_scan.view_parameter_values.clone(),
+                                            use_final: view_scan.use_final,
+                                            is_denormalized: view_scan.is_denormalized,
+                                            from_node_properties: view_scan.from_node_properties.clone(),
+                                            to_node_properties: view_scan.to_node_properties.clone(),
+                                            type_column: view_scan.type_column.clone(),
+                                            type_values: view_scan.type_values.clone(),
+                                            from_label_column: view_scan.from_label_column.clone(),
+                                            to_label_column: view_scan.to_label_column.clone(),
+                                            schema_filter: view_scan.schema_filter.clone(),
+                                        },
+                                    )));
+                                    
+                                    // Create new GraphNode with the modified ViewScan
+                                    let new_graph_node = Arc::new(LogicalPlan::GraphNode(
+                                        crate::query_planner::logical_plan::GraphNode {
+                                            input: new_view_scan,
+                                            alias: graph_node.alias.clone(),
+                                            label: graph_node.label.clone(),
+                                            is_denormalized: graph_node.is_denormalized,
+                                        },
+                                    ));
+                                    
+                                    // Create new Projection with the modified GraphNode
+                                    let new_proj = Arc::new(LogicalPlan::Projection(Projection {
+                                        input: new_graph_node,
+                                        items: proj.items.clone(),
+                                        kind: proj.kind.clone(),
+                                        distinct: proj.distinct,
+                                    }));
+                                    
+                                    println!(
+                                        "FilterIntoGraphRel: Successfully created Projection with filtered GraphNode → ViewScan"
+                                    );
+                                    return Ok(Transformed::Yes(new_proj));
+                                }
+                            } else {
+                                println!(
+                                    "FilterIntoGraphRel: No matching filters found for GraphNode alias '{}'",
+                                    graph_node.alias
+                                );
+                            }
+                        }
                     }
                 }
 
@@ -739,7 +850,8 @@ impl OptimizerPass for FilterIntoGraphRel {
 
                     if let Some(predicate) = combined_predicate {
                         log::debug!(
-                            "FilterIntoGraphRel: Injecting filter into ViewScan.view_filter"
+                            "FilterIntoGraphRel: Injecting filter into ViewScan.view_filter: {:?}",
+                            predicate
                         );
 
                         let new_view_scan = Arc::new(LogicalPlan::ViewScan(Arc::new(
@@ -763,6 +875,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 type_values: view_scan.type_values.clone(),
                                 from_label_column: view_scan.from_label_column.clone(),
                                 to_label_column: view_scan.to_label_column.clone(),
+                                schema_filter: view_scan.schema_filter.clone(),
                             },
                         )));
 

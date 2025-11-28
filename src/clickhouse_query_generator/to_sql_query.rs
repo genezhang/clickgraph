@@ -371,6 +371,7 @@ impl ToSql for Join {
         eprintln!("  table_alias: {}", self.table_alias);
         eprintln!("  table_name: {}", self.table_name);
         eprintln!("  joining_on.len(): {}", self.joining_on.len());
+        eprintln!("  pre_filter: {:?}", self.pre_filter.is_some());
         if !self.joining_on.is_empty() {
             eprintln!("  joining_on conditions:");
             for (idx, cond) in self.joining_on.iter().enumerate() {
@@ -393,9 +394,28 @@ impl ToSql for Join {
             JoinType::Right => "RIGHT JOIN",
         };
 
+        // For LEFT JOIN with pre_filter, use subquery form:
+        // LEFT JOIN (SELECT * FROM table WHERE pre_filter) AS alias ON ...
+        // This ensures the filter is applied BEFORE the join (correct LEFT JOIN semantics)
+        let table_expr = if let Some(ref pre_filter) = self.pre_filter {
+            if matches!(self.join_type, JoinType::Left) {
+                // Use to_sql_without_table_alias to render column names without table prefix
+                // since inside the subquery, the table is not yet aliased
+                let filter_sql = pre_filter.to_sql_without_table_alias();
+                eprintln!("  Using subquery form for LEFT JOIN with pre_filter: {}", filter_sql);
+                format!("(SELECT * FROM {} WHERE {})", self.table_name, filter_sql)
+            } else {
+                // For non-LEFT joins, pre_filter can go in ON clause or be ignored
+                // (In practice, we only set pre_filter for LEFT joins)
+                self.table_name.clone()
+            }
+        } else {
+            self.table_name.clone()
+        };
+
         let mut sql = format!(
             "{} {} AS {}",
-            join_type_str, self.table_name, self.table_alias
+            join_type_str, table_expr, self.table_alias
         );
 
         // Note: FINAL keyword for joins would need to be added here if Join struct
@@ -599,10 +619,24 @@ impl RenderExpr {
                             }
                         }
                     }
-                    2 => format!("{} {} {}", &rendered[0], sql_op, &rendered[1]),
+                    2 => {
+                        // For AND/OR, wrap in parentheses to ensure correct precedence
+                        // when combined with other expressions
+                        match op.operator {
+                            Operator::And | Operator::Or => {
+                                format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
+                            }
+                            _ => format!("{} {} {}", &rendered[0], sql_op, &rendered[1]),
+                        }
+                    }
                     _ => {
-                        // n-ary: join with the operator
-                        rendered.join(&format!(" {} ", sql_op))
+                        // n-ary: join with the operator, wrap in parentheses for AND/OR
+                        match op.operator {
+                            Operator::And | Operator::Or => {
+                                format!("({})", rendered.join(&format!(" {} ", sql_op)))
+                            }
+                            _ => rendered.join(&format!(" {} ", sql_op)),
+                        }
                     }
                 }
             }
@@ -652,6 +686,85 @@ impl RenderExpr {
 
                 format!("{} IN ({})", left, body)
             }
+        }
+    }
+
+    /// Render this expression to SQL without table alias prefixes.
+    /// Used for rendering filters inside subqueries where the table is not yet aliased.
+    /// e.g., `LEFT JOIN (SELECT * FROM table WHERE is_active = true) AS b`
+    /// The filter should be `is_active = true`, not `b.is_active = true`.
+    pub fn to_sql_without_table_alias(&self) -> String {
+        match self {
+            RenderExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
+                // Just render the column without the table alias prefix
+                column.0.to_sql_column_only()
+            }
+            RenderExpr::OperatorApplicationExp(op) => {
+                fn op_str(o: Operator) -> &'static str {
+                    match o {
+                        Operator::Addition => "+",
+                        Operator::Subtraction => "-",
+                        Operator::Multiplication => "*",
+                        Operator::Division => "/",
+                        Operator::ModuloDivision => "%",
+                        Operator::Exponentiation => "^",
+                        Operator::Equal => "=",
+                        Operator::NotEqual => "<>",
+                        Operator::LessThan => "<",
+                        Operator::GreaterThan => ">",
+                        Operator::LessThanEqual => "<=",
+                        Operator::GreaterThanEqual => ">=",
+                        Operator::And => "AND",
+                        Operator::Or => "OR",
+                        Operator::In => "IN",
+                        Operator::NotIn => "NOT IN",
+                        Operator::Not => "NOT",
+                        Operator::Distinct => "DISTINCT",
+                        Operator::IsNull => "IS NULL",
+                        Operator::IsNotNull => "IS NOT NULL",
+                    }
+                }
+
+                let sql_op = op_str(op.operator);
+                // Recursively render operands without table alias
+                let rendered: Vec<String> = op
+                    .operands
+                    .iter()
+                    .map(|e| e.to_sql_without_table_alias())
+                    .collect();
+
+                match rendered.len() {
+                    0 => "".into(),
+                    1 => {
+                        match op.operator {
+                            Operator::IsNull | Operator::IsNotNull => {
+                                format!("{} {}", &rendered[0], sql_op)
+                            }
+                            _ => {
+                                format!("{} {}", sql_op, &rendered[0])
+                            }
+                        }
+                    }
+                    2 => {
+                        match op.operator {
+                            Operator::And | Operator::Or => {
+                                format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
+                            }
+                            _ => format!("{} {} {}", &rendered[0], sql_op, &rendered[1]),
+                        }
+                    }
+                    _ => {
+                        match op.operator {
+                            Operator::And | Operator::Or => {
+                                format!("({})", rendered.join(&format!(" {} ", sql_op)))
+                            }
+                            _ => rendered.join(&format!(" {} ", sql_op)),
+                        }
+                    }
+                }
+            }
+            // For other expression types, delegate to regular to_sql
+            _ => self.to_sql(),
         }
     }
 }

@@ -157,6 +157,7 @@ property_mappings:
             properties: props,
             view_parameters: Some(vec!["tenant_id".to_string()]),
             use_final: None,
+            filter: None,
             auto_discover_columns: false,
             exclude_columns: vec![],
             naming_convention: "snake_case".to_string(),

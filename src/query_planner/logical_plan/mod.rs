@@ -290,16 +290,21 @@ pub struct GraphJoins {
     pub anchor_table: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Default)]
 pub struct Join {
     pub table_name: String,
     pub table_alias: String,
     pub joining_on: Vec<OperatorApplication>,
     pub join_type: JoinType,
+    /// Pre-filter for LEFT JOINs (applied inside subquery form)
+    /// Used for OPTIONAL MATCH WHERE predicates that reference only the optional alias
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pre_filter: Option<LogicalExpr>,
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Default)]
 pub enum JoinType {
+    #[default]
     Join,
     Inner,
     Left,

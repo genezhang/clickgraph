@@ -1643,18 +1643,83 @@ impl RenderPlanBuilder for LogicalPlan {
                 // ViewScan.view_filter should be None after CleanupViewScanFilters optimizer.
                 // All filters are consolidated in GraphRel.where_predicate.
                 // This case handles standalone ViewScans outside of GraphRel contexts.
+                let mut filters = Vec::new();
+                
+                // Add view_filter if present
                 if let Some(ref filter) = scan.view_filter {
                     let mut expr: RenderExpr = filter.clone().try_into()?;
-                    // Apply property mapping to the filter expression
                     apply_property_mapping_to_expr(&mut expr, &LogicalPlan::ViewScan(scan.clone()));
-                    Some(expr)
-                } else {
+                    filters.push(expr);
+                }
+                
+                // Add schema_filter if present (defined in YAML schema)
+                if let Some(ref schema_filter) = scan.schema_filter {
+                    // Use a default alias for standalone ViewScans
+                    // In practice, these will be wrapped in GraphNode which provides the alias
+                    if let Ok(sql) = schema_filter.to_sql("t") {
+                        log::debug!("ViewScan: Adding schema filter: {}", sql);
+                        filters.push(RenderExpr::Raw(sql));
+                    }
+                }
+                
+                if filters.is_empty() {
                     None
+                } else if filters.len() == 1 {
+                    Some(filters.into_iter().next().unwrap())
+                } else {
+                    // Combine with AND
+                    let combined = filters.into_iter().reduce(|acc, pred| {
+                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![acc, pred],
+                        })
+                    }).unwrap();
+                    Some(combined)
                 }
             }
             LogicalPlan::GraphNode(graph_node) => {
-                // GraphNode's filters are handled by the parent GraphRel.
-                // Don't extract from the input ViewScan to avoid duplicates.
+                // For node-only queries, extract both view_filter and schema_filter from the input ViewScan
+                if let LogicalPlan::ViewScan(scan) = graph_node.input.as_ref() {
+                    let mut filters = Vec::new();
+                    
+                    // Extract view_filter (user's WHERE clause, injected by optimizer)
+                    if let Some(ref view_filter) = scan.view_filter {
+                        let mut expr: RenderExpr = view_filter.clone().try_into()?;
+                        apply_property_mapping_to_expr(&mut expr, &graph_node.input);
+                        log::info!("GraphNode '{}': Adding view_filter: {:?}", graph_node.alias, expr);
+                        filters.push(expr);
+                    }
+                    
+                    // Extract schema_filter (from YAML schema)
+                    // Wrap in parentheses to ensure correct operator precedence when combined with user filters
+                    if let Some(ref schema_filter) = scan.schema_filter {
+                        if let Ok(sql) = schema_filter.to_sql(&graph_node.alias) {
+                            log::info!("GraphNode '{}': Adding schema filter: {}", graph_node.alias, sql);
+                            // Always wrap schema filter in parentheses for safe combination
+                            filters.push(RenderExpr::Raw(format!("({})", sql)));
+                        }
+                    }
+                    
+                    // Combine filters with AND if multiple
+                    // Use explicit AND combination - each operand will be wrapped appropriately
+                    if filters.is_empty() {
+                        return Ok(None);
+                    } else if filters.len() == 1 {
+                        return Ok(Some(filters.into_iter().next().unwrap()));
+                    } else {
+                        // When combining filters, wrap non-Raw expressions in parentheses
+                        // to handle AND/OR precedence correctly
+                        let combined = filters.into_iter().reduce(|acc, pred| {
+                            // The OperatorApplicationExp will render as "(left) AND (right)" 
+                            // due to the render_expr_to_sql_string logic
+                            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::And,
+                                operands: vec![acc, pred],
+                            })
+                        }).unwrap();
+                        return Ok(Some(combined));
+                    }
+                }
                 None
             }
             LogicalPlan::GraphRel(graph_rel) => {
@@ -1662,14 +1727,96 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // Collect all where_predicates from this GraphRel and nested GraphRel nodes
                 // This fixes the bug where only ONE GraphRel's predicate was being used
+                // 
+                // IMPORTANT: For optional (LEFT JOIN) patterns, predicates that reference ONLY
+                // optional aliases are moved to pre_filter (subquery form) and should NOT be
+                // included in the main WHERE clause. We filter them out here.
                 fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr> {
+                    use crate::query_planner::logical_expr::{LogicalExpr, Operator as LogicalOp, OperatorApplication as LogicalOpApp};
+                    
+                    // Helper to check if expression references ONLY a specific alias
+                    fn references_only_alias(expr: &LogicalExpr, alias: &str) -> bool {
+                        fn collect_aliases(expr: &LogicalExpr, aliases: &mut std::collections::HashSet<String>) {
+                            match expr {
+                                LogicalExpr::PropertyAccessExp(prop) => {
+                                    aliases.insert(prop.table_alias.0.clone());
+                                }
+                                LogicalExpr::OperatorApplicationExp(op) => {
+                                    for operand in &op.operands {
+                                        collect_aliases(operand, aliases);
+                                    }
+                                }
+                                LogicalExpr::ScalarFnCall(func) => {
+                                    for arg in &func.args {
+                                        collect_aliases(arg, aliases);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        let mut aliases = std::collections::HashSet::new();
+                        collect_aliases(expr, &mut aliases);
+                        aliases.len() == 1 && aliases.contains(alias)
+                    }
+                    
+                    // Split AND-connected predicates
+                    fn split_and_predicates(expr: &LogicalExpr) -> Vec<LogicalExpr> {
+                        match expr {
+                            LogicalExpr::OperatorApplicationExp(op) if matches!(op.operator, LogicalOp::And) => {
+                                let mut result = Vec::new();
+                                for operand in &op.operands {
+                                    result.extend(split_and_predicates(operand));
+                                }
+                                result
+                            }
+                            _ => vec![expr.clone()],
+                        }
+                    }
+                    
                     let mut predicates = Vec::new();
                     match plan {
                         LogicalPlan::GraphRel(gr) => {
-                            // Add this GraphRel's predicate
+                            // Add this GraphRel's predicate, but filter out optional-only predicates
                             if let Some(ref pred) = gr.where_predicate {
-                                if let Ok(render_expr) = RenderExpr::try_from(pred.clone()) {
-                                    predicates.push(render_expr);
+                                let is_optional = gr.is_optional.unwrap_or(false);
+                                
+                                if is_optional {
+                                    // For OPTIONAL MATCH patterns (a)-[r]->(b):
+                                    // - left_connection (a) is the REQUIRED anchor from previous MATCH
+                                    // - alias (r) is the optional relationship
+                                    // - right_connection (b) is the optional target node
+                                    //
+                                    // Only filter out predicates that reference ONLY:
+                                    // - The relationship (alias)
+                                    // - The right/optional node (right_connection)
+                                    // 
+                                    // Keep predicates that reference left_connection (anchor)!
+                                    let all_preds = split_and_predicates(pred);
+                                    for p in all_preds {
+                                        // Only filter if predicate references ONLY the optional parts
+                                        let refs_only_rel = references_only_alias(&p, &gr.alias);
+                                        let refs_only_right = references_only_alias(&p, &gr.right_connection);
+                                        
+                                        // Keep predicate in WHERE if it:
+                                        // - References the required anchor (left_connection)
+                                        // - References multiple aliases
+                                        // Filter out if it references ONLY rel or ONLY right
+                                        if refs_only_rel || refs_only_right {
+                                            log::debug!(
+                                                "Excluding optional-alias predicate from WHERE: refs_rel={}, refs_right={}",
+                                                refs_only_rel, refs_only_right
+                                            );
+                                        } else {
+                                            if let Ok(render_expr) = RenderExpr::try_from(p) {
+                                                predicates.push(render_expr);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Non-optional: include all predicates
+                                    if let Ok(render_expr) = RenderExpr::try_from(pred.clone()) {
+                                        predicates.push(render_expr);
+                                    }
                                 }
                             }
                             // Recursively collect from children (to get nested GraphRel predicates)
@@ -1689,10 +1836,50 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                     predicates
                 }
+                
+                // Collect schema filters from all ViewScans (defined in YAML schema)
+                fn collect_schema_filters(plan: &LogicalPlan, alias_hint: Option<&str>) -> Vec<RenderExpr> {
+                    let mut filters = Vec::new();
+                    match plan {
+                        LogicalPlan::ViewScan(scan) => {
+                            // If ViewScan has a schema_filter, convert it to RenderExpr::Raw with table alias
+                            if let Some(ref schema_filter) = scan.schema_filter {
+                                // We need the table alias to properly prefix columns
+                                // Use alias_hint if provided, otherwise extract from context
+                                let table_alias = alias_hint.unwrap_or("t");
+                                if let Ok(sql) = schema_filter.to_sql(table_alias) {
+                                    log::debug!(
+                                        "Collected schema filter for table '{}' with alias '{}': {}",
+                                        scan.source_table, table_alias, sql
+                                    );
+                                    filters.push(RenderExpr::Raw(sql));
+                                }
+                            }
+                        }
+                        LogicalPlan::GraphRel(gr) => {
+                            // For GraphRel, use the connection aliases as hints for child ViewScans
+                            filters.extend(collect_schema_filters(&gr.left, Some(&gr.left_connection)));
+                            filters.extend(collect_schema_filters(&gr.center, Some(&gr.alias)));
+                            filters.extend(collect_schema_filters(&gr.right, Some(&gr.right_connection)));
+                        }
+                        LogicalPlan::GraphNode(gn) => {
+                            filters.extend(collect_schema_filters(&gn.input, Some(&gn.alias)));
+                        }
+                        _ => {}
+                    }
+                    filters
+                }
 
                 let all_predicates = collect_graphrel_predicates(&LogicalPlan::GraphRel(graph_rel.clone()));
                 
                 let mut all_predicates = all_predicates;
+                
+                // 🔒 Add schema-level filters from ViewScans
+                let schema_filters = collect_schema_filters(&LogicalPlan::GraphRel(graph_rel.clone()), None);
+                if !schema_filters.is_empty() {
+                    log::info!("Adding {} schema filter(s) to WHERE clause", schema_filters.len());
+                    all_predicates.extend(schema_filters);
+                }
                 
                 // 🚀 ADD CYCLE PREVENTION for fixed-length paths
                 if let Some(spec) = &graph_rel.variable_length {
@@ -1766,8 +1953,19 @@ impl RenderPlanBuilder for LogicalPlan {
                 let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
                 // Apply property mapping to the filter expression
                 apply_property_mapping_to_expr(&mut expr, &filter.input);
-                println!("DEBUG: extract_filters - Returning Some(expr) from Filter");
-                Some(expr)
+                
+                // Also check for schema filters from the input (e.g., GraphNode → ViewScan)
+                if let Some(input_filter) = filter.input.extract_filters()? {
+                    println!("DEBUG: extract_filters - Combining Filter predicate with input schema filter");
+                    // Combine the Filter predicate with input's schema filter using AND
+                    Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::And,
+                        operands: vec![input_filter, expr],
+                    }))
+                } else {
+                    println!("DEBUG: extract_filters - Returning Filter predicate only (no input filter)");
+                    Some(expr)
+                }
             }
             LogicalPlan::Projection(projection) => {
                 println!("DEBUG: extract_filters - Projection, recursing to input type: {:?}", std::mem::discriminant(&*projection.input));
@@ -1829,6 +2027,125 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn extract_joins(&self) -> RenderPlanBuilderResult<Vec<Join>> {
+        // Helper to extract schema filter from a LogicalPlan for LEFT JOIN pre_filter
+        // This ensures schema filters are applied BEFORE the LEFT JOIN (correct semantics)
+        fn get_schema_filter_for_node(plan: &LogicalPlan, alias: &str) -> Option<RenderExpr> {
+            match plan {
+                LogicalPlan::GraphNode(gn) => {
+                    if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                        if let Some(ref sf) = vs.schema_filter {
+                            if let Ok(sql) = sf.to_sql(alias) {
+                                return Some(RenderExpr::Raw(sql));
+                            }
+                        }
+                    }
+                    None
+                }
+                LogicalPlan::ViewScan(vs) => {
+                    if let Some(ref sf) = vs.schema_filter {
+                        if let Ok(sql) = sf.to_sql(alias) {
+                            return Some(RenderExpr::Raw(sql));
+                        }
+                    }
+                    None
+                }
+                _ => None,
+            }
+        }
+        
+        /// Helper to extract predicates from where_predicate that reference ONLY a specific alias.
+        /// Returns (predicates_for_alias, remaining_predicates).
+        /// This is used to move optional-alias predicates into LEFT JOIN pre_filter.
+        fn extract_predicates_for_alias(
+            where_predicate: &Option<crate::query_planner::logical_expr::LogicalExpr>,
+            target_alias: &str,
+        ) -> (Option<RenderExpr>, Option<crate::query_planner::logical_expr::LogicalExpr>) {
+            use crate::query_planner::logical_expr::{LogicalExpr, Operator as LogicalOperator, OperatorApplication as LogicalOpApp};
+            
+            let predicate = match where_predicate {
+                Some(p) => p,
+                None => return (None, None),
+            };
+            
+            // Helper to check if an expression references ONLY the target alias
+            fn references_only_alias(expr: &LogicalExpr, alias: &str) -> bool {
+                fn collect_aliases(expr: &LogicalExpr, aliases: &mut std::collections::HashSet<String>) {
+                    match expr {
+                        LogicalExpr::PropertyAccessExp(prop) => {
+                            aliases.insert(prop.table_alias.0.clone());
+                        }
+                        LogicalExpr::OperatorApplicationExp(op) => {
+                            for operand in &op.operands {
+                                collect_aliases(operand, aliases);
+                            }
+                        }
+                        LogicalExpr::ScalarFnCall(func) => {
+                            for arg in &func.args {
+                                collect_aliases(arg, aliases);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                
+                let mut aliases = std::collections::HashSet::new();
+                collect_aliases(expr, &mut aliases);
+                
+                // Must reference ONLY the target alias (not zero, not multiple)
+                aliases.len() == 1 && aliases.contains(alias)
+            }
+            
+            // Split AND-connected predicates
+            fn split_and_predicates(expr: &LogicalExpr) -> Vec<LogicalExpr> {
+                match expr {
+                    LogicalExpr::OperatorApplicationExp(op) if matches!(op.operator, LogicalOperator::And) => {
+                        let mut result = Vec::new();
+                        for operand in &op.operands {
+                            result.extend(split_and_predicates(operand));
+                        }
+                        result
+                    }
+                    _ => vec![expr.clone()],
+                }
+            }
+            
+            // Combine predicates with AND
+            fn combine_with_and(predicates: Vec<LogicalExpr>) -> Option<LogicalExpr> {
+                if predicates.is_empty() {
+                    None
+                } else if predicates.len() == 1 {
+                    Some(predicates.into_iter().next().unwrap())
+                } else {
+                    Some(LogicalExpr::OperatorApplicationExp(LogicalOpApp {
+                        operator: LogicalOperator::And,
+                        operands: predicates,
+                    }))
+                }
+            }
+            
+            let all_predicates = split_and_predicates(predicate);
+            let mut for_alias = Vec::new();
+            let mut remaining = Vec::new();
+            
+            for pred in all_predicates {
+                if references_only_alias(&pred, target_alias) {
+                    for_alias.push(pred);
+                } else {
+                    remaining.push(pred);
+                }
+            }
+            
+            // Convert for_alias predicates to RenderExpr
+            let alias_filter = if for_alias.is_empty() {
+                None
+            } else {
+                let combined = combine_with_and(for_alias).unwrap();
+                RenderExpr::try_from(combined).ok()
+            };
+            
+            (alias_filter, combine_with_and(remaining))
+        }
+        
         let joins = match &self {
             LogicalPlan::Limit(limit) => limit.input.extract_joins()?,
             LogicalPlan::Skip(skip) => skip.input.extract_joins()?,
@@ -1848,6 +2165,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             table_alias: inner_node.alias.clone(), // Use the inner GraphNode's alias
                             joining_on: vec![],                    // Empty for CROSS JOIN
                             join_type: JoinType::Join,             // CROSS JOIN
+                            pre_filter: None,
                         });
                     }
                 }
@@ -2011,6 +2329,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 ],
                             }],
                             join_type: JoinType::Inner,
+                            pre_filter: None,
                         });
                     }
                     // For single-hop denormalized, no JOINs needed - relationship table IS the data
@@ -2092,6 +2411,67 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Detect this case: is_optional=true AND FROM clause is right node
                 // (The FROM clause selection logic prefers right node when is_optional=true)
                 let reverse_join_order = is_optional;
+                
+                // For LEFT JOINs, we need to extract:
+                // 1. Schema filters from YAML config (ViewScan.schema_filter)
+                // 2. User WHERE predicates that reference ONLY optional aliases
+                // Both go into pre_filter (subquery form) for correct LEFT JOIN semantics
+                //
+                // IMPORTANT: In OPTIONAL MATCH (a)-[r]->(b):
+                // - left_connection (a) is the REQUIRED anchor - do NOT extract its predicates!
+                // - alias (r) is optional - extract its predicates
+                // - right_connection (b) is optional - extract its predicates
+                
+                // Extract user predicates ONLY for optional aliases (rel and right)
+                // DO NOT extract for left_connection - it's the required anchor!
+                let (rel_user_pred, remaining_after_rel) = if is_optional {
+                    extract_predicates_for_alias(&graph_rel.where_predicate, &graph_rel.alias)
+                } else {
+                    (None, graph_rel.where_predicate.clone())
+                };
+                
+                let (right_user_pred, _remaining) = if is_optional {
+                    extract_predicates_for_alias(&remaining_after_rel, &graph_rel.right_connection)
+                } else {
+                    (None, remaining_after_rel)
+                };
+                
+                // Get schema filters from YAML config
+                // Note: left_connection is the anchor node, but it might still have a schema filter
+                let left_schema_filter = if is_optional {
+                    get_schema_filter_for_node(&graph_rel.left, &graph_rel.left_connection)
+                } else {
+                    None
+                };
+                let rel_schema_filter = if is_optional {
+                    get_schema_filter_for_node(&graph_rel.center, &graph_rel.alias)
+                } else {
+                    None
+                };
+                let right_schema_filter = if is_optional {
+                    get_schema_filter_for_node(&graph_rel.right, &graph_rel.right_connection)
+                } else {
+                    None
+                };
+                
+                // Combine schema filter + user predicates for each alias's pre_filter
+                // Note: left_connection is anchor, so we only use schema filter (no user predicate extraction)
+                fn combine_pre_filters(schema: Option<RenderExpr>, user: Option<RenderExpr>) -> Option<RenderExpr> {
+                    match (schema, user) {
+                        (Some(s), Some(u)) => Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![s, u],
+                        })),
+                        (Some(s), None) => Some(s),
+                        (None, Some(u)) => Some(u),
+                        (None, None) => None,
+                    }
+                }
+                
+                // left_node uses ONLY schema filter (no user predicates - anchor node predicates stay in WHERE)
+                let left_node_pre_filter = left_schema_filter;
+                let rel_pre_filter = combine_pre_filters(rel_schema_filter, rel_user_pred);
+                let right_node_pre_filter = combine_pre_filters(right_schema_filter, right_user_pred);
 
                 if reverse_join_order {
                     println!(
@@ -2099,7 +2479,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     );
 
                     // JOIN 1: End node (optional left node 'b')
-                    //   e.g., LEFT JOIN users AS b ON b.user_id = r.to_node_id
+                    //   e.g., LEFT JOIN (SELECT * FROM users WHERE schema_filter) AS b ON b.user_id = r.to_node_id
                     joins.push(Join {
                         table_name: start_table.clone(),
                         table_alias: graph_rel.left_connection.clone(),
@@ -2117,10 +2497,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             ],
                         }],
                         join_type: join_type.clone(),
+                        pre_filter: left_node_pre_filter.clone(),
                     });
 
                     // JOIN 2: Relationship table (can now reference both nodes)
-                    //   e.g., LEFT JOIN follows AS r ON r.follower_id = b.user_id AND r.followed_id = a.user_id
+                    //   e.g., LEFT JOIN (SELECT * FROM follows WHERE schema_filter) AS r ON ...
                     joins.push(Join {
                         table_name: rel_table.clone(),
                         table_alias: graph_rel.alias.clone(),
@@ -2153,11 +2534,13 @@ impl RenderPlanBuilder for LogicalPlan {
                             },
                         ],
                         join_type: join_type.clone(),
+                        pre_filter: rel_pre_filter.clone(),
                     });
                 } else {
                     // Normal order: relationship first, then end node
                     // JOIN 1: Start node -> Relationship table
                     //   e.g., INNER JOIN follows AS r ON r.from_node_id = a.user_id
+                    //   For LEFT JOIN: use pre_filter with schema filter
                     joins.push(Join {
                         table_name: rel_table.clone(),
                         table_alias: graph_rel.alias.clone(),
@@ -2175,10 +2558,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             ],
                         }],
                         join_type: join_type.clone(),
+                        pre_filter: rel_pre_filter.clone(),
                     });
 
                     // JOIN 2: Relationship table -> End node
-                    //   e.g., LEFT JOIN users AS b ON b.user_id = r.to_node_id
+                    //   e.g., LEFT JOIN (SELECT * FROM users WHERE schema_filter) AS b ON b.user_id = r.to_node_id
                     joins.push(Join {
                         table_name: end_table,
                         table_alias: graph_rel.right_connection.clone(),
@@ -2196,6 +2580,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             ],
                         }],
                         join_type,
+                        pre_filter: right_node_pre_filter.clone(),
                     });
                 }
 
@@ -3122,6 +3507,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             table_alias: cte_name.clone(),
                             joining_on: vec![join_condition],
                             join_type: super::JoinType::Inner,
+                            pre_filter: None,
                         };
 
                         println!(
@@ -3488,9 +3874,80 @@ impl RenderPlanBuilder for LogicalPlan {
                     alias: Some("t".to_string()), // CTE uses 't' as alias
                     use_final: false,             // CTEs don't use FINAL
                 })));
-                // For variable-length paths, apply end filters in the outer query
-                if let Some((_start_alias, _end_alias)) = has_variable_length_rel(self) {
-                    final_filters = context.get_end_filters_for_outer_query().cloned();
+                
+                // For variable-length paths, apply schema filters in the outer query
+                // The outer query JOINs to base tables (users_bench AS u, users_bench AS v)
+                // so we need schema filters on those base table JOINs
+                if let Some((start_alias, end_alias)) = has_variable_length_rel(self) {
+                    let mut filter_parts: Vec<RenderExpr> = Vec::new();
+                    
+                    // Add user end filters from context
+                    if let Some(user_filters) = context.get_end_filters_for_outer_query() {
+                        filter_parts.push(user_filters.clone());
+                    }
+                    
+                    // Helper to extract schema filter from ViewScan for a given alias
+                    fn collect_schema_filter_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
+                        match plan {
+                            LogicalPlan::GraphRel(gr) => {
+                                // Check right side for end node
+                                if gr.right_connection == target_alias {
+                                    if let LogicalPlan::GraphNode(gn) = gr.right.as_ref() {
+                                        if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                                            if let Some(ref sf) = vs.schema_filter {
+                                                return sf.to_sql(target_alias).ok();
+                                            }
+                                        }
+                                    }
+                                }
+                                // Also check left side
+                                if gr.left_connection == target_alias {
+                                    if let LogicalPlan::GraphNode(gn) = gr.left.as_ref() {
+                                        if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                                            if let Some(ref sf) = vs.schema_filter {
+                                                return sf.to_sql(target_alias).ok();
+                                            }
+                                        }
+                                    }
+                                }
+                                // Recurse into children
+                                collect_schema_filter_for_alias(&gr.left, target_alias)
+                                    .or_else(|| collect_schema_filter_for_alias(&gr.right, target_alias))
+                            }
+                            LogicalPlan::GraphNode(gn) => collect_schema_filter_for_alias(&gn.input, target_alias),
+                            LogicalPlan::Filter(f) => collect_schema_filter_for_alias(&f.input, target_alias),
+                            LogicalPlan::Projection(p) => collect_schema_filter_for_alias(&p.input, target_alias),
+                            LogicalPlan::GraphJoins(gj) => collect_schema_filter_for_alias(&gj.input, target_alias),
+                            LogicalPlan::Limit(l) => collect_schema_filter_for_alias(&l.input, target_alias),
+                            _ => None,
+                        }
+                    }
+                    
+                    // Get start node schema filter (for JOIN to start node base table)
+                    if let Some(schema_sql) = collect_schema_filter_for_alias(self, &start_alias) {
+                        log::info!("VLP outer query: Adding schema filter for start node '{}': {}", start_alias, schema_sql);
+                        filter_parts.push(RenderExpr::Raw(format!("({})", schema_sql)));
+                    }
+                    
+                    // Get end node schema filter (for JOIN to end node base table)
+                    if let Some(schema_sql) = collect_schema_filter_for_alias(self, &end_alias) {
+                        log::info!("VLP outer query: Adding schema filter for end node '{}': {}", end_alias, schema_sql);
+                        filter_parts.push(RenderExpr::Raw(format!("({})", schema_sql)));
+                    }
+                    
+                    // Combine all filters with AND
+                    final_filters = if filter_parts.is_empty() {
+                        None
+                    } else if filter_parts.len() == 1 {
+                        Some(filter_parts.into_iter().next().unwrap())
+                    } else {
+                        Some(filter_parts.into_iter().reduce(|acc, f| {
+                            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::And,
+                                operands: vec![acc, f],
+                            })
+                        }).unwrap())
+                    };
                 } else {
                     final_filters = None;
                 }
@@ -3622,6 +4079,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 },
                             ],
                             join_type: JoinType::Join,
+                            pre_filter: None,
                         });
                     }
                 } else {
@@ -3644,6 +4102,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 ],
                             }],
                             join_type: JoinType::Join,
+                            pre_filter: None,
                         });
                     }
                     if !end_is_denorm {
@@ -3664,6 +4123,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 ],
                             }],
                             join_type: JoinType::Join,
+                            pre_filter: None,
                         });
                     }
                 }
@@ -3722,6 +4182,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             ],
                         }],
                         join_type: JoinType::Join,
+                        pre_filter: None,
                     });
 
                     // Add JOIN from CTE to target node (using CTE's to_node_id)
@@ -3742,6 +4203,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             ],
                         }],
                         join_type: JoinType::Join,
+                        pre_filter: None,
                     });
                 }
             } else {

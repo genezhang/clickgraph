@@ -375,8 +375,9 @@ impl VariableLengthCteGenerator {
         let max_hops = self.spec.max_hops;
 
         // Determine if we need an _inner CTE wrapper
-        // This is needed when we have shortest path mode OR end filters
-        let needs_inner_cte = self.shortest_path_mode.is_some() || self.end_node_filters.is_some();
+        // This is needed when we have shortest path mode (which requires post-processing)
+        // For non-shortest-path mode, filters are applied in base/recursive cases directly
+        let needs_inner_cte = self.shortest_path_mode.is_some();
         let recursive_cte_name = if needs_inner_cte {
             format!("{}_inner", self.cte_name)
         } else {
@@ -508,18 +509,11 @@ impl VariableLengthCteGenerator {
                     self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name
                 )
             }
-            (None, Some(end_filters)) => {
-                // End filters are applied in separate _to_target CTE
-                format!(
-                    "{}_inner AS (\n{}\n),\n{}_to_target AS (\n    SELECT * FROM {}_inner WHERE {}\n),\n{} AS (\n    SELECT * FROM {}_to_target\n)",
-                    self.cte_name,
-                    query_body,
-                    self.cte_name,
-                    self.cte_name,
-                    end_filters,
-                    self.cte_name,
-                    self.cte_name
-                )
+            (None, Some(_end_filters)) => {
+                // For non-shortest-path mode, end filters are ALREADY applied in base/recursive cases
+                // (see generate_base_case and generate_recursive_case_with_cte_name)
+                // No need for _to_target wrapper - just wrap with CTE name
+                format!("{} AS (\n{}\n)", self.cte_name, query_body)
             }
             (None, None) => {
                 // Simple: just wrap with CTE name (no filtering)

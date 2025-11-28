@@ -449,6 +449,7 @@ fn test_analyzer_denormalized_property_integration() {
         type_values: None,
         from_label_column: None,
         to_label_column: None,
+        schema_filter: None,
     })));
 
     let origin_node = Arc::new(LogicalPlan::GraphNode(crate::query_planner::logical_plan::GraphNode {
@@ -479,6 +480,7 @@ fn test_analyzer_denormalized_property_integration() {
         type_values: None,
         from_label_column: None,
         to_label_column: None,
+        schema_filter: None,
     })));
 
     let dest_node = Arc::new(LogicalPlan::GraphNode(crate::query_planner::logical_plan::GraphNode {

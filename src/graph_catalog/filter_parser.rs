@@ -103,7 +103,7 @@ impl ComparisonOp {
 }
 
 /// Stored filter value with parsed AST
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SchemaFilter {
     /// Original filter string
     pub raw: String,

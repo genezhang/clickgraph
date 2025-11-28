@@ -61,6 +61,31 @@ impl PropertyValue {
             }
         }
     }
+
+    /// Generate SQL for just the column/expression without table prefix.
+    /// Used for rendering filters inside subqueries where no alias exists yet.
+    pub fn to_sql_column_only(&self) -> String {
+        match self {
+            PropertyValue::Column(col) => {
+                if needs_quoting(col) {
+                    format!("\"{}\"", col)
+                } else {
+                    col.clone()
+                }
+            }
+            PropertyValue::Expression(expr) => {
+                // Parse and render without table alias
+                match parse_clickhouse_scalar_expr(expr) {
+                    Ok((_, ast)) => ast.to_sql_no_alias(),
+                    Err(_) => {
+                        // Fallback: treat as raw SQL
+                        eprintln!("Warning: Failed to parse expression '{}', using as-is", expr);
+                        expr.clone()
+                    }
+                }
+            }
+        }
+    }
     
     /// Get raw value (for debugging)
     pub fn raw(&self) -> &str {
@@ -166,6 +191,37 @@ impl ClickHouseExpr {
                 format!("{}[{}]",
                     array.to_sql(table_alias),
                     index.to_sql(table_alias)
+                )
+            }
+            ClickHouseExpr::Literal(lit) => {
+                lit.to_sql()
+            }
+        }
+    }
+
+    /// Generate SQL without table alias prefix.
+    /// Used for rendering filters inside subqueries where no alias exists yet.
+    pub fn to_sql_no_alias(&self) -> String {
+        match self {
+            ClickHouseExpr::Column(col) => col.clone(),
+            ClickHouseExpr::QuotedColumn(col) => format!("\"{}\"", col),
+            ClickHouseExpr::FunctionCall { name, args } => {
+                let args_sql: Vec<String> = args.iter()
+                    .map(|a| a.to_sql_no_alias())
+                    .collect();
+                format!("{}({})", name, args_sql.join(", "))
+            }
+            ClickHouseExpr::BinaryOp { op, left, right } => {
+                format!("({} {} {})", 
+                    left.to_sql_no_alias(),
+                    op.to_str(),
+                    right.to_sql_no_alias()
+                )
+            }
+            ClickHouseExpr::ArrayIndex { array, index } => {
+                format!("{}[{}]",
+                    array.to_sql_no_alias(),
+                    index.to_sql_no_alias()
                 )
             }
             ClickHouseExpr::Literal(lit) => {

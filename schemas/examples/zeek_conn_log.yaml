@@ -43,7 +43,7 @@ graph_schema:
         ip: "id.resp_h"      # IP.ip → conn_log."id.resp_h"
         port: "id.resp_p"
 
-  relationships:
+  edges:
     # ACCESSED relationship - "192.168.4.76 accessed 192.168.4.1"
     - type: ACCESSED
       database: zeek

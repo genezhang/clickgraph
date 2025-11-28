@@ -56,19 +56,17 @@ graph_schema:
         name: query  # When domain is target (in REQUESTED)
 
     # ResolvedIP node - resolved IP addresses from answers array
-    # NOTE: This requires special handling for array flattening
+    # NOTE: this is an array type, need special handling
     - label: ResolvedIP
       database: zeek
       table: dns_log
-      id_column: ip
+      id_column: answers
       property_mappings: {}
       
-      # When ResolvedIP is the target of RESOLVED_TO, we need ARRAY JOIN
       to_node_properties:
-        ip: answer  # After ARRAY JOIN, individual answer element
-        # Note: The table needs to use ARRAY JOIN answers AS answer
+        answers: answers
 
-  relationships:
+  edges:
     # REQUESTED relationship - "192.168.4.76 requested testmyids.com"
     - type: REQUESTED
       database: zeek
@@ -89,23 +87,17 @@ graph_schema:
         rtt: rtt
 
     # RESOLVED_TO relationship - "testmyids.com resolved_to 31.3.245.133"
-    # NOTE: This relationship requires array flattening via ClickHouse ARRAY JOIN
+    # Note: user UNWIND to flatten the answers array
     - type: RESOLVED_TO
       database: zeek
       table: dns_log
       from_id: query
-      to_id: answer  # This is the flattened element from answers array
+      to_id: answers
       from_node: Domain
       to_node: ResolvedIP
       
       # Edge ID includes both uid and the specific answer for uniqueness
-      edge_id: [uid, answer]
-      
-      # Array flattening configuration - NEW FEATURE
-      # This tells ClickGraph to use ARRAY JOIN when querying this relationship
-      array_flatten:
-        source_column: answers    # The array column in the table
-        flattened_alias: answer   # The alias for individual elements
+      edge_id: [uid, answers]
       
       property_mappings:
         uid: uid

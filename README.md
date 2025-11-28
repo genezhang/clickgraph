@@ -4,7 +4,7 @@
 
 # ClickGraph
 
-#### ClickGraph - A graph query layer on top of ClickHouse®, developed on a forked repo of Brahmand
+#### ClickGraph - A graph query layer on top of ClickHouse®, developed on a forked repo of Brahmand, written in Rust.
 
 **A high-performance, stateless, read-only graph query engine for ClickHouse with Neo4j ecosystem compatibility.**
 
@@ -19,6 +19,7 @@ The next release will be big enhancements to the schema patterns, including
 - **Edge ID**: it can be a single column or a composite key with multiple columns for a unique edge instance. Default to (from_id, to_id).
 - **Property mapping to expression**: properties can be mapped to expressions represented in simple SQL expressions.
 - **Denormalized edge table**: nodes are part of the edge table with denormalized node property columns. Either from_node or to_node or both can be denormalized.
+- **Filter support**: a simple SQL predicate can be specified as a filter to a node or edge definition.
 - **Polymorphic edge table**: multiple edge types share the same edge table with a type column to indicate its edge type. The edge table also contains `from_label_column` and `to_label_column` to indicate the node labels that are standalone tables.
 
 While the schema config loading is complete, query support is still being developed.

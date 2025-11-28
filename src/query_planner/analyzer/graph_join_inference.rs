@@ -428,6 +428,126 @@ impl GraphJoinInference {
             _ => {}
         }
     }
+    
+    /// Attach pre_filter predicates to LEFT JOINs for optional aliases.
+    /// This extracts predicates from GraphRel.where_predicate that reference ONLY
+    /// the optional alias, and moves them into the JOIN's pre_filter field.
+    fn attach_pre_filters_to_joins(
+        joins: Vec<Join>,
+        optional_aliases: &std::collections::HashSet<String>,
+        logical_plan: &Arc<LogicalPlan>,
+    ) -> Vec<Join> {
+        use crate::query_planner::logical_expr::{LogicalExpr, Operator, OperatorApplication as LogicalOpApp};
+        
+        // First, collect all predicates from GraphRel.where_predicate nodes
+        fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<(LogicalExpr, String, String, String)> {
+            // Returns (predicate, left_connection, alias, right_connection) tuples
+            let mut results = Vec::new();
+            match plan {
+                LogicalPlan::GraphRel(gr) => {
+                    if let Some(ref pred) = gr.where_predicate {
+                        if gr.is_optional.unwrap_or(false) {
+                            results.push((
+                                pred.clone(),
+                                gr.left_connection.clone(),
+                                gr.alias.clone(),
+                                gr.right_connection.clone(),
+                            ));
+                        }
+                    }
+                    results.extend(collect_graphrel_predicates(&gr.left));
+                    results.extend(collect_graphrel_predicates(&gr.center));
+                    results.extend(collect_graphrel_predicates(&gr.right));
+                }
+                LogicalPlan::GraphNode(gn) => {
+                    results.extend(collect_graphrel_predicates(&gn.input));
+                }
+                LogicalPlan::Projection(proj) => {
+                    results.extend(collect_graphrel_predicates(&proj.input));
+                }
+                LogicalPlan::Filter(filter) => {
+                    results.extend(collect_graphrel_predicates(&filter.input));
+                }
+                _ => {}
+            }
+            results
+        }
+        
+        // Helper: check if expression references ONLY a single alias
+        fn references_only_alias(expr: &LogicalExpr, alias: &str) -> bool {
+            let mut refs = std::collections::HashSet::new();
+            GraphJoinInference::extract_table_refs_from_expr(expr, &mut refs);
+            refs.len() == 1 && refs.contains(alias)
+        }
+        
+        // Split AND-connected predicates
+        fn split_and_predicates(expr: &LogicalExpr) -> Vec<LogicalExpr> {
+            match expr {
+                LogicalExpr::OperatorApplicationExp(op) if matches!(op.operator, Operator::And) => {
+                    let mut result = Vec::new();
+                    for operand in &op.operands {
+                        result.extend(split_and_predicates(operand));
+                    }
+                    result
+                }
+                _ => vec![expr.clone()],
+            }
+        }
+        
+        // Combine predicates with AND
+        fn combine_with_and(predicates: Vec<LogicalExpr>) -> Option<LogicalExpr> {
+            if predicates.is_empty() {
+                None
+            } else if predicates.len() == 1 {
+                Some(predicates.into_iter().next().unwrap())
+            } else {
+                Some(LogicalExpr::OperatorApplicationExp(LogicalOpApp {
+                    operator: Operator::And,
+                    operands: predicates,
+                }))
+            }
+        }
+        
+        // Collect predicates from all optional GraphRels
+        let graphrel_preds = collect_graphrel_predicates(logical_plan);
+        
+        // Build a map of alias -> predicates for optional aliases
+        // Only include predicates that reference the optional parts (rel alias or right_connection)
+        let mut alias_predicates: std::collections::HashMap<String, Vec<LogicalExpr>> = std::collections::HashMap::new();
+        
+        for (predicate, _left_conn, rel_alias, right_conn) in graphrel_preds {
+            let all_preds = split_and_predicates(&predicate);
+            
+            for pred in all_preds {
+                // Only extract predicates for optional aliases (rel and right, not left which is anchor)
+                if references_only_alias(&pred, &rel_alias) && optional_aliases.contains(&rel_alias) {
+                    alias_predicates.entry(rel_alias.clone()).or_default().push(pred.clone());
+                }
+                if references_only_alias(&pred, &right_conn) && optional_aliases.contains(&right_conn) {
+                    alias_predicates.entry(right_conn.clone()).or_default().push(pred.clone());
+                }
+            }
+        }
+        
+        // Now attach predicates to the corresponding LEFT JOINs
+        joins.into_iter().map(|mut join| {
+            if matches!(join.join_type, crate::query_planner::logical_plan::JoinType::Left) {
+                if let Some(preds) = alias_predicates.get(&join.table_alias) {
+                    if !preds.is_empty() {
+                        let combined = combine_with_and(preds.clone());
+                        if combined.is_some() {
+                            eprintln!(
+                                "DEBUG: Attaching pre_filter to LEFT JOIN on '{}': {:?}",
+                                join.table_alias, combined
+                            );
+                            join.pre_filter = combined;
+                        }
+                    }
+                }
+            }
+            join
+        }).collect()
+    }
 
     fn build_graph_joins(
         logical_plan: Arc<LogicalPlan>,
@@ -471,11 +591,18 @@ impl GraphJoinInference {
                     &optional_aliases,
                     plan_ctx,
                 );
+                
+                // Extract predicates for optional aliases and attach them to LEFT JOINs
+                let joins_with_pre_filter = Self::attach_pre_filters_to_joins(
+                    reordered_joins,
+                    &optional_aliases,
+                    &logical_plan,
+                );
 
                 // wrap the outer projection i.e. first occurance in the tree walk with Graph joins
                 Transformed::Yes(Arc::new(LogicalPlan::GraphJoins(GraphJoins {
                     input: logical_plan.clone(),
-                    joins: reordered_joins,
+                    joins: joins_with_pre_filter,
                     optional_aliases,
                     anchor_table,
                 })))
@@ -1120,6 +1247,7 @@ impl GraphJoinInference {
                         ],
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
+                    pre_filter: None,
                 };
 
                 // Node join not needed for edge list with same-type nodes
@@ -1211,6 +1339,7 @@ impl GraphJoinInference {
                             ],
                         }],
                         join_type: Self::determine_join_type(left_is_optional),
+                    pre_filter: None,
                     };
                     collected_graph_joins.push(left_graph_join);
                     eprintln!("    TRADITIONAL: Created JOIN for LEFT alias '{}'", left_alias);
@@ -1298,6 +1427,7 @@ impl GraphJoinInference {
                         ],
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
+                    pre_filter: None,
                 };
 
                 eprintln!(
@@ -1432,6 +1562,7 @@ impl GraphJoinInference {
                                 ],
                             }],
                             join_type: Self::determine_join_type(left_is_optional),
+                    pre_filter: None,
                         };
                         collected_graph_joins.push(left_graph_join);
                         joined_entities.insert(left_alias.to_string());
@@ -1496,6 +1627,7 @@ impl GraphJoinInference {
                                     ],
                                 }],
                                 join_type: JoinType::Inner,
+                    pre_filter: None,
                             };
                             collected_graph_joins.push(edge_to_edge_join);
                             joined_entities.insert(rel_alias.to_string());
@@ -1590,6 +1722,7 @@ impl GraphJoinInference {
                                         ],
                                     }],
                                     join_type: Self::determine_join_type(left_is_optional),
+                    pre_filter: None,
                                 };
                                 collected_graph_joins.push(left_graph_join);
                                 joined_entities.insert(left_alias.to_string());
@@ -1661,6 +1794,7 @@ impl GraphJoinInference {
                                 ],
                             }],
                             join_type: Self::determine_join_type(right_is_optional),
+                    pre_filter: None,
                         };
                         collected_graph_joins.push(right_graph_join);
                         joined_entities.insert(right_alias.to_string());
@@ -1699,6 +1833,7 @@ impl GraphJoinInference {
                         ],
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
+                    pre_filter: None,
                 };
 
                 // Node join not needed for edge list (different node types)
@@ -1792,6 +1927,7 @@ impl GraphJoinInference {
                             ],
                         }],
                         join_type: Self::determine_join_type(left_is_optional),
+                    pre_filter: None,
                     };
                     collected_graph_joins.push(left_graph_join);
                 }
@@ -1825,6 +1961,7 @@ impl GraphJoinInference {
                         ],
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
+                    pre_filter: None,
                 };
 
                 // Node join not needed for edge list (different node types)
@@ -1916,6 +2053,7 @@ impl GraphJoinInference {
                             ],
                         }],
                         join_type: Self::determine_join_type(right_is_optional),
+                    pre_filter: None,
                     };
                     collected_graph_joins.push(right_graph_join);
                 }
@@ -1945,6 +2083,7 @@ impl GraphJoinInference {
                         ],
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
+                    pre_filter: None,
                 };
 
                 // Node join not needed for edge list (different node types)
@@ -2034,6 +2173,7 @@ impl GraphJoinInference {
                                 ],
                             }],
                             join_type: Self::determine_join_type(left_is_optional),
+                    pre_filter: None,
                         };
                         collected_graph_joins.push(left_graph_join);
                     }
@@ -2065,6 +2205,7 @@ impl GraphJoinInference {
                         ],
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
+                    pre_filter: None,
                 };
 
                 // Node join not needed for edge list (different node types)
@@ -2158,6 +2299,7 @@ impl GraphJoinInference {
                                 ],
                             }],
                             join_type: Self::determine_join_type(right_is_optional),
+                    pre_filter: None,
                         };
                         collected_graph_joins.push(right_graph_join);
                     }

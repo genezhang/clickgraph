@@ -10,36 +10,48 @@ use crate::query_planner::{
 /// Optimizer pass that clears ViewScan.view_filter after filters have been moved to GraphRel
 ///
 /// This pass runs AFTER FilterIntoGraphRel and removes redundant view_filter fields from
-/// ViewScan nodes. After FilterIntoGraphRel consolidates all filters into GraphRel.where_predicate,
-/// the view_filter fields become redundant and cause duplicate filter collection during rendering.
+/// ViewScan nodes that are INSIDE GraphRel contexts. After FilterIntoGraphRel consolidates 
+/// all filters into GraphRel.where_predicate, the view_filter fields become redundant.
 ///
-/// By clearing view_filter, we ensure filters are only collected from GraphRel.where_predicate,
-/// preventing duplicates in the generated SQL WHERE clause.
+/// IMPORTANT: ViewScan nodes that are NOT inside a GraphRel (e.g., simple node-only queries
+/// like `MATCH (u:User) WHERE u.country = 'USA' RETURN u.name`) must KEEP their view_filter
+/// because there is no GraphRel.where_predicate to hold the filter.
+///
+/// By clearing view_filter only in GraphRel contexts, we ensure filters are only collected 
+/// from GraphRel.where_predicate for relationship queries, while node-only queries still
+/// work correctly.
 pub struct CleanupViewScanFilters;
 
-impl OptimizerPass for CleanupViewScanFilters {
-    fn optimize(
+impl CleanupViewScanFilters {
+    /// Recursively optimize, tracking whether we're inside a GraphRel context
+    fn optimize_with_context(
         &self,
         logical_plan: Arc<LogicalPlan>,
         plan_ctx: &mut PlanCtx,
+        inside_graph_rel: bool,
     ) -> OptimizerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::ViewScan(scan) => {
-                // Clear view_filter - filters should come from GraphRel.where_predicate only
-                if scan.view_filter.is_some() {
+                // Only clear view_filter if inside a GraphRel context
+                // For node-only queries (GraphNode → ViewScan), we MUST keep the view_filter
+                if inside_graph_rel && scan.view_filter.is_some() {
+                    log::debug!("CleanupViewScanFilters: Clearing view_filter (inside GraphRel)");
                     let new_scan = Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan {
                         view_filter: None,
                         ..scan.as_ref().clone()
                     })));
                     Transformed::Yes(new_scan)
                 } else {
+                    if scan.view_filter.is_some() {
+                        log::debug!("CleanupViewScanFilters: Keeping view_filter (NOT inside GraphRel)");
+                    }
                     Transformed::No(logical_plan)
                 }
             }
             
-            // Recursively process all other node types
+            // Recursively process all other node types, propagating inside_graph_rel context
             LogicalPlan::Projection(proj) => {
-                let input_tf = self.optimize(proj.input.clone(), plan_ctx)?;
+                let input_tf = self.optimize_with_context(proj.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
                     Transformed::Yes(new_input) => {
                         Transformed::Yes(Arc::new(LogicalPlan::Projection(
@@ -56,7 +68,7 @@ impl OptimizerPass for CleanupViewScanFilters {
             }
             
             LogicalPlan::Filter(filter) => {
-                let input_tf = self.optimize(filter.input.clone(), plan_ctx)?;
+                let input_tf = self.optimize_with_context(filter.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
                     Transformed::Yes(new_input) => {
                         Transformed::Yes(Arc::new(LogicalPlan::Filter(
@@ -71,9 +83,10 @@ impl OptimizerPass for CleanupViewScanFilters {
             }
             
             LogicalPlan::GraphRel(graph_rel) => {
-                let left_tf = self.optimize(graph_rel.left.clone(), plan_ctx)?;
-                let center_tf = self.optimize(graph_rel.center.clone(), plan_ctx)?;
-                let right_tf = self.optimize(graph_rel.right.clone(), plan_ctx)?;
+                // Mark that we're now inside a GraphRel context
+                let left_tf = self.optimize_with_context(graph_rel.left.clone(), plan_ctx, true)?;
+                let center_tf = self.optimize_with_context(graph_rel.center.clone(), plan_ctx, true)?;
+                let right_tf = self.optimize_with_context(graph_rel.right.clone(), plan_ctx, true)?;
                 
                 match (left_tf, center_tf, right_tf) {
                     (Transformed::No(_), Transformed::No(_), Transformed::No(_)) => {
@@ -116,7 +129,8 @@ impl OptimizerPass for CleanupViewScanFilters {
             }
             
             LogicalPlan::GraphNode(graph_node) => {
-                let input_tf = self.optimize(graph_node.input.clone(), plan_ctx)?;
+                // GraphNode is NOT a GraphRel, so don't set inside_graph_rel = true
+                let input_tf = self.optimize_with_context(graph_node.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
                     Transformed::Yes(new_input) => {
                         Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
@@ -133,7 +147,7 @@ impl OptimizerPass for CleanupViewScanFilters {
             }
             
             LogicalPlan::GroupBy(group_by) => {
-                let input_tf = self.optimize(group_by.input.clone(), plan_ctx)?;
+                let input_tf = self.optimize_with_context(group_by.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
                     Transformed::Yes(new_input) => {
                         Transformed::Yes(Arc::new(LogicalPlan::GroupBy(
@@ -149,7 +163,7 @@ impl OptimizerPass for CleanupViewScanFilters {
             }
             
             LogicalPlan::OrderBy(order_by) => {
-                let input_tf = self.optimize(order_by.input.clone(), plan_ctx)?;
+                let input_tf = self.optimize_with_context(order_by.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
                     Transformed::Yes(new_input) => {
                         Transformed::Yes(Arc::new(LogicalPlan::OrderBy(
@@ -164,7 +178,7 @@ impl OptimizerPass for CleanupViewScanFilters {
             }
             
             LogicalPlan::Limit(limit) => {
-                let input_tf = self.optimize(limit.input.clone(), plan_ctx)?;
+                let input_tf = self.optimize_with_context(limit.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
                     Transformed::Yes(new_input) => {
                         Transformed::Yes(Arc::new(LogicalPlan::Limit(
@@ -179,7 +193,7 @@ impl OptimizerPass for CleanupViewScanFilters {
             }
             
             LogicalPlan::Skip(skip) => {
-                let input_tf = self.optimize(skip.input.clone(), plan_ctx)?;
+                let input_tf = self.optimize_with_context(skip.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
                     Transformed::Yes(new_input) => {
                         Transformed::Yes(Arc::new(LogicalPlan::Skip(
@@ -194,7 +208,7 @@ impl OptimizerPass for CleanupViewScanFilters {
             }
             
             LogicalPlan::GraphJoins(graph_joins) => {
-                let input_tf = self.optimize(graph_joins.input.clone(), plan_ctx)?;
+                let input_tf = self.optimize_with_context(graph_joins.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
                     Transformed::Yes(new_input) => {
                         Transformed::Yes(Arc::new(LogicalPlan::GraphJoins(
@@ -219,5 +233,16 @@ impl OptimizerPass for CleanupViewScanFilters {
         };
 
         Ok(transformed_plan)
+    }
+}
+
+impl OptimizerPass for CleanupViewScanFilters {
+    fn optimize(
+        &self,
+        logical_plan: Arc<LogicalPlan>,
+        plan_ctx: &mut PlanCtx,
+    ) -> OptimizerResult<Transformed<Arc<LogicalPlan>>> {
+        // Start with inside_graph_rel = false; it will be set to true when we enter a GraphRel
+        self.optimize_with_context(logical_plan, plan_ctx, false)
     }
 }

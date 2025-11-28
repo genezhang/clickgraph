@@ -195,6 +195,7 @@ fn try_generate_view_scan(
                     .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
                     .collect()
             });
+            from_scan.schema_filter = node_schema.filter.clone();
             // Note: to_node_properties is None - this is the FROM branch
             
             // Create TO position ViewScan  
@@ -212,6 +213,7 @@ fn try_generate_view_scan(
                     .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
                     .collect()
             });
+            to_scan.schema_filter = node_schema.filter.clone();
             // Note: from_node_properties is None - this is the TO branch
             
             // Create Union of the two ViewScans
@@ -249,6 +251,7 @@ fn try_generate_view_scan(
                 .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
                 .collect()
         });
+        view_scan.schema_filter = node_schema.filter.clone();
         
         log::info!(
             "✓ Created denormalized ViewScan for '{}' (single position)",
@@ -341,6 +344,16 @@ fn try_generate_view_scan(
         label,
         node_schema.table_name
     );
+    
+    // Set schema-level filter if defined in schema
+    view_scan.schema_filter = node_schema.filter.clone();
+    if view_scan.schema_filter.is_some() {
+        log::info!(
+            "ViewScan: Applied schema filter for label '{}': {:?}",
+            label,
+            node_schema.filter.as_ref().map(|f| &f.raw)
+        );
+    }
 
     Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))))
 }
@@ -441,6 +454,16 @@ fn try_generate_relationship_view_scan(
             "ViewScan: Populated polymorphic fields for rel '{}' - type_column={:?}",
             rel_type,
             view_scan.type_column
+        );
+    }
+    
+    // Set schema-level filter if defined in schema
+    view_scan.schema_filter = rel_schema.filter.clone();
+    if view_scan.schema_filter.is_some() {
+        log::info!(
+            "ViewScan: Applied schema filter for relationship '{}': {:?}",
+            rel_type,
+            rel_schema.filter.as_ref().map(|f| &f.raw)
         );
     }
 

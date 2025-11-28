@@ -1,0 +1,38 @@
+graph_schema:
+  nodes:
+    - label: User
+      database: brahmand
+      table: users_bench
+      id_column: user_id
+      # Filter: only active users
+      filter: "is_active = 1"
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        email: email_address
+        is_active: is_active
+        country: country
+
+    - label: Post
+      database: brahmand
+      table: posts_bench
+      id_column: post_id
+      property_mappings:
+        post_id: post_id
+        title: post_title
+        content: post_content
+        date: post_date
+
+  relationships:
+    - type: FOLLOWS
+      database: brahmand
+      table: user_follows_bench
+      from_id: follower_id
+      to_id: followed_id
+      edge_id: follow_id
+      from_node: User
+      to_node: User
+      # Filter: only follows from this year
+      filter: "toYear(follow_date) >= 2024"
+      property_mappings:
+        follow_date: follow_date

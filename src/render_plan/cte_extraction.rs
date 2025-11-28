@@ -42,6 +42,28 @@ fn extract_node_alias(plan: &LogicalPlan) -> Option<String> {
     }
 }
 
+/// Extract schema filter from a node's ViewScan (for CTE generation)
+/// Returns the raw filter SQL with table alias replaced to match CTE convention
+fn extract_schema_filter_from_node(plan: &LogicalPlan, cte_alias: &str) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            extract_schema_filter_from_node(&node.input, cte_alias)
+        }
+        LogicalPlan::ViewScan(view_scan) => {
+            if let Some(ref schema_filter) = view_scan.schema_filter {
+                // Convert schema filter to SQL with the CTE alias
+                schema_filter.to_sql(cte_alias).ok()
+            } else {
+                None
+            }
+        }
+        LogicalPlan::Filter(filter) => {
+            extract_schema_filter_from_node(&filter.input, cte_alias)
+        }
+        _ => None,
+    }
+}
+
 /// Helper function to extract the actual table name from a LogicalPlan node
 /// Recursively traverses the plan tree to find the Scan or ViewScan node
 fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
@@ -719,6 +741,31 @@ pub fn extract_ctes_with_context(
                     let both_denormalized = start_is_denormalized && end_is_denormalized;
                     let is_mixed = start_is_denormalized != end_is_denormalized;
                     
+                    // 🎯 Extract schema filters from start and end nodes
+                    // Schema filters are defined in YAML and should be applied to CTE base/recursive cases
+                    let start_schema_filter = extract_schema_filter_from_node(&graph_rel.left, "start_node");
+                    let end_schema_filter = extract_schema_filter_from_node(&graph_rel.right, "end_node");
+                    
+                    // Combine user filters with schema filters using AND
+                    let combined_start_filters = match (&start_filters_sql, &start_schema_filter) {
+                        (Some(user), Some(schema)) => Some(format!("({}) AND ({})", user, schema)),
+                        (Some(user), None) => Some(user.clone()),
+                        (None, Some(schema)) => Some(schema.clone()),
+                        (None, None) => None,
+                    };
+                    
+                    let combined_end_filters = match (&end_filters_sql, &end_schema_filter) {
+                        (Some(user), Some(schema)) => Some(format!("({}) AND ({})", user, schema)),
+                        (Some(user), None) => Some(user.clone()),
+                        (None, Some(schema)) => Some(schema.clone()),
+                        (None, None) => None,
+                    };
+                    
+                    if start_schema_filter.is_some() || end_schema_filter.is_some() {
+                        log::info!("CTE: Applying schema filters - start: {:?}, end: {:?}", 
+                                  start_schema_filter, end_schema_filter);
+                    }
+                    
                     // Get edge_id from relationship schema if available
                     // Use the first relationship label to look up the schema
                     let edge_id = if let Some(schema) = context.schema() {
@@ -742,7 +789,7 @@ pub fn extract_ctes_with_context(
                     
                     // Choose generator based on denormalized status
                     let generator = if both_denormalized {
-                        eprintln!("CTE: Using denormalized generator for variable-length path (both nodes virtual)");
+                        log::debug!("CTE: Using denormalized generator for variable-length path (both nodes virtual)");
                         VariableLengthCteGenerator::new_denormalized(
                             spec.clone(),
                             &rel_table,   // The only table - edge table
@@ -751,18 +798,15 @@ pub fn extract_ctes_with_context(
                             &graph_rel.left_connection,
                             &graph_rel.right_connection,
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()),
-                            start_filters_sql,
-                            if graph_rel.shortest_path_mode.is_some() {
-                                end_filters_sql
-                            } else {
-                                None
-                            },
+                            combined_start_filters.clone(),
+                            // 🔒 Always pass end filters - schema filters apply to base tables
+                            combined_end_filters.clone(),
                             graph_rel.path_variable.clone(),
                             graph_rel.labels.clone(),
                             edge_id,
                         )
                     } else if is_mixed {
-                        eprintln!("CTE: Using mixed generator for variable-length path (start_denorm={}, end_denorm={})", 
+                        log::debug!("CTE: Using mixed generator for variable-length path (start_denorm={}, end_denorm={})", 
                                   start_is_denormalized, end_is_denormalized);
                         VariableLengthCteGenerator::new_mixed(
                             spec.clone(),
@@ -777,12 +821,9 @@ pub fn extract_ctes_with_context(
                             &graph_rel.right_connection,
                             filter_properties.clone(),
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()),
-                            start_filters_sql,
-                            if graph_rel.shortest_path_mode.is_some() {
-                                end_filters_sql
-                            } else {
-                                None
-                            },
+                            combined_start_filters.clone(),
+                            // 🔒 Always pass end filters - schema filters apply to base tables
+                            combined_end_filters.clone(),
                             graph_rel.path_variable.clone(),
                             graph_rel.labels.clone(),
                             edge_id,
@@ -803,12 +844,9 @@ pub fn extract_ctes_with_context(
                             &graph_rel.right_connection,
                             filter_properties, // Use filter properties
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()),
-                            start_filters_sql, // Start filters
-                            if graph_rel.shortest_path_mode.is_some() {
-                                end_filters_sql
-                            } else {
-                                None
-                            }, // End filters only for shortest path
+                            combined_start_filters, // Start filters (user + schema)
+                            // 🔒 Always pass end filters - schema filters apply to base tables
+                            combined_end_filters,
                             graph_rel.path_variable.clone(),
                             graph_rel.labels.clone(),
                             edge_id, // Pass edge_id from schema
@@ -1310,6 +1348,7 @@ pub fn expand_fixed_length_joins(
                 ],
             }],
             join_type: JoinType::Inner,
+            pre_filter: None,
         });
         
         // TODO: Add intermediate node JOIN only if properties referenced
@@ -1335,6 +1374,7 @@ pub fn expand_fixed_length_joins(
             ],
         }],
         join_type: JoinType::Inner,
+        pre_filter: None,
     });
     
     println!(

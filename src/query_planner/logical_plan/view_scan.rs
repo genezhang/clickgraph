@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::LogicalPlan;
 use crate::graph_catalog::expression_parser::PropertyValue;
+use crate::graph_catalog::filter_parser::SchemaFilter;
 use crate::query_planner::logical_expr::LogicalExpr;
 
 /// A scan operation on a view-based table
@@ -73,6 +74,13 @@ pub struct ViewScan {
     /// Column containing to-node label (for polymorphic edges)
     /// Example: Some("to_type")
     pub to_label_column: Option<String>,
+    
+    // ===== Schema-level filtering =====
+    
+    /// Schema-level filter defined in YAML configuration
+    /// Applied automatically to all scans of this node/relationship type
+    /// Example: "ts >= now() - INTERVAL 7 DAY AND proto = 'tcp'"
+    pub schema_filter: Option<SchemaFilter>,
 }
 
 impl ViewScan {
@@ -105,6 +113,7 @@ impl ViewScan {
             type_values: None,
             from_label_column: None,
             to_label_column: None,
+            schema_filter: None, // Default: no schema-level filter
         }
     }
 
@@ -138,6 +147,7 @@ impl ViewScan {
             type_values: None,
             from_label_column: None,
             to_label_column: None,
+            schema_filter: None, // Default: no schema-level filter
         }
     }
 
@@ -172,6 +182,7 @@ impl ViewScan {
             type_values: None,
             from_label_column: None,
             to_label_column: None,
+            schema_filter: None, // Default: no schema-level filter
         }
     }
 
@@ -207,6 +218,7 @@ impl ViewScan {
             type_values: None,
             from_label_column: None,
             to_label_column: None,
+            schema_filter: None, // Default: no schema-level filter
         }
     }
 
@@ -250,6 +262,7 @@ impl ViewScan {
             type_values: self.type_values.clone(),
             from_label_column: self.from_label_column.clone(),
             to_label_column: self.to_label_column.clone(),
+            schema_filter: self.schema_filter.clone(), // Preserve schema filter
         }
     }
 
