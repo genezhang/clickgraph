@@ -246,6 +246,13 @@ pub struct RelationshipDefinition {
     /// - "camelCase": Convert to camelCase (user_id → userId)
     #[serde(default = "default_naming_convention")]
     pub naming_convention: String,
+    /// Optional: Composite edge ID for cycle prevention in variable-length paths
+    /// Examples: 
+    ///   - Single: "relationship_id" or ["relationship_id"]
+    ///   - Composite: ["from_id", "to_id", "timestamp"]
+    /// Default: [from_id, to_id]
+    #[serde(default)]
+    pub edge_id: Option<Identifier>,
 }
 
 /// Edge definition - supporting both standard and polymorphic patterns
@@ -681,8 +688,8 @@ impl GraphSchemaConfig {
                 view_parameters: rel_def.view_parameters.clone(),
                 engine: None, // Will be populated during schema loading with ClickHouse client
                 use_final: rel_def.use_final,
-                // New fields (legacy relationships don't have these)
-                edge_id: None,
+                // New fields
+                edge_id: rel_def.edge_id.clone(),
                 type_column: None,
                 from_label_column: None,
                 to_label_column: None,
@@ -951,7 +958,7 @@ impl GraphSchemaConfig {
                 view_parameters: rel_def.view_parameters.clone(),
                 engine,
                 use_final: Some(use_final),
-                edge_id: None,
+                edge_id: rel_def.edge_id.clone(),
                 type_column: None,
                 from_label_column: None,
                 to_label_column: None,
@@ -973,6 +980,80 @@ impl GraphSchemaConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_relationship_definition_edge_id_parsing() {
+        // Test that edge_id is correctly parsed from YAML relationship definition
+        let yaml = r#"
+name: test_edge_id
+graph_schema:
+  nodes:
+    - label: Airport
+      database: test
+      table: flights
+      id_column: code
+      property_mappings: {}
+  relationships:
+    - type: FLIGHT
+      database: test
+      table: flights
+      from_id: Origin
+      to_id: Dest
+      from_node: Airport
+      to_node: Airport
+      edge_id: [flight_id, flight_number]
+      property_mappings:
+        carrier: airline
+"#;
+        let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
+        
+        // Check that RelationshipDefinition has the edge_id
+        assert_eq!(config.graph_schema.relationships.len(), 1);
+        let rel = &config.graph_schema.relationships[0];
+        assert!(rel.edge_id.is_some(), "edge_id should be parsed from YAML");
+        
+        let edge_id = rel.edge_id.as_ref().unwrap();
+        assert!(edge_id.is_composite(), "edge_id should be composite");
+        assert_eq!(edge_id.columns(), vec!["flight_id", "flight_number"]);
+    }
+
+    #[test]
+    fn test_relationship_definition_edge_id_in_graph_schema() {
+        // Test that edge_id is preserved when converting to GraphSchema
+        let yaml = r#"
+name: test_edge_id
+graph_schema:
+  nodes:
+    - label: Airport
+      database: test
+      table: flights
+      id_column: code
+      property_mappings: {}
+  relationships:
+    - type: FLIGHT
+      database: test
+      table: flights
+      from_id: Origin
+      to_id: Dest
+      from_node: Airport
+      to_node: Airport
+      edge_id: [flight_id, flight_number]
+      property_mappings:
+        carrier: airline
+"#;
+        let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
+        
+        // Convert to GraphSchema
+        let graph_schema = config.to_graph_schema().expect("Failed to convert to GraphSchema");
+        
+        // Check that RelationshipSchema has the edge_id
+        let rel_schema = graph_schema.get_rel_schema("FLIGHT").expect("Failed to get rel schema");
+        assert!(rel_schema.edge_id.is_some(), "RelationshipSchema should have edge_id");
+        
+        let edge_id = rel_schema.edge_id.as_ref().unwrap();
+        assert!(edge_id.is_composite(), "edge_id should be composite");
+        assert_eq!(edge_id.columns(), vec!["flight_id", "flight_number"]);
+    }
 
     #[test]
     fn test_snake_to_camel_case() {
