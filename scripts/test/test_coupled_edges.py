@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Test script for co-located edge detection in multi-relationship denormalized tables.
+"""Test script for coupled edge detection in multi-relationship event tables.
+
+Coupled edges are edges that exist in the same table row (same event),
+sharing a "coupling node" that connects them.
 
 This tests the Zeek DNS log pattern where:
 - REQUESTED: (IP)-[:REQUESTED]->(Domain) 
 - RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)
 
-Both edges are in the same table (dns_log) and share the Domain node.
+Both edges are in the same table (dns_log) with Domain as the coupling node.
 The system should detect this and NOT generate a self-JOIN.
 """
 
@@ -31,11 +34,11 @@ def run_query(query: str, schema_path: str = "./schemas/examples/zeek_dns_log.ya
     )
     return response.json()
 
-def test_colocated_detection():
-    """Test that co-located edges are detected and JOIN is skipped."""
-    print(f"\n{YELLOW}=== Testing Co-Located Edge Detection ==={RESET}")
+def test_coupled_detection():
+    """Test that coupled edges are detected and JOIN is skipped."""
+    print(f"\n{YELLOW}=== Testing Coupled Edge Detection ==={RESET}")
     
-    # Query that traverses two co-located edges
+    # Query that traverses two coupled edges
     query = """
     MATCH (ip:IP)-[:REQUESTED]->(d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)
     RETURN ip, d, rip
@@ -63,13 +66,13 @@ def test_colocated_detection():
         print(f"  - Table 'dns_log' appears {table_count} times")
         print(f"  - JOIN keyword appears {join_count} times")
         
-        # With co-located detection, we should have minimal JOINs
-        # Ideally, for co-located edges in same row, no JOIN is needed
+        # With coupled edge detection, we should have minimal JOINs
+        # Ideally, for coupled edges in same row, no JOIN is needed
         if join_count == 0 and table_count <= 2:
-            print(f"{GREEN}✓ Co-located edges detected - no unnecessary JOIN!{RESET}")
+            print(f"{GREEN}✓ Coupled edges detected - no unnecessary JOIN!{RESET}")
             return True
         elif 'ARRAY JOIN' in sql and join_count == 1:
-            print(f"{GREEN}✓ Co-located edges with ARRAY JOIN for array column{RESET}")
+            print(f"{GREEN}✓ Coupled edges with ARRAY JOIN for array column{RESET}")
             return True
         else:
             print(f"{YELLOW}⚠ May have unnecessary JOINs - check SQL above{RESET}")
@@ -79,9 +82,9 @@ def test_colocated_detection():
         print(f"{RED}✗ Error: {e}{RESET}")
         return False
 
-def test_non_colocated_still_joins():
-    """Test that non-co-located edges still produce JOINs."""
-    print(f"\n{YELLOW}=== Testing Non-Co-Located Edges (should JOIN) ==={RESET}")
+def test_non_coupled_still_joins():
+    """Test that non-coupled edges still produce JOINs."""
+    print(f"\n{YELLOW}=== Testing Non-Coupled Edges (should JOIN) ==={RESET}")
     
     # Use the social benchmark schema where edges are in different tables
     query = """
@@ -106,12 +109,12 @@ def test_non_colocated_still_joins():
         sql = result.get('generated_sql', '')
         print(f"\nGenerated SQL:\n{sql[:500]}...")
         
-        # Non-co-located edges should have JOINs
+        # Non-coupled edges should have JOINs
         if 'JOIN' in sql.upper():
-            print(f"{GREEN}✓ Non-co-located edges correctly use JOINs{RESET}")
+            print(f"{GREEN}✓ Non-coupled edges correctly use JOINs{RESET}")
             return True
         else:
-            print(f"{RED}✗ Expected JOINs for non-co-located edges{RESET}")
+            print(f"{RED}✗ Expected JOINs for non-coupled edges{RESET}")
             return False
             
     except Exception as e:
@@ -121,7 +124,7 @@ def test_non_colocated_still_joins():
 def main():
     """Run all tests."""
     print(f"{YELLOW}╔════════════════════════════════════════════════════════════╗{RESET}")
-    print(f"{YELLOW}║       Co-Located Edge Detection Test Suite                 ║{RESET}")
+    print(f"{YELLOW}║       Coupled Edge Detection Test Suite                    ║{RESET}")
     print(f"{YELLOW}╚════════════════════════════════════════════════════════════╝{RESET}")
     
     # Check if server is running
@@ -138,11 +141,11 @@ def main():
     
     results = []
     
-    # Test 1: Co-located edge detection
-    results.append(("Co-located detection", test_colocated_detection()))
+    # Test 1: Coupled edge detection
+    results.append(("Coupled detection", test_coupled_detection()))
     
-    # Test 2: Non-co-located edges (might fail if wrong schema)
-    # results.append(("Non-co-located JOINs", test_non_colocated_still_joins()))
+    # Test 2: Non-coupled edges (might fail if wrong schema)
+    # results.append(("Non-coupled JOINs", test_non_coupled_still_joins()))
     
     print(f"\n{YELLOW}=== Summary ==={RESET}")
     passed = sum(1 for _, r in results if r)

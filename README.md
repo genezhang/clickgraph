@@ -20,7 +20,7 @@ The next release will be big enhancements to the schema patterns, including
 - **Property mapping to expression**: properties can be mapped to expressions represented in simple SQL expressions.
 - **Denormalized edge table**: nodes are part of the edge table with denormalized node property columns. Either from_node or to_node or both can be denormalized.
 - **Filter support**: a simple SQL predicate can be specified as a filter to a node or edge definition.
-- **Array support**: array field type and UNWIND clause to flatten an array value.
+- **Array support**: array columns and UNWIND clause to flatten an array value.
 - **Polymorphic edge table**: multiple edge types share the same edge table with a type column to indicate its edge type. The edge table also contains `from_label_column` and `to_label_column` to indicate the node labels that are standalone tables.
 
 While the schema config loading is complete, query support is still being developed.

@@ -6,8 +6,8 @@
   - Translates to ARRAY JOIN on CTE's path_nodes/path_relationships arrays
   - Works with all VLP patterns: `*`, `*2`, `*1..3`, `*..5`, `*2..`
   
-- Add co-located edge detection in graph schema
-  - `are_edges_colocated()` and `get_colocated_edge_info()` schema methods
+- Add coupled edge detection in graph schema
+  - `are_edges_coupled()` and `get_coupled_edge_info()` schema methods
   - Detects when two edges share the same table and a common node
   - Foundation for multi-edge single-row optimization (Zeek DNS pattern)
 

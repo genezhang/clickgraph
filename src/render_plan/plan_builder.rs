@@ -2322,9 +2322,9 @@ impl RenderPlanBuilder for LogicalPlan {
                         );
                         
                         // =========================================================
-                        // CO-LOCATED EDGE DETECTION
+                        // COUPLED EDGE DETECTION
                         // =========================================================
-                        // Check if the left and current edges are co-located (same table, shared node)
+                        // Check if the left and current edges are coupled (same table, coupling node)
                         // If so, they exist in the same row - NO JOIN needed!
                         let current_rel_type = graph_rel.labels.as_ref()
                             .and_then(|l| l.first().cloned());
@@ -2332,16 +2332,16 @@ impl RenderPlanBuilder for LogicalPlan {
                             .and_then(|l| l.first().cloned());
                         
                         if let (Some(curr_type), Some(left_type)) = (current_rel_type, left_rel_type) {
-                            // Try to get co-location info from schema
+                            // Try to get coupling info from schema
                             if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
                                 if let Ok(schemas) = schema_lock.try_read() {
                                     // Try different schema names
                                     for schema_name in ["default", ""] {
                                         if let Some(schema) = schemas.get(schema_name) {
-                                            if let Some(coloc_info) = schema.get_colocated_edge_info(&left_type, &curr_type) {
+                                            if let Some(coupling_info) = schema.get_coupled_edge_info(&left_type, &curr_type) {
                                                 println!(
-                                                    "DEBUG: CO-LOCATED EDGES DETECTED! {} and {} share node {} in table {}",
-                                                    left_type, curr_type, coloc_info.shared_node_label, coloc_info.table_name
+                                                    "DEBUG: COUPLED EDGES DETECTED! {} and {} share coupling node {} in table {}",
+                                                    left_type, curr_type, coupling_info.coupling_node, coupling_info.table_name
                                                 );
                                                 
                                                 // Skip the JOIN - edges are in the same row!
@@ -2354,7 +2354,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             }
                         }
                         
-                        // Not co-located - add the JOIN as usual
+                        // Not coupled - add the JOIN as usual
                         // JOIN this relationship table to the previous one
                         // e.g., INNER JOIN flights AS f2 ON f2.Origin = f1.Dest
                         joins.push(Join {

@@ -499,22 +499,22 @@ impl GraphSchema {
         self.denormalized_nodes.keys().collect()
     }
     
-    /// Check if two relationship types are co-located (same table, shared node)
+    /// Check if two relationship types are coupled (same table, shared coupling node)
     /// 
-    /// Two edges are co-located when:
+    /// Two edges are coupled when:
     /// 1. They share the same physical table (database.table)
-    /// 2. They share at least one node (edge1.to_node == edge2.from_node OR
+    /// 2. They share at least one node - the "coupling node" (edge1.to_node == edge2.from_node OR
     ///    edge1.from_node == edge2.to_node)
     /// 
-    /// When edges are co-located, they exist in the same row, so no JOIN is needed.
+    /// Coupled edges exist in the same row (same event), so no JOIN is needed.
     /// 
     /// Example (Zeek DNS log):
     /// - REQUESTED: (IP)-[:REQUESTED]->(Domain)  from dns_log
     /// - RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)  from dns_log
-    /// These are co-located because:
+    /// These are coupled because:
     /// - Same table: dns_log
-    /// - Shared node: Domain (REQUESTED.to_node == RESOLVED_TO.from_node)
-    pub fn are_edges_colocated(&self, edge1_type: &str, edge2_type: &str) -> bool {
+    /// - Coupling node: Domain (REQUESTED.to_node == RESOLVED_TO.from_node)
+    pub fn are_edges_coupled(&self, edge1_type: &str, edge2_type: &str) -> bool {
         let edge1 = match self.get_relationships_schema_opt(edge1_type) {
             Some(e) => e,
             None => return false,
@@ -539,18 +539,18 @@ impl GraphSchema {
         shared_node
     }
     
-    /// Get co-location info for two consecutive edges in a path pattern
+    /// Get coupling info for two consecutive edges in a path pattern
     /// 
-    /// Returns Some((shared_node_label, join_column)) if edges are co-located,
-    /// where join_column is the column that connects them (should be equal in the same row)
+    /// Returns Some(CoupledEdgeInfo) if edges are coupled,
+    /// where the coupling node connects them (same value in the same row)
     /// 
     /// For pattern: (a)-[e1]->(b)-[e2]->(c)
-    /// If e1 and e2 are co-located, returns Some(("b", column_name))
-    pub fn get_colocated_edge_info(
+    /// If e1 and e2 are coupled, returns Some(info) with coupling_node = "b"
+    pub fn get_coupled_edge_info(
         &self, 
         edge1_type: &str, 
         edge2_type: &str
-    ) -> Option<ColocatedEdgeInfo> {
+    ) -> Option<CoupledEdgeInfo> {
         let edge1 = self.get_relationships_schema_opt(edge1_type)?;
         let edge2 = self.get_relationships_schema_opt(edge2_type)?;
         
@@ -561,8 +561,8 @@ impl GraphSchema {
         
         // Check for edge1.to_node == edge2.from_node (most common: chained path)
         if edge1.to_node == edge2.from_node {
-            return Some(ColocatedEdgeInfo {
-                shared_node_label: edge1.to_node.clone(),
+            return Some(CoupledEdgeInfo {
+                coupling_node: edge1.to_node.clone(),
                 edge1_column: edge1.to_id.clone(),
                 edge2_column: edge2.from_id.clone(),
                 table_name: edge1.full_table_name(),
@@ -571,8 +571,8 @@ impl GraphSchema {
         
         // Check for edge1.from_node == edge2.to_node (reverse chain)
         if edge1.from_node == edge2.to_node {
-            return Some(ColocatedEdgeInfo {
-                shared_node_label: edge1.from_node.clone(),
+            return Some(CoupledEdgeInfo {
+                coupling_node: edge1.from_node.clone(),
                 edge1_column: edge1.from_id.clone(),
                 edge2_column: edge2.to_id.clone(),
                 table_name: edge1.full_table_name(),
@@ -583,11 +583,11 @@ impl GraphSchema {
     }
 }
 
-/// Information about co-located edges (edges in the same table row)
+/// Information about coupled edges (edges in the same table row, same event)
 #[derive(Debug, Clone)]
-pub struct ColocatedEdgeInfo {
-    /// The node label shared between the two edges
-    pub shared_node_label: String,
+pub struct CoupledEdgeInfo {
+    /// The coupling node - the node shared between the two edges
+    pub coupling_node: String,
     /// Column in edge1 that references the shared node
     pub edge1_column: String,
     /// Column in edge2 that references the shared node
@@ -1345,11 +1345,11 @@ mod tests {
     }
     
     // ========================================================================
-    // Co-located Edge Detection Tests
+    // Coupled Edge Detection Tests
     // ========================================================================
     
     #[test]
-    fn test_colocated_edges_same_table_shared_node() {
+    fn test_coupled_edges_same_table_shared_node() {
         // Zeek DNS pattern: REQUESTED and RESOLVED_TO in same table, sharing Domain node
         let mut relationships = HashMap::new();
         
@@ -1406,21 +1406,21 @@ mod tests {
         
         let schema = GraphSchema::build(1, "zeek".to_string(), HashMap::new(), relationships);
         
-        // These edges should be co-located
-        assert!(schema.are_edges_colocated("REQUESTED", "RESOLVED_TO"));
-        assert!(schema.are_edges_colocated("RESOLVED_TO", "REQUESTED"));
+        // These edges should be coupled
+        assert!(schema.are_edges_coupled("REQUESTED", "RESOLVED_TO"));
+        assert!(schema.are_edges_coupled("RESOLVED_TO", "REQUESTED"));
         
-        // Get co-location info
-        let info = schema.get_colocated_edge_info("REQUESTED", "RESOLVED_TO").unwrap();
-        assert_eq!(info.shared_node_label, "Domain");
+        // Get coupling info
+        let info = schema.get_coupled_edge_info("REQUESTED", "RESOLVED_TO").unwrap();
+        assert_eq!(info.coupling_node, "Domain");
         assert_eq!(info.edge1_column, "query");
         assert_eq!(info.edge2_column, "query");
         assert_eq!(info.table_name, "zeek.dns_log");
     }
     
     #[test]
-    fn test_not_colocated_different_tables() {
-        // Different tables = not co-located
+    fn test_not_coupled_different_tables() {
+        // Different tables = not coupled
         let mut relationships = HashMap::new();
         
         let edge1 = RelationshipSchema {
@@ -1474,14 +1474,14 @@ mod tests {
         
         let schema = GraphSchema::build(1, "db".to_string(), HashMap::new(), relationships);
         
-        // Not co-located (different tables)
-        assert!(!schema.are_edges_colocated("REL1", "REL2"));
-        assert!(schema.get_colocated_edge_info("REL1", "REL2").is_none());
+        // Not coupled (different tables)
+        assert!(!schema.are_edges_coupled("REL1", "REL2"));
+        assert!(schema.get_coupled_edge_info("REL1", "REL2").is_none());
     }
     
     #[test]
-    fn test_not_colocated_no_shared_node() {
-        // Same table but no shared node = not co-located (bad schema design!)
+    fn test_not_coupled_no_shared_node() {
+        // Same table but no shared node = not coupled (bad schema design!)
         let mut relationships = HashMap::new();
         
         let edge1 = RelationshipSchema {
@@ -1535,7 +1535,7 @@ mod tests {
         
         let schema = GraphSchema::build(1, "db".to_string(), HashMap::new(), relationships);
         
-        // Not co-located (no shared node - bad schema design)
-        assert!(!schema.are_edges_colocated("REL1", "REL2"));
+        // Not coupled (no shared node - bad schema design)
+        assert!(!schema.are_edges_coupled("REL1", "REL2"));
     }
 }
