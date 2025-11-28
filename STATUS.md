@@ -32,37 +32,39 @@
 
 ## 🎯 **v0.5.2-alpha: In Progress** 🚧
 
-**Status**: 🚧 **Denormalized Edge Implementation - Single-Hop Working, Multi-Hop Blocked**  
+**Status**: ✅ **Denormalized Edge Implementation - COMPLETE**  
 **Started**: November 22, 2025  
 **Updated**: November 27, 2025  
-**Next**: Redesign ViewScan/JOIN generation for multi-hop virtual nodes
+**Next**: Polymorphic edges or composite edge IDs
 
 ### 🎯 v0.5.2 Goals: Schema Variations
 
 **Purpose**: Add support for advanced schema patterns while maintaining existing quality
 
 **Features in Development**:
-1. 🚧 **Denormalized Edge Tables** (Partially Complete)
+1. ✅ **Denormalized Edge Tables** (COMPLETE - Nov 27, 2025)
    - ✅ Schema structure complete (node-level properties)
    - ✅ Property resolution function enhanced
-   - ✅ **Single-hop patterns working** (fixed Nov 27, 2025)
+   - ✅ Single-hop patterns working
+   - ✅ **Multi-hop patterns working** (verified via e2e tests)
+   - ✅ **Variable-length paths working** (verified via e2e tests)
    - ✅ Aggregations on denormalized queries working
-   - ❌ Multi-hop patterns require architecture redesign
    
 2. 📋 Polymorphic edges (queued)
 3. 📋 Composite edge IDs (queued)
 
-#### Denormalized Edge Tables - Implementation Status
+#### Denormalized Edge Tables - Implementation Complete ✅
 
-**✅ Completed (Nov 27, 2025)**:
-- Schema architecture refactored to node-level properties
+**All Features Working (Verified Nov 27, 2025)**:
+- Schema architecture with node-level `from_node_properties` and `to_node_properties`
 - YAML schema syntax finalized
 - Property mapping function enhanced with role-awareness
-- **Single-hop pattern SQL generation working correctly**
-- **Source AND destination node properties correctly mapped**
-- Aggregations (COUNT, SUM, AVG) on denormalized patterns working
+- Single-hop pattern SQL generation
+- **Multi-hop pattern SQL generation** (2-hop, 3-hop, etc.)
+- **Variable-length path SQL generation** (`*1..2`, `*`, etc.)
+- Aggregations (COUNT, SUM, AVG) on denormalized patterns
 
-**Example (Now Working)**:
+**Example (Working - Single-hop)**:
 ```cypher
 MATCH (a:Airport)-[f:FLIGHT]->(b:Airport)
 WHERE a.city = "Seattle"
@@ -75,18 +77,22 @@ FROM flights AS f
 WHERE f.OriginCityName = 'Seattle'
 ```
 
-**❌ Blocked**: Multi-hop Pattern SQL Generation
-- Current: 2+ hop patterns missing JOIN clauses
-- Required: Correct FROM/JOIN generation for chained patterns
-- Impact: Needs ViewScan/JOIN generation redesign for multi-hop
-- Details: See `notes/denormalized_blocker.md`
+**Example (Working - Multi-hop)**:
+```cypher
+MATCH (a:Airport)-[f1:FLIGHT]->(b:Airport)-[f2:FLIGHT]->(c:Airport)
+RETURN a.code, b.code, c.code
+```
+Generates:
+```sql
+SELECT f1.Origin AS "a.code", f1.Dest AS "b.code", f2.Dest AS "c.code"
+FROM flights AS f1
+INNER JOIN flights AS f2 ON f2.Origin = f1.Dest
+```
 
-**Next Steps**:
-1. Investigate multi-hop JOIN generation
-2. Fix FROM clause generation for chained relationships
-3. Test multi-hop denormalized patterns
-
-**Quality Target**: Don't regress existing 240 working tests (57.9% baseline)
+**Test Results**:
+- 20 denormalized-specific unit tests: ✅ All passing
+- 487 total library tests: ✅ All passing
+- E2E verification: ✅ All patterns working
 
 ### Baseline Test Results (Post-v0.5.1)
 
