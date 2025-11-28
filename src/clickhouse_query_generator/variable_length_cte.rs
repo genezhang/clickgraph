@@ -630,6 +630,12 @@ impl VariableLengthCteGenerator {
                 "1 as hop_count".to_string(),
                 format!("[{}] as path_edges", edge_tuple), // Track edge IDs, not node IDs
                 self.generate_relationship_type_for_hop(1), // path_relationships for single hop
+                // Add path_nodes array for UNWIND nodes(p) support
+                format!(
+                    "[{}.{}, {}.{}] as path_nodes",
+                    self.start_node_alias, self.start_node_id_column,
+                    self.end_node_alias, self.end_node_id_column
+                ),
             ];
 
             // Add properties for start and end nodes
@@ -741,6 +747,11 @@ impl VariableLengthCteGenerator {
             format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
+            ),
+            // Add path_nodes array for UNWIND nodes(p) support
+            format!(
+                "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
+                self.end_node_alias, self.end_node_id_column
             ),
         ];
 

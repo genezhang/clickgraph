@@ -139,6 +139,18 @@ impl SchemaInference {
             }
             LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::Unwind(u) => {
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan(u.input.clone(), plan_ctx)?;
+                match child_tf {
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
+                        input: new_input,
+                        expression: u.expression.clone(),
+                        alias: u.alias.clone(),
+                    }))),
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
         };
         Ok(transformed_plan)
     }
@@ -295,6 +307,9 @@ impl SchemaInference {
             }
             LogicalPlan::PageRank(_) => Ok(()),
             LogicalPlan::ViewScan(_) => Ok(()),
+            LogicalPlan::Unwind(u) => {
+                self.infer_schema(u.input.clone(), plan_ctx, graph_schema)
+            }
         }
     }
 

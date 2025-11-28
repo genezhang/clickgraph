@@ -498,6 +498,102 @@ impl GraphSchema {
     pub fn get_denormalized_node_labels(&self) -> Vec<&String> {
         self.denormalized_nodes.keys().collect()
     }
+    
+    /// Check if two relationship types are co-located (same table, shared node)
+    /// 
+    /// Two edges are co-located when:
+    /// 1. They share the same physical table (database.table)
+    /// 2. They share at least one node (edge1.to_node == edge2.from_node OR
+    ///    edge1.from_node == edge2.to_node)
+    /// 
+    /// When edges are co-located, they exist in the same row, so no JOIN is needed.
+    /// 
+    /// Example (Zeek DNS log):
+    /// - REQUESTED: (IP)-[:REQUESTED]->(Domain)  from dns_log
+    /// - RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)  from dns_log
+    /// These are co-located because:
+    /// - Same table: dns_log
+    /// - Shared node: Domain (REQUESTED.to_node == RESOLVED_TO.from_node)
+    pub fn are_edges_colocated(&self, edge1_type: &str, edge2_type: &str) -> bool {
+        let edge1 = match self.get_relationships_schema_opt(edge1_type) {
+            Some(e) => e,
+            None => return false,
+        };
+        let edge2 = match self.get_relationships_schema_opt(edge2_type) {
+            Some(e) => e,
+            None => return false,
+        };
+        
+        // Must be same physical table
+        if edge1.full_table_name() != edge2.full_table_name() {
+            return false;
+        }
+        
+        // Must share at least one node
+        let shared_node = 
+            edge1.to_node == edge2.from_node ||  // edge1 -> shared -> edge2
+            edge1.from_node == edge2.to_node ||  // edge2 -> shared -> edge1
+            edge1.to_node == edge2.to_node ||    // both point to same node
+            edge1.from_node == edge2.from_node;  // both originate from same node
+        
+        shared_node
+    }
+    
+    /// Get co-location info for two consecutive edges in a path pattern
+    /// 
+    /// Returns Some((shared_node_label, join_column)) if edges are co-located,
+    /// where join_column is the column that connects them (should be equal in the same row)
+    /// 
+    /// For pattern: (a)-[e1]->(b)-[e2]->(c)
+    /// If e1 and e2 are co-located, returns Some(("b", column_name))
+    pub fn get_colocated_edge_info(
+        &self, 
+        edge1_type: &str, 
+        edge2_type: &str
+    ) -> Option<ColocatedEdgeInfo> {
+        let edge1 = self.get_relationships_schema_opt(edge1_type)?;
+        let edge2 = self.get_relationships_schema_opt(edge2_type)?;
+        
+        // Must be same physical table
+        if edge1.full_table_name() != edge2.full_table_name() {
+            return None;
+        }
+        
+        // Check for edge1.to_node == edge2.from_node (most common: chained path)
+        if edge1.to_node == edge2.from_node {
+            return Some(ColocatedEdgeInfo {
+                shared_node_label: edge1.to_node.clone(),
+                edge1_column: edge1.to_id.clone(),
+                edge2_column: edge2.from_id.clone(),
+                table_name: edge1.full_table_name(),
+            });
+        }
+        
+        // Check for edge1.from_node == edge2.to_node (reverse chain)
+        if edge1.from_node == edge2.to_node {
+            return Some(ColocatedEdgeInfo {
+                shared_node_label: edge1.from_node.clone(),
+                edge1_column: edge1.from_id.clone(),
+                edge2_column: edge2.to_id.clone(),
+                table_name: edge1.full_table_name(),
+            });
+        }
+        
+        None
+    }
+}
+
+/// Information about co-located edges (edges in the same table row)
+#[derive(Debug, Clone)]
+pub struct ColocatedEdgeInfo {
+    /// The node label shared between the two edges
+    pub shared_node_label: String,
+    /// Column in edge1 that references the shared node
+    pub edge1_column: String,
+    /// Column in edge2 that references the shared node
+    pub edge2_column: String,
+    /// The table containing both edges
+    pub table_name: String,
 }
 
 // ============================================================================
@@ -1246,5 +1342,200 @@ mod tests {
         
         // Should NOT be detected (too many property_mappings)
         assert!(!is_node_denormalized_on_edge(&airport, &flight_edge, true));
+    }
+    
+    // ========================================================================
+    // Co-located Edge Detection Tests
+    // ========================================================================
+    
+    #[test]
+    fn test_colocated_edges_same_table_shared_node() {
+        // Zeek DNS pattern: REQUESTED and RESOLVED_TO in same table, sharing Domain node
+        let mut relationships = HashMap::new();
+        
+        // REQUESTED: (IP)-[:REQUESTED]->(Domain)
+        let requested = RelationshipSchema {
+            database: "zeek".to_string(),
+            table_name: "dns_log".to_string(),
+            column_names: vec![],
+            from_node: "IP".to_string(),
+            to_node: "Domain".to_string(),
+            from_id: "id.orig_h".to_string(),
+            to_id: "query".to_string(),
+            from_node_id_dtype: "String".to_string(),
+            to_node_id_dtype: "String".to_string(),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
+        };
+        
+        // RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)
+        let resolved_to = RelationshipSchema {
+            database: "zeek".to_string(),
+            table_name: "dns_log".to_string(),
+            column_names: vec![],
+            from_node: "Domain".to_string(),
+            to_node: "ResolvedIP".to_string(),
+            from_id: "query".to_string(),
+            to_id: "answers".to_string(),
+            from_node_id_dtype: "String".to_string(),
+            to_node_id_dtype: "String".to_string(),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
+        };
+        
+        relationships.insert("REQUESTED".to_string(), requested);
+        relationships.insert("RESOLVED_TO".to_string(), resolved_to);
+        
+        let schema = GraphSchema::build(1, "zeek".to_string(), HashMap::new(), relationships);
+        
+        // These edges should be co-located
+        assert!(schema.are_edges_colocated("REQUESTED", "RESOLVED_TO"));
+        assert!(schema.are_edges_colocated("RESOLVED_TO", "REQUESTED"));
+        
+        // Get co-location info
+        let info = schema.get_colocated_edge_info("REQUESTED", "RESOLVED_TO").unwrap();
+        assert_eq!(info.shared_node_label, "Domain");
+        assert_eq!(info.edge1_column, "query");
+        assert_eq!(info.edge2_column, "query");
+        assert_eq!(info.table_name, "zeek.dns_log");
+    }
+    
+    #[test]
+    fn test_not_colocated_different_tables() {
+        // Different tables = not co-located
+        let mut relationships = HashMap::new();
+        
+        let edge1 = RelationshipSchema {
+            database: "db".to_string(),
+            table_name: "table1".to_string(),
+            column_names: vec![],
+            from_node: "A".to_string(),
+            to_node: "B".to_string(),
+            from_id: "a_id".to_string(),
+            to_id: "b_id".to_string(),
+            from_node_id_dtype: "String".to_string(),
+            to_node_id_dtype: "String".to_string(),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
+        };
+        
+        let edge2 = RelationshipSchema {
+            database: "db".to_string(),
+            table_name: "table2".to_string(),  // Different table!
+            column_names: vec![],
+            from_node: "B".to_string(),  // Shares node B
+            to_node: "C".to_string(),
+            from_id: "b_id".to_string(),
+            to_id: "c_id".to_string(),
+            from_node_id_dtype: "String".to_string(),
+            to_node_id_dtype: "String".to_string(),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
+        };
+        
+        relationships.insert("REL1".to_string(), edge1);
+        relationships.insert("REL2".to_string(), edge2);
+        
+        let schema = GraphSchema::build(1, "db".to_string(), HashMap::new(), relationships);
+        
+        // Not co-located (different tables)
+        assert!(!schema.are_edges_colocated("REL1", "REL2"));
+        assert!(schema.get_colocated_edge_info("REL1", "REL2").is_none());
+    }
+    
+    #[test]
+    fn test_not_colocated_no_shared_node() {
+        // Same table but no shared node = not co-located (bad schema design!)
+        let mut relationships = HashMap::new();
+        
+        let edge1 = RelationshipSchema {
+            database: "db".to_string(),
+            table_name: "same_table".to_string(),
+            column_names: vec![],
+            from_node: "A".to_string(),
+            to_node: "B".to_string(),
+            from_id: "a_id".to_string(),
+            to_id: "b_id".to_string(),
+            from_node_id_dtype: "String".to_string(),
+            to_node_id_dtype: "String".to_string(),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
+        };
+        
+        let edge2 = RelationshipSchema {
+            database: "db".to_string(),
+            table_name: "same_table".to_string(),  // Same table
+            column_names: vec![],
+            from_node: "C".to_string(),  // But different nodes! (C, D vs A, B)
+            to_node: "D".to_string(),
+            from_id: "c_id".to_string(),
+            to_id: "d_id".to_string(),
+            from_node_id_dtype: "String".to_string(),
+            to_node_id_dtype: "String".to_string(),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
+        };
+        
+        relationships.insert("REL1".to_string(), edge1);
+        relationships.insert("REL2".to_string(), edge2);
+        
+        let schema = GraphSchema::build(1, "db".to_string(), HashMap::new(), relationships);
+        
+        // Not co-located (no shared node - bad schema design)
+        assert!(!schema.are_edges_colocated("REL1", "REL2"));
     }
 }

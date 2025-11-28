@@ -720,6 +720,22 @@ impl GraphJoinInference {
             }
             LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::Unwind(u) => {
+                let child_tf = Self::build_graph_joins(
+                    u.input.clone(),
+                    collected_graph_joins,
+                    optional_aliases,
+                    plan_ctx,
+                )?;
+                match child_tf {
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
+                        input: new_input,
+                        expression: u.expression.clone(),
+                        alias: u.alias.clone(),
+                    }))),
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
         };
         Ok(transformed_plan)
     }
@@ -932,6 +948,17 @@ impl GraphJoinInference {
             LogicalPlan::PageRank(_) => {
                 eprintln!("� ? PageRank, nothing to collect");
                 Ok(())
+            }
+            LogicalPlan::Unwind(u) => {
+                eprintln!("� ? Unwind, recursing into input");
+                self.collect_graph_joins(
+                    u.input.clone(),
+                    root_plan.clone(),
+                    plan_ctx,
+                    graph_schema,
+                    collected_graph_joins,
+                    joined_entities,
+                )
             }
         };
 

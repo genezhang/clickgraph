@@ -8,6 +8,7 @@ pub struct OpenCypherQueryAst<'a> {
     pub match_clause: Option<MatchClause<'a>>,
     pub optional_match_clauses: Vec<OptionalMatchClause<'a>>,
     pub call_clause: Option<CallClause<'a>>,
+    pub unwind_clause: Option<UnwindClause<'a>>,
     pub with_clause: Option<WithClause<'a>>,
     pub where_clause: Option<WhereClause<'a>>,
     pub create_clause: Option<CreateClause<'a>>,
@@ -35,6 +36,17 @@ pub struct MatchClause<'a> {
 pub struct OptionalMatchClause<'a> {
     pub path_patterns: Vec<PathPattern<'a>>,
     pub where_clause: Option<WhereClause<'a>>,
+}
+
+/// UNWIND clause: transforms an array/list into individual rows
+/// Example: UNWIND [1, 2, 3] AS x
+/// Example: UNWIND r.items AS item
+#[derive(Debug, PartialEq, Clone)]
+pub struct UnwindClause<'a> {
+    /// The expression to unwind (must evaluate to an array/list)
+    pub expression: Expression<'a>,
+    /// The alias for each unwound element
+    pub alias: &'a str,
 }
 
 #[derive(Debug, PartialEq, Clone)]

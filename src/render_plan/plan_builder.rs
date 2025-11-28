@@ -22,7 +22,7 @@ use super::render_expr::{
     RenderExpr, ScalarFnCall, TableAlias,
 };
 use super::{
-    Cte, CteItems, FilterItems, FromTable, FromTableItem, GroupByExpressions, Join, JoinItems,
+    ArrayJoinItem, Cte, CteItems, FilterItems, FromTable, FromTableItem, GroupByExpressions, Join, JoinItems,
     JoinType, LimitItem, OrderByItem, OrderByItems, OrderByOrder, RenderPlan, SelectItem, SelectItems, SkipItem,
     Union, UnionItems, ViewTableRef,
     view_table_ref::{from_table_to_view_ref, view_ref_to_from_table},
@@ -100,6 +100,9 @@ pub(crate) trait RenderPlanBuilder {
     fn extract_skip(&self) -> Option<i64>;
 
     fn extract_union(&self) -> RenderPlanBuilderResult<Option<Union>>;
+
+    /// Extract UNWIND clause as ARRAY JOIN item
+    fn extract_array_join(&self) -> RenderPlanBuilderResult<Option<super::ArrayJoin>>;
 
     fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan>;
 
@@ -356,6 +359,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 None
             }
             LogicalPlan::PageRank(_) => None,
+            LogicalPlan::Unwind(u) => u.input.extract_last_node_cte()?,
         };
         Ok(last_node_cte)
     }
@@ -645,6 +649,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 Ok(ctes)
             }
             LogicalPlan::PageRank(_) => Ok(vec![]),
+            LogicalPlan::Unwind(u) => u.input.extract_ctes(last_node_alias),
         }
     }
 
@@ -1069,6 +1074,7 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Cte(cte) => cte.input.extract_select_items()?,
             LogicalPlan::Union(_) => vec![],
             LogicalPlan::PageRank(_) => vec![],
+            LogicalPlan::Unwind(u) => u.input.extract_select_items()?,
         };
 
         Ok(select_items)
@@ -1413,6 +1419,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             LogicalPlan::GraphRel(gr) => Some(gr),
                             LogicalPlan::Projection(proj) => find_graph_rel(&proj.input),
                             LogicalPlan::Filter(filter) => find_graph_rel(&filter.input),
+                            LogicalPlan::Unwind(u) => find_graph_rel(&u.input),
                             _ => None,
                         }
                     }
@@ -1423,6 +1430,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             LogicalPlan::GraphNode(gn) => Some(gn),
                             LogicalPlan::Projection(proj) => find_graph_node(&proj.input),
                             LogicalPlan::Filter(filter) => find_graph_node(&filter.input),
+                            LogicalPlan::Unwind(u) => find_graph_node(&u.input),
                             _ => None,
                         }
                     }
@@ -1470,12 +1478,13 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
 
                 // NORMAL PATH: JOINs exist, use existing anchor logic
-                // Helper function to unwrap Projection/Filter layers to find GraphRel
+                // Helper function to unwrap Projection/Filter/Unwind layers to find GraphRel
                 fn find_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
                     match plan {
                         LogicalPlan::GraphRel(gr) => Some(gr),
                         LogicalPlan::Projection(proj) => find_graph_rel(&proj.input),
                         LogicalPlan::Filter(filter) => find_graph_rel(&filter.input),
+                        LogicalPlan::Unwind(u) => find_graph_rel(&u.input),
                         _ => None,
                     }
                 }
@@ -1631,6 +1640,7 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Cte(cte) => from_table_to_view_ref(cte.input.extract_from()?),
             LogicalPlan::Union(_) => None,
             LogicalPlan::PageRank(_) => None,
+            LogicalPlan::Unwind(u) => from_table_to_view_ref(u.input.extract_from()?),
         };
         Ok(view_ref_to_from_table(from_ref))
     }
@@ -1979,6 +1989,7 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_filters()?,
             LogicalPlan::Union(_) => None,
             LogicalPlan::PageRank(_) => None,
+            LogicalPlan::Unwind(u) => u.input.extract_filters()?,
         };
         Ok(filters)
     }
@@ -2310,6 +2321,40 @@ impl RenderPlanBuilder for LogicalPlan {
                             },
                         );
                         
+                        // =========================================================
+                        // CO-LOCATED EDGE DETECTION
+                        // =========================================================
+                        // Check if the left and current edges are co-located (same table, shared node)
+                        // If so, they exist in the same row - NO JOIN needed!
+                        let current_rel_type = graph_rel.labels.as_ref()
+                            .and_then(|l| l.first().cloned());
+                        let left_rel_type = left_rel.labels.as_ref()
+                            .and_then(|l| l.first().cloned());
+                        
+                        if let (Some(curr_type), Some(left_type)) = (current_rel_type, left_rel_type) {
+                            // Try to get co-location info from schema
+                            if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                                if let Ok(schemas) = schema_lock.try_read() {
+                                    // Try different schema names
+                                    for schema_name in ["default", ""] {
+                                        if let Some(schema) = schemas.get(schema_name) {
+                                            if let Some(coloc_info) = schema.get_colocated_edge_info(&left_type, &curr_type) {
+                                                println!(
+                                                    "DEBUG: CO-LOCATED EDGES DETECTED! {} and {} share node {} in table {}",
+                                                    left_type, curr_type, coloc_info.shared_node_label, coloc_info.table_name
+                                                );
+                                                
+                                                // Skip the JOIN - edges are in the same row!
+                                                // If arrays need expansion, user should use UNWIND clause
+                                                return Ok(joins);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Not co-located - add the JOIN as usual
                         // JOIN this relationship table to the previous one
                         // e.g., INNER JOIN flights AS f2 ON f2.Origin = f1.Dest
                         joins.push(Join {
@@ -2688,6 +2733,34 @@ impl RenderPlanBuilder for LogicalPlan {
         Ok(union_opt)
     }
 
+    /// Extract UNWIND clause as ARRAY JOIN
+    /// Traverses the logical plan tree to find Unwind nodes
+    fn extract_array_join(&self) -> RenderPlanBuilderResult<Option<super::ArrayJoin>> {
+        match self {
+            LogicalPlan::Unwind(u) => {
+                // Convert LogicalExpr to RenderExpr
+                let render_expr = RenderExpr::try_from(u.expression.clone())?;
+                Ok(Some(super::ArrayJoin {
+                    expression: render_expr,
+                    alias: u.alias.clone(),
+                }))
+            }
+            // Recursively check children
+            LogicalPlan::Projection(p) => p.input.extract_array_join(),
+            LogicalPlan::Filter(f) => f.input.extract_array_join(),
+            LogicalPlan::GroupBy(g) => g.input.extract_array_join(),
+            LogicalPlan::OrderBy(o) => o.input.extract_array_join(),
+            LogicalPlan::Limit(l) => l.input.extract_array_join(),
+            LogicalPlan::Skip(s) => s.input.extract_array_join(),
+            LogicalPlan::GraphJoins(gj) => gj.input.extract_array_join(),
+            LogicalPlan::GraphNode(gn) => gn.input.extract_array_join(),
+            LogicalPlan::GraphRel(gr) => gr.center.extract_array_join()
+                .or_else(|_| gr.left.extract_array_join())
+                .or_else(|_| gr.right.extract_array_join()),
+            _ => Ok(None),
+        }
+    }
+
     /// Try to build a JOIN-based render plan for simple queries
     /// Returns Ok(plan) if successful, Err(_) if this query needs CTE-based processing
     fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
@@ -2799,6 +2872,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     },
                     from: FromTableItem(None),
                     joins: JoinItems(vec![]),
+                    array_join: ArrayJoinItem(None),
                     filters: FilterItems(None),
                     group_by: GroupByExpressions(outer_group_by),
                     having_clause: None,
@@ -2871,6 +2945,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         },
                         from: plan.from.clone(),
                         joins: plan.joins.clone(),
+                        array_join: ArrayJoinItem(None),
                         filters: plan.filters.clone(),
                         group_by: GroupByExpressions(vec![]), // No GROUP BY in branches
                         having_clause: None,
@@ -2946,6 +3021,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     },
                     from: FromTableItem(None),
                     joins: JoinItems(vec![]),
+                    array_join: ArrayJoinItem(None),
                     filters: FilterItems(None),
                     group_by: GroupByExpressions(outer_group_by),
                     having_clause: first_plan.having_clause.clone(),
@@ -3009,6 +3085,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 select: SelectItems { items: vec![], distinct: false }, // Empty - let to_sql use SELECT *
                 from: FromTableItem(None), // Union doesn't need FROM at top level
                 joins: JoinItems(vec![]),
+                array_join: ArrayJoinItem(None),
                 filters: FilterItems(None),
                 group_by: GroupByExpressions(vec![]),
                 having_clause: None,
@@ -3409,6 +3486,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 },
                                 from: inner_render_plan.from.clone(),
                                 joins: inner_render_plan.joins.clone(),
+                                array_join: ArrayJoinItem(None),
                                 filters: inner_render_plan.filters.clone(),
                                 group_by: GroupByExpressions(group_by_exprs.clone()), // Clone to preserve for later use
                                 having_clause: having_expr,
@@ -3558,6 +3636,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             },
                             from: outer_from,
                             joins: JoinItems(vec![cte_join]),
+                            array_join: ArrayJoinItem(None),
                             filters: FilterItems(None),
                             group_by: GroupByExpressions(vec![]),
                             having_clause: None,
@@ -3605,11 +3684,23 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
-        let final_from = self.extract_from()?;
+        let mut final_from = self.extract_from()?;
         println!(
             "DEBUG: build_simple_relationship_render_plan - final_from: {:?}",
             final_from
         );
+
+        // Check if we have an UNWIND clause - if so and no FROM, use system.one
+        let array_join = self.extract_array_join()?;
+        if final_from.is_none() && array_join.is_some() {
+            log::debug!("UNWIND clause without FROM, using system.one as dummy source");
+            final_from = Some(FromTable::new(Some(ViewTableRef {
+                source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
+                name: "system.one".to_string(),
+                alias: Some("_dummy".to_string()),
+                use_final: false,
+            })));
+        }
 
         // Validate that we have a FROM clause
         if final_from.is_none() {
@@ -3679,6 +3770,7 @@ impl RenderPlanBuilder for LogicalPlan {
             },
             from: FromTableItem(from_table_to_view_ref(final_from)),
             joins: JoinItems(filtered_joins), // GraphJoinInference already ordered these correctly
+            array_join: ArrayJoinItem(self.extract_array_join()?),
             filters: FilterItems(final_filters),
             group_by: GroupByExpressions(self.extract_group_by()?),
             having_clause: self.extract_having()?,
@@ -3715,6 +3807,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 },
                 from: FromTableItem(None),
                 joins: JoinItems(vec![]),
+                array_join: ArrayJoinItem(None),
                 filters: FilterItems(None),
                 group_by: GroupByExpressions(vec![]),
                 having_clause: None,
@@ -3762,6 +3855,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::Cte(_) => "Cte",
                 LogicalPlan::Union(_) => "Union",
                 LogicalPlan::PageRank(_) => "PageRank",
+                LogicalPlan::Unwind(_) => "Unwind",
             }
         );
 
@@ -4359,6 +4453,33 @@ impl RenderPlanBuilder for LogicalPlan {
             },
             from: FromTableItem(from_table_to_view_ref(final_from)),
             joins: JoinItems(extracted_joins),
+            array_join: ArrayJoinItem({
+                // Extract ARRAY JOIN and rewrite path functions for VLP if needed
+                let mut array_join_opt = transformed_plan.extract_array_join()?;
+                
+                // If this is a VLP query with ARRAY JOIN, rewrite path functions
+                // e.g., UNWIND nodes(p) AS n → ARRAY JOIN t.path_nodes AS n
+                if let Some(ref mut array_join) = array_join_opt {
+                    if let Some(ref pv) = get_path_variable(&transformed_plan) {
+                        // Check if this is a VLP query that uses CTE
+                        let needs_cte = if let Some(spec) = get_variable_length_spec(&transformed_plan) {
+                            spec.exact_hop_count().is_none() || get_shortest_path_mode(&transformed_plan).is_some()
+                        } else {
+                            false
+                        };
+                        
+                        if needs_cte {
+                            // Rewrite path functions like nodes(p) → t.path_nodes
+                            array_join.expression = rewrite_path_functions_with_table(
+                                &array_join.expression,
+                                pv,
+                                "t"  // CTE alias
+                            );
+                        }
+                    }
+                }
+                array_join_opt
+            }),
             filters: FilterItems(final_filters),
             group_by: GroupByExpressions(extracted_group_by_exprs),
             having_clause: self.extract_having()?,

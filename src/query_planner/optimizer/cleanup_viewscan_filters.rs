@@ -229,7 +229,8 @@ impl CleanupViewScanFilters {
             | LogicalPlan::Scan(_)
             | LogicalPlan::PageRank(_)
             | LogicalPlan::Union(_)
-            | LogicalPlan::Cte(_) => Transformed::No(logical_plan),
+            | LogicalPlan::Cte(_)
+            | LogicalPlan::Unwind(_) => Transformed::No(logical_plan),
         };
 
         Ok(transformed_plan)

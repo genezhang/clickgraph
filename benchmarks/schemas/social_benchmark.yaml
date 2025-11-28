@@ -24,6 +24,19 @@ graph_schema:
         content: post_content
         date: post_date
 
+    # Zeek log node for testing UNWIND on array columns
+    - label: ZeekLog
+      database: brahmand
+      table: zeek_logs
+      id_column: log_id
+      property_mappings:
+        log_id: log_id
+        timestamp: timestamp
+        source_ip: source_ip
+        dest_ips: dest_ips
+        protocols: protocols
+        bytes_sent: bytes_sent
+
   relationships:
     - type: FOLLOWS
       database: brahmand
@@ -57,3 +70,4 @@ graph_schema:
       to_node: User
       property_mappings:
         since_date: since_date
+

@@ -34,15 +34,16 @@ mod edge_uniqueness_tests {
             _ => panic!("Expected RawSql"),
         };
 
-        // Check for path_edges (not path_nodes)
+        // Check for path_edges (for edge uniqueness)
         assert!(
             sql.contains("path_edges"),
-            "SQL should use path_edges, not path_nodes. SQL:\n{}",
+            "SQL should use path_edges for edge uniqueness. SQL:\n{}",
             sql
         );
+        // path_nodes is now included for UNWIND nodes(p) support
         assert!(
-            !sql.contains("path_nodes"),
-            "SQL should NOT contain path_nodes. SQL:\n{}",
+            sql.contains("path_nodes"),
+            "SQL should contain path_nodes for UNWIND nodes(p) support. SQL:\n{}",
             sql
         );
 

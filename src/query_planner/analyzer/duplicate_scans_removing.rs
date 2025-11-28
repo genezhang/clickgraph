@@ -2,7 +2,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::query_planner::{
     analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult},
-    logical_plan::LogicalPlan,
+    logical_plan::{LogicalPlan, Unwind},
     plan_ctx::PlanCtx,
     transformed::Transformed,
 };
@@ -142,6 +142,17 @@ impl DuplicateScansRemoving {
             LogicalPlan::PageRank(_) => {
                 // PageRank is a leaf node, no transformation needed
                 Transformed::No(logical_plan.clone())
+            }
+            LogicalPlan::Unwind(u) => {
+                let child_tf = Self::remove_duplicate_scans(u.input.clone(), traversed, plan_ctx)?;
+                match child_tf {
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(Unwind {
+                        input: new_input,
+                        expression: u.expression.clone(),
+                        alias: u.alias.clone(),
+                    }))),
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
             }
         };
         Ok(transformed_plan)

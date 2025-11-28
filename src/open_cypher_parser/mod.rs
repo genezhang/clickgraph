@@ -1,7 +1,7 @@
 use ast::{
     CallClause, CreateClause, DeleteClause, LimitClause, MatchClause, OpenCypherQueryAst,
     OptionalMatchClause, OrderByClause, RemoveClause, ReturnClause, SetClause, SkipClause,
-    UseClause, WhereClause, WithClause,
+    UnwindClause, UseClause, WhereClause, WithClause,
 };
 use common::ws;
 use errors::OpenCypherParsingError;
@@ -29,6 +29,7 @@ mod remove_clause;
 mod return_clause;
 mod set_clause;
 mod skip_clause;
+mod unwind_clause;
 mod use_clause;
 mod where_clause;
 mod with_clause;
@@ -66,6 +67,11 @@ pub fn parse_query_with_nom(
     let (input, call_clause): (&str, Option<CallClause>) =
         opt(call_clause::parse_call_clause).parse(input)?;
 
+    // Parse UNWIND clause (can appear after MATCH/OPTIONAL MATCH, before WITH/RETURN)
+    // Example: MATCH (n) UNWIND n.items AS item RETURN item
+    let (input, unwind_clause): (&str, Option<UnwindClause>) =
+        opt(unwind_clause::parse_unwind_clause).parse(input)?;
+
     let (input, with_clause): (&str, Option<WithClause>) =
         opt(with_clause::parse_with_clause).parse(input)?;
 
@@ -101,6 +107,7 @@ pub fn parse_query_with_nom(
         match_clause,
         optional_match_clauses,
         call_clause,
+        unwind_clause,
         with_clause,
         where_clause,
         create_clause,

@@ -40,6 +40,7 @@ pub mod plan_builder;
 mod projection_view;
 mod return_clause;
 mod skip_n_limit_clause;
+mod unwind_clause;
 mod view_scan;
 mod where_clause;
 mod with_clause;
@@ -97,6 +98,10 @@ pub enum LogicalPlan {
     Union(Union),
 
     PageRank(PageRank),
+
+    /// UNWIND clause: transforms array values into individual rows
+    /// Maps to ClickHouse ARRAY JOIN
+    Unwind(Unwind),
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -375,6 +380,21 @@ pub struct Limit {
     #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub count: i64,
+}
+
+/// UNWIND clause: transforms array values into individual rows
+/// Maps to ClickHouse ARRAY JOIN
+/// 
+/// Example: UNWIND r.items AS item
+/// Generates: ARRAY JOIN r.items AS item
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct Unwind {
+    #[serde(with = "serde_arc")]
+    pub input: Arc<LogicalPlan>,
+    /// The expression to unwind (must be an array type)
+    pub expression: LogicalExpr,
+    /// The alias for each unwound element
+    pub alias: String,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -793,6 +813,9 @@ impl LogicalPlan {
             LogicalPlan::PageRank(_) => {
                 // PageRank is a leaf node - no children to traverse
             }
+            LogicalPlan::Unwind(unwind) => {
+                children.push(&unwind.input);
+            }
             LogicalPlan::ViewScan(_) => {
                 // ViewScan is a leaf node - no children to traverse
             }
@@ -833,6 +856,7 @@ impl LogicalPlan {
                 "PageRank(iterations: {}, damping: {:.2})",
                 pagerank.iterations, pagerank.damping_factor
             ),
+            LogicalPlan::Unwind(unwind) => format!("Unwind(alias: {})", unwind.alias),
             LogicalPlan::ViewScan(scan) => format!("ViewScan({:?})", scan.source_table),
         }
     }
@@ -863,6 +887,7 @@ impl LogicalPlan {
                 .inputs
                 .iter()
                 .any(|input| input.contains_variable_length_path()),
+            LogicalPlan::Unwind(unwind) => unwind.input.contains_variable_length_path(),
             // Leaf nodes
             LogicalPlan::Scan(_)
             | LogicalPlan::ViewScan(_)

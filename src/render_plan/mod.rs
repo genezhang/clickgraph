@@ -50,6 +50,7 @@ pub struct RenderPlan {
     pub select: SelectItems,
     pub from: FromTableItem,
     pub joins: JoinItems,
+    pub array_join: ArrayJoinItem,
     pub filters: FilterItems,
     pub group_by: GroupByExpressions,
     pub having_clause: Option<RenderExpr>, // HAVING clause for post-aggregation filtering
@@ -102,6 +103,22 @@ pub enum JoinType {
     Inner,
     Left,
     Right,
+}
+
+/// ARRAY JOIN item for ClickHouse
+/// Maps from Cypher UNWIND clause
+/// 
+/// Example: UNWIND r.items AS item
+/// Generates: ARRAY JOIN r.items AS item
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Default)]
+pub struct ArrayJoinItem(pub Option<ArrayJoin>);
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct ArrayJoin {
+    /// The expression to array join (must be an array type)
+    pub expression: RenderExpr,
+    /// The alias for each unwound element
+    pub alias: String,
 }
 
 impl TryFrom<LogicalJoinType> for JoinType {
@@ -252,6 +269,7 @@ impl fmt::Display for RenderPlan {
         writeln!(f, "\nSELECT: {:?}", self.select)?;
         writeln!(f, "\nFROM: {:?}", self.from)?;
         writeln!(f, "\nJOINS: {:?}", self.joins)?;
+        writeln!(f, "\nARRAY JOIN: {:?}", self.array_join)?;
         writeln!(f, "\nFILTERS: {:?}", self.filters)?;
         writeln!(f, "\nGROUP BY: {:?}", self.group_by)?;
         writeln!(f, "\nHAVING: {:?}", self.having_clause)?;

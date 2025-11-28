@@ -7,7 +7,7 @@ use crate::{
     query_planner::{
         logical_plan::{
             LogicalPlan, errors::LogicalPlanError, match_clause, optional_match_clause,
-            order_by_clause, return_clause, skip_n_limit_clause, where_clause, with_clause,
+            order_by_clause, return_clause, skip_n_limit_clause, unwind_clause, where_clause, with_clause,
         },
         plan_ctx::PlanCtx,
     },
@@ -50,6 +50,16 @@ pub fn build_logical_plan(
             logical_plan,
             &mut plan_ctx,
         )?;
+    }
+
+    // Process UNWIND clause after MATCH/OPTIONAL MATCH, before WITH
+    // UNWIND transforms array values into individual rows
+    if let Some(unwind_clause_ast) = &query_ast.unwind_clause {
+        log::debug!(
+            "build_logical_plan: Processing UNWIND clause with alias {}",
+            unwind_clause_ast.alias
+        );
+        logical_plan = unwind_clause::evaluate_unwind_clause(unwind_clause_ast, logical_plan, &mut plan_ctx);
     }
 
     // Process WITH clause before WHERE to create intermediate projections

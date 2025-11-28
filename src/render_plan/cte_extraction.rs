@@ -966,6 +966,7 @@ pub fn extract_ctes_with_context(
                     LogicalPlan::Cte(_) => "Cte",
                     LogicalPlan::Union(_) => "Union",
                     LogicalPlan::PageRank(_) => "PageRank",
+                    LogicalPlan::Unwind(_) => "Unwind",
                 }
             );
             extract_ctes_with_context(&projection.input, last_node_alias, context)
@@ -1012,6 +1013,7 @@ pub fn extract_ctes_with_context(
             Ok(ctes)
         }
         LogicalPlan::PageRank(_) => Ok(vec![]),
+        LogicalPlan::Unwind(u) => extract_ctes_with_context(&u.input, last_node_alias, context),
     }
 }
 
@@ -1176,6 +1178,7 @@ pub fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::Skip(skip) => get_path_variable(&skip.input),
         LogicalPlan::Limit(limit) => get_path_variable(&limit.input),
         LogicalPlan::Cte(cte) => get_path_variable(&cte.input),
+        LogicalPlan::Unwind(u) => get_path_variable(&u.input),
         _ => None,
     }
 }
@@ -1193,6 +1196,7 @@ pub fn get_variable_length_spec(plan: &LogicalPlan) -> Option<crate::query_plann
         LogicalPlan::Skip(skip) => get_variable_length_spec(&skip.input),
         LogicalPlan::Limit(limit) => get_variable_length_spec(&limit.input),
         LogicalPlan::Cte(cte) => get_variable_length_spec(&cte.input),
+        LogicalPlan::Unwind(u) => get_variable_length_spec(&u.input),
         _ => None,
     }
 }
@@ -1210,6 +1214,7 @@ pub fn get_shortest_path_mode(plan: &LogicalPlan) -> Option<crate::query_planner
         LogicalPlan::Skip(skip) => get_shortest_path_mode(&skip.input),
         LogicalPlan::Limit(limit) => get_shortest_path_mode(&limit.input),
         LogicalPlan::Cte(cte) => get_shortest_path_mode(&cte.input),
+        LogicalPlan::Unwind(u) => get_shortest_path_mode(&u.input),
         _ => None,
     }
 }

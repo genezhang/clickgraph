@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: November 22, 2025*
+*Updated: November 28, 2025*
 
 ## 🚨 **CRITICAL DOCUMENTATION FIX** - November 22, 2025
 
@@ -34,8 +34,46 @@
 
 **Status**: ✅ **Denormalized Edge Implementation - COMPLETE**  
 **Started**: November 22, 2025  
-**Updated**: November 27, 2025  
+**Updated**: November 28, 2025  
 **Next**: Polymorphic edges or composite edge IDs
+
+### 🆕 VLP + UNWIND Support - COMPLETE (Nov 28, 2025)
+
+**Feature**: UNWIND `nodes(p)` and `relationships(p)` after variable-length paths
+
+**What Works**:
+- ✅ `UNWIND nodes(p) AS n` - Explodes path nodes to rows using ARRAY JOIN
+- ✅ `UNWIND relationships(p) AS r` - Explodes path relationships to rows
+- ✅ Works with all VLP patterns: `*`, `*2`, `*1..3`, `*..5`, `*2..`
+
+**Example (Working)**:
+```cypher
+MATCH p = (u:User)-[:FOLLOWS*1..2]->(f:User)
+WHERE u.user_id = 1
+UNWIND nodes(p) AS n
+RETURN n
+```
+Generates:
+```sql
+WITH RECURSIVE variable_path_... AS (
+    SELECT ..., [start_node.user_id, end_node.user_id] as path_nodes
+    FROM brahmand.users_bench start_node
+    JOIN brahmand.user_follows_bench rel ON ...
+    UNION ALL ...
+)
+SELECT n AS "n"
+FROM variable_path_... AS t
+ARRAY JOIN t.path_nodes AS n
+```
+
+**Key Implementation Details**:
+- VLP CTEs automatically collect `path_nodes` and `path_relationships` arrays
+- UNWIND is translated to `ARRAY JOIN` in ClickHouse
+- Path function (`nodes()`, `relationships()`) is correctly resolved to CTE column
+
+**Test Results**: 520 tests passing (single-threaded; 1 flaky race condition in parallel mode)
+
+---
 
 ### 🎯 v0.5.2 Goals: Schema Variations
 

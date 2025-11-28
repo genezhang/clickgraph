@@ -6,7 +6,7 @@ use crate::{
             PropertyAccess, RenderExpr, TableAlias,
         },
         {
-            Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join,
+            ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join,
             JoinItems, JoinType, OrderByItems, OrderByOrder, RenderPlan, SelectItems, ToSql,
             UnionItems, UnionType,
         },
@@ -82,6 +82,7 @@ pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     sql.push_str(&plan.select.to_sql());
     sql.push_str(&plan.from.to_sql());
     sql.push_str(&plan.joins.to_sql());
+    sql.push_str(&plan.array_join.to_sql());
     sql.push_str(&plan.filters.to_sql());
     sql.push_str(&plan.group_by.to_sql());
 
@@ -221,6 +222,20 @@ impl ToSql for FilterItems {
     fn to_sql(&self) -> String {
         if let Some(expr) = &self.0 {
             format!("WHERE {}\n", expr.to_sql())
+        } else {
+            "".into()
+        }
+    }
+}
+
+/// ARRAY JOIN for ClickHouse - maps from Cypher UNWIND
+/// 
+/// Example: UNWIND r.items AS item
+/// Generates: ARRAY JOIN r.items AS item
+impl ToSql for ArrayJoinItem {
+    fn to_sql(&self) -> String {
+        if let Some(array_join) = &self.0 {
+            format!("ARRAY JOIN {} AS {}\n", array_join.expression.to_sql(), array_join.alias)
         } else {
             "".into()
         }
@@ -524,7 +539,8 @@ impl RenderExpr {
                     .map(|e| e.to_sql())
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("({})", inner)
+                // ClickHouse uses square brackets for arrays
+                format!("[{}]", inner)
             }
             RenderExpr::ScalarFnCall(fn_call) => {
                 // Check if we have a Neo4j -> ClickHouse mapping

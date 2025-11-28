@@ -194,6 +194,14 @@ impl AliasResolverContext {
             LogicalPlan::Empty => LogicalPlan::Empty,
             LogicalPlan::Scan(scan) => LogicalPlan::Scan(scan),
             LogicalPlan::PageRank(pr) => LogicalPlan::PageRank(pr),
+            LogicalPlan::Unwind(u) => {
+                let transformed_input = Arc::new(self.transform_plan((*u.input).clone()));
+                LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
+                    input: transformed_input,
+                    expression: self.transform_expr(u.expression.clone()),
+                    alias: u.alias.clone(),
+                })
+            }
         }
     }
     
@@ -390,6 +398,10 @@ impl AliasResolverContext {
             
             LogicalPlan::PageRank(_) => {
                 // PageRank is handled specially
+            }
+            
+            LogicalPlan::Unwind(u) => {
+                self.analyze_plan(&u.input);
             }
         }
     }

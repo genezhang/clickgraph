@@ -341,6 +341,7 @@ pub(super) fn get_denormalized_aliases(plan: &LogicalPlan) -> std::collections::
             LogicalPlan::OrderBy(order) => collect_denormalized(&order.input, denormalized),
             LogicalPlan::Limit(limit) => collect_denormalized(&limit.input, denormalized),
             LogicalPlan::Skip(skip) => collect_denormalized(&skip.input, denormalized),
+            LogicalPlan::Unwind(u) => collect_denormalized(&u.input, denormalized),
             _ => {}
         }
     }
@@ -711,6 +712,7 @@ pub(super) fn has_multiple_relationship_types(plan: &LogicalPlan) -> bool {
         LogicalPlan::OrderBy(ob) => has_multiple_relationship_types(&ob.input),
         LogicalPlan::Limit(limit) => has_multiple_relationship_types(&limit.input),
         LogicalPlan::Skip(skip) => has_multiple_relationship_types(&skip.input),
+        LogicalPlan::Unwind(u) => has_multiple_relationship_types(&u.input),
         _ => false,
     }
 }
@@ -747,6 +749,7 @@ pub(super) fn has_variable_length_or_shortest_path(plan: &LogicalPlan) -> bool {
         LogicalPlan::OrderBy(ob) => has_variable_length_or_shortest_path(&ob.input),
         LogicalPlan::Limit(limit) => has_variable_length_or_shortest_path(&limit.input),
         LogicalPlan::Skip(skip) => has_variable_length_or_shortest_path(&skip.input),
+        LogicalPlan::Unwind(u) => has_variable_length_or_shortest_path(&u.input),
         _ => false,
     }
 }
@@ -962,6 +965,7 @@ pub(super) fn plan_type_name(plan: &LogicalPlan) -> &'static str {
         LogicalPlan::Cte(_) => "Cte",
         LogicalPlan::Union(_) => "Union",
         LogicalPlan::PageRank(_) => "PageRank",
+        LogicalPlan::Unwind(_) => "Unwind",
     }
 }
 
@@ -1019,6 +1023,7 @@ pub(super) fn plan_contains_view_scan(plan: &LogicalPlan) -> bool {
         LogicalPlan::Skip(skip) => plan_contains_view_scan(&skip.input),
         LogicalPlan::Limit(limit) => plan_contains_view_scan(&limit.input),
         LogicalPlan::Cte(cte) => plan_contains_view_scan(&cte.input),
+        LogicalPlan::Unwind(u) => plan_contains_view_scan(&u.input),
         LogicalPlan::Union(union) => union.inputs.iter().any(|i| plan_contains_view_scan(i.as_ref())),
         _ => false,
     }
@@ -1245,6 +1250,7 @@ pub(super) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Optio
         LogicalPlan::Limit(limit) => get_node_label_for_alias(alias, &limit.input),
         LogicalPlan::GroupBy(group_by) => get_node_label_for_alias(alias, &group_by.input),
         LogicalPlan::Cte(cte) => get_node_label_for_alias(alias, &cte.input),
+        LogicalPlan::Unwind(u) => get_node_label_for_alias(alias, &u.input),
         LogicalPlan::Union(union) => {
             for input in &union.inputs {
                 if let Some(label) = get_node_label_for_alias(alias, input) {

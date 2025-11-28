@@ -50,6 +50,7 @@ impl AnalyzerPass for FilterTagging {
             LogicalPlan::GraphJoins(_) => "GraphJoins",
             LogicalPlan::Union(_) => "Union",
             LogicalPlan::PageRank(_) => "PageRank",
+            LogicalPlan::Unwind(_) => "Unwind",
         };
         println!("FilterTagging: About to match on variant: {}", variant_name);
         Ok(match logical_plan.as_ref() {
@@ -269,6 +270,18 @@ impl AnalyzerPass for FilterTagging {
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
             }
             LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::Unwind(u) => {
+                let child_tf =
+                    self.analyze_with_graph_schema(u.input.clone(), plan_ctx, graph_schema)?;
+                match child_tf {
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
+                        input: new_input,
+                        expression: u.expression.clone(),
+                        alias: u.alias.clone(),
+                    }))),
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
         })
     }
 }
