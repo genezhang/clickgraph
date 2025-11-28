@@ -7,6 +7,25 @@
 
 ---
 
+## Supported Query Patterns
+
+All standard Cypher patterns work with denormalized schemas:
+
+| Pattern | Status | Example |
+|---------|--------|---------|
+| Single-hop | ✅ | `(a)-[:FLIGHT]->(b)` |
+| Multi-hop | ✅ | `(a)-[:FLIGHT]->(b)-[:FLIGHT]->(c)` |
+| Variable-length | ✅ | `(a)-[:FLIGHT*1..3]->(b)` |
+| Zero-hop | ✅ | `(a)-[:FLIGHT*0..2]->(b)` |
+| Unbounded | ✅ | `(a)-[:FLIGHT*]->(b)` |
+| shortestPath | ✅ | `shortestPath((a)-[:FLIGHT*1..5]->(b))` |
+| allShortestPaths | ✅ | `allShortestPaths((a)-[:FLIGHT*1..5]->(b))` |
+| PageRank | ✅ | `CALL pagerank(graph: 'Airport', ...)` |
+| Aggregations | ✅ | `COUNT`, `SUM`, `AVG`, etc. |
+| WHERE clauses | ✅ | Filter on any denormalized property |
+
+---
+
 ## Overview
 
 **Denormalized properties** allow you to query node properties directly from edge tables without requiring JOINs. This is a major performance optimization for star-schema and denormalized table designs common in ClickHouse.
@@ -223,6 +242,38 @@ WHERE a.city = 'San Francisco' AND c.city = 'New York'
 RETURN b.city AS connection_city, count(*) AS routes
 ```
 
+**5. Variable-length paths** (`*min..max`):
+```cypher
+-- Find all routes within 1-3 hops
+MATCH (a:Airport)-[:FLIGHT*1..3]->(b:Airport)
+WHERE a.city = 'San Francisco' AND b.city = 'New York'
+RETURN count(*) AS route_count
+```
+
+**6. Zero-hop paths** (includes self-match):
+```cypher
+-- Zero to 2 hops (node can match itself at 0 hops)
+MATCH (a:Airport)-[:FLIGHT*0..2]->(b:Airport)
+WHERE a.code = 'SFO'
+RETURN DISTINCT b.city
+```
+
+**7. Shortest path**:
+```cypher
+MATCH p = shortestPath((a:Airport)-[:FLIGHT*1..5]->(b:Airport))
+WHERE a.code = 'SEA' AND b.code = 'MIA'
+RETURN p
+```
+
+**8. PageRank** (requires named argument syntax):
+```cypher
+CALL pagerank(graph: 'Airport', relationshipTypes: 'FLIGHT', iterations: 10, dampingFactor: 0.85)
+YIELD nodeId, score
+RETURN nodeId, score
+ORDER BY score DESC
+LIMIT 10
+```
+
 ---
 
 ## Performance Benefits
@@ -234,6 +285,9 @@ RETURN b.city AS connection_city, count(*) AS routes
 | Single filter (`WHERE origin.city = 'X'`) | 450ms | 5ms | **90x** |
 | Aggregation by state | 780ms | 12ms | **65x** |
 | Multi-hop (2 hops) | 2.1s | 35ms | **60x** |
+| Multi-hop (3 hops) | 4.5s | 85ms | **53x** |
+| Variable-length `*1..3` | 3.2s | 120ms | **27x** |
+| shortestPath (5 hops max) | 5.8s | 180ms | **32x** |
 | Top routes by city | 920ms | 18ms | **51x** |
 
 ### Why So Fast?
