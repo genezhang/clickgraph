@@ -939,3 +939,320 @@ pub(super) fn generate_polymorphic_edge_filters(
         }))
     }
 }
+
+// ============================================================================
+// Plan utilities - moved from plan_builder.rs for better organization
+// ============================================================================
+
+/// Get human-readable name of a LogicalPlan variant
+pub(super) fn plan_type_name(plan: &LogicalPlan) -> &'static str {
+    match plan {
+        LogicalPlan::Empty => "Empty",
+        LogicalPlan::Scan(_) => "Scan",
+        LogicalPlan::ViewScan(_) => "ViewScan",
+        LogicalPlan::GraphNode(_) => "GraphNode",
+        LogicalPlan::GraphRel(_) => "GraphRel",
+        LogicalPlan::Filter(_) => "Filter",
+        LogicalPlan::Projection(_) => "Projection",
+        LogicalPlan::GraphJoins(_) => "GraphJoins",
+        LogicalPlan::GroupBy(_) => "GroupBy",
+        LogicalPlan::OrderBy(_) => "OrderBy",
+        LogicalPlan::Skip(_) => "Skip",
+        LogicalPlan::Limit(_) => "Limit",
+        LogicalPlan::Cte(_) => "Cte",
+        LogicalPlan::Union(_) => "Union",
+        LogicalPlan::PageRank(_) => "PageRank",
+    }
+}
+
+/// Format a LogicalPlan as a debug string for logging
+#[allow(dead_code)]
+pub(super) fn plan_to_string(plan: &LogicalPlan, depth: usize) -> String {
+    let indent = "  ".repeat(depth);
+    match plan {
+        LogicalPlan::GraphNode(node) => format!(
+            "{}GraphNode(alias='{}', input={})",
+            indent,
+            node.alias,
+            plan_to_string(&node.input, depth + 1)
+        ),
+        LogicalPlan::GraphRel(rel) => format!(
+            "{}GraphRel(alias='{}', left={}, center={}, right={})",
+            indent,
+            rel.alias,
+            plan_to_string(&rel.left, depth + 1),
+            plan_to_string(&rel.center, depth + 1),
+            plan_to_string(&rel.right, depth + 1)
+        ),
+        LogicalPlan::Filter(filter) => format!(
+            "{}Filter(input={})",
+            indent,
+            plan_to_string(&filter.input, depth + 1)
+        ),
+        LogicalPlan::Projection(proj) => format!(
+            "{}Projection(input={})",
+            indent,
+            plan_to_string(&proj.input, depth + 1)
+        ),
+        LogicalPlan::ViewScan(scan) => format!("{}ViewScan(table='{}')", indent, scan.source_table),
+        LogicalPlan::Scan(scan) => format!("{}Scan(table={:?})", indent, scan.table_name),
+        _ => format!("{}Other({})", indent, plan_type_name(plan)),
+    }
+}
+
+/// Check if a LogicalPlan contains any ViewScan nodes
+#[allow(dead_code)]
+pub(super) fn plan_contains_view_scan(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::ViewScan(_) => true,
+        LogicalPlan::GraphNode(node) => plan_contains_view_scan(&node.input),
+        LogicalPlan::GraphRel(rel) => {
+            plan_contains_view_scan(&rel.left)
+                || plan_contains_view_scan(&rel.right)
+                || plan_contains_view_scan(&rel.center)
+        }
+        LogicalPlan::Filter(filter) => plan_contains_view_scan(&filter.input),
+        LogicalPlan::Projection(proj) => plan_contains_view_scan(&proj.input),
+        LogicalPlan::GraphJoins(joins) => plan_contains_view_scan(&joins.input),
+        LogicalPlan::GroupBy(group_by) => plan_contains_view_scan(&group_by.input),
+        LogicalPlan::OrderBy(order_by) => plan_contains_view_scan(&order_by.input),
+        LogicalPlan::Skip(skip) => plan_contains_view_scan(&skip.input),
+        LogicalPlan::Limit(limit) => plan_contains_view_scan(&limit.input),
+        LogicalPlan::Cte(cte) => plan_contains_view_scan(&cte.input),
+        LogicalPlan::Union(union) => union.inputs.iter().any(|i| plan_contains_view_scan(i.as_ref())),
+        _ => false,
+    }
+}
+
+/// Apply property mapping to an expression (DISABLED - handled by analyzer)
+pub(super) fn apply_property_mapping_to_expr(_expr: &mut RenderExpr, _plan: &LogicalPlan) {
+    // DISABLED: Property mapping is now handled in the FilterTagging analyzer pass
+    // The analyzer phase maps Cypher properties → database columns, so we should not
+    // attempt to re-map them here in the render phase.
+}
+
+/// Check if a filter expression appears to be invalid (e.g., "1 = 0")
+pub(super) fn is_invalid_filter_expression(expr: &RenderExpr) -> bool {
+    match expr {
+        RenderExpr::OperatorApplicationExp(op) => {
+            if matches!(op.operator, Operator::Equal) && op.operands.len() == 2 {
+                matches!(
+                    (&op.operands[0], &op.operands[1]),
+                    (RenderExpr::Literal(Literal::Integer(1)), RenderExpr::Literal(Literal::Integer(0)))
+                    | (RenderExpr::Literal(Literal::Integer(0)), RenderExpr::Literal(Literal::Integer(1)))
+                )
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Find a Union node nested inside a plan
+pub(super) fn find_nested_union(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::Union> {
+    match plan {
+        LogicalPlan::Union(union) => Some(union),
+        LogicalPlan::GraphJoins(graph_joins) => find_nested_union(&graph_joins.input),
+        LogicalPlan::Projection(projection) => find_nested_union(&projection.input),
+        LogicalPlan::Filter(filter) => find_nested_union(&filter.input),
+        LogicalPlan::GroupBy(group_by) => find_nested_union(&group_by.input),
+        _ => None,
+    }
+}
+
+/// Extract outer aggregation info from a plan that wraps a Union
+pub(super) fn extract_outer_aggregation_info(
+    plan: &LogicalPlan,
+) -> Option<(Vec<super::SelectItem>, Vec<RenderExpr>)> {
+    use super::{SelectItem, ColumnAlias};
+    
+    let (projection, group_by) = match plan {
+        LogicalPlan::GraphJoins(graph_joins) => {
+            if let LogicalPlan::Projection(proj) = graph_joins.input.as_ref() {
+                if let LogicalPlan::GroupBy(gb) = proj.input.as_ref() {
+                    if find_nested_union(&gb.input).is_some() {
+                        (Some(proj), Some(gb))
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            }
+        }
+        LogicalPlan::Projection(proj) => {
+            if let LogicalPlan::GroupBy(gb) = proj.input.as_ref() {
+                if find_nested_union(&gb.input).is_some() {
+                    (Some(proj), Some(gb))
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            }
+        }
+        _ => (None, None),
+    };
+
+    let (projection, group_by) = (projection?, group_by?);
+
+    let has_aggregation = projection.items.iter().any(|item| {
+        matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_))
+    });
+
+    if !has_aggregation {
+        return None;
+    }
+
+    let outer_select: Vec<SelectItem> = projection.items.iter().map(|item| {
+        let expr: RenderExpr = match &item.expression {
+            crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
+                RenderExpr::Raw(format!("\"{}\"", alias.0))
+            }
+            crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(agg) => {
+                let args: Vec<RenderExpr> = agg.args.iter().map(|arg| {
+                    match arg {
+                        crate::query_planner::logical_expr::LogicalExpr::Star => RenderExpr::Raw("*".to_string()),
+                        crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
+                            RenderExpr::Raw(format!("\"{}\"", alias.0))
+                        }
+                        other => other.clone().try_into().unwrap_or(RenderExpr::Raw("?".to_string()))
+                    }
+                }).collect();
+                RenderExpr::AggregateFnCall(AggregateFnCall {
+                    name: agg.name.clone(),
+                    args,
+                })
+            }
+            other => other.clone().try_into().unwrap_or(RenderExpr::Raw("?".to_string()))
+        };
+        SelectItem {
+            expression: expr,
+            col_alias: item.col_alias.as_ref().map(|a| ColumnAlias(a.0.clone())),
+        }
+    }).collect();
+
+    let outer_group_by: Vec<RenderExpr> = group_by.expressions.iter().map(|expr| {
+        match expr {
+            crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
+                RenderExpr::Raw(format!("\"{}\"", alias.0))
+            }
+            other => other.clone().try_into().unwrap_or(RenderExpr::Raw("?".to_string()))
+        }
+    }).collect();
+
+    Some((outer_select, outer_group_by))
+}
+
+/// Convert an ORDER BY expression for use in a UNION query
+#[allow(dead_code)]
+pub(super) fn convert_order_by_expr_for_union(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+) -> RenderExpr {
+    use crate::query_planner::logical_expr::LogicalExpr;
+    
+    match expr {
+        LogicalExpr::PropertyAccessExp(prop_access) => {
+            let alias = format!("\"{}.{}\"", prop_access.table_alias.0, prop_access.column.raw());
+            RenderExpr::Raw(alias)
+        }
+        LogicalExpr::ColumnAlias(col_alias) => {
+            RenderExpr::Raw(format!("\"{}\"", col_alias.0))
+        }
+        _ => expr.clone().try_into().unwrap_or_else(|_| RenderExpr::Raw("1".to_string()))
+    }
+}
+
+/// Check if joining_on references a UNION CTE
+pub(super) fn references_union_cte_in_join(joining_on: &[OperatorApplication], cte_name: &str) -> bool {
+    for op_app in joining_on {
+        if op_app.operands.len() >= 2 {
+            if references_union_cte_in_operand(&op_app.operands[0], cte_name)
+                || references_union_cte_in_operand(&op_app.operands[1], cte_name)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn references_union_cte_in_operand(operand: &RenderExpr, cte_name: &str) -> bool {
+    match operand {
+        RenderExpr::PropertyAccessExp(prop_access) => {
+            prop_access.column.0.raw() == "from_id" || prop_access.column.0.raw() == "to_id"
+        }
+        RenderExpr::OperatorApplicationExp(op_app) => {
+            references_union_cte_in_join(&[op_app.clone()], cte_name)
+        }
+        _ => false,
+    }
+}
+
+/// Update JOIN expressions to use standardized column names for UNION CTEs
+pub(super) fn update_join_expression_for_union_cte(op_app: &mut OperatorApplication, table_alias: &str) {
+    for operand in op_app.operands.iter_mut() {
+        update_operand_for_union_cte(operand, table_alias);
+    }
+}
+
+fn update_operand_for_union_cte(operand: &mut RenderExpr, table_alias: &str) {
+    match operand {
+        RenderExpr::Column(col) => {
+            if col.0.raw() == "from_id" {
+                *operand = RenderExpr::Column(Column(PropertyValue::Column("from_node_id".to_string())));
+            } else if col.0.raw() == "to_id" {
+                *operand = RenderExpr::Column(Column(PropertyValue::Column("to_node_id".to_string())));
+            }
+        }
+        RenderExpr::PropertyAccessExp(prop_access) => {
+            if prop_access.column.0.raw() == "from_id" {
+                prop_access.column = Column(PropertyValue::Column("from_node_id".to_string()));
+            } else if prop_access.column.0.raw() == "to_id" {
+                prop_access.column = Column(PropertyValue::Column("to_node_id".to_string()));
+            }
+        }
+        RenderExpr::OperatorApplicationExp(inner_op_app) => {
+            update_join_expression_for_union_cte(inner_op_app, table_alias);
+        }
+        _ => {}
+    }
+}
+
+/// Get the node label for a given Cypher alias by searching the plan
+#[allow(dead_code)]
+pub(super) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
+    use crate::render_plan::cte_extraction::extract_node_label_from_viewscan;
+    
+    match plan {
+        LogicalPlan::GraphNode(node) if node.alias == alias => {
+            extract_node_label_from_viewscan(&node.input)
+        }
+        LogicalPlan::GraphNode(node) => get_node_label_for_alias(alias, &node.input),
+        LogicalPlan::GraphRel(rel) => {
+            get_node_label_for_alias(alias, &rel.left)
+                .or_else(|| get_node_label_for_alias(alias, &rel.center))
+                .or_else(|| get_node_label_for_alias(alias, &rel.right))
+        }
+        LogicalPlan::Filter(filter) => get_node_label_for_alias(alias, &filter.input),
+        LogicalPlan::Projection(proj) => get_node_label_for_alias(alias, &proj.input),
+        LogicalPlan::GraphJoins(joins) => get_node_label_for_alias(alias, &joins.input),
+        LogicalPlan::OrderBy(order_by) => get_node_label_for_alias(alias, &order_by.input),
+        LogicalPlan::Skip(skip) => get_node_label_for_alias(alias, &skip.input),
+        LogicalPlan::Limit(limit) => get_node_label_for_alias(alias, &limit.input),
+        LogicalPlan::GroupBy(group_by) => get_node_label_for_alias(alias, &group_by.input),
+        LogicalPlan::Cte(cte) => get_node_label_for_alias(alias, &cte.input),
+        LogicalPlan::Union(union) => {
+            for input in &union.inputs {
+                if let Some(label) = get_node_label_for_alias(alias, input) {
+                    return Some(label);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
