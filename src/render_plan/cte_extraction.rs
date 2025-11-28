@@ -529,8 +529,12 @@ pub fn extract_ctes_with_context(
                     .unwrap_or_else(|| "User".to_string());
                 let end_label = extract_node_label_from_viewscan(&graph_rel.right)
                     .unwrap_or_else(|| "User".to_string());
-                let start_table = label_to_table_name(&start_label);
-                let end_table = label_to_table_name(&end_label);
+                // 🎯 FIX: Extract table name from ViewScan (authoritative) before label lookup
+                // ViewScan contains the correct fully-qualified table name from schema resolution
+                let start_table = extract_table_name(&graph_rel.left)
+                    .unwrap_or_else(|| label_to_table_name(&start_label));
+                let end_table = extract_table_name(&graph_rel.right)
+                    .unwrap_or_else(|| label_to_table_name(&end_label));
                 
                 // Get rel_table from ViewScan's source_table (authoritative) or fall back to label lookup
                 let rel_table = match graph_rel.center.as_ref() {
@@ -704,13 +708,16 @@ pub fn extract_ctes_with_context(
                     );
                     
                     // Check if nodes are denormalized (properties embedded in edge table)
-                    let is_denormalized = match graph_rel.left.as_ref() {
-                        LogicalPlan::GraphNode(node) => node.is_denormalized,
-                        _ => false,
-                    } || match graph_rel.right.as_ref() {
+                    let start_is_denormalized = match graph_rel.left.as_ref() {
                         LogicalPlan::GraphNode(node) => node.is_denormalized,
                         _ => false,
                     };
+                    let end_is_denormalized = match graph_rel.right.as_ref() {
+                        LogicalPlan::GraphNode(node) => node.is_denormalized,
+                        _ => false,
+                    };
+                    let both_denormalized = start_is_denormalized && end_is_denormalized;
+                    let is_mixed = start_is_denormalized != end_is_denormalized;
                     
                     // Get edge_id from relationship schema if available
                     // Use the first relationship label to look up the schema
@@ -734,8 +741,8 @@ pub fn extract_ctes_with_context(
                     };
                     
                     // Choose generator based on denormalized status
-                    let generator = if is_denormalized {
-                        eprintln!("CTE: Using denormalized generator for variable-length path");
+                    let generator = if both_denormalized {
+                        eprintln!("CTE: Using denormalized generator for variable-length path (both nodes virtual)");
                         VariableLengthCteGenerator::new_denormalized(
                             spec.clone(),
                             &rel_table,   // The only table - edge table
@@ -753,6 +760,34 @@ pub fn extract_ctes_with_context(
                             graph_rel.path_variable.clone(),
                             graph_rel.labels.clone(),
                             edge_id,
+                        )
+                    } else if is_mixed {
+                        eprintln!("CTE: Using mixed generator for variable-length path (start_denorm={}, end_denorm={})", 
+                                  start_is_denormalized, end_is_denormalized);
+                        VariableLengthCteGenerator::new_mixed(
+                            spec.clone(),
+                            &start_table,
+                            &start_id_col,
+                            &rel_table,
+                            &from_col,
+                            &to_col,
+                            &end_table,
+                            &end_id_col,
+                            &graph_rel.left_connection,
+                            &graph_rel.right_connection,
+                            filter_properties.clone(),
+                            graph_rel.shortest_path_mode.clone().map(|m| m.into()),
+                            start_filters_sql,
+                            if graph_rel.shortest_path_mode.is_some() {
+                                end_filters_sql
+                            } else {
+                                None
+                            },
+                            graph_rel.path_variable.clone(),
+                            graph_rel.labels.clone(),
+                            edge_id,
+                            start_is_denormalized,
+                            end_is_denormalized,
                         )
                     } else {
                         VariableLengthCteGenerator::new(
@@ -963,7 +998,8 @@ pub fn has_variable_length_rel(plan: &LogicalPlan) -> Option<(String, String)> {
 }
 
 /// Check if a variable-length pattern uses denormalized edges
-/// Returns true if nodes are virtual (embedded in edge table)
+/// Returns true if EITHER node is virtual (embedded in edge table)
+/// For checking if BOTH are denormalized, use get_variable_length_denorm_info
 pub fn is_variable_length_denormalized(plan: &LogicalPlan) -> bool {
     fn check_node_denormalized(plan: &LogicalPlan) -> bool {
         match plan {
@@ -987,6 +1023,71 @@ pub fn is_variable_length_denormalized(plan: &LogicalPlan) -> bool {
         LogicalPlan::Limit(limit) => is_variable_length_denormalized(&limit.input),
         LogicalPlan::Cte(cte) => is_variable_length_denormalized(&cte.input),
         _ => false,
+    }
+}
+
+/// Detailed denormalization info for a variable-length pattern
+#[derive(Debug, Clone)]
+pub struct VariableLengthDenormInfo {
+    pub start_is_denormalized: bool,
+    pub end_is_denormalized: bool,
+    // Node table information extracted from the plan (fully qualified)
+    pub start_table: Option<String>,
+    pub start_id_col: Option<String>,
+    pub end_table: Option<String>,
+    pub end_id_col: Option<String>,
+}
+
+impl VariableLengthDenormInfo {
+    pub fn is_fully_denormalized(&self) -> bool {
+        self.start_is_denormalized && self.end_is_denormalized
+    }
+    
+    pub fn is_mixed(&self) -> bool {
+        self.start_is_denormalized != self.end_is_denormalized
+    }
+    
+    pub fn is_any_denormalized(&self) -> bool {
+        self.start_is_denormalized || self.end_is_denormalized
+    }
+}
+
+/// Get detailed denormalization info for a variable-length pattern
+pub fn get_variable_length_denorm_info(plan: &LogicalPlan) -> Option<VariableLengthDenormInfo> {
+    fn check_node_denormalized(plan: &LogicalPlan) -> bool {
+        match plan {
+            LogicalPlan::GraphNode(node) => node.is_denormalized,
+            _ => false,
+        }
+    }
+    
+    match plan {
+        LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
+            // Extract table names and id columns from the nodes' ViewScans
+            let start_table = extract_table_name(&rel.left);
+            let end_table = extract_table_name(&rel.right);
+            let start_id_col = extract_id_column(&rel.left);
+            let end_id_col = extract_id_column(&rel.right);
+            
+            Some(VariableLengthDenormInfo {
+                start_is_denormalized: check_node_denormalized(&rel.left),
+                end_is_denormalized: check_node_denormalized(&rel.right),
+                start_table,
+                start_id_col,
+                end_table,
+                end_id_col,
+            })
+        }
+        LogicalPlan::GraphNode(node) => get_variable_length_denorm_info(&node.input),
+        LogicalPlan::Filter(filter) => get_variable_length_denorm_info(&filter.input),
+        LogicalPlan::Projection(proj) => get_variable_length_denorm_info(&proj.input),
+        LogicalPlan::GraphJoins(joins) => get_variable_length_denorm_info(&joins.input),
+        LogicalPlan::GroupBy(gb) => get_variable_length_denorm_info(&gb.input),
+        LogicalPlan::OrderBy(ob) => get_variable_length_denorm_info(&ob.input),
+        LogicalPlan::Skip(skip) => get_variable_length_denorm_info(&skip.input),
+        LogicalPlan::Limit(limit) => get_variable_length_denorm_info(&limit.input),
+        LogicalPlan::Cte(cte) => get_variable_length_denorm_info(&cte.input),
+        _ => None,
     }
 }
 

@@ -785,3 +785,105 @@ pub fn rewrite_expr_for_denormalized_cte_with_rel(
         _ => expr.clone(),
     }
 }
+
+/// Rewrite expressions for mixed denormalized patterns
+/// Only rewrites properties for the side that is denormalized
+/// Standard side properties are left unchanged (they'll be resolved by JOINs)
+#[allow(clippy::too_many_arguments)]
+pub fn rewrite_expr_for_mixed_denormalized_cte(
+    expr: &RenderExpr,
+    start_cypher_alias: &str,
+    end_cypher_alias: &str,
+    start_is_denormalized: bool,
+    end_is_denormalized: bool,
+    rel_alias: Option<&str>,
+    from_col: Option<&str>,
+    to_col: Option<&str>,
+    _path_var: Option<&str>,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            let mut new_prop = prop.clone();
+            let raw_col = prop.column.0.raw();
+            
+            // Check if this is a relationship alias access (e.g., f.Origin, f.Dest)
+            if let (Some(rel), Some(from), Some(to)) = (rel_alias, from_col, to_col) {
+                if prop.table_alias.0 == rel {
+                    new_prop.table_alias = TableAlias("t".to_string());
+                    if raw_col == from {
+                        // from_col (e.g., Origin) → start_id
+                        new_prop.column = Column(PropertyValue::Column("start_id".to_string()));
+                    } else if raw_col == to {
+                        // to_col (e.g., Dest) → end_id
+                        new_prop.column = Column(PropertyValue::Column("end_id".to_string()));
+                    }
+                    return RenderExpr::PropertyAccessExp(new_prop);
+                }
+            }
+            
+            // Rewrite only for denormalized nodes
+            if prop.table_alias.0 == start_cypher_alias && start_is_denormalized {
+                // Start node is denormalized → rewrite to t.start_id
+                new_prop.table_alias = TableAlias("t".to_string());
+                if raw_col != "*" {
+                    new_prop.column = Column(PropertyValue::Column("start_id".to_string()));
+                }
+            } else if prop.table_alias.0 == end_cypher_alias && end_is_denormalized {
+                // End node is denormalized → rewrite to t.end_id
+                new_prop.table_alias = TableAlias("t".to_string());
+                if raw_col != "*" {
+                    new_prop.column = Column(PropertyValue::Column("end_id".to_string()));
+                }
+            }
+            // Standard nodes are left unchanged - they'll be resolved by JOINs
+            RenderExpr::PropertyAccessExp(new_prop)
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            let rewritten_operands = op
+                .operands
+                .iter()
+                .map(|operand| {
+                    rewrite_expr_for_mixed_denormalized_cte(
+                        operand,
+                        start_cypher_alias,
+                        end_cypher_alias,
+                        start_is_denormalized,
+                        end_is_denormalized,
+                        rel_alias,
+                        from_col,
+                        to_col,
+                        _path_var,
+                    )
+                })
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator.clone(),
+                operands: rewritten_operands,
+            })
+        }
+        RenderExpr::ScalarFnCall(fn_call) => {
+            let rewritten_args = fn_call
+                .args
+                .iter()
+                .map(|arg| {
+                    rewrite_expr_for_mixed_denormalized_cte(
+                        arg,
+                        start_cypher_alias,
+                        end_cypher_alias,
+                        start_is_denormalized,
+                        end_is_denormalized,
+                        rel_alias,
+                        from_col,
+                        to_col,
+                        _path_var,
+                    )
+                })
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: fn_call.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        _ => expr.clone(),
+    }
+}

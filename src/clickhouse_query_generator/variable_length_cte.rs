@@ -34,7 +34,9 @@ pub struct VariableLengthCteGenerator {
     pub path_variable: Option<String>, // Path variable name from MATCH clause (e.g., "p" in "MATCH p = ...")
     pub relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
     pub edge_id: Option<Identifier>, // Edge ID columns for relationship uniqueness (None = use from_id, to_id)
-    pub is_denormalized: bool, // True if nodes are virtual and properties come from edge table
+    pub is_denormalized: bool, // True if BOTH nodes are virtual (for backward compat)
+    pub start_is_denormalized: bool, // True if start node is virtual (properties come from edge table)
+    pub end_is_denormalized: bool, // True if end node is virtual (properties come from edge table)
 }
 
 /// Mode for shortest path queries
@@ -104,6 +106,8 @@ impl VariableLengthCteGenerator {
             relationship_types,
             edge_id,
             is_denormalized: false, // Default to standard (normalized) mode
+            start_is_denormalized: false, // Start node is standard
+            end_is_denormalized: false, // End node is standard
         }
     }
 
@@ -148,7 +152,63 @@ impl VariableLengthCteGenerator {
             path_variable,
             relationship_types,
             edge_id,
-            is_denormalized: true, // Enable denormalized mode
+            is_denormalized: true, // Enable denormalized mode (both nodes)
+            start_is_denormalized: true, // Start node is denormalized
+            end_is_denormalized: true, // End node is denormalized
+        }
+    }
+
+    /// Create a generator for mixed patterns (one node denormalized, one standard)
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_mixed(
+        spec: VariableLengthSpec,
+        start_table: &str,             // Start node table (or rel table if start is denorm)
+        start_id_col: &str,            // Start ID column
+        relationship_table: &str,      // Relationship table
+        rel_from_col: &str,            // Relationship from column
+        rel_to_col: &str,              // Relationship to column
+        end_table: &str,               // End node table (or rel table if end is denorm)
+        end_id_col: &str,              // End ID column
+        start_alias: &str,             // Cypher alias for start node
+        end_alias: &str,               // Cypher alias for end node
+        properties: Vec<NodeProperty>, // Properties to include
+        shortest_path_mode: Option<ShortestPathMode>,
+        start_node_filters: Option<String>,
+        end_node_filters: Option<String>,
+        path_variable: Option<String>,
+        relationship_types: Option<Vec<String>>,
+        edge_id: Option<Identifier>,
+        start_is_denormalized: bool,   // Whether start node is denormalized
+        end_is_denormalized: bool,     // Whether end node is denormalized
+    ) -> Self {
+        let database = std::env::var("CLICKHOUSE_DATABASE").ok();
+
+        Self {
+            spec,
+            cte_name: format!("variable_path_{}", uuid::Uuid::new_v4().simple()),
+            start_node_table: start_table.to_string(),
+            start_node_id_column: start_id_col.to_string(),
+            start_node_alias: "start_node".to_string(),
+            relationship_table: relationship_table.to_string(),
+            relationship_from_column: rel_from_col.to_string(),
+            relationship_to_column: rel_to_col.to_string(),
+            relationship_alias: "rel".to_string(),
+            end_node_table: end_table.to_string(),
+            end_node_id_column: end_id_col.to_string(),
+            end_node_alias: "end_node".to_string(),
+            start_cypher_alias: start_alias.to_string(),
+            end_cypher_alias: end_alias.to_string(),
+            properties,
+            database,
+            shortest_path_mode,
+            start_node_filters,
+            end_node_filters,
+            path_variable,
+            relationship_types,
+            edge_id,
+            is_denormalized: start_is_denormalized && end_is_denormalized, // Both must be denorm for full denorm mode
+            start_is_denormalized,
+            end_is_denormalized,
         }
     }
 
@@ -543,11 +603,22 @@ impl VariableLengthCteGenerator {
     }
 
     fn generate_base_case(&self, hop_count: u32) -> String {
-        // For denormalized edges, use simplified generation
+        // Determine which pattern to use based on denormalization flags
+        // Full denormalized: both nodes virtual → use denormalized generator
+        // Mixed: one node virtual, one standard → use mixed generator
+        // Full standard: both nodes standard → use standard generator
+        
         if self.is_denormalized {
+            // Both nodes denormalized (fully virtual)
             return self.generate_denormalized_base_case(hop_count);
         }
         
+        // Check for mixed patterns (one side denormalized)
+        if self.start_is_denormalized || self.end_is_denormalized {
+            return self.generate_mixed_base_case(hop_count);
+        }
+        
+        // Standard case: both nodes have their own tables
         if hop_count == 1 {
             // Build edge tuple for the base case
             let edge_tuple = self.build_edge_tuple_base();
@@ -647,11 +718,17 @@ impl VariableLengthCteGenerator {
     }
 
     fn generate_recursive_case_with_cte_name(&self, max_hops: u32, cte_name: &str) -> String {
-        // For denormalized edges, use simplified generation
+        // For fully denormalized edges, use simplified generation
         if self.is_denormalized {
             return self.generate_denormalized_recursive_case(max_hops, cte_name);
         }
         
+        // Check for mixed patterns (one side denormalized)
+        if self.start_is_denormalized || self.end_is_denormalized {
+            return self.generate_mixed_recursive_case(max_hops, cte_name);
+        }
+        
+        // Standard case: both nodes have their own tables
         // Build edge tuple for recursive case
         let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
         
@@ -836,6 +913,240 @@ impl VariableLengthCteGenerator {
             rel_table = self.format_table_name(&self.relationship_table),
             rel = self.relationship_alias,
             from_col = self.relationship_from_column,
+            where_clause = where_clause
+        )
+    }
+
+    // ======================================================================
+    // MIXED PATTERN GENERATION
+    // ======================================================================
+    // For mixed patterns where one node is denormalized and the other is standard.
+    // - Denorm → Standard: Start from rel table (no start table), end with standard table JOIN
+    // - Standard → Denorm: Start from standard table, but end is denormalized (no end table JOIN)
+
+    /// Generate base case for mixed patterns
+    fn generate_mixed_base_case(&self, hop_count: u32) -> String {
+        if hop_count != 1 {
+            // Multi-hop base case not yet supported for mixed
+            return format!(
+                "    -- Multi-hop base case for {} hops (mixed - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_edges, [] as path_relationships\n    WHERE false",
+                hop_count, hop_count
+            );
+        }
+
+        let edge_tuple = self.build_edge_tuple_base();
+
+        // Determine start_id and end_id based on which side is denormalized
+        let start_id_expr = if self.start_is_denormalized {
+            // Start is denorm: ID comes from relationship table from_col
+            format!("{}.{}", self.relationship_alias, self.relationship_from_column)
+        } else {
+            // Start is standard: ID comes from start node table
+            format!("{}.{}", self.start_node_alias, self.start_node_id_column)
+        };
+
+        let end_id_expr = if self.end_is_denormalized {
+            // End is denorm: ID comes from relationship table to_col
+            format!("{}.{}", self.relationship_alias, self.relationship_to_column)
+        } else {
+            // End is standard: ID comes from end node table
+            format!("{}.{}", self.end_node_alias, self.end_node_id_column)
+        };
+
+        let mut select_items = vec![
+            format!("{} as start_id", start_id_expr),
+            format!("{} as end_id", end_id_expr),
+            "1 as hop_count".to_string(),
+            format!("[{}] as path_edges", edge_tuple),
+            self.generate_relationship_type_for_hop(1),
+        ];
+
+        // Add properties for non-denormalized nodes
+        for prop in &self.properties {
+            if prop.cypher_alias == self.start_cypher_alias && !self.start_is_denormalized {
+                select_items.push(format!(
+                    "{}.{} as start_{}",
+                    self.start_node_alias, prop.column_name, prop.alias
+                ));
+            }
+            if prop.cypher_alias == self.end_cypher_alias && !self.end_is_denormalized {
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    self.end_node_alias, prop.column_name, prop.alias
+                ));
+            }
+        }
+
+        let select_clause = select_items.join(",\n        ");
+
+        // Build FROM clause based on which nodes are denormalized
+        let from_clause = if self.start_is_denormalized && !self.end_is_denormalized {
+            // Denorm → Standard: FROM rel_table JOIN end_table
+            format!(
+                "FROM {rel_table} {rel}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}",
+                rel_table = self.format_table_name(&self.relationship_table),
+                rel = self.relationship_alias,
+                end_table = self.format_table_name(&self.end_node_table),
+                end = self.end_node_alias,
+                to_col = self.relationship_to_column,
+                end_id_col = self.end_node_id_column
+            )
+        } else if !self.start_is_denormalized && self.end_is_denormalized {
+            // Standard → Denorm: FROM start_table JOIN rel_table
+            format!(
+                "FROM {start_table} {start}\n    JOIN {rel_table} {rel} ON {start}.{start_id_col} = {rel}.{from_col}",
+                start_table = self.format_table_name(&self.start_node_table),
+                start = self.start_node_alias,
+                rel_table = self.format_table_name(&self.relationship_table),
+                rel = self.relationship_alias,
+                start_id_col = self.start_node_id_column,
+                from_col = self.relationship_from_column
+            )
+        } else {
+            // Shouldn't reach here - handled by is_denormalized check
+            format!(
+                "FROM {rel_table} {rel}",
+                rel_table = self.format_table_name(&self.relationship_table),
+                rel = self.relationship_alias
+            )
+        };
+
+        let mut query = format!(
+            "    SELECT \n        {select}\n    {from_clause}",
+            select = select_clause,
+            from_clause = from_clause
+        );
+
+        // Add WHERE conditions
+        let mut where_conditions = Vec::new();
+        if let Some(ref filters) = self.start_node_filters {
+            // Rewrite for denorm start if needed
+            let rewritten = if self.start_is_denormalized {
+                filters.replace("start_node.", &format!("{}.", self.relationship_alias))
+            } else {
+                filters.clone()
+            };
+            where_conditions.push(rewritten);
+        }
+
+        if self.shortest_path_mode.is_none() {
+            if let Some(ref filters) = self.end_node_filters {
+                // Rewrite for denorm end if needed
+                let rewritten = if self.end_is_denormalized {
+                    filters.replace("end_node.", &format!("{}.", self.relationship_alias))
+                } else {
+                    filters.clone()
+                };
+                where_conditions.push(rewritten);
+            }
+        }
+
+        if !where_conditions.is_empty() {
+            query.push_str(&format!("\n    WHERE {}", where_conditions.join(" AND ")));
+        }
+
+        query
+    }
+
+    /// Generate recursive case for mixed patterns
+    fn generate_mixed_recursive_case(&self, max_hops: u32, cte_name: &str) -> String {
+        let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
+
+        // End ID expression based on denormalization
+        let end_id_expr = if self.end_is_denormalized {
+            format!("{}.{}", self.relationship_alias, self.relationship_to_column)
+        } else {
+            format!("{}.{}", self.end_node_alias, self.end_node_id_column)
+        };
+
+        let mut select_items = vec![
+            "vp.start_id".to_string(),
+            format!("{} as end_id", end_id_expr),
+            "vp.hop_count + 1 as hop_count".to_string(),
+            format!(
+                "arrayConcat(vp.path_edges, [{}]) as path_edges",
+                edge_tuple_recursive
+            ),
+            format!(
+                "arrayConcat(vp.path_relationships, {}) as path_relationships",
+                self.get_relationship_type_array()
+            ),
+        ];
+
+        // Add properties - start from CTE, end from joined node (if not denorm)
+        for prop in &self.properties {
+            if prop.cypher_alias == self.start_cypher_alias && !self.start_is_denormalized {
+                select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
+            }
+            if prop.cypher_alias == self.end_cypher_alias && !self.end_is_denormalized {
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    self.end_node_alias, prop.column_name, prop.alias
+                ));
+            }
+        }
+
+        let select_clause = select_items.join(",\n        ");
+
+        // Build FROM/JOIN clause based on denormalization
+        let from_clause = if self.start_is_denormalized && !self.end_is_denormalized {
+            // Denorm → Standard: CTE → rel → end_table
+            format!(
+                "FROM {cte_name} vp\n    JOIN {rel_table} {rel} ON vp.end_id = {rel}.{from_col}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}",
+                cte_name = cte_name,
+                rel_table = self.format_table_name(&self.relationship_table),
+                rel = self.relationship_alias,
+                from_col = self.relationship_from_column,
+                end_table = self.format_table_name(&self.end_node_table),
+                end = self.end_node_alias,
+                to_col = self.relationship_to_column,
+                end_id_col = self.end_node_id_column
+            )
+        } else if !self.start_is_denormalized && self.end_is_denormalized {
+            // Standard → Denorm: CTE → current → rel (no end table)
+            // We join through current node to find the next relationship
+            format!(
+                "FROM {cte_name} vp\n    JOIN {current_table} current_node ON vp.end_id = current_node.{current_id_col}\n    JOIN {rel_table} {rel} ON current_node.{current_id_col} = {rel}.{from_col}",
+                cte_name = cte_name,
+                current_table = self.format_table_name(&self.end_node_table),
+                current_id_col = self.end_node_id_column,
+                rel_table = self.format_table_name(&self.relationship_table),
+                rel = self.relationship_alias,
+                from_col = self.relationship_from_column
+            )
+        } else {
+            // Shouldn't reach here
+            format!(
+                "FROM {cte_name} vp\n    JOIN {rel_table} {rel} ON vp.end_id = {rel}.{from_col}",
+                cte_name = cte_name,
+                rel_table = self.format_table_name(&self.relationship_table),
+                rel = self.relationship_alias,
+                from_col = self.relationship_from_column
+            )
+        };
+
+        let mut where_conditions = vec![
+            format!("vp.hop_count < {}", max_hops),
+            format!("NOT has(vp.path_edges, {})", edge_tuple_recursive),
+        ];
+
+        if self.shortest_path_mode.is_none() {
+            if let Some(ref filters) = self.end_node_filters {
+                let rewritten = if self.end_is_denormalized {
+                    filters.replace("end_node.", &format!("{}.", self.relationship_alias))
+                } else {
+                    filters.clone()
+                };
+                where_conditions.push(rewritten);
+            }
+        }
+
+        let where_clause = where_conditions.join("\n      AND ");
+
+        format!(
+            "    SELECT\n        {select}\n    {from_clause}\n    WHERE {where_clause}",
+            select = select_clause,
+            from_clause = from_clause,
             where_clause = where_clause
         )
     }

@@ -15,6 +15,7 @@ use super::filter_pipeline::{
     filter_expr_to_sql, render_end_filter_to_column_alias,
     rewrite_end_filters_for_variable_length_cte, rewrite_expr_for_outer_query,
     rewrite_expr_for_var_len_cte, rewrite_expr_for_denormalized_cte_with_rel,
+    rewrite_expr_for_mixed_denormalized_cte,
 };
 use super::render_expr::{
     AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
@@ -30,7 +31,8 @@ use crate::render_plan::cte_extraction::extract_ctes_with_context;
 use crate::render_plan::cte_extraction::{
     RelationshipColumns, VariableLengthRelInfo, extract_node_label_from_viewscan, extract_relationship_columns,
     get_path_variable, get_shortest_path_mode, get_variable_length_spec, get_variable_length_rel_info,
-    has_variable_length_rel, is_variable_length_denormalized, label_to_table_name, rel_type_to_table_name, 
+    get_variable_length_denorm_info, has_variable_length_rel, is_variable_length_denormalized, 
+    label_to_table_name, rel_type_to_table_name, 
     rel_types_to_table_names, table_to_id_column,
 };
 
@@ -3504,25 +3506,33 @@ impl RenderPlanBuilder for LogicalPlan {
         // For denormalized variable-length paths, rewrite SELECT items to reference CTE columns
         // Standard patterns keep a.*, b.* since they JOIN to node tables
         // Denormalized patterns need t.start_id, t.end_id since there are no node table JOINs
+        // Mixed patterns: rewrite only the denormalized side
         if let Some((start_alias, end_alias)) = has_variable_length_rel(&transformed_plan) {
-            let is_denormalized = is_variable_length_denormalized(&transformed_plan);
+            let denorm_info = get_variable_length_denorm_info(&transformed_plan);
+            let is_any_denormalized = denorm_info.as_ref().map_or(false, |d| d.is_any_denormalized());
             let needs_cte = if let Some(spec) = get_variable_length_spec(&transformed_plan) {
                 spec.exact_hop_count().is_none() || get_shortest_path_mode(&transformed_plan).is_some()
             } else {
                 false
             };
             
-            if is_denormalized && needs_cte {
+            if is_any_denormalized && needs_cte {
                 // Get relationship info for rewriting f.Origin → t.start_id, f.Dest → t.end_id
                 let rel_info = get_variable_length_rel_info(&transformed_plan);
                 let path_var = get_path_variable(&transformed_plan);
+                let start_is_denorm = denorm_info.as_ref().map_or(false, |d| d.start_is_denormalized);
+                let end_is_denorm = denorm_info.as_ref().map_or(false, |d| d.end_is_denormalized);
+                
                 final_select_items = final_select_items
                     .into_iter()
                     .map(|item| {
-                        let rewritten = rewrite_expr_for_denormalized_cte_with_rel(
+                        // For mixed patterns, only rewrite the denormalized aliases
+                        let rewritten = rewrite_expr_for_mixed_denormalized_cte(
                             &item.expression,
                             &start_alias,
                             &end_alias,
+                            start_is_denorm,
+                            end_is_denorm,
                             rel_info.as_ref().map(|r| r.rel_alias.as_str()),
                             rel_info.as_ref().map(|r| r.from_col.as_str()),
                             rel_info.as_ref().map(|r| r.to_col.as_str()),
@@ -3549,24 +3559,78 @@ impl RenderPlanBuilder for LogicalPlan {
 
             // For denormalized edges, node properties are embedded in edge table
             // so we don't need to join to separate node tables
-            if is_variable_length_denormalized(&transformed_plan) {
-                // No joins needed - CTE already has all node properties
+            // For mixed patterns, only skip the JOIN for the denormalized node
+            let denorm_info = get_variable_length_denorm_info(&transformed_plan);
+            
+            if denorm_info.as_ref().map_or(false, |d| d.is_fully_denormalized()) {
+                // Fully denormalized: no joins needed - CTE already has all node properties
             } else {
-                // Get the actual table names and ID columns from the schema
-                let start_table = get_node_table_for_alias(&start_alias);
-                let end_table = get_node_table_for_alias(&end_alias);
-                let start_id_col = get_node_id_column_for_alias(&start_alias);
-                let end_id_col = get_node_id_column_for_alias(&end_alias);
+                // Get the actual table names and ID columns from the plan (preferred) or fallback
+                // 🎯 FIX: Use table info extracted directly from the logical plan's ViewScans
+                // This ensures we use the correct fully-qualified table names from schema resolution
+                let start_table = denorm_info.as_ref()
+                    .and_then(|d| d.start_table.clone())
+                    .unwrap_or_else(|| get_node_table_for_alias(&start_alias));
+                let end_table = denorm_info.as_ref()
+                    .and_then(|d| d.end_table.clone())
+                    .unwrap_or_else(|| get_node_table_for_alias(&end_alias));
+                let start_id_col = denorm_info.as_ref()
+                    .and_then(|d| d.start_id_col.clone())
+                    .unwrap_or_else(|| get_node_id_column_for_alias(&start_alias));
+                let end_id_col = denorm_info.as_ref()
+                    .and_then(|d| d.end_id_col.clone())
+                    .unwrap_or_else(|| get_node_id_column_for_alias(&end_alias));
+
+                // Check denormalization status for each node
+                let start_is_denorm = denorm_info.as_ref().map_or(false, |d| d.start_is_denormalized);
+                let end_is_denorm = denorm_info.as_ref().map_or(false, |d| d.end_is_denormalized);
 
                 // Check for self-loop: start and end are the same node (e.g., (a)-[*0..]->(a))
                 if start_alias == end_alias {
-                    // Self-loop: Only add ONE JOIN with compound ON condition
-                    // JOIN users AS a ON t.start_id = a.user_id AND t.end_id = a.user_id
-                    extracted_joins.push(Join {
-                        table_name: start_table,
-                        table_alias: start_alias.clone(),
-                        joining_on: vec![
-                            OperatorApplication {
+                    // Self-loop: Only add ONE JOIN with compound ON condition (if not denormalized)
+                    if !start_is_denorm {
+                        // JOIN users AS a ON t.start_id = a.user_id AND t.end_id = a.user_id
+                        extracted_joins.push(Join {
+                            table_name: start_table,
+                            table_alias: start_alias.clone(),
+                            joining_on: vec![
+                                OperatorApplication {
+                                    operator: Operator::Equal,
+                                    operands: vec![
+                                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias("t".to_string()),
+                                            column: Column(PropertyValue::Column("start_id".to_string())),
+                                        }),
+                                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(start_alias.clone()),
+                                            column: Column(PropertyValue::Column(start_id_col.clone())),
+                                        }),
+                                    ],
+                                },
+                                OperatorApplication {
+                                    operator: Operator::Equal,
+                                    operands: vec![
+                                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias("t".to_string()),
+                                            column: Column(PropertyValue::Column("end_id".to_string())),
+                                        }),
+                                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(start_alias.clone()),
+                                            column: Column(PropertyValue::Column(start_id_col.clone())),
+                                        }),
+                                    ],
+                                },
+                            ],
+                            join_type: JoinType::Join,
+                        });
+                    }
+                } else {
+                    // Different start and end nodes: Add JOINs for non-denormalized nodes
+                    if !start_is_denorm {
+                        extracted_joins.push(Join {
+                            table_name: start_table,
+                            table_alias: start_alias.clone(),
+                            joining_on: vec![OperatorApplication {
                                 operator: Operator::Equal,
                                 operands: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -3578,8 +3642,15 @@ impl RenderPlanBuilder for LogicalPlan {
                                         column: Column(PropertyValue::Column(start_id_col.clone())),
                                     }),
                                 ],
-                            },
-                            OperatorApplication {
+                            }],
+                            join_type: JoinType::Join,
+                        });
+                    }
+                    if !end_is_denorm {
+                        extracted_joins.push(Join {
+                            table_name: end_table,
+                            table_alias: end_alias.clone(),
+                            joining_on: vec![OperatorApplication {
                                 operator: Operator::Equal,
                                 operands: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -3587,52 +3658,14 @@ impl RenderPlanBuilder for LogicalPlan {
                                         column: Column(PropertyValue::Column("end_id".to_string())),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(start_alias.clone()),
-                                        column: Column(PropertyValue::Column(start_id_col.clone())),
+                                        table_alias: TableAlias(end_alias.clone()),
+                                        column: Column(PropertyValue::Column(end_id_col.clone())),
                                     }),
                                 ],
-                            },
-                        ],
-                        join_type: JoinType::Join,
-                    });
-                } else {
-                    // Different start and end nodes: Add two separate JOINs
-                    extracted_joins.push(Join {
-                        table_name: start_table,
-                        table_alias: start_alias.clone(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias("t".to_string()),
-                                    column: Column(PropertyValue::Column("start_id".to_string())),
-                                }),
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(start_alias.clone()),
-                                    column: Column(PropertyValue::Column(start_id_col.clone())),
-                                }),
-                            ],
-                        }],
-                        join_type: JoinType::Join,
-                    });
-                    extracted_joins.push(Join {
-                        table_name: end_table,
-                        table_alias: end_alias.clone(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias("t".to_string()),
-                                    column: Column(PropertyValue::Column("end_id".to_string())),
-                                }),
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(end_alias.clone()),
-                                    column: Column(PropertyValue::Column(end_id_col.clone())),
-                                }),
-                            ],
-                        }],
-                        join_type: JoinType::Join,
-                    });
+                            }],
+                            join_type: JoinType::Join,
+                        });
+                    }
                 }
             }
         }

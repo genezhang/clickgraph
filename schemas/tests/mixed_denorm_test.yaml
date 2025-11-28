@@ -1,0 +1,72 @@
+# Test Schema for Mixed Denormalized/Standard Node Patterns
+# Tests scenarios where some nodes are denormalized and others are standard
+
+name: mixed_denorm_test
+version: "1.0"
+
+graph_schema:
+  nodes:
+    # Airport is denormalized - properties on the flights table
+    - label: Airport
+      database: test_integration
+      table: flights
+      id_column: code
+      property_mappings: {}
+      
+      from_node_properties:
+        code: Origin
+        city: OriginCityName
+        state: OriginState
+      
+      to_node_properties:
+        code: Dest
+        city: DestCityName
+        state: DestState
+
+    # City is a standard node with its own table
+    - label: City
+      database: test_integration
+      table: cities
+      id_column: city_id
+      property_mappings:
+        city_id: city_id
+        name: city_name
+        population: population
+        country: country
+
+  relationships:
+    # FLIGHT between Airports (denorm → denorm) - existing case
+    - type: FLIGHT
+      database: test_integration
+      table: flights
+      from_id: Origin
+      to_id: Dest
+      from_node: Airport
+      to_node: Airport
+      edge_id: [flight_id, flight_number]
+      property_mappings:
+        flight_num: flight_number
+
+    # LOCATED_IN from Airport to City (denorm → standard)
+    # Airport is virtual (from flights table), City is real table
+    - type: LOCATED_IN
+      database: test_integration
+      table: airport_cities
+      from_id: airport_code  # Links to flights.Origin or flights.Dest
+      to_id: city_id         # Links to cities.city_id
+      from_node: Airport
+      to_node: City
+      property_mappings:
+        since: established_date
+
+    # SERVES from City to Airport (standard → denorm)
+    # City is real table, Airport is virtual
+    - type: SERVES
+      database: test_integration
+      table: city_airports
+      from_id: city_id       # Links to cities.city_id
+      to_id: airport_code    # Links to flights.Origin or flights.Dest
+      from_node: City
+      to_node: Airport
+      property_mappings:
+        capacity: terminal_capacity
