@@ -49,6 +49,8 @@
    - ✅ **Multi-hop patterns working** (verified via e2e tests)
    - ✅ **Variable-length paths working** (verified via e2e tests)
    - ✅ Aggregations on denormalized queries working
+   - ✅ **shortestPath / allShortestPaths working**
+   - ✅ **PageRank working** (named argument syntax)
    
 2. 📋 Polymorphic edges (queued)
 3. 📋 Composite edge IDs (queued)
@@ -63,6 +65,7 @@
 - **Multi-hop pattern SQL generation** (2-hop, 3-hop, etc.)
 - **Variable-length path SQL generation** (`*1..2`, `*`, etc.)
 - Aggregations (COUNT, SUM, AVG) on denormalized patterns
+- **Graph algorithms**: shortestPath, allShortestPaths, PageRank
 
 **Example (Working - Single-hop)**:
 ```cypher
@@ -88,6 +91,20 @@ SELECT f1.Origin AS "a.code", f1.Dest AS "b.code", f2.Dest AS "c.code"
 FROM flights AS f1
 INNER JOIN flights AS f2 ON f2.Origin = f1.Dest
 ```
+
+**Example (Working - shortestPath)**:
+```cypher
+MATCH p = shortestPath((a:Airport)-[:FLIGHT*1..5]->(b:Airport))
+WHERE a.code = 'SEA' AND b.code = 'LAX'
+RETURN p
+```
+
+**Example (Working - PageRank)**:
+```cypher
+CALL pagerank(graph: 'Airport', relationshipTypes: 'FLIGHT', iterations: 10, dampingFactor: 0.85)
+YIELD nodeId, score RETURN nodeId, score
+```
+Note: PageRank requires named argument syntax (not positional).
 
 **Test Results**:
 - 20 denormalized-specific unit tests: ✅ All passing

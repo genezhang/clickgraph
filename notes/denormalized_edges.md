@@ -14,6 +14,8 @@
 6. **Multi-Hop Patterns**: ✅ Working correctly (2-hop, 3-hop, etc.)
 7. **Variable-Length Paths**: ✅ Working correctly (`*1..2`, `*`, etc.)
 8. **Aggregations**: COUNT, SUM, AVG, etc. work correctly on denormalized patterns
+9. **shortestPath / allShortestPaths**: ✅ Working correctly
+10. **PageRank**: ✅ Working correctly (requires named argument syntax)
 
 ### Verified End-to-End Test Results (Nov 27, 2025)
 
@@ -24,6 +26,8 @@
 | Multi-hop (3) | ✅ | Correct chain of 3 JOINs |
 | Variable-length `*1..2` | ✅ | Recursive CTE with correct table |
 | WHERE on source node | ✅ | `f.OriginCityName = 'Seattle'` |
+| shortestPath | ✅ | Recursive CTE with correct table |
+| PageRank | ✅ | Full PageRank SQL with correct tables |
 
 ### Example Queries
 
@@ -59,6 +63,39 @@ RETURN a.code, b.code
 ```
 Generates recursive CTE with correct `test_integration.flights` table.
 
+**Shortest Path**:
+```cypher
+MATCH p = shortestPath((a:Airport)-[:FLIGHT*1..5]->(b:Airport))
+WHERE a.code = 'SEA' AND b.code = 'LAX'
+RETURN p
+```
+Generates recursive CTE with correct table and early termination optimization.
+
+**PageRank** (requires named argument syntax):
+```cypher
+CALL pagerank(graph: 'Airport', relationshipTypes: 'FLIGHT', iterations: 10, dampingFactor: 0.85)
+YIELD nodeId, score
+RETURN nodeId, score
+```
+Generates full PageRank SQL with iterative computation.
+
+### Graph Algorithms Support
+
+| Algorithm | Status | Notes |
+|-----------|--------|-------|
+| shortestPath | ✅ | Uses correct denormalized table |
+| allShortestPaths | ✅ | Same as shortestPath |
+| PageRank | ✅ | Requires named argument syntax (see below) |
+
+**PageRank Syntax Note**: Use named arguments, not positional:
+```cypher
+-- ✅ Correct (named arguments)
+CALL pagerank(graph: 'Airport', relationshipTypes: 'FLIGHT', iterations: 5, dampingFactor: 0.85)
+
+-- ❌ Not supported (positional arguments)
+CALL pagerank('Airport', 'FLIGHT', {iterations: 5})
+```
+
 ### Files Modified
 
 **Schema Loading** (✅ Complete):
@@ -75,6 +112,7 @@ Generates recursive CTE with correct `test_integration.flights` table.
 - Single-hop, multi-hop, and variable-length all working
 - Property mappings correctly use relationship table alias
 - JOIN generation correct for chained patterns
+- Graph algorithms (shortestPath, PageRank) use correct tables
 
 ### Unit Test Coverage
 
