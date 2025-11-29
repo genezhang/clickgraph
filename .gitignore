@@ -47,6 +47,7 @@ server.log
 server_error.log
 clickgraph_server.log
 debug_server.log
+server*.log
 
 # Temporary scripts and files
 cleanup_*.ps1
