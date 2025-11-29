@@ -948,10 +948,10 @@ if __name__ == '__main__':
 Now that you understand advanced schema configuration:
 
 - **[Multi-Tenancy & RBAC](Multi-Tenancy-RBAC.md)** - Implement tenant isolation
-- **[Schema Configuration Basics](Schema-Configuration-Basics.md)** - Review fundamentals
+- **[Schema Configuration Basics](Schema-Basics.md)** - Review fundamentals
 - **[Performance Optimization](Performance-Query-Optimization.md)** - Optimize queries
 - **[Migration Guide](Migration-from-Neo4j.md)** - Migrate from other systems
 
 ---
 
-[← Back: Schema Basics](Schema-Configuration-Basics.md) | [Home](Home.md) | [Next: Multi-Tenancy →](Multi-Tenancy-RBAC.md)
+[← Back: Schema Basics](Schema-Basics.md) | [Home](Home.md) | [Next: Multi-Tenancy →](Multi-Tenancy-RBAC.md)
