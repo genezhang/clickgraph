@@ -1,10 +1,10 @@
 # Known Issues
 
-**Current Status**: 🚨 **CRITICAL: Undirected patterns need relationship ID support**  
-**Test Results**: 423/423 unit tests passing (100%), 197/308 integration tests passing (64%)  
-**Active Issues**: 3 bugs (undirected uniqueness, disconnected patterns), 1 enhancement (polymorphic schema)
+**Current Status**: 🔧 **Undirected patterns need relationship ID support**  
+**Test Results**: 523/523 unit tests passing (100%)  
+**Active Issues**: 2 bugs (undirected uniqueness, disconnected patterns)
 
-**Date Updated**: November 22, 2025  
+**Date Updated**: November 29, 2025  
 **Neo4j Semantics Verified**: November 22, 2025 (see `notes/CRITICAL_relationship_vs_node_uniqueness.md`)
 
 **CRITICAL DISCOVERIES**: 
@@ -46,19 +46,19 @@ Examples where duplicates exist:
 
 **What we need**: A true **relationship ID** (like Neo4j's `id(r)`)
 
-### Solution: Add `relationship_id` to Schema
+### Solution: Add `edge_id` to Schema
 
 **Schema YAML enhancement**:
 ```yaml
-relationships:
+edges:
   - name: FOLLOWS
     table: user_follows
     from_id: follower_id
     to_id: followed_id
-    relationship_id: id  # ← NEW: Unique identifier for relationship instances
+    edge_id: id  # ← NEW: Unique identifier for relationship instances
 ```
 
-**SQL generation with relationship ID**:
+**SQL generation with edge ID**:
 ```sql
 WHERE NOT (r1.id = r2.id)  -- Simple, correct, fast! ✅
 ```
@@ -461,192 +461,65 @@ DisconnectedPatternFound(String),
 
 ---
 
-## 💡 ENHANCEMENT: Polymorphic Schema Support (Ultra-Simplified)
+## ✅ COMPLETE: Polymorphic Edge Table Support
 
-**Status**: 💡 **PROPOSED** (November 20, 2025)  
-**Severity**: Low - Enhancement for simpler schemas  
-**Impact**: **Extreme simplification** for users with single polymorphic relationship table
+**Status**: ✅ **IMPLEMENTED** (November 29, 2025)  
+**Severity**: N/A - Feature complete  
+**Impact**: Single polymorphic relationship table supporting multiple edge types
 
 ### Summary
-For schemas with **one polymorphic relationship table storing most relationships**, support a **single relationship spec** that works for unlimited relationship types. Relationship types are derived from query, not configured.
+Polymorphic edge tables allow a **single table to store multiple relationship types**. The relationship type is stored in a `type_column` and ClickGraph generates UNION CTEs to handle all matching types.
 
-**Hybrid Support**: Explicit relationships can coexist as exceptions with higher priority.
+### Features Implemented ✅
+- ✅ **UNION CTE generation** - Each `type_value` generates a CTE branch with proper type filter
+- ✅ **Multi-hop chaining** - `(u)-[r1]->(m)-[r2]->(t)` correctly chains CTEs  
+- ✅ **Bidirectional edges** - `(u)<-[r]-(source)` uses `to_node_id` JOIN
+- ✅ **Composite edge IDs** - `edge_id: [from_id, to_id, type, timestamp]` generates `tuple(...)`
+- ✅ **Type filtering** - `WHERE interaction_type = 'FOLLOWS'` applied per branch
+- ✅ **Automatic type inference** - Node labels used for `from_type`/`to_type` filtering
+- ✅ **VLP compatibility** - Variable-length paths work with polymorphic tables
 
-**Key Innovation**: Since there's ONE polymorphic table handling most cases, no need to list every relationship type - they're data-driven!
-
-**Benefits**:
-- ✅ **7-10 lines total config** for unlimited types (vs 100+ for 10 types)
-- ✅ **Low maintenance** - Add type to `type_values` list (prevents expensive typo queries)
-- ✅ **Data-driven** - Relationship types come from data
-- ✅ **Typo protection** - Fast validation errors vs expensive empty queries
-- ✅ **Hybrid flexibility** - Explicit relationships as exceptions (higher priority)
-- ✅ **Works with separate node tables** (users, posts, comments, etc.)
-- ✅ **Automatic type inference** from query labels
-
-**Recommended Configuration**:
+### Configuration Example
 ```yaml
-relationships:
+edges:
   - polymorphic: true
-    table: relationships
+    database: brahmand
+    table: interactions
     from_id: from_id
     to_id: to_id
-    type_column: relation_type
-    type_values: [FOLLOWS, LIKES, AUTHORED, COMMENTED]  # ⭐ Values in type_column
+    type_column: interaction_type
     from_label_column: from_type
     to_label_column: to_type
+    type_values: [FOLLOWS, LIKES, AUTHORED, COMMENTED, SHARED]
+    edge_id: [from_id, to_id, interaction_type, timestamp]  # Composite ID
+    property_mappings:
+      created_at: timestamp
+      weight: interaction_weight
 ```
 
-### Current Schema Pattern
-```yaml
-relationships:
-  - name: FOLLOWS
-    table: user_follows # Dedicated table
-  - name: LIKES
-    table: user_likes   # Different table
-  # ... 10 lines per type × N types = 100+ lines
-```
-
-### Proposed Ultra-Simple Pattern
-```yaml
-nodes:
-  - label: User
-    table: users
-    # ... standard config
-  - label: Post
-    table: posts
-    # ... standard config
-
-relationships:
-  - polymorphic: true              # ✨ Single spec for ALL relationships!
-    table: relationships
-    from_id: from_id
-    to_id: to_id
-    type_column: relation_type     # 'FOLLOWS', 'LIKES', 'AUTHORED', etc.
-    from_label_column: from_type   # 'User', 'Post', 'Comment', etc.
-    to_label_column: to_type       # 'User', 'Post', 'Comment', etc.
-```
-
-**Configuration Reduction**: 7 lines total (vs 10× N lines before) = **93% reduction for 10 types**
-
-**Hybrid Configuration Example**:
-```yaml
-relationships:
-  # Polymorphic catch-all (handles 95% of relationships)
-  - polymorphic: true
-    table: relationships
-    from_id: from_id
-    to_id: to_id
-    type_column: relation_type
-    from_label_column: from_type
-    to_label_column: to_type
-  
-  # Exception: High-priority dedicated table
-  - name: RECOMMENDS
-    table: recommendations_optimized
-    from_id: user_id
-    to_id: product_id
-```
-
-**Resolution Priority**: Explicit (RECOMMENDS) → Polymorphic (everything else) → Error
-
-### Database Schema (with Heterogeneous Relationship Support)
-```sql
--- Single node table with type discriminator
-CREATE TABLE entities (
-    id UInt64,
-    node_type LowCardinality(String),  -- 'User', 'Post', 'Comment'
-    name String,
-    properties String  -- JSON for flexible properties
-) ENGINE = MergeTree()
-ORDER BY (node_type, id);
-
--- Single relationship table with type discriminators for endpoints
-CREATE TABLE relationships (
-    from_id UInt64,
-    to_id UInt64,
-    from_type LowCardinality(String),    -- NEW: Source type ('User', 'Admin')
-    to_type LowCardinality(String),      -- NEW: Target type ('User', 'Post')
-    relation_type LowCardinality(String), -- 'FOLLOWS', 'LIKES', 'AUTHORED'
-    properties String
-) ENGINE = MergeTree()
-ORDER BY (relation_type, from_type, to_type, from_id);
-```
-
-### Query Translation with Type Filtering
+### Generated SQL Example
 ```cypher
-MATCH (u:User)-[:LIKES]->(p:Post)
-WHERE u.user_id = 1
-RETURN p.name
+MATCH (u:User)-[:FOLLOWS]->(target:User) WHERE u.user_id = 1 RETURN target.name
 ```
 
-Becomes:
-### Query Translation with Automatic Type Inference
-```cypher
-MATCH (u:User)-[:LIKES]->(p:Post)
-WHERE u.user_id = 1
-RETURN p.name
-```
-
-Query planner automatically extracts:
-- Source label: `User` (from `u:User`)
-- Target label: `Post` (from `p:Post`)
-- Relationship type: `LIKES` (from `[:LIKES]`)
-
-Generated SQL:
+Generates:
 ```sql
-SELECT p.name
-FROM entities AS u
-WHERE u.node_type = 'User' AND u.user_id = 1
-INNER JOIN relationships AS r
-  ON r.from_id = u.id
-  AND r.relation_type = 'LIKES'
-  AND r.from_type = 'User'    -- ✨ INFERRED from u:User
-  AND r.to_type = 'Post'      -- ✨ INFERRED from p:Post
-INNER JOIN entities AS p
-  ON p.id = r.to_id
-  AND p.node_type = 'Post'
+WITH rel_u_target AS (
+    SELECT from_id AS from_node_id, to_id AS to_node_id, ...
+    FROM interactions
+    WHERE interaction_type = 'FOLLOWS'
+      AND from_type = 'User' 
+      AND to_type = 'User'
+)
+SELECT target.username AS "target.name"
+FROM users AS u
+INNER JOIN rel_u_target ON rel_u_target.from_node_id = u.user_id
+INNER JOIN users AS target ON target.user_id = rel_u_target.to_node_id
+WHERE u.user_id = 1
 ```
 
-### The Heterogeneous Relationship Challenge
-
-**Problem**: A single polymorphic `relationships` table handles different endpoint types:
-- FOLLOWS: User → User (homogeneous)
-- LIKES: User → Post (heterogeneous!)
-- AUTHORED: User → Post
-
-**Solution**: Store endpoint types in relationship rows (`from_type`, `to_type` columns) + **automatically infer from query labels**
-
-**Benefits**:
-- ✅ **Zero config maintenance** - No from_type/to_type in YAML!
-- ✅ **Automatic inference** - Extract types from query labels  
-- ✅ Query optimization via type-based partitioning
-- ✅ Data validation at insert time
-- ✅ Handles any type→type combination
-
-**Important Constraint**:
-- ⚠️ **Labeled nodes recommended** for optimal performance
-- Works with unlabeled nodes but scans all types (slower)
-- Example: `(u:User)-[:LIKES]->(p:Post)` ✅ fast vs `(u)-[:LIKES]->(p)` ⚠️ slow
-
-### Implementation
-See detailed design: `notes/polymorphic-schema.md`
-
-**Key Changes**:
-1. Add `type_column` and `type_value` fields to RelationshipSchema config (only 2 fields per relationship!)
-2. **Extract node labels from query patterns** in match_clause analyzer
-3. Include inferred `from_type`/`to_type` predicates in JOIN conditions
-4. Database still stores `from_type`/`to_type` columns for filtering
-
-**Estimated Effort**: 2-3 days
-
-**Configuration Simplicity**:
-- ❌ **OLD**: 6 fields per relationship (type_column, type_value, from_type_column, from_type_value, to_type_column, to_type_value)
-- ✅ **NEW**: 2 fields per relationship (type_column, type_value) - **67% reduction!**
-
-### References
-- Design doc: `notes/polymorphic-schema.md`
-- Single Table Inheritance pattern (Rails, Django ORMs)
-- ClickHouse LowCardinality optimization
+### Test Schema
+See `schemas/examples/social_polymorphic.yaml` for a complete working example.
 
 ---
 
@@ -1246,51 +1119,7 @@ All OPTIONAL MATCH functionality now working correctly:
 
 ---
 
----
-
-## 🐛 BUG: Duplicate JOIN with Multiple Relationship Types
-
-**Status**: 🐛 **BUG** (Discovered November 9, 2025)  
-**Severity**: Medium - Specific query pattern fails  
-**Impact**: Queries with `[:TYPE1|TYPE2]` pattern generate duplicate FROM/JOIN with same alias
-
-### Summary
-When querying with multiple relationship types using `|` operator, the SQL generator creates a duplicate JOIN to the source node table with the same alias, causing ClickHouse error: "Multiple table expressions with same alias".
-
-**Example Query**:
-```cypher
-MATCH (u:User)-[:FOLLOWS|FRIENDS_WITH]->(target:User)
-RETURN u.name, target.name
-```
-
-**Generated SQL** (Incorrect):
-```sql
-WITH rel_u_target AS (
-  SELECT from_id as from_node_id, to_id as to_node_id FROM follows
-  UNION ALL
-  SELECT from_id as from_node_id, to_id as to_node_id FROM friendships
-)
-SELECT u.name, target.name
-FROM users AS u                              -- ✅ Correct
-INNER JOIN users AS u ON u.user_id = abc.from_node_id  -- ❌ DUPLICATE!
-INNER JOIN rel_u_target AS abc ON abc.from_node_id = u.user_id
-INNER JOIN users AS target ON target.user_id = abc.to_node_id
-```
-
-**Expected SQL**:
-```sql
-FROM users AS u
-INNER JOIN rel_u_target AS abc ON abc.from_node_id = u.user_id  -- ✅ No duplicate
-INNER JOIN users AS target ON target.user_id = abc.to_node_id
-```
-
-**Affected Test**: `test_multi_with_schema_load.py`
-
-**Fix Required**: SQL generator creating extra JOIN when CTE is used for multiple relationship types. Likely in `clickhouse_query_generator` JOIN assembly logic.
-
----
-
-## �🔧 ACTIVE: OPTIONAL MATCH Architectural Limitations
+## 🔧 ACTIVE: OPTIONAL MATCH Architectural Limitations
 
 **Status**: 🔧 **IN PROGRESS** (November 8, 2025)  
 **Severity**: Medium - Core functionality partially working  
