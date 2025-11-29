@@ -304,7 +304,8 @@ fn is_simple_column(s: &str) -> bool {
         return false;
     }
     
-    s.chars().all(|c| c.is_alphanumeric() || c == '_')
+    // Allow alphanumeric, underscore, and dot (for nested columns like id.orig_h)
+    s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
 }
 
 fn needs_quoting(col: &str) -> bool {

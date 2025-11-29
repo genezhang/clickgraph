@@ -161,13 +161,33 @@ impl AnalyzerPass for ProjectionTagging {
             LogicalPlan::Unwind(u) => {
                 let child_tf =
                     self.analyze_with_graph_schema(u.input.clone(), plan_ctx, graph_schema)?;
-                match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-                        input: new_input,
-                        expression: u.expression.clone(),
-                        alias: u.alias.clone(),
-                    }))),
-                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                
+                // Transform the UNWIND expression - resolve property mappings for denormalized nodes
+                let transformed_expr = self.transform_unwind_expression(
+                    &u.expression, 
+                    plan_ctx, 
+                    graph_schema
+                )?;
+                
+                // Check if anything changed
+                let expr_changed = transformed_expr != u.expression;
+                
+                match (&child_tf, expr_changed) {
+                    (Transformed::Yes(new_input), _) => {
+                        Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
+                            input: new_input.clone(),
+                            expression: transformed_expr,
+                            alias: u.alias.clone(),
+                        })))
+                    },
+                    (Transformed::No(_), true) => {
+                        Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
+                            input: u.input.clone(),
+                            expression: transformed_expr,
+                            alias: u.alias.clone(),
+                        })))
+                    },
+                    (Transformed::No(_), false) => Transformed::No(logical_plan.clone()),
                 }
             }
         };
@@ -198,6 +218,70 @@ impl ProjectionTagging {
                 }
             })
             .collect()
+    }
+
+    /// Transform UNWIND expression to resolve property mappings for denormalized nodes
+    /// For example: UNWIND rip.ips -> UNWIND rip.answers (when ips maps to answers column)
+    fn transform_unwind_expression(
+        &self,
+        expr: &LogicalExpr,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<LogicalExpr> {
+        match expr {
+            LogicalExpr::PropertyAccessExp(property_access) => {
+                // Get the table context for this alias - if not found, just return as-is
+                let table_ctx = match plan_ctx.get_table_ctx(&property_access.table_alias.0) {
+                    Ok(ctx) => ctx,
+                    Err(_) => return Ok(expr.clone()),
+                };
+                
+                let label = table_ctx.get_label_opt().unwrap_or_default();
+                
+                // Check if this is a denormalized node
+                if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
+                    if node_schema.is_denormalized {
+                        // Try to resolve from to_node_properties first (common for denormalized end nodes)
+                        // then from_node_properties
+                        let mapped_column = if let Some(ref to_props) = node_schema.to_properties {
+                            if let Some(mapped) = to_props.get(property_access.column.raw()) {
+                                Some(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }.or_else(|| {
+                            if let Some(ref from_props) = node_schema.from_properties {
+                                if let Some(mapped) = from_props.get(property_access.column.raw()) {
+                                    Some(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        });
+                        
+                        if let Some(mapped) = mapped_column {
+                            log::debug!("UNWIND property mapping: {}.{} -> {:?}", 
+                                       property_access.table_alias.0, 
+                                       property_access.column.raw(),
+                                       mapped);
+                            return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: property_access.table_alias.clone(),
+                                column: mapped,
+                            }));
+                        }
+                    }
+                }
+                
+                // No mapping needed - return as-is
+                Ok(expr.clone())
+            }
+            // For other expression types, return as-is
+            _ => Ok(expr.clone()),
+        }
     }
 
     fn tag_projection(

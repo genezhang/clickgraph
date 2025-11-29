@@ -987,7 +987,34 @@ impl FilterTagging {
                 Self::find_property_in_viewscan(&node.input, alias, property)
             }
             LogicalPlan::GraphRel(rel) => {
-                // Check left, center, and right
+                // For denormalized patterns, check if alias is left_connection or right_connection
+                // and look at the corresponding node_properties in the center ViewScan
+                if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                    // Check if alias is the left (from) node
+                    if rel.left_connection == alias {
+                        if let Some(from_props) = &scan.from_node_properties {
+                            if let Some(prop_value) = from_props.get(property) {
+                                if let crate::graph_catalog::expression_parser::PropertyValue::Column(col) = prop_value {
+                                    println!("FilterTagging: find_property_in_viewscan - found '{}' in from_node_properties -> '{}'", property, col);
+                                    return Some(col.clone());
+                                }
+                            }
+                        }
+                    }
+                    // Check if alias is the right (to) node  
+                    if rel.right_connection == alias {
+                        if let Some(to_props) = &scan.to_node_properties {
+                            if let Some(prop_value) = to_props.get(property) {
+                                if let crate::graph_catalog::expression_parser::PropertyValue::Column(col) = prop_value {
+                                    println!("FilterTagging: find_property_in_viewscan - found '{}' in to_node_properties -> '{}'", property, col);
+                                    return Some(col.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Check left, center, and right (original logic)
                 if let Some(col) = Self::find_property_in_viewscan(&rel.left, alias, property) {
                     return Some(col);
                 }

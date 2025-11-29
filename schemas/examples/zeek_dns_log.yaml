@@ -56,7 +56,7 @@ graph_schema:
         name: query  # When domain is target (in REQUESTED)
 
     # ResolvedIP node - resolved IP addresses from answers array
-    # NOTE: there is an array type - answers, need special handling
+    # NOTE: answers is an array - use UNWIND to flatten
     - label: ResolvedIP
       database: zeek
       table: dns_log
@@ -64,7 +64,7 @@ graph_schema:
       property_mappings: {}
       
       to_node_properties:
-        answers: answers
+        ips: answers  # rip.ips -> answers array, use UNWIND rip.ips AS ip
 
   edges:
     # REQUESTED relationship - "192.168.4.76 requested testmyids.com"
@@ -77,13 +77,6 @@ graph_schema:
       to_node: Domain
       
       edge_id: uid
-      
-      # Denormalized node properties
-      from_node_properties:
-        ip: "id.orig_h"
-      
-      to_node_properties:
-        name: query
       
       property_mappings:
         uid: uid
@@ -105,10 +98,6 @@ graph_schema:
       
       # Edge ID includes both uid and the specific answer for uniqueness
       edge_id: [uid, answers]
-      
-      # Denormalized node properties for to_node (ResolvedIP)
-      to_node_properties:
-        ip: answers
       
       property_mappings:
         uid: uid

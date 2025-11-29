@@ -1091,6 +1091,7 @@ impl GraphJoinInference {
             right_node_id_column,
             left_label,
             right_label,
+            rel_label,
             left_node_schema,
             right_node_schema,
             rel_schema,
@@ -1116,6 +1117,7 @@ impl GraphJoinInference {
                 graph_context.right.schema.node_id.column.clone(),
                 graph_context.left.label.clone(),
                 graph_context.right.label.clone(),
+                graph_context.rel.label.clone(),  // Add rel_label
                 graph_context.left.schema.clone(),
                 graph_context.right.schema.clone(),
                 graph_context.rel.schema.clone(),
@@ -1182,7 +1184,9 @@ impl GraphJoinInference {
             right_is_referenced,
             left_label,
             right_label,
+            &rel_label,
             plan_ctx,
+            graph_schema,
             collected_graph_joins,
             joined_entities,
         );
@@ -1223,7 +1227,9 @@ impl GraphJoinInference {
         right_is_referenced: bool,
         left_label: String,
         right_label: String,
+        rel_type: &str,
         plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
@@ -1339,7 +1345,8 @@ impl GraphJoinInference {
                         left_alias.to_string(),
                         rel_alias.to_string(),
                         true,  // is_from_node
-                        left_label.clone()
+                        left_label.clone(),
+                        rel_type.to_string(),
                     );
                     eprintln!(
                         "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (from_node)",
@@ -1563,7 +1570,8 @@ impl GraphJoinInference {
                             left_alias.to_string(),
                             rel_alias.to_string(),
                             true,  // is_from_node
-                            left_label.clone()
+                            left_label.clone(),
+                            rel_type.to_string(),
                         );
                         eprintln!(
                             "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (from_node)",
@@ -1617,25 +1625,84 @@ impl GraphJoinInference {
                     // Check if left_alias was already registered on a different edge
                     let prev_edge_info = plan_ctx.get_denormalized_alias_info(left_alias);
                     
-                    if let Some((prev_rel_alias, is_from_node, _label)) = prev_edge_info {
+                    if let Some((prev_rel_alias, is_from_node, prev_node_label, prev_rel_type)) = prev_edge_info {
                         if prev_rel_alias != *rel_alias {
+                            // =========================================================
+                            // COUPLED EDGE CHECK
+                            // =========================================================
+                            // If the previous edge and current edge are COUPLED (same table,
+                            // coupling node), they exist in the SAME ROW - NO JOIN needed!
+                            
+                            eprintln!(
+                                "    ?? COUPLED CHECK: prev_rel_type='{}', current_rel_type='{}'",
+                                prev_rel_type, rel_type
+                            );
+                            let edges_are_coupled = graph_schema.are_edges_coupled(&prev_rel_type, rel_type);
+                            eprintln!("    ?? COUPLED CHECK RESULT: {}", edges_are_coupled);
+                            
+                            if edges_are_coupled {
+                                eprintln!(
+                                    "    ✓ COUPLED EDGES: '{}' and '{}' share same table row via coupling node - NO JOIN needed!",
+                                    prev_rel_type, rel_type
+                                );
+                                // Don't create a JOIN - just register this edge and continue
+                                // The previous edge's table scan will provide all columns
+                                joined_entities.insert(rel_alias.to_string());
+                                
+                                // CRITICAL: For coupled edges, the right_alias (rip) should point to 
+                                // the PREVIOUS edge's alias, since they're the same row!
+                                // This ensures all property references resolve to the edge in FROM clause.
+                                plan_ctx.register_denormalized_alias(
+                                    right_alias.to_string(),
+                                    prev_rel_alias.clone(),  // Use PREVIOUS edge alias, not current!
+                                    false, // right is TO node
+                                    right_label.clone(),
+                                    rel_type.to_string(),  // But keep current rel_type for property mapping
+                                );
+                                
+                                // Coupled edges - no JOIN needed, return early
+                                return Ok(());
+                            }
+                            
                             // MULTI-HOP DENORMALIZED: left node is on a DIFFERENT previous edge
-                            // We need to JOIN this edge to the previous edge
-                            // Join condition: current_edge.from_id = prev_edge.to_id (or from_id depending on role)
+                            // AND edges are NOT coupled - we need to JOIN this edge to the previous edge
+                            // Join condition: current_edge.from_id = prev_edge.(from_id or to_id depending on role)
                             eprintln!(
                                 "    🔗 MULTI-HOP DENORMALIZED: '{}' already on edge '{}', now on '{}' - creating edge-to-edge JOIN",
                                 left_alias, prev_rel_alias, rel_alias
                             );
                             
-                            // The previous edge's column for this node depends on whether it was from or to
-                            let prev_edge_col = if is_from_node {
-                                rel_from_col.clone()  // node was FROM on prev edge, use from_id
+                            // Get the previous edge's relationship type from plan_ctx
+                            let prev_edge_type = plan_ctx.get_rel_table_ctx(&prev_rel_alias)
+                                .ok()
+                                .and_then(|ctx| ctx.get_labels().cloned())
+                                .and_then(|labels| labels.first().cloned());
+                            
+                            // Look up the previous edge's schema to get its from_id/to_id
+                            let prev_edge_col = if let Some(ref prev_type) = prev_edge_type {
+                                if let Ok(prev_rel_schema_found) = graph_schema.get_rel_schema(prev_type) {
+                                    if is_from_node {
+                                        eprintln!("    ?? MULTI-HOP: node was FROM on prev edge, using prev edge's from_id: {}", prev_rel_schema_found.from_id);
+                                        prev_rel_schema_found.from_id.clone()
+                                    } else {
+                                        eprintln!("    ?? MULTI-HOP: node was TO on prev edge, using prev edge's to_id: {}", prev_rel_schema_found.to_id);
+                                        prev_rel_schema_found.to_id.clone()
+                                    }
+                                } else {
+                                    // Fallback: use current edge's columns if prev schema not found
+                                    eprintln!("    ?? MULTI-HOP: Could not find prev edge schema, using fallback");
+                                    if is_from_node { rel_from_col.clone() } else { rel_to_col.clone() }
+                                }
                             } else {
-                                rel_to_col.clone()    // node was TO on prev edge, use to_id
+                                // Fallback: use current edge's columns if prev type not found
+                                eprintln!("    ?? MULTI-HOP: Could not find prev edge type, using fallback");
+                                if is_from_node { rel_from_col.clone() } else { rel_to_col.clone() }
                             };
                             
                             // This edge's column is from_id (left node connects to from_id)
                             let current_edge_col = rel_from_col.clone();
+                            
+                            eprintln!("    ?? MULTI-HOP JOIN: {}.{} = {}.{}", rel_alias, current_edge_col, prev_rel_alias, prev_edge_col);
                             
                             let edge_to_edge_join = Join {
                                 table_name: rel_cte_name.clone(),
@@ -1724,7 +1791,8 @@ impl GraphJoinInference {
                                     left_alias.to_string(),
                                     rel_alias.to_string(),
                                     true,  // is_from_node
-                                    left_label.clone()
+                                    left_label.clone(),
+                                    rel_type.to_string(),
                                 );
                                 eprintln!(
                                     "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (from_node)",
@@ -1796,7 +1864,8 @@ impl GraphJoinInference {
                             right_alias.to_string(),
                             rel_alias.to_string(),
                             false,  // is_from_node
-                            right_label.clone()
+                            right_label.clone(),
+                            rel_type.to_string(),
                         );
                         eprintln!(
                             "    DENORMALIZED: Registered RIGHT alias '{}' → rel '{}' (to_node)",
@@ -1930,7 +1999,8 @@ impl GraphJoinInference {
                         left_alias.to_string(),
                         rel_alias.to_string(),
                         true,  // is_from_node
-                        left_label.clone()
+                        left_label.clone(),
+                        rel_type.to_string(),
                     );
                     eprintln!(
                         "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (from_node)",
@@ -2056,7 +2126,8 @@ impl GraphJoinInference {
                         right_alias.to_string(),
                         rel_alias.to_string(),
                         true,  // is_from_node (reversed)
-                        right_label.clone()
+                        right_label.clone(),
+                        rel_type.to_string(),
                     );
                     eprintln!(
                         "    DENORMALIZED: Registered RIGHT alias '{}' → rel '{}' (from_node, reversed)",
@@ -2176,7 +2247,8 @@ impl GraphJoinInference {
                             left_alias.to_string(),
                             rel_alias.to_string(),
                             false,  // is_from_node (reversed)
-                            left_label.clone()
+                            left_label.clone(),
+                            rel_type.to_string(),
                         );
                         eprintln!(
                             "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (to_node, reversed)",
@@ -2302,7 +2374,8 @@ impl GraphJoinInference {
                             right_alias.to_string(),
                             rel_alias.to_string(),
                             false,  // is_from_node
-                            right_label.clone()
+                            right_label.clone(),
+                            rel_type.to_string(),
                         );
                         eprintln!(
                             "    DENORMALIZED: Registered RIGHT alias '{}' → rel '{}' (to_node)",

@@ -304,17 +304,9 @@ pub struct StandardEdgeDefinition {
     #[serde(default)]
     pub edge_id: Option<Identifier>,
     
-    /// Optional: Denormalized source node properties (column mappings)
-    /// Used when node and edge share the same table
-    /// Example: { "city": "OriginCityName", "state": "OriginState" }
-    #[serde(default)]
-    pub from_node_properties: Option<HashMap<String, String>>,
-    
-    /// Optional: Denormalized target node properties (column mappings)
-    /// Used when node and edge share the same table
-    /// Example: { "city": "DestCityName", "state": "DestState" }
-    #[serde(default)]
-    pub to_node_properties: Option<HashMap<String, String>>,
+    // NOTE: from_node_properties and to_node_properties are defined on NODE definitions,
+    // not on edge definitions. The edge gets these from the node definitions based on
+    // from_node and to_node labels during schema loading.
     
     /// Property mappings for edge properties
     #[serde(rename = "property_mappings", default)]
@@ -523,44 +515,44 @@ impl GraphSchemaConfig {
 
     /// Validate denormalized node configurations
     fn validate_denormalized_nodes(&self) -> Result<(), GraphSchemaError> {
-        // Build a map of (database, table) -> node label for quick lookup
-        let mut node_tables: HashMap<(String, String), String> = HashMap::new();
+        // Build a map of (database, table) -> node definition for quick lookup
+        let mut node_by_table: HashMap<(String, String), &NodeDefinition> = HashMap::new();
         for node in &self.graph_schema.nodes {
             let key = (node.database.clone(), node.table.clone());
-            node_tables.insert(key, node.label.clone());
+            node_by_table.insert(key, node);
         }
 
-        // Check standard edges for denormalized nodes
+        // Check standard edges - verify that denormalized nodes have properties defined on NODE
         for edge in &self.graph_schema.edges {
             if let EdgeDefinition::Standard(std_edge) = edge {
                 let edge_table_key = (std_edge.database.clone(), std_edge.table.clone());
 
-                // Check if from_node shares the same table
-                if let Some(from_node_label) = node_tables.get(&edge_table_key) {
-                    if from_node_label == &std_edge.from_node {
-                        // Denormalized! Require from_node_properties
-                        if std_edge.from_node_properties.is_none() || 
-                           std_edge.from_node_properties.as_ref().unwrap().is_empty() {
+                // Check if from_node shares the same table (denormalized)
+                if let Some(from_node_def) = node_by_table.get(&edge_table_key) {
+                    if from_node_def.label == std_edge.from_node {
+                        // Denormalized! Node definition must have from_node_properties
+                        if from_node_def.from_node_properties.is_none() || 
+                           from_node_def.from_node_properties.as_ref().unwrap().is_empty() {
                             return Err(GraphSchemaError::InvalidConfig {
                                 message: format!(
-                                    "Edge '{}' has denormalized from_node '{}' (shares table '{}') but missing from_node_properties",
-                                    std_edge.type_name, std_edge.from_node, std_edge.table
+                                    "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing from_node_properties on node definition",
+                                    std_edge.from_node, std_edge.type_name, std_edge.table
                                 ),
                             });
                         }
                     }
                 }
 
-                // Check if to_node shares the same table
-                if let Some(to_node_label) = node_tables.get(&edge_table_key) {
-                    if to_node_label == &std_edge.to_node {
-                        // Denormalized! Require to_node_properties
-                        if std_edge.to_node_properties.is_none() || 
-                           std_edge.to_node_properties.as_ref().unwrap().is_empty() {
+                // Check if to_node shares the same table (denormalized)
+                if let Some(to_node_def) = node_by_table.get(&edge_table_key) {
+                    if to_node_def.label == std_edge.to_node {
+                        // Denormalized! Node definition must have to_node_properties
+                        if to_node_def.to_node_properties.is_none() || 
+                           to_node_def.to_node_properties.as_ref().unwrap().is_empty() {
                             return Err(GraphSchemaError::InvalidConfig {
                                 message: format!(
-                                    "Edge '{}' has denormalized to_node '{}' (shares table '{}') but missing to_node_properties",
-                                    std_edge.type_name, std_edge.to_node, std_edge.table
+                                    "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing to_node_properties on node definition",
+                                    std_edge.to_node, std_edge.type_name, std_edge.table
                                 ),
                             });
                         }
@@ -766,6 +758,12 @@ impl GraphSchemaConfig {
                     };
                     
                     // Convert standard edge definition to RelationshipSchema
+                    // Look up denormalized node properties from NODE definitions (not edge)
+                    let from_node_props = nodes.get(&std_edge.from_node)
+                        .and_then(|n| n.from_properties.clone());
+                    let to_node_props = nodes.get(&std_edge.to_node)
+                        .and_then(|n| n.to_properties.clone());
+                    
                     let rel_schema = RelationshipSchema {
                         database: std_edge.database.clone(),
                         table_name: std_edge.table.clone(),
@@ -789,8 +787,9 @@ impl GraphSchemaConfig {
                         type_column: None,
                         from_label_column: None,
                         to_label_column: None,
-                        from_node_properties: std_edge.from_node_properties.clone(),
-                        to_node_properties: std_edge.to_node_properties.clone(),
+                        // Use node properties from NODE definitions
+                        from_node_properties: from_node_props,
+                        to_node_properties: to_node_props,
                     };
                     relationships.insert(std_edge.type_name.clone(), rel_schema);
                 }
@@ -1064,6 +1063,140 @@ impl GraphSchemaConfig {
             relationships.insert(rel_def.type_name.clone(), rel_schema);
         }
 
+        // Convert edge definitions (new format) with auto-discovery
+        for edge_def in &self.graph_schema.edges {
+            match edge_def {
+                EdgeDefinition::Standard(std_edge) => {
+                    let property_mappings = if std_edge.auto_discover_columns {
+                        // Auto-discover columns from ClickHouse
+                        let columns = query_table_columns(client, &std_edge.database, &std_edge.table)
+                            .await
+                            .map_err(|e| GraphSchemaError::ConfigReadError {
+                                error: format!("Failed to query columns: {}", e),
+                            })?;
+
+                        let mut mappings = HashMap::new();
+                        for col in columns {
+                            if !std_edge.exclude_columns.contains(&col) {
+                                let property_name =
+                                    apply_naming_convention(&col, &std_edge.naming_convention);
+                                mappings.insert(property_name, col);
+                            }
+                        }
+                        mappings.extend(std_edge.properties.clone());
+                        mappings
+                    } else {
+                        std_edge.properties.clone()
+                    };
+
+                    let property_mappings = parse_property_mappings(property_mappings)?;
+
+                    let engine = detect_table_engine(client, &std_edge.database, &std_edge.table)
+                        .await
+                        .ok();
+
+                    let use_final = std_edge
+                        .use_final
+                        .unwrap_or_else(|| engine.as_ref().map(|e| e.supports_final()).unwrap_or(false));
+
+                    let filter = if let Some(filter_str) = &std_edge.filter {
+                        Some(SchemaFilter::new(filter_str).map_err(|e| {
+                            GraphSchemaError::ConfigReadError {
+                                error: format!("Invalid filter for edge '{}': {}", std_edge.type_name, e),
+                            }
+                        })?)
+                    } else {
+                        None
+                    };
+
+                    // Look up denormalized node properties from NODE definitions (not edge)
+                    let from_node_props = nodes.get(&std_edge.from_node)
+                        .and_then(|n| n.from_properties.clone());
+                    let to_node_props = nodes.get(&std_edge.to_node)
+                        .and_then(|n| n.to_properties.clone());
+
+                    let rel_schema = RelationshipSchema {
+                        database: std_edge.database.clone(),
+                        table_name: std_edge.table.clone(),
+                        column_names: property_mappings
+                            .values()
+                            .flat_map(|pv| pv.get_columns())
+                            .collect(),
+                        from_node: std_edge.from_node.clone(),
+                        to_node: std_edge.to_node.clone(),
+                        from_id: std_edge.from_id.clone(),
+                        to_id: std_edge.to_id.clone(),
+                        from_node_id_dtype: "UInt64".to_string(),
+                        to_node_id_dtype: "UInt64".to_string(),
+                        property_mappings,
+                        view_parameters: std_edge.view_parameters.clone(),
+                        engine,
+                        use_final: Some(use_final),
+                        filter,
+                        edge_id: std_edge.edge_id.clone(),
+                        type_column: None,
+                        from_label_column: None,
+                        to_label_column: None,
+                        // Use node properties from NODE definitions
+                        from_node_properties: from_node_props,
+                        to_node_properties: to_node_props,
+                    };
+                    relationships.insert(std_edge.type_name.clone(), rel_schema);
+                }
+                EdgeDefinition::Polymorphic(poly_edge) => {
+                    // Polymorphic edges use explicit property mappings
+                    let property_mappings = parse_property_mappings(poly_edge.properties.clone())?;
+
+                    let engine = detect_table_engine(client, &poly_edge.database, &poly_edge.table)
+                        .await
+                        .ok();
+
+                    let use_final = poly_edge
+                        .use_final
+                        .unwrap_or_else(|| engine.as_ref().map(|e| e.supports_final()).unwrap_or(false));
+
+                    let filter = if let Some(filter_str) = &poly_edge.filter {
+                        Some(SchemaFilter::new(filter_str).map_err(|e| {
+                            GraphSchemaError::ConfigReadError {
+                                error: format!("Invalid filter for polymorphic edge: {}", e),
+                            }
+                        })?)
+                    } else {
+                        None
+                    };
+
+                    for type_val in &poly_edge.type_values {
+                        let rel_schema = RelationshipSchema {
+                            database: poly_edge.database.clone(),
+                            table_name: poly_edge.table.clone(),
+                            column_names: property_mappings
+                                .values()
+                                .flat_map(|pv| pv.get_columns())
+                                .collect(),
+                            from_node: "$any".to_string(),
+                            to_node: "$any".to_string(),
+                            from_id: poly_edge.from_id.clone(),
+                            to_id: poly_edge.to_id.clone(),
+                            from_node_id_dtype: "UInt64".to_string(),
+                            to_node_id_dtype: "UInt64".to_string(),
+                            property_mappings: property_mappings.clone(),
+                            view_parameters: poly_edge.view_parameters.clone(),
+                            engine: engine.clone(),
+                            use_final: Some(use_final),
+                            filter: filter.clone(),
+                            edge_id: poly_edge.edge_id.clone(),
+                            type_column: Some(poly_edge.type_column.clone()),
+                            from_label_column: Some(poly_edge.from_label_column.clone()),
+                            to_label_column: Some(poly_edge.to_label_column.clone()),
+                            from_node_properties: None,
+                            to_node_properties: None,
+                        };
+                        relationships.insert(type_val.clone(), rel_schema);
+                    }
+                }
+            }
+        }
+
         Ok(GraphSchema::build(
             1,
             "default".to_string(),
@@ -1192,6 +1325,7 @@ graph_schema:
     #[test]
     fn test_denormalized_schema_validation_success() {
         // Valid denormalized schema (OnTime-style)
+        // Node properties are defined on the NODE, not the edge
         let config = GraphSchemaConfig {
             name: Some("ontime".to_string()),
             graph_schema: GraphSchemaDefinition {
@@ -1203,12 +1337,23 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
-            filter: None,
+                    filter: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
-                    from_node_properties: None,
-                    to_node_properties: None,
+                    // Denormalized node properties defined HERE (on node, not edge)
+                    from_node_properties: Some({
+                        let mut props = HashMap::new();
+                        props.insert("city".to_string(), "OriginCityName".to_string());
+                        props.insert("state".to_string(), "OriginState".to_string());
+                        props
+                    }),
+                    to_node_properties: Some({
+                        let mut props = HashMap::new();
+                        props.insert("city".to_string(), "DestCityName".to_string());
+                        props.insert("state".to_string(), "DestState".to_string());
+                        props
+                    }),
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Standard(StandardEdgeDefinition {
@@ -1225,22 +1370,11 @@ graph_schema:
                         "Origin".to_string(),
                         "Dest".to_string(),
                     ])),
-                    from_node_properties: Some({
-                        let mut props = HashMap::new();
-                        props.insert("city".to_string(), "OriginCityName".to_string());
-                        props.insert("state".to_string(), "OriginState".to_string());
-                        props
-                    }),
-                    to_node_properties: Some({
-                        let mut props = HashMap::new();
-                        props.insert("city".to_string(), "DestCityName".to_string());
-                        props.insert("state".to_string(), "DestState".to_string());
-                        props
-                    }),
+                    // No from_node_properties/to_node_properties on edge - they come from node
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
-            filter: None,
+                    filter: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1254,7 +1388,7 @@ graph_schema:
 
     #[test]
     fn test_denormalized_schema_validation_missing_from_properties() {
-        // Invalid: denormalized but missing from_node_properties
+        // Invalid: denormalized node but missing from_node_properties on NODE definition
         let config = GraphSchemaConfig {
             name: Some("ontime_invalid".to_string()),
             graph_schema: GraphSchemaDefinition {
@@ -1266,12 +1400,16 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
-            filter: None,
+                    filter: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
-                    from_node_properties: None,
-                    to_node_properties: None,
+                    from_node_properties: None,  // Missing! Node is used as from_node in edge
+                    to_node_properties: Some({
+                        let mut props = HashMap::new();
+                        props.insert("city".to_string(), "DestCityName".to_string());
+                        props
+                    }),
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Standard(StandardEdgeDefinition {
@@ -1283,16 +1421,10 @@ graph_schema:
                     from_node: "Airport".to_string(),
                     to_node: "Airport".to_string(),
                     edge_id: None,
-                    from_node_properties: None, // Missing!
-                    to_node_properties: Some({
-                        let mut props = HashMap::new();
-                        props.insert("city".to_string(), "DestCityName".to_string());
-                        props
-                    }),
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
-            filter: None,
+                    filter: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1420,5 +1552,34 @@ graph_schema:
         ]);
         assert!(composite.is_composite());
         assert_eq!(composite.columns(), vec!["col1", "col2", "col3"]);
+    }
+}
+
+#[cfg(test)]
+mod zeek_tests {
+    use super::*;
+
+    #[test]
+    fn test_zeek_schema_parsing() {
+        let yaml = std::fs::read_to_string("schemas/examples/zeek_dns_log.yaml")
+            .expect("Failed to read zeek schema");
+        
+        let config = GraphSchemaConfig::from_yaml_str(&yaml)
+            .expect("Failed to parse YAML");
+        
+        println!("Schema name: {:?}", config.name);
+        println!("Nodes count: {}", config.graph_schema.nodes.len());
+        println!("Edges count: {}", config.graph_schema.edges.len());
+        println!("Relationships count: {}", config.graph_schema.relationships.len());
+        
+        // Convert to GraphSchema
+        let schema = config.to_graph_schema().expect("Failed to convert to GraphSchema");
+        
+        println!("GraphSchema relationships: {}", schema.get_relationships_schemas().len());
+        for (name, _rel) in schema.get_relationships_schemas() {
+            println!("  - Relationship: {}", name);
+        }
+        
+        assert!(schema.get_relationships_schemas().len() > 0, "Should have relationships!");
     }
 }

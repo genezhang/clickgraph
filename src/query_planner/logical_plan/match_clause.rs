@@ -457,6 +457,28 @@ fn try_generate_relationship_view_scan(
         );
     }
     
+    // Set denormalized node properties from schema
+    // Convert HashMap<String, String> to HashMap<String, PropertyValue>
+    view_scan.from_node_properties = rel_schema.from_node_properties.as_ref().map(|props| {
+        props.iter()
+            .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+            .collect()
+    });
+    view_scan.to_node_properties = rel_schema.to_node_properties.as_ref().map(|props| {
+        props.iter()
+            .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+            .collect()
+    });
+    
+    if view_scan.from_node_properties.is_some() || view_scan.to_node_properties.is_some() {
+        log::debug!(
+            "ViewScan: Set denormalized node properties for rel '{}' - from_props={:?}, to_props={:?}",
+            rel_type,
+            view_scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
+            view_scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>())
+        );
+    }
+    
     // Set schema-level filter if defined in schema
     view_scan.schema_filter = rel_schema.filter.clone();
     if view_scan.schema_filter.is_some() {

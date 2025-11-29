@@ -152,9 +152,9 @@ pub struct PlanCtx {
     /// View parameter values for parameterized views (e.g., {"region": "US", "tier": "premium"})
     /// These are passed to table functions: table(region = 'US', tier = 'premium')
     view_parameter_values: Option<HashMap<String, String>>,
-    /// Track denormalized node-to-edge mappings: node_alias -> (edge_alias, is_from_node, label)
+    /// Track denormalized node-to-edge mappings: node_alias -> (edge_alias, is_from_node, node_label, rel_type)
     /// Used for multi-hop denormalized patterns to create edge-to-edge JOINs
-    denormalized_node_edges: HashMap<String, (String, bool, String)>,
+    denormalized_node_edges: HashMap<String, (String, bool, String, String)>,
 }
 
 impl PlanCtx {
@@ -302,12 +302,12 @@ impl PlanCtx {
     
     /// Register a denormalized node alias with its associated edge
     /// Used for multi-hop denormalized patterns to create edge-to-edge JOINs
-    pub fn register_denormalized_alias(&mut self, alias: String, rel_alias: String, is_from_node: bool, label: String) {
-        self.denormalized_node_edges.insert(alias, (rel_alias, is_from_node, label));
+    pub fn register_denormalized_alias(&mut self, alias: String, rel_alias: String, is_from_node: bool, node_label: String, rel_type: String) {
+        self.denormalized_node_edges.insert(alias, (rel_alias, is_from_node, node_label, rel_type));
     }
     
-    /// Get denormalized alias info: returns (edge_alias, is_from_node, label) if node is denormalized
-    pub fn get_denormalized_alias_info(&self, node_alias: &str) -> Option<(String, bool, String)> {
+    /// Get denormalized alias info: returns (edge_alias, is_from_node, node_label, rel_type) if node is denormalized
+    pub fn get_denormalized_alias_info(&self, node_alias: &str) -> Option<(String, bool, String, String)> {
         self.denormalized_node_edges.get(node_alias).cloned()
     }
 }

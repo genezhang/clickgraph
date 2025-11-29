@@ -1488,10 +1488,30 @@ impl RenderPlanBuilder for LogicalPlan {
                         _ => None,
                     }
                 }
+                
+                // Helper to find the INNERMOST GraphRel (for coupled edges - use first edge as anchor)
+                fn find_innermost_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
+                    match plan {
+                        LogicalPlan::GraphRel(gr) => {
+                            // Check if left is also a GraphRel (nested case)
+                            // Use as_ref() to get &LogicalPlan from Arc<LogicalPlan>
+                            if let Some(inner) = find_innermost_graph_rel(gr.left.as_ref()) {
+                                Some(inner)
+                            } else {
+                                Some(gr)
+                            }
+                        }
+                        LogicalPlan::Projection(proj) => find_innermost_graph_rel(&proj.input),
+                        LogicalPlan::Filter(filter) => find_innermost_graph_rel(&filter.input),
+                        LogicalPlan::Unwind(u) => find_innermost_graph_rel(&u.input),
+                        _ => None,
+                    }
+                }
 
                 // DENORMALIZED: If no joins, just use the relationship table
+                // For coupled edges, use the FIRST (innermost) edge as anchor
                 if graph_joins.joins.is_empty() {
-                    if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
+                    if let Some(graph_rel) = find_innermost_graph_rel(&graph_joins.input) {
                         if let Some(rel_table) = extract_table_name(&graph_rel.center) {
                             log::info!("🎯 DENORMALIZED: No JOINs, using relationship table '{}' as '{}'", rel_table, graph_rel.alias);
                             // CRITICAL FIX: Pass the actual graph_rel as source so extract_filters() can find view_filter

@@ -42,6 +42,8 @@ pub enum AliasResolution {
 pub struct AliasResolverContext {
     /// Maps Cypher alias → how to resolve it in SQL
     resolutions: HashMap<String, AliasResolution>,
+    /// For coupled edges: maps table name → unified alias to use
+    coupled_edge_aliases: HashMap<String, String>,
 }
 
 impl AliasResolverContext {
@@ -49,20 +51,36 @@ impl AliasResolverContext {
     pub fn new() -> Self {
         Self {
             resolutions: HashMap::new(),
+            coupled_edge_aliases: HashMap::new(),
         }
     }
     
     /// Build context by analyzing a LogicalPlan tree
     pub fn from_logical_plan(plan: &LogicalPlan) -> Self {
         let mut context = Self::new();
+        
+        // First pass: detect coupled edges (multiple relationships on same table)
+        context.detect_coupled_edges(plan);
+        
+        // Second pass: analyze plan and register aliases
         context.analyze_plan(plan);
         context
     }
     
     /// Get the SQL table alias for a Cypher alias
     pub fn get_table_alias(&self, cypher_alias: &str) -> Option<&str> {
+        // First check if this alias has a coupled edge override
+        if let Some(unified) = self.coupled_edge_aliases.get(cypher_alias) {
+            return Some(unified.as_str());
+        }
+        
         match self.resolutions.get(cypher_alias)? {
-            AliasResolution::StandardTable { table_alias } => Some(table_alias),
+            AliasResolution::StandardTable { table_alias } => {
+                // Check if this table_alias has a coupled edge override
+                self.coupled_edge_aliases.get(table_alias)
+                    .map(|s| s.as_str())
+                    .or(Some(table_alias))
+            },
             AliasResolution::DenormalizedNode { relationship_alias, .. } => {
                 Some(relationship_alias)
             }
@@ -293,13 +311,106 @@ impl AliasResolverContext {
         relationship_alias: String,
         position: NodePosition,
     ) {
+        // If this table has a coupled edge alias override, use that instead
+        // (This happens when multiple edges share the same table)
+        let actual_alias = if let Some(unified_alias) = self.coupled_edge_aliases.get(&relationship_alias) {
+            log::debug!("Coupled edge: Using unified alias {} instead of {} for node {}", 
+                     unified_alias, relationship_alias, node_alias);
+            unified_alias.clone()
+        } else {
+            relationship_alias
+        };
+        
         self.resolutions.insert(
             node_alias,
             AliasResolution::DenormalizedNode {
-                relationship_alias,
+                relationship_alias: actual_alias,
                 position,
             },
         );
+    }
+    
+    /// Detect coupled edges (multiple relationships sharing the same table)
+    /// When detected, all nodes should use the same (first) relationship's alias
+    fn detect_coupled_edges(&mut self, plan: &LogicalPlan) {
+        let mut edge_tables: HashMap<String, Vec<String>> = HashMap::new(); // table_name -> [aliases]
+        
+        self.collect_edge_tables(plan, &mut edge_tables);
+        
+        log::debug!("Coupled edge detection - edge tables: {:?}", edge_tables);
+        
+        // For tables with multiple edges, map all aliases to the first one
+        for (table_name, aliases) in edge_tables {
+            if aliases.len() > 1 {
+                let first_alias = aliases[0].clone();
+                log::info!("Coupled edges detected: Table {} has {} edges, unifying aliases to {}", 
+                         table_name, aliases.len(), first_alias);
+                for alias in aliases.iter().skip(1) {
+                    self.coupled_edge_aliases.insert(alias.clone(), first_alias.clone());
+                }
+                // Also need to map the edge alias itself (not just node aliases)
+                // The first alias maps to itself, others map to first
+                for alias in &aliases {
+                    self.coupled_edge_aliases.insert(alias.clone(), first_alias.clone());
+                }
+            }
+        }
+    }
+    
+    /// Collect all edge tables and their aliases from the plan
+    fn collect_edge_tables(&self, plan: &LogicalPlan, edge_tables: &mut HashMap<String, Vec<String>>) {
+        match plan {
+            LogicalPlan::GraphRel(rel) => {
+                // Extract table name from ViewScan
+                if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                    edge_tables.entry(scan.source_table.clone())
+                        .or_default()
+                        .push(rel.alias.clone());
+                }
+                
+                // Recurse into nested GraphRels
+                self.collect_edge_tables(&rel.left, edge_tables);
+                self.collect_edge_tables(&rel.right, edge_tables);
+            }
+            
+            LogicalPlan::GraphNode(node) => {
+                self.collect_edge_tables(&node.input, edge_tables);
+            }
+            
+            LogicalPlan::Projection(proj) => {
+                self.collect_edge_tables(&proj.input, edge_tables);
+            }
+            
+            LogicalPlan::Filter(filter) => {
+                self.collect_edge_tables(&filter.input, edge_tables);
+            }
+            
+            LogicalPlan::GraphJoins(joins) => {
+                self.collect_edge_tables(&joins.input, edge_tables);
+            }
+            
+            LogicalPlan::OrderBy(ob) => {
+                self.collect_edge_tables(&ob.input, edge_tables);
+            }
+            
+            LogicalPlan::Skip(skip) => {
+                self.collect_edge_tables(&skip.input, edge_tables);
+            }
+            
+            LogicalPlan::Limit(limit) => {
+                self.collect_edge_tables(&limit.input, edge_tables);
+            }
+            
+            LogicalPlan::GroupBy(gb) => {
+                self.collect_edge_tables(&gb.input, edge_tables);
+            }
+            
+            LogicalPlan::Unwind(u) => {
+                self.collect_edge_tables(&u.input, edge_tables);
+            }
+            
+            _ => {}
+        }
     }
     
     /// Analyze a LogicalPlan tree and build resolutions
