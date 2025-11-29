@@ -63,3 +63,4 @@ archive/
 # Development assistants
 .claude/
 agent-os/
+.github/copilot-instructions.md

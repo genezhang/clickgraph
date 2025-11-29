@@ -2084,6 +2084,95 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
         
+        // Helper to generate polymorphic edge type filter
+        // For polymorphic edges, adds: r.type_column = 'EDGE_TYPE' AND r.from_label = 'NodeType' AND r.to_label = 'NodeType'
+        fn get_polymorphic_edge_filter(
+            center: &LogicalPlan,
+            alias: &str,
+            rel_type: &str,
+            from_label: &str,
+            to_label: &str,
+        ) -> Option<RenderExpr> {
+            // Extract ViewScan from center (might be wrapped in GraphNode)
+            let view_scan = match center {
+                LogicalPlan::ViewScan(vs) => Some(vs.as_ref()),
+                LogicalPlan::GraphNode(gn) => {
+                    if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                        Some(vs.as_ref())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }?;
+            
+            // Check if this is a polymorphic edge (has type_column set)
+            let type_col = view_scan.type_column.as_ref()?;
+            
+            log::debug!(
+                "Generating polymorphic edge filter for alias='{}', rel_type='{}', type_col='{}'",
+                alias, rel_type, type_col
+            );
+            
+            let mut filters = Vec::new();
+            
+            // Filter 1: type_column = 'EDGE_TYPE'
+            filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Equal,
+                operands: vec![
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(alias.to_string()),
+                        column: Column(PropertyValue::Column(type_col.clone())),
+                    }),
+                    RenderExpr::Literal(Literal::String(rel_type.to_string())),
+                ],
+            }));
+            
+            // Filter 2: from_label_column = 'FromNodeType' (if present and not $any)
+            if let Some(from_label_col) = &view_scan.from_label_column {
+                if !from_label.is_empty() && from_label != "$any" {
+                    filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(alias.to_string()),
+                                column: Column(PropertyValue::Column(from_label_col.clone())),
+                            }),
+                            RenderExpr::Literal(Literal::String(from_label.to_string())),
+                        ],
+                    }));
+                }
+            }
+            
+            // Filter 3: to_label_column = 'ToNodeType' (if present and not $any)
+            if let Some(to_label_col) = &view_scan.to_label_column {
+                if !to_label.is_empty() && to_label != "$any" {
+                    filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(alias.to_string()),
+                                column: Column(PropertyValue::Column(to_label_col.clone())),
+                            }),
+                            RenderExpr::Literal(Literal::String(to_label.to_string())),
+                        ],
+                    }));
+                }
+            }
+            
+            // Combine filters with AND
+            if filters.is_empty() {
+                None
+            } else if filters.len() == 1 {
+                Some(filters.into_iter().next().unwrap())
+            } else {
+                Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::And,
+                    operands: filters,
+                }))
+            }
+        }
+        
         /// Helper to extract predicates from where_predicate that reference ONLY a specific alias.
         /// Returns (predicates_for_alias, remaining_predicates).
         /// This is used to move optional-alias predicates into LEFT JOIN pre_filter.
@@ -2519,24 +2608,39 @@ impl RenderPlanBuilder for LogicalPlan {
                     None
                 };
                 
+                // Generate polymorphic edge filter (type_column = 'TYPE' AND from_label = 'X' AND to_label = 'Y')
+                // This applies regardless of whether the JOIN is optional or required
+                let rel_type_for_filter = graph_rel.labels.as_ref()
+                    .and_then(|labels| labels.first())
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                let polymorphic_filter = get_polymorphic_edge_filter(
+                    &graph_rel.center,
+                    &graph_rel.alias,
+                    rel_type_for_filter,
+                    &start_label,
+                    &end_label,
+                );
+                
                 // Combine schema filter + user predicates for each alias's pre_filter
                 // Note: left_connection is anchor, so we only use schema filter (no user predicate extraction)
-                fn combine_pre_filters(schema: Option<RenderExpr>, user: Option<RenderExpr>) -> Option<RenderExpr> {
-                    match (schema, user) {
-                        (Some(s), Some(u)) => Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                fn combine_pre_filters(filters: Vec<Option<RenderExpr>>) -> Option<RenderExpr> {
+                    let active: Vec<RenderExpr> = filters.into_iter().flatten().collect();
+                    match active.len() {
+                        0 => None,
+                        1 => Some(active.into_iter().next().unwrap()),
+                        _ => Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
                             operator: Operator::And,
-                            operands: vec![s, u],
+                            operands: active,
                         })),
-                        (Some(s), None) => Some(s),
-                        (None, Some(u)) => Some(u),
-                        (None, None) => None,
                     }
                 }
                 
                 // left_node uses ONLY schema filter (no user predicates - anchor node predicates stay in WHERE)
                 let left_node_pre_filter = left_schema_filter;
-                let rel_pre_filter = combine_pre_filters(rel_schema_filter, rel_user_pred);
-                let right_node_pre_filter = combine_pre_filters(right_schema_filter, right_user_pred);
+                // Relationship pre_filter combines: schema filter + polymorphic filter + user predicates
+                let rel_pre_filter = combine_pre_filters(vec![rel_schema_filter, polymorphic_filter, rel_user_pred]);
+                let right_node_pre_filter = combine_pre_filters(vec![right_schema_filter, right_user_pred]);
 
                 if reverse_join_order {
                     println!(
@@ -3753,15 +3857,23 @@ impl RenderPlanBuilder for LogicalPlan {
 
         // Filter out JOINs that duplicate the FROM table
         // If we're starting FROM node 'a', we shouldn't also have it in the JOINs list
+        // BUT: If the filtered-out JOIN has a pre_filter (e.g., polymorphic edge filter),
+        // we need to preserve it as a WHERE filter
         let from_alias = final_from
             .as_ref()
             .and_then(|ft| ft.table.as_ref())
             .and_then(|vt| vt.alias.clone());
+        let mut anchor_pre_filter: Option<RenderExpr> = None;
         let filtered_joins: Vec<Join> = if let Some(ref anchor_alias) = from_alias {
             extracted_joins.into_iter()
                 .filter(|join| {
                     if &join.table_alias == anchor_alias {
                         println!("DEBUG: Filtering out JOIN for '{}' because it's already in FROM clause", anchor_alias);
+                        // Preserve the pre_filter from the anchor JOIN
+                        if join.pre_filter.is_some() {
+                            anchor_pre_filter = join.pre_filter.clone();
+                            println!("DEBUG: Preserving pre_filter from anchor JOIN: {:?}", anchor_pre_filter);
+                        }
                         false
                     } else {
                         true
@@ -3771,6 +3883,24 @@ impl RenderPlanBuilder for LogicalPlan {
         } else {
             extracted_joins
         };
+        
+        // Add anchor pre_filter to final_filters if present
+        let final_filters = if let Some(filter) = anchor_pre_filter {
+            println!("DEBUG: Adding anchor pre_filter to final_filters");
+            match final_filters {
+                Some(existing) => {
+                    // Combine existing filter with anchor pre_filter using AND
+                    Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::And,
+                        operands: vec![existing, filter],
+                    }))
+                }
+                None => Some(filter),
+            }
+        } else {
+            final_filters
+        };
+        
         println!(
             "DEBUG: build_simple_relationship_render_plan - filtered_joins: {:?}",
             filtered_joins

@@ -147,11 +147,15 @@ impl AnalyzerPass for QueryValidation {
                     }
                 })?;
 
-                if rel_schema.from_node == *from && rel_schema.to_node == *to
+                // Check if node types match, treating "$any" as wildcard
+                let from_matches = rel_schema.from_node == *from || rel_schema.from_node == "$any";
+                let to_matches = rel_schema.to_node == *to || rel_schema.to_node == "$any";
+                
+                if (from_matches && to_matches)
                     || (graph_rel.direction == Direction::Either
-                        && [rel_schema.from_node.clone(), rel_schema.to_node.clone()]
-                            .contains(&from)
-                        && [rel_schema.from_node.clone(), rel_schema.to_node.clone()].contains(&to))
+                        && (rel_schema.from_node == "$any" || rel_schema.to_node == "$any"
+                            || ([rel_schema.from_node.clone(), rel_schema.to_node.clone()].contains(&from)
+                                && [rel_schema.from_node.clone(), rel_schema.to_node.clone()].contains(&to))))
                 {
                     // valid graph - ClickGraph only supports edge list (relationships as explicit tables)
                     Transformed::No(logical_plan.clone())

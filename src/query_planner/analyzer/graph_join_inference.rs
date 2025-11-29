@@ -18,6 +18,52 @@ use crate::{
     render_plan::cte_extraction::extract_relationship_columns,
 };
 
+/// Generate a polymorphic edge filter for relationships stored in a unified table
+/// with type discriminator columns.
+///
+/// For polymorphic edges, we need to filter by:
+/// - `type_column = 'rel_type'` - The relationship type (e.g., 'FOLLOWS')
+/// - `from_label_column = 'FromLabel'` - The source node type (if configured)
+/// - `to_label_column = 'ToLabel'` - The target node type (if configured)
+fn generate_polymorphic_edge_filter(
+    rel_alias: &str,
+    rel_type: &str,
+    rel_schema: &RelationshipSchema,
+    left_label: &str,
+    right_label: &str,
+) -> Option<LogicalExpr> {
+    let mut filter_parts = Vec::new();
+
+    // Add type filter if type_column is defined
+    if let Some(ref type_col) = rel_schema.type_column {
+        filter_parts.push(format!("{}.{} = '{}'", rel_alias, type_col, rel_type));
+    }
+
+    // Add from_label filter if from_label_column is defined and we're filtering by from type
+    // Skip if schema uses $any wildcard (polymorphic from any source)
+    if let Some(ref from_label_col) = rel_schema.from_label_column {
+        if rel_schema.from_node != "$any" && !left_label.is_empty() {
+            filter_parts.push(format!("{}.{} = '{}'", rel_alias, from_label_col, left_label));
+        }
+    }
+
+    // Add to_label filter if to_label_column is defined and we're filtering by to type
+    // Skip if schema uses $any wildcard (polymorphic to any target)
+    if let Some(ref to_label_col) = rel_schema.to_label_column {
+        if rel_schema.to_node != "$any" && !right_label.is_empty() {
+            filter_parts.push(format!("{}.{} = '{}'", rel_alias, to_label_col, right_label));
+        }
+    }
+
+    if filter_parts.is_empty() {
+        None
+    } else {
+        let filter_sql = filter_parts.join(" AND ");
+        eprintln!("    🔹 Polymorphic edge filter: {}", filter_sql);
+        Some(LogicalExpr::Raw(filter_sql))
+    }
+}
+
 pub struct GraphJoinInference;
 
 impl AnalyzerPass for GraphJoinInference {
@@ -1257,12 +1303,19 @@ impl GraphJoinInference {
                 left_node_schema.table_name, right_node_schema.table_name
             );
             if joined_entities.contains(right_alias) {
-                eprintln!("    � ?? Branch: RIGHT already joined");
+                eprintln!("    🔹 Branch: RIGHT already joined");
                 // join the rel with right first and then join the left with rel
                 // Since GraphRel structure is already adjusted for direction,
                 // we don't need direction-based logic here
                 let rel_conn_with_right_node = rel_to_col.clone();
                 let left_conn_with_rel = rel_from_col.clone();
+                let polymorphic_filter = generate_polymorphic_edge_filter(
+                    rel_alias,
+                    rel_type,
+                    rel_schema,
+                    &left_label,
+                    &right_label,
+                );
                 let mut rel_graph_join = Join {
                     table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
@@ -1280,7 +1333,7 @@ impl GraphJoinInference {
                         ],
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
-                    pre_filter: None,
+                    pre_filter: polymorphic_filter,
                 };
 
                 // Node join not needed for edge list with same-type nodes
@@ -1436,7 +1489,7 @@ impl GraphJoinInference {
                         right_node_id_column.clone(),
                     )
                 } else {
-                    eprintln!("    � FALLBACK - connecting to LEFT");
+                    eprintln!("    🔹 FALLBACK - connecting to LEFT");
                     (
                         rel_conn_with_left_node.clone(),
                         left_alias.to_string(),
@@ -1444,6 +1497,13 @@ impl GraphJoinInference {
                     )
                 };
 
+                let polymorphic_filter = generate_polymorphic_edge_filter(
+                    rel_alias,
+                    rel_type,
+                    rel_schema,
+                    &left_label,
+                    &right_label,
+                );
                 let mut rel_graph_join = Join {
                     table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
@@ -1461,7 +1521,7 @@ impl GraphJoinInference {
                         ],
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
-                    pre_filter: None,
+                    pre_filter: polymorphic_filter,
                 };
 
                 eprintln!(
@@ -1702,8 +1762,15 @@ impl GraphJoinInference {
                             // This edge's column is from_id (left node connects to from_id)
                             let current_edge_col = rel_from_col.clone();
                             
-                            eprintln!("    ?? MULTI-HOP JOIN: {}.{} = {}.{}", rel_alias, current_edge_col, prev_rel_alias, prev_edge_col);
+                            eprintln!("    🔹 MULTI-HOP JOIN: {}.{} = {}.{}", rel_alias, current_edge_col, prev_rel_alias, prev_edge_col);
                             
+                            let polymorphic_filter = generate_polymorphic_edge_filter(
+                                rel_alias,
+                                rel_type,
+                                rel_schema,
+                                &left_label,
+                                &right_label,
+                            );
                             let edge_to_edge_join = Join {
                                 table_name: rel_cte_name.clone(),
                                 table_alias: rel_alias.to_string(),
@@ -1721,7 +1788,7 @@ impl GraphJoinInference {
                                     ],
                                 }],
                                 join_type: JoinType::Inner,
-                    pre_filter: None,
+                    pre_filter: polymorphic_filter,
                             };
                             collected_graph_joins.push(edge_to_edge_join);
                             joined_entities.insert(rel_alias.to_string());
@@ -1912,6 +1979,13 @@ impl GraphJoinInference {
                 //   - LEFT node to rel.from_id (the source of the relationship)
                 // No need to check direction here - it's already encoded in left_conn/right_conn!
 
+                let polymorphic_filter = generate_polymorphic_edge_filter(
+                    rel_alias,
+                    rel_type,
+                    rel_schema,
+                    &left_label,
+                    &right_label,
+                );
                 let mut rel_graph_join = Join {
                     table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
@@ -1929,7 +2003,7 @@ impl GraphJoinInference {
                         ],
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
-                    pre_filter: None,
+                    pre_filter: polymorphic_filter,
                 };
 
                 // Node join not needed for edge list (different node types)
@@ -2041,6 +2115,13 @@ impl GraphJoinInference {
                 //   - RIGHT node to rel.to_id (the target of the relationship)
                 // No need to check direction here - it's already encoded in left_conn/right_conn!
 
+                let polymorphic_filter = generate_polymorphic_edge_filter(
+                    rel_alias,
+                    rel_type,
+                    rel_schema,
+                    &left_label,
+                    &right_label,
+                );
                 let mut rel_graph_join = Join {
                     table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
@@ -2058,7 +2139,7 @@ impl GraphJoinInference {
                         ],
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
-                    pre_filter: None,
+                    pre_filter: polymorphic_filter,
                 };
 
                 // Node join not needed for edge list (different node types)
@@ -2164,6 +2245,13 @@ impl GraphJoinInference {
             // check if right is already joined
             if joined_entities.contains(right_alias) {
                 // join the rel with right first and then join the left with rel
+                let polymorphic_filter = generate_polymorphic_edge_filter(
+                    rel_alias,
+                    rel_type,
+                    rel_schema,
+                    &left_label,
+                    &right_label,
+                );
                 let mut rel_graph_join = Join {
                     table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
@@ -2181,7 +2269,7 @@ impl GraphJoinInference {
                         ],
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
-                    pre_filter: None,
+                    pre_filter: polymorphic_filter,
                 };
 
                 // Node join not needed for edge list (different node types)
@@ -2287,6 +2375,13 @@ impl GraphJoinInference {
 
                 // join the relation with left side first and then
                 // the join the right side with relation
+                let polymorphic_filter = generate_polymorphic_edge_filter(
+                    rel_alias,
+                    rel_type,
+                    rel_schema,
+                    &left_label,
+                    &right_label,
+                );
                 let mut rel_graph_join = Join {
                     table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
@@ -2304,7 +2399,7 @@ impl GraphJoinInference {
                         ],
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
-                    pre_filter: None,
+                    pre_filter: polymorphic_filter,
                 };
 
                 // Node join not needed for edge list (different node types)

@@ -412,6 +412,10 @@ impl ToSql for Join {
         // For LEFT JOIN with pre_filter, use subquery form:
         // LEFT JOIN (SELECT * FROM table WHERE pre_filter) AS alias ON ...
         // This ensures the filter is applied BEFORE the join (correct LEFT JOIN semantics)
+        //
+        // For INNER JOIN with pre_filter, add filter to ON clause:
+        // INNER JOIN table AS alias ON <join_cond> AND <pre_filter>
+        // This is semantically equivalent and more efficient than subquery
         let table_expr = if let Some(ref pre_filter) = self.pre_filter {
             if matches!(self.join_type, JoinType::Left) {
                 // Use to_sql_without_table_alias to render column names without table prefix
@@ -420,8 +424,7 @@ impl ToSql for Join {
                 eprintln!("  Using subquery form for LEFT JOIN with pre_filter: {}", filter_sql);
                 format!("(SELECT * FROM {} WHERE {})", self.table_name, filter_sql)
             } else {
-                // For non-LEFT joins, pre_filter can go in ON clause or be ignored
-                // (In practice, we only set pre_filter for LEFT joins)
+                // For non-LEFT joins, pre_filter will be added to ON clause below
                 self.table_name.clone()
             }
         } else {
@@ -441,7 +444,17 @@ impl ToSql for Join {
             let joining_on_str_vec: Vec<String> =
                 self.joining_on.iter().map(|cond| cond.to_sql()).collect();
 
-            let joining_on_str = joining_on_str_vec.join(" AND ");
+            let mut joining_on_str = joining_on_str_vec.join(" AND ");
+            
+            // For INNER JOINs (not LEFT), add pre_filter to ON clause
+            // This applies polymorphic edge filters, schema filters, etc.
+            if let Some(ref pre_filter) = self.pre_filter {
+                if !matches!(self.join_type, JoinType::Left) {
+                    let filter_sql = pre_filter.to_sql();
+                    eprintln!("  Adding pre_filter to INNER JOIN ON clause: {}", filter_sql);
+                    joining_on_str = format!("{} AND {}", joining_on_str, filter_sql);
+                }
+            }
 
             sql.push_str(&format!(" ON {joining_on_str}"));
         }
