@@ -37,6 +37,32 @@
 **Updated**: November 28, 2025  
 **Next**: Polymorphic edges or composite edge IDs
 
+### 🆕 Coupled Edges Optimization - COMPLETE (Nov 28, 2025)
+
+**Feature**: Automatic JOIN elimination for multi-hop patterns on same table
+
+When multiple relationships share the same table AND connect through a "coupling node", ClickGraph:
+- ✅ **Skips unnecessary JOINs** - No self-join on same table row
+- ✅ **Unifies table aliases** - All edges use single alias (e.g., `r1` for both `r1` and `r2`)
+- ✅ **Property resolution** - UNWIND correctly maps to SQL columns
+
+**Example (Working)**:
+```cypher
+MATCH (ip:IP)-[r1:REQUESTED]->(d:Domain)-[r2:RESOLVED_TO]->(rip:ResolvedIP)
+WHERE ip.ip = '192.168.4.76'
+RETURN ip.ip, d.name, rip.ips
+```
+Generates (optimized - NO self-join):
+```sql
+SELECT r1."id.orig_h" AS "ip.ip", r1.query AS "d.name", r1.answers AS "rip.ips"
+FROM zeek.dns_log AS r1
+WHERE r1."id.orig_h" = '192.168.4.76'
+```
+
+**Tested Patterns**: Basic 2-hop, WHERE filters, COUNT/aggregations, ORDER BY, DISTINCT, edge properties, UNWIND with arrays
+
+---
+
 ### 🆕 VLP + UNWIND Support - COMPLETE (Nov 28, 2025)
 
 **Feature**: UNWIND `nodes(p)` and `relationships(p)` after variable-length paths

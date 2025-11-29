@@ -160,6 +160,7 @@ The root directory should contain ONLY essential project files. Before creating 
 - Feature documentation → `docs/features/`
 - API docs → `docs/api/`
 - Images/diagrams → `docs/images/`
+- User facing docs → `docs/wiki/`
 
 **🗂️ Schemas** → `schemas/`
 - Demo schemas → `schemas/demo/`

@@ -203,6 +203,67 @@ to_node_properties:
 
 ## Advanced Patterns
 
+### Coupled Edges (Multi-Hop on Same Table)
+
+When multiple relationships share the same physical table AND connect through a common "coupling node", ClickGraph automatically optimizes queries by:
+1. **Skipping unnecessary JOINs** - No self-join on the same table row
+2. **Unifying table aliases** - All relationships use a single table alias
+
+This is common in log data where one row represents multiple graph relationships.
+
+**Example: DNS Log with Coupled Edges**
+
+Consider a DNS log where each row contains:
+- Source IP → Domain (REQUESTED relationship)
+- Domain → Resolved IPs (RESOLVED_TO relationship)
+
+```yaml
+# Schema: Two relationship types from ONE table row
+edges:
+  - type: REQUESTED
+    table: dns_log
+    from_id: "id.orig_h"    # Source IP
+    to_id: query             # Domain (coupling node)
+    from_node: IP
+    to_node: Domain
+    
+  - type: RESOLVED_TO
+    table: dns_log
+    from_id: query           # Domain (coupling node)  
+    to_id: answers           # Resolved IP
+    from_node: Domain
+    to_node: ResolvedIP
+```
+
+**Cypher Query**:
+```cypher
+MATCH (ip:IP)-[r1:REQUESTED]->(d:Domain)-[r2:RESOLVED_TO]->(rip:ResolvedIP)
+WHERE ip.ip = '192.168.4.76'
+RETURN ip.ip, d.name, rip.ips
+```
+
+**Generated SQL** (optimized - NO self-join!):
+```sql
+SELECT 
+  r1."id.orig_h" AS "ip.ip",
+  r1.query AS "d.name",
+  r1.answers AS "rip.ips"
+FROM zeek.dns_log AS r1
+WHERE r1."id.orig_h" = '192.168.4.76'
+```
+
+Notice: Both `r1` and `r2` use the same alias `r1` because they're coupled through the Domain node (`d`).
+
+**When Edges Are Coupled**:
+- ✅ Same physical table
+- ✅ Share a "coupling node" (e.g., `r1.to_node = r2.from_node`)
+- ✅ Relationship chain is sequential (no branching)
+
+**Benefits**:
+- 10-100x faster queries (no self-joins)
+- Simpler generated SQL
+- Works with all Cypher features: WHERE, aggregations, ORDER BY, UNWIND
+
 ### Multiple Relationship Types from One Table
 
 If your table has different relationship types:
@@ -220,6 +281,30 @@ relationships:
     from_id: actor_id
     to_id: target_id
 ```
+
+### UNWIND with Coupled Edges
+
+When your denormalized table contains array columns (like DNS `answers`), use UNWIND to flatten them:
+
+```cypher
+MATCH (ip:IP)-[:REQUESTED]->(d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)
+WHERE ip.ip = '192.168.4.76'
+UNWIND rip.ips AS resolved_ip
+RETURN ip.ip, d.name, resolved_ip
+```
+
+**Generated SQL**:
+```sql
+SELECT 
+  r1."id.orig_h" AS "ip.ip",
+  r1.query AS "d.name",
+  resolved_ip AS "resolved_ip"
+FROM zeek.dns_log AS r1
+ARRAY JOIN r1.answers AS resolved_ip
+WHERE r1."id.orig_h" = '192.168.4.76'
+```
+
+The property name `rip.ips` is automatically mapped to the correct SQL column (`answers`) based on the schema's `to_node_properties` definition.
 
 ### Node-Only Queries (UNION Pattern)
 
@@ -280,6 +365,19 @@ nodes:
 relationships:
   - type: ACCESSED
     table: conn_log      # <-- Same table
+```
+
+### Coupled edges still generating JOINs
+
+For coupled edge optimization to work:
+1. Both relationships must be on the **exact same table** (same database.table)
+2. They must share a **coupling node** (e.g., `r1.to_node = r2.from_node`)
+3. The pattern must be **sequential** (linear chain, not branching)
+
+Example of a pattern that WON'T be coupled:
+```cypher
+-- Branching pattern - not coupled
+MATCH (a)-[r1]->(b), (a)-[r2]->(c)
 ```
 
 ## Example Schemas

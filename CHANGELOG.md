@@ -2,6 +2,15 @@
 
 ### 🚀 Features
 
+- Add coupled edge alias unification for denormalized patterns
+  - Automatic JOIN elimination for multi-hop patterns on same table
+  - Unified table aliases for coupled edges (e.g., both `r1` and `r2` use `r1`)
+  - Works with all Cypher features: WHERE, aggregations, ORDER BY, DISTINCT, UNWIND
+  
+- Add UNWIND property mapping for denormalized nodes
+  - `transform_unwind_expression()` resolves Cypher properties to SQL columns
+  - Supports denormalized node properties (`from_node_properties`/`to_node_properties`)
+
 - Add VLP + UNWIND support: UNWIND nodes(p) and relationships(p) after variable-length paths
   - Translates to ARRAY JOIN on CTE's path_nodes/path_relationships arrays
   - Works with all VLP patterns: `*`, `*2`, `*1..3`, `*..5`, `*2..`
@@ -10,6 +19,12 @@
   - `are_edges_coupled()` and `get_coupled_edge_info()` schema methods
   - Detects when two edges share the same table and a common node
   - Foundation for multi-edge single-row optimization (Zeek DNS pattern)
+
+### 📚 Documentation
+
+- Add Coupled Edges section to denormalized-edge-tables.md
+- Add UNWIND with Coupled Edges documentation
+- Add coupled-edges.md implementation notes
 
 ### ⚙️ Miscellaneous Tasks
 
