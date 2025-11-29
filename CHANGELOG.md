@@ -9,6 +9,13 @@
   - Mixed edge patterns: Standard edges + polymorphic edges in same query
   - Added `is_incoming` tracking for correct JOIN direction
 
+- Verify composite edge ID support with polymorphic tables
+  - Single-column edge IDs: `edge_id: uid`
+  - Composite edge IDs: `edge_id: [from_id, to_id, interaction_type, timestamp]`
+  - Works with VLP (variable-length paths) - generates `tuple(...)` for uniqueness
+  - Works with polymorphic edge tables - type filters + composite IDs together
+  - Proper `NOT has(path_edges, tuple(...))` cycle detection
+
 - Add coupled edge alias unification for denormalized patterns
   - Automatic JOIN elimination for multi-hop patterns on same table
   - Unified table aliases for coupled edges (e.g., both `r1` and `r2` use `r1`)

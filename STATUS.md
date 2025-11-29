@@ -32,10 +32,10 @@
 
 ## 🎯 **v0.5.2-alpha: In Progress** 🚧
 
-**Status**: ✅ **Denormalized Edge Implementation - COMPLETE**  
+**Status**: ✅ **All Schema Variations - COMPLETE**  
 **Started**: November 22, 2025  
-**Updated**: November 28, 2025  
-**Next**: Composite edge IDs
+**Updated**: November 29, 2025  
+**Next**: v0.5.2-alpha release preparation
 
 ### 🆕 Polymorphic Edge Filters - COMPLETE (Nov 29, 2025)
 
@@ -177,8 +177,13 @@ ARRAY JOIN t.path_nodes AS n
    - ✅ **shortestPath / allShortestPaths working**
    - ✅ **PageRank working** (named argument syntax)
    
-2. ✅ **Polymorphic edges** (COMPLETE - Nov 29, 2025)
-3. 📋 Composite edge IDs (queued)
+2. ✅ **Coupled Edges** (COMPLETE - Nov 28, 2025)
+   - ✅ Automatic JOIN elimination for multi-hop on same table
+   - ✅ Alias unification across coupled edges
+   - ✅ Works with UNWIND, aggregations, ORDER BY
+
+3. ✅ **Polymorphic edges** (COMPLETE - Nov 29, 2025)
+4. ✅ **Composite edge IDs** (COMPLETE - Nov 29, 2025)
 
 #### Denormalized Edge Tables - Implementation Complete ✅
 
@@ -321,10 +326,19 @@ Note: PageRank requires named argument syntax (not positional).
    - ✅ Automatic property resolution
    - ✅ Example: User name in both `users` and `follows` tables
 
-3. **Composite Edge IDs** 🚧
-   - Multi-column edge uniqueness
-   - Beyond (from_id, to_id) pairs
-   - Example: `(user_id, product_id, timestamp)` for temporal graphs
+3. **Coupled Edges** ✅ **COMPLETE** (Nov 28, 2025)
+   - ✅ Automatic JOIN elimination for multi-hop patterns on same table
+   - ✅ Alias unification (all edges use single alias like `r1`)
+   - ✅ Works with denormalized edge tables
+   - ✅ Example: Zeek DNS log pattern `(IP)->(Domain)->(ResolvedIP)`
+
+4. **Composite Edge IDs** ✅ **COMPLETE** (Nov 29, 2025)
+   - ✅ Single-column edge IDs: `edge_id: uid`
+   - ✅ Composite edge IDs: `edge_id: [col1, col2, ...]`
+   - ✅ Works with VLP (variable-length paths)
+   - ✅ Works with polymorphic edge tables
+   - ✅ Proper uniqueness checking with tuples
+   - Example: `edge_id: [from_id, to_id, interaction_type, timestamp]`
 
 **Success Criteria**:
 - ✅ New features work with test cases

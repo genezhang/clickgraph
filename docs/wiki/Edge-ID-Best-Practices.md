@@ -81,6 +81,48 @@ relationships:  # YAML key remains 'relationships:' for backward compatibility
 tuple(rel.flight_date, rel.flight_number, rel.origin_airport, rel.dest_airport)
 ```
 
+## Composite Edge IDs with Polymorphic Tables
+
+When using a **polymorphic edge table** (single table with multiple edge types), composite edge IDs are often necessary to ensure uniqueness across different interaction types:
+
+```yaml
+edges:
+  - polymorphic: true
+    table: interactions
+    from_id: from_id
+    to_id: to_id
+    type_column: interaction_type
+    type_values: [FOLLOWS, LIKES, AUTHORED, COMMENTED]
+    
+    # Composite edge ID includes type + timestamp for uniqueness
+    edge_id: [from_id, to_id, interaction_type, timestamp]
+```
+
+**Why this is needed:**
+- The same user pair `(1, 2)` might have multiple interactions (FOLLOWS + LIKES)
+- Adding `interaction_type` distinguishes different relationship types
+- Adding `timestamp` allows multiple interactions of the same type
+
+**Generated VLP SQL:**
+```sql
+WITH RECURSIVE variable_path_xxx AS (
+    SELECT 
+        ...,
+        [tuple(rel.from_id, rel.to_id, rel.interaction_type, rel.timestamp)] as path_edges
+    FROM brahmand.interactions rel
+    WHERE rel.interaction_type = 'FOLLOWS' AND ...
+    UNION ALL
+    SELECT
+        ...,
+        arrayConcat(vp.path_edges, [tuple(rel.from_id, rel.to_id, rel.interaction_type, rel.timestamp)])
+    WHERE vp.hop_count < max_hops
+      AND NOT has(vp.path_edges, tuple(rel.from_id, rel.to_id, rel.interaction_type, rel.timestamp))
+      AND rel.interaction_type = 'FOLLOWS'
+)
+```
+
+**Note:** Both the type filter (`interaction_type = 'FOLLOWS'`) and the composite edge ID work together correctly.
+
 ## Migration Guide
 
 ### Adding edge_id to Existing Tables
@@ -219,4 +261,4 @@ match &self.edge_id {
 
 ---
 
-*Last updated: November 22, 2025*
+*Last updated: November 29, 2025*
