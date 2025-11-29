@@ -23,11 +23,12 @@ use crate::{
 ///
 /// For polymorphic edges, we need to filter by:
 /// - `type_column = 'rel_type'` - The relationship type (e.g., 'FOLLOWS')
+/// - `type_column IN ('TYPE1', 'TYPE2')` - For multiple types (alternate relationship types)
 /// - `from_label_column = 'FromLabel'` - The source node type (if configured)
 /// - `to_label_column = 'ToLabel'` - The target node type (if configured)
 fn generate_polymorphic_edge_filter(
     rel_alias: &str,
-    rel_type: &str,
+    rel_types: &[String],
     rel_schema: &RelationshipSchema,
     left_label: &str,
     right_label: &str,
@@ -36,7 +37,17 @@ fn generate_polymorphic_edge_filter(
 
     // Add type filter if type_column is defined
     if let Some(ref type_col) = rel_schema.type_column {
-        filter_parts.push(format!("{}.{} = '{}'", rel_alias, type_col, rel_type));
+        if rel_types.len() == 1 {
+            // Single type: use = 'TYPE'
+            filter_parts.push(format!("{}.{} = '{}'", rel_alias, type_col, rel_types[0]));
+        } else if rel_types.len() > 1 {
+            // Multiple types: use IN ('TYPE1', 'TYPE2')
+            let types_list = rel_types.iter()
+                .map(|t| format!("'{}'", t))
+                .collect::<Vec<_>>()
+                .join(", ");
+            filter_parts.push(format!("{}.{} IN ({})", rel_alias, type_col, types_list));
+        }
     }
 
     // Add from_label filter if from_label_column is defined and we're filtering by from type
@@ -1137,7 +1148,7 @@ impl GraphJoinInference {
             right_node_id_column,
             left_label,
             right_label,
-            rel_label,
+            rel_labels,
             left_node_schema,
             right_node_schema,
             rel_schema,
@@ -1163,7 +1174,10 @@ impl GraphJoinInference {
                 graph_context.right.schema.node_id.column.clone(),
                 graph_context.left.label.clone(),
                 graph_context.right.label.clone(),
-                graph_context.rel.label.clone(),  // Add rel_label
+                // Get all labels from table_ctx for polymorphic IN clause support
+                graph_context.rel.table_ctx.get_labels()
+                    .cloned()
+                    .unwrap_or_else(|| vec![graph_context.rel.label.clone()]),
                 graph_context.left.schema.clone(),
                 graph_context.right.schema.clone(),
                 graph_context.rel.schema.clone(),
@@ -1230,7 +1244,7 @@ impl GraphJoinInference {
             right_is_referenced,
             left_label,
             right_label,
-            &rel_label,
+            rel_labels,
             plan_ctx,
             graph_schema,
             collected_graph_joins,
@@ -1273,13 +1287,17 @@ impl GraphJoinInference {
         right_is_referenced: bool,
         left_label: String,
         right_label: String,
-        rel_type: &str,
+        rel_types: Vec<String>,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
         // Aliases and CTE names are now passed as parameters
+        
+        // For coupled edge checking and other single-type operations, use the first type
+        // For polymorphic edge filters, we pass all types to generate IN clause if needed
+        let rel_type = rel_types.first().map(|s| s.as_str()).unwrap_or("");
         
         // Extract relationship column names from the ViewScan
         let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
@@ -1311,7 +1329,7 @@ impl GraphJoinInference {
                 let left_conn_with_rel = rel_from_col.clone();
                 let polymorphic_filter = generate_polymorphic_edge_filter(
                     rel_alias,
-                    rel_type,
+                    &rel_types,
                     rel_schema,
                     &left_label,
                     &right_label,
@@ -1499,7 +1517,7 @@ impl GraphJoinInference {
 
                 let polymorphic_filter = generate_polymorphic_edge_filter(
                     rel_alias,
-                    rel_type,
+                    &rel_types,
                     rel_schema,
                     &left_label,
                     &right_label,
@@ -1766,7 +1784,7 @@ impl GraphJoinInference {
                             
                             let polymorphic_filter = generate_polymorphic_edge_filter(
                                 rel_alias,
-                                rel_type,
+                                &rel_types,
                                 rel_schema,
                                 &left_label,
                                 &right_label,
@@ -1981,7 +1999,7 @@ impl GraphJoinInference {
 
                 let polymorphic_filter = generate_polymorphic_edge_filter(
                     rel_alias,
-                    rel_type,
+                    &rel_types,
                     rel_schema,
                     &left_label,
                     &right_label,
@@ -2117,7 +2135,7 @@ impl GraphJoinInference {
 
                 let polymorphic_filter = generate_polymorphic_edge_filter(
                     rel_alias,
-                    rel_type,
+                    &rel_types,
                     rel_schema,
                     &left_label,
                     &right_label,
@@ -2247,7 +2265,7 @@ impl GraphJoinInference {
                 // join the rel with right first and then join the left with rel
                 let polymorphic_filter = generate_polymorphic_edge_filter(
                     rel_alias,
-                    rel_type,
+                    &rel_types,
                     rel_schema,
                     &left_label,
                     &right_label,
@@ -2377,7 +2395,7 @@ impl GraphJoinInference {
                 // the join the right side with relation
                 let polymorphic_filter = generate_polymorphic_edge_filter(
                     rel_alias,
-                    rel_type,
+                    &rel_types,
                     rel_schema,
                     &left_label,
                     &right_label,
