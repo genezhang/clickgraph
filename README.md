@@ -24,7 +24,7 @@ The next release will be big enhancements to the schema patterns, including
 - **Coupled edge table**: multiple links occuring in the same event and stored in a single row of an edge table, which is usually denormalized.
 - **Polymorphic edge table**: multiple edge types share the same edge table with a type column to indicate its edge type. The edge table also contains `from_label_column` and `to_label_column` to indicate the node labels that are standalone tables.
 
-While the schema config loading is complete, query support is still being developed.
+The schema config loading is complete, and most of query support is also finished. Some loose-end work remains.
 
 ## 🚀 What's New in v0.5.1 (November 21, 2025)
 

@@ -35,7 +35,33 @@
 **Status**: ✅ **Denormalized Edge Implementation - COMPLETE**  
 **Started**: November 22, 2025  
 **Updated**: November 28, 2025  
-**Next**: Polymorphic edges or composite edge IDs
+**Next**: Composite edge IDs
+
+### 🆕 Polymorphic Edge Filters - MOSTLY COMPLETE (Nov 28, 2025)
+
+**Feature**: Filter polymorphic edge tables by type discriminator columns
+
+**What Works**:
+- ✅ **Single type filter**: `MATCH (u:User)-[:FOLLOWS]->(f:User)` → `WHERE r.interaction_type = 'FOLLOWS'`
+- ✅ **Node label filters**: `from_label_column`/`to_label_column` for source/target node types
+- ✅ **VLP polymorphic filter**: Filters in both base case and recursive case of CTE
+- ✅ **$any wildcard**: Skip node label filter when schema uses `$any`
+- ✅ **IN clause generation**: `[:FOLLOWS|LIKES]` → `IN ('FOLLOWS', 'LIKES')` (for single-hop direct path)
+
+**Schema Configuration**:
+```yaml
+relationships:
+  - type: FOLLOWS
+    table: interactions
+    type_column: interaction_type      # Filter by type
+    from_label_column: from_type       # Filter by source node type
+    to_label_column: to_type           # Filter by target node type
+```
+
+**Limitation**: Alternate types `[:FOLLOWS|LIKES]` currently route through UNION CTE path
+(designed for separate-table architectures). Works correctly but not optimized for polymorphic tables.
+
+---
 
 ### 🆕 Coupled Edges Optimization - COMPLETE (Nov 28, 2025)
 
@@ -241,15 +267,20 @@ Note: PageRank requires named argument syntax (not positional).
 
 **Features to Implement**:
 
-1. **Polymorphic Edges** 🚧
-   - Multiple relationship types per ClickHouse table
-   - Type discriminator column support
-   - Example: Single `edges` table with `edge_type` column
+1. **Polymorphic Edges** ✅ **MOSTLY COMPLETE** (Nov 28, 2025)
+   - ✅ Single relationship type per polymorphic table
+   - ✅ Type discriminator column support (`type_column`)
+   - ✅ Node label columns (`from_label_column`, `to_label_column`)
+   - ✅ VLP polymorphic filter (recursive CTE with type filter)
+   - ✅ Single-hop polymorphic filter (JOIN ON clause)
+   - ✅ IN clause support for multiple types (implementation ready)
+   - 🚧 Alternate types `[:FOLLOWS|LIKES]` routes through UNION CTE (works, not optimized)
+   - Example: Single `interactions` table with `interaction_type` column
 
-2. **Denormalized Properties** 🚧
-   - Properties stored in both node and edge tables
-   - Automatic property resolution
-   - Example: User name in both `users` and `follows` tables
+2. **Denormalized Properties** ✅ **COMPLETE** (Nov 27, 2025)
+   - ✅ Properties stored in both node and edge tables
+   - ✅ Automatic property resolution
+   - ✅ Example: User name in both `users` and `follows` tables
 
 3. **Composite Edge IDs** 🚧
    - Multi-column edge uniqueness
