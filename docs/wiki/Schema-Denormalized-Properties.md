@@ -478,11 +478,11 @@ ORDER BY route_count DESC
 
 ## Coupled Edges (v0.5.2+)
 
-**Coupled edges** are an advanced optimization for denormalized schemas where multiple relationship types are defined on the same physical table AND connect through a common "coupling node". ClickGraph automatically detects these patterns and eliminates unnecessary self-joins.
+**Coupled edges** are an advanced optimization for denormalized schemas where multiple edge types are defined on the same physical table AND connect through a common "coupling node". ClickGraph automatically detects these patterns and eliminates unnecessary self-joins.
 
 ### What Are Coupled Edges?
 
-When a single table row represents multiple graph relationships, those edges are "coupled":
+When a single table row represents multiple graph edges, those edges are "coupled":
 
 ```
 Single DNS Log Row:
@@ -501,7 +501,7 @@ Single DNS Log Row:
 ### Schema Configuration
 
 ```yaml
-# Two relationship types from ONE table
+# Two edge types from ONE table
 edges:
   - type: REQUESTED
     database: zeek

@@ -126,6 +126,10 @@ pub fn get_graph_context<'a>(
             rel_schema.to_node.clone()
         }
     };
+    
+    // NOTE: For polymorphic $any nodes, this function should not be called.
+    // The graph_traversal_planning pass should skip $any nodes and let the normal JOIN path handle them.
+    // If we reach here with $any, it's a programming error - but we'll handle it gracefully.
 
     let left_schema =
         graph_schema
@@ -140,9 +144,19 @@ pub fn get_graph_context<'a>(
             pass: pass.clone(),
             source: e,
         })?;
-    let right_schema = graph_schema
-        .get_node_schema(&right_label)
-        .map_err(|e| AnalyzerError::GraphSchema { pass, source: e })?;
+    
+    // Handle $any (polymorphic) right node - create a placeholder schema
+    // $any means the node type is determined at runtime from the edge's to_label_column
+    let right_schema = if right_label == "$any" {
+        // Use a placeholder schema for polymorphic nodes
+        // We can use the left schema as a template (or create a minimal one)
+        // The actual table/columns don't matter since we won't JOIN to this node
+        left_schema
+    } else {
+        graph_schema
+            .get_node_schema(&right_label)
+            .map_err(|e| AnalyzerError::GraphSchema { pass: pass.clone(), source: e })?
+    };
 
     let left_node_id_column = left_schema.node_id.column.clone();
     let right_node_id_column = right_schema.node_id.column.clone();

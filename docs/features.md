@@ -83,7 +83,7 @@ RETURN u.name,
 
 ### Advanced Query Features
 - **Parameterized Queries**: Safe parameter substitution
-- **Path Queries**: Multi-hop relationship traversals
+- **Path Queries**: Multi-hop edge traversals
 - **Conditional Expressions**: CASE statements and boolean logic
 - **Aggregation Functions**: COUNT, SUM, AVG, MIN, MAX
 - **String Operations**: Pattern matching and text processing
@@ -120,7 +120,7 @@ views:
           content: post_content
           created: created_at
           
-    relationships:
+    edges:
       FOLLOWS:
         source_table: user_follows
         from_node: User

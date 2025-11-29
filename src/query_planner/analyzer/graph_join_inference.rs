@@ -1072,6 +1072,55 @@ impl GraphJoinInference {
             return Ok(());
         }
 
+        // Check for $any nodes - only skip if LEFT is $any (nothing to join FROM)
+        // If RIGHT is $any, we still need to:
+        // 1. Join the relationship CTE to the left node
+        // 2. Just skip creating a join for the $any target node table itself
+        let left_is_polymorphic_any = if let Ok(left_ctx) = &left_ctx_opt {
+            if let Ok(left_label) = left_ctx.get_label_str() {
+                left_label == "$any"
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        
+        let right_is_polymorphic_any = if let Ok(right_ctx) = &right_ctx_opt {
+            if let Ok(right_label) = right_ctx.get_label_str() {
+                eprintln!("    🔍 DEBUG: right_label = '{}'", right_label);
+                right_label == "$any"
+            } else {
+                eprintln!("    🔍 DEBUG: right_ctx.get_label_str() failed");
+                false
+            }
+        } else {
+            eprintln!("    🔍 DEBUG: right_ctx_opt is Err");
+            false
+        };
+        
+        eprintln!("    🔍 DEBUG: right_is_polymorphic_any = {}", right_is_polymorphic_any);
+        
+        if left_is_polymorphic_any {
+            eprintln!("    🚫 SKIP: Polymorphic $any left node - nothing to join from");
+            eprintln!("    +- infer_graph_join EXIT\n");
+            return Ok(());
+        }
+        
+        // For polymorphic right nodes ($any), skip relationship join creation entirely
+        // The CTE will handle the relationship join in plan_builder.rs
+        // When right node is $any, we know this is a polymorphic/wildcard edge
+        // because $any is only set for edges that:
+        // 1. Have no explicit target type (wildcard like [r]->)
+        // 2. Use polymorphic edge table with $any in schema
+        if right_is_polymorphic_any {
+            eprintln!("    🎯 SKIP: Polymorphic $any right node - CTE will handle relationship join");
+            eprintln!("    +- infer_graph_join EXIT\n");
+            // Mark the relationship as "joined" to avoid issues in subsequent processing
+            joined_entities.insert(graph_rel.alias.clone());
+            return Ok(());
+        }
+
         // FIX: Don't check for labels - anonymous nodes don't have labels but still need JOINs
         // let left_has_label = left_ctx_opt.as_ref().unwrap().get_label_opt().is_some();
         // let right_has_label = right_ctx_opt.as_ref().unwrap().get_label_opt().is_some();
@@ -1933,6 +1982,15 @@ impl GraphJoinInference {
                         "    � ?? RIGHT node '{}' is the ANCHOR (required + first) - will go in FROM, not JOIN",
                         right_alias
                     );
+                    joined_entities.insert(right_alias.to_string());
+                } else if right_label == "$any" {
+                    // RIGHT is $any (polymorphic wildcard) - skip creating node table JOIN
+                    // The relationship CTE join handles the data; target type is in to_label_column
+                    eprintln!(
+                        "    � ?? RIGHT node '{}' is $any (polymorphic) - skipping node table JOIN",
+                        right_alias
+                    );
+                    // Mark as "joined" to avoid duplicate processing
                     joined_entities.insert(right_alias.to_string());
                 } else {
                     eprintln!("    � ? Creating JOIN for RIGHT '{}'", right_alias);

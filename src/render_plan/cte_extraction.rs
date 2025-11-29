@@ -890,19 +890,68 @@ pub fn extract_ctes_with_context(
                         labels, rel_tables
                     );
 
-                    // Create a UNION CTE
-                    let union_queries: Vec<String> = rel_tables
-                        .iter()
-                        .map(|table| {
-                            // Get the correct column names for this table
-                            let (from_col, to_col) = get_relationship_columns_by_table(table)
-                                .unwrap_or(("from_node_id".to_string(), "to_node_id".to_string())); // fallback
-                            format!(
-                                "SELECT {} as from_node_id, {} as to_node_id FROM {}",
-                                from_col, to_col, table
-                            )
-                        })
-                        .collect();
+                    // Check if this is a polymorphic edge (all types map to same table with type_column)
+                    let is_polymorphic = if let Some(schema) = context.schema() {
+                        // Check if the first relationship type has a type_column (indicates polymorphic)
+                        if let Ok(rel_schema) = schema.get_rel_schema(&labels[0]) {
+                            rel_schema.type_column.is_some()
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    let union_queries: Vec<String> = if is_polymorphic {
+                        // Polymorphic edge: all types share the same table, need type filters
+                        // Get schema info from context
+                        if let Some(schema) = context.schema() {
+                            if let Ok(rel_schema) = schema.get_rel_schema(&labels[0]) {
+                                let table_name = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+                                let from_col = &rel_schema.from_id;
+                                let to_col = &rel_schema.to_id;
+                                let type_col = rel_schema.type_column.as_ref().expect("polymorphic edge must have type_column");
+                                
+                                // For polymorphic edges, use a single query with IN clause
+                                // This is more efficient than UNION of identical table scans
+                                // Include type_column for relationship property access
+                                let type_values: Vec<String> = labels.iter().map(|l| format!("'{}'", l)).collect();
+                                let type_in_clause = type_values.join(", ");
+                                
+                                vec![format!(
+                                    "SELECT {from_col} as from_node_id, {to_col} as to_node_id, {type_col} as interaction_type FROM {table_name} WHERE {type_col} IN ({type_in_clause})"
+                                )]
+                            } else {
+                                // Fallback if schema lookup fails
+                                rel_tables.iter().map(|table| {
+                                    let (from_col, to_col) = get_relationship_columns_by_table(table)
+                                        .unwrap_or(("from_node_id".to_string(), "to_node_id".to_string()));
+                                    format!("SELECT {} as from_node_id, {} as to_node_id FROM {}", from_col, to_col, table)
+                                }).collect()
+                            }
+                        } else {
+                            // No schema in context, fallback
+                            rel_tables.iter().map(|table| {
+                                let (from_col, to_col) = get_relationship_columns_by_table(table)
+                                    .unwrap_or(("from_node_id".to_string(), "to_node_id".to_string()));
+                                format!("SELECT {} as from_node_id, {} as to_node_id FROM {}", from_col, to_col, table)
+                            }).collect()
+                        }
+                    } else {
+                        // Regular multiple relationship types: UNION of different tables
+                        rel_tables
+                            .iter()
+                            .map(|table| {
+                                // Get the correct column names for this table
+                                let (from_col, to_col) = get_relationship_columns_by_table(table)
+                                    .unwrap_or(("from_node_id".to_string(), "to_node_id".to_string())); // fallback
+                                format!(
+                                    "SELECT {} as from_node_id, {} as to_node_id FROM {}",
+                                    from_col, to_col, table
+                                )
+                            })
+                            .collect()
+                    };
 
                     let union_sql = union_queries.join(" UNION ALL ");
                     let cte_name = format!(
@@ -927,11 +976,17 @@ pub fn extract_ctes_with_context(
                 eprintln!("DEBUG cte_extraction: No labels on GraphRel!");
             }
 
-            // Normal path - for simple relationships, don't create CTEs
-            // Let the normal plan building logic handle JOINs
-            // Only create CTEs for variable-length paths or multiple relationship types
-            // For simple relationships, don't recurse into child nodes
-            Ok(relationship_ctes)
+            // IMPORTANT: Recurse into left and right branches to collect CTEs from nested GraphRels
+            // This is needed for multi-hop polymorphic patterns like (u)-[r1]->(m)-[r2]->(t)
+            // where both r1 and r2 are wildcard edges needing their own CTEs
+            let mut left_ctes = extract_ctes_with_context(&graph_rel.left, last_node_alias, context)?;
+            let mut right_ctes = extract_ctes_with_context(&graph_rel.right, last_node_alias, context)?;
+            
+            // Combine all CTEs: left branch + right branch + current relationship
+            left_ctes.append(&mut right_ctes);
+            left_ctes.append(&mut relationship_ctes);
+            
+            Ok(left_ctes)
         }
         LogicalPlan::Filter(filter) => {
             // Store the filter in context so GraphRel nodes can access it

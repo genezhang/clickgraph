@@ -33,6 +33,16 @@ fn generate_scan(
     );
 
     if let Some(label_str) = &label {
+        // Handle $any wildcard for polymorphic edges
+        if label_str == "$any" {
+            log::debug!("Label is $any (polymorphic wildcard), creating empty Scan");
+            let scan = Scan {
+                table_alias: Some(alias),
+                table_name: None,
+            };
+            return Ok(Arc::new(LogicalPlan::Scan(scan)));
+        }
+        
         log::debug!("Trying to create ViewScan for label '{}'", label_str);
         if let Some(view_scan) = try_generate_view_scan(&alias, &label_str, plan_ctx) {
             log::info!("✓ Successfully created ViewScan for label '{}'", label_str);

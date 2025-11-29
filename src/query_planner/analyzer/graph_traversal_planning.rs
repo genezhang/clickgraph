@@ -229,6 +229,28 @@ impl GraphTRaversalPlanning {
         graph_schema: &GraphSchema,
         is_anchor_traversal: bool,
     ) -> AnalyzerResult<(GraphRel, Vec<CtxToUpdate>)> {
+        // Check for $any nodes - skip graph traversal planning for polymorphic wildcards
+        let left_alias = &graph_rel.left_connection;
+        let right_alias = &graph_rel.right_connection;
+        
+        if let Ok(left_ctx) = plan_ctx.get_node_table_ctx(left_alias) {
+            if let Ok(left_label) = left_ctx.get_label_str() {
+                if left_label == "$any" {
+                    log::debug!("Skipping graph traversal planning for $any left node");
+                    return Ok((graph_rel.clone(), vec![]));
+                }
+            }
+        }
+        
+        if let Ok(right_ctx) = plan_ctx.get_node_table_ctx(right_alias) {
+            if let Ok(right_label) = right_ctx.get_label_str() {
+                if right_label == "$any" {
+                    log::debug!("Skipping graph traversal planning for $any right node");
+                    return Ok((graph_rel.clone(), vec![]));
+                }
+            }
+        }
+        
         let graph_context = graph_context::get_graph_context(
             graph_rel,
             plan_ctx,

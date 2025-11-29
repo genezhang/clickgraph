@@ -68,6 +68,16 @@ impl SchemaInference {
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Scan(scan) => {
+                // If scan already has a table_name that looks like a CTE name (rel_*),
+                // don't overwrite it - it's a multi-relationship placeholder
+                if let Some(existing_name) = &scan.table_name {
+                    if existing_name.starts_with("rel_") {
+                        // This is a CTE placeholder for multiple relationship types
+                        // Don't overwrite it
+                        return Ok(Transformed::No(logical_plan.clone()));
+                    }
+                }
+                
                 let table_ctx = plan_ctx
                     .get_table_ctx_from_alias_opt(&scan.table_alias)
                     .map_err(|e| AnalyzerError::PlanCtx {
@@ -75,8 +85,21 @@ impl SchemaInference {
                         source: e,
                     })?;
 
+                // Don't try to resolve table names for relationships - they're handled differently
+                // (either via CTE for multiple types, or via ViewScan for single types)
+                if table_ctx.is_relation() {
+                    // Keep the existing table_name (which could be CTE name or relationship type)
+                    return Ok(Transformed::No(logical_plan.clone()));
+                }
+
                 // Get the actual table name from schema, not the label
                 let table_name = if let Some(label) = table_ctx.get_label_opt() {
+                    // Skip $any labels - they're placeholders for polymorphic nodes
+                    if label == "$any" {
+                        log::debug!("push_inferred_table_names_to_scan: Skipping $any node");
+                        return Ok(Transformed::No(logical_plan.clone()));
+                    }
+                    
                     // Use the graph_schema parameter that was passed to analyze_with_graph_schema
                     // Note: We're in push_inferred_table_names_to_scan which doesn't have graph_schema,
                     // but we can get it from plan_ctx
@@ -228,6 +251,11 @@ impl SchemaInference {
                     .get_labels()
                     .map(|labels| labels.len() > 1)
                     .unwrap_or(false);
+                
+                // Extract needed info before mutating plan_ctx
+                let left_has_label = left_table_ctx.get_label_opt().is_some();
+                let right_has_label = right_table_ctx.get_label_opt().is_some();
+                let rel_labels_cloned = rel_table_ctx.get_labels().cloned();
 
                 if should_infer_labels {
                     let (left_label, rel_label, right_label) = self.infer_missing_labels(
@@ -249,6 +277,56 @@ impl SchemaInference {
                             }
                         })?;
                         table_ctx.set_labels(Some(vec![label]));
+                    }
+                } else {
+                    // For multiple relationship types, check if any are polymorphic
+                    // If so, we need to mark the unlabeled target node as $any
+                    if !right_has_label {
+                        // Check if any of the relationship types are polymorphic ($any nodes)
+                        if let Some(labels) = &rel_labels_cloned {
+                            for label in labels {
+                                if let Ok(rel_schema) = graph_schema.get_rel_schema(label) {
+                                    if rel_schema.from_node == "$any" || rel_schema.to_node == "$any" {
+                                        // This is a polymorphic edge - set target as $any
+                                        log::debug!(
+                                            "SchemaInference: Marking target node '{}' as $any (polymorphic edge)",
+                                            right_alias
+                                        );
+                                        let target_ctx = plan_ctx.get_mut_table_ctx(right_alias).map_err(|e| {
+                                            AnalyzerError::PlanCtx {
+                                                pass: Pass::SchemaInference,
+                                                source: e,
+                                            }
+                                        })?;
+                                        target_ctx.set_labels(Some(vec!["$any".to_string()]));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Also check left node if unlabeled
+                    if !left_has_label {
+                        if let Some(labels) = &rel_labels_cloned {
+                            for label in labels {
+                                if let Ok(rel_schema) = graph_schema.get_rel_schema(label) {
+                                    if rel_schema.from_node == "$any" || rel_schema.to_node == "$any" {
+                                        log::debug!(
+                                            "SchemaInference: Marking source node '{}' as $any (polymorphic edge)",
+                                            left_alias
+                                        );
+                                        let source_ctx = plan_ctx.get_mut_table_ctx(left_alias).map_err(|e| {
+                                            AnalyzerError::PlanCtx {
+                                                pass: Pass::SchemaInference,
+                                                source: e,
+                                            }
+                                        })?;
+                                        source_ctx.set_labels(Some(vec!["$any".to_string()]));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -661,7 +739,7 @@ impl SchemaInference {
             if relations_found.len() > 1 && extracted_right_node_table_result.is_some() {
                 #[allow(clippy::unnecessary_unwrap)]
                 let extracted_right_node_table_name = extracted_right_node_table_result.unwrap();
-                for relation_schema in relations_found {
+                for relation_schema in &relations_found {
                     let rel_table_name = &relation_schema.table_name;
                     // if the existing left node and extracted right node table is present in the current relation
                     // then use the current relation and new right node name
@@ -675,6 +753,44 @@ impl SchemaInference {
                             left_table_name.to_string(),
                             rel_table_name.to_string(),
                             right_table_name.to_string(),
+                        ));
+                    }
+                }
+            }
+            
+            // NEW: Handle polymorphic edges with $any wildcard target
+            // For MATCH (u:User)-[r]->(target), we use the first polymorphic relationship found
+            if relations_found.len() >= 1 {
+                for relation_schema in &relations_found {
+                    // Check if this relationship uses $any wildcard (polymorphic)
+                    let is_from_any = relation_schema.from_node == "$any";
+                    let is_to_any = relation_schema.to_node == "$any";
+                    
+                    if is_from_any || is_to_any {
+                        // This is a polymorphic edge - use $any for the unknown node
+                        let rel_table_name = &relation_schema.table_name;
+                        
+                        // Determine direction: is left_table_name the from_node or to_node?
+                        let right_table_name = if relation_schema.from_node == left_table_name || relation_schema.from_node == "$any" {
+                            // Left is from_node (or could be), so right is to_node
+                            if relation_schema.to_node == "$any" {
+                                "$any".to_string()
+                            } else {
+                                relation_schema.to_node.clone()
+                            }
+                        } else {
+                            // Left is to_node, so right is from_node
+                            if relation_schema.from_node == "$any" {
+                                "$any".to_string()
+                            } else {
+                                relation_schema.from_node.clone()
+                            }
+                        };
+                        
+                        return Ok((
+                            left_table_name.to_string(),
+                            rel_table_name.to_string(),
+                            right_table_name,
                         ));
                     }
                 }
@@ -728,7 +844,7 @@ impl SchemaInference {
             if relations_found.len() > 1 && extracted_left_node_table_result.is_some() {
                 #[allow(clippy::unnecessary_unwrap)]
                 let extracted_left_node_table_name = extracted_left_node_table_result.unwrap();
-                for relation_schema in relations_found {
+                for relation_schema in &relations_found {
                     let rel_table_name = &relation_schema.table_name;
                     // if the existing right node is present at from_node in relation
                     // and the left node's extracted column is present in curren found relation's column names
@@ -742,6 +858,44 @@ impl SchemaInference {
                         let left_table_name = extracted_left_node_table_name;
                         return Ok((
                             left_table_name.to_string(),
+                            rel_table_name.to_string(),
+                            right_table_name.to_string(),
+                        ));
+                    }
+                }
+            }
+            
+            // NEW: Handle polymorphic edges with $any wildcard source
+            // For MATCH (source)-[r]->(p:Post), we use the first polymorphic relationship found
+            if relations_found.len() >= 1 {
+                for relation_schema in &relations_found {
+                    // Check if this relationship uses $any wildcard (polymorphic)
+                    let is_from_any = relation_schema.from_node == "$any";
+                    let is_to_any = relation_schema.to_node == "$any";
+                    
+                    if is_from_any || is_to_any {
+                        // This is a polymorphic edge - use $any for the unknown node
+                        let rel_table_name = &relation_schema.table_name;
+                        
+                        // Determine direction: is right_table_name the from_node or to_node?
+                        let left_table_name = if relation_schema.to_node == right_table_name || relation_schema.to_node == "$any" {
+                            // Right is to_node (or could be), so left is from_node
+                            if relation_schema.from_node == "$any" {
+                                "$any".to_string()
+                            } else {
+                                relation_schema.from_node.clone()
+                            }
+                        } else {
+                            // Right is from_node, so left is to_node
+                            if relation_schema.to_node == "$any" {
+                                "$any".to_string()
+                            } else {
+                                relation_schema.to_node.clone()
+                            }
+                        };
+                        
+                        return Ok((
+                            left_table_name,
                             rel_table_name.to_string(),
                             right_table_name.to_string(),
                         ));

@@ -691,6 +691,35 @@ pub(super) fn get_node_info_from_schema(node_label: &str) -> Option<(String, Str
     None
 }
 
+/// Check if a node with the given alias is polymorphic ($any)
+/// A polymorphic node is represented by a GraphNode whose input is a Scan with no table_name
+pub(super) fn is_node_polymorphic(plan: &LogicalPlan, target_alias: &str) -> bool {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            if node.alias == target_alias {
+                // Check if input is a Scan with no table_name
+                if let LogicalPlan::Scan(scan) = node.input.as_ref() {
+                    return scan.table_name.is_none();
+                }
+            }
+            is_node_polymorphic(&node.input, target_alias)
+        }
+        LogicalPlan::GraphRel(graph_rel) => {
+            is_node_polymorphic(&graph_rel.left, target_alias)
+                || is_node_polymorphic(&graph_rel.right, target_alias)
+        }
+        LogicalPlan::GraphJoins(joins) => is_node_polymorphic(&joins.input, target_alias),
+        LogicalPlan::Projection(proj) => is_node_polymorphic(&proj.input, target_alias),
+        LogicalPlan::Filter(filter) => is_node_polymorphic(&filter.input, target_alias),
+        LogicalPlan::GroupBy(gb) => is_node_polymorphic(&gb.input, target_alias),
+        LogicalPlan::OrderBy(ob) => is_node_polymorphic(&ob.input, target_alias),
+        LogicalPlan::Limit(limit) => is_node_polymorphic(&limit.input, target_alias),
+        LogicalPlan::Skip(skip) => is_node_polymorphic(&skip.input, target_alias),
+        LogicalPlan::Unwind(u) => is_node_polymorphic(&u.input, target_alias),
+        _ => false,
+    }
+}
+
 /// Check if a logical plan contains any GraphRel with multiple relationship types
 pub(super) fn has_multiple_relationship_types(plan: &LogicalPlan) -> bool {
     match plan {
@@ -714,6 +743,179 @@ pub(super) fn has_multiple_relationship_types(plan: &LogicalPlan) -> bool {
         LogicalPlan::Skip(skip) => has_multiple_relationship_types(&skip.input),
         LogicalPlan::Unwind(u) => has_multiple_relationship_types(&u.input),
         _ => false,
+    }
+}
+
+/// Check if a logical plan contains a polymorphic edge (CTE with rel_ prefix)
+/// OR multiple relationship types (for backward compat)
+pub(super) fn has_polymorphic_or_multi_rel(plan: &LogicalPlan) -> bool {
+    // Check for multi-rel patterns
+    if has_multiple_relationship_types(plan) {
+        return true;
+    }
+    
+    // Check for polymorphic edge patterns - look for $any nodes in GraphRel
+    has_polymorphic_edge(plan)
+}
+
+/// Check if a logical plan contains any polymorphic edge (right node is $any)
+/// A polymorphic edge is detected when the right GraphNode has a Scan with no table_name
+pub(super) fn has_polymorphic_edge(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Check if right node is polymorphic ($any)
+            if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
+                if let LogicalPlan::Scan(scan) = right_node.input.as_ref() {
+                    if scan.table_name.is_none() {
+                        log::debug!("has_polymorphic_edge: Found $any right node '{}'", right_node.alias);
+                        return true;
+                    }
+                }
+            }
+            // Check child plans
+            has_polymorphic_edge(&graph_rel.left)
+                || has_polymorphic_edge(&graph_rel.right)
+        }
+        LogicalPlan::GraphJoins(joins) => has_polymorphic_edge(&joins.input),
+        LogicalPlan::Projection(proj) => has_polymorphic_edge(&proj.input),
+        LogicalPlan::Filter(filter) => has_polymorphic_edge(&filter.input),
+        LogicalPlan::GraphNode(node) => has_polymorphic_edge(&node.input),
+        LogicalPlan::GroupBy(gb) => has_polymorphic_edge(&gb.input),
+        LogicalPlan::OrderBy(ob) => has_polymorphic_edge(&ob.input),
+        LogicalPlan::Limit(limit) => has_polymorphic_edge(&limit.input),
+        LogicalPlan::Skip(skip) => has_polymorphic_edge(&skip.input),
+        LogicalPlan::Unwind(u) => has_polymorphic_edge(&u.input),
+        _ => false,
+    }
+}
+
+/// Get the relationship alias from a POLYMORPHIC GraphRel pattern
+/// Only returns alias if the right node is polymorphic ($any)
+pub(super) fn get_polymorphic_relationship_alias(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Check if right node is polymorphic ($any)
+            if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
+                if let LogicalPlan::Scan(scan) = right_node.input.as_ref() {
+                    if scan.table_name.is_none() {
+                        // This is a polymorphic edge - return its alias
+                        if !graph_rel.alias.is_empty() {
+                            return Some(graph_rel.alias.clone());
+                        }
+                    }
+                }
+            }
+            // Check child plans
+            get_polymorphic_relationship_alias(&graph_rel.left)
+                .or_else(|| get_polymorphic_relationship_alias(&graph_rel.right))
+        }
+        LogicalPlan::GraphJoins(joins) => get_polymorphic_relationship_alias(&joins.input),
+        LogicalPlan::Projection(proj) => get_polymorphic_relationship_alias(&proj.input),
+        LogicalPlan::Filter(filter) => get_polymorphic_relationship_alias(&filter.input),
+        LogicalPlan::GraphNode(node) => get_polymorphic_relationship_alias(&node.input),
+        LogicalPlan::GroupBy(gb) => get_polymorphic_relationship_alias(&gb.input),
+        LogicalPlan::OrderBy(ob) => get_polymorphic_relationship_alias(&ob.input),
+        LogicalPlan::Limit(limit) => get_polymorphic_relationship_alias(&limit.input),
+        LogicalPlan::Skip(skip) => get_polymorphic_relationship_alias(&skip.input),
+        LogicalPlan::Unwind(u) => get_polymorphic_relationship_alias(&u.input),
+        _ => None,
+    }
+}
+
+/// Information about a polymorphic edge for CTE processing
+#[derive(Debug, Clone)]
+pub(super) struct PolymorphicEdgeInfo {
+    pub rel_alias: String,           // e.g., "r1" or "r2"
+    pub left_connection: String,     // e.g., "u" or "source"
+    pub right_connection: String,    // e.g., "middle" or "u"
+    pub cte_name: String,            // e.g., "rel_u_middle" or "rel_source_u"
+    pub is_incoming: bool,           // true for (a)<-[r]-(b), false for (a)-[r]->(b)
+}
+
+/// Collect ALL polymorphic edges from the logical plan
+/// Returns a list of PolymorphicEdgeInfo for each polymorphic edge found
+pub(super) fn collect_polymorphic_edges(plan: &LogicalPlan) -> Vec<PolymorphicEdgeInfo> {
+    fn collect_inner(plan: &LogicalPlan, edges: &mut Vec<PolymorphicEdgeInfo>) {
+        match plan {
+            LogicalPlan::GraphRel(graph_rel) => {
+                // Check if right node is polymorphic ($any) - for outgoing edges
+                let right_is_polymorphic = if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
+                    if let LogicalPlan::Scan(scan) = right_node.input.as_ref() {
+                        scan.table_name.is_none()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                
+                // Check if left node is polymorphic ($any) - for incoming edges
+                let left_is_polymorphic = if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
+                    if let LogicalPlan::Scan(scan) = left_node.input.as_ref() {
+                        scan.table_name.is_none()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                
+                let is_polymorphic = right_is_polymorphic || left_is_polymorphic;
+                
+                if is_polymorphic && !graph_rel.alias.is_empty() {
+                    let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
+                    edges.push(PolymorphicEdgeInfo {
+                        rel_alias: graph_rel.alias.clone(),
+                        left_connection: graph_rel.left_connection.clone(),
+                        right_connection: graph_rel.right_connection.clone(),
+                        cte_name,
+                        // Track which side is polymorphic for proper JOIN direction
+                        is_incoming: left_is_polymorphic && !right_is_polymorphic,
+                    });
+                }
+                // Recurse into children
+                collect_inner(&graph_rel.left, edges);
+                collect_inner(&graph_rel.right, edges);
+            }
+            LogicalPlan::GraphJoins(joins) => collect_inner(&joins.input, edges),
+            LogicalPlan::Projection(proj) => collect_inner(&proj.input, edges),
+            LogicalPlan::Filter(filter) => collect_inner(&filter.input, edges),
+            LogicalPlan::GraphNode(node) => collect_inner(&node.input, edges),
+            LogicalPlan::GroupBy(gb) => collect_inner(&gb.input, edges),
+            LogicalPlan::OrderBy(ob) => collect_inner(&ob.input, edges),
+            LogicalPlan::Limit(limit) => collect_inner(&limit.input, edges),
+            LogicalPlan::Skip(skip) => collect_inner(&skip.input, edges),
+            LogicalPlan::Unwind(u) => collect_inner(&u.input, edges),
+            _ => {}
+        }
+    }
+    
+    let mut edges = Vec::new();
+    collect_inner(plan, &mut edges);
+    edges
+}
+
+/// Get the relationship alias from a GraphRel pattern (e.g., for MATCH (a)-[r]->(b), returns "r")
+pub(super) fn get_relationship_alias(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Return the alias if it exists and is not empty
+            if graph_rel.alias.is_empty() {
+                None
+            } else {
+                Some(graph_rel.alias.clone())
+            }
+        }
+        LogicalPlan::GraphJoins(joins) => get_relationship_alias(&joins.input),
+        LogicalPlan::Projection(proj) => get_relationship_alias(&proj.input),
+        LogicalPlan::Filter(filter) => get_relationship_alias(&filter.input),
+        LogicalPlan::GraphNode(node) => get_relationship_alias(&node.input),
+        LogicalPlan::GroupBy(gb) => get_relationship_alias(&gb.input),
+        LogicalPlan::OrderBy(ob) => get_relationship_alias(&ob.input),
+        LogicalPlan::Limit(limit) => get_relationship_alias(&limit.input),
+        LogicalPlan::Skip(skip) => get_relationship_alias(&skip.input),
+        LogicalPlan::Unwind(u) => get_relationship_alias(&u.input),
+        _ => None,
     }
 }
 

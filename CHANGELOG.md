@@ -2,6 +2,13 @@
 
 ### 🚀 Features
 
+- Complete polymorphic edge support for wildcard relationship patterns
+  - Single-hop wildcard edges: `(u:User)-[r]->(target)` with unlabeled targets
+  - Multi-hop polymorphic CTE chaining: `(u)-[r1]->(m)-[r2]->(t)` with proper JOIN chaining
+  - Bidirectional (incoming) edges: `(u:User)<-[r]-(source)` using `to_node_id` JOIN
+  - Mixed edge patterns: Standard edges + polymorphic edges in same query
+  - Added `is_incoming` tracking for correct JOIN direction
+
 - Add coupled edge alias unification for denormalized patterns
   - Automatic JOIN elimination for multi-hop patterns on same table
   - Unified table aliases for coupled edges (e.g., both `r1` and `r2` use `r1`)
@@ -22,6 +29,7 @@
 
 ### 📚 Documentation
 
+- Update STATUS.md with complete polymorphic edge support
 - Add Coupled Edges section to denormalized-edge-tables.md
 - Add UNWIND with Coupled Edges documentation
 - Add coupled-edges.md implementation notes

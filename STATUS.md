@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: November 28, 2025*
+*Updated: November 29, 2025*
 
 ## 🚨 **CRITICAL DOCUMENTATION FIX** - November 22, 2025
 
@@ -37,7 +37,7 @@
 **Updated**: November 28, 2025  
 **Next**: Composite edge IDs
 
-### 🆕 Polymorphic Edge Filters - MOSTLY COMPLETE (Nov 28, 2025)
+### 🆕 Polymorphic Edge Filters - COMPLETE (Nov 29, 2025)
 
 **Feature**: Filter polymorphic edge tables by type discriminator columns
 
@@ -47,6 +47,10 @@
 - ✅ **VLP polymorphic filter**: Filters in both base case and recursive case of CTE
 - ✅ **$any wildcard**: Skip node label filter when schema uses `$any`
 - ✅ **IN clause generation**: `[:FOLLOWS|LIKES]` → `IN ('FOLLOWS', 'LIKES')` (for single-hop direct path)
+- ✅ **Single-hop wildcard edges**: `(u:User)-[r]->(target)` with unlabeled targets
+- ✅ **Multi-hop polymorphic CTE chaining**: `(u)-[r1]->(m)-[r2]->(t)` with proper CTE chains
+- ✅ **Bidirectional (incoming) edges**: `(u:User)<-[r]-(source)` using `to_node_id` JOIN
+- ✅ **Mixed edge patterns**: Standard edges + polymorphic edges in same query
 
 **Schema Configuration**:
 ```yaml
@@ -56,6 +60,37 @@ relationships:
     type_column: interaction_type      # Filter by type
     from_label_column: from_type       # Filter by source node type
     to_label_column: to_type           # Filter by target node type
+```
+
+**Example (Multi-hop polymorphic)**:
+```cypher
+MATCH (u:User)-[r1]->(middle)-[r2]->(target)
+WHERE u.user_id = 1
+RETURN u.user_id, r1.interaction_type, r2.interaction_type
+```
+Generates:
+```sql
+WITH rel_u_middle AS (...), rel_middle_target AS (...)
+SELECT u.user_id, r1.interaction_type, r2.interaction_type
+FROM brahmand.users AS u
+JOIN rel_u_middle AS r1 ON r1.from_node_id = u.user_id
+JOIN rel_middle_target AS r2 ON r2.from_node_id = r1.to_node_id  -- CTE chaining!
+WHERE u.user_id = 1
+```
+
+**Example (Incoming edge)**:
+```cypher
+MATCH (u:User)<-[r]-(source)
+WHERE u.user_id = 4
+RETURN u.user_id, r.interaction_type
+```
+Generates:
+```sql
+WITH rel_source_u AS (...)
+SELECT u.user_id, r.interaction_type
+FROM brahmand.users AS u
+JOIN rel_source_u AS r ON r.to_node_id = u.user_id  -- Incoming uses to_node_id
+WHERE u.user_id = 4
 ```
 
 **Limitation**: Alternate types `[:FOLLOWS|LIKES]` currently route through UNION CTE path
@@ -142,7 +177,7 @@ ARRAY JOIN t.path_nodes AS n
    - ✅ **shortestPath / allShortestPaths working**
    - ✅ **PageRank working** (named argument syntax)
    
-2. 📋 Polymorphic edges (queued)
+2. ✅ **Polymorphic edges** (COMPLETE - Nov 29, 2025)
 3. 📋 Composite edge IDs (queued)
 
 #### Denormalized Edge Tables - Implementation Complete ✅
@@ -267,14 +302,18 @@ Note: PageRank requires named argument syntax (not positional).
 
 **Features to Implement**:
 
-1. **Polymorphic Edges** ✅ **MOSTLY COMPLETE** (Nov 28, 2025)
+1. **Polymorphic Edges** ✅ **COMPLETE** (Nov 29, 2025)
    - ✅ Single relationship type per polymorphic table
    - ✅ Type discriminator column support (`type_column`)
    - ✅ Node label columns (`from_label_column`, `to_label_column`)
    - ✅ VLP polymorphic filter (recursive CTE with type filter)
    - ✅ Single-hop polymorphic filter (JOIN ON clause)
    - ✅ IN clause support for multiple types (implementation ready)
-   - 🚧 Alternate types `[:FOLLOWS|LIKES]` routes through UNION CTE (works, not optimized)
+   - ✅ **Single-hop wildcard edges** (`(u)-[r]->(target)`)
+   - ✅ **Multi-hop polymorphic CTE chaining** (`(u)-[r1]->(m)-[r2]->(t)`)
+   - ✅ **Bidirectional (incoming) edges** (`(u)<-[r]-(source)`)
+   - ✅ **Mixed edge patterns** (standard + polymorphic in same query)
+   - 🟡 Alternate types `[:FOLLOWS|LIKES]` routes through UNION CTE (works, not optimized)
    - Example: Single `interactions` table with `interaction_type` column
 
 2. **Denormalized Properties** ✅ **COMPLETE** (Nov 27, 2025)

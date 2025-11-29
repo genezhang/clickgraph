@@ -29,6 +29,13 @@ impl<'a> ViewResolver<'a> {
 
     /// Get the schema for a node label
     pub fn resolve_node(&self, label: &str) -> Result<&'a NodeSchema, AnalyzerError> {
+        // Handle $any wildcard for polymorphic edges
+        if label == "$any" {
+            return Err(AnalyzerError::NodeLabelNotFound(
+                "$any (polymorphic wildcard - node type resolved at runtime)".to_string()
+            ));
+        }
+        
         self.schema
             .get_node_schema(label)
             .map_err(|_| AnalyzerError::NodeLabelNotFound(label.to_string()))

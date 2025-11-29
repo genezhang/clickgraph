@@ -1411,37 +1411,81 @@ impl RenderPlanBuilder for LogicalPlan {
                 from_table_to_view_ref(projection.input.extract_from()?)
             }
             LogicalPlan::GraphJoins(graph_joins) => {
-                // SIMPLE RULE: No joins = use relationship table, otherwise use first join
+                // Helper to find GraphRel through Projection/Filter wrappers
+                fn find_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
+                    match plan {
+                        LogicalPlan::GraphRel(gr) => Some(gr),
+                        LogicalPlan::Projection(proj) => find_graph_rel(&proj.input),
+                        LogicalPlan::Filter(filter) => find_graph_rel(&filter.input),
+                        LogicalPlan::Unwind(u) => find_graph_rel(&u.input),
+                        _ => None,
+                    }
+                }
+                
+                // Helper to find GraphNode for node-only queries
+                fn find_graph_node(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphNode> {
+                    match plan {
+                        LogicalPlan::GraphNode(gn) => Some(gn),
+                        LogicalPlan::Projection(proj) => find_graph_node(&proj.input),
+                        LogicalPlan::Filter(filter) => find_graph_node(&filter.input),
+                        LogicalPlan::Unwind(u) => find_graph_node(&u.input),
+                        _ => None,
+                    }
+                }
+                
+                // Helper to check if a GraphNode has a real ViewScan (not just a Scan placeholder)
+                fn has_viewscan_input(graph_node: &crate::query_planner::logical_plan::GraphNode) -> bool {
+                    matches!(graph_node.input.as_ref(), LogicalPlan::ViewScan(_))
+                }
+                
+                // RULE: When joins is empty, check if we have a LABELED node that should be FROM
+                // Only use relationship table as FROM if both nodes are denormalized/unlabeled
                 if graph_joins.joins.is_empty() {
-                    // DENORMALIZED: No physical node tables, only the relationship table exists
-                    fn find_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
-                        match plan {
-                            LogicalPlan::GraphRel(gr) => Some(gr),
-                            LogicalPlan::Projection(proj) => find_graph_rel(&proj.input),
-                            LogicalPlan::Filter(filter) => find_graph_rel(&filter.input),
-                            LogicalPlan::Unwind(u) => find_graph_rel(&u.input),
-                            _ => None,
-                        }
-                    }
-                    
-                    // Helper to find GraphNode for node-only queries
-                    fn find_graph_node(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphNode> {
-                        match plan {
-                            LogicalPlan::GraphNode(gn) => Some(gn),
-                            LogicalPlan::Projection(proj) => find_graph_node(&proj.input),
-                            LogicalPlan::Filter(filter) => find_graph_node(&filter.input),
-                            LogicalPlan::Unwind(u) => find_graph_node(&u.input),
-                            _ => None,
-                        }
-                    }
-                    
                     if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
+                        // Check if LEFT node has a real table (ViewScan, not just placeholder Scan)
+                        // This handles polymorphic edges where one side is labeled, other is $any
+                        if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
+                            if has_viewscan_input(left_node) && !left_node.is_denormalized {
+                                // Left node is a real table - use it as FROM
+                                log::info!(
+                                    "🎯 POLYMORPHIC: Left node '{}' has ViewScan, using as FROM (joins may be empty due to $any target)",
+                                    left_node.alias
+                                );
+                                if let LogicalPlan::ViewScan(scan) = left_node.input.as_ref() {
+                                    return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                                        source: std::sync::Arc::new(LogicalPlan::GraphNode(left_node.clone())),
+                                        name: scan.source_table.clone(),
+                                        alias: Some(left_node.alias.clone()),
+                                        use_final: scan.use_final,
+                                    }))));
+                                }
+                            }
+                        }
+                        
+                        // Check if RIGHT node has a real table (for reverse direction queries)
+                        if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
+                            if has_viewscan_input(right_node) && !right_node.is_denormalized {
+                                log::info!(
+                                    "🎯 POLYMORPHIC: Right node '{}' has ViewScan, using as FROM",
+                                    right_node.alias
+                                );
+                                if let LogicalPlan::ViewScan(scan) = right_node.input.as_ref() {
+                                    return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                                        source: std::sync::Arc::new(LogicalPlan::GraphNode(right_node.clone())),
+                                        name: scan.source_table.clone(),
+                                        alias: Some(right_node.alias.clone()),
+                                        use_final: scan.use_final,
+                                    }))));
+                                }
+                            }
+                        }
+                        
+                        // Both nodes are either denormalized or unlabeled - use relationship table
                         if let Some(rel_table) = extract_table_name(&graph_rel.center) {
                             log::info!(
-                                "🎯 DENORMALIZED: No JOINs, using relationship table '{}' as '{}'",
+                                "🎯 DENORMALIZED: No labeled nodes, using relationship table '{}' as '{}'",
                                 rel_table, graph_rel.alias
                             );
-                            // CRITICAL FIX: Pass the actual graph_rel as source so extract_filters() can find view_filter
                             let view_ref = super::ViewTableRef {
                                 source: std::sync::Arc::new(LogicalPlan::GraphRel(graph_rel.clone())),
                                 name: rel_table,
@@ -1476,68 +1520,39 @@ impl RenderPlanBuilder for LogicalPlan {
                     
                     return Ok(from_table_to_view_ref(None).map(|vr| FromTable::new(Some(vr))));
                 }
-
-                // NORMAL PATH: JOINs exist, use existing anchor logic
-                // Helper function to unwrap Projection/Filter/Unwind layers to find GraphRel
-                fn find_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
-                    match plan {
-                        LogicalPlan::GraphRel(gr) => Some(gr),
-                        LogicalPlan::Projection(proj) => find_graph_rel(&proj.input),
-                        LogicalPlan::Filter(filter) => find_graph_rel(&filter.input),
-                        LogicalPlan::Unwind(u) => find_graph_rel(&u.input),
-                        _ => None,
-                    }
-                }
                 
-                // Helper to find the INNERMOST GraphRel (for coupled edges - use first edge as anchor)
-                fn find_innermost_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
-                    match plan {
-                        LogicalPlan::GraphRel(gr) => {
-                            // Check if left is also a GraphRel (nested case)
-                            // Use as_ref() to get &LogicalPlan from Arc<LogicalPlan>
-                            if let Some(inner) = find_innermost_graph_rel(gr.left.as_ref()) {
-                                Some(inner)
-                            } else {
-                                Some(gr)
-                            }
-                        }
-                        LogicalPlan::Projection(proj) => find_innermost_graph_rel(&proj.input),
-                        LogicalPlan::Filter(filter) => find_innermost_graph_rel(&filter.input),
-                        LogicalPlan::Unwind(u) => find_innermost_graph_rel(&u.input),
-                        _ => None,
-                    }
-                }
-
-                // DENORMALIZED: If no joins, just use the relationship table
-                // For coupled edges, use the FIRST (innermost) edge as anchor
-                if graph_joins.joins.is_empty() {
-                    if let Some(graph_rel) = find_innermost_graph_rel(&graph_joins.input) {
-                        if let Some(rel_table) = extract_table_name(&graph_rel.center) {
-                            log::info!("🎯 DENORMALIZED: No JOINs, using relationship table '{}' as '{}'", rel_table, graph_rel.alias);
-                            // CRITICAL FIX: Pass the actual graph_rel as source so extract_filters() can find view_filter
-                            Some(super::ViewTableRef {
-                                source: std::sync::Arc::new(LogicalPlan::GraphRel(graph_rel.clone())),
-                                name: rel_table,
-                                alias: Some(graph_rel.alias.clone()),
-                                use_final: false,
-                            })
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
                 // NORMAL PATH with JOINs: Try to find GraphRel through any Projection/Filter wrappers
                 if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
                     if let Some(labels) = &graph_rel.labels {
                         if labels.len() > 1 {
-                            // Multiple relationship types: need both start and end nodes in FROM
-                            // Get end node from GraphRel
-                            let end_from = graph_rel.right.extract_from()?;
+                            // Multiple relationship types: check if right node is polymorphic ($any)
+                            // $any nodes have a Scan with no table_name (not a ViewScan)
+                            // For polymorphic edges, use LEFT node (the labeled one) as FROM
+                            let right_is_polymorphic = match graph_rel.right.as_ref() {
+                                LogicalPlan::GraphNode(gn) => {
+                                    match gn.input.as_ref() {
+                                        // Scan with no table_name = polymorphic $any node
+                                        LogicalPlan::Scan(scan) => scan.table_name.is_none(),
+                                        // ViewScan = normal labeled node
+                                        _ => false,
+                                    }
+                                }
+                                _ => false,
+                            };
+                            
+                            if right_is_polymorphic {
+                                // Polymorphic: use LEFT (labeled) node as FROM
+                                log::info!("🎯 POLYMORPHIC: Right is $any (no table), using LEFT node as FROM");
+                                let left_from = graph_rel.left.extract_from()?;
+                                from_table_to_view_ref(left_from)
+                            } else {
+                                // Normal multi-type: need both start and end nodes in FROM
+                                // Get end node from GraphRel
+                                let end_from = graph_rel.right.extract_from()?;
 
-                            // Return the end node - start node will be added as CROSS JOIN
-                            from_table_to_view_ref(end_from)
+                                // Return the end node - start node will be added as CROSS JOIN
+                                from_table_to_view_ref(end_from)
+                            }
                         } else {
                             // Single relationship type: Use anchor table from GraphJoins
                             // The anchor was already computed during join reordering
@@ -1647,7 +1662,6 @@ impl RenderPlanBuilder for LogicalPlan {
                         }
                     }
                 }
-                } // close the else block for joins.is_empty() check
             }
             LogicalPlan::GroupBy(group_by) => {
                 from_table_to_view_ref(group_by.input.extract_from()?)
@@ -3237,10 +3251,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 ));
             }
 
-            // Check if there's a multiple-relationship GraphRel anywhere in the tree
-            if has_multiple_relationship_types(&graph_joins.input) {
+            // Check if there's a multiple-relationship OR polymorphic edge GraphRel anywhere in the tree
+            if has_polymorphic_or_multi_rel(&graph_joins.input) {
                 println!(
-                    "DEBUG: Multiple relationship types detected in GraphJoins tree, returning Err to use CTE path"
+                    "DEBUG: Multiple relationship types or polymorphic edge detected in GraphJoins tree, returning Err to use CTE path"
                 );
                 return Err(RenderBuildError::InvalidRenderPlan(
                     "Multiple relationship types require CTE-based processing with UNION"
@@ -4013,7 +4027,7 @@ impl RenderPlanBuilder for LogicalPlan {
         let mut context = analyze_property_requirements(&transformed_plan, schema);
 
         let extracted_ctes: Vec<Cte>;
-        let mut final_from: Option<FromTable>;
+        let mut final_from: Option<FromTable> = None;
         let final_filters: Option<RenderExpr>;
 
         let last_node_cte_opt = transformed_plan.extract_last_node_cte()?;
@@ -4196,9 +4210,80 @@ impl RenderPlanBuilder for LogicalPlan {
                     final_filters = None;
                 }
             } else {
-                // Normal case: no CTEs, extract FROM, joins, and filters normally
-                final_from = transformed_plan.extract_from()?;
-                final_filters = transformed_plan.extract_filters()?;
+                // Check if we have a polymorphic/multi-relationship CTE (starts with "rel_")
+                let has_polymorphic_cte = extracted_ctes.iter().any(|cte| {
+                    cte.cte_name.starts_with("rel_")
+                });
+                
+                if has_polymorphic_cte {
+                    // For polymorphic edge CTEs, find a labeled node to use as FROM
+                    // This handles MATCH (u:User)-[r]->(target) where target is $any
+                    log::info!("🎯 POLYMORPHIC CTE: Looking for labeled node as FROM");
+                    
+                    // For polymorphic edges, ALWAYS find the leftmost ViewScan node first
+                    // because extract_from() may return a CTE placeholder instead
+                    fn find_leftmost_viewscan_node(plan: &LogicalPlan) -> Option<&super::super::query_planner::logical_plan::GraphNode> {
+                        match plan {
+                            LogicalPlan::GraphNode(gn) => {
+                                if matches!(gn.input.as_ref(), LogicalPlan::ViewScan(_)) {
+                                    return Some(gn);
+                                }
+                                None
+                            }
+                            LogicalPlan::GraphRel(gr) => {
+                                // Prefer left (from) node first - recurse into left branch
+                                if let Some(node) = find_leftmost_viewscan_node(&gr.left) {
+                                    return Some(node);
+                                }
+                                // Check if left is a GraphNode with ViewScan
+                                if let LogicalPlan::GraphNode(left_node) = gr.left.as_ref() {
+                                    if matches!(left_node.input.as_ref(), LogicalPlan::ViewScan(_)) && !left_node.is_denormalized {
+                                        return Some(left_node);
+                                    }
+                                }
+                                // Then try right node  
+                                if let LogicalPlan::GraphNode(right_node) = gr.right.as_ref() {
+                                    if matches!(right_node.input.as_ref(), LogicalPlan::ViewScan(_)) && !right_node.is_denormalized {
+                                        return Some(right_node);
+                                    }
+                                }
+                                // Recurse into right
+                                find_leftmost_viewscan_node(&gr.right)
+                            }
+                            LogicalPlan::Filter(f) => find_leftmost_viewscan_node(&f.input),
+                            LogicalPlan::Projection(p) => find_leftmost_viewscan_node(&p.input),
+                            LogicalPlan::GraphJoins(gj) => find_leftmost_viewscan_node(&gj.input),
+                            LogicalPlan::Limit(l) => find_leftmost_viewscan_node(&l.input),
+                            LogicalPlan::OrderBy(o) => find_leftmost_viewscan_node(&o.input),
+                            LogicalPlan::Skip(s) => find_leftmost_viewscan_node(&s.input),
+                            _ => None,
+                        }
+                    }
+                    
+                    // Find the leftmost ViewScan node for FROM
+                    if let Some(graph_node) = find_leftmost_viewscan_node(&transformed_plan) {
+                        if let LogicalPlan::ViewScan(vs) = graph_node.input.as_ref() {
+                            log::info!("🎯 POLYMORPHIC: Using leftmost node '{}' with table '{}' as FROM", graph_node.alias, vs.source_table);
+                            final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                                source: graph_node.input.clone(),
+                                name: vs.source_table.clone(),
+                                alias: Some(graph_node.alias.clone()),
+                                use_final: vs.use_final,
+                            })));
+                        }
+                    }
+                    
+                    // Fallback to extract_from if find_leftmost failed
+                    if final_from.is_none() {
+                        final_from = transformed_plan.extract_from()?;
+                    }
+                    
+                    final_filters = transformed_plan.extract_filters()?;
+                } else {
+                    // Normal case: no CTEs, extract FROM, joins, and filters normally
+                    final_from = transformed_plan.extract_from()?;
+                    final_filters = transformed_plan.extract_filters()?;
+                }
             }
         }
 
@@ -4375,110 +4460,109 @@ impl RenderPlanBuilder for LogicalPlan {
         }
 
         // For multiple relationship types (UNION CTE), add joins to connect nodes
-        // Similar to variable-length paths, we need to clear and rebuild joins
-        if let Some(union_cte) = extracted_ctes
+        // Handle MULTIPLE polymorphic edges for multi-hop patterns like (u)-[r1]->(m)-[r2]->(t)
+        let polymorphic_edges = collect_polymorphic_edges(&transformed_plan);
+        let polymorphic_ctes: Vec<_> = extracted_ctes
             .iter()
-            .find(|cte| cte.cte_name.starts_with("rel_") && !cte.is_recursive)
-        {
-            // Check if this is actually a multi-relationship query (has UNION in plan)
-            if has_multiple_relationship_types(&transformed_plan) {
-                // Clear extracted joins like we do for variable-length paths
-                // The GraphRel joins include duplicate source node joins which cause
-                // "Multiple table expressions with same alias" errors
-                extracted_joins.clear();
-
-                // Extract the node aliases from the CTE name (e.g., "rel_u_target" → "u", "target")
-                let cte_name = union_cte.cte_name.clone();
-                let parts: Vec<&str> = cte_name
-                    .strip_prefix("rel_")
-                    .unwrap_or(&cte_name)
-                    .split('_')
-                    .collect();
-
-                if parts.len() >= 2 {
-                    let source_alias = parts[0].to_string();
-                    let target_alias = parts[parts.len() - 1].to_string();
-
-                    // Get table names and ID columns from schema
-                    let source_table = get_node_table_for_alias(&source_alias);
-                    let target_table = get_node_table_for_alias(&target_alias);
-                    let source_id_col = get_node_id_column_for_alias(&source_alias);
-                    let target_id_col = get_node_id_column_for_alias(&target_alias);
-
-                    // Generate a random alias for the CTE JOIN
-                    let cte_alias = crate::query_planner::logical_plan::generate_id();
-
-                    // Add JOIN from CTE to source node (using CTE's from_node_id)
-                    extracted_joins.push(Join {
-                        table_name: cte_name.clone(),
-                        table_alias: cte_alias.clone(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(cte_alias.clone()),
-                                    column: Column(PropertyValue::Column("from_node_id".to_string())),
-                                }),
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(source_alias.clone()),
-                                    column: Column(PropertyValue::Column(source_id_col.clone())),
-                                }),
-                            ],
-                        }],
-                        join_type: JoinType::Join,
-                        pre_filter: None,
-                    });
-
-                    // Add JOIN from CTE to target node (using CTE's to_node_id)
-                    extracted_joins.push(Join {
-                        table_name: target_table,
-                        table_alias: target_alias.clone(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(cte_alias.clone()),
-                                    column: Column(PropertyValue::Column("to_node_id".to_string())),
-                                }),
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(target_alias.clone()),
-                                    column: Column(PropertyValue::Column(target_id_col.clone())),
-                                }),
-                            ],
-                        }],
-                        join_type: JoinType::Join,
-                        pre_filter: None,
-                    });
+            .filter(|cte| cte.cte_name.starts_with("rel_") && !cte.is_recursive)
+            .collect();
+        
+        if !polymorphic_ctes.is_empty() && has_polymorphic_or_multi_rel(&transformed_plan) {
+            log::info!("🎯 MULTI-HOP POLYMORPHIC: Found {} CTEs and {} polymorphic edges", 
+                      polymorphic_ctes.len(), polymorphic_edges.len());
+            
+            // Get the FROM clause alias to exclude it from joins
+            let from_alias = final_from
+                .as_ref()
+                .and_then(|ft| ft.table.as_ref())
+                .and_then(|vt| vt.alias.clone());
+            
+            // Collect all polymorphic target aliases to filter from joins
+            let polymorphic_targets: std::collections::HashSet<_> = polymorphic_edges
+                .iter()
+                .map(|e| e.right_connection.clone())
+                .collect();
+            
+            // Filter out duplicate joins for polymorphic targets and FROM alias
+            extracted_joins.retain(|j| {
+                let is_polymorphic_target = polymorphic_targets.contains(&j.table_alias);
+                let is_from = from_alias.as_ref().map_or(false, |fa| &j.table_alias == fa);
+                if is_from {
+                    log::info!("🎯 MIXED EDGE: Filtering out JOIN for FROM alias '{}'", j.table_alias);
                 }
-            } else {
-                // Old PATCH code for non-UNION multi-rel (keep for backward compat)
-                let cte_name = union_cte.cte_name.clone();
-                for join in extracted_joins.iter_mut() {
-                    // Update joins that are relationship tables
-                    // Check both with and without schema prefix (e.g., "follows" or "test_integration.follows")
-                    let table_lower = join.table_name.to_lowercase();
-                    if table_lower.contains("follow")
-                        || table_lower.contains("friend")
-                        || table_lower.contains("like")
-                        || table_lower.contains("purchase")
-                        || join.table_name.starts_with("rel_")
-                    {
-                        eprintln!(
-                            "DEBUG: Updating JOIN to use CTE '{}' (was '{}')",
-                            cte_name, join.table_name
-                        );
-                        join.table_name = cte_name.clone();
-                        // Also update joining_on expressions to use standardized column names
-                        for op_app in join.joining_on.iter_mut() {
-                            update_join_expression_for_union_cte(op_app, &join.table_alias);
-                        }
+                if is_polymorphic_target {
+                    log::info!("🎯 POLYMORPHIC: Filtering out JOIN for polymorphic target '{}'", j.table_alias);
+                }
+                !is_polymorphic_target && !is_from
+            });
+            
+            // Build a map of node aliases to their source CTE (for chaining)
+            // Key: right_connection (target), Value: (cte_alias, cte_name)
+            let mut node_to_cte: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+            
+            // Sort edges by processing order: edges whose left_connection is NOT a CTE target go first
+            // This ensures we process `u -> middle` before `middle -> target`
+            let mut sorted_edges = polymorphic_edges.clone();
+            sorted_edges.sort_by(|a, b| {
+                let a_is_chained = polymorphic_targets.contains(&a.left_connection);
+                let b_is_chained = polymorphic_targets.contains(&b.left_connection);
+                a_is_chained.cmp(&b_is_chained)
+            });
+            
+            // Add JOINs for each polymorphic edge
+            for edge in &sorted_edges {
+                // For incoming edges (u)<-[r]-(source), the labeled node is on the right
+                // and we join on to_node_id. For outgoing edges, the labeled node is on
+                // the left and we join on from_node_id.
+                let (cte_column, node_alias, id_column) = if edge.is_incoming {
+                    // Incoming: join CTE's to_node_id to the right connection (labeled node)
+                    let id_col = get_node_id_column_for_alias(&edge.right_connection);
+                    log::info!("🎯 INCOMING EDGE: {} joins to_node_id = {}.{}", 
+                              edge.rel_alias, edge.right_connection, id_col);
+                    ("to_node_id".to_string(), edge.right_connection.clone(), id_col)
+                } else {
+                    // Outgoing: check if source is from a previous CTE (chaining)
+                    if let Some((prev_cte_alias, _)) = node_to_cte.get(&edge.left_connection) {
+                        // Chained CTE: join on previous CTE's to_node_id
+                        log::info!("🎯 CHAINED CTE: {} joins from previous CTE {}.to_node_id", edge.rel_alias, prev_cte_alias);
+                        ("from_node_id".to_string(), prev_cte_alias.clone(), "to_node_id".to_string())
+                    } else {
+                        // First hop: join on source node's ID column
+                        let source_id_col = get_node_id_column_for_alias(&edge.left_connection);
+                        ("from_node_id".to_string(), edge.left_connection.clone(), source_id_col)
                     }
-                    // Also update any join that references the union CTE in its expressions
-                    else if references_union_cte_in_join(&join.joining_on, &cte_name) {
-                        for op_app in join.joining_on.iter_mut() {
-                            update_join_expression_for_union_cte(op_app, &cte_name);
-                        }
-                    }
+                };
+                
+                log::info!("🎯 Adding CTE JOIN: {} AS {} ON {} = {}.{}", 
+                          edge.cte_name, edge.rel_alias, cte_column, node_alias, id_column);
+                
+                extracted_joins.push(Join {
+                    table_name: edge.cte_name.clone(),
+                    table_alias: edge.rel_alias.clone(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(edge.rel_alias.clone()),
+                                column: Column(PropertyValue::Column(cte_column)),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(node_alias),
+                                column: Column(PropertyValue::Column(id_column)),
+                            }),
+                        ],
+                    }],
+                    join_type: JoinType::Join,
+                    pre_filter: None,
+                });
+                
+                // Record this CTE as the source for its target node (for chaining)
+                // For outgoing edges: target is right_connection
+                // For incoming edges: target is left_connection (the $any node)
+                if edge.is_incoming {
+                    node_to_cte.insert(edge.left_connection.clone(), (edge.rel_alias.clone(), edge.cte_name.clone()));
+                } else {
+                    node_to_cte.insert(edge.right_connection.clone(), (edge.rel_alias.clone(), edge.cte_name.clone()));
                 }
             }
         }

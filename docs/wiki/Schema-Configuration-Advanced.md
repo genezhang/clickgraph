@@ -72,7 +72,7 @@ graph_schema:
         content: post_content
         date: post_date
   
-  relationships:
+  edges:
     - type: FOLLOWS
       database: brahmand
       table: user_follows_bench
@@ -198,7 +198,7 @@ nodes:
 ### 4. Edge Properties
 
 ```yaml
-relationships:  # YAML key remains 'relationships:' for backward compatibility
+edges:  # YAML key 'relationships:' is accepted for backward compatibility
   FOLLOWS:
     source_table: "user_follows"
     from_node: "User"
@@ -367,7 +367,7 @@ views:
           post_id: "post_id"
           content: "post_content"
     
-    relationships:
+    edges:
       AUTHORED:
         source_table: "posts"
         from_node: "User"
@@ -412,7 +412,7 @@ views:
           post_id: "post_id"
           content: "post_content"
     
-    relationships:
+    edges:
       LIKED:
         source_table: "post_likes"
         filters:
@@ -483,7 +483,7 @@ nodes:
 
 **Undefined Node Reference**:
 ```yaml
-relationships:
+edges:
   FOLLOWS:
     from_node: "User"     # Must be defined in nodes
     to_node: "UserProfile"  # ❌ ERROR: Not defined!
@@ -592,7 +592,7 @@ MATCH (u:User {email: 'alice@example.com'}) RETURN u.name
 
 ```yaml
 # Forward edge
-relationships:  # YAML key remains 'relationships:' for backward compatibility
+edges:  # YAML key 'relationships:' is accepted for backward compatibility
   FOLLOWS:
     source_table: "user_follows"
     from_node: "User"
@@ -686,7 +686,7 @@ views:
 **Model time-varying connections**:
 
 ```yaml
-relationships:  # YAML key remains 'relationships:' for backward compatibility
+edges:  # YAML key 'relationships:' is accepted for backward compatibility
   EMPLOYED_BY:
     source_table: "employment_history"
     from_node: "Person"
@@ -719,7 +719,7 @@ RETURN p.name, c.name
 **Model tree structures**:
 
 ```yaml
-relationships:
+edges:
   REPORTS_TO:
     source_table: "employee_hierarchy"
     from_node: "Employee"
@@ -747,7 +747,7 @@ RETURN [n IN nodes(path) | n.name] AS chain
 **Model edge weights**:
 
 ```yaml
-relationships:  # YAML key remains 'relationships:' for backward compatibility
+edges:  # YAML key 'relationships:' is accepted for backward compatibility
   SIMILAR_TO:
     source_table: "product_similarity"
     from_node: "Product"
@@ -793,7 +793,7 @@ views:
         source_table: "skills"
         identifier_property: "skill_id"
     
-    relationships:
+    edges:
       WORKS_AT:
         from_node: "Person"
         to_node: "Company"
