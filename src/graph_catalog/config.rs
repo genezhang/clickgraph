@@ -440,6 +440,316 @@ fn parse_property_mappings(
     Ok(parsed)
 }
 
+// ============================================================================
+// Schema Building Helpers
+// ============================================================================
+// These helper types and functions consolidate the shared logic between
+// `to_graph_schema()` (sync, no discovery) and `to_graph_schema_with_client()` 
+// (async, with auto-discovery and engine detection).
+
+use super::engine_detection::TableEngine;
+
+/// Optional discovery data for a table (populated by async ClickHouse queries)
+#[derive(Debug, Clone, Default)]
+struct TableDiscovery {
+    /// Auto-discovered columns (if auto_discover_columns is enabled)
+    columns: Option<Vec<String>>,
+    /// Detected table engine type
+    engine: Option<TableEngine>,
+}
+
+/// Build property mappings with optional auto-discovery
+fn build_property_mappings(
+    manual_mappings: HashMap<String, String>,
+    discovery: &TableDiscovery,
+    auto_discover: bool,
+    exclude_columns: &[String],
+    naming_convention: &str,
+) -> HashMap<String, String> {
+    if !auto_discover {
+        return manual_mappings;
+    }
+    
+    let mut mappings = HashMap::new();
+    
+    // Apply auto-discovered columns first (if available)
+    if let Some(ref columns) = discovery.columns {
+        for col in columns {
+            if !exclude_columns.contains(col) {
+                let property_name = apply_naming_convention(col, naming_convention);
+                mappings.insert(property_name, col.clone());
+            }
+        }
+    }
+    
+    // Manual mappings override auto-discovered (manual wins)
+    mappings.extend(manual_mappings);
+    
+    mappings
+}
+
+/// Determine use_final value from config and detected engine
+fn determine_use_final(config_use_final: Option<bool>, engine: &Option<TableEngine>) -> Option<bool> {
+    // If config has explicit value, use it
+    if config_use_final.is_some() {
+        return config_use_final;
+    }
+    // Otherwise, auto-detect from engine
+    Some(engine.as_ref().map(|e| e.supports_final()).unwrap_or(false))
+}
+
+/// Build a NodeSchema from a NodeDefinition with optional discovery data
+fn build_node_schema(
+    node_def: &NodeDefinition,
+    discovery: &TableDiscovery,
+) -> Result<NodeSchema, GraphSchemaError> {
+    // Build property mappings (with optional auto-discovery)
+    let raw_mappings = build_property_mappings(
+        node_def.properties.clone(),
+        discovery,
+        node_def.auto_discover_columns,
+        &node_def.exclude_columns,
+        &node_def.naming_convention,
+    );
+    
+    let property_mappings = parse_property_mappings(raw_mappings)?;
+    
+    // Determine use_final
+    let use_final = determine_use_final(node_def.use_final, &discovery.engine);
+    
+    // Check if this is a denormalized node
+    let is_denormalized = node_def.from_node_properties.is_some() 
+        || node_def.to_node_properties.is_some();
+    
+    // Parse filter if provided
+    let filter = if let Some(filter_str) = &node_def.filter {
+        Some(SchemaFilter::new(filter_str).map_err(|e| {
+            GraphSchemaError::ConfigReadError {
+                error: format!("Invalid filter for node '{}': {}", node_def.label, e),
+            }
+        })?)
+    } else {
+        None
+    };
+    
+    Ok(NodeSchema {
+        database: node_def.database.clone(),
+        table_name: node_def.table.clone(),
+        column_names: property_mappings
+            .values()
+            .flat_map(|pv| pv.get_columns())
+            .collect(),
+        primary_keys: node_def.id_column.clone(),
+        node_id: NodeIdSchema {
+            column: node_def.id_column.clone(),
+            dtype: "UInt64".to_string(),
+        },
+        property_mappings,
+        view_parameters: node_def.view_parameters.clone(),
+        engine: discovery.engine.clone(),
+        use_final,
+        filter,
+        is_denormalized,
+        from_properties: node_def.from_node_properties.clone(),
+        to_properties: node_def.to_node_properties.clone(),
+        denormalized_source_table: if is_denormalized {
+            Some(format!("{}.{}", node_def.database, node_def.table))
+        } else {
+            None
+        },
+    })
+}
+
+/// Build a RelationshipSchema from a legacy RelationshipDefinition
+fn build_relationship_schema(
+    rel_def: &RelationshipDefinition,
+    default_node_type: &str,
+    discovery: &TableDiscovery,
+) -> Result<RelationshipSchema, GraphSchemaError> {
+    // Build property mappings (with optional auto-discovery)
+    let raw_mappings = build_property_mappings(
+        rel_def.properties.clone(),
+        discovery,
+        rel_def.auto_discover_columns,
+        &rel_def.exclude_columns,
+        &rel_def.naming_convention,
+    );
+    
+    let property_mappings = parse_property_mappings(raw_mappings)?;
+    
+    // Determine use_final
+    let use_final = determine_use_final(rel_def.use_final, &discovery.engine);
+    
+    let from_node = rel_def
+        .from_node
+        .as_ref()
+        .unwrap_or(&default_node_type.to_string())
+        .clone();
+    let to_node = rel_def
+        .to_node
+        .as_ref()
+        .unwrap_or(&default_node_type.to_string())
+        .clone();
+    
+    // Parse filter if provided
+    let filter = if let Some(filter_str) = &rel_def.filter {
+        Some(SchemaFilter::new(filter_str).map_err(|e| {
+            GraphSchemaError::ConfigReadError {
+                error: format!("Invalid filter for relationship '{}': {}", rel_def.type_name, e),
+            }
+        })?)
+    } else {
+        None
+    };
+    
+    Ok(RelationshipSchema {
+        database: rel_def.database.clone(),
+        table_name: rel_def.table.clone(),
+        column_names: property_mappings
+            .values()
+            .flat_map(|pv| pv.get_columns())
+            .collect(),
+        from_node,
+        to_node,
+        from_id: rel_def.from_id.clone(),
+        to_id: rel_def.to_id.clone(),
+        from_node_id_dtype: "UInt64".to_string(),
+        to_node_id_dtype: "UInt64".to_string(),
+        property_mappings,
+        view_parameters: rel_def.view_parameters.clone(),
+        engine: discovery.engine.clone(),
+        use_final,
+        filter,
+        edge_id: rel_def.edge_id.clone(),
+        type_column: None,
+        from_label_column: None,
+        to_label_column: None,
+        from_node_properties: None,
+        to_node_properties: None,
+    })
+}
+
+/// Build a RelationshipSchema from a StandardEdgeDefinition
+fn build_standard_edge_schema(
+    std_edge: &StandardEdgeDefinition,
+    nodes: &HashMap<String, NodeSchema>,
+    discovery: &TableDiscovery,
+) -> Result<RelationshipSchema, GraphSchemaError> {
+    // Build property mappings (with optional auto-discovery)
+    let raw_mappings = build_property_mappings(
+        std_edge.properties.clone(),
+        discovery,
+        std_edge.auto_discover_columns,
+        &std_edge.exclude_columns,
+        &std_edge.naming_convention,
+    );
+    
+    let property_mappings = parse_property_mappings(raw_mappings)?;
+    
+    // Determine use_final
+    let use_final = determine_use_final(std_edge.use_final, &discovery.engine);
+    
+    // Parse filter if provided
+    let filter = if let Some(filter_str) = &std_edge.filter {
+        Some(SchemaFilter::new(filter_str).map_err(|e| {
+            GraphSchemaError::ConfigReadError {
+                error: format!("Invalid filter for edge '{}': {}", std_edge.type_name, e),
+            }
+        })?)
+    } else {
+        None
+    };
+    
+    // Look up denormalized node properties from NODE definitions (not edge)
+    let from_node_props = nodes.get(&std_edge.from_node)
+        .and_then(|n| n.from_properties.clone());
+    let to_node_props = nodes.get(&std_edge.to_node)
+        .and_then(|n| n.to_properties.clone());
+    
+    Ok(RelationshipSchema {
+        database: std_edge.database.clone(),
+        table_name: std_edge.table.clone(),
+        column_names: property_mappings
+            .values()
+            .flat_map(|pv| pv.get_columns())
+            .collect(),
+        from_node: std_edge.from_node.clone(),
+        to_node: std_edge.to_node.clone(),
+        from_id: std_edge.from_id.clone(),
+        to_id: std_edge.to_id.clone(),
+        from_node_id_dtype: "UInt64".to_string(),
+        to_node_id_dtype: "UInt64".to_string(),
+        property_mappings,
+        view_parameters: std_edge.view_parameters.clone(),
+        engine: discovery.engine.clone(),
+        use_final,
+        filter,
+        edge_id: std_edge.edge_id.clone(),
+        type_column: None,
+        from_label_column: None,
+        to_label_column: None,
+        from_node_properties: from_node_props,
+        to_node_properties: to_node_props,
+    })
+}
+
+/// Build RelationshipSchemas from a PolymorphicEdgeDefinition (one per type_value)
+fn build_polymorphic_edge_schemas(
+    poly_edge: &PolymorphicEdgeDefinition,
+    discovery: &TableDiscovery,
+) -> Result<Vec<(String, RelationshipSchema)>, GraphSchemaError> {
+    let property_mappings = parse_property_mappings(poly_edge.properties.clone())?;
+    
+    // Determine use_final
+    let use_final = determine_use_final(poly_edge.use_final, &discovery.engine);
+    
+    // Parse filter if provided
+    let filter = if let Some(filter_str) = &poly_edge.filter {
+        Some(SchemaFilter::new(filter_str).map_err(|e| {
+            GraphSchemaError::ConfigReadError {
+                error: format!("Invalid filter for polymorphic edge: {}", e),
+            }
+        })?)
+    } else {
+        None
+    };
+    
+    let mut results = Vec::new();
+    
+    for type_val in &poly_edge.type_values {
+        let rel_schema = RelationshipSchema {
+            database: poly_edge.database.clone(),
+            table_name: poly_edge.table.clone(),
+            column_names: property_mappings
+                .values()
+                .flat_map(|pv| pv.get_columns())
+                .collect(),
+            // Node types are NOT known at schema load time
+            // They will be matched at query time via from_label_column/to_label_column
+            from_node: "$any".to_string(),
+            to_node: "$any".to_string(),
+            from_id: poly_edge.from_id.clone(),
+            to_id: poly_edge.to_id.clone(),
+            from_node_id_dtype: "UInt64".to_string(),
+            to_node_id_dtype: "UInt64".to_string(),
+            property_mappings: property_mappings.clone(),
+            view_parameters: poly_edge.view_parameters.clone(),
+            engine: discovery.engine.clone(),
+            use_final,
+            filter: filter.clone(),
+            edge_id: poly_edge.edge_id.clone(),
+            type_column: Some(poly_edge.type_column.clone()),
+            from_label_column: Some(poly_edge.from_label_column.clone()),
+            to_label_column: Some(poly_edge.to_label_column.clone()),
+            from_node_properties: None,
+            to_node_properties: None,
+        };
+        results.push((type_val.clone(), rel_schema));
+    }
+    
+    Ok(results)
+}
+
 impl GraphSchemaConfig {
     /// Load graph schema configuration from a YAML file
     pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, GraphSchemaError> {
@@ -618,237 +928,58 @@ impl GraphSchemaConfig {
         self.validate()
     }
 
-    /// Convert to GraphSchema
+    /// Convert to GraphSchema (sync version, no auto-discovery)
+    /// 
+    /// This is the sync version that doesn't require a ClickHouse connection.
+    /// For auto-discovery and engine detection, use `to_graph_schema_with_client()`.
     pub fn to_graph_schema(&self) -> Result<GraphSchema, GraphSchemaError> {
-        self.validate()?; // Validate before converting
+        self.validate()?;
 
+        // No discovery data in sync mode
+        let no_discovery = TableDiscovery::default();
+        
         let mut nodes = HashMap::new();
         let mut relationships = HashMap::new();
 
-        // Convert node definitions
+        // Convert node definitions using shared builder
         for node_def in &self.graph_schema.nodes {
-            let property_mappings = parse_property_mappings(node_def.properties.clone())?;
-            
-            // Check if this is a denormalized node
-            let is_denormalized = node_def.from_node_properties.is_some() 
-                || node_def.to_node_properties.is_some();
-            
-            // Parse filter if provided
-            let filter = if let Some(filter_str) = &node_def.filter {
-                Some(SchemaFilter::new(filter_str).map_err(|e| {
-                    GraphSchemaError::ConfigReadError {
-                        error: format!("Invalid filter for node '{}': {}", node_def.label, e),
-                    }
-                })?)
-            } else {
-                None
-            };
-            
-            let node_schema = NodeSchema {
-                database: node_def.database.clone(),
-                table_name: node_def.table.clone(),
-                column_names: property_mappings
-                    .values()
-                    .flat_map(|pv| pv.get_columns())
-                    .collect(),
-                primary_keys: node_def.id_column.clone(),
-                node_id: NodeIdSchema {
-                    column: node_def.id_column.clone(),
-                    dtype: "UInt64".to_string(), // Default, could be made configurable
-                },
-                property_mappings,
-                view_parameters: node_def.view_parameters.clone(),
-                engine: None, // Will be populated during schema loading with ClickHouse client
-                use_final: node_def.use_final,
-                filter,
-                // Denormalized fields from node definition
-                is_denormalized,
-                from_properties: node_def.from_node_properties.clone(),
-                to_properties: node_def.to_node_properties.clone(),
-                denormalized_source_table: if is_denormalized {
-                    Some(format!("{}.{}", node_def.database, node_def.table))
-                } else {
-                    None
-                },
-            };
+            let node_schema = build_node_schema(node_def, &no_discovery)?;
             nodes.insert(node_def.label.clone(), node_schema);
         }
 
-        // Convert relationship definitions
+        // Get default node type for legacy relationship definitions
+        let default_node_type = self
+            .graph_schema
+            .nodes
+            .first()
+            .map(|n| n.label.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        // Convert legacy relationship definitions using shared builder
         for rel_def in &self.graph_schema.relationships {
-            // Parse property mappings
-            let property_mappings = parse_property_mappings(rel_def.properties.clone())?;
-            
-            // If from_node/to_node not specified, try to infer from first node type
-            // This is a simple heuristic - for production, should be explicitly specified
-            let default_node_type = self
-                .graph_schema
-                .nodes
-                .first()
-                .map(|n| n.label.clone())
-                .unwrap_or_else(|| "Unknown".to_string());
-
-            let from_node = rel_def
-                .from_node
-                .as_ref()
-                .unwrap_or(&default_node_type)
-                .clone();
-            let to_node = rel_def
-                .to_node
-                .as_ref()
-                .unwrap_or(&default_node_type)
-                .clone();
-
-            // Parse filter if provided
-            let filter = if let Some(filter_str) = &rel_def.filter {
-                Some(SchemaFilter::new(filter_str).map_err(|e| {
-                    GraphSchemaError::ConfigReadError {
-                        error: format!("Invalid filter for relationship '{}': {}", rel_def.type_name, e),
-                    }
-                })?)
-            } else {
-                None
-            };
-
-            let rel_schema = RelationshipSchema {
-                database: rel_def.database.clone(),
-                table_name: rel_def.table.clone(),
-                column_names: property_mappings
-                    .values()
-                    .flat_map(|pv| pv.get_columns())
-                    .collect(),
-                from_node,
-                to_node,
-                from_id: rel_def.from_id.clone(),
-                to_id: rel_def.to_id.clone(),
-                from_node_id_dtype: "UInt64".to_string(),
-                to_node_id_dtype: "UInt64".to_string(),
-                property_mappings,
-                view_parameters: rel_def.view_parameters.clone(),
-                engine: None, // Will be populated during schema loading with ClickHouse client
-                use_final: rel_def.use_final,
-                filter,
-                // New fields
-                edge_id: rel_def.edge_id.clone(),
-                type_column: None,
-                from_label_column: None,
-                to_label_column: None,
-                from_node_properties: None,
-                to_node_properties: None,
-            };
+            let rel_schema = build_relationship_schema(rel_def, &default_node_type, &no_discovery)?;
             relationships.insert(rel_def.type_name.clone(), rel_schema);
         }
 
-        // Convert edge definitions (new format)
+        // Convert edge definitions (new format) using shared builders
         for edge_def in &self.graph_schema.edges {
             match edge_def {
                 EdgeDefinition::Standard(std_edge) => {
-                    // Parse property mappings
-                    let property_mappings = parse_property_mappings(std_edge.properties.clone())?;
-                    
-                    // Parse filter if provided
-                    let filter = if let Some(filter_str) = &std_edge.filter {
-                        Some(SchemaFilter::new(filter_str).map_err(|e| {
-                            GraphSchemaError::ConfigReadError {
-                                error: format!("Invalid filter for edge '{}': {}", std_edge.type_name, e),
-                            }
-                        })?)
-                    } else {
-                        None
-                    };
-                    
-                    // Convert standard edge definition to RelationshipSchema
-                    // Look up denormalized node properties from NODE definitions (not edge)
-                    let from_node_props = nodes.get(&std_edge.from_node)
-                        .and_then(|n| n.from_properties.clone());
-                    let to_node_props = nodes.get(&std_edge.to_node)
-                        .and_then(|n| n.to_properties.clone());
-                    
-                    let rel_schema = RelationshipSchema {
-                        database: std_edge.database.clone(),
-                        table_name: std_edge.table.clone(),
-                        column_names: property_mappings
-                            .values()
-                            .flat_map(|pv| pv.get_columns())
-                            .collect(),
-                        from_node: std_edge.from_node.clone(),
-                        to_node: std_edge.to_node.clone(),
-                        from_id: std_edge.from_id.clone(),
-                        to_id: std_edge.to_id.clone(),
-                        from_node_id_dtype: "UInt64".to_string(),
-                        to_node_id_dtype: "UInt64".to_string(),
-                        property_mappings,
-                        view_parameters: std_edge.view_parameters.clone(),
-                        engine: None,
-                        use_final: std_edge.use_final,
-                        filter,
-                        // New fields
-                        edge_id: std_edge.edge_id.clone(),
-                        type_column: None,
-                        from_label_column: None,
-                        to_label_column: None,
-                        // Use node properties from NODE definitions
-                        from_node_properties: from_node_props,
-                        to_node_properties: to_node_props,
-                    };
+                    let rel_schema = build_standard_edge_schema(std_edge, &nodes, &no_discovery)?;
                     relationships.insert(std_edge.type_name.clone(), rel_schema);
                 }
                 EdgeDefinition::Polymorphic(poly_edge) => {
-                    // Parse property mappings
-                    let property_mappings = parse_property_mappings(poly_edge.properties.clone())?;
-                    
-                    // Parse filter if provided
-                    let filter = if let Some(filter_str) = &poly_edge.filter {
-                        Some(SchemaFilter::new(filter_str).map_err(|e| {
-                            GraphSchemaError::ConfigReadError {
-                                error: format!("Invalid filter for polymorphic edge: {}", e),
-                            }
-                        })?)
-                    } else {
-                        None
-                    };
-                    
-                    // Expand polymorphic edge: one config → N schemas (one per type_value)
-                    // No ClickHouse query needed - types are explicit in config
-                    for type_val in &poly_edge.type_values {
-                        let rel_schema = RelationshipSchema {
-                            database: poly_edge.database.clone(),
-                            table_name: poly_edge.table.clone(),
-                            column_names: property_mappings
-                                .values()
-                                .flat_map(|pv| pv.get_columns())
-                                .collect(),
-                            // Node types are NOT known at schema load time
-                            // They will be matched at query time via from_label_column/to_label_column
-                            // Use wildcard placeholders
-                            from_node: "$any".to_string(),
-                            to_node: "$any".to_string(),
-                            from_id: poly_edge.from_id.clone(),
-                            to_id: poly_edge.to_id.clone(),
-                            from_node_id_dtype: "UInt64".to_string(),
-                            to_node_id_dtype: "UInt64".to_string(),
-                            property_mappings: property_mappings.clone(),
-                            view_parameters: poly_edge.view_parameters.clone(),
-                            engine: None,
-                            use_final: poly_edge.use_final,
-                            filter: filter.clone(),
-                            // New fields - polymorphic specific
-                            edge_id: poly_edge.edge_id.clone(),
-                            type_column: Some(poly_edge.type_column.clone()),
-                            from_label_column: Some(poly_edge.from_label_column.clone()),
-                            to_label_column: Some(poly_edge.to_label_column.clone()),
-                            from_node_properties: None,
-                            to_node_properties: None,
-                        };
-                        relationships.insert(type_val.clone(), rel_schema);
+                    let poly_schemas = build_polymorphic_edge_schemas(poly_edge, &no_discovery)?;
+                    for (type_name, rel_schema) in poly_schemas {
+                        relationships.insert(type_name, rel_schema);
                     }
                 }
             }
         }
 
         Ok(GraphSchema::build(
-            1,                     // version
-            "default".to_string(), // Default database, individual tables have their own
+            1,
+            "default".to_string(),
             nodes,
             relationships,
         ))
@@ -859,6 +990,9 @@ impl GraphSchemaConfig {
     /// This method extends `to_graph_schema()` with:
     /// - Auto-discovery of table columns when `auto_discover_columns = true`
     /// - Automatic engine detection for FINAL keyword support
+    ///
+    /// Uses the same helper functions as `to_graph_schema()` but with populated
+    /// `TableDiscovery` data from ClickHouse metadata queries.
     ///
     /// # Arguments
     /// * `client` - ClickHouse client for querying metadata
@@ -879,187 +1013,58 @@ impl GraphSchemaConfig {
 
         // Convert node definitions with auto-discovery
         for node_def in &self.graph_schema.nodes {
-            let property_mappings = if node_def.auto_discover_columns {
-                // Auto-discover columns from ClickHouse
-                let columns = query_table_columns(client, &node_def.database, &node_def.table)
-                    .await
-                    .map_err(|e| GraphSchemaError::ConfigReadError {
-                        error: format!("Failed to query columns: {}", e),
-                    })?;
-
-                // Build identity mappings for all columns except excluded
-                let mut mappings = HashMap::new();
-                for col in columns {
-                    if !node_def.exclude_columns.contains(&col) {
-                        // Apply naming convention to property name
-                        let property_name =
-                            apply_naming_convention(&col, &node_def.naming_convention);
-                        mappings.insert(property_name, col);
-                    }
-                }
-
-                // Apply manual overrides from YAML (manual wins)
-                mappings.extend(node_def.properties.clone());
-
-                mappings
-            } else {
-                // Manual mode: use YAML as-is
-                node_def.properties.clone()
-            };
-
-            // Parse property mappings (convert String -> PropertyValue)
-            let property_mappings = parse_property_mappings(property_mappings)?;
-
-            // Auto-detect engine type
-            let engine = detect_table_engine(client, &node_def.database, &node_def.table)
-                .await
-                .ok(); // Gracefully handle detection failures
-
-            // Determine use_final: manual override > engine detection > false
-            let use_final = node_def
-                .use_final
-                .unwrap_or_else(|| engine.as_ref().map(|e| e.supports_final()).unwrap_or(false));
-
-            // Check if this is a denormalized node
-            let is_denormalized = node_def.from_node_properties.is_some() 
-                || node_def.to_node_properties.is_some();
-
-            // Parse filter if provided
-            let filter = if let Some(filter_str) = &node_def.filter {
-                Some(SchemaFilter::new(filter_str).map_err(|e| {
-                    GraphSchemaError::ConfigReadError {
-                        error: format!("Invalid filter for node '{}': {}", node_def.label, e),
-                    }
-                })?)
+            // Gather discovery data
+            let columns = if node_def.auto_discover_columns {
+                Some(
+                    query_table_columns(client, &node_def.database, &node_def.table)
+                        .await
+                        .map_err(|e| GraphSchemaError::ConfigReadError {
+                            error: format!("Failed to query columns for node '{}': {}", node_def.label, e),
+                        })?
+                )
             } else {
                 None
             };
-
-            let node_schema = NodeSchema {
-                database: node_def.database.clone(),
-                table_name: node_def.table.clone(),
-                column_names: property_mappings
-                    .values()
-                    .flat_map(|pv| pv.get_columns())
-                    .collect(),
-                primary_keys: node_def.id_column.clone(),
-                node_id: NodeIdSchema {
-                    column: node_def.id_column.clone(),
-                    dtype: "UInt64".to_string(),
-                },
-                property_mappings,
-                view_parameters: node_def.view_parameters.clone(),
-                engine,
-                use_final: Some(use_final),
-                filter,
-                // Denormalized fields from node definition
-                is_denormalized,
-                from_properties: node_def.from_node_properties.clone(),
-                to_properties: node_def.to_node_properties.clone(),
-                denormalized_source_table: if is_denormalized {
-                    Some(format!("{}.{}", node_def.database, node_def.table))
-                } else {
-                    None
-                },
-            };
+            
+            let engine = detect_table_engine(client, &node_def.database, &node_def.table)
+                .await
+                .ok();
+            
+            let discovery = TableDiscovery { columns, engine };
+            
+            let node_schema = build_node_schema(node_def, &discovery)?;
             nodes.insert(node_def.label.clone(), node_schema);
         }
 
+        // Get default node type for legacy relationship definitions
+        let default_node_type = self
+            .graph_schema
+            .nodes
+            .first()
+            .map(|n| n.label.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+
         // Convert relationship definitions with auto-discovery
         for rel_def in &self.graph_schema.relationships {
-            let property_mappings = if rel_def.auto_discover_columns {
-                // Auto-discover columns from ClickHouse
-                let columns = query_table_columns(client, &rel_def.database, &rel_def.table)
-                    .await
-                    .map_err(|e| GraphSchemaError::ConfigReadError {
-                        error: format!("Failed to query columns: {}", e),
-                    })?;
-
-                // Build identity mappings for all columns except excluded
-                let mut mappings = HashMap::new();
-                for col in columns {
-                    if !rel_def.exclude_columns.contains(&col) {
-                        // Apply naming convention to property name
-                        let property_name =
-                            apply_naming_convention(&col, &rel_def.naming_convention);
-                        mappings.insert(property_name, col);
-                    }
-                }
-
-                // Apply manual overrides
-                mappings.extend(rel_def.properties.clone());
-
-                mappings
-            } else {
-                rel_def.properties.clone()
-            };
-
-            // Parse property mappings (convert String -> PropertyValue)
-            let property_mappings = parse_property_mappings(property_mappings)?;
-
-            // Auto-detect engine type
-            let engine = detect_table_engine(client, &rel_def.database, &rel_def.table)
-                .await
-                .ok();
-
-            let use_final = rel_def
-                .use_final
-                .unwrap_or_else(|| engine.as_ref().map(|e| e.supports_final()).unwrap_or(false));
-
-            let default_node_type = self
-                .graph_schema
-                .nodes
-                .first()
-                .map(|n| n.label.clone())
-                .unwrap_or_else(|| "Unknown".to_string());
-
-            let from_node = rel_def
-                .from_node
-                .as_ref()
-                .unwrap_or(&default_node_type)
-                .clone();
-            let to_node = rel_def
-                .to_node
-                .as_ref()
-                .unwrap_or(&default_node_type)
-                .clone();
-
-            // Parse filter if provided
-            let filter = if let Some(filter_str) = &rel_def.filter {
-                Some(SchemaFilter::new(filter_str).map_err(|e| {
-                    GraphSchemaError::ConfigReadError {
-                        error: format!("Invalid filter for relationship '{}': {}", rel_def.type_name, e),
-                    }
-                })?)
+            let columns = if rel_def.auto_discover_columns {
+                Some(
+                    query_table_columns(client, &rel_def.database, &rel_def.table)
+                        .await
+                        .map_err(|e| GraphSchemaError::ConfigReadError {
+                            error: format!("Failed to query columns for relationship '{}': {}", rel_def.type_name, e),
+                        })?
+                )
             } else {
                 None
             };
-
-            let rel_schema = RelationshipSchema {
-                database: rel_def.database.clone(),
-                table_name: rel_def.table.clone(),
-                column_names: property_mappings
-                    .values()
-                    .flat_map(|pv| pv.get_columns())
-                    .collect(),
-                from_node,
-                to_node,
-                from_id: rel_def.from_id.clone(),
-                to_id: rel_def.to_id.clone(),
-                from_node_id_dtype: "UInt64".to_string(),
-                to_node_id_dtype: "UInt64".to_string(),
-                property_mappings,
-                view_parameters: rel_def.view_parameters.clone(),
-                engine,
-                use_final: Some(use_final),
-                filter,
-                edge_id: rel_def.edge_id.clone(),
-                type_column: None,
-                from_label_column: None,
-                to_label_column: None,
-                from_node_properties: None,
-                to_node_properties: None,
-            };
+            
+            let engine = detect_table_engine(client, &rel_def.database, &rel_def.table)
+                .await
+                .ok();
+            
+            let discovery = TableDiscovery { columns, engine };
+            
+            let rel_schema = build_relationship_schema(rel_def, &default_node_type, &discovery)?;
             relationships.insert(rel_def.type_name.clone(), rel_schema);
         }
 
@@ -1067,131 +1072,38 @@ impl GraphSchemaConfig {
         for edge_def in &self.graph_schema.edges {
             match edge_def {
                 EdgeDefinition::Standard(std_edge) => {
-                    let property_mappings = if std_edge.auto_discover_columns {
-                        // Auto-discover columns from ClickHouse
-                        let columns = query_table_columns(client, &std_edge.database, &std_edge.table)
-                            .await
-                            .map_err(|e| GraphSchemaError::ConfigReadError {
-                                error: format!("Failed to query columns: {}", e),
-                            })?;
-
-                        let mut mappings = HashMap::new();
-                        for col in columns {
-                            if !std_edge.exclude_columns.contains(&col) {
-                                let property_name =
-                                    apply_naming_convention(&col, &std_edge.naming_convention);
-                                mappings.insert(property_name, col);
-                            }
-                        }
-                        mappings.extend(std_edge.properties.clone());
-                        mappings
+                    let columns = if std_edge.auto_discover_columns {
+                        Some(
+                            query_table_columns(client, &std_edge.database, &std_edge.table)
+                                .await
+                                .map_err(|e| GraphSchemaError::ConfigReadError {
+                                    error: format!("Failed to query columns for edge '{}': {}", std_edge.type_name, e),
+                                })?
+                        )
                     } else {
-                        std_edge.properties.clone()
+                        None
                     };
-
-                    let property_mappings = parse_property_mappings(property_mappings)?;
-
+                    
                     let engine = detect_table_engine(client, &std_edge.database, &std_edge.table)
                         .await
                         .ok();
-
-                    let use_final = std_edge
-                        .use_final
-                        .unwrap_or_else(|| engine.as_ref().map(|e| e.supports_final()).unwrap_or(false));
-
-                    let filter = if let Some(filter_str) = &std_edge.filter {
-                        Some(SchemaFilter::new(filter_str).map_err(|e| {
-                            GraphSchemaError::ConfigReadError {
-                                error: format!("Invalid filter for edge '{}': {}", std_edge.type_name, e),
-                            }
-                        })?)
-                    } else {
-                        None
-                    };
-
-                    // Look up denormalized node properties from NODE definitions (not edge)
-                    let from_node_props = nodes.get(&std_edge.from_node)
-                        .and_then(|n| n.from_properties.clone());
-                    let to_node_props = nodes.get(&std_edge.to_node)
-                        .and_then(|n| n.to_properties.clone());
-
-                    let rel_schema = RelationshipSchema {
-                        database: std_edge.database.clone(),
-                        table_name: std_edge.table.clone(),
-                        column_names: property_mappings
-                            .values()
-                            .flat_map(|pv| pv.get_columns())
-                            .collect(),
-                        from_node: std_edge.from_node.clone(),
-                        to_node: std_edge.to_node.clone(),
-                        from_id: std_edge.from_id.clone(),
-                        to_id: std_edge.to_id.clone(),
-                        from_node_id_dtype: "UInt64".to_string(),
-                        to_node_id_dtype: "UInt64".to_string(),
-                        property_mappings,
-                        view_parameters: std_edge.view_parameters.clone(),
-                        engine,
-                        use_final: Some(use_final),
-                        filter,
-                        edge_id: std_edge.edge_id.clone(),
-                        type_column: None,
-                        from_label_column: None,
-                        to_label_column: None,
-                        // Use node properties from NODE definitions
-                        from_node_properties: from_node_props,
-                        to_node_properties: to_node_props,
-                    };
+                    
+                    let discovery = TableDiscovery { columns, engine };
+                    
+                    let rel_schema = build_standard_edge_schema(std_edge, &nodes, &discovery)?;
                     relationships.insert(std_edge.type_name.clone(), rel_schema);
                 }
                 EdgeDefinition::Polymorphic(poly_edge) => {
-                    // Polymorphic edges use explicit property mappings
-                    let property_mappings = parse_property_mappings(poly_edge.properties.clone())?;
-
+                    // Polymorphic edges don't support auto_discover_columns,
+                    // but we still detect the engine
                     let engine = detect_table_engine(client, &poly_edge.database, &poly_edge.table)
                         .await
                         .ok();
-
-                    let use_final = poly_edge
-                        .use_final
-                        .unwrap_or_else(|| engine.as_ref().map(|e| e.supports_final()).unwrap_or(false));
-
-                    let filter = if let Some(filter_str) = &poly_edge.filter {
-                        Some(SchemaFilter::new(filter_str).map_err(|e| {
-                            GraphSchemaError::ConfigReadError {
-                                error: format!("Invalid filter for polymorphic edge: {}", e),
-                            }
-                        })?)
-                    } else {
-                        None
-                    };
-
-                    for type_val in &poly_edge.type_values {
-                        let rel_schema = RelationshipSchema {
-                            database: poly_edge.database.clone(),
-                            table_name: poly_edge.table.clone(),
-                            column_names: property_mappings
-                                .values()
-                                .flat_map(|pv| pv.get_columns())
-                                .collect(),
-                            from_node: "$any".to_string(),
-                            to_node: "$any".to_string(),
-                            from_id: poly_edge.from_id.clone(),
-                            to_id: poly_edge.to_id.clone(),
-                            from_node_id_dtype: "UInt64".to_string(),
-                            to_node_id_dtype: "UInt64".to_string(),
-                            property_mappings: property_mappings.clone(),
-                            view_parameters: poly_edge.view_parameters.clone(),
-                            engine: engine.clone(),
-                            use_final: Some(use_final),
-                            filter: filter.clone(),
-                            edge_id: poly_edge.edge_id.clone(),
-                            type_column: Some(poly_edge.type_column.clone()),
-                            from_label_column: Some(poly_edge.from_label_column.clone()),
-                            to_label_column: Some(poly_edge.to_label_column.clone()),
-                            from_node_properties: None,
-                            to_node_properties: None,
-                        };
-                        relationships.insert(type_val.clone(), rel_schema);
+                    
+                    let discovery = TableDiscovery { columns: None, engine };
+                    
+                    for (type_name, rel_schema) in build_polymorphic_edge_schemas(poly_edge, &discovery)? {
+                        relationships.insert(type_name, rel_schema);
                     }
                 }
             }
