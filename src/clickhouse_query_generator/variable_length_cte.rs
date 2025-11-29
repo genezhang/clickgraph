@@ -37,6 +37,12 @@ pub struct VariableLengthCteGenerator {
     pub is_denormalized: bool, // True if BOTH nodes are virtual (for backward compat)
     pub start_is_denormalized: bool, // True if start node is virtual (properties come from edge table)
     pub end_is_denormalized: bool, // True if end node is virtual (properties come from edge table)
+    // Polymorphic edge fields - for filtering unified edge tables by type
+    pub type_column: Option<String>, // Discriminator column for relationship type (e.g., "interaction_type")
+    pub from_label_column: Option<String>, // Discriminator column for source node type
+    pub to_label_column: Option<String>, // Discriminator column for target node type
+    pub from_node_label: Option<String>, // Expected value for from_label_column (e.g., "User")
+    pub to_node_label: Option<String>, // Expected value for to_label_column (e.g., "Post")
 }
 
 /// Mode for shortest path queries
@@ -79,6 +85,57 @@ impl VariableLengthCteGenerator {
         relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
         edge_id: Option<Identifier>,   // Edge ID for relationship uniqueness
     ) -> Self {
+        Self::new_with_polymorphic(
+            spec,
+            start_table,
+            start_id_col,
+            relationship_table,
+            rel_from_col,
+            rel_to_col,
+            end_table,
+            end_id_col,
+            start_alias,
+            end_alias,
+            properties,
+            shortest_path_mode,
+            start_node_filters,
+            end_node_filters,
+            path_variable,
+            relationship_types,
+            edge_id,
+            None, // type_column
+            None, // from_label_column
+            None, // to_label_column
+            None, // from_node_label
+            None, // to_node_label
+        )
+    }
+
+    /// Create a generator with polymorphic edge support
+    pub fn new_with_polymorphic(
+        spec: VariableLengthSpec,
+        start_table: &str,
+        start_id_col: &str,
+        relationship_table: &str,
+        rel_from_col: &str,
+        rel_to_col: &str,
+        end_table: &str,
+        end_id_col: &str,
+        start_alias: &str,
+        end_alias: &str,
+        properties: Vec<NodeProperty>,
+        shortest_path_mode: Option<ShortestPathMode>,
+        start_node_filters: Option<String>,
+        end_node_filters: Option<String>,
+        path_variable: Option<String>,
+        relationship_types: Option<Vec<String>>,
+        edge_id: Option<Identifier>,
+        type_column: Option<String>,
+        from_label_column: Option<String>,
+        to_label_column: Option<String>,
+        from_node_label: Option<String>,
+        to_node_label: Option<String>,
+    ) -> Self {
         // Try to get database from environment
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
 
@@ -105,9 +162,14 @@ impl VariableLengthCteGenerator {
             path_variable,
             relationship_types,
             edge_id,
-            is_denormalized: false, // Default to standard (normalized) mode
-            start_is_denormalized: false, // Start node is standard
-            end_is_denormalized: false, // End node is standard
+            is_denormalized: false,
+            start_is_denormalized: false,
+            end_is_denormalized: false,
+            type_column,
+            from_label_column,
+            to_label_column,
+            from_node_label,
+            to_node_label,
         }
     }
 
@@ -155,6 +217,12 @@ impl VariableLengthCteGenerator {
             is_denormalized: true, // Enable denormalized mode (both nodes)
             start_is_denormalized: true, // Start node is denormalized
             end_is_denormalized: true, // End node is denormalized
+            // Polymorphic edge fields - not used for denormalized edges
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_label: None,
+            to_node_label: None,
         }
     }
 
@@ -209,6 +277,12 @@ impl VariableLengthCteGenerator {
             is_denormalized: start_is_denormalized && end_is_denormalized, // Both must be denorm for full denorm mode
             start_is_denormalized,
             end_is_denormalized,
+            // Polymorphic edge fields - not used for mixed mode yet
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_label: None,
+            to_node_label: None,
         }
     }
 
@@ -224,6 +298,70 @@ impl VariableLengthCteGenerator {
             format!("{}.{}", db, table)
         } else {
             table.to_string()
+        }
+    }
+
+    /// Generate polymorphic edge filter condition for JOIN ON clause
+    /// For polymorphic edges (unified table with type discriminator), adds filters like:
+    /// - `rel.interaction_type = 'FOLLOWS'` (type filter)
+    /// - `rel.from_label = 'User'` (source node type filter)
+    /// - `rel.to_label = 'User'` (target node type filter)
+    /// 
+    /// For multiple relationship types (e.g., [:FOLLOWS|LIKES]):
+    /// - `rel.interaction_type IN ('FOLLOWS', 'LIKES')`
+    fn generate_polymorphic_edge_filter(&self) -> Option<String> {
+        let mut filter_parts = Vec::new();
+
+        // Add type filter if type_column is defined
+        if let Some(ref type_col) = self.type_column {
+            if let Some(ref rel_types) = self.relationship_types {
+                if rel_types.len() == 1 {
+                    // Single type: use equality
+                    filter_parts.push(format!(
+                        "{}.{} = '{}'",
+                        self.relationship_alias, type_col, rel_types[0]
+                    ));
+                } else if rel_types.len() > 1 {
+                    // Multiple types: use IN clause
+                    let types_list = rel_types
+                        .iter()
+                        .map(|t| format!("'{}'", t))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    filter_parts.push(format!(
+                        "{}.{} IN ({})",
+                        self.relationship_alias, type_col, types_list
+                    ));
+                }
+            }
+        }
+
+        // Add from_label filter if from_label_column is defined
+        if let Some(ref from_label_col) = self.from_label_column {
+            if let Some(ref from_label) = self.from_node_label {
+                filter_parts.push(format!(
+                    "{}.{} = '{}'",
+                    self.relationship_alias, from_label_col, from_label
+                ));
+            }
+        }
+
+        // Add to_label filter if to_label_column is defined
+        if let Some(ref to_label_col) = self.to_label_column {
+            if let Some(ref to_label) = self.to_node_label {
+                filter_parts.push(format!(
+                    "{}.{} = '{}'",
+                    self.relationship_alias, to_label_col, to_label
+                ));
+            }
+        }
+
+        if filter_parts.is_empty() {
+            None
+        } else {
+            let filter = filter_parts.join(" AND ");
+            eprintln!("    🔹 VLP polymorphic edge filter: {}", filter);
+            Some(filter)
         }
     }
 
@@ -680,6 +818,12 @@ impl VariableLengthCteGenerator {
             // For shortest path queries, only include start filters in base case
             // End filters are applied in the _to_target wrapper CTE
             let mut where_conditions = Vec::new();
+            
+            // Add polymorphic edge filter if this is a polymorphic edge table
+            if let Some(poly_filter) = self.generate_polymorphic_edge_filter() {
+                where_conditions.push(poly_filter);
+            }
+            
             if let Some(ref filters) = self.start_node_filters {
                 where_conditions.push(filters.clone());
             }
@@ -784,6 +928,11 @@ impl VariableLengthCteGenerator {
                 edge_tuple_check
             ), // Edge uniqueness check (Neo4j semantics)
         ];
+
+        // Add polymorphic edge filter if this is a polymorphic edge table
+        if let Some(poly_filter) = self.generate_polymorphic_edge_filter() {
+            where_conditions.push(poly_filter);
+        }
 
         // Note: We no longer skip zero-hop rows in recursion.
         // The recursion can now start from zero-hop base case and expand from there.
@@ -1228,6 +1377,80 @@ mod tests {
         assert_eq!(spec.effective_min_hops(), 2);
         assert_eq!(spec.max_hops, Some(2));
         assert!(!spec.is_single_hop());
+    }
+
+    #[test]
+    fn test_polymorphic_edge_filter() {
+        // Test single relationship type with polymorphic edge
+        let spec = VariableLengthSpec::range(1, 3);
+        let generator = VariableLengthCteGenerator::new_with_polymorphic(
+            spec,
+            "users",         // start table
+            "user_id",       // start id column
+            "interactions",  // relationship table (polymorphic)
+            "from_id",       // from column
+            "to_id",         // to column
+            "users",         // end table
+            "user_id",       // end id column
+            "u1",            // start alias
+            "u2",            // end alias
+            vec![],          // no properties for test
+            None,            // no shortest path mode
+            None,            // no start node filters
+            None,            // no end node filters
+            None,            // no path variable
+            Some(vec!["FOLLOWS".to_string()]), // relationship type
+            None,            // no edge_id
+            Some("interaction_type".to_string()), // type_column
+            None,            // no from_label_column
+            None,            // no to_label_column
+            Some("User".to_string()), // from_node_label
+            Some("User".to_string()), // to_node_label
+        );
+
+        let sql = generator.generate_recursive_sql();
+        println!("Polymorphic edge SQL:\n{}", sql);
+
+        // Should contain the polymorphic type filter
+        assert!(sql.contains("interaction_type = 'FOLLOWS'"), 
+               "Expected polymorphic filter in base case. SQL: {}", sql);
+    }
+
+    #[test]
+    fn test_polymorphic_edge_filter_multiple_types() {
+        // Test multiple relationship types with polymorphic edge
+        let spec = VariableLengthSpec::range(1, 3);
+        let generator = VariableLengthCteGenerator::new_with_polymorphic(
+            spec,
+            "users",         // start table
+            "user_id",       // start id column
+            "interactions",  // relationship table (polymorphic)
+            "from_id",       // from column
+            "to_id",         // to column
+            "users",         // end table
+            "user_id",       // end id column
+            "u1",            // start alias
+            "u2",            // end alias
+            vec![],          // no properties for test
+            None,            // no shortest path mode
+            None,            // no start node filters
+            None,            // no end node filters
+            None,            // no path variable
+            Some(vec!["FOLLOWS".to_string(), "LIKES".to_string()]), // multiple types
+            None,            // no edge_id
+            Some("interaction_type".to_string()), // type_column
+            None,            // no from_label_column
+            None,            // no to_label_column
+            Some("User".to_string()), // from_node_label
+            Some("User".to_string()), // to_node_label
+        );
+
+        let sql = generator.generate_recursive_sql();
+        println!("Polymorphic edge multiple types SQL:\n{}", sql);
+
+        // Should contain the polymorphic type filter with IN clause
+        assert!(sql.contains("interaction_type IN ('FOLLOWS', 'LIKES')"), 
+               "Expected polymorphic IN filter in base case. SQL: {}", sql);
     }
 }
 

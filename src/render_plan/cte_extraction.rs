@@ -768,23 +768,28 @@ pub fn extract_ctes_with_context(
                     
                     // Get edge_id from relationship schema if available
                     // Use the first relationship label to look up the schema
-                    let edge_id = if let Some(schema) = context.schema() {
+                    let (edge_id, type_column, from_label_column, to_label_column) = if let Some(schema) = context.schema() {
                         if let Some(labels) = &graph_rel.labels {
                             if let Some(first_label) = labels.first() {
                                 // Try to get relationship schema by label (not table name)
                                 if let Ok(rel_schema) = schema.get_rel_schema(first_label) {
-                                    rel_schema.edge_id.clone()
+                                    (
+                                        rel_schema.edge_id.clone(),
+                                        rel_schema.type_column.clone(),
+                                        rel_schema.from_label_column.clone(),
+                                        rel_schema.to_label_column.clone(),
+                                    )
                                 } else {
-                                    None
+                                    (None, None, None, None)
                                 }
                             } else {
-                                None
+                                (None, None, None, None)
                             }
                         } else {
-                            None
+                            (None, None, None, None)
                         }
                     } else {
-                        None
+                        (None, None, None, None)
                     };
                     
                     // Choose generator based on denormalized status
@@ -831,7 +836,7 @@ pub fn extract_ctes_with_context(
                             end_is_denormalized,
                         )
                     } else {
-                        VariableLengthCteGenerator::new(
+                        VariableLengthCteGenerator::new_with_polymorphic(
                             spec.clone(),
                             &start_table,
                             &start_id_col,
@@ -850,6 +855,11 @@ pub fn extract_ctes_with_context(
                             graph_rel.path_variable.clone(),
                             graph_rel.labels.clone(),
                             edge_id, // Pass edge_id from schema
+                            type_column, // Polymorphic edge type discriminator
+                            from_label_column, // Polymorphic edge from label column
+                            to_label_column, // Polymorphic edge to label column
+                            Some(start_label.clone()), // Expected from node label
+                            Some(end_label.clone()), // Expected to node label
                         )
                     };
                     let var_len_cte = generator.generate_cte();

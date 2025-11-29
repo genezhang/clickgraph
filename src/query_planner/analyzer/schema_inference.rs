@@ -494,50 +494,121 @@ impl SchemaInference {
                 #[allow(clippy::unnecessary_unwrap)]
                 let left_table_name = extracted_left_node_table_result.unwrap();
 
+                // Handle polymorphic edges with $any wildcards
                 let right_table_name = if relation_schema.from_node == left_table_name {
-                    &graph_schema
-                        .get_node_schema(&relation_schema.to_node)
-                        .map_err(|e| AnalyzerError::GraphSchema {
-                            pass: Pass::SchemaInference,
-                            source: e,
-                        })?
-                        .table_name
+                    // Left is from_node, so right is to_node
+                    if relation_schema.to_node == "$any" {
+                        // Polymorphic edge - try to extract from right table context
+                        if let Some(extracted_right) = extracted_right_node_table_result.as_ref() {
+                            extracted_right.clone()
+                        } else {
+                            // Fallback: use left_table_name (self-join pattern)
+                            left_table_name.clone()
+                        }
+                    } else {
+                        graph_schema
+                            .get_node_schema(&relation_schema.to_node)
+                            .map_err(|e| AnalyzerError::GraphSchema {
+                                pass: Pass::SchemaInference,
+                                source: e,
+                            })?
+                            .table_name
+                            .clone()
+                    }
+                } else if relation_schema.from_node == "$any" {
+                    // from_node is wildcard, so right is to_node
+                    if relation_schema.to_node == "$any" {
+                        // Both are wildcards - use extracted or fallback
+                        if let Some(extracted_right) = extracted_right_node_table_result.as_ref() {
+                            extracted_right.clone()
+                        } else {
+                            left_table_name.clone()
+                        }
+                    } else {
+                        graph_schema
+                            .get_node_schema(&relation_schema.to_node)
+                            .map_err(|e| AnalyzerError::GraphSchema {
+                                pass: Pass::SchemaInference,
+                                source: e,
+                            })?
+                            .table_name
+                            .clone()
+                    }
                 } else {
-                    &graph_schema
-                        .get_node_schema(&relation_schema.from_node)
-                        .map_err(|e| AnalyzerError::GraphSchema {
-                            pass: Pass::SchemaInference,
-                            source: e,
-                        })?
-                        .table_name
+                    // Left is to_node, so right is from_node
+                    if relation_schema.from_node == "$any" {
+                        if let Some(extracted_right) = extracted_right_node_table_result.as_ref() {
+                            extracted_right.clone()
+                        } else {
+                            left_table_name.clone()
+                        }
+                    } else {
+                        graph_schema
+                            .get_node_schema(&relation_schema.from_node)
+                            .map_err(|e| AnalyzerError::GraphSchema {
+                                pass: Pass::SchemaInference,
+                                source: e,
+                            })?
+                            .table_name
+                            .clone()
+                    }
                 };
                 return Ok((
                     left_table_name,
                     rel_table_name.to_string(),
-                    right_table_name.to_string(),
+                    right_table_name,
                 ));
             } else if extracted_right_node_table_result.is_some() {
                 let right_table_name = extracted_right_node_table_result.unwrap();
 
+                // Handle polymorphic edges with $any wildcards
                 let left_table_name = if relation_schema.from_node == right_table_name {
-                    &graph_schema
-                        .get_node_schema(&relation_schema.to_node)
-                        .map_err(|e| AnalyzerError::GraphSchema {
-                            pass: Pass::SchemaInference,
-                            source: e,
-                        })?
-                        .table_name
+                    // Right is from_node, so left is to_node
+                    if relation_schema.to_node == "$any" {
+                        // Polymorphic edge - use right_table_name as fallback (self-join pattern)
+                        right_table_name.clone()
+                    } else {
+                        graph_schema
+                            .get_node_schema(&relation_schema.to_node)
+                            .map_err(|e| AnalyzerError::GraphSchema {
+                                pass: Pass::SchemaInference,
+                                source: e,
+                            })?
+                            .table_name
+                            .clone()
+                    }
+                } else if relation_schema.from_node == "$any" {
+                    // from_node is wildcard
+                    if relation_schema.to_node == "$any" {
+                        // Both are wildcards - use right_table_name
+                        right_table_name.clone()
+                    } else {
+                        graph_schema
+                            .get_node_schema(&relation_schema.to_node)
+                            .map_err(|e| AnalyzerError::GraphSchema {
+                                pass: Pass::SchemaInference,
+                                source: e,
+                            })?
+                            .table_name
+                            .clone()
+                    }
                 } else {
-                    &graph_schema
-                        .get_node_schema(&relation_schema.from_node)
-                        .map_err(|e| AnalyzerError::GraphSchema {
-                            pass: Pass::SchemaInference,
-                            source: e,
-                        })?
-                        .table_name
+                    // Right is to_node, so left is from_node  
+                    if relation_schema.from_node == "$any" {
+                        right_table_name.clone()
+                    } else {
+                        graph_schema
+                            .get_node_schema(&relation_schema.from_node)
+                            .map_err(|e| AnalyzerError::GraphSchema {
+                                pass: Pass::SchemaInference,
+                                source: e,
+                            })?
+                            .table_name
+                            .clone()
+                    }
                 };
                 return Ok((
-                    left_table_name.to_string(),
+                    left_table_name,
                     rel_table_name.to_string(),
                     right_table_name,
                 ));
