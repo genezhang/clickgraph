@@ -537,9 +537,10 @@ clickgraph/
 │   │   ├── environment-checklist.md
 │   │   ├── testing.md
 │   │   └── git-workflow.md
-│   └── features/
-│       ├── bolt-protocol.md
-│       └── packstream.md
+|   ├── features/
+│   |   ├── bolt-protocol.md
+│   |   └── packstream.md
+|   └─wiki/
 ├── notes/
 │   ├── viewscan.md             # Feature implementation details
 │   ├── optional-match.md
