@@ -3844,6 +3844,48 @@ impl RenderPlanBuilder for LogicalPlan {
             final_from
         );
 
+        // FIX: For fixed-length VLP patterns (*2, *3, etc.), we need to use the START node as FROM,
+        // not the relationship anchor. The expand_fixed_length_joins() generates JOINs that start
+        // with r1 joining to the start node, so FROM must be the start node.
+        if let LogicalPlan::GraphJoins(graph_joins) = self {
+            if let Some(spec) = get_variable_length_spec(&graph_joins.input) {
+                if let Some(exact_hops) = spec.exact_hop_count() {
+                    if exact_hops > 1 {
+                        // Find the start node from the GraphRel
+                        fn find_graph_rel_start(plan: &LogicalPlan) -> Option<(String, String)> {
+                            match plan {
+                                LogicalPlan::GraphRel(gr) => {
+                                    // Get start node alias and table
+                                    if let LogicalPlan::GraphNode(node) = gr.left.as_ref() {
+                                        if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                                            return Some((node.alias.clone(), scan.source_table.clone()));
+                                        }
+                                    }
+                                    None
+                                }
+                                LogicalPlan::Projection(p) => find_graph_rel_start(&p.input),
+                                LogicalPlan::Filter(f) => find_graph_rel_start(&f.input),
+                                _ => None,
+                            }
+                        }
+                        
+                        if let Some((start_alias, start_table)) = find_graph_rel_start(&graph_joins.input) {
+                            println!(
+                                "DEBUG: Fixed-length VLP pattern (*{}) - overriding FROM to start node '{}' (table: {})",
+                                exact_hops, start_alias, start_table
+                            );
+                            final_from = Some(FromTable::new(Some(ViewTableRef {
+                                source: std::sync::Arc::new(LogicalPlan::Empty),
+                                name: start_table,
+                                alias: Some(start_alias),
+                                use_final: false,
+                            })));
+                        }
+                    }
+                }
+            }
+        }
+
         // Check if we have an UNWIND clause - if so and no FROM, use system.one
         let array_join = self.extract_array_join()?;
         if final_from.is_none() && array_join.is_some() {

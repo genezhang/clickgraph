@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://github.com/genezhang/clickgraph/tree/main/docs/images/cglogo.png" height="200">
+  <img src="https://github.com/genezhang/clickgraph/blob/main/docs/images/cglogo.png" height="200">
 </div>
 
 # ClickGraph

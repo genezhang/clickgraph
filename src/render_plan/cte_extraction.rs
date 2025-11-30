@@ -1593,23 +1593,22 @@ pub fn generate_cycle_prevention_filters_composite(
         }
     };
     
-    // 1. Start node != End node
+    // 1. Start node != End node (prevents returning to the starting point)
     filters.push(generate_composite_not_equal(
         start_alias, start_id_cols,
         end_alias, end_id_cols,
     ));
     
-    // 2. For each pair of consecutive relationships, ensure different intermediate nodes
-    // r1.to_id != r2.from_id, r2.to_id != r3.from_id, etc.
-    for hop in 1..exact_hops {
-        let curr_rel = format!("r{}", hop);
-        let next_rel = format!("r{}", hop + 1);
-        
-        filters.push(generate_composite_not_equal(
-            &curr_rel, to_cols,
-            &next_rel, from_cols,
-        ));
-    }
+    // NOTE: We previously had cycle prevention for intermediate nodes, but it was WRONG.
+    // The condition `r1.to_id != r2.from_id` blocks VALID paths because that's exactly 
+    // how paths connect (r1.to_id = r2.from_id is the JOIN condition).
+    //
+    // For proper cycle prevention (no node visited twice), we would need to track all
+    // intermediate nodes and ensure they're all different from each other. This is
+    // complex for inline JOINs (easy in recursive CTEs with path arrays).
+    //
+    // For now, we only prevent returning to the start node, which is the most common
+    // cycle prevention requirement. Full cycle detection can be added later if needed.
     
     // Combine all filters with AND
     if filters.is_empty() {
