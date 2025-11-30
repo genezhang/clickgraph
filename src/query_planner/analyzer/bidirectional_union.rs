@@ -154,15 +154,42 @@ fn transform_bidirectional(
             let transformed = transform_bidirectional(&proj.input, plan_ctx)?;
             match transformed {
                 Transformed::Yes(new_input) => {
-                    let new_proj = Projection {
-                        input: new_input,
-                        items: proj.items.clone(),
-                        kind: proj.kind.clone(),
-                        distinct: proj.distinct,
-                    };
-                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
-                        new_proj,
-                    ))))
+                    // If the input transformed into a Union (from bidirectional pattern),
+                    // we need to push the Projection down into each Union branch
+                    if let LogicalPlan::Union(union) = new_input.as_ref() {
+                        eprintln!(
+                            "🔄 BidirectionalUnion: Pushing Projection into {} Union branches",
+                            union.inputs.len()
+                        );
+                        
+                        // Create a Projection for each branch
+                        let projected_branches: Vec<Arc<LogicalPlan>> = union.inputs.iter().map(|branch| {
+                            Arc::new(LogicalPlan::Projection(Projection {
+                                input: branch.clone(),
+                                items: proj.items.clone(),
+                                kind: proj.kind.clone(),
+                                distinct: proj.distinct,
+                            }))
+                        }).collect();
+                        
+                        // Return Union with projected branches
+                        let new_union = Union {
+                            inputs: projected_branches,
+                            union_type: union.union_type.clone(),
+                        };
+                        Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(new_union))))
+                    } else {
+                        // Not a Union, just wrap with the same Projection
+                        let new_proj = Projection {
+                            input: new_input,
+                            items: proj.items.clone(),
+                            kind: proj.kind.clone(),
+                            distinct: proj.distinct,
+                        };
+                        Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
+                            new_proj,
+                        ))))
+                    }
                 }
                 Transformed::No(_) => Ok(Transformed::No(plan.clone())),
             }
