@@ -10,7 +10,8 @@ use crate::{
     graph_catalog::graph_schema::GraphSchema,
     query_planner::{
         analyzer::{
-            analyzer_pass::AnalyzerPass, duplicate_scans_removing::DuplicateScansRemoving,
+            analyzer_pass::AnalyzerPass, bidirectional_union::BidirectionalUnion,
+            duplicate_scans_removing::DuplicateScansRemoving,
             filter_tagging::FilterTagging, graph_join_inference::GraphJoinInference,
             graph_traversal_planning::GraphTRaversalPlanning, group_by_building::GroupByBuilding,
             plan_sanitization::PlanSanitization, projection_tagging::ProjectionTagging,
@@ -23,6 +24,7 @@ use crate::{
 use super::plan_ctx::PlanCtx;
 
 mod analyzer_pass;
+mod bidirectional_union;
 mod duplicate_scans_removing;
 pub mod errors;
 mod filter_tagging;
@@ -101,6 +103,16 @@ pub fn intermediate_analyzing(
 
     let duplicate_scans_removing = DuplicateScansRemoving::new();
     let transformed_plan = duplicate_scans_removing.analyze(plan.clone(), plan_ctx)?;
+    let plan = transformed_plan.get_plan();
+
+    // Transform bidirectional patterns (Direction::Either) into UNION ALL of two directed patterns
+    // This MUST run before GraphJoinInference to avoid OR-based JOINs that ClickHouse handles incorrectly
+    let bidirectional_union = BidirectionalUnion;
+    let transformed_plan = bidirectional_union.analyze_with_graph_schema(
+        plan.clone(),
+        plan_ctx,
+        current_graph_schema,
+    )?;
     let plan = transformed_plan.get_plan();
 
     let graph_join_inference = GraphJoinInference::new();

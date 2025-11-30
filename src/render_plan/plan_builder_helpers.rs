@@ -1269,16 +1269,37 @@ pub(super) fn find_nested_union(plan: &LogicalPlan) -> Option<&crate::query_plan
 }
 
 /// Extract outer aggregation info from a plan that wraps a Union
+/// Handles two possible structures:
+/// 1. Projection(GroupBy(Union(...))) - older structure
+/// 2. GroupBy(Projection(Union(...))) - from GroupByBuilding analyzer
 pub(super) fn extract_outer_aggregation_info(
     plan: &LogicalPlan,
 ) -> Option<(Vec<super::SelectItem>, Vec<RenderExpr>)> {
     use super::{SelectItem, ColumnAlias};
     
+    println!("🔍 extract_outer_aggregation_info: plan type = {:?}", std::mem::discriminant(plan));
+    
     let (projection, group_by) = match plan {
+        // Pattern 1: GraphJoins(Projection(GroupBy(Union)))
         LogicalPlan::GraphJoins(graph_joins) => {
+            println!("🔍 extract_outer_aggregation_info: GraphJoins case");
             if let LogicalPlan::Projection(proj) = graph_joins.input.as_ref() {
                 if let LogicalPlan::GroupBy(gb) = proj.input.as_ref() {
                     if find_nested_union(&gb.input).is_some() {
+                        (Some(proj), Some(gb))
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                }
+            // Pattern 2: GraphJoins(GroupBy(Projection(Union))) - from GroupByBuilding
+            } else if let LogicalPlan::GroupBy(gb) = graph_joins.input.as_ref() {
+                println!("🔍 extract_outer_aggregation_info: GraphJoins(GroupBy) case");
+                if let LogicalPlan::Projection(proj) = gb.input.as_ref() {
+                    println!("🔍 extract_outer_aggregation_info: Found Projection inside GroupBy, proj.input type = {:?}", std::mem::discriminant(proj.input.as_ref()));
+                    if find_nested_union(&proj.input).is_some() {
+                        println!("🔍 extract_outer_aggregation_info: Found Union! Returning projection and group_by");
                         (Some(proj), Some(gb))
                     } else {
                         (None, None)
@@ -1290,7 +1311,9 @@ pub(super) fn extract_outer_aggregation_info(
                 (None, None)
             }
         }
+        // Pattern 1: Projection(GroupBy(Union))
         LogicalPlan::Projection(proj) => {
+            println!("🔍 extract_outer_aggregation_info: Projection case");
             if let LogicalPlan::GroupBy(gb) = proj.input.as_ref() {
                 if find_nested_union(&gb.input).is_some() {
                     (Some(proj), Some(gb))
@@ -1301,7 +1324,45 @@ pub(super) fn extract_outer_aggregation_info(
                 (None, None)
             }
         }
-        _ => (None, None),
+        // Pattern 2: GroupBy(Projection(Union)) - from GroupByBuilding
+        // Also handles: GroupBy(GraphJoins(Projection(Union))) - after GraphJoinInference
+        LogicalPlan::GroupBy(gb) => {
+            println!("🔍 extract_outer_aggregation_info: GroupBy case, input type = {:?}", std::mem::discriminant(gb.input.as_ref()));
+            // Direct case: GroupBy(Projection(Union))
+            if let LogicalPlan::Projection(proj) = gb.input.as_ref() {
+                println!("🔍 extract_outer_aggregation_info: Found Projection, proj.input type = {:?}", std::mem::discriminant(proj.input.as_ref()));
+                if find_nested_union(&proj.input).is_some() {
+                    println!("🔍 extract_outer_aggregation_info: Found Union inside Projection.input!");
+                    (Some(proj), Some(gb))
+                } else {
+                    println!("🔍 extract_outer_aggregation_info: No Union found in Projection.input");
+                    (None, None)
+                }
+            // Indirect case: GroupBy(GraphJoins(Projection(Union))) - after GraphJoinInference
+            } else if let LogicalPlan::GraphJoins(graph_joins) = gb.input.as_ref() {
+                println!("🔍 extract_outer_aggregation_info: Found GraphJoins inside GroupBy, looking for Projection...");
+                if let LogicalPlan::Projection(proj) = graph_joins.input.as_ref() {
+                    println!("🔍 extract_outer_aggregation_info: Found Projection inside GraphJoins, proj.input type = {:?}", std::mem::discriminant(proj.input.as_ref()));
+                    if find_nested_union(&proj.input).is_some() {
+                        println!("🔍 extract_outer_aggregation_info: ✓ Found Union inside Projection.input!");
+                        (Some(proj), Some(gb))
+                    } else {
+                        println!("🔍 extract_outer_aggregation_info: No Union found in Projection.input");
+                        (None, None)
+                    }
+                } else {
+                    println!("🔍 extract_outer_aggregation_info: GraphJoins.input is NOT Projection, it's {:?}", std::mem::discriminant(graph_joins.input.as_ref()));
+                    (None, None)
+                }
+            } else {
+                println!("🔍 extract_outer_aggregation_info: GroupBy.input is NOT Projection or GraphJoins");
+                (None, None)
+            }
+        }
+        _ => {
+            println!("🔍 extract_outer_aggregation_info: Unknown plan type, returning None");
+            (None, None)
+        }
     };
 
     let (projection, group_by) = (projection?, group_by?);
