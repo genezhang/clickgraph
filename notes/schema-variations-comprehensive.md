@@ -1,17 +1,23 @@
 # Schema Variations: Comprehensive Analysis
 
-## The Three Schema Patterns
+## Two Orthogonal Dimensions
 
-### 1. Standard Schema (Separate Tables)
+ClickGraph supports schema variations across **two orthogonal dimensions**:
 
-**Structure**: Each node label → separate table, each edge type → separate table
+1. **Edge Storage Pattern** (How edge types are organized in tables)
+2. **Coupled Edge Optimization** (Whether edge and node share a table)
+
+These dimensions are independent - any combination is possible.
+
+---
+
+## Dimension 1: Edge Storage Patterns
+
+### 1.1 Standard Schema (Separate Tables)
+
+**Structure**: Each edge type → separate table
 
 ```yaml
-nodes:
-  - label: User
-    table: users
-    id_column: user_id
-    
 edges:
   - type: FOLLOWS
     table: user_follows
@@ -42,10 +48,11 @@ SELECT 'LIKES' AS rel_type FROM post_likes ...
 
 ---
 
-### 2. Denormalized Edge Schema (with Node Properties)
+### 1.2 Denormalized Edge Schema
 
-**Structure**: Edge table contains embedded node properties
+**Structure**: Edge table contains embedded node properties OR edge table IS the node table
 
+**Variant A - Embedded Node Properties**:
 ```yaml
 edges:
   - type: FOLLOWS
@@ -61,25 +68,30 @@ edges:
       email: followed_email
 ```
 
-**Sub-variation - Coupled Edge**: Edge only exists with specific node type
-
+**Variant B - Edge Table = Node Table**:
 ```yaml
+nodes:
+  - label: Post
+    table: posts
+    id_column: post_id
+
 edges:
   - type: AUTHORED
-    table: posts  # Node table that has author_id
+    table: posts        # Same table as Post node!
     from_id: author_id
     to_id: post_id
-    coupled_node: Post  # Edge is "coupled" to Post node
+    from_node: User
+    to_node: Post
 ```
 
 **Characteristics**:
-- Edge table contains from/to node properties inline
+- Edge table contains from/to node properties inline, OR
+- Edge table IS the same physical table as a node
 - No need to JOIN to node tables for property access
-- Coupled edges: node table doubles as edge table
-- Still separate tables per edge type (no polymorphism)
+- Still separate tables per edge type (like Standard)
 
 **Query Strategy for `[:FOLLOWS|LIKES]`**:
-- **UNION ALL** (same as standard, just different property access)
+- **UNION ALL** (same as standard)
 - Property access uses denormalized columns instead of JOINs
 
 **`type(r)` Returns**: Literal string (same as standard)
@@ -89,7 +101,7 @@ SELECT 'FOLLOWS' AS rel_type, r.followed_name FROM follows_denormalized r ...
 
 ---
 
-### 3. Polymorphic Edge Schema (Single Table, Multiple Types)
+### 1.3 Polymorphic Edge Schema (Single Table, Multiple Types)
 
 **Structure**: Single edge table with type discriminator column
 
@@ -137,7 +149,74 @@ WHERE r.interaction_type IN ('FOLLOWS', 'LIKES')
 
 ---
 
+## Dimension 2: Coupled Edge Optimization
+
+### What Are Coupled Edges?
+
+**Coupled edges** occur when **two or more edges** share the same physical table AND connect through common **coupling nodes**. This creates an opportunity for alias unification and self-join elimination.
+
+**Key insight**: This is ORTHOGONAL to the three edge storage patterns above, but most commonly occurs with denormalized schemas.
+
+### 2.1 Coupled Edges on Denormalized Tables (Most Common)
+
+When multiple edges in the same pattern use the same denormalized table AND connect through a common node, they're "coupled" through that node.
+
+**Example Schema** (DNS logs):
+```yaml
+nodes:
+  - label: IP
+    table: dns_logs
+    id_column: client_ip
+  - label: Domain  
+    table: dns_logs
+    id_column: query_domain
+
+edges:
+  - type: QUERIED         # Edge 1
+    table: dns_logs       # Same table!
+    from_id: client_ip
+    to_id: query_domain
+  - type: RESOLVED_TO     # Edge 2
+    table: dns_logs       # Same table!
+    from_id: query_domain
+    to_id: resolved_ip
+```
+
+**Query**: `MATCH (ip:IP)-[r1:QUERIED]->(d:Domain)-[r2:RESOLVED_TO]->(resolved:IP)`
+
+Here, `r1` and `r2` are **coupled** because:
+1. Both use the same table (`dns_logs`)
+2. They share a coupling node (`d:Domain`)
+
+**Without Optimization**:
+```sql
+SELECT ...
+FROM dns_logs r1
+JOIN dns_logs d ON r1.query_domain = d.query_domain
+JOIN dns_logs r2 ON r2.query_domain = d.query_domain  -- Self-join!
+```
+
+**With Coupled Edge Optimization**:
+```sql
+SELECT ...
+FROM dns_logs r1  -- r1, d, and r2 all unified to same alias!
+WHERE r1.query_domain IS NOT NULL
+```
+
+---
+
+### 2.2 Polymorphic (Not Applicable)
+
+Polymorphic schemas typically don't have coupled edges because:
+- There's only ONE edge definition (with multiple `type_values`)
+- Multiple edge types are distinguished by `type_column`, not separate edge definitions
+- No opportunity for alias unification across different edge definitions
+
+---
+
 ## Comparison Matrix
+
+### Edge Storage Patterns
 
 | Aspect | Standard | Denormalized | Polymorphic |
 |--------|----------|--------------|-------------|
@@ -146,101 +225,94 @@ WHERE r.interaction_type IN ('FOLLOWS', 'LIKES')
 | `type(r)` value | Literal string | Literal string | Column value |
 | Node property access | JOIN required | Inline (no JOIN) | JOIN required |
 | Schema complexity | Simple | Medium | Medium |
-| Query complexity | Higher for multi-type | Higher for multi-type | Lower for multi-type |
+
+### Coupled Edge Applicability
+
+| Schema Type | Coupled Edges Possible? | Optimization |
+|-------------|-------------------------|--------------|
+| Standard | No (separate tables per edge) | N/A |
+| Denormalized | ✅ Yes (when 2+ edges share table) | Alias unification, self-join elimination |
+| Polymorphic | No (single edge definition) | N/A |
 
 ---
 
 ## Current Implementation Status
 
-### ✅ Working
+### Edge Storage Patterns
 
 | Pattern | Standard | Denormalized | Polymorphic |
 |---------|----------|--------------|-------------|
-| Single type `[:FOLLOWS]` | ✅ | ✅ | ✅ |
-| `type(r)` single type | ✅ | ✅ | ✅ |
-| Bidirectional | ✅ | ✅ | ✅ |
+| Single type `[:FOLLOWS]` | ✅ | ✅ | ✅ (requires labels) |
+| `type(r)` single type | ✅ | ✅ | ✅ (requires labels) |
+| Bidirectional | ✅ | ✅ | ✅ (requires labels) |
+| Multi-type `[:A\|B]` | ✅ UNION | N/A (single type) | ✅ IN clause (requires labels) |
+| `type(r)` multi-type | ✅ | N/A | ✅ (requires labels) |
+| VLP exact `*2` | ✅ | N/A | ✅ (requires labels) |
+| VLP range `*1..3` | ✅ | N/A | ✅ (requires labels) |
+| WHERE node prop | ✅ | ✅ | ✅ |
+| `type(r)` in WHERE | ✅ | N/A | ✅ (requires labels) |
+| OPTIONAL MATCH | ✅ | N/A | ✅ |
+| COUNT aggregation | ✅ | ✅ | ✅ (requires labels) |
+| Wildcard `[r]` no target | ❌ | ❌ | ❌ |
 
-### ⚠️ Partial / Bug
+**Note**: Polymorphic schemas require explicit node labels because the edge doesn't have
+static `from_node`/`to_node` values - node types are determined at runtime via
+`from_label_column`/`to_label_column`.
 
-| Pattern | Standard | Denormalized | Polymorphic |
-|---------|----------|--------------|-------------|
-| Multi-type `[:A\|B]` | ✅ UNION | ✅ UNION | ⚠️ BUG: JOIN filters wrong |
-| `type(r)` multi-type | ✅ | ✅ | ⚠️ Column correct, JOIN wrong |
+### Coupled Edge Optimization
 
-### ❌ Not Working
-
-| Pattern | Standard | Denormalized | Polymorphic |
-|---------|----------|--------------|-------------|
-| Wildcard `[r]` no target | ❌ | ❌ | ❌ Property resolution |
-
----
-
-## The Polymorphic Multi-Type JOIN Bug
-
-**Current Behavior** (buggy):
-```sql
--- CTE correctly uses IN
-WITH rel_a_b AS (
-  SELECT ... FROM interactions WHERE interaction_type IN ('FOLLOWS', 'LIKES')
-)
--- But JOIN incorrectly uses only first type!
-INNER JOIN interactions AS r ON ... AND r.interaction_type = 'FOLLOWS'
-```
-
-**Root Cause**: In `graph_join_inference.rs`, the `pre_filter` is generated correctly via `generate_polymorphic_edge_filter()` with all types, but somewhere the JOIN generation only uses the first type.
-
-**Fix Location**: Need to trace where the JOIN `pre_filter` gets overwritten or where only `rel_types[0]` is used.
+| Pattern | Denormalized (with coupled edges) |
+|---------|-----------------------------------|
+| Multi-hop alias unification | ✅ |
+| Self-join elimination | ✅ |
+| Bidirectional coupled | ⚠️ Untested |
 
 ---
 
-## Optimization Opportunities
+## Optimization Summary
 
-### Polymorphic Edge Optimization (Not Yet Implemented)
-
-For polymorphic edges with unified ID columns, we can avoid UNION ALL entirely:
-
-**Instead of** (current for non-polymorphic multi-type):
-```sql
-SELECT ... FROM follows WHERE ...
-UNION ALL
-SELECT ... FROM likes WHERE ...
-```
-
-**Generate** (for polymorphic):
-```sql
-SELECT ... FROM interactions 
-WHERE interaction_type IN ('FOLLOWS', 'LIKES')
-```
-
-This is simpler, faster, and what the CTE extraction already does correctly.
-
-### Denormalized Property Access (Working)
-
-For denormalized edges, property access uses inline columns:
-```sql
--- Instead of: SELECT u.name FROM follows f JOIN users u ON ...
-SELECT f.followed_name FROM follows_denormalized f
-```
+| Optimization | When Applied | Benefit |
+|--------------|--------------|---------|
+| Polymorphic IN clause | `[:A\|B]` on polymorphic edge | Avoid UNION ALL |
+| Denormalized property access | Node property on denormalized edge | Avoid JOIN to node |
+| Coupled edge alias unification | 2+ edges on same denormalized table with coupling node | Eliminate self-JOINs |
 
 ---
 
-## Key Code Locations
+## Testing Checklist
 
-| Component | Standard | Denormalized | Polymorphic |
-|-----------|----------|--------------|-------------|
-| Schema parsing | `graph_schema.rs` | `graph_schema.rs` | `graph_schema.rs` |
-| Edge resolution | `view_resolver.rs` | `view_resolver.rs` | `view_resolver.rs` |
-| type(r) | `projection_tagging.rs` | `projection_tagging.rs` | `projection_tagging.rs` |
-| CTE generation | `cte_extraction.rs` | `cte_extraction.rs` | `cte_extraction.rs` |
-| JOIN generation | `graph_join_inference.rs` | `graph_join_inference.rs` | `graph_join_inference.rs` |
-| Property mapping | `filter_tagging.rs` | Special handling | `filter_tagging.rs` |
+### Edge Storage (Nov 30, 2025 - All passing!)
+
+- [x] Standard: 14/14 tests passing
+  - single edge, multi-edge UNION, type(r), VLP, bidirectional, coupled edge
+- [x] Denormalized: 7/7 tests passing
+  - single edge, type(r), property access without JOIN, coupled edge
+- [x] Polymorphic: 11/11 tests passing
+  - single edge, multi-edge IN, type(r), VLP, bidirectional (all require labels)
+
+### Test Script
+
+Run comprehensive tests:
+```bash
+python scripts/test/test_schema_variations.py
+python scripts/test/test_schema_variations.py --schema standard  # Test one schema
+```
+
+### Coupled Edge (orthogonal - applies to denormalized only)
+
+- [x] Denormalized + Coupled: FLIGHT pattern with Airport nodes
+- [ ] Multi-hop DNS pattern with coupling nodes
+- [ ] Verify self-JOIN elimination in generated SQL (needs manual review)
 
 ---
 
-## Test Coverage Needed
+## Key Design Insight
 
-1. **Standard multi-type**: `[:FOLLOWS|LIKES]` with separate tables ✅
-2. **Denormalized multi-type**: `[:FOLLOWS|LIKES]` with denormalized tables
-3. **Polymorphic multi-type**: `[:FOLLOWS|LIKES]` with single polymorphic table ⚠️
-4. **Mixed schemas**: Some edges standard, some polymorphic
-5. **Wildcard with each schema type**: `[r]` pattern
+**Coupled edges require two or more edges sharing the same table.**
+
+They're detected when:
+1. Two or more edge definitions use the same `table`
+2. A query pattern chains these edges through a common coupling node
+3. The optimizer can unify aliases and eliminate self-JOINs
+
+This is a specialized optimization for denormalized schemas where a single physical table (like `dns_logs` or `flights`) contains multiple logical relationships.
