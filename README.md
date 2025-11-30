@@ -11,22 +11,79 @@
 > **Note: ClickGraph is development-ready for view-based graph analysis with full Neo4j Bolt Protocol 5.8 support. This is a read-only analytical query engine - write operations are not supported. Codebase has diverged from the upstream with DDL/writes feature removal and other structure/code refactoring to follow Rust idiomatic style.**
 
 ---
-## Work in Progress towards Next Release
 
-> **Note: we are standardizing on using `Node` and `Edge` externally following ISO GQL terminology**
+## 🚀 What's New in v0.5.2 (November 30, 2025)
 
-The next release will be big enhancements to the schema patterns, including
-- **Edge ID**: it can be a single column or a composite key with multiple columns for a unique edge instance. Default to (from_id, to_id).
-- **Property mapping to expression**: properties can be mapped to expressions represented in simple SQL expressions.
-- **Denormalized edge table**: nodes are part of the edge table with denormalized node property columns. Either from_node or to_node or both can be denormalized.
-- **Filter support**: a simple SQL predicate can be specified as a filter to a node or edge definition.
-- **Array support**: array columns and UNWIND clause to flatten an array value.
-- **Coupled edge table**: multiple links occuring in the same event and stored in a single row of an edge table, which is usually denormalized.
-- **Polymorphic edge table**: multiple edge types share the same edge table with a type column to indicate its edge type. The edge table also contains `from_label_column` and `to_label_column` to indicate the node labels that are standalone tables.
+### Schema Variations Release - Complete Support for All Edge Table Patterns! 🎉
 
-The schema config loading is complete, and most of query support is also finished. Some loose-end work remains.
+**v0.5.2 delivers comprehensive support for advanced schema patterns including polymorphic edges, coupled edges, and denormalized tables.**
 
-## 🚀 What's New in v0.5.1 (November 21, 2025)
+### Polymorphic Edge Tables ✨
+
+**Single table containing multiple edge types with dynamic filtering:**
+```yaml
+edges:
+  - polymorphic: true
+    table: interactions
+    type_column: interaction_type      # FOLLOWS, LIKES, AUTHORED
+    from_label_column: from_type       # Source node type
+    to_label_column: to_type           # Target node type
+```
+
+```cypher
+-- Multi-type filter generates IN clause
+MATCH (u:User)-[:FOLLOWS|LIKES]->(target)
+RETURN u.name, target.name
+```
+
+**What Works:**
+- ✅ **Single-hop wildcard edges**: `(u:User)-[r]->(target)` with unlabeled targets
+- ✅ **Multi-hop CTE chaining**: `(u)-[r1]->(m)-[r2]->(t)` with proper JOINs
+- ✅ **Bidirectional edges**: `(u:User)<-[r]-(source)` using correct JOIN direction
+- ✅ **Composite edge IDs**: `[from_id, to_id, type, timestamp]` for uniqueness
+
+### Coupled Edge Optimization ⚡
+
+**Automatic JOIN elimination when edges share the same table:**
+```cypher
+-- Zeek DNS pattern: IP → Domain → ResolvedIP (all in dns_log table)
+MATCH (ip:IP)-[:REQUESTED]->(d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)
+WHERE ip.ip = '192.168.4.76'
+RETURN ip.ip, d.name, rip.ips
+```
+Generates optimized SQL with NO self-join - single table scan!
+
+### VLP + UNWIND Support 🔄
+
+**Decompose paths with ARRAY JOIN:**
+```cypher
+MATCH p = (u:User)-[:FOLLOWS*1..3]->(f:User)
+UNWIND nodes(p) AS n
+RETURN n
+```
+
+### OPTIONAL MATCH + VLP Fix 🐛
+
+**Anchor nodes now preserved when no path exists:**
+```cypher
+MATCH (a:User) WHERE a.name = 'Eve'
+OPTIONAL MATCH (a)-[:FOLLOWS*1..3]->(b:User)
+RETURN a.name, COUNT(b) as reachable
+-- Eve (no followers) now correctly returns 1 row with reachable = 0
+```
+
+### Test Coverage 🧪
+
+- **534 library tests passing** (100%)
+- **73 schema variation tests** across 4 schema types:
+  - Standard: 30 tests
+  - Denormalized: 14 tests
+  - Polymorphic: 24 tests
+  - Coupled: 5 tests
+
+---
+
+## 📦 What's in v0.5.1 (November 21, 2025)
 
 ### Official Docker Hub Release! 🐳
 
