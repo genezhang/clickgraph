@@ -2,61 +2,106 @@
 
 ### 🚀 Features
 
-- **OPTIONAL MATCH + Variable-Length Paths** - Fix returning 0 rows when no path exists
-  - Changed FROM clause to use anchor node instead of CTE for optional VLP
-  - Added LEFT JOIN for CTE (instead of FROM) when VLP is optional
-  - Added LEFT JOIN for end node through CTE
-  - Extract start node filter to outer query WHERE clause
-  - All 27 OPTIONAL MATCH tests now pass (100%)
+- Add docker-compose.dev.yaml for development
+- [**breaking**] Phase 1 - Fixed-length paths use inline JOINs instead of CTEs
+- Add cycle prevention for fixed-length paths
+- Restore PropertyValue and denormalized support from stash, integrate with anchor_table
+- Complete denormalized query support with alias remapping and WHERE clause filtering
+- Implement denormalized node-only queries with UNION ALL
+- Support RETURN DISTINCT for denormalized node-only queries
+- Support ORDER BY for denormalized UNION queries
+- Fix UNION ALL aggregation semantics for denormalized node queries
+- Variable-length paths for denormalized edge tables
+- Add schema-level filter field with SQL predicate parsing
+- Schema-level filters and OPTIONAL MATCH LEFT JOIN fix
+- Add VLP + UNWIND support with ARRAY JOIN generation
+- Implement coupled edge alias unification for denormalized patterns
+- Implement polymorphic edge query support
+- *(polymorphic)* Add VLP polymorphic edge filter support
+- *(polymorphic)* Add IN clause support for multiple relationship types in single-hop
+- Complete polymorphic edge support for wildcard relationship patterns
+- Add edge inline property filter tests and update documentation
+- Implement bidirectional pattern UNION ALL transformation
 
-- **Complete Polymorphic Edge Support** - Single table with multiple edge types
-  - Single-hop wildcard edges: `(u:User)-[r]->(target)` with unlabeled targets
-  - Multi-hop polymorphic CTE chaining: `(u)-[r1]->(m)-[r2]->(t)` with proper JOIN chaining
-  - Bidirectional (incoming) edges: `(u:User)<-[r]-(source)` using `to_node_id` JOIN
-  - Mixed edge patterns: Standard edges + polymorphic edges in same query
-  - Multi-type filter with IN clause: `[:FOLLOWS|LIKES]` → `WHERE type IN ('FOLLOWS', 'LIKES')`
+### 🐛 Bug Fixes
 
-- **Composite Edge ID Support** - Multi-column uniqueness for polymorphic tables
-  - Single-column edge IDs: `edge_id: uid`
-  - Composite edge IDs: `edge_id: [from_id, to_id, interaction_type, timestamp]`
-  - Works with VLP - generates `tuple(...)` for cycle detection
-  - Works with polymorphic edge tables - type filters + composite IDs together
+- ORDER BY rewrite bug for chained JOIN CTEs
+- Zero-hop variable-length path support
+- Remove ChainedJoinGenerator CTE for fixed-length paths
+- Complete PropertyValue type conversions in plan_builder.rs
+- Revert table alias remapping in filter_tagging to preserve filter context
+- Eliminate duplicate WHERE filters by optimizing FilterIntoGraphRel
+- Correct JOIN order and FROM table selection for mixed property expressions
+- Ensure variable-length and shortest path queries use CTE path
+- Destination node properties now map to correct columns in denormalized edge tables
+- Multi-hop denormalized edge patterns and duplicate WHERE filters
+- Variable-length path schema resolution for denormalized edges
+- Add edge_id support to RelationshipDefinition for cycle prevention
+- Fixed-length VLP (*1, *2, *3) now generates inline JOINs
+- Fixed-length VLP (*2, *3) now works correctly
+- Denormalized schema VLP property alias resolution
+- VLP recursive CTE min_hops filtering and aggregation handling
+- OPTIONAL MATCH + VLP returns anchor when no path exists
+- RETURN r and graph functions (type, id, labels)
+- Support inline property filters with numeric literals
+- Push projections into Union branches for bidirectional patterns
+- Polymorphic multi-type JOIN filter now uses IN clause
 
-- **Coupled Edge Optimization** - JOIN elimination for multi-hop on same table
-  - Automatic detection when edges share table and coupling node
-  - Unified table aliases (e.g., both `r1` and `r2` use `r1`)
-  - Works with all Cypher features: WHERE, aggregations, ORDER BY, DISTINCT, UNWIND
+### 💼 Other
 
-- **VLP + UNWIND Support** - Path decomposition with ARRAY JOIN
-  - `UNWIND nodes(p) AS n` - Explodes path nodes to rows
-  - `UNWIND relationships(p) AS r` - Explodes path relationships to rows
-  - Works with all VLP patterns: `*`, `*2`, `*1..3`, `*..5`, `*2..`
+- Manual addition of denormalized fields (incomplete)
 
-- **Denormalized Edge Tables** - Edge table = node table pattern
-  - Schema structure with `from_node_properties`/`to_node_properties`
-  - Multi-hop patterns, VLP, aggregations all working
-  - Graph algorithms: shortestPath, allShortestPaths, PageRank
+### 🚜 Refactor
 
-### 🧪 Testing
-
-- Add comprehensive schema variation test suite (73 tests)
-  - Standard schema: 30 tests
-  - Denormalized schema: 14 tests
-  - Polymorphic schema: 24 tests
-  - Coupled schema: 5 tests
-- All 534 library tests passing
+- Simplify ORDER BY logic for inline JOINs
+- Simplify GraphJoins FROM clause logic - use relationship table when no joins exist
+- Store anchor table in GraphJoins, eliminate redundant find_anchor_node() calls
+- Set is_denormalized flag directly in analyzer, remove redundant optimizer pass
+- Move helper functions from plan_builder.rs to plan_builder_helpers.rs
+- Rename co-located → coupled edges terminology
+- Consolidate schema loading with shared helpers
+- Consolidated VLP handling with VlpSchemaType
 
 ### 📚 Documentation
 
-- Add Schema-Polymorphic-Edges.md wiki page
-- Add Cypher-Subgraph-Extraction.md wiki page
-- Add coupled-edges.md implementation notes
-- Update STATUS.md with complete schema variation support
+- Prioritize Docker Hub image in getting-started guide
+- Update README with v0.5.1 Docker Hub release
+- Add v0.5.2 planning document
+- Update wiki Quick Start to use Docker Hub image with credentials
+- Add Zeek network log examples and denormalized edge table guide
+- Update STATUS.md with denormalized single-hop fix
+- Update denormalized blocker notes with current status
+- Update denormalized edge status to COMPLETE
+- Add graph algorithm support to denormalized edge docs
+- Add 0-hop pattern support to denormalized edge docs
+- *(wiki)* Update denormalized properties with all supported patterns
+- Add coupled edges documentation
+- *(wiki)* Add Coupled Edges section to denormalized properties
+- Add v0.5.2 TODO list for polymorphic edges and code consolidation
+- Mark schema loading consolidation complete in TODO
+- Update STATUS.md with polymorphic edge filter completion
+- Add Schema-Basics.md and wiki versioning workflow
+- Update documentation for v0.5.2 schema variations
+- Update KNOWN_ISSUES.md with v0.5.2 status
+- Update KNOWN_ISSUES.md with fixed-length VLP resolution
+- Update KNOWN_ISSUES with VLP fixes and *0 pattern limitation
+- Add Cypher Subgraph Extraction wiki with Nebula GET SUBGRAPH comparison
+
+### 🎨 Styling
+
+- Use UNION instead of UNION DISTINCT
+
+### 🧪 Testing
+
+- Add comprehensive Docker image validation suite
+- Add comprehensive schema variation test suite (73 tests)
 
 ### ⚙️ Miscellaneous Tasks
 
 - Update CHANGELOG.md [skip ci]
-
+- Update CHANGELOG.md [skip ci]
+- Clean up root directory - remove temp files and organize Python tests
+- Release v0.5.2
 ## [0.5.1] - 2025-11-21
 
 ### 🚀 Features
