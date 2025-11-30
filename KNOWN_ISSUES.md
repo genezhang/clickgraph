@@ -1,10 +1,10 @@
 # Known Issues
 
 **Current Status**: 🔧 **Undirected patterns need relationship ID support**  
-**Test Results**: 523/523 unit tests passing (100%)  
+**Test Results**: 526/526 unit tests passing (100%)  
 **Active Issues**: 2 bugs (undirected uniqueness, disconnected patterns)
 
-**Date Updated**: November 29, 2025  
+**Date Updated**: November 30, 2025  
 **Neo4j Semantics Verified**: November 22, 2025 (see `notes/CRITICAL_relationship_vs_node_uniqueness.md`)
 
 **CRITICAL DISCOVERIES**: 
@@ -12,6 +12,9 @@
 2. **Undirected patterns need relationship IDs** - `(from_id, to_id)` alone is NOT sufficient!
 
 **Note**: Some integration tests have incorrect expectations or test unimplemented features. Known feature gaps documented below.
+
+**Recently Resolved** (November 30, 2025):
+- ✅ **Fixed-length VLP (`*1`, `*2`, `*3`)**: Now generates efficient inline JOINs instead of incomplete SQL
 
 ---
 
@@ -615,6 +618,76 @@ docker-compose up neo4j
 
 ### Files Modified
 - ✅ `docker-compose.yaml` - Added Neo4j service
+
+---
+
+## ✅ RESOLVED: Fixed-Length VLP (`*1`, `*2`, `*3`) Missing JOINs
+
+**Status**: ✅ **FIXED** (November 30, 2025)  
+**Severity**: Medium - Caused incomplete SQL for exact-hop patterns  
+**Commit**: `f8745ed` 
+
+### Summary
+Fixed-length variable-length path patterns like `*1`, `*2`, `*3` (exact hop counts) were generating incomplete SQL missing the JOIN clauses. This was because `GraphJoinInference` unconditionally skipped JOIN generation for ANY pattern with `variable_length.is_some()`, not distinguishing between truly variable patterns (like `*1..3`, `*`) and fixed-length patterns.
+
+### Root Cause
+In `graph_join_inference.rs` line ~1052:
+```rust
+// Before: Skipped ALL variable-length patterns (WRONG!)
+if graph_rel.variable_length.is_some() {
+    return Ok(());  // Skip JOIN generation entirely
+}
+```
+
+Fixed-length patterns should use efficient inline JOINs (chained `INNER JOIN` statements), not recursive CTEs.
+
+### What Was Fixed
+
+**Fix 1**: `graph_join_inference.rs` - Only skip truly variable-length patterns:
+```rust
+// After: Only skip if NOT fixed-length
+let is_fixed_length = spec.exact_hop_count().is_some() && !shortest_path_mode;
+if !is_fixed_length {
+    return Ok(());  // Only skip for ranges like *1..3, *, etc.
+}
+// Continue to generate JOINs for *1, *2, *3
+```
+
+**Fix 2**: `plan_builder.rs` - Delegate to input for multi-hop fixed-length:
+```rust
+// For *2, *3: delegate to input which uses expand_fixed_length_joins()
+if exact_hops > 1 {
+    return graph_joins.input.extract_joins();
+}
+```
+
+### Example Query Fixed
+```cypher
+MATCH (a:User)-[:FOLLOWS*2]->(b:User)
+RETURN a.name, b.name
+```
+
+**Before** (broken):
+```sql
+SELECT a.name, b.name
+FROM users AS a
+-- Missing JOINs!
+```
+
+**After** (correct):
+```sql
+SELECT a.name, b.name
+FROM users AS a
+INNER JOIN follows AS r1 ON r1.from_id = a.id
+INNER JOIN users AS n1 ON r1.to_id = n1.id
+INNER JOIN follows AS r2 ON r2.from_id = n1.id
+INNER JOIN users AS b ON r2.to_id = b.id
+```
+
+### Files Modified
+- ✅ `src/query_planner/analyzer/graph_join_inference.rs` - Fixed skip condition
+- ✅ `src/render_plan/plan_builder.rs` - Added delegation for multi-hop
+- ✅ `src/render_plan/tests/where_clause_filter_tests.rs` - Added regression tests
 
 ---
 
