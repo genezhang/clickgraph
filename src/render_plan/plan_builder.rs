@@ -179,11 +179,29 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::GraphRel(rel) => {
-                // Check both left and right branches
+                // Check if this relationship's alias matches
+                if rel.alias == alias {
+                    // Found the matching relationship - extract all properties from its ViewScan (center)
+                    if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                        // Convert property_mapping HashMap to Vec of tuples
+                        let properties: Vec<(String, String)> = scan
+                            .property_mapping
+                            .iter()
+                            .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
+                            .collect();
+                        return Ok(properties);
+                    }
+                }
+                
+                // Check left and right branches for node aliases
                 if let Ok(props) = rel.left.get_all_properties_for_alias(alias) {
                     return Ok(props);
                 }
                 if let Ok(props) = rel.right.get_all_properties_for_alias(alias) {
+                    return Ok(props);
+                }
+                // Also check center for nested cases
+                if let Ok(props) = rel.center.get_all_properties_for_alias(alias) {
                     return Ok(props);
                 }
             }

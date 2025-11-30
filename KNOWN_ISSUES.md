@@ -2,9 +2,9 @@
 
 **Current Status**: 🔧 **Undirected patterns need UNION ALL implementation**  
 **Test Results**: 526/526 unit tests passing (100%)  
-**Active Issues**: 4 bugs (undirected OR-JOIN limitation, undirected uniqueness, disconnected patterns, *0 pattern)
+**Active Issues**: 4 bugs (undirected OR-JOIN, undirected uniqueness, disconnected patterns, *0 pattern)
 
-**Date Updated**: November 29, 2025  
+**Date Updated**: November 30, 2025  
 **Neo4j Semantics Verified**: November 22, 2025 (see `notes/CRITICAL_relationship_vs_node_uniqueness.md`)
 
 **CRITICAL DISCOVERIES**: 
@@ -12,6 +12,12 @@
 2. **Undirected patterns need relationship IDs** - `(from_id, to_id)` alone is NOT sufficient!
 
 **Note**: Some integration tests have incorrect expectations or test unimplemented features. Known feature gaps documented below.
+
+**Recently Resolved** (November 30, 2025):
+- ✅ **RETURN r (whole relationship)**: Fixed - Now expands to all relationship columns
+- ✅ **Graph functions (type, id, labels)**: Fixed - Now generate proper SQL
+- ✅ **OPTIONAL MATCH + VLP**: Fixed anchor node handling - Eve with no followers now returns correctly
+- ✅ **Inline property filters**: Verified working - `{prop: value}` converts to WHERE clause
 
 **Recently Resolved** (December 2, 2025):
 - ✅ **VLP min_hops Filtering**: Fixed CTE wrapper to filter `WHERE hop_count >= min_hops` for patterns like `*2..`
@@ -21,6 +27,33 @@
 - ✅ **Denormalized Schema VLP**: Fixed property alias rewriting for denormalized VLP patterns - now uses column-aware mapping (from_properties→r1, to_properties→rN)
 - ✅ **Fixed-length VLP (`*1`, `*2`, `*3`)**: Generates efficient inline JOINs for all schema types (Normal, Polymorphic, Denormalized)
 - ✅ **VLP Code Consolidation**: Unified schema-aware VLP handling with `VlpContext` and `VlpSchemaType`
+
+---
+
+## Known Parsing Limitation: Inline Property Filters with Integers
+
+**Status**: 🔧 **LIMITATION** - Parsing issue with integer literals in inline filters  
+**Severity**: **LOW** - Workaround available (use WHERE clause)
+
+### The Problem
+
+Inline property filters work with string values but fail with integer values:
+
+```cypher
+-- ✅ WORKS (string value)
+MATCH (u:User {name: "Alice"}) RETURN u
+
+-- ❌ PARSE ERROR (integer value)
+MATCH (u:User {user_id: 1}) RETURN u
+```
+
+### Workaround
+
+Use WHERE clause instead of inline filter:
+```cypher
+-- ✅ WORKS
+MATCH (u:User) WHERE u.user_id = 1 RETURN u
+```
 
 ---
 

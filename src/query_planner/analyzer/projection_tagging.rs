@@ -434,7 +434,106 @@ impl ProjectionTagging {
                 Ok(())
             }
             LogicalExpr::ScalarFnCall(scalar_fn_call) => {
-                // Recursively process arguments and collect transformed expressions
+                let fn_name_lower = scalar_fn_call.name.to_lowercase();
+                
+                // Handle graph introspection functions specially
+                // These functions take a node/relationship alias and shouldn't be expanded to .*
+                if matches!(fn_name_lower.as_str(), "type" | "id" | "labels") {
+                    // Get the first argument (the node/relationship alias)
+                    if let Some(LogicalExpr::TableAlias(TableAlias(alias))) = scalar_fn_call.args.first() {
+                        let table_ctx = plan_ctx.get_mut_table_ctx(alias).map_err(|e| {
+                            AnalyzerError::PlanCtx {
+                                pass: Pass::ProjectionTagging,
+                                source: e,
+                            }
+                        })?;
+                        
+                        match fn_name_lower.as_str() {
+                            "type" => {
+                                // For type(r): 
+                                // - Polymorphic edge with type_column -> PropertyAccessExp(r.type_column)
+                                // - Non-polymorphic -> Literal string of the relationship type
+                                if table_ctx.is_relation() {
+                                    if let Some(labels) = table_ctx.get_labels() {
+                                        if let Some(first_label) = labels.first() {
+                                            // Check if this relationship has a type_column (polymorphic)
+                                            if let Ok(rel_schema) = graph_schema.get_rel_schema(first_label) {
+                                                if let Some(ref type_col) = rel_schema.type_column {
+                                                    // Polymorphic: return type column
+                                                    item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                        table_alias: TableAlias(alias.clone()),
+                                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(type_col.clone()),
+                                                    });
+                                                } else {
+                                                    // Non-polymorphic: return literal type name
+                                                    item.expression = LogicalExpr::Literal(
+                                                        crate::query_planner::logical_expr::Literal::String(first_label.clone())
+                                                    );
+                                                }
+                                                return Ok(());
+                                            }
+                                        }
+                                    }
+                                    // Fallback: return '*' (unknown type)
+                                    item.expression = LogicalExpr::Literal(
+                                        crate::query_planner::logical_expr::Literal::String("*".to_string())
+                                    );
+                                    return Ok(());
+                                }
+                                // type() on a node doesn't make sense in standard Cypher, keep as-is
+                            }
+                            "id" => {
+                                // For id(n): return the id column as PropertyAccessExp
+                                if let Ok(label) = table_ctx.get_label_str() {
+                                    let id_column = if table_ctx.is_relation() {
+                                        // Relationship ID column
+                                        if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
+                                            // Use first column from edge_id if defined, else from_id
+                                            if let Some(ref edge_id) = rel_schema.edge_id {
+                                                edge_id.columns().first().map(|s| s.to_string())
+                                                    .unwrap_or_else(|| rel_schema.from_id.clone())
+                                            } else {
+                                                rel_schema.from_id.clone()
+                                            }
+                                        } else {
+                                            "id".to_string()
+                                        }
+                                    } else {
+                                        // Node ID column
+                                        if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
+                                            node_schema.node_id.column.clone()
+                                        } else {
+                                            "id".to_string()
+                                        }
+                                    };
+                                    item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(alias.clone()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
+                                    });
+                                    return Ok(());
+                                }
+                            }
+                            "labels" => {
+                                // For labels(n): return an array literal with the node's label(s)
+                                if !table_ctx.is_relation() {
+                                    if let Some(labels) = table_ctx.get_labels() {
+                                        // Create array literal: ['Label1', 'Label2', ...]
+                                        let label_exprs: Vec<LogicalExpr> = labels.iter()
+                                            .map(|l| LogicalExpr::Literal(
+                                                crate::query_planner::logical_expr::Literal::String(l.clone())
+                                            ))
+                                            .collect();
+                                        item.expression = LogicalExpr::List(label_exprs);
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                
+                // Generic scalar function - recursively process arguments
                 let mut transformed_args = Vec::new();
                 for arg in &scalar_fn_call.args {
                     let mut arg_return_item = ProjectionItem {

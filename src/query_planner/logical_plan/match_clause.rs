@@ -402,8 +402,12 @@ fn try_generate_relationship_view_scan(
         rel_schema.table_name
     );
 
-    // Create property mapping (initially empty - will be populated during projection planning)
-    let property_mapping = HashMap::new();
+    // Copy property mappings from schema so relationships can be expanded in RETURN
+    let property_mapping = rel_schema.property_mappings.clone();
+    log::debug!(
+        "Relationship ViewScan: property_mapping has {} entries",
+        property_mapping.len()
+    );
 
     // Create fully qualified table name (database.table)
     let full_table_name = format!("{}.{}", rel_schema.database, rel_schema.table_name);
