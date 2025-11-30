@@ -1933,6 +1933,10 @@ impl RenderPlanBuilder for LogicalPlan {
                         if graph_rel.shortest_path_mode.is_none() {
                             println!("DEBUG: extract_filters - Adding cycle prevention for fixed-length *{}", exact_hops);
                             
+                            // Check if this is a denormalized pattern
+                            let is_denormalized = is_node_denormalized(&graph_rel.left) 
+                                && is_node_denormalized(&graph_rel.right);
+                            
                             // Extract table/column info for cycle prevention
                             let start_label = extract_node_label_from_viewscan(&graph_rel.left)
                                 .unwrap_or_else(|| "User".to_string());
@@ -1941,17 +1945,24 @@ impl RenderPlanBuilder for LogicalPlan {
                             let start_table = label_to_table_name(&start_label);
                             let end_table = label_to_table_name(&end_label);
                             
-                            let start_id_col = extract_id_column(&graph_rel.left)
-                                .unwrap_or_else(|| table_to_id_column(&start_table));
-                            let end_id_col = extract_id_column(&graph_rel.right)
-                                .unwrap_or_else(|| table_to_id_column(&end_table));
-                            
                             let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
                                 RelationshipColumns {
                                     from_id: "from_node_id".to_string(),
                                     to_id: "to_node_id".to_string(),
                                 },
                             );
+                            
+                            // For denormalized, use relationship columns directly
+                            // For normal, use node ID columns
+                            let (start_id_col, end_id_col) = if is_denormalized {
+                                (rel_cols.from_id.clone(), rel_cols.to_id.clone())
+                            } else {
+                                let start = extract_id_column(&graph_rel.left)
+                                    .unwrap_or_else(|| table_to_id_column(&start_table));
+                                let end = extract_id_column(&graph_rel.right)
+                                    .unwrap_or_else(|| table_to_id_column(&end_table));
+                                (start, end)
+                            };
                             
                             // Generate cycle prevention filters
                             if let Some(cycle_filter) = crate::render_plan::cte_extraction::generate_cycle_prevention_filters(
@@ -3776,7 +3787,7 @@ impl RenderPlanBuilder for LogicalPlan {
             );
         }
 
-        let final_select_items = self.extract_select_items()?;
+        let mut final_select_items = self.extract_select_items()?;
         println!(
             "DEBUG: build_simple_relationship_render_plan - final_select_items: {:?}",
             final_select_items
@@ -3804,40 +3815,142 @@ impl RenderPlanBuilder for LogicalPlan {
             final_from
         );
 
-        // 🚀 CONSOLIDATED VLP FROM CLAUSE HANDLING
-        // For fixed-length VLP patterns, we need to set the correct FROM table based on schema type:
-        // - Normal/Polymorphic: FROM start_node_table AS start_alias
-        // - Denormalized: FROM edge_table AS r1
-        if let LogicalPlan::GraphJoins(graph_joins) = self {
-            // Find the GraphRel with VLP
-            fn find_vlp_graph_rel(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphRel> {
-                match plan {
-                    LogicalPlan::GraphRel(gr) if gr.variable_length.is_some() => Some(gr),
-                    LogicalPlan::Projection(p) => find_vlp_graph_rel(&p.input),
-                    LogicalPlan::Filter(f) => find_vlp_graph_rel(&f.input),
-                    _ => None,
-                }
+        // 🚀 CONSOLIDATED VLP FROM CLAUSE AND ALIAS REWRITING
+        // For fixed-length VLP patterns, we need to:
+        // 1. Set the correct FROM table based on schema type
+        // 2. For Denormalized schemas, build alias mappings and rewrite expressions
+        //
+        // CRITICAL: Must search recursively because self could be Limit(GraphJoins(...))
+        fn find_vlp_graph_rel_recursive(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphRel> {
+            match plan {
+                LogicalPlan::GraphRel(gr) if gr.variable_length.is_some() => Some(gr),
+                LogicalPlan::GraphJoins(gj) => find_vlp_graph_rel_recursive(&gj.input),
+                LogicalPlan::Projection(p) => find_vlp_graph_rel_recursive(&p.input),
+                LogicalPlan::Filter(f) => find_vlp_graph_rel_recursive(&f.input),
+                LogicalPlan::Limit(l) => find_vlp_graph_rel_recursive(&l.input),
+                LogicalPlan::Skip(s) => find_vlp_graph_rel_recursive(&s.input),
+                LogicalPlan::OrderBy(o) => find_vlp_graph_rel_recursive(&o.input),
+                _ => None,
             }
-            
-            if let Some(graph_rel) = find_vlp_graph_rel(&graph_joins.input) {
-                if let Some(vlp_ctx) = build_vlp_context(graph_rel) {
-                    if vlp_ctx.is_fixed_length {
-                        let exact_hops = vlp_ctx.exact_hops.unwrap_or(1);
+        }
+        
+        // Store VLP alias mapping for denormalized schemas
+        // Format: (simple_alias_map, rel_column_to_hop_map, rel_alias)
+        let mut vlp_alias_map: Option<(
+            std::collections::HashMap<String, String>,  // simple: a -> r1, b -> rN
+            std::collections::HashMap<String, String>,  // column -> hop: Origin -> r1, DestCityName -> rN
+            String,  // rel_alias (f)
+        )> = None;
+        
+        if let Some(graph_rel) = find_vlp_graph_rel_recursive(self) {
+            if let Some(vlp_ctx) = build_vlp_context(graph_rel) {
+                if vlp_ctx.is_fixed_length {
+                    let exact_hops = vlp_ctx.exact_hops.unwrap_or(1);
+                    
+                    // Get FROM info from the consolidated context
+                    let (from_table, from_alias, _) = expand_fixed_length_joins_with_context(&vlp_ctx);
+                    
+                    println!(
+                        "DEBUG: Fixed-length VLP (*{}) {:?} - setting FROM {} AS {}",
+                        exact_hops, vlp_ctx.schema_type, from_table, from_alias
+                    );
+                    
+                    final_from = Some(FromTable::new(Some(ViewTableRef {
+                        source: std::sync::Arc::new(LogicalPlan::Empty),
+                        name: from_table,
+                        alias: Some(from_alias),
+                        use_final: false,
+                    })));
+                    
+                    // For denormalized schemas, build alias mapping:
+                    // - start_alias (a) -> r1
+                    // - end_alias (b) -> rN
+                    // - rel_alias (f) -> DEPENDS on column (from_node_properties -> r1, to_node_properties -> rN)
+                    if vlp_ctx.schema_type == VlpSchemaType::Denormalized {
+                        // Simple alias map for node aliases
+                        let mut simple_map = std::collections::HashMap::new();
+                        simple_map.insert(vlp_ctx.start_alias.clone(), "r1".to_string());
+                        simple_map.insert(vlp_ctx.end_alias.clone(), format!("r{}", exact_hops));
                         
-                        // Get FROM info from the consolidated context
-                        let (from_table, from_alias, _) = expand_fixed_length_joins_with_context(&vlp_ctx);
+                        // Build column -> hop alias mapping for relationship alias
+                        // from_node_properties -> r1
+                        // to_node_properties -> rN
+                        let mut rel_column_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                        
+                        // Try to get node properties from the schema
+                        // The node label should be the same for both (Airport in ontime_denormalized)
+                        if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                            if let Ok(schemas) = schema_lock.try_read() {
+                                // Try different schema names
+                                for schema_name in ["default", ""] {
+                                    if let Some(schema) = schemas.get(schema_name) {
+                                        // Get the node label from the graph_rel
+                                        if let Some(node_label) = graph_rel.labels.as_ref().and_then(|l| l.first()) {
+                                            // Actually, we need the node label, not rel label
+                                            // Get it from the left/right GraphNodes
+                                            fn get_node_label(plan: &LogicalPlan) -> Option<String> {
+                                                match plan {
+                                                    LogicalPlan::GraphNode(n) => n.label.clone(),
+                                                    _ => None,
+                                                }
+                                            }
+                                            
+                                            if let Some(label) = get_node_label(&graph_rel.left) {
+                                                if let Some(node_schema) = schema.get_nodes_schemas().get(&label) {
+                                                    // Add from_properties columns -> r1
+                                                    if let Some(ref from_props) = node_schema.from_properties {
+                                                        for (_, col_value) in from_props {
+                                                            let col_name = col_value.clone();
+                                                            rel_column_map.insert(col_name, "r1".to_string());
+                                                        }
+                                                    }
+                                                    // Add to_properties columns -> rN
+                                                    if let Some(ref to_props) = node_schema.to_properties {
+                                                        for (_, col_value) in to_props {
+                                                            let col_name = col_value.clone();
+                                                            rel_column_map.insert(col_name, format!("r{}", exact_hops));
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Fallback: use VlpContext properties if available
+                        if let Some(ref from_props) = vlp_ctx.from_node_properties {
+                            for (_, col_value) in from_props {
+                                let col_name = match col_value {
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(c) => c.clone(),
+                                    crate::graph_catalog::expression_parser::PropertyValue::Expression(e) => e.clone(),
+                                };
+                                rel_column_map.insert(col_name, "r1".to_string());
+                            }
+                        }
+                        
+                        if let Some(ref to_props) = vlp_ctx.to_node_properties {
+                            for (_, col_value) in to_props {
+                                let col_name = match col_value {
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(c) => c.clone(),
+                                    crate::graph_catalog::expression_parser::PropertyValue::Expression(e) => e.clone(),
+                                };
+                                rel_column_map.insert(col_name, format!("r{}", exact_hops));
+                            }
+                        }
+                        
+                        // Also add from_id and to_id columns
+                        rel_column_map.insert(vlp_ctx.rel_from_col.clone(), "r1".to_string());
+                        rel_column_map.insert(vlp_ctx.rel_to_col.clone(), format!("r{}", exact_hops));
                         
                         println!(
-                            "DEBUG: Fixed-length VLP (*{}) {:?} - setting FROM {} AS {}",
-                            exact_hops, vlp_ctx.schema_type, from_table, from_alias
+                            "DEBUG: Denormalized VLP alias mapping - simple: {:?}, rel_column: {:?}",
+                            simple_map, rel_column_map
                         );
                         
-                        final_from = Some(FromTable::new(Some(ViewTableRef {
-                            source: std::sync::Arc::new(LogicalPlan::Empty),
-                            name: from_table,
-                            alias: Some(from_alias),
-                            use_final: false,
-                        })));
+                        vlp_alias_map = Some((simple_map, rel_column_map, vlp_ctx.rel_alias.clone()));
                     }
                 }
             }
@@ -3863,11 +3976,117 @@ impl RenderPlanBuilder for LogicalPlan {
             ));
         }
 
-        let final_filters = self.extract_filters()?;
+        // Helper function to rewrite table aliases in RenderExpr for denormalized VLP
+        // Takes: (simple_alias_map, column_to_hop_map, rel_alias)
+        fn rewrite_aliases_in_expr_vlp(
+            expr: RenderExpr, 
+            simple_map: &std::collections::HashMap<String, String>,
+            column_map: &std::collections::HashMap<String, String>,
+            rel_alias: &str,
+        ) -> RenderExpr {
+            use super::render_expr::{Column, TableAlias, PropertyAccess, OperatorApplication, ScalarFnCall, AggregateFnCall};
+            use crate::graph_catalog::expression_parser::PropertyValue;
+            
+            match expr {
+                RenderExpr::PropertyAccessExp(prop) => {
+                    // Get the column name from the PropertyValue
+                    let col_name = match &prop.column.0 {
+                        PropertyValue::Column(c) => c.clone(),
+                        PropertyValue::Expression(e) => e.clone(),
+                    };
+                    
+                    let new_alias = if prop.table_alias.0 == rel_alias {
+                        // This is a relationship alias - look up by column name
+                        column_map.get(&col_name).cloned().unwrap_or_else(|| "r1".to_string())
+                    } else {
+                        // Check simple map for node aliases
+                        simple_map.get(&prop.table_alias.0).cloned().unwrap_or_else(|| prop.table_alias.0.clone())
+                    };
+                    
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(new_alias),
+                        column: prop.column,
+                    })
+                }
+                RenderExpr::TableAlias(alias) => {
+                    if let Some(new_alias) = simple_map.get(&alias.0) {
+                        RenderExpr::TableAlias(TableAlias(new_alias.clone()))
+                    } else {
+                        RenderExpr::TableAlias(alias)
+                    }
+                }
+                RenderExpr::OperatorApplicationExp(op) => {
+                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: op.operator,
+                        operands: op.operands.into_iter()
+                            .map(|o| rewrite_aliases_in_expr_vlp(o, simple_map, column_map, rel_alias))
+                            .collect(),
+                    })
+                }
+                RenderExpr::ScalarFnCall(func) => {
+                    RenderExpr::ScalarFnCall(ScalarFnCall {
+                        name: func.name,
+                        args: func.args.into_iter()
+                            .map(|a| rewrite_aliases_in_expr_vlp(a, simple_map, column_map, rel_alias))
+                            .collect(),
+                    })
+                }
+                RenderExpr::AggregateFnCall(agg) => {
+                    RenderExpr::AggregateFnCall(AggregateFnCall {
+                        name: agg.name,
+                        args: agg.args.into_iter()
+                            .map(|a| rewrite_aliases_in_expr_vlp(a, simple_map, column_map, rel_alias))
+                            .collect(),
+                    })
+                }
+                RenderExpr::List(items) => {
+                    RenderExpr::List(items.into_iter()
+                        .map(|i| rewrite_aliases_in_expr_vlp(i, simple_map, column_map, rel_alias))
+                        .collect())
+                }
+                RenderExpr::Case(case) => {
+                    RenderExpr::Case(super::render_expr::RenderCase {
+                        expr: case.expr.map(|e| Box::new(rewrite_aliases_in_expr_vlp(*e, simple_map, column_map, rel_alias))),
+                        when_then: case.when_then.into_iter()
+                            .map(|(w, t)| (
+                                rewrite_aliases_in_expr_vlp(w, simple_map, column_map, rel_alias),
+                                rewrite_aliases_in_expr_vlp(t, simple_map, column_map, rel_alias)
+                            ))
+                            .collect(),
+                        else_expr: case.else_expr.map(|e| Box::new(rewrite_aliases_in_expr_vlp(*e, simple_map, column_map, rel_alias))),
+                    })
+                }
+                // Pass through expressions that don't contain table aliases
+                other => other,
+            }
+        }
+        
+        // Apply alias rewriting for denormalized VLP if we have a mapping
+        if let Some((ref simple_map, ref column_map, ref rel_alias)) = vlp_alias_map {
+            println!("DEBUG: Rewriting select items with VLP alias map: simple={:?}, column={:?}, rel={}", 
+                     simple_map, column_map, rel_alias);
+            final_select_items = final_select_items.into_iter()
+                .map(|item| SelectItem {
+                    expression: rewrite_aliases_in_expr_vlp(item.expression, simple_map, column_map, rel_alias),
+                    col_alias: item.col_alias,
+                })
+                .collect();
+        }
+
+        let mut final_filters = self.extract_filters()?;
         println!(
             "DEBUG: build_simple_relationship_render_plan - final_filters: {:?}",
             final_filters
         );
+        
+        // Apply alias rewriting to filters for denormalized VLP
+        if let Some((ref simple_map, ref column_map, ref rel_alias)) = vlp_alias_map {
+            if let Some(filter) = final_filters {
+                println!("DEBUG: Rewriting filters with VLP alias map: simple={:?}, column={:?}, rel={}", 
+                         simple_map, column_map, rel_alias);
+                final_filters = Some(rewrite_aliases_in_expr_vlp(filter, simple_map, column_map, rel_alias));
+            }
+        }
 
         // Validate that filters don't contain obviously invalid expressions
         if let Some(ref filter_expr) = final_filters {
