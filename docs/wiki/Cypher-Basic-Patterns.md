@@ -63,7 +63,7 @@ RETURN p.title, p.date
 ### Match Nodes by Property
 
 ```cypher
--- Match user by name (use WHERE clause)
+-- Match user by name (using WHERE clause)
 MATCH (u:User)
 WHERE u.name = 'Alice'
 RETURN u
@@ -73,48 +73,37 @@ MATCH (u:User)
 WHERE u.country = 'USA'
 RETURN u.name, u.city
 
--- Multiple properties
+-- Multiple properties with WHERE
 MATCH (u:User)
 WHERE u.country = 'USA' AND u.is_active = true
 RETURN u.name
 ```
 
-**When to use**: Find specific nodes or filter by exact property values
+### Inline Property Filters
 
-**Best practice**: Always use WHERE clause for property filtering - it's more flexible and fully supported.
-
-<!-- 
-⚠️ FUTURE FEATURE - Commented out until inline property filter support is implemented
-
-Inline property filters are not yet supported. Parser needs enhancement for `{property: value}` syntax.
+ClickGraph supports inline property filters using curly brace syntax `{property: value}`:
 
 ```cypher
--- Inline property syntax - NOT YET SUPPORTED
+-- Inline property filter on node
 MATCH (u:User {name: 'Alice'})
 RETURN u
 
+-- Multiple inline properties
 MATCH (u:User {country: 'USA', is_active: true})
 RETURN u.name
-```
 
-Use WHERE clause instead (shown in working examples above).
--->
-
-<!-- 
-⚠️ FUTURE FEATURE - Commented out until inline property filter support is added
-
-Inline property filters need parser and planner updates to handle {property: value} syntax.
-To implement: Update match_clause.rs to expand inline properties to WHERE conditions.
-
-```cypher
--- Inline property syntax - NOT YET SUPPORTED
-MATCH (u:User {name: 'Alice'})
-RETURN u
-
-MATCH (u:User {country: 'USA', is_active: true})
+-- Numeric property values
+MATCH (u:User {user_id: 1})
 RETURN u.name
+
+-- Inline with label
+MATCH (p:Post {is_published: true})
+RETURN p.title
 ```
--->
+
+**Best practice**: Both WHERE clause and inline filters are fully supported. Use inline filters for simple equality checks, WHERE clause for complex conditions (ranges, OR, NOT, etc.).
+
+**Equivalence**: `MATCH (u:User {name: 'Alice'})` is equivalent to `MATCH (u:User) WHERE u.name = 'Alice'`
 
 ### Anonymous Nodes
 
@@ -201,40 +190,33 @@ RETURN a.name, b.name, type(e)
 
 ### Edge Property Filtering
 
-### Edge Property Filtering
+Edge properties can be filtered using inline syntax or WHERE clause:
 
 ```cypher
--- Filter by edge property (use WHERE clause)
-
-<!--
-⚠️ FUTURE FEATURE: Inline edge property filters not yet supported
+-- Inline edge property filter
 MATCH (a:User)-[:FOLLOWS {follow_date: '2024-01-01'}]->(b:User)
 RETURN a.name, b.name
 
-Reason: Parser needs enhancement for inline property syntax on edges.
-Use WHERE clause instead.
--->
+-- Numeric inline edge property
+MATCH (a:User)-[r:FOLLOWS {since: 2024}]->(b:User)
+RETURN a.name, b.name
+
+-- Multiple inline edge properties
+MATCH (a)-[r:KNOWS {weight: 0.5, since: 2020}]->(b)
+RETURN a.name, b.name
+
+-- WHERE clause for complex filtering (ranges, etc.)
 MATCH (a:User)-[e:FOLLOWS]->(b:User)
 WHERE e.follow_date > '2024-01-01'
 RETURN a.name, b.name, e.follow_date
 
--- Multiple edge property conditions
+-- Multiple edge property conditions with WHERE
 MATCH (a:User)-[e:FOLLOWS]->(b:User)
 WHERE e.follow_date >= '2024-01-01' AND e.follow_date <= '2024-12-31'
 RETURN a.name, b.name, e.follow_date
 ```
 
-<!-- 
-⚠️ FUTURE FEATURE - Commented out until inline edge property filters are supported
-
-To implement: Extend edge pattern parser to handle property maps.
-
-```cypher
--- Inline edge property filter - NOT YET SUPPORTED
-MATCH (a:User)-[:FOLLOWS {follow_date: '2024-01-01'}]->(b:User)
-RETURN a.name, b.name
-```
--->
+**Best practice**: Use inline syntax for equality filters, WHERE clause for ranges and complex conditions.
 
 ---
 

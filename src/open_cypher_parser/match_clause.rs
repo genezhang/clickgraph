@@ -219,4 +219,32 @@ mod tests {
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
         }
     }
+
+    #[test]
+    fn test_parse_match_clause_with_edge_inline_properties() {
+        // Test relationship/edge inline properties with numeric value
+        let input = "MATCH (a:User)-[r:FOLLOWS {since: 2024}]->(b:User)";
+        let result = parse_match_clause(input);
+        match result {
+            Ok((remaining, clause)) => {
+                assert_eq!(remaining.trim(), "", "Should consume entire input, remaining: '{}'", remaining);
+                assert_eq!(clause.path_patterns.len(), 1);
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_match_clause_with_edge_multiple_properties() {
+        // Test relationship with multiple inline properties
+        let input = "MATCH (a)-[r:KNOWS {weight: 0.5, since: 2020}]->(b)";
+        let result = parse_match_clause(input);
+        match result {
+            Ok((remaining, clause)) => {
+                assert_eq!(remaining.trim(), "", "Should consume entire input, remaining: '{}'", remaining);
+                assert_eq!(clause.path_patterns.len(), 1);
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
 }
