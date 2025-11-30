@@ -15,10 +15,10 @@ use nom::{
     IResult, Parser,
     branch::alt,
     bytes::complete::{tag, tag_no_case, take_until},
-    character::complete::{char, multispace0, multispace1, alphanumeric1, digit1, one_of},
-    combinator::{map, opt, recognize, value},
-    multi::{many0, separated_list0, separated_list1},
-    sequence::{delimited, preceded, tuple},
+    character::complete::{char, multispace0, multispace1},
+    combinator::value,
+    multi::separated_list1,
+    sequence::delimited,
 };
 use serde::{Deserialize, Serialize};
 

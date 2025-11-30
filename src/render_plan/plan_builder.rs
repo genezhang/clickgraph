@@ -1,24 +1,20 @@
 use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::{GraphRel, LogicalPlan, ProjectionItem};
-use crate::query_planner::plan_ctx::PlanCtx;
 use std::sync::Arc;
 
 use super::cte_generation::{
-    analyze_property_requirements, extract_var_len_properties, map_property_to_column_with_schema,
+    analyze_property_requirements, extract_var_len_properties,
 };
 use super::errors::RenderBuildError;
 use super::filter_pipeline::{
-    CategorizedFilters, categorize_filters, clean_last_node_filters, extract_start_end_filters,
-    filter_expr_to_sql, render_end_filter_to_column_alias,
-    rewrite_end_filters_for_variable_length_cte, rewrite_expr_for_outer_query,
-    rewrite_expr_for_var_len_cte, rewrite_expr_for_denormalized_cte_with_rel,
+    categorize_filters, clean_last_node_filters,
+    rewrite_expr_for_var_len_cte,
     rewrite_expr_for_mixed_denormalized_cte,
 };
 use super::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
+    Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
     RenderExpr, ScalarFnCall, TableAlias,
 };
 use super::{
@@ -29,11 +25,12 @@ use super::{
 };
 use crate::render_plan::cte_extraction::extract_ctes_with_context;
 use crate::render_plan::cte_extraction::{
-    RelationshipColumns, VariableLengthRelInfo, VlpContext, VlpSchemaType,
-    build_vlp_context, detect_vlp_schema_type, expand_fixed_length_joins_with_context,
+    RelationshipColumns, VlpSchemaType,
+    build_vlp_context, expand_fixed_length_joins_with_context,
     extract_node_label_from_viewscan, extract_relationship_columns,
     get_path_variable, get_shortest_path_mode, get_variable_length_spec, get_variable_length_rel_info,
     get_variable_length_denorm_info, has_variable_length_rel, is_variable_length_denormalized, 
+    is_variable_length_optional,
     label_to_table_name, rel_type_to_table_name, 
     rel_types_to_table_names, table_to_id_column,
 };
@@ -736,7 +733,9 @@ impl RenderPlanBuilder for LogicalPlan {
                                             table_alias: TableAlias(graph_node.alias.clone()),
                                             column: Column(col_name.clone()),
                                         }),
-                                        col_alias: Some(ColumnAlias(prop_name.clone())),
+                                        // Use qualified alias like "a.name" to avoid duplicates
+                                        // when multiple nodes have the same property names
+                                        col_alias: Some(ColumnAlias(format!("{}.{}", graph_node.alias, prop_name))),
                                     })
                                 })
                                 .collect::<Result<Vec<SelectItem>, RenderBuildError>>()?
@@ -992,7 +991,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         };
 
                     // Apply denormalized property mapping for denormalized nodes
-                    let mut expr: RenderExpr = resolved_expr.try_into()?;
+                    let expr: RenderExpr = resolved_expr.try_into()?;
                     
                     // DENORMALIZED PROPERTY TRANSLATION:
                     // For denormalized nodes, translate logical property names to physical columns
@@ -1298,28 +1297,30 @@ impl RenderPlanBuilder for LogicalPlan {
                 // For GraphRel with labeled nodes, we need to include the start node in the FROM clause
                 // This handles simple relationship queries where the start node should be FROM
 
-                // For OPTIONAL MATCH, prefer the required (non-optional) node as FROM
-                // Check if this is an optional relationship (left node optional, right node required)
-                let prefer_right_as_from = graph_rel.is_optional == Some(true);
+                // ALWAYS use left node as FROM for relationship patterns.
+                // The is_optional flag determines JOIN type (INNER vs LEFT), not FROM table selection.
+                // 
+                // For `MATCH (a) OPTIONAL MATCH (a)-[:R]->(b)`:
+                //   - a is the left connection (required, already defined)
+                //   - b is the right connection (optional, newly introduced)
+                //   - FROM should be `a`, with LEFT JOIN to relationship and `b`
+                //
+                // For `MATCH (a) OPTIONAL MATCH (b)-[:R]->(a)`:
+                //   - b is the left connection (optional, newly introduced) 
+                //   - a is the right connection (required, already defined)
+                //   - FROM should be `a` (the required one), but the pattern structure has `b` on left
+                //   - This case needs special handling: find which connection is NOT optional
 
                 println!(
-                    "DEBUG: graph_rel.is_optional = {:?}, prefer_right_as_from = {}",
-                    graph_rel.is_optional, prefer_right_as_from
+                    "DEBUG: graph_rel.is_optional = {:?}",
+                    graph_rel.is_optional
                 );
 
-                let (primary_from, fallback_from) = if prefer_right_as_from {
-                    // For optional relationships, use right (required) node as FROM
-                    (
-                        graph_rel.right.extract_from(),
-                        graph_rel.left.extract_from(),
-                    )
-                } else {
-                    // For required relationships, use left (start) node as FROM
-                    (
-                        graph_rel.left.extract_from(),
-                        graph_rel.right.extract_from(),
-                    )
-                };
+                // Use left as primary, right as fallback
+                let (primary_from, fallback_from) = (
+                    graph_rel.left.extract_from(),
+                    graph_rel.right.extract_from(),
+                );
 
                 println!("DEBUG: primary_from = {:?}", primary_from);
                 println!("DEBUG: fallback_from = {:?}", fallback_from);
@@ -1778,7 +1779,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // optional aliases are moved to pre_filter (subquery form) and should NOT be
                 // included in the main WHERE clause. We filter them out here.
                 fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr> {
-                    use crate::query_planner::logical_expr::{LogicalExpr, Operator as LogicalOp, OperatorApplication as LogicalOpApp};
+                    use crate::query_planner::logical_expr::{LogicalExpr, Operator as LogicalOp};
                     
                     // Helper to check if expression references ONLY a specific alias
                     fn references_only_alias(expr: &LogicalExpr, alias: &str) -> bool {
@@ -1827,35 +1828,55 @@ impl RenderPlanBuilder for LogicalPlan {
                                 let is_optional = gr.is_optional.unwrap_or(false);
                                 
                                 if is_optional {
-                                    // For OPTIONAL MATCH patterns (a)-[r]->(b):
-                                    // - left_connection (a) is the REQUIRED anchor from previous MATCH
-                                    // - alias (r) is the optional relationship
-                                    // - right_connection (b) is the optional target node
+                                    // For OPTIONAL MATCH patterns, we need to determine which node is the anchor
+                                    // (required from base MATCH) and which is the optional target.
+                                    //
+                                    // anchor_connection is set during GraphRel creation based on which alias
+                                    // already existed in the plan context (from base MATCH).
                                     //
                                     // Only filter out predicates that reference ONLY:
                                     // - The relationship (alias)
-                                    // - The right/optional node (right_connection)
+                                    // - The optional target node (NOT the anchor)
                                     // 
-                                    // Keep predicates that reference left_connection (anchor)!
-                                    let all_preds = split_and_predicates(pred);
-                                    for p in all_preds {
-                                        // Only filter if predicate references ONLY the optional parts
-                                        let refs_only_rel = references_only_alias(&p, &gr.alias);
-                                        let refs_only_right = references_only_alias(&p, &gr.right_connection);
-                                        
-                                        // Keep predicate in WHERE if it:
-                                        // - References the required anchor (left_connection)
-                                        // - References multiple aliases
-                                        // Filter out if it references ONLY rel or ONLY right
-                                        if refs_only_rel || refs_only_right {
-                                            log::debug!(
-                                                "Excluding optional-alias predicate from WHERE: refs_rel={}, refs_right={}",
-                                                refs_only_rel, refs_only_right
-                                            );
-                                        } else {
-                                            if let Ok(render_expr) = RenderExpr::try_from(p) {
-                                                predicates.push(render_expr);
+                                    // Keep predicates that reference the anchor!
+                                    
+                                    // Determine anchor and optional aliases
+                                    let anchor_alias = gr.anchor_connection.as_ref();
+                                    let optional_alias = if anchor_alias == Some(&gr.left_connection) {
+                                        Some(&gr.right_connection)
+                                    } else if anchor_alias == Some(&gr.right_connection) {
+                                        Some(&gr.left_connection)
+                                    } else {
+                                        // No anchor set - fall back to keeping all predicates
+                                        None
+                                    };
+                                    
+                                    if let (Some(anchor), Some(optional)) = (anchor_alias, optional_alias) {
+                                        let all_preds = split_and_predicates(pred);
+                                        for p in all_preds {
+                                            // Only filter if predicate references ONLY the optional parts
+                                            let refs_only_rel = references_only_alias(&p, &gr.alias);
+                                            let refs_only_optional = references_only_alias(&p, optional);
+                                            
+                                            // Keep predicate in WHERE if it:
+                                            // - References the anchor (required node from base MATCH)
+                                            // - References multiple aliases
+                                            // Filter out if it references ONLY rel or ONLY the optional node
+                                            if refs_only_rel || refs_only_optional {
+                                                log::debug!(
+                                                    "Excluding optional-alias predicate from WHERE: refs_rel={}, refs_optional={}, anchor={}, optional={}",
+                                                    refs_only_rel, refs_only_optional, anchor, optional
+                                                );
+                                            } else {
+                                                if let Ok(render_expr) = RenderExpr::try_from(p) {
+                                                    predicates.push(render_expr);
+                                                }
                                             }
+                                        }
+                                    } else {
+                                        // No anchor determined - keep all predicates (conservative)
+                                        if let Ok(render_expr) = RenderExpr::try_from(pred.clone()) {
+                                            predicates.push(render_expr);
                                         }
                                     }
                                 } else {
@@ -2565,14 +2586,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     },
                 );
 
-                // OPTIONAL MATCH FIX: For incoming optional relationships like (b:User)-[:FOLLOWS]->(a)
-                // where 'a' is required and 'b' is optional, we need to reverse the JOIN order:
-                // 1. JOIN b first (optional node)
-                // 2. Then JOIN relationship (can reference both a and b)
+                // JOIN ORDER: For standard patterns like (a)-[:R]->(b), we join:
+                // 1. Relationship table (can reference anchor `a` from FROM clause)
+                // 2. End node `b` (can reference relationship)
                 //
-                // Detect this case: is_optional=true AND FROM clause is right node
-                // (The FROM clause selection logic prefers right node when is_optional=true)
-                let reverse_join_order = is_optional;
+                // The `is_optional` flag determines JOIN TYPE (LEFT vs INNER), not order.
+                // The FROM clause is always the left/anchor node, so normal order works.
                 
                 // For LEFT JOINs, we need to extract:
                 // 1. Schema filters from YAML config (ViewScan.schema_filter)
@@ -2645,45 +2664,114 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
                 
                 // left_node uses ONLY schema filter (no user predicates - anchor node predicates stay in WHERE)
-                let left_node_pre_filter = left_schema_filter;
+                let _left_node_pre_filter = left_schema_filter;
                 // Relationship pre_filter combines: schema filter + polymorphic filter + user predicates
                 let rel_pre_filter = combine_pre_filters(vec![rel_schema_filter, polymorphic_filter, rel_user_pred]);
                 let right_node_pre_filter = combine_pre_filters(vec![right_schema_filter, right_user_pred]);
 
-                if reverse_join_order {
-                    println!(
-                        "DEBUG: Reversing JOIN order for optional relationship (b)-[:FOLLOWS]->(a) where a is FROM"
-                    );
+                // Standard join order: relationship first, then end node
+                // The FROM clause is always the left/anchor node.
+                
+                // Import Direction for bidirectional pattern support
+                use crate::query_planner::logical_expr::Direction;
+                
+                // Determine if this is an undirected pattern (Direction::Either)
+                let is_bidirectional = graph_rel.direction == Direction::Either;
+                
+                // JOIN 1: Start node -> Relationship table
+                //   For outgoing: r.from_id = a.user_id
+                //   For incoming: r.to_id = a.user_id
+                //   For either: (r.from_id = a.user_id) OR (r.to_id = a.user_id)
+                let rel_join_condition = if is_bidirectional {
+                    // Bidirectional: create OR condition for both directions
+                    let outgoing_cond = OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(graph_rel.alias.clone()),
+                                column: Column(PropertyValue::Column(rel_cols.from_id.clone())),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(graph_rel.left_connection.clone()),
+                                column: Column(PropertyValue::Column(start_id_col.clone())),
+                            }),
+                        ],
+                    };
+                    let incoming_cond = OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(graph_rel.alias.clone()),
+                                column: Column(PropertyValue::Column(rel_cols.to_id.clone())),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(graph_rel.left_connection.clone()),
+                                column: Column(PropertyValue::Column(start_id_col.clone())),
+                            }),
+                        ],
+                    };
+                    OperatorApplication {
+                        operator: Operator::Or,
+                        operands: vec![
+                            RenderExpr::OperatorApplicationExp(outgoing_cond),
+                            RenderExpr::OperatorApplicationExp(incoming_cond),
+                        ],
+                    }
+                } else {
+                    // Directional: single condition based on direction
+                    let (rel_col, node_col) = match graph_rel.direction {
+                        Direction::Incoming => (&rel_cols.to_id, &start_id_col),
+                        _ => (&rel_cols.from_id, &start_id_col), // Outgoing is default
+                    };
+                    OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(graph_rel.alias.clone()),
+                                column: Column(PropertyValue::Column(rel_col.clone())),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(graph_rel.left_connection.clone()),
+                                column: Column(PropertyValue::Column(node_col.clone())),
+                            }),
+                        ],
+                    }
+                };
+                
+                joins.push(Join {
+                    table_name: rel_table.clone(),
+                    table_alias: graph_rel.alias.clone(),
+                    joining_on: vec![rel_join_condition],
+                    join_type: join_type.clone(),
+                    pre_filter: rel_pre_filter.clone(),
+                });
 
-                    // JOIN 1: End node (optional left node 'b')
-                    //   e.g., LEFT JOIN (SELECT * FROM users WHERE schema_filter) AS b ON b.user_id = r.to_node_id
-                    joins.push(Join {
-                        table_name: start_table.clone(),
-                        table_alias: graph_rel.left_connection.clone(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(graph_rel.left_connection.clone()),
-                                    column: Column(PropertyValue::Column(start_id_col.clone())),
-                                }),
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(graph_rel.alias.clone()),
-                                    column: Column(PropertyValue::Column(rel_cols.from_id.clone())),
-                                }),
-                            ],
-                        }],
-                        join_type: join_type.clone(),
-                        pre_filter: left_node_pre_filter.clone(),
-                    });
-
-                    // JOIN 2: Relationship table (can now reference both nodes)
-                    //   e.g., LEFT JOIN (SELECT * FROM follows WHERE schema_filter) AS r ON ...
-                    joins.push(Join {
-                        table_name: rel_table.clone(),
-                        table_alias: graph_rel.alias.clone(),
-                        joining_on: vec![
-                            OperatorApplication {
+                // JOIN 2: Relationship table -> End node
+                //   For outgoing: b.user_id = r.to_id
+                //   For incoming: b.user_id = r.from_id
+                //   For either: (b.user_id = r.to_id AND r.from_id = a.user_id) OR (b.user_id = r.from_id AND r.to_id = a.user_id)
+                //   Simplified for bidirectional: b.user_id = CASE WHEN r.from_id = a.user_id THEN r.to_id ELSE r.from_id END
+                //   Actually simpler: just check b connects to whichever end of r that's NOT a
+                let end_join_condition = if is_bidirectional {
+                    // For bidirectional, the end node connects to whichever side of r that ISN'T the start node
+                    // This is expressed as: (b.id = r.to_id AND r.from_id = a.id) OR (b.id = r.from_id AND r.to_id = a.id)
+                    let outgoing_side = OperatorApplication {
+                        operator: Operator::And,
+                        operands: vec![
+                            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(graph_rel.right_connection.clone()),
+                                        column: Column(PropertyValue::Column(end_id_col.clone())),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(graph_rel.alias.clone()),
+                                        column: Column(PropertyValue::Column(rel_cols.to_id.clone())),
+                                    }),
+                                ],
+                            }),
+                            RenderExpr::OperatorApplicationExp(OperatorApplication {
                                 operator: Operator::Equal,
                                 operands: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -2695,8 +2783,26 @@ impl RenderPlanBuilder for LogicalPlan {
                                         column: Column(PropertyValue::Column(start_id_col.clone())),
                                     }),
                                 ],
-                            },
-                            OperatorApplication {
+                            }),
+                        ],
+                    };
+                    let incoming_side = OperatorApplication {
+                        operator: Operator::And,
+                        operands: vec![
+                            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(graph_rel.right_connection.clone()),
+                                        column: Column(PropertyValue::Column(end_id_col.clone())),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(graph_rel.alias.clone()),
+                                        column: Column(PropertyValue::Column(rel_cols.from_id.clone())),
+                                    }),
+                                ],
+                            }),
+                            RenderExpr::OperatorApplicationExp(OperatorApplication {
                                 operator: Operator::Equal,
                                 operands: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -2704,62 +2810,48 @@ impl RenderPlanBuilder for LogicalPlan {
                                         column: Column(PropertyValue::Column(rel_cols.to_id.clone())),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(graph_rel.right_connection.clone()),
-                                        column: Column(PropertyValue::Column(end_id_col.clone())),
+                                        table_alias: TableAlias(graph_rel.left_connection.clone()),
+                                        column: Column(PropertyValue::Column(start_id_col.clone())),
                                     }),
                                 ],
-                            },
+                            }),
                         ],
-                        join_type: join_type.clone(),
-                        pre_filter: rel_pre_filter.clone(),
-                    });
+                    };
+                    OperatorApplication {
+                        operator: Operator::Or,
+                        operands: vec![
+                            RenderExpr::OperatorApplicationExp(outgoing_side),
+                            RenderExpr::OperatorApplicationExp(incoming_side),
+                        ],
+                    }
                 } else {
-                    // Normal order: relationship first, then end node
-                    // JOIN 1: Start node -> Relationship table
-                    //   e.g., INNER JOIN follows AS r ON r.from_node_id = a.user_id
-                    //   For LEFT JOIN: use pre_filter with schema filter
-                    joins.push(Join {
-                        table_name: rel_table.clone(),
-                        table_alias: graph_rel.alias.clone(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(graph_rel.alias.clone()),
-                                    column: Column(PropertyValue::Column(rel_cols.from_id.clone())),
-                                }),
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(graph_rel.left_connection.clone()),
-                                    column: Column(PropertyValue::Column(start_id_col.clone())),
-                                }),
-                            ],
-                        }],
-                        join_type: join_type.clone(),
-                        pre_filter: rel_pre_filter.clone(),
-                    });
-
-                    // JOIN 2: Relationship table -> End node
-                    //   e.g., LEFT JOIN (SELECT * FROM users WHERE schema_filter) AS b ON b.user_id = r.to_node_id
-                    joins.push(Join {
-                        table_name: end_table,
-                        table_alias: graph_rel.right_connection.clone(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(graph_rel.right_connection.clone()),
-                                    column: Column(PropertyValue::Column(end_id_col.clone())),
-                                }),
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(graph_rel.alias.clone()),
-                                    column: Column(PropertyValue::Column(rel_cols.to_id.clone())),
-                                }),
-                            ],
-                        }],
-                        join_type,
-                        pre_filter: right_node_pre_filter.clone(),
-                    });
-                }
+                    // Directional: single condition based on direction
+                    let rel_col = match graph_rel.direction {
+                        Direction::Incoming => &rel_cols.from_id,
+                        _ => &rel_cols.to_id, // Outgoing is default
+                    };
+                    OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(graph_rel.right_connection.clone()),
+                                column: Column(PropertyValue::Column(end_id_col.clone())),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(graph_rel.alias.clone()),
+                                column: Column(PropertyValue::Column(rel_col.clone())),
+                            }),
+                        ],
+                    }
+                };
+                
+                joins.push(Join {
+                    table_name: end_table,
+                    table_alias: graph_rel.right_connection.clone(),
+                    joining_on: vec![end_join_condition],
+                    join_type,
+                    pre_filter: right_node_pre_filter.clone(),
+                });
 
                 joins
             }
@@ -3747,7 +3839,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                         println!(
                             "DEBUG: Created GroupBy CTE pattern with table_alias={}, key_column={}",
-                            table_alias, key_column.raw().clone()
+                            table_alias, key_column.raw()
                         );
 
                         // Build ORDER BY items, rewriting WITH alias references to CTE references
@@ -4016,7 +4108,7 @@ impl RenderPlanBuilder for LogicalPlan {
             column_map: &std::collections::HashMap<String, String>,
             rel_alias: &str,
         ) -> RenderExpr {
-            use super::render_expr::{Column, TableAlias, PropertyAccess, OperatorApplication, ScalarFnCall, AggregateFnCall};
+            use super::render_expr::{TableAlias, PropertyAccess, OperatorApplication, ScalarFnCall, AggregateFnCall};
             use crate::graph_catalog::expression_parser::PropertyValue;
             
             match expr {
@@ -4315,22 +4407,86 @@ impl RenderPlanBuilder for LogicalPlan {
             });
 
             if has_variable_length_cte {
-                // For variable-length paths, use the CTE itself as the FROM clause
+                // For variable-length paths, we need to handle OPTIONAL MATCH specially:
+                // - Required VLP: FROM cte AS t JOIN users AS a ...
+                // - Optional VLP: FROM users AS a LEFT JOIN cte AS t ... (preserves anchor when no paths)
                 let var_len_cte = extracted_ctes
                     .iter()
                     .find(|cte| cte.is_recursive)
                     .expect("Variable-length CTE should exist");
 
-                // Create a ViewTableRef that references the CTE by name
-                // We'll use an empty LogicalPlan as the source since the CTE is already defined
-                final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
-                    source: std::sync::Arc::new(
-                        crate::query_planner::logical_plan::LogicalPlan::Empty,
-                    ),
-                    name: var_len_cte.cte_name.clone(),
-                    alias: Some("t".to_string()), // CTE uses 't' as alias
-                    use_final: false,             // CTEs don't use FINAL
-                })));
+                let vlp_is_optional = is_variable_length_optional(&transformed_plan);
+                
+                if vlp_is_optional {
+                    // OPTIONAL MATCH with VLP: Use anchor node as FROM, LEFT JOIN to CTE
+                    // This ensures the anchor node is returned even when no paths exist
+                    if let Some((start_alias, _end_alias)) = has_variable_length_rel(&transformed_plan) {
+                        let denorm_info = get_variable_length_denorm_info(&transformed_plan);
+                        
+                        if let Some(ref info) = denorm_info {
+                            if let (Some(start_table), Some(_start_id_col)) = (&info.start_table, &info.start_id_col) {
+                                // FROM users AS a (anchor node)
+                                final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(
+                                        crate::query_planner::logical_plan::LogicalPlan::Empty,
+                                    ),
+                                    name: start_table.clone(),
+                                    alias: Some(start_alias.clone()),
+                                    use_final: false,
+                                })));
+                                
+                                // Add LEFT JOIN to CTE: LEFT JOIN variable_path_xxx AS t ON t.start_id = a.user_id
+                                // This will be added to extracted_joins later when we process VLP joins
+                                // For now, mark that we need to add the CTE join
+                                log::info!(
+                                    "🎯 OPTIONAL VLP: FROM {} AS {}, will LEFT JOIN to CTE {}",
+                                    start_table, start_alias, var_len_cte.cte_name
+                                );
+                            } else {
+                                // Fallback if table info not available
+                                log::warn!("OPTIONAL VLP: Could not get start node table info, falling back to CTE as FROM");
+                                final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(
+                                        crate::query_planner::logical_plan::LogicalPlan::Empty,
+                                    ),
+                                    name: var_len_cte.cte_name.clone(),
+                                    alias: Some("t".to_string()),
+                                    use_final: false,
+                                })));
+                            }
+                        } else {
+                            // No denorm info, fallback
+                            final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                                source: std::sync::Arc::new(
+                                    crate::query_planner::logical_plan::LogicalPlan::Empty,
+                                ),
+                                name: var_len_cte.cte_name.clone(),
+                                alias: Some("t".to_string()),
+                                use_final: false,
+                            })));
+                        }
+                    } else {
+                        // No VLP info, fallback
+                        final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                            source: std::sync::Arc::new(
+                                crate::query_planner::logical_plan::LogicalPlan::Empty,
+                            ),
+                            name: var_len_cte.cte_name.clone(),
+                            alias: Some("t".to_string()),
+                            use_final: false,
+                        })));
+                    }
+                } else {
+                    // Required VLP: Use CTE as FROM (original behavior)
+                    final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                        source: std::sync::Arc::new(
+                            crate::query_planner::logical_plan::LogicalPlan::Empty,
+                        ),
+                        name: var_len_cte.cte_name.clone(),
+                        alias: Some("t".to_string()),
+                        use_final: false,
+                    })));
+                }
 
                 // Check if there are end filters stored in the context that need to be applied to the outer query
                 final_filters = context.get_end_filters_for_outer_query().cloned();
@@ -4380,7 +4536,7 @@ impl RenderPlanBuilder for LogicalPlan {
             });
 
             if has_variable_length_cte {
-                // For variable-length paths, use the CTE itself as the FROM clause
+                // For variable-length paths, handle OPTIONAL MATCH specially
                 let var_len_cte = extracted_ctes
                     .iter()
                     .find(|cte| {
@@ -4389,21 +4545,113 @@ impl RenderPlanBuilder for LogicalPlan {
                     })
                     .expect("Variable-length CTE should exist");
 
-                // Create a ViewTableRef that references the CTE by name
-                final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
-                    source: std::sync::Arc::new(
-                        crate::query_planner::logical_plan::LogicalPlan::Empty,
-                    ),
-                    name: var_len_cte.cte_name.clone(),
-                    alias: Some("t".to_string()), // CTE uses 't' as alias
-                    use_final: false,             // CTEs don't use FINAL
-                })));
+                let vlp_is_optional = is_variable_length_optional(&transformed_plan);
+                
+                if vlp_is_optional {
+                    // OPTIONAL MATCH with VLP: Use anchor node as FROM
+                    if let Some((start_alias, _end_alias)) = has_variable_length_rel(&transformed_plan) {
+                        let denorm_info = get_variable_length_denorm_info(&transformed_plan);
+                        
+                        if let Some(ref info) = denorm_info {
+                            if let (Some(start_table), Some(_start_id_col)) = (&info.start_table, &info.start_id_col) {
+                                final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(
+                                        crate::query_planner::logical_plan::LogicalPlan::Empty,
+                                    ),
+                                    name: start_table.clone(),
+                                    alias: Some(start_alias.clone()),
+                                    use_final: false,
+                                })));
+                                log::info!(
+                                    "🎯 OPTIONAL VLP (no wrapper): FROM {} AS {}, will LEFT JOIN to CTE {}",
+                                    start_table, start_alias, var_len_cte.cte_name
+                                );
+                            } else {
+                                // Fallback to CTE as FROM
+                                final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(
+                                        crate::query_planner::logical_plan::LogicalPlan::Empty,
+                                    ),
+                                    name: var_len_cte.cte_name.clone(),
+                                    alias: Some("t".to_string()),
+                                    use_final: false,
+                                })));
+                            }
+                        } else {
+                            final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                                source: std::sync::Arc::new(
+                                    crate::query_planner::logical_plan::LogicalPlan::Empty,
+                                ),
+                                name: var_len_cte.cte_name.clone(),
+                                alias: Some("t".to_string()),
+                                use_final: false,
+                            })));
+                        }
+                    } else {
+                        final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                            source: std::sync::Arc::new(
+                                crate::query_planner::logical_plan::LogicalPlan::Empty,
+                            ),
+                            name: var_len_cte.cte_name.clone(),
+                            alias: Some("t".to_string()),
+                            use_final: false,
+                        })));
+                    }
+                } else {
+                    // Required VLP: Use CTE as FROM
+                    final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
+                        source: std::sync::Arc::new(
+                            crate::query_planner::logical_plan::LogicalPlan::Empty,
+                        ),
+                        name: var_len_cte.cte_name.clone(),
+                        alias: Some("t".to_string()),
+                        use_final: false,
+                    })));
+                }
                 
                 // For variable-length paths, apply schema filters in the outer query
                 // The outer query JOINs to base tables (users_bench AS u, users_bench AS v)
                 // so we need schema filters on those base table JOINs
                 if let Some((start_alias, end_alias)) = has_variable_length_rel(self) {
                     let mut filter_parts: Vec<RenderExpr> = Vec::new();
+                    
+                    // For OPTIONAL MATCH VLP, we also need the start node filter in the outer query
+                    // The filter is pushed into the CTE for performance, but we also need it
+                    // in the outer query to filter the anchor node (since FROM is the anchor node)
+                    if vlp_is_optional {
+                        // Extract the where_predicate from the GraphRel (start node filter)
+                        fn extract_start_filter_for_outer_query(plan: &LogicalPlan) -> Option<RenderExpr> {
+                            match plan {
+                                LogicalPlan::GraphRel(gr) => {
+                                    // Use the where_predicate as the start filter
+                                    if let Some(ref predicate) = gr.where_predicate {
+                                        RenderExpr::try_from(predicate.clone()).ok()
+                                    } else {
+                                        None
+                                    }
+                                }
+                                LogicalPlan::Projection(p) => extract_start_filter_for_outer_query(&p.input),
+                                LogicalPlan::Filter(f) => {
+                                    // Also check Filter for where clause
+                                    if let Ok(expr) = RenderExpr::try_from(f.predicate.clone()) {
+                                        Some(expr)
+                                    } else {
+                                        extract_start_filter_for_outer_query(&f.input)
+                                    }
+                                }
+                                LogicalPlan::GraphJoins(gj) => extract_start_filter_for_outer_query(&gj.input),
+                                LogicalPlan::GroupBy(gb) => extract_start_filter_for_outer_query(&gb.input),
+                                LogicalPlan::Limit(l) => extract_start_filter_for_outer_query(&l.input),
+                                LogicalPlan::OrderBy(o) => extract_start_filter_for_outer_query(&o.input),
+                                _ => None,
+                            }
+                        }
+                        
+                        if let Some(start_filter) = extract_start_filter_for_outer_query(&transformed_plan) {
+                            log::debug!("OPTIONAL VLP: Adding start node filter to outer query");
+                            filter_parts.push(start_filter);
+                        }
+                    }
                     
                     // Add user end filters from context
                     if let Some(user_filters) = context.get_end_filters_for_outer_query() {
@@ -4609,6 +4857,51 @@ impl RenderPlanBuilder for LogicalPlan {
             // "Multiple table expressions with same alias" errors.
             extracted_joins.clear();
 
+            // Check if this VLP is part of an OPTIONAL MATCH
+            // If so, we need LEFT JOINs to preserve the anchor node even when no paths exist
+            let vlp_is_optional = is_variable_length_optional(&transformed_plan);
+            let vlp_join_type = if vlp_is_optional {
+                JoinType::Left
+            } else {
+                JoinType::Join
+            };
+
+            // For OPTIONAL VLP, we need to add the CTE as a LEFT JOIN
+            // (because FROM is now the anchor node, not the CTE)
+            if vlp_is_optional {
+                // Find the variable-length CTE name
+                if let Some(vlp_cte) = extracted_ctes.iter().find(|cte| {
+                    cte.cte_name.starts_with("variable_path_") || cte.cte_name.starts_with("chained_path_")
+                }) {
+                    let cte_name = vlp_cte.cte_name.clone();
+                    let denorm_info_for_cte = get_variable_length_denorm_info(&transformed_plan);
+                    let start_id_col_for_cte = denorm_info_for_cte.as_ref()
+                        .and_then(|d| d.start_id_col.clone())
+                        .unwrap_or_else(|| get_node_id_column_for_alias(&start_alias));
+                    
+                    // LEFT JOIN variable_path_xxx AS t ON t.start_id = a.user_id
+                    extracted_joins.push(Join {
+                        table_name: cte_name,
+                        table_alias: "t".to_string(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias("t".to_string()),
+                                    column: Column(PropertyValue::Column("start_id".to_string())),
+                                }),
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(start_alias.clone()),
+                                    column: Column(PropertyValue::Column(start_id_col_for_cte)),
+                                }),
+                            ],
+                        }],
+                        join_type: JoinType::Left,
+                        pre_filter: None,
+                    });
+                }
+            }
+
             // For denormalized edges, node properties are embedded in edge table
             // so we don't need to join to separate node tables
             // For mixed patterns, only skip the JOIN for the denormalized node
@@ -4640,7 +4933,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Check for self-loop: start and end are the same node (e.g., (a)-[*0..]->(a))
                 if start_alias == end_alias {
                     // Self-loop: Only add ONE JOIN with compound ON condition (if not denormalized)
-                    if !start_is_denorm {
+                    // For OPTIONAL VLP, the start node is already in FROM, so skip this JOIN
+                    if !start_is_denorm && !vlp_is_optional {
                         // JOIN users AS a ON t.start_id = a.user_id AND t.end_id = a.user_id
                         extracted_joins.push(Join {
                             table_name: start_table,
@@ -4673,13 +4967,14 @@ impl RenderPlanBuilder for LogicalPlan {
                                     ],
                                 },
                             ],
-                            join_type: JoinType::Join,
+                            join_type: vlp_join_type.clone(),
                             pre_filter: None,
                         });
                     }
                 } else {
                     // Different start and end nodes: Add JOINs for non-denormalized nodes
-                    if !start_is_denorm {
+                    // For OPTIONAL VLP, skip the start node JOIN (it's already in FROM)
+                    if !start_is_denorm && !vlp_is_optional {
                         extracted_joins.push(Join {
                             table_name: start_table,
                             table_alias: start_alias.clone(),
@@ -4696,7 +4991,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     }),
                                 ],
                             }],
-                            join_type: JoinType::Join,
+                            join_type: vlp_join_type.clone(),
                             pre_filter: None,
                         });
                     }
@@ -4717,7 +5012,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     }),
                                 ],
                             }],
-                            join_type: JoinType::Join,
+                            join_type: vlp_join_type.clone(),
                             pre_filter: None,
                         });
                     }
@@ -4847,38 +5142,35 @@ impl RenderPlanBuilder for LogicalPlan {
 
         let mut extracted_group_by_exprs = transformed_plan.extract_group_by()?;
 
-        // Rewrite GROUP BY expressions for variable-length paths
+        // Rewrite GROUP BY expressions for variable-length paths ONLY for denormalized edges
+        // For non-denormalized edges, the outer query JOINs with node tables, so a.name works directly
+        // For denormalized edges, there are no node table JOINs, so we need t.start_name
         if let Some((left_alias, right_alias)) = has_variable_length_rel(&transformed_plan) {
-            let path_var = get_path_variable(&transformed_plan);
-            extracted_group_by_exprs = extracted_group_by_exprs
-                .into_iter()
-                .map(|expr| {
-                    rewrite_expr_for_var_len_cte(
-                        &expr,
-                        &left_alias,
-                        &right_alias,
-                        path_var.as_deref(),
-                    )
-                })
-                .collect();
+            // Only rewrite for denormalized patterns (no node table JOINs)
+            if is_variable_length_denormalized(&transformed_plan) {
+                let path_var = get_path_variable(&transformed_plan);
+                extracted_group_by_exprs = extracted_group_by_exprs
+                    .into_iter()
+                    .map(|expr| {
+                        rewrite_expr_for_var_len_cte(
+                            &expr,
+                            &left_alias,
+                            &right_alias,
+                            path_var.as_deref(),
+                        )
+                    })
+                    .collect();
+            }
         }
 
         let mut extracted_order_by = transformed_plan.extract_order_by()?;
 
-        // Rewrite ORDER BY expressions for variable-length paths that use recursive CTEs
-        // Fixed-length patterns use inline JOINs, so rewriting is not needed (a.name, c.name work fine)
-        // Variable-length patterns use recursive CTEs (t.start_id, t.end_id), so rewrite to t.start_name
+        // Rewrite ORDER BY expressions for variable-length paths ONLY for denormalized edges
+        // For non-denormalized edges, the outer query JOINs with node tables, so a.name works directly
+        // For denormalized edges, there are no node table JOINs, so we need t.start_name
         if let Some((left_alias, right_alias)) = has_variable_length_rel(&transformed_plan) {
-            // Check if this is truly variable-length (needs recursive CTE)
-            // Fixed-length (*2, *3) use inline JOINs and don't need rewriting
-            let needs_cte = if let Some(spec) = get_variable_length_spec(&transformed_plan) {
-                spec.exact_hop_count().is_none() || get_shortest_path_mode(self).is_some()
-            } else {
-                false
-            };
-
-            // Only rewrite ORDER BY for patterns that use recursive CTEs
-            if needs_cte {
+            // Only rewrite ORDER BY for denormalized patterns (no node table JOINs)
+            if is_variable_length_denormalized(&transformed_plan) {
                 let path_var = get_path_variable(&transformed_plan);
                 extracted_order_by = extracted_order_by
                     .into_iter()

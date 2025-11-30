@@ -2,11 +2,7 @@
 //!
 //! This module provides common utilities for working with RenderExpr trees.
 
-use super::errors::RenderBuildError;
-use super::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator, OperatorApplication,
-    PropertyAccess, RenderCase, RenderExpr, ScalarFnCall, TableAlias,
-};
+use super::render_expr::RenderExpr;
 
 /// Check if a RenderExpr references a specific table alias (USED by tests)
 pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
@@ -45,6 +41,7 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_plan::render_expr::{PropertyAccess, TableAlias, Column};
 
     #[test]
     fn test_references_alias() {

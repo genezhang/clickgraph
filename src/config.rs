@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::env;
 use thiserror::Error;
-use validator::{Validate, ValidationError};
+use validator::Validate;
 
 /// Configuration errors
 #[derive(Error, Debug)]

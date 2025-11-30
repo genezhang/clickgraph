@@ -1,8 +1,7 @@
 use super::errors::ClickhouseQueryGeneratorError;
 use super::function_translator::translate_scalar_function;
 use crate::query_planner::logical_expr::{
-    AggregateFnCall, InSubquery, Literal, LogicalCase, LogicalExpr, Operator, OperatorApplication,
-    PropertyAccess, ScalarFnCall,
+    Literal, LogicalExpr, Operator,
 };
 use crate::query_planner::logical_plan::LogicalPlan;
 use std::sync::Arc;

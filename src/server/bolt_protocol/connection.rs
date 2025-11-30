@@ -283,7 +283,7 @@ where
         // PackStream Bolt messages are structures: 0xB[size] [signature] [field1] [field2] ...
         // We need to manually parse the structure wrapper to get signature and fields
 
-        let mut cursor = bytes.clone();
+        let cursor = bytes.clone();
         if cursor.is_empty() {
             return Err(BoltError::invalid_message("Empty message data"));
         }

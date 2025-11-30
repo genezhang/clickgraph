@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: November 29, 2025*
+*Updated: November 30, 2025*
 
 ## 🚨 **CRITICAL DOCUMENTATION FIX** - November 22, 2025
 
@@ -95,6 +95,41 @@ WHERE u.user_id = 4
 
 **Limitation**: Alternate types `[:FOLLOWS|LIKES]` currently route through UNION CTE path
 (designed for separate-table architectures). Works correctly but not optimized for polymorphic tables.
+
+---
+
+### 🆕 OPTIONAL MATCH + Variable-Length Paths - COMPLETE (Nov 30, 2025)
+
+**Feature**: OPTIONAL MATCH with variable-length paths now correctly returns anchor nodes even when no path exists
+
+**What Was Fixed**:
+- ✅ **LEFT JOIN for VLP CTEs**: When `OPTIONAL MATCH` + VLP, CTE is LEFT JOINed (not used as FROM)
+- ✅ **Anchor node in FROM clause**: Start node is FROM table, ensuring it's always returned
+- ✅ **Outer query WHERE clause**: Start node filters are extracted to outer query
+- ✅ **End node LEFT JOIN**: End node table is LEFT JOINed through CTE
+
+**Example (Working)**:
+```cypher
+MATCH (a:User)
+WHERE a.name = 'Eve'
+OPTIONAL MATCH (a)-[:FOLLOWS*1..3]->(b:User)
+RETURN a.name, COUNT(b) as reachable
+```
+Now correctly generates:
+```sql
+WITH RECURSIVE variable_path_xxx AS (...)
+SELECT a.name AS "a.name", COUNT(b.user_id) AS "reachable"
+FROM users AS a                                          -- Anchor in FROM
+LEFT JOIN variable_path_xxx AS t ON t.start_id = a.user_id  -- LEFT JOIN CTE
+LEFT JOIN users AS b ON t.end_id = b.user_id             -- LEFT JOIN end node
+WHERE a.name = 'Eve'                                     -- Filter in outer query
+GROUP BY a.name
+```
+
+**Before**: Eve (no followers) returned 0 rows
+**After**: Eve correctly returns 1 row with `reachable = 0`
+
+**All 27 OPTIONAL MATCH tests now pass (100%)**.
 
 ---
 

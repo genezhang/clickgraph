@@ -1,4 +1,4 @@
-use crate::render_plan::{RenderPlan, ToSql as RenderPlanToSql};
+use crate::render_plan::RenderPlan;
 
 mod common;
 mod errors;

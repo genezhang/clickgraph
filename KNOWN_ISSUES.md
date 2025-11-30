@@ -1,10 +1,10 @@
 # Known Issues
 
-**Current Status**: 🔧 **Undirected patterns need relationship ID support**  
+**Current Status**: 🔧 **Undirected patterns need UNION ALL implementation**  
 **Test Results**: 526/526 unit tests passing (100%)  
-**Active Issues**: 3 bugs (undirected uniqueness, disconnected patterns, *0 pattern)
+**Active Issues**: 4 bugs (undirected OR-JOIN limitation, undirected uniqueness, disconnected patterns, *0 pattern)
 
-**Date Updated**: December 2, 2025  
+**Date Updated**: November 29, 2025  
 **Neo4j Semantics Verified**: November 22, 2025 (see `notes/CRITICAL_relationship_vs_node_uniqueness.md`)
 
 **CRITICAL DISCOVERIES**: 
@@ -43,6 +43,70 @@ Join conditions prevent same row reuse because r1 and r2 have different join pre
 MATCH (a)-[r1]-(b)-[r2]-(c)
 ```
 Same physical row can be used twice (forward and backward direction) without proper relationship ID checks!
+
+---
+
+## 🚨 NEW: ClickHouse OR-in-JOIN Limitation for Undirected Patterns
+
+**Status**: 🔧 **IDENTIFIED** - Needs UNION ALL implementation  
+**Severity**: **HIGH** - Causes missing rows in undirected pattern results  
+**Identified**: November 29, 2025
+
+### The Problem
+
+Undirected relationship patterns like `(a)-[r]-(b)` currently generate OR conditions in JOINs:
+
+```sql
+FROM users AS a
+INNER JOIN follows AS r ON (r.follower_id = a.user_id OR r.followed_id = a.user_id)
+INNER JOIN users AS b ON (b.user_id = r.followed_id OR b.user_id = r.follower_id) 
+                         AND b.user_id != a.user_id
+```
+
+**ClickHouse has known issues with OR conditions in JOIN clauses** - some rows are missed.
+
+### Test Case Evidence
+
+`test_relationship_degree` with aggregation returns 4 instead of 5 rows - Alice is missing from results.
+
+### Solution: UNION ALL Approach
+
+Instead of OR-based joins, split into two queries with simple equi-joins:
+
+```sql
+-- Direction 1: a follows b
+SELECT a.name, b.name
+FROM users AS a
+JOIN follows AS r ON r.follower_id = a.user_id
+JOIN users AS b ON b.user_id = r.followed_id
+
+UNION ALL
+
+-- Direction 2: b follows a  
+SELECT a.name, b.name
+FROM users AS a
+JOIN follows AS r ON r.followed_id = a.user_id
+JOIN users AS b ON b.user_id = r.follower_id
+```
+
+### Benefits of UNION ALL
+
+1. **Correct results**: Each branch uses simple equi-joins that ClickHouse handles correctly
+2. **Performance**: Equi-joins are optimized, UNION ALL is efficient
+3. **Clarity**: Each branch is simple to understand and debug
+
+### Implementation Plan
+
+See `notes/bidirectional-union-approach.md` for detailed implementation plan.
+
+### Affected Tests
+
+- `test_undirected_relationship` - Currently generates OR-based JOINs
+- `test_relationship_degree` - Returns 4 instead of 5 (xfail until fixed)
+- `test_mutual_follows` - Cyclic pattern, separate issue
+- `test_triangle_pattern` - Cyclic pattern, separate issue
+
+---
 
 ### Root Cause
 

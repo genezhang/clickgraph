@@ -122,6 +122,7 @@ impl CleanupViewScanFilters {
                                 where_predicate: graph_rel.where_predicate.clone(),
                                 labels: graph_rel.labels.clone(),
                                 is_optional: graph_rel.is_optional.clone(),
+                                anchor_connection: graph_rel.anchor_connection.clone(),
                             },
                         )))
                     }

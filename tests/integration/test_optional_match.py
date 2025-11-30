@@ -248,7 +248,7 @@ class TestOptionalMatchWithFilters:
             MATCH (a:User)
             WHERE a.name = 'Alice'
             OPTIONAL MATCH (a)-[r:FOLLOWS]->(b:User)
-            WHERE r.since > 2020
+            WHERE r.since > '2020'
             RETURN a.name, b.name
             """,
             schema_name=simple_graph["schema_name"]

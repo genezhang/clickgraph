@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Instant};
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Json},
+    response::Json,
 };
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
 
 use super::{
     graph_catalog,
-    models::{ErrorDetails, SqlDialect, SqlGenerationError, SqlGenerationMetadata, SqlGenerationRequest, SqlGenerationResponse},
+    models::{ErrorDetails, SqlGenerationError, SqlGenerationMetadata, SqlGenerationRequest, SqlGenerationResponse},
     query_cache::QueryCacheKey,
     AppState, GLOBAL_QUERY_CACHE,
 };

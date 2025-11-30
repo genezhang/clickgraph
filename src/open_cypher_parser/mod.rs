@@ -7,10 +7,8 @@ use common::ws;
 use errors::OpenCypherParsingError;
 use nom::bytes::complete::tag;
 use nom::character::complete::multispace0;
-use nom::combinator::{cut, opt};
-use nom::error::context;
+use nom::combinator::opt;
 use nom::multi::many0;
-use nom::sequence::terminated;
 use nom::{IResult, Parser};
 
 pub mod ast;

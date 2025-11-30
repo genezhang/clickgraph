@@ -4,7 +4,7 @@ use crate::{
     open_cypher_parser::ast,
     query_planner::{
         logical_plan::{
-            LogicalPlan, errors::LogicalPlanError, match_clause::evaluate_match_clause,
+            LogicalPlan,
             plan_builder::LogicalPlanResult,
         },
         plan_ctx::PlanCtx,

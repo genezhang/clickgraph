@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use crate::query_planner::logical_plan::LogicalPlan;
-use crate::query_planner::logical_expr::{LogicalExpr, PropertyAccess as LogicalPropertyAccess, TableAlias};
+use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
 
 /// Position of a denormalized node in a relationship pattern
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -572,6 +572,7 @@ mod tests {
             where_predicate: None,
             labels: Some(vec!["FLIGHT".to_string()]),
             is_optional: None,
+            anchor_connection: None,
         });
         
         let context = AliasResolverContext::from_logical_plan(&graph_rel);

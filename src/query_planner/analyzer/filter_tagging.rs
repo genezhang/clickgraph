@@ -535,7 +535,7 @@ impl FilterTagging {
                 agg_call.args = mapped_args;
                 Ok(LogicalExpr::AggregateFnCall(agg_call))
             }
-            LogicalExpr::List(mut list) => {
+            LogicalExpr::List(list) => {
                 // Recursively apply property mapping to list elements
                 let mut mapped_elements = Vec::new();
                 for element in list {

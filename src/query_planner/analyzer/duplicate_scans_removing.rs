@@ -210,6 +210,7 @@ mod tests {
             where_predicate: None, // Will be populated by filter pushdown
             labels: None,
             is_optional: None,
+            anchor_connection: None,
         }))
     }
 

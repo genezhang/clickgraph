@@ -7,7 +7,7 @@ use nom::bytes::complete::tag;
 use nom::character::complete::{alphanumeric1, char};
 use nom::combinator::opt;
 use nom::multi::separated_list0;
-use nom::sequence::{delimited, tuple};
+use nom::sequence::delimited;
 use nom::{IResult, Parser};
 
 pub fn parse_call_clause<'a>(

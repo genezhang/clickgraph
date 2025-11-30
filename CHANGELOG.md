@@ -2,6 +2,15 @@
 
 ### 🚀 Features
 
+- Fix OPTIONAL MATCH + Variable-Length Paths returning 0 rows when no path exists
+  - Changed FROM clause to use anchor node instead of CTE for optional VLP
+  - Added LEFT JOIN for CTE (instead of FROM) when VLP is optional
+  - Added LEFT JOIN for end node through CTE
+  - Extract start node filter to outer query WHERE clause
+  - Added `extract_start_filter_for_outer_query()` to traverse logical plan and find GraphRel.where_predicate
+  - Added `GroupBy` handling to filter extraction (was missing, causing filter to not be found)
+  - All 27 OPTIONAL MATCH tests now pass (100%)
+
 - Complete polymorphic edge support for wildcard relationship patterns
   - Single-hop wildcard edges: `(u:User)-[r]->(target)` with unlabeled targets
   - Multi-hop polymorphic CTE chaining: `(u)-[r1]->(m)-[r2]->(t)` with proper JOIN chaining

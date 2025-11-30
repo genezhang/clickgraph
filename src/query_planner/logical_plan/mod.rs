@@ -143,6 +143,7 @@ pub struct GraphRel {
     pub where_predicate: Option<LogicalExpr>, // WHERE clause predicates for filter placement in CTEs
     pub labels: Option<Vec<String>>, // Relationship type labels for [:TYPE1|TYPE2] patterns
     pub is_optional: Option<bool>, // For OPTIONAL MATCH: marks this relationship as optional (LEFT JOIN)
+    pub anchor_connection: Option<String>, // For OPTIONAL MATCH: the connection from base MATCH (keeps WHERE filters)
 }
 
 /// Mode for shortest path queries
@@ -583,6 +584,7 @@ impl GraphRel {
                 where_predicate: self.where_predicate.clone(),
                 labels: self.labels.clone(),
                 is_optional: self.is_optional,
+                anchor_connection: self.anchor_connection.clone(),
             });
             Transformed::Yes(Arc::new(new_graph_rel))
         } else {
@@ -1056,6 +1058,7 @@ mod tests {
             where_predicate: None,
             labels: None,
             is_optional: None,
+            anchor_connection: None,
         };
 
         let old_plan = Arc::new(LogicalPlan::GraphRel(graph_rel.clone()));

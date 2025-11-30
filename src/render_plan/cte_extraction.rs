@@ -5,29 +5,18 @@ use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::LogicalPlan;
-use crate::query_planner::plan_ctx::PlanCtx;
-use std::sync::Arc;
 
-use super::cte_generation::{
-    analyze_property_requirements, extract_var_len_properties, map_property_to_column_with_schema,
-};
+use super::cte_generation::map_property_to_column_with_schema;
 use super::errors::RenderBuildError;
-use super::filter_pipeline::{
-    CategorizedFilters, categorize_filters, clean_last_node_filters, extract_start_end_filters,
-    filter_expr_to_sql, render_end_filter_to_column_alias,
-    rewrite_end_filters_for_variable_length_cte, rewrite_expr_for_outer_query,
-    rewrite_expr_for_var_len_cte,
-};
+use super::filter_pipeline::categorize_filters;
 use super::plan_builder::RenderPlanBuilder;
 use super::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
-    RenderExpr, ScalarFnCall, TableAlias,
+    Operator, PropertyAccess,
+    RenderExpr,
 };
 use super::{
-    Cte, CteItems, FilterItems, FromTable, FromTableItem, GroupByExpressions, Join, JoinItems,
-    JoinType, LimitItem, OrderByItem, OrderByItems, RenderPlan, SelectItem, SelectItems, SkipItem,
-    Union, UnionItems, ViewTableRef,
-    view_table_ref::{from_table_to_view_ref, view_ref_to_from_table},
+    Cte, Join,
+    JoinType,
 };
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
@@ -1079,6 +1068,26 @@ pub fn extract_ctes_with_context(
         }
         LogicalPlan::PageRank(_) => Ok(vec![]),
         LogicalPlan::Unwind(u) => extract_ctes_with_context(&u.input, last_node_alias, context),
+    }
+}
+
+/// Check if a variable-length relationship is optional (for OPTIONAL MATCH semantics)
+/// Returns true if the VLP should use LEFT JOIN instead of INNER JOIN
+pub fn is_variable_length_optional(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
+            rel.is_optional.unwrap_or(false)
+        }
+        LogicalPlan::GraphNode(node) => is_variable_length_optional(&node.input),
+        LogicalPlan::Filter(filter) => is_variable_length_optional(&filter.input),
+        LogicalPlan::Projection(proj) => is_variable_length_optional(&proj.input),
+        LogicalPlan::GraphJoins(joins) => is_variable_length_optional(&joins.input),
+        LogicalPlan::GroupBy(gb) => is_variable_length_optional(&gb.input),
+        LogicalPlan::OrderBy(ob) => is_variable_length_optional(&ob.input),
+        LogicalPlan::Skip(skip) => is_variable_length_optional(&skip.input),
+        LogicalPlan::Limit(limit) => is_variable_length_optional(&limit.input),
+        LogicalPlan::Cte(cte) => is_variable_length_optional(&cte.input),
+        _ => false,
     }
 }
 

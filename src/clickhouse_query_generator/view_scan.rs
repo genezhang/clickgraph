@@ -3,12 +3,8 @@
 //! This module handles converting ViewScan operations from the logical plan
 //! into equivalent SQL queries.
 
-use std::sync::Arc;
 
-use crate::query_planner::{
-    logical_expr::LogicalExpr,
-    logical_plan::{LogicalPlan, ViewScan},
-};
+use crate::query_planner::logical_plan::{LogicalPlan, ViewScan};
 
 /// Build a SQL query for a ViewScan operation
 pub fn build_view_scan(scan: &ViewScan, plan: &LogicalPlan) -> String {

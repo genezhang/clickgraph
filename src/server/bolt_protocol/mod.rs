@@ -10,7 +10,7 @@
 
 use clickhouse::Client;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub mod auth;

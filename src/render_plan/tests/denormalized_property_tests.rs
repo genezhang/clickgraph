@@ -510,6 +510,7 @@ fn test_analyzer_denormalized_property_integration() {
         where_predicate: None,
         labels: Some(vec!["FLIGHT".to_string()]),
         is_optional: None,
+        anchor_connection: None,
     }));
 
     // Add a filter on denormalized property: WHERE origin.city = 'Los Angeles'

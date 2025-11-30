@@ -21,7 +21,7 @@ use crate::{
 
 use super::{
     AppState, GLOBAL_QUERY_CACHE, graph_catalog,
-    models::{OutputFormat, QueryRequest, SqlOnlyResponse, SqlGenerationRequest, SqlGenerationResponse, SqlGenerationMetadata, SqlGenerationError, ErrorDetails},
+    models::{OutputFormat, QueryRequest, SqlOnlyResponse},
     parameter_substitution, query_cache,
 };
 
@@ -499,7 +499,7 @@ pub async fn query_handler(
 
             // If SQL-only mode, return the SQL without executing
             if sql_only {
-                let mut sql_response = Json(SqlOnlyResponse {
+                let sql_response = Json(SqlOnlyResponse {
                     cypher_query: payload.query.clone(),
                     generated_sql: ch_query.clone(),
                     execution_mode: "sql_only".to_string(),

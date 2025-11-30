@@ -7,7 +7,7 @@ use axum::{
 };
 use clickhouse::Client;
 use handlers::{
-    health_check, get_schema_handler, list_schemas_handler, load_schema_handler, query_handler, simple_test_handler,
+    health_check, get_schema_handler, list_schemas_handler, load_schema_handler, query_handler,
 };
 use sql_generation_handler::sql_generation_handler;
 
@@ -15,13 +15,10 @@ use dotenv::dotenv;
 use tokio::net::TcpListener;
 #[cfg(windows)]
 use tokio::signal;
-#[cfg(unix)]
-use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{OnceCell, RwLock};
 
-use crate::config::{CliConfig, ConfigError, ServerConfig};
-use crate::graph_catalog::{config::GraphSchemaConfig, graph_schema::GraphSchema};
-use crate::server::graph_catalog::SchemaSource;
+use crate::config::ServerConfig;
+use crate::graph_catalog::graph_schema::GraphSchema;
 use bolt_protocol::{BoltConfig, BoltServer};
 
 pub mod bolt_protocol;

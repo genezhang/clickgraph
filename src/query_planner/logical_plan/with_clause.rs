@@ -1,6 +1,5 @@
 use crate::{
     open_cypher_parser::ast::WithClause,
-    query_planner::logical_expr::LogicalExpr,
     query_planner::logical_plan::{LogicalPlan, Projection, ProjectionItem, ProjectionKind},
 };
 use std::sync::Arc;

@@ -9,9 +9,9 @@ use crate::{
             graph_context,
         },
         logical_expr::{
-            LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
+            Direction, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
         },
-        logical_plan::{GraphJoins, GraphNode, GraphRel, Join, JoinType, LogicalPlan},
+        logical_plan::{GraphJoins, GraphRel, Join, JoinType, LogicalPlan},
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
@@ -72,6 +72,138 @@ fn generate_polymorphic_edge_filter(
         let filter_sql = filter_parts.join(" AND ");
         eprintln!("    🔹 Polymorphic edge filter: {}", filter_sql);
         Some(LogicalExpr::Raw(filter_sql))
+    }
+}
+
+/// Generate a join condition for the relationship to anchor node (undirected).
+/// 
+/// For undirected patterns, the relationship can connect to the anchor in either direction:
+/// r.from_id = anchor.id OR r.to_id = anchor.id
+fn generate_rel_to_anchor_bidirectional(
+    rel_alias: &str,
+    rel_from_col: &str,
+    rel_to_col: &str,
+    anchor_alias: &str,
+    anchor_id_col: &str,
+) -> OperatorApplication {
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    
+    // r.from_id = anchor.id
+    let forward = LogicalExpr::OperatorApplicationExp(OperatorApplication {
+        operator: Operator::Equal,
+        operands: vec![
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(rel_alias.to_string()),
+                column: PropertyValue::Column(rel_from_col.to_string()),
+            }),
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(anchor_alias.to_string()),
+                column: PropertyValue::Column(anchor_id_col.to_string()),
+            }),
+        ],
+    });
+    
+    // r.to_id = anchor.id
+    let reverse = LogicalExpr::OperatorApplicationExp(OperatorApplication {
+        operator: Operator::Equal,
+        operands: vec![
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(rel_alias.to_string()),
+                column: PropertyValue::Column(rel_to_col.to_string()),
+            }),
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(anchor_alias.to_string()),
+                column: PropertyValue::Column(anchor_id_col.to_string()),
+            }),
+        ],
+    });
+    
+    eprintln!("    🔹 Bidirectional rel->anchor: {}.{} = {}.{} OR {}.{} = {}.{}",
+        rel_alias, rel_from_col, anchor_alias, anchor_id_col,
+        rel_alias, rel_to_col, anchor_alias, anchor_id_col);
+    
+    // Combine with OR
+    OperatorApplication {
+        operator: Operator::Or,
+        operands: vec![forward, reverse],
+    }
+}
+
+/// Generate a join condition for target node to relationship (undirected).
+/// 
+/// For undirected patterns, the target connects to the relationship's other end:
+/// (b.id = r.from_id OR b.id = r.to_id) AND b.id <> anchor.id
+fn generate_target_to_rel_bidirectional(
+    target_alias: &str,
+    target_id_col: &str,
+    rel_alias: &str,
+    rel_from_col: &str,
+    rel_to_col: &str,
+    anchor_alias: &str,
+    anchor_id_col: &str,
+) -> OperatorApplication {
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    
+    // b.id = r.from_id
+    let to_from = LogicalExpr::OperatorApplicationExp(OperatorApplication {
+        operator: Operator::Equal,
+        operands: vec![
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(target_alias.to_string()),
+                column: PropertyValue::Column(target_id_col.to_string()),
+            }),
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(rel_alias.to_string()),
+                column: PropertyValue::Column(rel_from_col.to_string()),
+            }),
+        ],
+    });
+    
+    // b.id = r.to_id
+    let to_to = LogicalExpr::OperatorApplicationExp(OperatorApplication {
+        operator: Operator::Equal,
+        operands: vec![
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(target_alias.to_string()),
+                column: PropertyValue::Column(target_id_col.to_string()),
+            }),
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(rel_alias.to_string()),
+                column: PropertyValue::Column(rel_to_col.to_string()),
+            }),
+        ],
+    });
+    
+    // (b.id = r.from_id OR b.id = r.to_id)
+    let either_end = LogicalExpr::OperatorApplicationExp(OperatorApplication {
+        operator: Operator::Or,
+        operands: vec![to_from, to_to],
+    });
+    
+    // b.id <> anchor.id (exclude self-loops)
+    let not_anchor = LogicalExpr::OperatorApplicationExp(OperatorApplication {
+        operator: Operator::NotEqual,
+        operands: vec![
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(target_alias.to_string()),
+                column: PropertyValue::Column(target_id_col.to_string()),
+            }),
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(anchor_alias.to_string()),
+                column: PropertyValue::Column(anchor_id_col.to_string()),
+            }),
+        ],
+    });
+    
+    eprintln!("    🔹 Bidirectional target->rel: ({}.{} = {}.{} OR {}.{} = {}.{}) AND {}.{} <> {}.{}",
+        target_alias, target_id_col, rel_alias, rel_from_col,
+        target_alias, target_id_col, rel_alias, rel_to_col,
+        target_alias, target_id_col, anchor_alias, anchor_id_col);
+    
+    // Combine with AND
+    OperatorApplication {
+        operator: Operator::And,
+        operands: vec![either_end, not_anchor],
     }
 }
 
@@ -288,39 +420,22 @@ impl GraphJoinInference {
     fn reorder_joins_by_dependencies(
         joins: Vec<Join>,
         optional_aliases: &std::collections::HashSet<String>,
-        plan_ctx: &PlanCtx,
+        _plan_ctx: &PlanCtx,
     ) -> (Option<String>, Vec<Join>) {
         if joins.is_empty() {
             // No joins means denormalized pattern - no anchor needed (will use relationship table)
             return (None, joins);
         }
 
-        eprintln!("\n?? REORDERING {} JOINS by dependencies", joins.len());
+        eprintln!("\n🔄 REORDERING {} JOINS by dependencies", joins.len());
 
-        // Start with tables available from FROM clause (anchor nodes - required nodes)
-        let mut available_tables: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-
-        // CRITICAL FIX: Find anchor by identifying which table is REQUIRED (not optional)
-        // The anchor is the table that should go in FROM clause
-        // It's the table alias that is NOT in optional_aliases
-
-        // Strategy 1: Check joins list for required tables
-        for join in &joins {
-            if !optional_aliases.contains(&join.table_alias) {
-                // This is a required table - it's a candidate for FROM clause (anchor)
-                available_tables.insert(join.table_alias.clone());
-                eprintln!("  ?? Found REQUIRED table in joins: {}", join.table_alias);
-            }
-        }
-
-        // Strategy 2: Find tables referenced in JOIN conditions but NOT in the joins list
-        // These are the anchors that were correctly identified during JOIN inference
+        // Collect all aliases that are being joined
         let mut join_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
         for join in &joins {
             join_aliases.insert(join.table_alias.clone());
         }
 
+        // Find all tables referenced in JOIN conditions
         let mut referenced_tables: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         for join in &joins {
@@ -331,35 +446,85 @@ impl GraphJoinInference {
             }
         }
 
-        // Tables that are referenced but not in joins list are anchors
-        // CRITICAL: Skip denormalized aliases - they're virtual, not physical tables
+        // CRITICAL FIX: The ONLY tables that should start as "available" are those that:
+        // 1. Are referenced in JOIN conditions (needed by some JOIN)
+        // 2. Are NOT themselves being joined (they go in FROM clause)
+        // This is the true anchor - the table that other JOINs depend on but doesn't need a JOIN itself
+        let mut available_tables: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        
         for table in &referenced_tables {
-            if !join_aliases.contains(table) && !false /* is_denormalized check removed */ {
+            if !join_aliases.contains(table) {
                 available_tables.insert(table.clone());
                 eprintln!(
-                    "  ?? Found ANCHOR table (referenced but not joined): {}",
-                    table
-                );
-            } else if false /* is_denormalized check removed */ {
-                eprintln!(
-                    "  ?? Skipping denormalized alias '{}' as anchor (virtual node on edge table)",
+                    "  ✅ Found TRUE ANCHOR table (referenced but not joined): {}",
                     table
                 );
             }
         }
 
-        // If we found anchor tables, they will be in FROM clause
-        if !available_tables.is_empty() {
-            eprintln!(
-                "  ?? Anchor tables (will be in FROM, not JOIN): {:?}",
-                available_tables
-            );
-        } else {
-            eprintln!("  ??  No anchor tables found - all are optional!");
+        // Track if we pulled a join out to be the FROM clause (for cyclic patterns)
+        let mut from_join_index: Option<usize> = None;
+        
+        // If no anchor found (all referenced tables are also being joined = cyclic pattern),
+        // we need to pick a starting point and move it from JOIN list to FROM clause.
+        if available_tables.is_empty() {
+            eprintln!("  ⚠️ No natural anchor - picking FROM table from joins...");
+            
+            // Strategy: Find a join that can start the chain
+            // Priority 1: Node tables (short aliases like 'a', 'b') - they're likely to be JOIN targets
+            // Priority 2: Any required table
+            
+            // First, find the best candidate for FROM clause
+            for (i, join) in joins.iter().enumerate() {
+                // Skip optional tables - they can't be FROM
+                if optional_aliases.contains(&join.table_alias) {
+                    continue;
+                }
+                
+                // Prefer short aliases (likely node tables like 'a', 'b')
+                let is_likely_node_table = !join.table_alias.starts_with("a") 
+                    || join.table_alias.len() < 5;
+                
+                if is_likely_node_table {
+                    from_join_index = Some(i);
+                    eprintln!("  📌 Moving '{}' to FROM clause (node table)", join.table_alias);
+                    break;
+                }
+            }
+            
+            // If no node table found, use first required table
+            if from_join_index.is_none() {
+                for (i, join) in joins.iter().enumerate() {
+                    if !optional_aliases.contains(&join.table_alias) {
+                        from_join_index = Some(i);
+                        eprintln!("  📌 Moving '{}' to FROM clause (first required)", join.table_alias);
+                        break;
+                    }
+                }
+            }
         }
+
+        eprintln!(
+            "  🔍 Initial available tables (anchors): {:?}",
+            available_tables
+        );
 
         let mut ordered_joins = Vec::new();
         let mut remaining_joins = joins;
+        
+        // Track the FROM clause table separately (for cyclic patterns where we pick from joins)
+        let mut from_clause_alias: Option<String> = None;
+        
+        // If we're pulling a join out for FROM clause, do that first
+        if let Some(idx) = from_join_index {
+            let from_join = remaining_joins.remove(idx);
+            eprintln!("  🏠 Extracted '{}' for FROM clause (will NOT be in JOINs list)", from_join.table_alias);
+            from_clause_alias = Some(from_join.table_alias.clone());
+            available_tables.insert(from_join.table_alias.clone());
+            // DON'T push to ordered_joins - the FROM table should not appear as a JOIN!
+            // The anchor return value will specify the FROM table.
+        }
 
         // Keep trying to add joins until we can't make progress
         let mut made_progress = true;
@@ -425,14 +590,13 @@ impl GraphJoinInference {
                 .collect::<Vec<_>>()
         );
 
-        // CRITICAL FIX: The anchor should be a table that is referenced by first JOIN but NOT being joined itself
-        // For queries like: MATCH (u1:User)-[:FOLLOWS]->(u2:User)
-        // The first JOIN will be: u1 ON u1.user_id = <rel>.follower_id
-        // We want u1 to be in FROM, not u2 or the relationship table
-        
-        // Strategy: Get references from first JOIN condition (excluding the JOIN's own alias)
-        // The anchor is a table that is referenced but not being joined
-        let anchor = if let Some(first_join) = ordered_joins.first() {
+        // CRITICAL FIX: For cyclic patterns, we extracted a FROM table from the joins list.
+        // Use that directly if available. Otherwise, compute the anchor from join conditions.
+        let anchor = if let Some(from_alias) = from_clause_alias {
+            // We explicitly picked this table for FROM clause
+            Some(from_alias)
+        } else if let Some(first_join) = ordered_joins.first() {
+            // Compute anchor from first join's references
             let mut refs = std::collections::HashSet::new();
             for condition in &first_join.joining_on {
                 for operand in &condition.operands {
@@ -1376,14 +1540,17 @@ impl GraphJoinInference {
         // If both nodes are of the same type then check the direction to determine where are the left and right nodes present in the edgelist.
         if left_node_schema.table_name == right_node_schema.table_name {
             eprintln!(
-                "    � ?? SAME-TYPE NODES PATH (left={}, right={})",
+                "    SAME-TYPE NODES PATH (left={}, right={})",
                 left_node_schema.table_name, right_node_schema.table_name
             );
+            
+            // Check for undirected pattern (Direction::Either) - needs bidirectional join
+            let is_bidirectional = graph_rel.direction == Direction::Either;
+            eprintln!("    Direction: {:?}, is_bidirectional: {}", graph_rel.direction, is_bidirectional);
+            
             if joined_entities.contains(right_alias) {
-                eprintln!("    🔹 Branch: RIGHT already joined");
+                eprintln!("    Branch: RIGHT already joined");
                 // join the rel with right first and then join the left with rel
-                // Since GraphRel structure is already adjusted for direction,
-                // we don't need direction-based logic here
                 let rel_conn_with_right_node = rel_to_col.clone();
                 let left_conn_with_rel = rel_from_col.clone();
                 let polymorphic_filter = generate_polymorphic_edge_filter(
@@ -1393,10 +1560,20 @@ impl GraphJoinInference {
                     &left_label,
                     &right_label,
                 );
-                let mut rel_graph_join = Join {
-                    table_name: rel_cte_name.clone(),
-                    table_alias: rel_alias.to_string(),
-                    joining_on: vec![OperatorApplication {
+                
+                // For bidirectional/undirected patterns, use OR condition for both directions
+                let joining_on = if is_bidirectional {
+                    // For undirected: rel connects to anchor (right) in either direction
+                    vec![generate_rel_to_anchor_bidirectional(
+                        rel_alias,
+                        &rel_from_col,
+                        &rel_to_col,
+                        right_alias,
+                        &right_node_id_column,
+                    )]
+                } else {
+                    // Standard single-direction join
+                    vec![OperatorApplication {
                         operator: Operator::Equal,
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
@@ -1408,7 +1585,13 @@ impl GraphJoinInference {
                                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_node_id_column.clone()),
                             }),
                         ],
-                    }],
+                    }]
+                };
+                
+                let mut rel_graph_join = Join {
+                    table_name: rel_cte_name.clone(),
+                    table_alias: rel_alias.to_string(),
+                    joining_on,
                     join_type: Self::determine_join_type(rel_is_optional),
                     pre_filter: polymorphic_filter,
                 };
@@ -1584,19 +1767,30 @@ impl GraphJoinInference {
                 let mut rel_graph_join = Join {
                     table_name: rel_cte_name.clone(),
                     table_alias: rel_alias.to_string(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(rel_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_connect_column),
-                            }),
-                            LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(node_alias),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(node_id_column),
-                            }),
-                        ],
-                    }],
+                    joining_on: if is_bidirectional {
+                        // For undirected: rel connects to anchor (left) in either direction
+                        vec![generate_rel_to_anchor_bidirectional(
+                            rel_alias,
+                            &rel_from_col,
+                            &rel_to_col,
+                            left_alias,
+                            &left_node_id_column,
+                        )]
+                    } else {
+                        vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(rel_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_connect_column),
+                                }),
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(node_alias),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(node_id_column),
+                                }),
+                            ],
+                        }]
+                    },
                     join_type: Self::determine_join_type(rel_is_optional),
                     pre_filter: polymorphic_filter,
                 };
@@ -1684,13 +1878,25 @@ impl GraphJoinInference {
 
                 // FIX: Always join LEFT if rel references it (even for anonymous nodes)
                 // The relationship JOIN condition references left_alias, so it MUST be in scope
-                let reverse_join_order = !joined_entities.contains(left_alias);
-                eprintln!("    � ?? DEBUG: reverse_join_order={}", reverse_join_order);
-                eprintln!("    � ?? FIX: Joining LEFT regardless of is_referenced for JOIN scope");
+                // BUT: If LEFT is the anchor (required, first relationship), it should go to FROM, not JOIN!
+                let left_is_anchor = is_first_relationship && !left_is_optional;
+                let reverse_join_order = !joined_entities.contains(left_alias) && !left_is_anchor;
+                eprintln!("    🔹 ?? DEBUG: reverse_join_order={}, left_is_anchor={}", reverse_join_order, left_is_anchor);
+                eprintln!("    🔹 ?? FIX: Joining LEFT regardless of is_referenced for JOIN scope");
+
+                // OPTIONAL MATCH FIX: When left is the anchor, just mark it as joined (for FROM clause)
+                // without creating an actual JOIN entry - the anchor goes in FROM, not JOIN!
+                if left_is_anchor && !joined_entities.contains(left_alias) {
+                    eprintln!(
+                        "    🔹 ?? LEFT ANCHOR: Marking '{}' as joined (will be FROM table, not JOIN)",
+                        left_alias
+                    );
+                    joined_entities.insert(left_alias.to_string());
+                }
 
                 if reverse_join_order {
                     eprintln!(
-                        "    � ?? REVERSING JOIN ORDER: Joining LEFT node '{}' BEFORE relationship",
+                        "    🔹 ?? REVERSING JOIN ORDER: Joining LEFT node '{}' BEFORE relationship",
                         left_alias
                     );
                     
@@ -2026,10 +2232,21 @@ impl GraphJoinInference {
                         );
                         joined_entities.insert(right_alias.to_string());
                     } else {
-                        let right_graph_join = Join {
-                            table_name: right_cte_name.clone(),
-                            table_alias: right_alias.to_string(),
-                            joining_on: vec![OperatorApplication {
+                        // For bidirectional patterns, target connects to either end of relationship
+                        // and excludes the anchor node (to avoid self-match)
+                        let right_joining_on = if is_bidirectional {
+                            vec![generate_target_to_rel_bidirectional(
+                                right_alias,
+                                &right_node_id_column,
+                                rel_alias,
+                                &rel_from_col,
+                                &rel_to_col,
+                                left_alias,
+                                &left_node_id_column,
+                            )]
+                        } else {
+                            // Standard directed join
+                            vec![OperatorApplication {
                                 operator: Operator::Equal,
                                 operands: vec![
                                     LogicalExpr::PropertyAccessExp(PropertyAccess {
@@ -2041,9 +2258,15 @@ impl GraphJoinInference {
                                         column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_conn_with_rel.clone()),
                                     }),
                                 ],
-                            }],
+                            }]
+                        };
+                        
+                        let right_graph_join = Join {
+                            table_name: right_cte_name.clone(),
+                            table_alias: right_alias.to_string(),
+                            joining_on: right_joining_on,
                             join_type: Self::determine_join_type(right_is_optional),
-                    pre_filter: None,
+                            pre_filter: None,
                         };
                         collected_graph_joins.push(right_graph_join);
                         joined_entities.insert(right_alias.to_string());
@@ -2854,6 +3077,7 @@ mod tests {
             where_predicate: None, // Will be populated by filter pushdown
             labels: None,
             is_optional: None,
+            anchor_connection: None,
         }))
     }
 
@@ -2933,21 +3157,18 @@ mod tests {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        // Multi-hop fix: Creates joins for both nodes (p2, p1) + relationship (f1)
-                        // Pattern: (p2)-[f1:FOLLOWS]->(p1) creates 3 joins in order: p2, f1, p1
-                        assert_eq!(graph_joins.joins.len(), 3);
+                        // Anchor node (p2) goes to FROM clause, not JOIN
+                        // Pattern: (p2)-[f1:FOLLOWS]->(p1) creates 2 joins: f1, p1
+                        // p2 is in anchor_table, not in joins list
+                        assert_eq!(graph_joins.joins.len(), 2);
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
+                        assert_eq!(graph_joins.anchor_table, Some("p2".to_string()));
 
-                        // First join: left node (p2)
-                        let p2_join = &graph_joins.joins[0];
-                        assert_eq!(p2_join.table_name, "default.Person");
-                        assert_eq!(p2_join.table_alias, "p2");
-
-                        // Second join: relationship (f1)
-                        let rel_join = &graph_joins.joins[1];
+                        // First join: relationship (f1)
+                        let rel_join = &graph_joins.joins[0];
                         assert_eq!(rel_join.table_name, "default.FOLLOWS");
                         assert_eq!(rel_join.table_alias, "f1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
@@ -2977,8 +3198,8 @@ mod tests {
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
 
-                        // Third join: right node (p1)
-                        let p1_join = &graph_joins.joins[2];
+                        // Second join: right node (p1)
+                        let p1_join = &graph_joins.joins[1];
                         assert_eq!(p1_join.table_name, "default.Person");
                         assert_eq!(p1_join.table_alias, "p1");
                         assert_eq!(p1_join.join_type, JoinType::Inner);
@@ -3379,21 +3600,18 @@ mod tests {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        // Multi-hop fix: Creates joins for both nodes + relationship
-                        // Pattern: (p1)<-[f1:FOLLOWS]-(p2) creates 3 joins in order: p2, f1, p1
-                        assert_eq!(graph_joins.joins.len(), 3);
+                        // Anchor node (p2) goes to FROM clause, not JOIN
+                        // Pattern: (p1)<-[f1:FOLLOWS]-(p2) creates 2 joins: f1, p1
+                        // p2 is in anchor_table, not in joins list
+                        assert_eq!(graph_joins.joins.len(), 2);
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
+                        assert_eq!(graph_joins.anchor_table, Some("p2".to_string()));
 
-                        // First join: left node (p2)
-                        let p2_join = &graph_joins.joins[0];
-                        assert_eq!(p2_join.table_name, "default.Person");
-                        assert_eq!(p2_join.table_alias, "p2");
-
-                        // Second join: relationship (f1)
-                        let rel_join = &graph_joins.joins[1];
+                        // First join: relationship (f1)
+                        let rel_join = &graph_joins.joins[0];
                         assert_eq!(rel_join.table_name, "default.FOLLOWS");
                         assert_eq!(rel_join.table_alias, "f1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
@@ -3421,8 +3639,8 @@ mod tests {
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
 
-                        // Third join: right node (p1)
-                        let p1_join = &graph_joins.joins[2];
+                        // Second join: right node (p1)
+                        let p1_join = &graph_joins.joins[1];
                         assert_eq!(p1_join.table_name, "default.Person");
                         assert_eq!(p1_join.table_alias, "p1");
                         assert_eq!(p1_join.join_type, JoinType::Inner);

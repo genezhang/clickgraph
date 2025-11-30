@@ -7,7 +7,7 @@ use crate::{
         logical_plan::{
             errors::LogicalPlanError,
             plan_builder::LogicalPlanResult,
-            {GraphNode, GraphRel, LogicalPlan, Scan, ShortestPathMode, Union, UnionType},
+            {GraphNode, GraphRel, LogicalPlan, Scan, ShortestPathMode, Union},
         },
         plan_ctx::{PlanCtx, TableCtx},
     },
@@ -834,6 +834,26 @@ fn traverse_connected_pattern_with_mode<'a>(
                 }
             };
 
+            // Determine anchor_connection for OPTIONAL MATCH
+            // The anchor is whichever node was already seen in the base MATCH
+            let anchor_connection = if is_optional {
+                let alias_map = plan_ctx.get_alias_table_ctx_map();
+                if alias_map.contains_key(&left_conn) && !alias_map.contains_key(&right_conn) {
+                    // left_conn exists, right_conn is new -> left_conn is anchor
+                    Some(left_conn.clone())
+                } else if alias_map.contains_key(&right_conn) && !alias_map.contains_key(&left_conn) {
+                    // right_conn exists, left_conn is new -> right_conn is anchor
+                    Some(right_conn.clone())
+                } else {
+                    // Both exist or neither exists - shouldn't happen in normal OPTIONAL MATCH
+                    // Fall back to None
+                    eprintln!("WARN: OPTIONAL MATCH could not determine anchor: left_conn={}, right_conn={}", left_conn, right_conn);
+                    None
+                }
+            } else {
+                None
+            };
+
             let graph_rel_node = GraphRel {
                 left: left_node,
                 center: generate_relationship_center(
@@ -855,6 +875,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 where_predicate: None, // Will be populated by filter pushdown optimization
                 labels: rel_labels.clone(),
                 is_optional: if is_optional { Some(true) } else { None },
+                anchor_connection,
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -934,8 +955,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                 right: plan.clone(),
                 alias: rel_alias.clone(),
                 direction: rel.direction.clone().into(),
-                left_connection: start_node_alias,
-                right_connection: end_node_alias,
+                left_connection: start_node_alias.clone(),
+                right_connection: end_node_alias.clone(),
                 is_rel_anchor: false,
                 variable_length: rel.variable_length.clone().map(|v| v.into()),
                 shortest_path_mode: shortest_path_mode.clone(),
@@ -953,6 +974,13 @@ fn traverse_connected_pattern_with_mode<'a>(
                         "CREATING GraphRel with is_optional=None, mode={}",
                         plan_ctx.is_optional_match_mode()
                     );
+                    None
+                },
+                // For anchor traversals, the right connection (end_node) is the anchor from base MATCH
+                // The left connection (start_node) is newly introduced
+                anchor_connection: if plan_ctx.is_optional_match_mode() {
+                    Some(end_node_alias.clone())
+                } else {
                     None
                 },
             };
@@ -1054,9 +1082,9 @@ fn traverse_connected_pattern_with_mode<'a>(
             );
 
             let (left_conn, right_conn) = match rel.direction {
-                ast::Direction::Outgoing => (start_node_alias, end_node_alias),
-                ast::Direction::Incoming => (end_node_alias, start_node_alias),
-                ast::Direction::Either => (start_node_alias, end_node_alias),
+                ast::Direction::Outgoing => (start_node_alias.clone(), end_node_alias.clone()),
+                ast::Direction::Incoming => (end_node_alias.clone(), start_node_alias.clone()),
+                ast::Direction::Either => (start_node_alias.clone(), end_node_alias.clone()),
             };
 
             let (left_node, right_node) = match rel.direction {
@@ -1072,6 +1100,21 @@ fn traverse_connected_pattern_with_mode<'a>(
                     Arc::new(LogicalPlan::GraphNode(start_graph_node)),
                     Arc::new(LogicalPlan::GraphNode(end_graph_node)),
                 ),
+            };
+
+            // Determine anchor_connection for OPTIONAL MATCH
+            // Check which connection already exists in alias_table_ctx_map
+            let anchor_connection = if is_optional {
+                let alias_map = plan_ctx.get_alias_table_ctx_map();
+                if alias_map.contains_key(&left_conn) && !alias_map.contains_key(&right_conn) {
+                    Some(left_conn.clone())
+                } else if alias_map.contains_key(&right_conn) && !alias_map.contains_key(&left_conn) {
+                    Some(right_conn.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
             };
 
             let graph_rel_node = GraphRel {
@@ -1095,6 +1138,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 where_predicate: None, // Will be populated by filter pushdown optimization
                 labels: rel_labels.clone(),
                 is_optional: if is_optional { Some(true) } else { None },
+                anchor_connection,
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -1213,7 +1257,7 @@ fn traverse_node_pattern(
 
 pub fn evaluate_match_clause<'a>(
     match_clause: &ast::MatchClause<'a>,
-    mut plan: Arc<LogicalPlan>,
+    plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
     evaluate_match_clause_with_optional(match_clause, plan, plan_ctx, false)
