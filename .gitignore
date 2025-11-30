@@ -13,6 +13,7 @@ server.pid
 *.pyc
 __pycache__/
 .pytest_cache/
+.venv/
 
 # Test output files
 test_*.txt

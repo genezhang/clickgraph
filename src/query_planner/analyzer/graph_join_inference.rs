@@ -1048,11 +1048,21 @@ impl GraphJoinInference {
         );
         eprintln!("    � joined_entities before: {:?}", joined_entities);
 
-        // Skip join inference for variable-length paths
-        if graph_rel.variable_length.is_some() {
-            eprintln!("    � ? SKIP: Variable-length path detected");
-            eprintln!("    +- infer_graph_join EXIT\n");
-            return Ok(());
+        // Skip join inference for TRULY variable-length paths (need recursive CTEs)
+        // But DO process fixed-length patterns (*1, *2, *3) - they use inline JOINs
+        if let Some(spec) = &graph_rel.variable_length {
+            let is_fixed_length = spec.exact_hop_count().is_some() 
+                && graph_rel.shortest_path_mode.is_none();
+            
+            if !is_fixed_length {
+                // Truly variable-length (*1..3, *, etc.) - skip, will use CTE path
+                eprintln!("    � ? SKIP: Variable-length path detected (not fixed-length)");
+                eprintln!("    +- infer_graph_join EXIT\n");
+                return Ok(());
+            }
+            // Fixed-length (*1, *2, *3) - continue to generate JOINs
+            eprintln!("    � Fixed-length pattern (*{}) detected - will generate inline JOINs", 
+                spec.exact_hop_count().unwrap());
         }
 
         // Check if nodes have labels - skip for anonymous nodes like ()-[r]->()

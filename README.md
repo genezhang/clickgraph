@@ -1,12 +1,12 @@
 <div align="center">
-  <img src="./docs/images/cglogo.png" height="200">
+  <img src="https://github.com/genezhang/clickgraph/tree/main/docs/images/cglogo.png" height="200">
 </div>
 
 # ClickGraph
 
 #### ClickGraph - A graph query layer on top of ClickHouse®, developed on a forked repo of Brahmand, written in Rust.
 
-**A high-performance, stateless, read-only graph query engine for ClickHouse with Neo4j ecosystem compatibility.**
+**A high-performance, stateless, read-only graph query translator for ClickHouse with Neo4j ecosystem compatibility.**
 
 > **Note: ClickGraph is development-ready for view-based graph analysis with full Neo4j Bolt Protocol 5.8 support. This is a read-only analytical query engine - write operations are not supported. Codebase has diverged from the upstream with DDL/writes feature removal and other structure/code refactoring to follow Rust idiomatic style.**
 

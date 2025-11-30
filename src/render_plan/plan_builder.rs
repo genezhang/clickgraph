@@ -2311,6 +2311,22 @@ impl RenderPlanBuilder for LogicalPlan {
                 joins
             }
             LogicalPlan::GraphJoins(graph_joins) => {
+                // Check if input has a fixed-length variable-length pattern with >1 hops
+                // For those, we need to use the expanded JOINs from extract_joins on the input
+                // (which will call GraphRel.extract_joins -> expand_fixed_length_joins)
+                if let Some(spec) = get_variable_length_spec(&graph_joins.input) {
+                    if let Some(exact_hops) = spec.exact_hop_count() {
+                        if exact_hops > 1 {
+                            println!(
+                                "DEBUG: GraphJoins has fixed-length *{} input - delegating to input.extract_joins()",
+                                exact_hops
+                            );
+                            // Delegate to input to get the expanded multi-hop JOINs
+                            return graph_joins.input.extract_joins();
+                        }
+                    }
+                }
+                
                 // Use the pre-computed joins from GraphJoinInference analyzer
                 // These were carefully constructed to handle OPTIONAL MATCH, multi-hop, etc.
                 println!(

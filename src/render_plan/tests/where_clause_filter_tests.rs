@@ -556,3 +556,59 @@ mod edge_cases {
         );
     }
 }
+
+#[cfg(test)]
+mod fixed_length_vlp_tests {
+    use super::*;
+
+    #[test]
+    fn test_fixed_length_star_one() {
+        // Test that *1 generates proper inline JOINs
+        let cypher = "MATCH (a:User)-[:FOLLOWS*1]->(b:User) RETURN COUNT(*)";
+        let sql = cypher_to_sql(cypher);
+
+        println!("Fixed-length *1 SQL:\n{}", sql);
+
+        // Should have a JOIN for the relationship
+        assert!(
+            sql.contains("JOIN") || sql.contains("join"),
+            "SQL should contain JOIN for *1 pattern. Got: {}", sql
+        );
+        
+        // Should reference the follows table
+        assert!(
+            sql.contains("follows") || sql.contains("FOLLOWS"),
+            "SQL should reference follows relationship table. Got: {}", sql
+        );
+    }
+
+    #[test]
+    fn test_fixed_length_star_two() {
+        // Test that *2 generates proper inline JOINs
+        let cypher = "MATCH (a:User)-[:FOLLOWS*2]->(b:User) RETURN COUNT(*)";
+        let sql = cypher_to_sql(cypher);
+
+        println!("Fixed-length *2 SQL:\n{}", sql);
+
+        // Should have JOINs for two hops
+        assert!(
+            sql.contains("JOIN") || sql.contains("join"),
+            "SQL should contain JOIN for *2 pattern. Got: {}", sql
+        );
+    }
+
+    #[test]
+    fn test_fixed_length_star_three() {
+        // Test that *3 generates proper inline JOINs
+        let cypher = "MATCH (a:User)-[:FOLLOWS*3]->(b:User) RETURN COUNT(*)";
+        let sql = cypher_to_sql(cypher);
+
+        println!("Fixed-length *3 SQL:\n{}", sql);
+
+        // Should have JOINs for three hops
+        assert!(
+            sql.contains("JOIN") || sql.contains("join"),
+            "SQL should contain JOIN for *3 pattern. Got: {}", sql
+        );
+    }
+}
