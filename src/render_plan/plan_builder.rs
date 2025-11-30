@@ -2363,9 +2363,16 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // 🚀 FIXED-LENGTH VLP: Use consolidated VlpContext for all schema types
                 if let Some(vlp_ctx) = build_vlp_context(graph_rel) {
-                    if vlp_ctx.is_fixed_length && vlp_ctx.exact_hops.unwrap_or(1) > 0 {
-                        let exact_hops = vlp_ctx.exact_hops.unwrap_or(1);
-                        
+                    let exact_hops = vlp_ctx.exact_hops.unwrap_or(1);
+                    
+                    // Special case: *0 pattern (zero hops = same node)
+                    // Return empty joins - both a and b reference the same node
+                    if vlp_ctx.is_fixed_length && exact_hops == 0 {
+                        println!("DEBUG: extract_joins - Zero-hop pattern (*0) - returning empty joins");
+                        return Ok(Vec::new());
+                    }
+                    
+                    if vlp_ctx.is_fixed_length && exact_hops > 0 {
                         println!(
                             "DEBUG: extract_joins - Fixed-length VLP (*{}) with {:?} schema",
                             exact_hops, vlp_ctx.schema_type
@@ -3306,6 +3313,21 @@ impl RenderPlanBuilder for LogicalPlan {
         }
 
         // Check if this query needs CTE-based processing
+        // First, check if there's any variable-length path anywhere in the plan
+        // that isn't fixed-length (which can use inline JOINs)
+        if self.contains_variable_length_path() {
+            // Check if it's truly variable (needs CTE) vs fixed-length (can use JOINs)
+            if let Some(spec) = get_variable_length_spec(self) {
+                let is_fixed_length = spec.exact_hop_count().is_some();
+                if !is_fixed_length {
+                    println!("DEBUG: Plan contains variable-length path (range pattern) - need CTE");
+                    return Err(RenderBuildError::InvalidRenderPlan(
+                        "Variable-length paths require CTE-based processing".to_string(),
+                    ));
+                }
+            }
+        }
+        
         if let LogicalPlan::Projection(proj) = self {
             if let LogicalPlan::GraphRel(graph_rel) = proj.input.as_ref() {
                 // Variable-length paths: check if truly variable or just fixed-length
@@ -3455,6 +3477,16 @@ impl RenderPlanBuilder for LogicalPlan {
                 println!("DEBUG: Projection is Return type");
                 if let LogicalPlan::GroupBy(group_by) = outer_proj.input.as_ref() {
                     println!("DEBUG: Found GroupBy under Projection(Return)!");
+                    
+                    // Check for variable-length paths in GroupBy's input
+                    // VLP with aggregation requires CTE-based processing
+                    if group_by.input.contains_variable_length_path() {
+                        println!("DEBUG: GroupBy contains variable-length path - need CTE");
+                        return Err(RenderBuildError::InvalidRenderPlan(
+                            "Variable-length paths with aggregation require CTE-based processing".to_string(),
+                        ));
+                    }
+                    
                     // Check if RETURN items need data beyond what WITH provides
                     // CTE is needed if RETURN contains:
                     // 1. Node references (TableAlias that refers to a node, not a WITH alias)

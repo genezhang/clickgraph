@@ -513,9 +513,10 @@ impl VariableLengthCteGenerator {
         let max_hops = self.spec.max_hops;
 
         // Determine if we need an _inner CTE wrapper
-        // This is needed when we have shortest path mode (which requires post-processing)
-        // For non-shortest-path mode, filters are applied in base/recursive cases directly
-        let needs_inner_cte = self.shortest_path_mode.is_some();
+        // This is needed when we have:
+        // 1. Shortest path mode (which requires post-processing)
+        // 2. min_hops > 1 (base case generates hop 1, but we need to filter)
+        let needs_inner_cte = self.shortest_path_mode.is_some() || min_hops > 1;
         let recursive_cte_name = if needs_inner_cte {
             format!("{}_inner", self.cte_name)
         } else {
@@ -650,12 +651,30 @@ impl VariableLengthCteGenerator {
             (None, Some(_end_filters)) => {
                 // For non-shortest-path mode, end filters are ALREADY applied in base/recursive cases
                 // (see generate_base_case and generate_recursive_case_with_cte_name)
-                // No need for _to_target wrapper - just wrap with CTE name
-                format!("{} AS (\n{}\n)", self.cte_name, query_body)
+                // But we still need to apply min_hops filtering if min_hops > 1
+                if min_hops > 1 {
+                    format!(
+                        "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count >= {}\n)",
+                        self.cte_name, query_body, self.cte_name, self.cte_name, min_hops
+                    )
+                } else {
+                    format!("{} AS (\n{}\n)", self.cte_name, query_body)
+                }
             }
             (None, None) => {
-                // Simple: just wrap with CTE name (no filtering)
-                format!("{} AS (\n{}\n)", self.cte_name, query_body)
+                // Apply min_hops filtering if needed
+                // Base case starts at hop 1 to allow recursion, but we need to filter
+                // results to respect min_hops (e.g., *2.. should only return hop_count >= 2)
+                // max_hops is already enforced by recursion termination condition
+                if min_hops > 1 {
+                    format!(
+                        "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count >= {}\n)",
+                        self.cte_name, query_body, self.cte_name, self.cte_name, min_hops
+                    )
+                } else {
+                    // No filtering needed (min_hops <= 1)
+                    format!("{} AS (\n{}\n)", self.cte_name, query_body)
+                }
             }
         };
 
@@ -680,6 +699,8 @@ impl VariableLengthCteGenerator {
             "0 as hop_count".to_string(), // Zero hops
             format!("CAST([] AS {}) as path_edges", path_edges_type), // Empty edge array
             "CAST([] AS Array(String)) as path_relationships".to_string(), // Empty array with explicit type
+            // Add path_nodes for UNWIND nodes(p) support - for zero hop, just the start node
+            format!("[{}.{}] as path_nodes", self.start_node_alias, self.start_node_id_column),
         ];
 
         // Add properties for start node (which is also the end node)
@@ -978,7 +999,7 @@ impl VariableLengthCteGenerator {
         if hop_count != 1 {
             // Multi-hop base case not yet supported for denormalized
             return format!(
-                "    -- Multi-hop base case for {} hops (denormalized - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_edges, [] as path_relationships\n    WHERE false",
+                "    -- Multi-hop base case for {} hops (denormalized - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_edges, [] as path_relationships, [] as path_nodes\n    WHERE false",
                 hop_count, hop_count
             );
         }
@@ -987,8 +1008,9 @@ impl VariableLengthCteGenerator {
         let edge_tuple = self.build_edge_tuple_base();
 
         // For denormalized, start_id and end_id come directly from the relationship columns
+        // Include path_nodes for UNWIND nodes(p) support
         let select_clause = format!(
-            "{rel}.{from_col} as start_id,\n        {rel}.{to_col} as end_id,\n        1 as hop_count,\n        [{edge_tuple}] as path_edges,\n        {path_rels}",
+            "{rel}.{from_col} as start_id,\n        {rel}.{to_col} as end_id,\n        1 as hop_count,\n        [{edge_tuple}] as path_edges,\n        {path_rels},\n        [{rel}.{from_col}, {rel}.{to_col}] as path_nodes",
             rel = self.relationship_alias,
             from_col = self.relationship_from_column,
             to_col = self.relationship_to_column,
@@ -1036,8 +1058,9 @@ impl VariableLengthCteGenerator {
         // For denormalized, the recursive case:
         // - Takes start_id from the CTE (previous path start)
         // - Takes end_id from the new relationship's to_col
+        // Include path_nodes for UNWIND nodes(p) support
         let select_clause = format!(
-            "vp.start_id,\n        {rel}.{to_col} as end_id,\n        vp.hop_count + 1 as hop_count,\n        arrayConcat(vp.path_edges, [{edge_tuple}]) as path_edges,\n        arrayConcat(vp.path_relationships, {path_rels}) as path_relationships",
+            "vp.start_id,\n        {rel}.{to_col} as end_id,\n        vp.hop_count + 1 as hop_count,\n        arrayConcat(vp.path_edges, [{edge_tuple}]) as path_edges,\n        arrayConcat(vp.path_relationships, {path_rels}) as path_relationships,\n        arrayConcat(vp.path_nodes, [{rel}.{to_col}]) as path_nodes",
             rel = self.relationship_alias,
             to_col = self.relationship_to_column,
             edge_tuple = edge_tuple_recursive,
@@ -1083,7 +1106,7 @@ impl VariableLengthCteGenerator {
         if hop_count != 1 {
             // Multi-hop base case not yet supported for mixed
             return format!(
-                "    -- Multi-hop base case for {} hops (mixed - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_edges, [] as path_relationships\n    WHERE false",
+                "    -- Multi-hop base case for {} hops (mixed - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_edges, [] as path_relationships, [] as path_nodes\n    WHERE false",
                 hop_count, hop_count
             );
         }
@@ -1113,6 +1136,8 @@ impl VariableLengthCteGenerator {
             "1 as hop_count".to_string(),
             format!("[{}] as path_edges", edge_tuple),
             self.generate_relationship_type_for_hop(1),
+            // Add path_nodes for UNWIND nodes(p) support
+            format!("[{}, {}] as path_nodes", start_id_expr, end_id_expr),
         ];
 
         // Add properties for non-denormalized nodes
@@ -1224,6 +1249,11 @@ impl VariableLengthCteGenerator {
             format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
+            ),
+            // Add path_nodes for UNWIND nodes(p) support
+            format!(
+                "arrayConcat(vp.path_nodes, [{}]) as path_nodes",
+                end_id_expr
             ),
         ];
 

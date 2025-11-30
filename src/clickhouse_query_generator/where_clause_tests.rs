@@ -148,7 +148,9 @@ mod where_clause_tests {
 
     #[test]
     fn test_no_filters_simple_structure() {
-        let spec = VariableLengthSpec::fixed(2);
+        // Use a range pattern starting at 1 to avoid min_hops filtering
+        // (Fixed patterns like *2 would use inline JOINs in practice, not CTEs)
+        let spec = VariableLengthSpec::range(1, 3); // *1..3
 
         let generator = VariableLengthCteGenerator::new(
             spec,
@@ -176,10 +178,10 @@ mod where_clause_tests {
             _ => panic!("Expected RawSql"),
         };
 
-        // Verify simple structure (no _inner, _to_target)
+        // Verify simple structure (no _inner, _to_target) when min_hops <= 1
         assert!(
             !sql.contains("_inner AS"),
-            "Should NOT have _inner CTE without filters/shortest path"
+            "Should NOT have _inner CTE without filters/shortest path when min_hops <= 1"
         );
         assert!(
             !sql.contains("_to_target AS"),
