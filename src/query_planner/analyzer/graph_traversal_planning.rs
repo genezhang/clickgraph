@@ -64,7 +64,15 @@ impl AnalyzerPass for GraphTRaversalPlanning {
 
                     for mut ctx in ctxs_to_update.into_iter() {
                         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&ctx.alias) {
-                            table_ctx.set_labels(Some(vec![ctx.label]));
+                            // Preserve multiple labels for relationships (e.g., [:FOLLOWS|LIKES])
+                            // Only overwrite if there's a single label or none
+                            let existing_labels = table_ctx.get_labels();
+                            let should_preserve_labels = existing_labels
+                                .map(|labels| labels.len() > 1)
+                                .unwrap_or(false);
+                            if !should_preserve_labels {
+                                table_ctx.set_labels(Some(vec![ctx.label]));
+                            }
                             // table_ctx.projection_items.append(&mut ctx.projections);
                             if let Some(plan_expr) = ctx.insubquery {
                                 table_ctx.insert_filter(plan_expr);
@@ -109,7 +117,15 @@ impl AnalyzerPass for GraphTRaversalPlanning {
 
                     for mut ctx in ctxs_to_update.into_iter() {
                         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&ctx.alias) {
-                            table_ctx.set_labels(Some(vec![ctx.label]));
+                            // Preserve multiple labels for relationships (e.g., [:FOLLOWS|LIKES])
+                            // Only overwrite if there's a single label or none
+                            let existing_labels = table_ctx.get_labels();
+                            let should_preserve_labels = existing_labels
+                                .map(|labels| labels.len() > 1)
+                                .unwrap_or(false);
+                            if !should_preserve_labels {
+                                table_ctx.set_labels(Some(vec![ctx.label]));
+                            }
                             // table_ctx.projection_items.append(&mut ctx.projections);
                             if let Some(plan_expr) = ctx.insubquery {
                                 table_ctx.insert_filter(plan_expr);

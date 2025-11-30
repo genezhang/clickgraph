@@ -1,10 +1,10 @@
 # Known Issues
 
 **Current Status**: 🔧 **Undirected patterns need UNION ALL implementation**  
-**Test Results**: 526/526 unit tests passing (100%)  
+**Test Results**: 534/534 unit tests passing (100%)  
 **Active Issues**: 4 bugs (undirected OR-JOIN, undirected uniqueness, disconnected patterns, *0 pattern)
 
-**Date Updated**: November 30, 2025  
+**Date Updated**: December 2, 2025  
 **Neo4j Semantics Verified**: November 22, 2025 (see `notes/CRITICAL_relationship_vs_node_uniqueness.md`)
 
 **CRITICAL DISCOVERIES**: 
@@ -13,15 +13,17 @@
 
 **Note**: Some integration tests have incorrect expectations or test unimplemented features. Known feature gaps documented below.
 
+**Recently Resolved** (December 2, 2025):
+- ✅ **Polymorphic Multi-Type JOIN Filter**: Fixed - Now uses `IN ('TYPE1', 'TYPE2')` for multi-type patterns
+- ✅ **VLP min_hops Filtering**: Fixed CTE wrapper to filter `WHERE hop_count >= min_hops` for patterns like `*2..`
+- ✅ **VLP + Aggregation**: Fixed plan builder to detect VLP in GroupBy and use CTE path correctly
+- ✅ **Bidirectional type(r)**: Fixed projection pushdown into Union branches for bidirectional patterns (commit 85279e1)
+
 **Recently Resolved** (November 30, 2025):
 - ✅ **RETURN r (whole relationship)**: Fixed - Now expands to all relationship columns
 - ✅ **Graph functions (type, id, labels)**: Fixed - Now generate proper SQL
 - ✅ **OPTIONAL MATCH + VLP**: Fixed anchor node handling - Eve with no followers now returns correctly
 - ✅ **Inline property filters**: Verified working - `{prop: value}` converts to WHERE clause
-
-**Recently Resolved** (December 2, 2025):
-- ✅ **VLP min_hops Filtering**: Fixed CTE wrapper to filter `WHERE hop_count >= min_hops` for patterns like `*2..`
-- ✅ **VLP + Aggregation**: Fixed plan builder to detect VLP in GroupBy and use CTE path correctly
 
 **Recently Resolved** (December 1, 2025):
 - ✅ **Denormalized Schema VLP**: Fixed property alias rewriting for denormalized VLP patterns - now uses column-aware mapping (from_properties→r1, to_properties→rN)
@@ -151,6 +153,56 @@ Examples where duplicates exist:
 3. **Transaction graphs**: Account A transfers to Account B multiple times → multiple rows
 
 **What we need**: A true **relationship ID** (like Neo4j's `id(r)`)
+
+---
+
+## ✅ RESOLVED: Polymorphic Edge Multi-Type JOIN Filter Bug
+
+**Status**: ✅ **FIXED** - December 2, 2025  
+**Severity**: **MEDIUM** - Was producing wrong results for multi-type polymorphic queries  
+**Identified**: December 2, 2025  
+**Fixed**: December 2, 2025
+
+### The Problem (Now Fixed)
+
+When using multi-type relationship patterns (`[:TYPE1|TYPE2]`) with polymorphic edge schemas, the generated SQL was incorrectly filtering to only the first type in the JOIN clause.
+
+### Root Cause
+
+In `src/query_planner/analyzer/graph_traversal_planning.rs`, the `CtxToUpdate` loop was overwriting the relationship's `TableCtx.labels` with a single label, destroying the multi-label information.
+
+### Fix
+
+Modified `graph_traversal_planning.rs` to preserve existing multiple labels when updating table contexts:
+```rust
+// Preserve multiple labels for relationships (e.g., [:FOLLOWS|LIKES])
+let existing_labels = table_ctx.get_labels();
+let should_preserve_labels = existing_labels
+    .map(|labels| labels.len() > 1)
+    .unwrap_or(false);
+if !should_preserve_labels {
+    table_ctx.set_labels(Some(vec![ctx.label]));
+}
+```
+
+### Verification
+
+```cypher
+MATCH (a:User)-[r:FOLLOWS|LIKES]->(b:User) RETURN type(r), b.name
+```
+
+Now correctly generates:
+```sql
+INNER JOIN interactions AS r ON r.from_id = a.user_id AND r.interaction_type IN ('FOLLOWS', 'LIKES')
+```
+- `src/query_planner/analyzer/graph_join_inference.rs` - Where `pre_filter` is set
+
+### Related
+
+- `notes/type-r-schema-variations.md` - Full `type(r)` behavior documentation
+- `notes/polymorphic-edge-query-optimization.md` - Design for polymorphic optimization
+
+---
 
 ### Solution: Add `edge_id` to Schema
 

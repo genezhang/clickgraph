@@ -2151,11 +2151,12 @@ impl RenderPlanBuilder for LogicalPlan {
         }
         
         // Helper to generate polymorphic edge type filter
-        // For polymorphic edges, adds: r.type_column = 'EDGE_TYPE' AND r.from_label = 'NodeType' AND r.to_label = 'NodeType'
+        // For polymorphic edges, adds: r.type_column IN ('TYPE1', 'TYPE2') AND r.from_label = 'NodeType' AND r.to_label = 'NodeType'
+        // For single type: r.type_column = 'EDGE_TYPE'
         fn get_polymorphic_edge_filter(
             center: &LogicalPlan,
             alias: &str,
-            rel_type: &str,
+            rel_types: &[String],
             from_label: &str,
             to_label: &str,
         ) -> Option<RenderExpr> {
@@ -2176,23 +2177,42 @@ impl RenderPlanBuilder for LogicalPlan {
             let type_col = view_scan.type_column.as_ref()?;
             
             log::debug!(
-                "Generating polymorphic edge filter for alias='{}', rel_type='{}', type_col='{}'",
-                alias, rel_type, type_col
+                "Generating polymorphic edge filter for alias='{}', rel_types={:?}, type_col='{}'",
+                alias, rel_types, type_col
             );
             
             let mut filters = Vec::new();
             
-            // Filter 1: type_column = 'EDGE_TYPE'
-            filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::Equal,
-                operands: vec![
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: TableAlias(alias.to_string()),
-                        column: Column(PropertyValue::Column(type_col.clone())),
-                    }),
-                    RenderExpr::Literal(Literal::String(rel_type.to_string())),
-                ],
-            }));
+            // Filter 1: type_column = 'EDGE_TYPE' (single) OR type_column IN ('TYPE1', 'TYPE2') (multiple)
+            if rel_types.len() == 1 {
+                // Single type: use equality
+                filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(alias.to_string()),
+                            column: Column(PropertyValue::Column(type_col.clone())),
+                        }),
+                        RenderExpr::Literal(Literal::String(rel_types[0].clone())),
+                    ],
+                }));
+            } else if rel_types.len() > 1 {
+                // Multiple types: use IN clause
+                let type_list: Vec<RenderExpr> = rel_types.iter()
+                    .map(|t| RenderExpr::Literal(Literal::String(t.clone())))
+                    .collect();
+                filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::In,
+                    operands: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(alias.to_string()),
+                            column: Column(PropertyValue::Column(type_col.clone())),
+                        }),
+                        RenderExpr::List(type_list),
+                    ],
+                }));
+            }
+            // If no types, skip type filter
             
             // Filter 2: from_label_column = 'FromNodeType' (if present and not $any)
             if let Some(from_label_col) = &view_scan.from_label_column {
@@ -2653,16 +2673,15 @@ impl RenderPlanBuilder for LogicalPlan {
                     None
                 };
                 
-                // Generate polymorphic edge filter (type_column = 'TYPE' AND from_label = 'X' AND to_label = 'Y')
+                // Generate polymorphic edge filter (type_column IN ('TYPE1', 'TYPE2') AND from_label = 'X' AND to_label = 'Y')
                 // This applies regardless of whether the JOIN is optional or required
-                let rel_type_for_filter = graph_rel.labels.as_ref()
-                    .and_then(|labels| labels.first())
-                    .map(|s| s.as_str())
-                    .unwrap_or("");
+                let rel_types_for_filter: Vec<String> = graph_rel.labels.as_ref()
+                    .map(|labels| labels.clone())
+                    .unwrap_or_default();
                 let polymorphic_filter = get_polymorphic_edge_filter(
                     &graph_rel.center,
                     &graph_rel.alias,
-                    rel_type_for_filter,
+                    &rel_types_for_filter,
                     &start_label,
                     &end_label,
                 );
