@@ -86,6 +86,7 @@
 - Update KNOWN_ISSUES.md with fixed-length VLP resolution
 - Update KNOWN_ISSUES with VLP fixes and *0 pattern limitation
 - Add Cypher Subgraph Extraction wiki with Nebula GET SUBGRAPH comparison
+- Update README with v0.5.2 features
 
 ### 🎨 Styling
 
@@ -102,6 +103,8 @@
 - Update CHANGELOG.md [skip ci]
 - Clean up root directory - remove temp files and organize Python tests
 - Release v0.5.2
+- Update CHANGELOG.md [skip ci]
+- Update Cargo.lock for v0.5.2
 ## [0.5.1] - 2025-11-21
 
 ### 🚀 Features
