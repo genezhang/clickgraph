@@ -5,8 +5,8 @@ members = [
 
 [package]
 name = "clickgraph"
-version = "0.5.1"
-edition = "2024"
+version = "0.5.2"
+edition = "2021"
 rust-version = "1.85"
 
 [dependencies]

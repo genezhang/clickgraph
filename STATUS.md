@@ -2,6 +2,20 @@
 
 *Updated: November 30, 2025*
 
+## 🎉 **v0.5.2 Released** - November 30, 2025
+
+**Highlights**:
+- ✅ Complete polymorphic edge support (wildcard, multi-hop, bidirectional)
+- ✅ Composite edge IDs for polymorphic tables
+- ✅ Coupled edge optimization (JOIN elimination)
+- ✅ VLP + UNWIND support (path decomposition)
+- ✅ OPTIONAL MATCH + VLP fix (anchor node preservation)
+- ✅ Denormalized edge tables (edge = node table pattern)
+- ✅ 534 library tests passing
+- ✅ 73 schema variation tests (Standard, Denormalized, Polymorphic, Coupled)
+
+---
+
 ## 🚨 **CRITICAL DOCUMENTATION FIX** - November 22, 2025
 
 **Issue Found**: Cypher Language Reference was missing critical enterprise features:
@@ -30,12 +44,11 @@
 
 ---
 
-## 🎯 **v0.5.2-alpha: In Progress** 🚧
+## ✅ **v0.5.2: Complete** 
 
-**Status**: ✅ **All Schema Variations - COMPLETE**  
+**Status**: ✅ **RELEASED**  
 **Started**: November 22, 2025  
-**Updated**: November 29, 2025  
-**Next**: v0.5.2-alpha release preparation
+**Completed**: November 30, 2025  
 
 ### 🆕 Polymorphic Edge Filters - COMPLETE (Nov 29, 2025)
 

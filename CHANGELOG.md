@@ -1,58 +1,62 @@
-## [unreleased]
+## [0.5.2] - 2025-11-30
 
 ### 🚀 Features
 
-- Fix OPTIONAL MATCH + Variable-Length Paths returning 0 rows when no path exists
+- **OPTIONAL MATCH + Variable-Length Paths** - Fix returning 0 rows when no path exists
   - Changed FROM clause to use anchor node instead of CTE for optional VLP
   - Added LEFT JOIN for CTE (instead of FROM) when VLP is optional
   - Added LEFT JOIN for end node through CTE
   - Extract start node filter to outer query WHERE clause
-  - Added `extract_start_filter_for_outer_query()` to traverse logical plan and find GraphRel.where_predicate
-  - Added `GroupBy` handling to filter extraction (was missing, causing filter to not be found)
   - All 27 OPTIONAL MATCH tests now pass (100%)
 
-- Complete polymorphic edge support for wildcard relationship patterns
+- **Complete Polymorphic Edge Support** - Single table with multiple edge types
   - Single-hop wildcard edges: `(u:User)-[r]->(target)` with unlabeled targets
   - Multi-hop polymorphic CTE chaining: `(u)-[r1]->(m)-[r2]->(t)` with proper JOIN chaining
   - Bidirectional (incoming) edges: `(u:User)<-[r]-(source)` using `to_node_id` JOIN
   - Mixed edge patterns: Standard edges + polymorphic edges in same query
-  - Added `is_incoming` tracking for correct JOIN direction
+  - Multi-type filter with IN clause: `[:FOLLOWS|LIKES]` → `WHERE type IN ('FOLLOWS', 'LIKES')`
 
-- Verify composite edge ID support with polymorphic tables
+- **Composite Edge ID Support** - Multi-column uniqueness for polymorphic tables
   - Single-column edge IDs: `edge_id: uid`
   - Composite edge IDs: `edge_id: [from_id, to_id, interaction_type, timestamp]`
-  - Works with VLP (variable-length paths) - generates `tuple(...)` for uniqueness
+  - Works with VLP - generates `tuple(...)` for cycle detection
   - Works with polymorphic edge tables - type filters + composite IDs together
-  - Proper `NOT has(path_edges, tuple(...))` cycle detection
 
-- Add coupled edge alias unification for denormalized patterns
-  - Automatic JOIN elimination for multi-hop patterns on same table
-  - Unified table aliases for coupled edges (e.g., both `r1` and `r2` use `r1`)
+- **Coupled Edge Optimization** - JOIN elimination for multi-hop on same table
+  - Automatic detection when edges share table and coupling node
+  - Unified table aliases (e.g., both `r1` and `r2` use `r1`)
   - Works with all Cypher features: WHERE, aggregations, ORDER BY, DISTINCT, UNWIND
-  
-- Add UNWIND property mapping for denormalized nodes
-  - `transform_unwind_expression()` resolves Cypher properties to SQL columns
-  - Supports denormalized node properties (`from_node_properties`/`to_node_properties`)
 
-- Add VLP + UNWIND support: UNWIND nodes(p) and relationships(p) after variable-length paths
-  - Translates to ARRAY JOIN on CTE's path_nodes/path_relationships arrays
+- **VLP + UNWIND Support** - Path decomposition with ARRAY JOIN
+  - `UNWIND nodes(p) AS n` - Explodes path nodes to rows
+  - `UNWIND relationships(p) AS r` - Explodes path relationships to rows
   - Works with all VLP patterns: `*`, `*2`, `*1..3`, `*..5`, `*2..`
-  
-- Add coupled edge detection in graph schema
-  - `are_edges_coupled()` and `get_coupled_edge_info()` schema methods
-  - Detects when two edges share the same table and a common node
-  - Foundation for multi-edge single-row optimization (Zeek DNS pattern)
+
+- **Denormalized Edge Tables** - Edge table = node table pattern
+  - Schema structure with `from_node_properties`/`to_node_properties`
+  - Multi-hop patterns, VLP, aggregations all working
+  - Graph algorithms: shortestPath, allShortestPaths, PageRank
+
+### 🧪 Testing
+
+- Add comprehensive schema variation test suite (73 tests)
+  - Standard schema: 30 tests
+  - Denormalized schema: 14 tests
+  - Polymorphic schema: 24 tests
+  - Coupled schema: 5 tests
+- All 534 library tests passing
 
 ### 📚 Documentation
 
-- Update STATUS.md with complete polymorphic edge support
-- Add Coupled Edges section to denormalized-edge-tables.md
-- Add UNWIND with Coupled Edges documentation
+- Add Schema-Polymorphic-Edges.md wiki page
+- Add Cypher-Subgraph-Extraction.md wiki page
 - Add coupled-edges.md implementation notes
+- Update STATUS.md with complete schema variation support
 
 ### ⚙️ Miscellaneous Tasks
 
 - Update CHANGELOG.md [skip ci]
+
 ## [0.5.1] - 2025-11-21
 
 ### 🚀 Features
