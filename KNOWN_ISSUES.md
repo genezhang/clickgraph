@@ -2,9 +2,9 @@
 
 **Current Status**: 🔧 **Undirected patterns need relationship ID support**  
 **Test Results**: 526/526 unit tests passing (100%)  
-**Active Issues**: 2 bugs (undirected uniqueness, disconnected patterns)
+**Active Issues**: 3 bugs (undirected uniqueness, disconnected patterns, *0 pattern)
 
-**Date Updated**: December 1, 2025  
+**Date Updated**: December 2, 2025  
 **Neo4j Semantics Verified**: November 22, 2025 (see `notes/CRITICAL_relationship_vs_node_uniqueness.md`)
 
 **CRITICAL DISCOVERIES**: 
@@ -12,6 +12,10 @@
 2. **Undirected patterns need relationship IDs** - `(from_id, to_id)` alone is NOT sufficient!
 
 **Note**: Some integration tests have incorrect expectations or test unimplemented features. Known feature gaps documented below.
+
+**Recently Resolved** (December 2, 2025):
+- ✅ **VLP min_hops Filtering**: Fixed CTE wrapper to filter `WHERE hop_count >= min_hops` for patterns like `*2..`
+- ✅ **VLP + Aggregation**: Fixed plan builder to detect VLP in GroupBy and use CTE path correctly
 
 **Recently Resolved** (December 1, 2025):
 - ✅ **Denormalized Schema VLP**: Fixed property alias rewriting for denormalized VLP patterns - now uses column-aware mapping (from_properties→r1, to_properties→rN)
@@ -851,6 +855,54 @@ MATCH (u1:User)-[:FOLLOWS]->()-[:FOLLOWS]->(u2:User)
 ```
 
 **Status**: Anonymous edges ✅ DONE | Anonymous nodes 🔧 TODO
+
+---
+
+## 🔧 KNOWN LIMITATION: Zero-Length Path Pattern (*0)
+
+**Status**: 🔧 **ARCHITECTURAL LIMITATION** (Identified December 2, 2025)  
+**Severity**: Low - Rarely needed  
+**Impact**: `*0` patterns return incorrect results instead of same node
+
+### Summary
+
+The `*0` pattern (zero-length path) should return the same node matched to both the start and end positions. This is because zero hops means no traversal occurs.
+
+**What Should Happen** ✅:
+```cypher
+-- Given: Alice (user_id=1) exists
+MATCH (a:User)-[:FOLLOWS*0]->(b:User) WHERE a.user_id = 1 RETURN b.name
+-- Expected: Alice (same node, no traversal)
+```
+
+**What Actually Happens** ❌:
+- Returns 1-hop results instead (users Alice follows)
+- The `*0` is interpreted like `*1`
+
+### Root Cause
+
+The analyzer's `GraphJoinInference` determines JOIN structure **before** VLP detection happens. By the time the plan builder recognizes `*0`, the joins have already been inferred based on the pattern structure `(a)-[r]->(b)` which assumes at least one hop.
+
+**Technical Details**:
+- `analyzer/graph_join_inference.rs` computes joins based on pattern shape
+- `render_plan/plan_builder.rs` detects `*0` too late
+- Would need architectural refactoring to defer join inference until VLP is known
+
+### Workaround ✅
+
+Use UNION or conditional logic if zero-length paths are truly needed:
+```cypher
+-- Instead of: (a)-[*0..2]->(b)
+-- Use: (a)-[*1..2]->(b) UNION (MATCH (a:User) RETURN a AS b)
+```
+
+### Resolution Path
+
+Low priority - `*0` is rarely needed in practice. Most use cases either:
+- Want at least one hop: `*1..N` or `*`
+- Want identity: Just match the node directly
+
+If needed, would require refactoring join inference to be VLP-aware.
 
 ---
 
