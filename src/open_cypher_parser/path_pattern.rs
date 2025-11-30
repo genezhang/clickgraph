@@ -9,7 +9,7 @@ use nom::{
     IResult, Parser,
     branch::alt,
     bytes::complete::{tag, tag_no_case},
-    character::complete::{alphanumeric1, multispace0, space0},
+    character::complete::{multispace0, space0},
     combinator::{map, opt},
     error::Error,
     multi::separated_list0,
@@ -192,7 +192,7 @@ fn parse_consecutive_relationships(
     }
 }
 
-// {name: 'Oliver Stone', age: 52}
+// {name: 'Oliver Stone', age: 52, tags: ['actor', 'director'], created: date('2024-01-01')}
 pub fn parse_properties(input: &'_ str) -> IResult<&'_ str, Vec<Property<'_>>> {
     alt((
         // Property map: requires curly braces and key-value pairs.
@@ -202,16 +202,20 @@ pub fn parse_properties(input: &'_ str) -> IResult<&'_ str, Vec<Property<'_>>> {
                 delimited(space0, char(','), space0),
                 map(
                     separated_pair(
-                        delimited(space0, alphanumeric1, space0), // key
+                        // Property key: alphanumeric with underscores (e.g., user_id)
+                        delimited(space0, common::parse_alphanumeric_with_underscore, space0),
                         delimited(space0, char(':'), space0),
-                        common::parse_alphanumeric_with_underscore_dot_star, // value
+                        // Use the full expression parser for values - supports:
+                        // - Strings: 'hello', "world"
+                        // - Numbers: 42, 3.14, -5
+                        // - Booleans: true, false
+                        // - Null: null
+                        // - Lists: [1, 2, 3]
+                        // - Function calls: date('2024-01-01'), datetime(...)
+                        // - Parameters: $param
+                        expression::parse_expression,
                     ),
-                    |(key, value)| {
-                        // println!("\n key : {:?}, value : {:?}\n", key, value);
-                        let value_expression = match expression::parse_parameter_property_access_literal_variable_expression(value) {
-                            Ok((_, expression)) => expression,
-                            _ => unreachable!(),
-                        };
+                    |(key, value_expression)| {
                         Property::PropertyKV(PropertyKVPair {
                             key,
                             value: value_expression,
@@ -569,6 +573,86 @@ mod tests {
         error::{Error, ErrorKind},
     };
     use std::rc::Rc;
+
+    #[test]
+    fn test_parse_properties_with_numeric_literal() {
+        // Test inline properties with numeric values
+        let input = "{id: 1}";
+        let result = parse_properties(input);
+        assert!(result.is_ok(), "Failed to parse {{id: 1}}: {:?}", result);
+        let (remaining, props) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input, got: '{}'", remaining);
+        assert_eq!(props.len(), 1, "Should have one property");
+        
+        match &props[0] {
+            Property::PropertyKV(kv) => {
+                assert_eq!(kv.key, "id");
+                match &kv.value {
+                    Expression::Literal(Literal::Integer(i)) => assert_eq!(*i, 1),
+                    other => panic!("Expected Integer literal, got: {:?}", other),
+                }
+            }
+            other => panic!("Expected PropertyKV, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_properties_with_float_literal() {
+        let input = "{price: 3.14}";
+        let result = parse_properties(input);
+        assert!(result.is_ok(), "Failed to parse {{price: 3.14}}: {:?}", result);
+        let (remaining, props) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        match &props[0] {
+            Property::PropertyKV(kv) => {
+                assert_eq!(kv.key, "price");
+                match &kv.value {
+                    Expression::Literal(Literal::Float(f)) => assert!((f - 3.14).abs() < 0.001),
+                    other => panic!("Expected Float literal, got: {:?}", other),
+                }
+            }
+            _ => panic!("Expected PropertyKV"),
+        }
+    }
+
+    #[test]
+    fn test_parse_node_with_numeric_property() {
+        // Full pattern test: (n:User {id: 1})
+        let input = "(n:User {id: 1})";
+        let result = parse_path_pattern(input);
+        assert!(result.is_ok(), "Failed to parse (n:User {{id: 1}}): {:?}", result);
+        let (remaining, pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        match pattern {
+            PathPattern::Node(node) => {
+                assert_eq!(node.name, Some("n"));
+                assert_eq!(node.label, Some("User"));
+                assert!(node.properties.is_some(), "Should have properties");
+            }
+            _ => panic!("Expected Node pattern"),
+        }
+    }
+
+    #[test]
+    fn test_parse_node_with_underscore_property_key() {
+        // Test with underscore in property key
+        let input = "(u:User {user_id: 1})";
+        let result = parse_path_pattern(input);
+        assert!(result.is_ok(), "Failed to parse (u:User {{user_id: 1}}): {:?}", result);
+        let (remaining, pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input, remaining: '{}'", remaining);
+        
+        match pattern {
+            PathPattern::Node(node) => {
+                assert_eq!(node.name, Some("u"));
+                assert_eq!(node.label, Some("User"));
+                assert!(node.properties.is_some(), "Should have properties");
+            }
+            _ => panic!("Expected Node pattern"),
+        }
+    }
 
     #[test]
     fn test_parse_path_pattern_single_node() {

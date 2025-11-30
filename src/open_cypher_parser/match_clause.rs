@@ -206,4 +206,17 @@ mod tests {
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
         }
     }
+
+    #[test]
+    fn test_parse_match_clause_with_numeric_property() {
+        let input = "MATCH (u:User {user_id: 1})";
+        let result = parse_match_clause(input);
+        match result {
+            Ok((remaining, clause)) => {
+                assert_eq!(remaining.trim(), "", "Should consume entire input, remaining: '{}'", remaining);
+                assert_eq!(clause.path_patterns.len(), 1);
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
 }

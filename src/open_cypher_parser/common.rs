@@ -2,7 +2,7 @@ use nom::{
     IResult, Parser,
     branch::alt,
     bytes::complete::{tag, take_until, take_while1},
-    character::complete::{alphanumeric1, multispace0},
+    character::complete::{alphanumeric1, digit1, multispace0},
     combinator::{opt, recognize},
     error::ParseError,
     multi::many0,
@@ -60,6 +60,23 @@ fn unquoted_identifier(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
+/// Parse a numeric literal (integer or float)
+/// Matches: 123, -123, 3.14, -3.14, .5, -.5
+fn parse_numeric_literal(input: &str) -> IResult<&str, &str> {
+    recognize(pair(
+        opt(char('-')),
+        alt((
+            // Float with integer part: 123.456 (must have digits after dot)
+            recognize((digit1, char('.'), digit1)),
+            // Float without integer part: .456
+            recognize(pair(char('.'), digit1)),
+            // Integer: 123 (no dot allowed - checked after float patterns)
+            digit1,
+        )),
+    ))
+    .parse(input)
+}
+
 pub fn parse_alphanumeric_with_underscore_dot_star(input: &str) -> IResult<&str, &str> {
     alt((
         // Single-quoted string: returns the whole thing including quotes.
@@ -68,6 +85,8 @@ pub fn parse_alphanumeric_with_underscore_dot_star(input: &str) -> IResult<&str,
         recognize(pair(char('"'), pair(take_until("\""), char('"')))),
         // The star token, e.g. COUNT(*)
         tag("*"),
+        // Numeric literals: 123, -456, 3.14, -0.5
+        parse_numeric_literal,
         // Unquoted identifier pattern.
         unquoted_identifier,
     ))
@@ -147,6 +166,24 @@ mod tests {
         );
         // a failure case (input not matching any pattern).
         assert!(parse_alphanumeric_with_underscore_dot_star("!abc").is_err());
+        
+        // Numeric literals
+        assert_eq!(
+            parse_alphanumeric_with_underscore_dot_star("123"),
+            Ok(("", "123"))
+        );
+        assert_eq!(
+            parse_alphanumeric_with_underscore_dot_star("-456"),
+            Ok(("", "-456"))
+        );
+        assert_eq!(
+            parse_alphanumeric_with_underscore_dot_star("3.14"),
+            Ok(("", "3.14"))
+        );
+        assert_eq!(
+            parse_alphanumeric_with_underscore_dot_star("-0.5"),
+            Ok(("", "-0.5"))
+        );
     }
 
     #[test]
