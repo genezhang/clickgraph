@@ -29,7 +29,9 @@ use super::{
 };
 use crate::render_plan::cte_extraction::extract_ctes_with_context;
 use crate::render_plan::cte_extraction::{
-    RelationshipColumns, VariableLengthRelInfo, extract_node_label_from_viewscan, extract_relationship_columns,
+    RelationshipColumns, VariableLengthRelInfo, VlpContext, VlpSchemaType,
+    build_vlp_context, detect_vlp_schema_type, expand_fixed_length_joins_with_context,
+    extract_node_label_from_viewscan, extract_relationship_columns,
     get_path_variable, get_shortest_path_mode, get_variable_length_spec, get_variable_length_rel_info,
     get_variable_length_denorm_info, has_variable_length_rel, is_variable_length_denormalized, 
     label_to_table_name, rel_type_to_table_name, 
@@ -2348,65 +2350,23 @@ impl RenderPlanBuilder for LogicalPlan {
                 // FIX: GraphRel must generate JOINs for the relationship traversal
                 // This fixes OPTIONAL MATCH queries by creating proper JOIN clauses
 
-                // 🚀 FIXED-LENGTH OPTIMIZATION: Check if this is a fixed-length pattern
-                if let Some(spec) = &graph_rel.variable_length {
-                    if let Some(exact_hops) = spec.exact_hop_count() {
-                        if graph_rel.shortest_path_mode.is_none() {
-                            println!(
-                                "DEBUG: extract_joins - Fixed-length pattern (*{}) - generating inline JOINs",
-                                exact_hops
-                            );
-                            
-                            // Extract table information
-                            let start_label = extract_node_label_from_viewscan(&graph_rel.left)
-                                .unwrap_or_else(|| "User".to_string());
-                            let end_label = extract_node_label_from_viewscan(&graph_rel.right)
-                                .unwrap_or_else(|| "User".to_string());
-                            let start_table = label_to_table_name(&start_label);
-                            let end_table = label_to_table_name(&end_label);
-                            
-                            let rel_table = if let Some(labels) = &graph_rel.labels {
-                                if !labels.is_empty() {
-                                    rel_type_to_table_name(&labels[0])
-                                } else {
-                                    extract_table_name(&graph_rel.center)
-                                        .unwrap_or_else(|| graph_rel.alias.clone())
-                                }
-                            } else {
-                                extract_table_name(&graph_rel.center)
-                                    .unwrap_or_else(|| graph_rel.alias.clone())
-                            };
-                            
-                            // Extract ID columns
-                            let start_id_col = extract_id_column(&graph_rel.left)
-                                .unwrap_or_else(|| table_to_id_column(&start_table));
-                            let end_id_col = extract_id_column(&graph_rel.right)
-                                .unwrap_or_else(|| table_to_id_column(&end_table));
-                            
-                            // Get relationship columns
-                            let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
-                                RelationshipColumns {
-                                    from_id: "from_node_id".to_string(),
-                                    to_id: "to_node_id".to_string(),
-                                },
-                            );
-                            
-                            // Generate inline JOINs using the new function
-                            let fixed_length_joins = crate::render_plan::cte_extraction::expand_fixed_length_joins(
-                                exact_hops,
-                                &start_table,
-                                &start_id_col,
-                                &rel_table,
-                                &rel_cols.from_id,
-                                &rel_cols.to_id,
-                                &end_table,
-                                &end_id_col,
-                                &graph_rel.left_connection,
-                                &graph_rel.right_connection,
-                            );
-                            
-                            return Ok(fixed_length_joins);
-                        }
+                // 🚀 FIXED-LENGTH VLP: Use consolidated VlpContext for all schema types
+                if let Some(vlp_ctx) = build_vlp_context(graph_rel) {
+                    if vlp_ctx.is_fixed_length && vlp_ctx.exact_hops.unwrap_or(1) > 0 {
+                        let exact_hops = vlp_ctx.exact_hops.unwrap_or(1);
+                        
+                        println!(
+                            "DEBUG: extract_joins - Fixed-length VLP (*{}) with {:?} schema",
+                            exact_hops, vlp_ctx.schema_type
+                        );
+                        
+                        // Use the consolidated function that handles all schema types
+                        let (_from_table, _from_alias, joins) = expand_fixed_length_joins_with_context(&vlp_ctx);
+                        
+                        // Store the VLP context for later use by FROM clause and property resolution
+                        // (This is done via the existing pattern of passing info through the plan)
+                        
+                        return Ok(joins);
                     }
                 }
 
@@ -3844,43 +3804,40 @@ impl RenderPlanBuilder for LogicalPlan {
             final_from
         );
 
-        // FIX: For fixed-length VLP patterns (*2, *3, etc.), we need to use the START node as FROM,
-        // not the relationship anchor. The expand_fixed_length_joins() generates JOINs that start
-        // with r1 joining to the start node, so FROM must be the start node.
+        // 🚀 CONSOLIDATED VLP FROM CLAUSE HANDLING
+        // For fixed-length VLP patterns, we need to set the correct FROM table based on schema type:
+        // - Normal/Polymorphic: FROM start_node_table AS start_alias
+        // - Denormalized: FROM edge_table AS r1
         if let LogicalPlan::GraphJoins(graph_joins) = self {
-            if let Some(spec) = get_variable_length_spec(&graph_joins.input) {
-                if let Some(exact_hops) = spec.exact_hop_count() {
-                    if exact_hops > 1 {
-                        // Find the start node from the GraphRel
-                        fn find_graph_rel_start(plan: &LogicalPlan) -> Option<(String, String)> {
-                            match plan {
-                                LogicalPlan::GraphRel(gr) => {
-                                    // Get start node alias and table
-                                    if let LogicalPlan::GraphNode(node) = gr.left.as_ref() {
-                                        if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
-                                            return Some((node.alias.clone(), scan.source_table.clone()));
-                                        }
-                                    }
-                                    None
-                                }
-                                LogicalPlan::Projection(p) => find_graph_rel_start(&p.input),
-                                LogicalPlan::Filter(f) => find_graph_rel_start(&f.input),
-                                _ => None,
-                            }
-                        }
+            // Find the GraphRel with VLP
+            fn find_vlp_graph_rel(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphRel> {
+                match plan {
+                    LogicalPlan::GraphRel(gr) if gr.variable_length.is_some() => Some(gr),
+                    LogicalPlan::Projection(p) => find_vlp_graph_rel(&p.input),
+                    LogicalPlan::Filter(f) => find_vlp_graph_rel(&f.input),
+                    _ => None,
+                }
+            }
+            
+            if let Some(graph_rel) = find_vlp_graph_rel(&graph_joins.input) {
+                if let Some(vlp_ctx) = build_vlp_context(graph_rel) {
+                    if vlp_ctx.is_fixed_length {
+                        let exact_hops = vlp_ctx.exact_hops.unwrap_or(1);
                         
-                        if let Some((start_alias, start_table)) = find_graph_rel_start(&graph_joins.input) {
-                            println!(
-                                "DEBUG: Fixed-length VLP pattern (*{}) - overriding FROM to start node '{}' (table: {})",
-                                exact_hops, start_alias, start_table
-                            );
-                            final_from = Some(FromTable::new(Some(ViewTableRef {
-                                source: std::sync::Arc::new(LogicalPlan::Empty),
-                                name: start_table,
-                                alias: Some(start_alias),
-                                use_final: false,
-                            })));
-                        }
+                        // Get FROM info from the consolidated context
+                        let (from_table, from_alias, _) = expand_fixed_length_joins_with_context(&vlp_ctx);
+                        
+                        println!(
+                            "DEBUG: Fixed-length VLP (*{}) {:?} - setting FROM {} AS {}",
+                            exact_hops, vlp_ctx.schema_type, from_table, from_alias
+                        );
+                        
+                        final_from = Some(FromTable::new(Some(ViewTableRef {
+                            source: std::sync::Arc::new(LogicalPlan::Empty),
+                            name: from_table,
+                            alias: Some(from_alias),
+                            use_final: false,
+                        })));
                     }
                 }
             }

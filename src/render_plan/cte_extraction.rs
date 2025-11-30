@@ -1248,6 +1248,216 @@ pub fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
     }
 }
 
+// ============================================================================
+// VLP (Variable-Length Path) Schema Types and Consolidated Info
+// ============================================================================
+
+/// Schema type classification for VLP query generation
+/// 
+/// Different schema types require different SQL generation strategies:
+/// - Normal: Separate node and edge tables, standard JOIN patterns
+/// - Polymorphic: Single edge table with type_column, nodes still separate
+/// - Denormalized: Nodes embedded in edge table (no separate node tables)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VlpSchemaType {
+    /// Standard schema: separate tables for nodes and edges
+    /// Example: users table + follows table
+    Normal,
+    
+    /// Polymorphic edge: single edge table with type_column to distinguish edge types
+    /// Example: interactions table with interaction_type column
+    /// Nodes still have separate tables
+    Polymorphic,
+    
+    /// Denormalized: node properties embedded in edge table
+    /// Example: flights table with Origin/Dest as node IDs and OriginCity/DestCity as properties
+    /// No separate node tables exist
+    Denormalized,
+}
+
+/// Consolidated VLP context containing all information needed for SQL generation
+/// 
+/// This struct gathers all the scattered VLP-related info into one place,
+/// making it easier to reason about and pass through the code.
+#[derive(Debug, Clone)]
+pub struct VlpContext {
+    /// Schema type determines SQL generation strategy
+    pub schema_type: VlpSchemaType,
+    
+    /// True if exact hop count (e.g., *2, *3), false if range/unbounded
+    pub is_fixed_length: bool,
+    
+    /// Exact hop count if fixed-length, None otherwise
+    pub exact_hops: Option<u32>,
+    
+    /// Min/max hops for range patterns
+    pub min_hops: Option<u32>,
+    pub max_hops: Option<u32>,
+    
+    /// Start node information
+    pub start_alias: String,
+    pub start_table: String,
+    pub start_id_col: String,
+    
+    /// End node information  
+    pub end_alias: String,
+    pub end_table: String,
+    pub end_id_col: String,
+    
+    /// Relationship information
+    pub rel_alias: String,
+    pub rel_table: String,
+    pub rel_from_col: String,
+    pub rel_to_col: String,
+    
+    /// For polymorphic edges: type column and value
+    pub type_column: Option<String>,
+    pub type_value: Option<String>,
+    
+    /// For denormalized edges: property mappings (logical_name -> ClickHouse column/expression)
+    pub from_node_properties: Option<std::collections::HashMap<String, PropertyValue>>,
+    pub to_node_properties: Option<std::collections::HashMap<String, PropertyValue>>,
+}
+
+impl VlpContext {
+    /// Check if this VLP needs a recursive CTE (true for range/unbounded patterns)
+    pub fn needs_cte(&self) -> bool {
+        !self.is_fixed_length
+    }
+    
+    /// Check if nodes have separate tables (not denormalized)
+    pub fn has_separate_node_tables(&self) -> bool {
+        self.schema_type != VlpSchemaType::Denormalized
+    }
+}
+
+/// Detect VLP schema type from a GraphRel
+pub fn detect_vlp_schema_type(graph_rel: &crate::query_planner::logical_plan::GraphRel) -> VlpSchemaType {
+    // Check if nodes are denormalized
+    let left_is_denorm = is_node_denormalized_from_graph_node(&graph_rel.left);
+    let right_is_denorm = is_node_denormalized_from_graph_node(&graph_rel.right);
+    
+    if left_is_denorm && right_is_denorm {
+        return VlpSchemaType::Denormalized;
+    }
+    
+    // Check for polymorphic edge (has type_column)
+    if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+        if scan.type_column.is_some() {
+            return VlpSchemaType::Polymorphic;
+        }
+    }
+    
+    VlpSchemaType::Normal
+}
+
+/// Helper to check if a GraphNode is denormalized
+fn is_node_denormalized_from_graph_node(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphNode(node) => node.is_denormalized,
+        _ => false,
+    }
+}
+
+/// Build a complete VlpContext from a GraphRel
+/// 
+/// This gathers all VLP-related information into a single struct
+pub fn build_vlp_context(graph_rel: &crate::query_planner::logical_plan::GraphRel) -> Option<VlpContext> {
+    let spec = graph_rel.variable_length.as_ref()?;
+    
+    let schema_type = detect_vlp_schema_type(graph_rel);
+    let is_fixed_length = spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
+    let exact_hops = spec.exact_hop_count();
+    
+    // Extract start node info
+    let (start_alias, start_table, start_id_col) = extract_node_info(&graph_rel.left, schema_type, &graph_rel.center)?;
+    
+    // Extract end node info
+    let (end_alias, end_table, end_id_col) = extract_node_info(&graph_rel.right, schema_type, &graph_rel.center)?;
+    
+    // Extract relationship info
+    let rel_alias = graph_rel.alias.clone();
+    let rel_table = extract_table_name(&graph_rel.center)?;
+    let rel_cols = extract_relationship_columns(&graph_rel.center)?;
+    
+    // Extract polymorphic type info
+    let (type_column, type_value) = if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+        (scan.type_column.clone(), graph_rel.labels.as_ref().and_then(|l| l.first().cloned()))
+    } else {
+        (None, None)
+    };
+    
+    // Extract denormalized property mappings
+    let (from_node_properties, to_node_properties) = if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+        (scan.from_node_properties.clone(), scan.to_node_properties.clone())
+    } else {
+        (None, None)
+    };
+    
+    Some(VlpContext {
+        schema_type,
+        is_fixed_length,
+        exact_hops,
+        min_hops: spec.min_hops,
+        max_hops: spec.max_hops,
+        start_alias,
+        start_table,
+        start_id_col,
+        end_alias,
+        end_table,
+        end_id_col,
+        rel_alias,
+        rel_table,
+        rel_from_col: rel_cols.from_id,
+        rel_to_col: rel_cols.to_id,
+        type_column,
+        type_value,
+        from_node_properties,
+        to_node_properties,
+    })
+}
+
+/// Extract node info (alias, table, id_col) handling different schema types
+fn extract_node_info(
+    node_plan: &LogicalPlan,
+    schema_type: VlpSchemaType,
+    rel_center: &LogicalPlan,
+) -> Option<(String, String, String)> {
+    match node_plan {
+        LogicalPlan::GraphNode(node) => {
+            let alias = node.alias.clone();
+            
+            match schema_type {
+                VlpSchemaType::Denormalized => {
+                    // For denormalized, table comes from relationship
+                    let table = extract_table_name(rel_center)?;
+                    // ID column is from relationship's from_id or to_id
+                    let rel_cols = extract_relationship_columns(rel_center)?;
+                    // Determine if this is start or end node by checking if it's the left or right
+                    // For now, use from_id - caller should determine correct column
+                    Some((alias, table, rel_cols.from_id))
+                }
+                _ => {
+                    // Normal/Polymorphic: get from node's ViewScan
+                    if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                        let table = scan.source_table.clone();
+                        let id_col = scan.id_column.clone();
+                        Some((alias, table, id_col))
+                    } else if let Some(label) = &node.label {
+                        // Fallback: derive from label
+                        let table = label_to_table_name(label);
+                        let id_col = table_to_id_column(&table);
+                        Some((alias, table, id_col))
+                    } else {
+                        None
+                    }
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Extract variable length spec from the plan
 pub fn get_variable_length_spec(plan: &LogicalPlan) -> Option<crate::query_planner::logical_plan::VariableLengthSpec> {
     match plan {
@@ -1453,6 +1663,142 @@ pub fn expand_fixed_length_joins(
     );
     
     joins
+}
+
+/// Schema-aware fixed-length VLP JOIN generation using VlpContext
+/// 
+/// This is the consolidated version that handles all schema types correctly:
+/// - Normal: FROM start_node, JOINs through r1...rN, final JOIN to end_node
+/// - Polymorphic: Same as Normal (nodes have separate tables)
+/// - Denormalized: FROM r1 (first edge), JOINs through r2...rN only (no node JOINs)
+///
+/// # Returns
+/// (from_table, from_alias, joins) - The FROM table info and JOIN clauses
+pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, String, Vec<Join>) {
+    use super::render_expr::{Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias};
+    
+    let exact_hops = ctx.exact_hops.unwrap_or(1);
+    let mut joins = Vec::new();
+    
+    println!(
+        "expand_fixed_length_joins_with_context: schema_type={:?}, {} hops from {} to {}",
+        ctx.schema_type, exact_hops, ctx.start_alias, ctx.end_alias
+    );
+    
+    match ctx.schema_type {
+        VlpSchemaType::Denormalized => {
+            // DENORMALIZED: No separate node tables
+            // FROM: edge_table AS r1 (the first hop becomes FROM)
+            // JOINs: r2 ON r1.to_id = r2.from_id, ..., rN ON r(N-1).to_id = rN.from_id
+            // No final node JOIN needed - end node properties come from rN.to_node_properties
+            
+            // First hop is the FROM table, not a JOIN
+            let from_table = ctx.rel_table.clone();
+            let from_alias = "r1".to_string();
+            
+            // Generate JOINs for hops 2..N
+            for hop in 2..=exact_hops {
+                let rel_alias = format!("r{}", hop);
+                let prev_alias = format!("r{}", hop - 1);
+                
+                joins.push(Join {
+                    table_name: ctx.rel_table.clone(),
+                    table_alias: rel_alias.clone(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(prev_alias),
+                                column: Column(PropertyValue::Column(ctx.rel_to_col.clone())),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(rel_alias),
+                                column: Column(PropertyValue::Column(ctx.rel_from_col.clone())),
+                            }),
+                        ],
+                    }],
+                    join_type: JoinType::Inner,
+                    pre_filter: None,
+                });
+            }
+            
+            println!(
+                "expand_fixed_length_joins_with_context [DENORMALIZED]: FROM {} AS {}, {} JOINs",
+                from_table, from_alias, joins.len()
+            );
+            
+            (from_table, from_alias, joins)
+        }
+        
+        VlpSchemaType::Normal | VlpSchemaType::Polymorphic => {
+            // NORMAL/POLYMORPHIC: Separate node tables exist
+            // FROM: start_node_table AS start_alias
+            // JOINs: r1 ON start.id = r1.from_id, r2 ON r1.to_id = r2.from_id, ..., end ON rN.to_id = end.id
+            
+            let from_table = ctx.start_table.clone();
+            let from_alias = ctx.start_alias.clone();
+            
+            for hop in 1..=exact_hops {
+                let rel_alias = format!("r{}", hop);
+                
+                let (prev_alias, prev_id_col) = if hop == 1 {
+                    (ctx.start_alias.clone(), ctx.start_id_col.clone())
+                } else {
+                    (format!("r{}", hop - 1), ctx.rel_to_col.clone())
+                };
+                
+                // Add relationship JOIN
+                joins.push(Join {
+                    table_name: ctx.rel_table.clone(),
+                    table_alias: rel_alias.clone(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(prev_alias),
+                                column: Column(PropertyValue::Column(prev_id_col)),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(rel_alias),
+                                column: Column(PropertyValue::Column(ctx.rel_from_col.clone())),
+                            }),
+                        ],
+                    }],
+                    join_type: JoinType::Inner,
+                    pre_filter: None,
+                });
+            }
+            
+            // Add final node JOIN
+            let last_rel = format!("r{}", exact_hops);
+            joins.push(Join {
+                table_name: ctx.end_table.clone(),
+                table_alias: ctx.end_alias.clone(),
+                joining_on: vec![OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(last_rel),
+                            column: Column(PropertyValue::Column(ctx.rel_to_col.clone())),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(ctx.end_alias.clone()),
+                            column: Column(PropertyValue::Column(ctx.end_id_col.clone())),
+                        }),
+                    ],
+                }],
+                join_type: JoinType::Inner,
+                pre_filter: None,
+            });
+            
+            println!(
+                "expand_fixed_length_joins_with_context [NORMAL/POLYMORPHIC]: FROM {} AS {}, {} JOINs",
+                from_table, from_alias, joins.len()
+            );
+            
+            (from_table, from_alias, joins)
+        }
+    }
 }
 
 /// Generate cycle prevention filters for fixed-length paths

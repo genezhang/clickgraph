@@ -2,7 +2,7 @@
 
 **Current Status**: 🔧 **Undirected patterns need relationship ID support**  
 **Test Results**: 526/526 unit tests passing (100%)  
-**Active Issues**: 2 bugs (undirected uniqueness, disconnected patterns)
+**Active Issues**: 3 bugs (undirected uniqueness, disconnected patterns, denormalized VLP)
 
 **Date Updated**: November 30, 2025  
 **Neo4j Semantics Verified**: November 22, 2025 (see `notes/CRITICAL_relationship_vs_node_uniqueness.md`)
@@ -14,7 +14,48 @@
 **Note**: Some integration tests have incorrect expectations or test unimplemented features. Known feature gaps documented below.
 
 **Recently Resolved** (November 30, 2025):
-- ✅ **Fixed-length VLP (`*1`, `*2`, `*3`)**: Now generates efficient inline JOINs instead of incomplete SQL
+- ✅ **Fixed-length VLP (`*1`, `*2`, `*3`)**: Now generates efficient inline JOINs for Normal and Polymorphic schemas
+- ✅ **VLP Code Consolidation**: Unified schema-aware VLP handling with `VlpContext` and `VlpSchemaType`
+
+---
+
+## 🚧 Denormalized Schema VLP Limitation
+
+**Status**: 🚧 **Partial** - JOINs work, property resolution needs work  
+**Severity**: **MEDIUM** - Affects denormalized schemas only  
+**Added**: November 30, 2025
+
+### The Problem
+
+Variable-length paths (`*2`, `*3`, etc.) on **denormalized schemas** (where nodes are embedded in edge tables) generate correct FROM and JOIN clauses, but property resolution still uses old aliases instead of VLP hop aliases.
+
+**Generated SQL** (incorrect property aliases):
+```sql
+SELECT a0eb32b138.DestCityName AS "dest.city"  -- Should be r2.DestCityName
+FROM test_integration.flights AS r1
+INNER JOIN test_integration.flights AS r2 ON r1.Dest = r2.Origin
+WHERE a0eb32b138.Origin = 'JFK'  -- Should be r1.Origin
+```
+
+### Root Cause
+
+Property resolution for denormalized nodes happens in `graph_join_inference.rs` during query planning, before VLP JOIN generation assigns hop aliases (`r1`, `r2`, etc.). The node alias → relationship alias mapping doesn't account for VLP.
+
+### What Works
+
+- ✅ Normal schemas (separate node and edge tables)
+- ✅ Polymorphic schemas (single edge table with type_column, separate node tables)
+- 🚧 Denormalized schemas (JOINs correct, properties incorrect)
+
+### Workaround
+
+For denormalized VLP, use single-hop queries with manual chaining, or use Normal/Polymorphic schema designs.
+
+### Fix Required
+
+Update `graph_join_inference.rs` to detect VLP patterns and map node aliases to hop aliases:
+- Start node alias → `r1` (first hop)
+- End node alias → `rN` (last hop, where N = exact_hops)
 
 ---
 
