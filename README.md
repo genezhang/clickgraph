@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://github.com/genezhang/clickgraph/blob/main/docs/images/cglogo.png" height="200">
+  <img src="/docs/images/cglogo.png" height="150">
 </div>
 
 # ClickGraph
@@ -8,7 +8,7 @@
 
 **A high-performance, stateless, read-only graph query translator for ClickHouse with Neo4j ecosystem compatibility.**
 
-> **Note: ClickGraph is development-ready for view-based graph analysis with full Neo4j Bolt Protocol 5.8 support. This is a read-only analytical query engine - write operations are not supported. Codebase has diverged from the upstream with DDL/writes feature removal and other structure/code refactoring to follow Rust idiomatic style.**
+> **Note: ClickGraph is development-ready for view-based graph analysis with full Neo4j Bolt Protocol 5.8 support. Codebase has diverged from the upstream with DDL/writes feature removal and other structure/code refactoring to follow Rust idiomatic style.**
 
 ---
 
@@ -81,166 +81,40 @@ RETURN a.name, COUNT(b) as reachable
   - Polymorphic: 24 tests
   - Coupled: 5 tests
 
----
-
-## 📦 What's in v0.5.1 (November 21, 2025)
-
-### Official Docker Hub Release! 🐳
-
-**ClickGraph is now available as a pre-built Docker image on Docker Hub for instant deployment!**
-
-- 🐳 **Docker Hub**: `docker pull genezhang/clickgraph:latest`
-- 📦 **Pre-built images**: No compilation required, instant startup
-- 🌐 **Multi-platform**: linux/amd64, linux/arm64 support
-- ⚡ **Quick start**: Get running in under 2 minutes
-- 🔄 **Auto-updates**: Tagged releases (`:latest`, `:v0.5.1`, `:0.5.1`)
-- ✅ **Fully tested**: 17/17 validation tests passing
-
-**Quick Start with Docker**:
-```bash
-# Pull and run with docker-compose
-docker-compose up -d
-
-# Or run directly
-docker pull genezhang/clickgraph:latest
-docker run -d -p 8080:8080 -p 7687:7687 \
-  -e CLICKHOUSE_URL="http://clickhouse:8123" \
-  genezhang/clickgraph:latest
-```
-
-### New Features ✨
-
-- 🆕 **RETURN DISTINCT**: Deduplication support in query results
-- 🧪 **Comprehensive testing**: Added Docker image validation suite
-- 📚 **Improved docs**: Docker-first getting started guide
+### Additional Features
+- Property mapping to SQL expressions in schema
+- Filters on nodes and edges in schema
+- Inline property filters in queries
+- `id()`, `label()`, and `type()` functions in queries
 
 ---
 
-## 📦 What's in v0.5.0 (November 2025)
+## 📦 Previous Releases
 
-### Phase 2 Complete: Enterprise Readiness 🎉
+<details>
+<summary><b>v0.5.1 (November 21, 2025)</b> - Docker Hub Release 🐳</summary>
 
-**ClickGraph v0.5.0 delivers production-ready multi-tenancy, RBAC, complete Bolt Protocol 5.8 support, and comprehensive documentation with 100% unit test coverage.**
+- Official Docker Hub availability: `docker pull genezhang/clickgraph:latest`
+- Multi-platform support (linux/amd64, linux/arm64)
+- RETURN DISTINCT support
+- Docker image validation suite
 
-### Multi-Tenancy & RBAC - Enterprise Security Features! 🔐
+</details>
 
-**Production-ready multi-tenant support with row and column-level security**
-- ✅ **Parameterized views**: Tenant isolation at database level with 99% cache memory reduction
-- ✅ **SET ROLE support**: ClickHouse native RBAC for column-level security
-- ✅ **Performance optimized**: 2x speedup with shared cache templates (18ms → 9ms)
-- ✅ **Smart caching**: SQL template reuse with parameter substitution
-- ✅ **Neo4j compatible**: CYPHER replan options (default/force/skip)
-- ✅ **LRU eviction**: Dual limits (1000 entries, 100 MB memory)
-- ✅ **Schema-aware**: Automatic cache invalidation on schema reload
-- ✅ **Thread-safe**: Arc<Mutex<HashMap>> for concurrent access
-- ✅ **100% tested**: 6/6 unit tests + 5/5 e2e tests passing
+<details>
+<summary><b>v0.5.0 (November 2025)</b> - Phase 2 Complete</summary>
 
-**Parameterized Query Support**:
-```bash
-# Use parameters for values (prevents SQL injection, enables caching)
-curl -X POST http://localhost:8080/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "MATCH (u:User) WHERE u.age > $minAge AND u.email = $email RETURN u.name",
-    "parameters": {
-      "minAge": 25,
-      "email": "alice@example.com"
-    }
-  }'
-```
+- Multi-tenancy with parameterized views (99% cache memory reduction)
+- SET ROLE RBAC support for column-level security
+- Query cache with LRU eviction (10-100x speedup)
+- Parameterized queries with Neo4j-compatible $param syntax
+- Auto-schema discovery from ClickHouse metadata
+- Complete Bolt Protocol 5.8 implementation
+- 22% code reduction in core modules
 
-**Cache Configuration**:
-```bash
-export CLICKGRAPH_QUERY_CACHE_ENABLED=true       # Default: true
-export CLICKGRAPH_QUERY_CACHE_MAX_ENTRIES=1000   # Default: 1000
-export CLICKGRAPH_QUERY_CACHE_MAX_SIZE_MB=100    # Default: 100 MB
-```
+</details>
 
-**Advanced Usage**:
-```bash
-# Cache hit on repeated query with different parameter values
-curl -X POST http://localhost:8080/query \
-  -d '{"query":"MATCH (u:User) WHERE u.age > $minAge RETURN u.name", "parameters":{"minAge":30}}'
-# Response header: X-Query-Cache-Status: HIT (uses cached SQL template)
-
-# Force recompilation (bypass cache)
-curl -X POST http://localhost:8080/query \
-  -d '{"query":"CYPHER replan=force MATCH (u:User) RETURN u.name"}'
-# Response header: X-Query-Cache-Status: BYPASS
-```
-
-**📖 Documentation**: 
-- [Query Cache Guide](notes/query-cache.md) - Caching implementation details
-- [Parameter Support](notes/parameter-support.md) - Where parameters can/cannot be used
-
-### Code Quality & Developer Experience
-
-**Major Refactoring & Bug Fixes**
-- ✅ **22% code reduction**: Modularized `plan_builder.rs` (769 lines removed) for better maintainability
-- ✅ **Undirected relationships**: `(a)-[r]-(b)` patterns with bidirectional matching via OR JOIN logic
-- ✅ **Bug fixes**: Anonymous node limitation documented, ChainedJoin CTE wrapping, WHERE clause filtering
-- ✅ **Test coverage**: 424/424 Rust unit tests (100%), integration tests pending
-- ✅ **Benchmark validation**: 14/14 queries passing (100%) across 3 scale levels (1K-5M nodes)
-
-**Performance Validated at Scale**
-- ✅ **5M users, 50M relationships**: 9/10 benchmark queries successful (90%)
-- ✅ **Consistent performance**: 2077-2088ms mean query time (only 0.5% overhead at 10x scale)
-- ✅ **Development-ready**: Stress tested with large-scale datasets
-
----
-
-## 🚀 Previous Update (November 9, 2025)
-
-### Major Architectural Improvements ✨
-
-**Complete Multi-Schema Support**
-- ✅ **Full schema isolation**: Different schemas can map same labels to different tables
-- ✅ **Per-request schema selection**: USE clause, schema_name parameter, or default
-- ✅ **Clean architecture**: Single source of truth for schema management (removed redundant GLOBAL_GRAPH_SCHEMA)
-- ✅ **Thread-safe**: Schema flows through entire query execution path
-- ✅ **End-to-end tested**: All 4 multi-schema tests passing
-
-**Code Quality Improvements**
-- 🧹 **Removed technical debt**: Eliminated duplicate schema storage system
-- 🔧 **Cleaner codebase**: Simplified render layer helper functions
-- 📊 **All tests passing**: 325 unit tests + 32 integration tests (100% non-benchmark)
-
----
-
-## 🚀 Previous Updates (November 1, 2025)
-
-### Large-Scale Testing & Bug Fixes
-
-**ClickGraph tested successfully on 5 MILLION users and 50 MILLION relationships!**
-
-| Benchmark | Dataset Size | Success Rate | Status |
-|-----------|-------------|--------------|--------|
-| **Large** | 5M users, 50M follows | 9/10 (90%) | ✅ **Stress Tested** |
-| **Medium** | 10K users, 50K follows | 10/10 (100%) | ✅ Well Validated |
-| **Small** | 1K users, 5K follows | 10/10 (100%) | ✅ Fully Tested |
-
-**What We Learned:**
-- ✅ **Direct relationships**: Handling 50M edges successfully
-- ✅ **Multi-hop traversals**: Working on 5M node graphs  
-- ✅ **Variable-length paths**: Scaling to large datasets
-- ✅ **Aggregations**: Pattern matching across millions of rows
-- ✅ **Performance**: ~2 seconds for most queries, even at large scale
-- ⚠️ **Shortest paths**: Memory limits on largest dataset (ClickHouse config dependent)
-
-**Recent Bug Fixes:**
-- 🐛 ChainedJoin CTE wrapper for exact hop variable-length paths (`*2`, `*3`)
-- 🐛 Shortest path filter rewriting for WHERE clauses on end nodes
-- 🐛 Aggregation table name schema lookup for GROUP BY queries
-
-**Tooling:**
-- 📊 Comprehensive benchmarking suite with 3 scale levels
-- 🔧 ClickHouse-native data generation for efficient loading
-- 📈 Performance metrics collection and analysis
-
-**📖 Documentation:**
-- [Detailed Benchmark Results](notes/benchmarking.md) - Complete analysis across all scales
-- [CHANGELOG.md](CHANGELOG.md) - Technical details and bug fixes
-- [STATUS.md](STATUS.md) - Current project status
+See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
 ---
 
@@ -544,204 +418,48 @@ export CLICKGRAPH_MAX_CTE_DEPTH=150  # Or via environment variable
 
 See `docs/configuration.md` for complete configuration documentation.
 
-## � Running in Background (Windows)
+## 📚 Documentation
 
-For Windows users, ClickGraph supports running in the background using PowerShell jobs:
-
-### PowerShell Background Jobs (Recommended)
-
-```powershell
-# Start server in background
-.\start_server_background.ps1
-
-# Check if server is running
-Invoke-WebRequest -Uri "http://localhost:8080/health"
-
-# Stop the server (replace JOB_ID with actual job ID shown)
-Stop-Job -Id JOB_ID; Remove-Job -Id JOB_ID
-```
-
-### Alternative: New Command Window
-
-Use the batch file to start the server in a separate command window:
-
-```batch
-start_server_background.bat
-```
-
-### Manual Daemon Mode
-
-The server also supports a `--daemon` flag for Unix-like daemon behavior:
-
-```bash
-cargo run --bin clickgraph -- --daemon --http-port 8080
-```
-
-## �📚 Documentation
-
-### User Guides
-- **[Getting Started](docs/getting-started.md)** - Complete setup walkthrough and first queries
-- **[Features Overview](docs/features.md)** - Comprehensive feature list and capabilities  
-- **[API Documentation](docs/api.md)** - HTTP REST API and Bolt protocol usage
+- **[Getting Started](docs/getting-started.md)** - Setup walkthrough and first queries
+- **[Features Overview](docs/features.md)** - Comprehensive feature list
+- **[API Documentation](docs/api.md)** - HTTP REST API and Bolt protocol
 - **[Configuration Guide](docs/configuration.md)** - Server configuration and CLI options
-
-### Technical Documentation  
-- **[GraphView Model](docs/graphview1-branch-summary.md)** - Complete view-based graph analysis
-- **[Test Infrastructure](docs/test-infrastructure-redesign.md)** - Testing framework and validation
-- **[Development Guide](.github/copilot-instructions.md)** - Development workflow and architecture
-
-### For Contributors
-- **[Development Process](DEVELOPMENT_PROCESS.md)** - ⭐ **5-phase feature development workflow** (START HERE!)
-- **[Quick Reference](QUICK_REFERENCE.md)** - Cheat sheet for common development tasks
-- **[Environment Setup](docs/development/environment-checklist.md)** - Pre-session checklist for developers
-- **[Testing Guide](docs/development/testing.md)** - Comprehensive testing strategies
+- **[Development Process](DEVELOPMENT_PROCESS.md)** - ⭐ **5-phase feature workflow** (START HERE for contributors!)
 - **[Current Status](STATUS.md)** - What works now, what's in progress
 - **[Known Issues](KNOWN_ISSUES.md)** - Active bugs and limitations
 
-### Reference
-- **[Original Brahmand Docs](https://www.brahmanddb.com/introduction/intro)** - Original project documentation
-- **[Neo4j Cypher Manual](https://neo4j.com/docs/cypher-manual/)** - Cypher query language reference
-- **[ClickHouse Documentation](https://clickhouse.com/docs/)** - ClickHouse database documentation
-
-## 🚀 Performance
-
-First [Benchmark Results](notes/benchmarking.md)
-
 ## 🧪 Development Status
 
-**Latest Update**: November 18, 2025 - **Phase 2 Complete** 🎉
+**Current Version**: v0.5.2 (November 30, 2025)
 
-**v0.5.0 Release Status**: Released (November 18, 2025)
-
-### Production-Ready Features (Phase 2)
-- ✅ **Multi-Tenancy with Parameterized Views**: Row-level security at database level
-  - 99% cache memory reduction (O(n) → O(1))
-  - 2x performance improvement with shared templates
-  - HTTP + Bolt protocol support
-- ✅ **SET ROLE RBAC**: ClickHouse native column-level security
-- ✅ **Auto-Schema Discovery**: Zero-configuration column mapping via `system.columns`
-- ✅ **Bolt Protocol 5.8**: Full Neo4j driver compatibility with all E2E tests passing
-- ✅ **HTTP Schema Loading API**: Runtime schema registration without restart
-- ✅ **Anonymous Patterns**: `MATCH (a)-[r]->(b)` and `()-[r:TYPE]->()` support
-- ✅ **Complete Documentation**: 19 wiki pages, comprehensive API reference, zero broken links
-
-### Development-Ready Features (Phase 1)
-- ✅ **Query Cache with LRU Eviction**: 10-100x query translation speedup (0.1-0.5ms cached vs 10-50ms uncached)
-  - Smart SQL template caching with parameter substitution
-  - Configurable limits: 1000 entries, 100 MB memory
-  - Neo4j-compatible CYPHER replan options (default/force/skip)
-  - Schema-aware automatic invalidation
-  - Thread-safe concurrent access
-- ✅ **Parameterized Queries**: Full Neo4j compatibility with `$param` syntax
-  - SQL injection prevention
-  - Query plan caching and reuse
-  - Type-safe parameter binding
-  - WHERE clause, RETURN, aggregation support
-- ✅ **Neo4j Bolt Protocol v5.8**: Wire protocol implementation for Neo4j driver compatibility
-  - Handshake, authentication, multi-database support
-  - Message handling for all Bolt operations
-  - Dual server architecture (HTTP + Bolt simultaneously)
-  - ⚠️ Query execution pending - use HTTP API for production
-- ✅ **Comprehensive Cypher Support**: Development-ready graph query patterns
-  - Simple node lookups and filtered scans
-  - Direct and multi-hop relationship traversals
-  - Variable-length paths with exact (`*2`) and range (`*1..3`) specifications
-  - Shortest path algorithms (`shortestPath()`, `allShortestPaths()`)
-  - OPTIONAL MATCH with LEFT JOIN semantics
-  - Multiple relationship types with UNION ALL
-  - Path variables and functions: `length(p)`, `nodes(p)`, `relationships(p)`
-  - Undirected relationships: `(a)-[r]-(b)` with bidirectional matching
-  - Aggregations with GROUP BY and ORDER BY
-- ✅ **Benchmark Validation**: 14/14 queries passing (100%) across 3 scale levels
-  - Small: 1K users, 5K relationships (100% success)
-  - Medium: 10K users, 50K relationships (100% success)
-  - Large: 5M users, 50M relationships (90% success)
-- ✅ **Neo4j Function Mappings**: 25+ functions for compatibility
-  - Datetime: `datetime()`, `date()`, `timestamp()`, `duration()`
-  - String: `toString()`, `toUpper()`, `toLower()`, `substring()`, `trim()`, `split()`
-  - Math: `abs()`, `ceil()`, `floor()`, `round()`, `sqrt()`, `log()`, `exp()`
-  - Aggregation: `count()`, `sum()`, `avg()`, `min()`, `max()`, `collect()`
-- ✅ **Code Quality**: Major refactoring and bug fixes
-  - 22% code reduction in core modules
-  - Comprehensive test coverage (100% Rust unit tests)
-  - Clean architecture with single source of truth
-  - Windows compatibility fixes
-- ✅ **View-Based Graph Model**: Transform existing tables to graphs via YAML configuration  
-- ✅ **Dual Server Architecture**: HTTP REST API and Bolt protocol simultaneously
-- ✅ **Flexible Configuration**: CLI options, environment variables, Docker deployment
-
-### Test Coverage (November 15, 2025)
-- ✅ **Rust Unit Tests**: 424/424 passing (100%)
-- ✅ **Integration Tests**: 197/308 passing (64% - improved from 54%)
+### Test Coverage
+- ✅ **Rust Unit Tests**: 534/534 passing (100%)
+- ✅ **Schema Variation Tests**: 73 tests across 4 schema types
 - ✅ **Benchmarks**: 14/14 passing (100%)
 - ✅ **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
-- � **Overall Progress**: +30 tests fixed since Phase 1 start
 
-### Recent Improvements (November 14-15, 2025)
-- 🚀 **Major Refactoring**: 22% code reduction in plan_builder.rs (769 LOC removed)
-- 🐛 **Undirected Relationships**: Fixed `(a)-[r]-(b)` patterns with bidirectional OR JOIN logic
-- 📚 **Documentation**: Anonymous node limitation documented in KNOWN_ISSUES.md
-- 🧪 **Bug Fixes**: ChainedJoin CTE wrapping, WHERE clause filtering, test infrastructure fixes
+### Key Features
+- ✅ **Polymorphic & Coupled Edge Tables**: Advanced schema patterns
+- ✅ **Multi-Tenancy**: Parameterized views with row-level security
+- ✅ **Bolt Protocol 5.8**: Full Neo4j driver compatibility
+- ✅ **Query Cache**: 10-100x speedup with LRU eviction
+- ✅ **Parameterized Queries**: Neo4j-compatible `$param` syntax
+- ✅ **Variable-Length Paths**: Recursive CTEs with configurable depth
 
 ### Known Limitations
-- ⚠️ **Read-Only Engine**: Write operations (CREATE, SET, DELETE, MERGE) are not supported by design
-- ⚠️ **Anonymous Nodes**: Queries like `MATCH ()-[r:FOLLOWS]->()` have SQL alias scope issues (use named nodes)
-- ⚠️ **Bolt Query Execution**: Wire protocol implemented but query execution pending (use HTTP API)
-- ⚠️ **Integration Test Gaps**: 111 tests remaining (feature gaps, not regressions)
-- 🧪 **Flaky Test**: 1 cache LRU test occasionally fails (non-blocking)
+- ⚠️ **Read-Only Engine**: Write operations not supported by design
+- ⚠️ **Anonymous Nodes**: Use named nodes for better SQL generation
 
-See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for detailed workarounds and status.
-
-### Benchmark Results
-**Performance validated across 3 scale levels:**
-
-| Scale | Dataset | Success Rate | Mean Query Time |
-|-------|---------|--------------|-----------------|
-| **Small** | 1K users, 5K relationships | 10/10 (100%) | ~50ms |
-| **Medium** | 10K users, 50K relationships | 10/10 (100%) | ~200ms |
-| **Large** | 5M users, 50M relationships | 9/10 (90%) | ~2077ms |
-
-**Key Findings**:
-- ✅ Only 0.5% overhead for 10x data scale (2077ms → 2088ms)
-- ✅ All query types working: traversals, aggregations, variable-length paths
-- ✅ Development-ready for analytical workloads
-- 📖 **Documentation**: See `notes/benchmarking.md` for detailed results
+See [STATUS.md](STATUS.md) and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 
 ## 🗺️ Roadmap
 
-**Phase 1 (v0.4.0) - COMPLETE** ✅
-- ✅ Query cache with LRU eviction (10-100x speedup)
-- ✅ Parameter support (Neo4j compatible)
-- ✅ Bolt 5.8 protocol (wire protocol complete)
-- ✅ Neo4j function mappings (25+ functions)
-- ✅ Benchmark suite validation (14/14 queries)
-- ✅ Code refactoring & bug fixes
+**Phase 1 (v0.4.0)** ✅ - Query cache, parameters, Bolt protocol, Neo4j functions
+**Phase 2 (v0.5.0)** ✅ - Multi-tenancy, RBAC, auto-schema discovery
+**Phase 2.5 (v0.5.2)** ✅ - Schema variations (polymorphic, coupled edges)
+**Phase 3 (v0.6.0)** 🔄 - Additional graph algorithms, query optimization
 
-**Phase 2 (v0.5.0) - COMPLETE** ✅ (November 2025)
-- ✅ Multi-tenancy with parameterized views
-- ✅ SET ROLE RBAC support
-- ✅ Auto-schema discovery
-- ✅ ReplacingMergeTree + FINAL support
-- ✅ HTTP schema loading API
-- ✅ Bolt Protocol 5.8 query execution
-- ✅ Anonymous pattern support
-- ✅ Complete documentation (19 wiki pages)
-- ✅ 100% unit test coverage (422/422)
-
-**Phase 3 (v0.6.0) - Q1 2026** (Planned)
-- 🔄 RBAC & row-level security
-- 🔄 Multi-tenant support with schema isolation
-- 🔄 ReplacingMergeTree & FINAL support
-- 🔄 Auto-schema discovery from ClickHouse metadata
-- 🔄 Comprehensive Wiki documentation
-
-**Phase 3 (v0.6.0) - Q2 2026** (Future)
-- 🔮 Additional graph algorithms (centrality, community detection)
-- 🔮 Query optimization improvements
-- 🔮 Advanced Neo4j compatibility
-- 🔮 Monitoring & observability enhancements
-
-See [ROADMAP.md](ROADMAP.md) for detailed feature tracking and timelines.
+See [ROADMAP.md](ROADMAP.md) for detailed feature tracking.
 
 ## 🤝 Contributing
 

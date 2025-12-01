@@ -164,54 +164,76 @@ nodes:
       tags: "splitByChar(',', tags_str)"
 ```
 
-### 3. Conditional Mappings
+### 3. Filters on Nodes and Edges
 
-<!-- ⚠️ NOT YET SUPPORTED - Planned for future release
-     Conditional expressions (CASE WHEN, multiIf) in property mappings
-     are not currently supported. Use query-time expressions instead.
-     
-     For now, use: WHERE CASE WHEN ... or multiIf() in RETURN clause
+**Feature**: Apply static SQL filters to node or edge definitions to pre-filter data at the schema level.
 
 ```yaml
 nodes:
-  User:
+  - label: ActiveUser
+    database: brahmand
+    table: users
+    id_column: user_id
+    filter: "is_active = 1 AND deleted_at IS NULL"  # Only active, non-deleted users
     property_mappings:
-      user_id: "user_id"
-      
-      # Tier based on score
-      tier: "CASE 
-               WHEN score >= 1000 THEN 'gold'
-               WHEN score >= 500 THEN 'silver'
-               ELSE 'bronze'
-             END"
-      
-      # Status from multiple conditions
-      status: "multiIf(
-                 is_deleted = 1, 'deleted',
-                 is_banned = 1, 'banned',
-                 is_active = 0, 'inactive',
-                 'active'
-               )"
+      user_id: user_id
+      name: full_name
+
+  - label: RecentPost
+    database: brahmand
+    table: posts
+    id_column: post_id
+    filter: "post_date >= today() - INTERVAL 30 DAY"  # Only posts from last 30 days
+    property_mappings:
+      post_id: post_id
+      title: title
+
+edges:
+  - type: RECENT_FOLLOWS
+    database: brahmand
+    table: user_follows
+    from_id: follower_id
+    to_id: followed_id
+    from_node: User
+    to_node: User
+    filter: "follow_date >= today() - INTERVAL 7 DAY"  # Only follows from last week
+    property_mappings:
+      follow_date: follow_date
 ```
--->
+
+**Usage**:
+```cypher
+-- Query only returns active users (filter applied automatically)
+MATCH (u:ActiveUser)
+RETURN u.name
+```
+
+**Generated SQL**:
+```sql
+SELECT full_name AS name
+FROM users
+WHERE is_active = 1 AND deleted_at IS NULL
+```
+
+**Benefits**:
+- ✅ Pre-filter data at schema level (no need to repeat in every query)
+- ✅ Improves query performance (filter applied at table scan)
+- ✅ Create multiple "views" of same table with different filters
 
 ### 4. Edge Properties
 
 ```yaml
-edges:  # YAML key 'relationships:' is accepted for backward compatibility
-  FOLLOWS:
-    source_table: "user_follows"
-    from_node: "User"
-    to_node: "User"
-    from_property: "follower_id"
-    to_property: "followed_id"
-    
+edges:
+  - type: FOLLOWS
+    database: brahmand
+    table: user_follows
+    from_id: follower_id
+    to_id: followed_id
+    from_node: User
+    to_node: User
     property_mappings:
-      since: "follow_date"
+      since: follow_date
       duration: "dateDiff('day', follow_date, today())"
-      # ⚠️ Conditionals not yet supported:
-      # is_recent: "follow_date >= today() - INTERVAL 30 DAY"
-      
       # Mathematical expressions are supported:
       strength: "interaction_count / 100.0"
 ```
@@ -236,25 +258,38 @@ RETURN u1.name, u2.name, r.duration
 
 **Architecture**:
 ```yaml
-# Schema 1: Social Network
-schema:
-  name: "social_graph"
-views:
-  - name: "social_network"
-    nodes:
-      User: ...
-      Post: ...
+# Schema 1: Social Network (schemas/social.yaml)
+name: social_graph
+graph_schema:
+  nodes:
+    - label: User
+      database: brahmand
+      table: users
+      id_column: user_id
+      property_mappings:
+        name: full_name
+    - label: Post
+      database: brahmand
+      table: posts
+      id_column: post_id
 
 ---
-# Schema 2: E-commerce
-schema:
-  name: "commerce_graph"
-views:
-  - name: "ecommerce"
-    nodes:
-      Customer: ...
-      Product: ...
-      Order: ...
+# Schema 2: E-commerce (schemas/commerce.yaml)
+name: commerce_graph
+graph_schema:
+  nodes:
+    - label: Customer
+      database: brahmand
+      table: customers
+      id_column: customer_id
+    - label: Product
+      database: brahmand
+      table: products
+      id_column: product_id
+    - label: Order
+      database: brahmand
+      table: orders
+      id_column: order_id
 ```
 
 ### 2. Schema Selection via USE Clause
@@ -342,109 +377,132 @@ curl -X POST http://localhost:8080/schemas/load \
 
 ### 1. Parameterized Views (Multi-Tenancy)
 
-**Schema with Parameters**:
-```yaml
-views:
-  - name: "tenant_data"
-    view_parameters: ["tenant_id"]
-    
-    nodes:
-      User:
-        source_table: "users"
-        identifier_property: "user_id"
-        filters:
-          - "tenant_id = ${tenant_id}"
-        property_mappings:
-          user_id: "user_id"
-          name: "full_name"
-      
-      Post:
-        source_table: "posts"
-        identifier_property: "post_id"
-        filters:
-          - "tenant_id = ${tenant_id}"
-        property_mappings:
-          post_id: "post_id"
-          content: "post_content"
-    
-    edges:
-      AUTHORED:
-        source_table: "posts"
-        from_node: "User"
-        to_node: "Post"
-        from_property: "author_id"
-        to_property: "post_id"
-        filters:
-          - "tenant_id = ${tenant_id}"
+ClickGraph supports multi-tenant architectures through **ClickHouse parameterized views**. See [Multi-Tenancy Patterns](Multi-Tenancy-Patterns.md) for full details.
+
+**Step 1: Create Parameterized Views in ClickHouse**:
+```sql
+-- Base table with tenant data
+CREATE TABLE users (
+    user_id UInt64,
+    tenant_id String,
+    name String,
+    email String
+) ENGINE = MergeTree()
+ORDER BY (tenant_id, user_id);
+
+-- Parameterized view for tenant isolation
+CREATE VIEW users_by_tenant AS
+SELECT * FROM users
+WHERE tenant_id = {tenant_id:String};
 ```
 
-**Usage**:
+**Step 2: Configure Schema with view_parameters**:
+```yaml
+graph_schema:
+  database: my_database
+  
+  nodes:
+    - label: User
+      table: users_by_tenant          # Reference the parameterized view
+      view_parameters: [tenant_id]     # Declare required parameters
+      id_column: user_id
+      property_mappings:
+        user_id: user_id
+        name: name
+        email: email
+
+  edges:
+    - type: PLACED
+      table: orders_by_tenant         # Also parameterized
+      view_parameters: [tenant_id]
+      from_id: user_id
+      to_id: order_id
+      from_node: User
+      to_node: Order
+```
+
+**Step 3: Query with Tenant Context**:
 ```bash
-# Query for specific tenant
 curl -X POST http://localhost:8080/query \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "MATCH (u:User) RETURN u.name",
-    "view_parameters": {"tenant_id": "acme_corp"}
+    "query": "MATCH (u:User) RETURN u.name, u.email",
+    "schema_name": "default",
+    "view_parameters": {
+      "tenant_id": "acme-corp"
+    }
   }'
 ```
 
-**Generated SQL** (automatically includes tenant filter):
+**Generated SQL** (tenant filter applied automatically):
 ```sql
-SELECT full_name AS name
-FROM users
-WHERE tenant_id = 'acme_corp'
+SELECT name AS `u.name`, email AS `u.email`
+FROM users_by_tenant(tenant_id = 'acme-corp') AS u
 ```
 
-### 2. Time-Based Views
+**Benefits**:
+- ✅ Row-level security at database level
+- ✅ Single cache entry shared across all tenants
+- ✅ Native ClickHouse performance
 
+### 2. Time-Based Filtering
+
+**Use Case**: Query only recent data using parameterized views.
+
+**ClickHouse View**:
+```sql
+CREATE VIEW posts_recent AS
+SELECT * FROM posts
+WHERE post_date >= today() - INTERVAL {days_back:UInt32} DAY;
+```
+
+**Schema Configuration**:
 ```yaml
-views:
-  - name: "recent_activity"
-    view_parameters: ["days_back"]
-    
-    nodes:
-      Post:
-        source_table: "posts"
-        filters:
-          - "post_date >= today() - INTERVAL ${days_back} DAY"
-        property_mappings:
-          post_id: "post_id"
-          content: "post_content"
-    
-    edges:
-      LIKED:
-        source_table: "post_likes"
-        filters:
-          - "like_date >= today() - INTERVAL ${days_back} DAY"
-        from_node: "User"
-        to_node: "Post"
+graph_schema:
+  nodes:
+    - label: Post
+      table: posts_recent
+      id_column: post_id
+      view_parameters: [days_back]
+      property_mappings:
+        post_id: post_id
+        content: post_content
+        post_date: post_date
 ```
 
 **Usage**:
 ```json
 {
-  "query": "MATCH (u:User)-[:LIKED]->(p:Post) RETURN count(p)",
+  "query": "MATCH (p:Post) RETURN count(p)",
   "view_parameters": {"days_back": "7"}
 }
 ```
 
-### 3. Region-Based Views
+### 3. Region-Based Filtering
 
+**Use Case**: Filter data by geographic region.
+
+**Schema Configuration with Static Filter**:
 ```yaml
-views:
-  - name: "regional_data"
-    view_parameters: ["region"]
-    
-    nodes:
-      User:
-        source_table: "users"
-        filters:
-          - "country IN (SELECT country FROM regions WHERE region = ${region})"
-        property_mappings:
-          user_id: "user_id"
-          name: "full_name"
-          country: "country"
+graph_schema:
+  nodes:
+    - label: USUser
+      table: users
+      id_column: user_id
+      filter: "country IN ('US', 'CA', 'MX')"  # North America only
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        country: country
+        
+    - label: EUUser
+      table: users
+      id_column: user_id
+      filter: "country IN ('DE', 'FR', 'UK', 'ES', 'IT')"  # Europe only
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        country: country
 ```
 
 ---
@@ -473,41 +531,42 @@ cargo run --bin clickgraph
 
 ### 2. Common Validation Errors
 
-**Missing Source Table**:
+**Missing Table**:
 ```yaml
 nodes:
-  User:
-    source_table: "users_bench"  # Table must exist
-    identifier_property: "user_id"
+  - label: User
+    database: brahmand
+    table: users_bench  # Table must exist in ClickHouse
+    id_column: user_id
 ```
 
 **Undefined Node Reference**:
 ```yaml
 edges:
-  FOLLOWS:
-    from_node: "User"     # Must be defined in nodes
-    to_node: "UserProfile"  # ❌ ERROR: Not defined!
+  - type: FOLLOWS
+    from_node: User        # Must be defined in nodes
+    to_node: UserProfile   # ❌ ERROR: Not defined!
 ```
 
-**Missing Identifier Property**:
+**Missing ID Column**:
 ```yaml
 nodes:
-  User:
-    source_table: "users"
-    # ❌ ERROR: identifier_property required
+  - label: User
+    table: users
+    # ❌ ERROR: id_column required
     property_mappings:
-      name: "full_name"
+      name: full_name
 ```
 
 **Invalid Property Mapping**:
 ```yaml
 nodes:
-  User:
-    source_table: "users"
-    identifier_property: "user_id"
+  - label: User
+    table: users
+    id_column: user_id
     property_mappings:
-      user_id: "user_id"
-      name: "nonexistent_column"  # ⚠️ Warning: Column doesn't exist
+      user_id: user_id
+      name: nonexistent_column  # ⚠️ Warning: Column doesn't exist
 ```
 
 ### 3. Schema Testing Script
@@ -528,8 +587,8 @@ def validate_schema(schema_path: str):
     print(f"✓ YAML syntax valid")
     
     # 2. Check required fields
-    assert 'schema' in schema, "Missing 'schema' key"
-    assert 'views' in schema['schema'], "Missing 'views'"
+    assert 'graph_schema' in schema, "Missing 'graph_schema' key"
+    assert 'nodes' in schema['graph_schema'], "Missing 'nodes'"
     print(f"✓ Required fields present")
     
     # 3. Test basic query
@@ -559,22 +618,22 @@ python test_schema.py schemas/my_schema.yaml
 
 ### 1. Indexed Property Selection
 
-**Choose identifier_property wisely**:
+**Choose id_column wisely**:
 
 ```yaml
 # ✅ GOOD: Primary key is user_id
 nodes:
-  User:
-    source_table: "users"
-    identifier_property: "user_id"  # Indexed column
+  - label: User
+    table: users
+    id_column: user_id  # Indexed column
     property_mappings:
-      user_id: "user_id"
+      user_id: user_id
 
 # ❌ BAD: Email is not indexed
 nodes:
-  User:
-    source_table: "users"
-    identifier_property: "email"  # Not indexed!
+  - label: User
+    table: users
+    id_column: email  # Not indexed!
 ```
 
 **Impact**:
@@ -592,23 +651,22 @@ MATCH (u:User {email: 'alice@example.com'}) RETURN u.name
 
 ```yaml
 # Forward edge
-edges:  # YAML key 'relationships:' is accepted for backward compatibility
-  FOLLOWS:
-    source_table: "user_follows"
-    from_node: "User"
-    to_node: "User"
-    from_property: "follower_id"  # Indexed
-    to_property: "followed_id"
+edges:
+  - type: FOLLOWS
+    table: user_follows
+    from_id: follower_id  # Indexed
+    to_id: followed_id
+    from_node: User
+    to_node: User
 
-# Reverse edge (uses materialized view)
-  FOLLOWED_BY:
-    source_table: "user_follows_reverse"  # Materialized view
-    from_node: "User"
-    to_node: "User"
-    from_property: "followed_id"  # Indexed
-    to_property: "follower_id"
+  # Reverse edge (uses materialized view)
+  - type: FOLLOWED_BY
+    table: user_follows_reverse  # Materialized view
+    from_id: followed_id  # Indexed
+    to_id: follower_id
+    from_node: User
+    to_node: User
 ```
-
 **ClickHouse Setup**:
 ```sql
 -- Materialized view for reverse lookups
@@ -626,7 +684,7 @@ MATCH (u:User {user_id: 1})-[:FOLLOWS]->(friend)
 RETURN friend.name
 
 -- Backward: Uses user_follows_reverse (also fast!)
-MATCH (u:User {user_id: 1})<-[:FOLLOWS]-(follower)
+MATCH (u:User {user_id: 1})<-[:FOLLOWED_BY]-(follower)
 RETURN follower.name
 ```
 
@@ -637,23 +695,27 @@ RETURN follower.name
 ```yaml
 # ❌ BAD: Map all columns (bloats results)
 nodes:
-  User:
+  - label: User
+    table: users
+    id_column: user_id
     property_mappings:
-      user_id: "user_id"
-      name: "full_name"
-      email: "email_address"
-      bio: "biography"
-      avatar: "avatar_url"
-      created_at: "registration_date"
+      user_id: user_id
+      name: full_name
+      email: email_address
+      bio: biography
+      avatar: avatar_url
+      created_at: registration_date
       # ... 50 more columns
 
 # ✅ GOOD: Map only commonly used properties
 nodes:
-  User:
+  - label: User
+    table: users
+    id_column: user_id
     property_mappings:
-      user_id: "user_id"
-      name: "full_name"
-      email: "email_address"
+      user_id: user_id
+      name: full_name
+      email: email_address
       # Query-specific properties can be added later
 ```
 
@@ -662,17 +724,15 @@ nodes:
 **Use filters in schema**:
 
 ```yaml
-views:
-  - name: "active_users_only"
-    nodes:
-      User:
-        source_table: "users"
-        filters:
-          - "is_active = 1"
-          - "deleted_at IS NULL"
-        property_mappings:
-          user_id: "user_id"
-          name: "full_name"
+graph_schema:
+  nodes:
+    - label: ActiveUser
+      table: users
+      id_column: user_id
+      filter: "is_active = 1 AND deleted_at IS NULL"
+      property_mappings:
+        user_id: user_id
+        name: full_name
 ```
 
 **Benefit**: Filters applied at table scan level (fastest).
@@ -686,25 +746,24 @@ views:
 **Model time-varying connections**:
 
 ```yaml
-edges:  # YAML key 'relationships:' is accepted for backward compatibility
-  EMPLOYED_BY:
-    source_table: "employment_history"
-    from_node: "Person"
-    to_node: "Company"
-    from_property: "person_id"
-    to_property: "company_id"
+edges:
+  - type: EMPLOYED_BY
+    table: employment_history
+    from_id: person_id
+    to_id: company_id
+    from_node: Person
+    to_node: Company
     property_mappings:
-      start_date: "start_date"
-      end_date: "end_date"
-      title: "job_title"
-      is_current: "end_date IS NULL"
+      start_date: start_date
+      end_date: end_date
+      title: job_title
 ```
 
 **Queries**:
 ```cypher
--- Current employment
+-- Current employment (end_date is NULL)
 MATCH (p:Person)-[r:EMPLOYED_BY]->(c:Company)
-WHERE r.is_current = true
+WHERE r.end_date IS NULL
 RETURN p.name, c.name, r.title
 
 -- Employment during specific period
@@ -720,14 +779,14 @@ RETURN p.name, c.name
 
 ```yaml
 edges:
-  REPORTS_TO:
-    source_table: "employee_hierarchy"
-    from_node: "Employee"
-    to_node: "Employee"
-    from_property: "employee_id"
-    to_property: "manager_id"
+  - type: REPORTS_TO
+    table: employee_hierarchy
+    from_id: employee_id
+    to_id: manager_id
+    from_node: Employee
+    to_node: Employee
     property_mappings:
-      since: "reporting_start_date"
+      since: reporting_start_date
 ```
 
 **Queries**:
@@ -747,16 +806,16 @@ RETURN [n IN nodes(path) | n.name] AS chain
 **Model edge weights**:
 
 ```yaml
-edges:  # YAML key 'relationships:' is accepted for backward compatibility
-  SIMILAR_TO:
-    source_table: "product_similarity"
-    from_node: "Product"
-    to_node: "Product"
-    from_property: "product_a_id"
-    to_property: "product_b_id"
+edges:
+  - type: SIMILAR_TO
+    table: product_similarity
+    from_id: product_a_id
+    to_id: product_b_id
+    from_node: Product
+    to_node: Product
     property_mappings:
-      similarity: "similarity_score"
-      method: "similarity_method"
+      similarity: similarity_score
+      method: similarity_method
 ```
 
 **Queries**:
@@ -774,37 +833,45 @@ LIMIT 10
 **Mix different entity types**:
 
 ```yaml
-views:
-  - name: "knowledge_graph"
-    nodes:
-      Person:
-        source_table: "persons"
-        identifier_property: "person_id"
+graph_schema:
+  nodes:
+    - label: Person
+      table: persons
+      id_column: person_id
       
-      Company:
-        source_table: "companies"
-        identifier_property: "company_id"
+    - label: Company
+      table: companies
+      id_column: company_id
       
-      Location:
-        source_table: "locations"
-        identifier_property: "location_id"
+    - label: Location
+      table: locations
+      id_column: location_id
       
-      Skill:
-        source_table: "skills"
-        identifier_property: "skill_id"
-    
-    edges:
-      WORKS_AT:
-        from_node: "Person"
-        to_node: "Company"
+    - label: Skill
+      table: skills
+      id_column: skill_id
+  
+  edges:
+    - type: WORKS_AT
+      table: employment
+      from_id: person_id
+      to_id: company_id
+      from_node: Person
+      to_node: Company
       
-      LOCATED_IN:
-        from_node: "Company"
-        to_node: "Location"
+    - type: LOCATED_IN
+      table: company_locations
+      from_id: company_id
+      to_id: location_id
+      from_node: Company
+      to_node: Location
       
-      HAS_SKILL:
-        from_node: "Person"
-        to_node: "Skill"
+    - type: HAS_SKILL
+      table: person_skills
+      from_id: person_id
+      to_id: skill_id
+      from_node: Person
+      to_node: Skill
 ```
 
 **Queries**:
@@ -823,16 +890,12 @@ RETURN p.name, c.name
 
 **Version Your Schemas**:
 ```yaml
-schema:
-  name: "social_graph"
-  version: "2.0"  # Increment on breaking changes
-  changelog:
-    - version: "2.0"
-      date: "2025-11-17"
-      changes: "Added Post.sentiment property"
-    - version: "1.0"
-      date: "2025-01-01"
-      changes: "Initial schema"
+name: social_graph
+version: "2.0"  # Increment on breaking changes
+
+graph_schema:
+  nodes:
+    # ... your nodes
 ```
 
 ### 2. Backward Compatible Changes
@@ -841,31 +904,34 @@ schema:
 - Add new nodes
 - Add new edges
 - Add new properties to existing nodes
-- Add new views
 
 ```yaml
 # v1.0 → v1.1 (backward compatible)
-nodes:
-  User:
-    property_mappings:
-      user_id: "user_id"
-      name: "full_name"
-      email: "email_address"
-      # NEW in v1.1
-      phone: "phone_number"  # ✅ Safe: Existing queries still work
+graph_schema:
+  nodes:
+    - label: User
+      table: users
+      id_column: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        email: email_address
+        # NEW in v1.1
+        phone: phone_number  # ✅ Safe: Existing queries still work
 ```
 
 **❌ Breaking Changes**:
 - Rename nodes or edge types
 - Remove properties
-- Change identifier_property
+- Change id_column
 - Change edge direction
 
 ```yaml
 # v1.0 → v2.0 (breaking!)
 nodes:
-  User:
-    identifier_property: "email"  # ❌ Breaking: Was "user_id"
+  - label: User
+    table: users
+    id_column: email  # ❌ Breaking: Was "user_id"
 ```
 
 ### 3. Blue-Green Schema Deployment
@@ -895,11 +961,12 @@ def migrate_v1_to_v2(v1_path: str, v2_path: str):
         v1 = yaml.safe_load(f)
     
     # Add version info
-    v1['schema']['version'] = '2.0'
+    v1['version'] = '2.0'
     
-    # Add new properties
-    user_node = v1['schema']['views'][0]['nodes']['User']
-    user_node['property_mappings']['phone'] = 'phone_number'
+    # Add new properties to User node
+    for node in v1['graph_schema']['nodes']:
+        if node['label'] == 'User':
+            node['property_mappings']['phone'] = 'phone_number'
     
     # Write v2
     with open(v2_path, 'w') as f:

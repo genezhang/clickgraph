@@ -91,7 +91,7 @@ RETURN u.email                -- Uses 'email' (Cypher property)
 
 **Generated ClickHouse SQL:**
 ```sql
-SELECT full_name, email_address  -- Uses actual column names
+SELECT email_address  -- Uses actual column names
 FROM users
 WHERE full_name = 'Alice'
 ```
