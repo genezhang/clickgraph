@@ -87,7 +87,7 @@ jobs:
         with:
           command: build
           target: ${{ matrix.target }}
-          args: "--locked --release"
+          args: "--locked --release --workspace"
           strip: true
 
       - name: Package artifacts (Unix)
