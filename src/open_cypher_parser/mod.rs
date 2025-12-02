@@ -123,8 +123,16 @@ pub fn parse_query_with_nom(
 
 pub fn parse_query(input: &'_ str) -> Result<OpenCypherQueryAst<'_>, OpenCypherParsingError<'_>> {
     match parse_statement(input) {
-        // if remainder is present then either show error or do something with it
-        Ok((_, query_ast)) => Ok(query_ast),
+        Ok((remainder, query_ast)) => {
+            // Check that all input was consumed (remainder should be empty or whitespace only)
+            let trimmed = remainder.trim();
+            if !trimmed.is_empty() {
+                return Err(OpenCypherParsingError {
+                    errors: vec![(remainder, "Unexpected tokens after query"), (trimmed, "Unparsed input")],
+                });
+            }
+            Ok(query_ast)
+        }
         Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => Err(e),
         Err(nom::Err::Incomplete(_)) => Err(OpenCypherParsingError {
             errors: vec![("", "")],

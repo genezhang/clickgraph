@@ -205,12 +205,13 @@ mod complex_query_tests {
     }
 
     #[test]
-    fn test_with_group_by() {
-        let cypher = "MATCH (u1:User)-[:FOLLOWS*1..2]->(u2:User) RETURN u1.full_name, COUNT(u2) GROUP BY u1.full_name";
+    fn test_with_aggregation() {
+        // Note: Cypher doesn't have explicit GROUP BY - aggregation is implicit based on non-aggregated columns
+        let cypher = "MATCH (u1:User)-[:FOLLOWS*1..2]->(u2:User) RETURN u1.full_name, COUNT(u2)";
         let result = open_cypher_parser::parse_query(cypher);
         assert!(
             result.is_ok(),
-            "Failed to parse with GROUP BY: {:?}",
+            "Failed to parse aggregation query: {:?}",
             result.err()
         );
     }

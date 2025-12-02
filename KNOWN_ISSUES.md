@@ -2,7 +2,7 @@
 
 **Current Status**: 🔧 **Undirected patterns need UNION ALL implementation**  
 **Test Results**: 534/534 unit tests passing (100%)  
-**Active Issues**: 7 bugs (undirected OR-JOIN, undirected uniqueness, disconnected patterns, *0 pattern, 3 new)
+**Active Issues**: 4 bugs (undirected OR-JOIN, undirected uniqueness, disconnected patterns, WHERE AND syntax)
 
 **Date Updated**: December 2, 2025  
 **Neo4j Semantics Verified**: November 22, 2025 (see `notes/CRITICAL_relationship_vs_node_uniqueness.md`)
@@ -13,20 +13,24 @@
 
 **Note**: Some integration tests have incorrect expectations or test unimplemented features. Known feature gaps documented below.
 
-**New Issues** (December 2, 2025):
-- 🚨 **RETURN node for denormalized schemas**: `RETURN a` on denormalized nodes returns empty - wildcard expansion looks at empty `property_mapping` instead of `from_node_properties`/`to_node_properties`
-- 🚨 **WHERE AND syntax error not caught**: `WHERE AND r.prop = value` parses without error instead of failing with syntax error
-- ⚠️ **WITH aggregation SQL generation**: `WITH r.month as month, count(r) as r_count` generates incorrect SQL - **Workaround: Use `RETURN` directly** (WITH is redundant for simple aggregations)
-- ⚠️ **Regex operator (=~)**: Parses but generates incomplete SQL (WHERE clause missing regex match)
-
-**Recently Resolved** (December 1, 2025):
-- ✅ **collect() function**: Now correctly maps to `groupArray()` in ClickHouse
+**Active Issues**:
+- 🚨 **WHERE AND syntax error not caught**: `WHERE AND r.prop = value` parses without error instead of failing with syntax error - parses `AND` as a variable name
 
 **Recently Resolved** (December 2, 2025):
+- ✅ **Regex operator (=~)**: Now generates `match(column, 'pattern')` for ClickHouse
+- ✅ **Inline property filters with integers**: `{user_id: 1}` now works correctly
+- ✅ **WITH aggregation SQL generation**: Generates correct CTE pattern for aggregations
+- ✅ **RETURN node (normal schemas)**: Correctly expands to all properties
 - ✅ **Polymorphic Multi-Type JOIN Filter**: Fixed - Now uses `IN ('TYPE1', 'TYPE2')` for multi-type patterns
 - ✅ **VLP min_hops Filtering**: Fixed CTE wrapper to filter `WHERE hop_count >= min_hops` for patterns like `*2..`
 - ✅ **VLP + Aggregation**: Fixed plan builder to detect VLP in GroupBy and use CTE path correctly
 - ✅ **Bidirectional type(r)**: Fixed projection pushdown into Union branches for bidirectional patterns (commit 85279e1)
+
+**Recently Resolved** (December 1, 2025):
+- ✅ **collect() function**: Now correctly maps to `groupArray()` in ClickHouse
+- ✅ **Denormalized Schema VLP**: Fixed property alias rewriting for denormalized VLP patterns - now uses column-aware mapping (from_properties→r1, to_properties→rN)
+- ✅ **Fixed-length VLP (`*1`, `*2`, `*3`)**: Generates efficient inline JOINs for all schema types (Normal, Polymorphic, Denormalized)
+- ✅ **VLP Code Consolidation**: Unified schema-aware VLP handling with `VlpContext` and `VlpSchemaType`
 
 **Recently Resolved** (November 30, 2025):
 - ✅ **RETURN r (whole relationship)**: Fixed - Now expands to all relationship columns
@@ -34,82 +38,9 @@
 - ✅ **OPTIONAL MATCH + VLP**: Fixed anchor node handling - Eve with no followers now returns correctly
 - ✅ **Inline property filters**: Verified working - `{prop: value}` converts to WHERE clause
 
-**Recently Resolved** (December 1, 2025):
-- ✅ **Denormalized Schema VLP**: Fixed property alias rewriting for denormalized VLP patterns - now uses column-aware mapping (from_properties→r1, to_properties→rN)
-- ✅ **Fixed-length VLP (`*1`, `*2`, `*3`)**: Generates efficient inline JOINs for all schema types (Normal, Polymorphic, Denormalized)
-- ✅ **VLP Code Consolidation**: Unified schema-aware VLP handling with `VlpContext` and `VlpSchemaType`
-
 ---
 
-## Known Parsing Limitation: Inline Property Filters with Integers
-
-**Status**: 🔧 **LIMITATION** - Parsing issue with integer literals in inline filters  
-**Severity**: **LOW** - Workaround available (use WHERE clause)
-
-### The Problem
-
-Inline property filters work with string values but fail with integer values:
-
-```cypher
--- ✅ WORKS (string value)
-MATCH (u:User {name: "Alice"}) RETURN u
-
--- ❌ PARSE ERROR (integer value)
-MATCH (u:User {user_id: 1}) RETURN u
-```
-
-### Workaround
-
-Use WHERE clause instead of inline filter:
-```cypher
--- ✅ WORKS
-MATCH (u:User) WHERE u.user_id = 1 RETURN u
-```
-
----
-
-## 🚨 NEW: RETURN Node on Denormalized Schema Returns Empty
-
-**Status**: 🔧 **BUG** - Needs fix in wildcard expansion  
-**Severity**: **HIGH** - Breaks basic `RETURN a` queries on denormalized schemas  
-**Identified**: December 2, 2025
-
-### The Problem
-
-When using `RETURN a` (returning a whole node) with denormalized node schemas, the result is empty:
-
-```cypher
--- ❌ Returns empty result
-MATCH (a:Airport) RETURN a LIMIT 5
-```
-
-### Root Cause
-
-In `extract_select_items`, when encountering `a.*` (wildcard property access), the code looks at `ViewScan.property_mapping` which is empty for denormalized nodes. The actual properties are in:
-- `ViewScan.from_node_properties` (when node is in "from" position)
-- `ViewScan.to_node_properties` (when node is in "to" position)
-
-From debug logs:
-```
-DEBUG: Found wildcard property access a.* - expanding to all properties
-DEBUG: Expanding a.* to 0 properties
-```
-
-### Workaround
-
-Explicitly list the properties you want:
-```cypher
--- ✅ WORKS
-MATCH (a:Airport) RETURN a.code, a.city, a.airport LIMIT 5
-```
-
-### Fix Location
-
-`src/render_plan/plan_builder.rs` or related file where `extract_select_items` handles wildcard expansion - needs to check `from_node_properties`/`to_node_properties` for denormalized nodes.
-
----
-
-## 🚨 NEW: WHERE AND Syntax Error Not Caught
+## 🚨 WHERE AND Syntax Error Not Caught
 
 **Status**: 🔧 **BUG** - Parser should reject invalid syntax  
 **Severity**: **MEDIUM** - Confusing error messages for users  
@@ -117,18 +48,12 @@ MATCH (a:Airport) RETURN a.code, a.city, a.airport LIMIT 5
 
 ### The Problem
 
-Invalid Cypher syntax `WHERE AND` is not caught by the parser:
+Invalid Cypher syntax `WHERE AND` is not caught by the parser - it parses `AND` as a variable name:
 
 ```cypher
--- ❌ Should fail with syntax error, but doesn't
-MATCH p = (a:Airport)-[r:FLIGHT]->(b:Airport)
-WHERE AND r.FlightDate = toDate('2024-01-15')
-RETURN p
-```
-
-The query continues to execution and fails later with a confusing error:
-```
-Brahmand Error: Invalid render plan: No select items found...
+-- ❌ Should fail with syntax error, but parses AND as a variable
+MATCH (u:User) WHERE AND u.name = "Alice" RETURN u
+-- Generates invalid SQL: WHERE AND
 ```
 
 ### Expected Behavior
@@ -140,81 +65,44 @@ Syntax error: Unexpected AND after WHERE
 
 ### Fix Location
 
-`src/open_cypher_parser/where_clause.rs` or `expression.rs` - WHERE clause parsing should require an expression after WHERE, not allow AND/OR operators at the start.
+`src/open_cypher_parser/expression.rs` - Need to add reserved word checking in identifier parsing to reject keywords like `AND`, `OR`, `NOT`, etc. as variable names.
 
 ---
 
-## 🚨 NEW: WITH Aggregation Generates Incorrect SQL
+## RETURN Node on Denormalized Schema Returns Empty
 
-**Status**: 🔧 **BUG** - SQL generation issue with WITH clause  
-**Severity**: **MEDIUM** - Workaround available  
+**Status**: 🔧 **BUG** - Needs fix in wildcard expansion  
+**Severity**: **MEDIUM** - Only affects denormalized schemas (normal schemas work correctly)  
 **Identified**: December 2, 2025
 
 ### The Problem
 
-Queries using `WITH` for aggregation on relationships generate incorrect SQL with duplicate FROM clauses:
+When using `RETURN a` (returning a whole node) with **denormalized** node schemas, the result is empty:
 
 ```cypher
-MATCH (a:Airport)-[r:FLIGHT]->(b:Airport)
-WHERE r.FlightDate = toDate('2024-01-15')
-WITH r.month as month, count(r) as r_count
-RETURN month, r_count ORDER BY month
+-- ❌ Returns empty result (denormalized schema only)
+MATCH (a:Airport) RETURN a LIMIT 5
 ```
 
-### Generated SQL (WRONG)
+**Note**: Normal schemas work correctly - `RETURN u` expands to all properties.
 
-```sql
-WITH grouped_data AS (
-    SELECT r.month AS "month", count(*) AS "r_count"
-    FROM test_integration.flights AS r
-    WHERE r.FlightDate = toDate(2024 - 1 - 15)  -- Also note: date parsing is wrong
-    GROUP BY r.month
-)
-SELECT grouped_data.month, grouped_data.r_count
-FROM test_integration.flights AS r  -- ❌ WRONG: Extra FROM clause
-INNER JOIN grouped_data ON r.month = grouped_data.month  -- ❌ WRONG: Unnecessary JOIN
-ORDER BY grouped_data.month ASC
-```
+### Root Cause
 
-### Expected SQL
+In `extract_select_items`, when encountering `a.*` (wildcard property access), the code looks at `ViewScan.property_mapping` which is empty for denormalized nodes. The actual properties are in:
+- `ViewScan.from_node_properties` (when node is in "from" position)
+- `ViewScan.to_node_properties` (when node is in "to" position)
 
-```sql
-SELECT r.month AS "month", count(*) AS "r_count"
-FROM test_integration.flights AS r
-WHERE r.FlightDate = toDate('2024-01-15')
-GROUP BY r.month
-ORDER BY r.month ASC
-```
+### Workaround
 
-### Workaround ✅
-
-**The WITH clause is redundant in this case** - use RETURN directly with aggregation:
-
+Explicitly list the properties you want:
 ```cypher
--- ✅ WORKS - equivalent query without WITH
-MATCH (a:Airport)-[r:FLIGHT]->(b:Airport)
-WHERE r.FlightDate = toDate('2024-01-15')
-RETURN r.month as month, count(r) as r_count
-ORDER BY month
+-- ✅ WORKS
+MATCH (a:Airport) RETURN a.code, a.city, a.airport LIMIT 5
 ```
-
-This generates correct SQL. The `WITH ... RETURN` pattern is only necessary when:
-1. You need to filter on aggregated results (HAVING equivalent)
-2. You need to do further processing after aggregation
-3. You're chaining multiple aggregation stages
-
-For simple "group by and return" queries, skip WITH and use RETURN directly.
-
-### Additional Issue: Date Literal Parsing
-
-`toDate('2024-01-15')` is being parsed as arithmetic: `toDate(2024 - 1 - 15)` = `toDate(2008)`
-
-This is a separate parser issue where the date string is being interpreted as subtraction.
 
 ### Fix Location
 
-1. **SQL generation**: `src/render_plan/plan_builder.rs` - WITH clause processing
-2. **Date parsing**: `src/open_cypher_parser/expression.rs` - function argument parsing
+`src/render_plan/plan_builder.rs` - `extract_select_items` needs to check `from_node_properties`/`to_node_properties` for denormalized nodes.
 
 ---
 
