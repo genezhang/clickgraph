@@ -2,7 +2,7 @@
 
 **Current Status**: 🔧 **Undirected patterns need UNION ALL implementation**  
 **Test Results**: 534/534 unit tests passing (100%)  
-**Active Issues**: 4 bugs (undirected OR-JOIN, undirected uniqueness, disconnected patterns, *0 pattern)
+**Active Issues**: 7 bugs (undirected OR-JOIN, undirected uniqueness, disconnected patterns, *0 pattern, 3 new)
 
 **Date Updated**: December 2, 2025  
 **Neo4j Semantics Verified**: November 22, 2025 (see `notes/CRITICAL_relationship_vs_node_uniqueness.md`)
@@ -12,6 +12,11 @@
 2. **Undirected patterns need relationship IDs** - `(from_id, to_id)` alone is NOT sufficient!
 
 **Note**: Some integration tests have incorrect expectations or test unimplemented features. Known feature gaps documented below.
+
+**New Issues** (December 2, 2025):
+- 🚨 **RETURN node for denormalized schemas**: `RETURN a` on denormalized nodes returns empty - wildcard expansion looks at empty `property_mapping` instead of `from_node_properties`/`to_node_properties`
+- 🚨 **WHERE AND syntax error not caught**: `WHERE AND r.prop = value` parses without error instead of failing with syntax error
+- 🚨 **WITH aggregation SQL generation**: `WITH r.month as month, count(r) as r_count` generates incorrect SQL with duplicate FROM clause
 
 **Recently Resolved** (December 2, 2025):
 - ✅ **Polymorphic Multi-Type JOIN Filter**: Fixed - Now uses `IN ('TYPE1', 'TYPE2')` for multi-type patterns
@@ -56,6 +61,137 @@ Use WHERE clause instead of inline filter:
 -- ✅ WORKS
 MATCH (u:User) WHERE u.user_id = 1 RETURN u
 ```
+
+---
+
+## 🚨 NEW: RETURN Node on Denormalized Schema Returns Empty
+
+**Status**: 🔧 **BUG** - Needs fix in wildcard expansion  
+**Severity**: **HIGH** - Breaks basic `RETURN a` queries on denormalized schemas  
+**Identified**: December 2, 2025
+
+### The Problem
+
+When using `RETURN a` (returning a whole node) with denormalized node schemas, the result is empty:
+
+```cypher
+-- ❌ Returns empty result
+MATCH (a:Airport) RETURN a LIMIT 5
+```
+
+### Root Cause
+
+In `extract_select_items`, when encountering `a.*` (wildcard property access), the code looks at `ViewScan.property_mapping` which is empty for denormalized nodes. The actual properties are in:
+- `ViewScan.from_node_properties` (when node is in "from" position)
+- `ViewScan.to_node_properties` (when node is in "to" position)
+
+From debug logs:
+```
+DEBUG: Found wildcard property access a.* - expanding to all properties
+DEBUG: Expanding a.* to 0 properties
+```
+
+### Workaround
+
+Explicitly list the properties you want:
+```cypher
+-- ✅ WORKS
+MATCH (a:Airport) RETURN a.code, a.city, a.airport LIMIT 5
+```
+
+### Fix Location
+
+`src/render_plan/plan_builder.rs` or related file where `extract_select_items` handles wildcard expansion - needs to check `from_node_properties`/`to_node_properties` for denormalized nodes.
+
+---
+
+## 🚨 NEW: WHERE AND Syntax Error Not Caught
+
+**Status**: 🔧 **BUG** - Parser should reject invalid syntax  
+**Severity**: **MEDIUM** - Confusing error messages for users  
+**Identified**: December 2, 2025
+
+### The Problem
+
+Invalid Cypher syntax `WHERE AND` is not caught by the parser:
+
+```cypher
+-- ❌ Should fail with syntax error, but doesn't
+MATCH p = (a:Airport)-[r:FLIGHT]->(b:Airport)
+WHERE AND r.FlightDate = toDate('2024-01-15')
+RETURN p
+```
+
+The query continues to execution and fails later with a confusing error:
+```
+Brahmand Error: Invalid render plan: No select items found...
+```
+
+### Expected Behavior
+
+Parser should fail with:
+```
+Syntax error: Unexpected AND after WHERE
+```
+
+### Fix Location
+
+`src/open_cypher_parser/where_clause.rs` or `expression.rs` - WHERE clause parsing should require an expression after WHERE, not allow AND/OR operators at the start.
+
+---
+
+## 🚨 NEW: WITH Aggregation Generates Incorrect SQL
+
+**Status**: 🔧 **BUG** - SQL generation issue with WITH clause  
+**Severity**: **HIGH** - Breaks aggregation queries with relationships  
+**Identified**: December 2, 2025
+
+### The Problem
+
+Queries using `WITH` for aggregation on relationships generate incorrect SQL with duplicate FROM clauses:
+
+```cypher
+MATCH (a:Airport)-[r:FLIGHT]->(b:Airport)
+WHERE r.FlightDate = toDate('2024-01-15')
+WITH r.month as month, count(r) as r_count
+RETURN month, r_count ORDER BY month
+```
+
+### Generated SQL (WRONG)
+
+```sql
+WITH grouped_data AS (
+    SELECT r.month AS "month", count(*) AS "r_count"
+    FROM test_integration.flights AS r
+    WHERE r.FlightDate = toDate(2024 - 1 - 15)  -- Also note: date parsing is wrong
+    GROUP BY r.month
+)
+SELECT grouped_data.month, grouped_data.r_count
+FROM test_integration.flights AS r  -- ❌ WRONG: Extra FROM clause
+INNER JOIN grouped_data ON r.month = grouped_data.month  -- ❌ WRONG: Unnecessary JOIN
+ORDER BY grouped_data.month ASC
+```
+
+### Expected SQL
+
+```sql
+SELECT r.month AS "month", count(*) AS "r_count"
+FROM test_integration.flights AS r
+WHERE r.FlightDate = toDate('2024-01-15')
+GROUP BY r.month
+ORDER BY r.month ASC
+```
+
+### Additional Issue: Date Literal Parsing
+
+`toDate('2024-01-15')` is being parsed as arithmetic: `toDate(2024 - 1 - 15)` = `toDate(2008)`
+
+This is a separate parser issue where the date string is being interpreted as subtraction.
+
+### Fix Location
+
+1. **SQL generation**: `src/render_plan/plan_builder.rs` - WITH clause processing
+2. **Date parsing**: `src/open_cypher_parser/expression.rs` - function argument parsing
 
 ---
 
