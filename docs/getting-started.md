@@ -71,29 +71,26 @@ docker-compose up -d clickhouse-service
 > If you run `docker-compose up -d` (all services), both the containerized ClickGraph 
 > and your local `cargo run` will try to bind to port 8080, causing a conflict.
 
-**Configure Environment**:
-```bash
-# Set ClickHouse connection details
-export CLICKHOUSE_URL="http://localhost:8123"
-export CLICKHOUSE_USER="test_user"
-export CLICKHOUSE_PASSWORD="test_pass"
-export CLICKHOUSE_DATABASE="brahmand"
-
-# Point to your graph schema YAML (required for graph queries)
-export GRAPH_CONFIG_PATH="./schemas/demo/social_network.yaml"
-```
-
 **Build and Run**:
 ```bash
 # Build ClickGraph
 cargo build --release
 
-# Start with default configuration (HTTP:8080, Bolt:7687)
+# Set required environment variables
+export CLICKHOUSE_URL="http://localhost:8123"
+export CLICKHOUSE_USER="test_user"
+export CLICKHOUSE_PASSWORD="test_pass"
+export CLICKHOUSE_DATABASE="brahmand"
+export GRAPH_CONFIG_PATH="./benchmarks/schemas/social_benchmark.yaml"
+
+# Start ClickGraph
 cargo run --bin clickgraph
 
 # Or use custom ports if 8080 is already in use:
-# cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
+cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 ```
+
+> **⚠️ Required**: `GRAPH_CONFIG_PATH` must be set to a valid schema YAML file. Without it, ClickGraph won't know how to map your ClickHouse tables to graph nodes and edges.
 
 You should see output like:
 ```
