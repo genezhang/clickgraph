@@ -2,25 +2,30 @@
 
 ### 🚀 Features
 
-- Add `label()` function for scalar label return
-- Add EXISTS subquery support
-- Add WITH + MATCH chaining support
-- Add regex match (`=~`) operator → `match()` function
-- Add `collect()` function → `groupArray()` mapping
+- Add regex match (=~) operator and fix collect() function
+- Add EXISTS subquery and WITH+MATCH chaining support
+- Add label() function for scalar label return
 
 ### 🐛 Bug Fixes
 
-- Fix column alias for `type()`, `id()`, `labels()` graph introspection functions
-- Parser now rejects invalid syntax with unparsed input (catches `WHERE AND`, etc.)
+- Remove unused schemas volume from docker-compose
+- Parser now rejects invalid syntax with unparsed input
+- Column alias for type(), id(), labels() graph introspection functions
 
 ### 📚 Documentation
 
-- Add anonymous nodes limitation to KNOWN_ISSUES.md
-- Fix Quick Start guide to include required `GRAPH_CONFIG_PATH`
-- Clean up resolved issues from KNOWN_ISSUES.md
+- Archive wiki for v0.5.2 release
+- Fix schema documentation and shorten README
+- Fix Quick Start to include required GRAPH_CONFIG_PATH
+- Add 3 new known issues from ontime schema testing
+- Update KNOWN_ISSUES.md - WHERE AND now caught
+- Clean up KNOWN_ISSUES.md - remove resolved issues
+- Remove false known limitations - all verified working
 
----
+### ⚙️ Miscellaneous Tasks
 
+- Update CHANGELOG.md [skip ci]
+- Release v0.5.3
 ## [0.5.2] - 2025-11-30
 
 ### 🚀 Features
