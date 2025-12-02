@@ -96,7 +96,7 @@ jobs:
         run: |
           mkdir -p dist/${{ matrix.name }}
           tar -C target/${{ matrix.target }}/release -czf \
-            dist/${{ matrix.name }}/brahmand-${{ matrix.name }}.tar.gz brahmand
+            dist/${{ matrix.name }}/clickgraph-${{ matrix.name }}.tar.gz clickgraph
           tar -C target/${{ matrix.target }}/release -czf \
             dist/${{ matrix.name }}/brahmand-client-${{ matrix.name }}.tar.gz brahmand-client
 
@@ -107,14 +107,14 @@ jobs:
           # Ensure output directory exists
           New-Item -ItemType Directory -Path dist/${{ matrix.name }} -Force | Out-Null
           # Use PowerShell Compress-Archive to create ZIPs
-          Compress-Archive -Path target/${{ matrix.target }}/release/brahmand.exe -DestinationPath dist/${{ matrix.name }}/brahmand-${{ matrix.name }}.zip -Force
+          Compress-Archive -Path target/${{ matrix.target }}/release/clickgraph.exe -DestinationPath dist/${{ matrix.name }}/clickgraph-${{ matrix.name }}.zip -Force
           Compress-Archive -Path target/${{ matrix.target }}/release/brahmand-client.exe -DestinationPath dist/${{ matrix.name }}/brahmand-client-${{ matrix.name }}.zip -Force
 
-      - name: Upload brahmand binary
+      - name: Upload clickgraph binary
         uses: softprops/action-gh-release@v2
         with:
           # upload_url: ${{ needs.create_release.outputs.upload_url }}
-          files: dist/${{ matrix.name }}/brahmand-${{ matrix.name }}.*
+          files: dist/${{ matrix.name }}/clickgraph-${{ matrix.name }}.*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
