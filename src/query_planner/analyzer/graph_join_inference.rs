@@ -241,7 +241,7 @@ impl AnalyzerPass for GraphJoinInference {
         // Empty joins vector = fully denormalized pattern (no JOINs needed)
         // Without this wrapper, RenderPlan will try to generate JOINs from raw GraphRel
         let optional_aliases = plan_ctx.get_optional_aliases().clone();
-        Self::build_graph_joins(logical_plan, &mut collected_graph_joins, optional_aliases, plan_ctx)
+        Self::build_graph_joins(logical_plan, &mut collected_graph_joins, optional_aliases, plan_ctx, graph_schema)
     }
 }
 
@@ -775,19 +775,40 @@ impl GraphJoinInference {
         collected_graph_joins: &mut Vec<Join>,
         optional_aliases: std::collections::HashSet<String>,
         plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
-            // If input is a Union, push GraphJoins into each branch
+            // If input is a Union, process each branch INDEPENDENTLY
+            // Each branch needs its own collect_graph_joins + build_graph_joins pass
             LogicalPlan::Union(union) => {
-                log::info!("🔄 Union detected in build_graph_joins, processing {} branches", union.inputs.len());
+                log::info!("🔄 Union detected in build_graph_joins, processing {} branches independently", union.inputs.len());
                 let mut any_transformed = false;
+                let graph_join_inference = GraphJoinInference::new();
+                
                 let transformed_branches: Result<Vec<Arc<LogicalPlan>>, _> = union.inputs.iter().map(|branch| {
-                    let mut branch_joins = collected_graph_joins.clone();
+                    // CRITICAL: Each branch needs fresh state - collect and build separately
+                    let mut branch_joins: Vec<Join> = vec![];
+                    let mut branch_joined_entities: HashSet<String> = HashSet::new();
+                    
+                    // Collect joins for this specific branch only
+                    graph_join_inference.collect_graph_joins(
+                        branch.clone(),
+                        branch.clone(),
+                        &mut plan_ctx.clone(),  // Clone PlanCtx for each branch
+                        graph_schema,
+                        &mut branch_joins,
+                        &mut branch_joined_entities,
+                    )?;
+                    
+                    eprintln!("🔹 Union branch collected {} joins", branch_joins.len());
+                    
+                    // Build GraphJoins for this branch with its own collected joins
                     let result = Self::build_graph_joins(
                         branch.clone(),
                         &mut branch_joins,
                         optional_aliases.clone(),
                         plan_ctx,
+                        graph_schema,
                     )?;
                     if matches!(result, Transformed::Yes(_)) {
                         any_transformed = true;
@@ -834,6 +855,7 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     optional_aliases.clone(),
                     plan_ctx,
+                    graph_schema,
                 )?;
                 
                 // is_denormalized flag is set by view_optimizer pass - just rebuild
@@ -845,18 +867,21 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     optional_aliases.clone(),
                     plan_ctx,
+                    graph_schema,
                 )?;
                 let center_tf = Self::build_graph_joins(
                     graph_rel.center.clone(),
                     collected_graph_joins,
                     optional_aliases.clone(),
                     plan_ctx,
+                    graph_schema,
                 )?;
                 let right_tf = Self::build_graph_joins(
                     graph_rel.right.clone(),
                     collected_graph_joins,
                     optional_aliases.clone(),
                     plan_ctx,
+                    graph_schema,
                 )?;
 
                 graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
@@ -867,6 +892,7 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     optional_aliases,
                     plan_ctx,
+                    graph_schema,
                 )?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -878,6 +904,7 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     optional_aliases,
                     plan_ctx,
+                    graph_schema,
                 )?;
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -887,6 +914,7 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     optional_aliases,
                     plan_ctx,
+                    graph_schema,
                 )?;
                 filter.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -896,6 +924,7 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     optional_aliases,
                     plan_ctx,
+                    graph_schema,
                 )?;
                 group_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -905,6 +934,7 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     optional_aliases,
                     plan_ctx,
+                    graph_schema,
                 )?;
                 order_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -914,6 +944,7 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     optional_aliases,
                     plan_ctx,
+                    graph_schema,
                 )?;
                 skip.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -923,6 +954,7 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     optional_aliases,
                     plan_ctx,
+                    graph_schema,
                 )?;
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -934,6 +966,7 @@ impl GraphJoinInference {
                         collected_graph_joins,
                         optional_aliases.clone(),
                         plan_ctx,
+                        graph_schema,
                     )?;
                     inputs_tf.push(child_tf);
                 }
@@ -947,6 +980,7 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     optional_aliases,
                     plan_ctx,
+                    graph_schema,
                 )?;
                 match child_tf {
                     Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
@@ -1153,17 +1187,11 @@ impl GraphJoinInference {
                 )
             }
             LogicalPlan::Union(union) => {
-                eprintln!("� ? Union, recursing into {} inputs", union.inputs.len());
-                for input_plan in union.inputs.iter() {
-                    self.collect_graph_joins(
-                        input_plan.clone(),
-                        root_plan.clone(),
-                        plan_ctx,
-                        graph_schema,
-                        collected_graph_joins,
-                        joined_entities,
-                    )?;
-                }
+                // CRITICAL: Don't recurse into UNION branches here!
+                // Each branch will be processed independently by build_graph_joins,
+                // which properly clones the state for each branch.
+                // If we recurse here with shared state, branches pollute each other.
+                eprintln!("🔀 Union detected in collect_graph_joins - skipping recursion (handled by build_graph_joins)");
                 Ok(())
             }
             LogicalPlan::PageRank(_) => {
@@ -1529,12 +1557,18 @@ impl GraphJoinInference {
                 to_id: "to_node_id".to_string(),
             },
         );
-        let rel_from_col = rel_cols.from_id;
-        let rel_to_col = rel_cols.to_id;
+        
+        // For Direction::Incoming (from BidirectionalUnion), swap the columns
+        // so that the "from" side of the relationship connects to the "to" node
+        let (rel_from_col, rel_to_col) = if graph_rel.direction == Direction::Incoming {
+            (rel_cols.to_id, rel_cols.from_id)  // Swapped for incoming direction
+        } else {
+            (rel_cols.from_id, rel_cols.to_id)  // Normal for outgoing/either
+        };
 
         eprintln!(
-            "    � ?? DEBUG REL COLUMNS: rel_from_col = '{}', rel_to_col = '{}'",
-            rel_from_col, rel_to_col
+            "    🔹 DEBUG REL COLUMNS: direction={:?}, rel_from_col = '{}', rel_to_col = '{}'",
+            graph_rel.direction, rel_from_col, rel_to_col
         );
 
         // If both nodes are of the same type then check the direction to determine where are the left and right nodes present in the edgelist.
@@ -1923,6 +1957,7 @@ impl GraphJoinInference {
                         // DON'T mark as joined - denormalized nodes are virtual, not physical tables
                     } else {
                         // Traditional: Join LEFT node first
+                        eprintln!("    🔹 CREATING LEFT JOIN: u1 ON r.{}", rel_from_col);
                         let left_graph_join = Join {
                             table_name: left_cte_name.clone(),
                             table_alias: left_alias.to_string(),
@@ -1944,7 +1979,7 @@ impl GraphJoinInference {
                         };
                         collected_graph_joins.push(left_graph_join);
                         joined_entities.insert(left_alias.to_string());
-                        eprintln!("    � ? LEFT node '{}' joined first", left_alias);
+                        eprintln!("    ✓ LEFT node '{}' joined first", left_alias);
                     }
                 }
 
@@ -3623,6 +3658,9 @@ mod tests {
                         assert_eq!(rel_join_condition.operands.len(), 2);
 
                         // For incoming direction, the relationship connects differently
+                        // Pattern (p2)<-[f1]-(p1) means p1 FOLLOWS p2, so:
+                        // - f1.from_id = p1.id (source)
+                        // - f1.to_id = p2.id (target) ← p2 is the anchor, connects via to_id
                         match (
                             &rel_join_condition.operands[0],
                             &rel_join_condition.operands[1],
@@ -3632,7 +3670,7 @@ mod tests {
                                 LogicalExpr::PropertyAccessExp(right_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.raw(), "from_id");
+                                assert_eq!(rel_prop.column.raw(), "to_id");  // p2 is target, connects via to_id
                                 assert_eq!(right_prop.table_alias.0, "p2");
                                 assert_eq!(right_prop.column.raw(), "id");
                             }
@@ -3659,7 +3697,7 @@ mod tests {
                                 assert_eq!(p1_prop.table_alias.0, "p1");
                                 assert_eq!(p1_prop.column.raw(), "id");
                                 assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.raw(), "to_id");
+                                assert_eq!(rel_prop.column.raw(), "from_id");  // p1 is source, connects via from_id
                             }
                             _ => panic!("Expected PropertyAccessExp operands for p1 join"),
                         }

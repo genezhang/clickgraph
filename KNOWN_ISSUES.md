@@ -8,35 +8,25 @@
 
 ## Active Issues
 
-### 1. Undirected Patterns - ClickHouse OR-in-JOIN Limitation
+### 1. ~~Undirected Patterns - Direction Logic Bug in UNION ALL~~ ✅ FIXED
 
-**Status**: 🔧 Needs UNION ALL implementation  
-**Severity**: HIGH  
-**Identified**: November 29, 2025
+**Status**: ✅ FIXED (December 2, 2025)  
+**Fix**: Ensured each UNION branch has independent `joined_entities` state and correctly swaps `from_id`/`to_id` columns based on direction.
 
-**Problem**: Undirected patterns `(a)-[r]-(b)` generate OR conditions in JOINs, which ClickHouse handles incorrectly (missing rows).
-
-**Current SQL** (problematic):
+**Correct SQL now generated**:
 ```sql
-INNER JOIN follows AS r ON (r.follower_id = a.user_id OR r.followed_id = a.user_id)
-```
-
-**Solution**: Generate UNION ALL of two directed queries instead:
-```sql
--- Direction 1
-SELECT ... FROM users AS a JOIN follows AS r ON r.follower_id = a.user_id ...
+SELECT ... FROM users AS u1
+JOIN follows AS r ON r.follower_id = u1.user_id  -- Branch 1: outgoing
+JOIN users AS u2 ON u2.user_id = r.followed_id
 UNION ALL
--- Direction 2  
-SELECT ... FROM users AS a JOIN follows AS r ON r.followed_id = a.user_id ...
+SELECT ... FROM users AS u1
+JOIN follows AS r ON r.followed_id = u1.user_id  -- Branch 2: incoming (swapped!)
+JOIN users AS u2 ON u2.user_id = r.follower_id
 ```
-
-**Affected Tests**: `test_relationship_degree`, `test_undirected_relationship`
-
-**Design Doc**: `notes/bidirectional-union-approach.md`
 
 ---
 
-### 2. Undirected Patterns - Relationship Uniqueness
+### ~~2.~~ 1. Undirected Patterns - Relationship Uniqueness
 
 **Status**: 🔧 Requires relationship IDs in schema  
 **Severity**: HIGH  
@@ -60,7 +50,31 @@ relationships:
 
 ---
 
-### 3. Disconnected Patterns Generate Invalid SQL
+### 3. Anonymous Nodes Without Labels Not Supported
+
+**Status**: 📋 Limitation  
+**Severity**: LOW  
+**Identified**: December 2, 2025
+
+**Problem**: Anonymous nodes without labels cannot be resolved to tables:
+```cypher
+MATCH ()-[r:FOLLOWS]->() RETURN r LIMIT 5  -- ❌ Broken SQL
+MATCH ()-[r]->() RETURN r LIMIT 5          -- ❌ Also broken
+```
+
+**Root Cause**: Without a label, the query planner cannot determine which node table to use. The anonymous node gets a generated alias (e.g., `aeba9f1d7f`) but no `table_name`, causing invalid SQL with dangling references.
+
+**Workaround**: Always specify node labels:
+```cypher
+MATCH (:User)-[r:FOLLOWS]->(:User) RETURN r LIMIT 5  -- ✅ Works
+MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r LIMIT 5  -- ✅ Works
+```
+
+**Future Enhancement**: For schemas with a single relationship type or polymorphic edge table, the system could infer node types from the relationship's `from_node_label`/`to_node_label` configuration. Deferred for now.
+
+---
+
+### 4. Disconnected Patterns Generate Invalid SQL
 
 **Status**: 🐛 Bug  
 **Severity**: MEDIUM  

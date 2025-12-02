@@ -1,3 +1,26 @@
+## [0.5.3] - 2025-12-02
+
+### 🚀 Features
+
+- Add `label()` function for scalar label return
+- Add EXISTS subquery support
+- Add WITH + MATCH chaining support
+- Add regex match (`=~`) operator → `match()` function
+- Add `collect()` function → `groupArray()` mapping
+
+### 🐛 Bug Fixes
+
+- Fix column alias for `type()`, `id()`, `labels()` graph introspection functions
+- Parser now rejects invalid syntax with unparsed input (catches `WHERE AND`, etc.)
+
+### 📚 Documentation
+
+- Add anonymous nodes limitation to KNOWN_ISSUES.md
+- Fix Quick Start guide to include required `GRAPH_CONFIG_PATH`
+- Clean up resolved issues from KNOWN_ISSUES.md
+
+---
+
 ## [0.5.2] - 2025-11-30
 
 ### 🚀 Features
