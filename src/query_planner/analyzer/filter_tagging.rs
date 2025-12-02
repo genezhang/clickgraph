@@ -518,52 +518,20 @@ impl FilterTagging {
                 Ok(LogicalExpr::OperatorApplicationExp(op))
             }
             LogicalExpr::ScalarFnCall(fn_call) => {
-                // Special handling for id() function - expand to appropriate columns
-                if fn_call.name.to_lowercase() == "id" && fn_call.args.len() == 1 {
-                    if let LogicalExpr::TableAlias(ref alias) = fn_call.args[0] {
-                        if let Ok(table_ctx) = plan_ctx.get_table_ctx(&alias.0) {
-                            if let Ok(label) = table_ctx.get_label_str() {
-                                if table_ctx.is_relation() {
-                                    // Relationship ID - may be single or composite
-                                    if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
-                                        if let Some(ref edge_id) = rel_schema.edge_id {
-                                            let columns = edge_id.columns();
-                                            if columns.len() == 1 {
-                                                // Single column edge ID
-                                                return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                    table_alias: TableAlias(alias.0.clone()),
-                                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(columns[0].to_string()),
-                                                }));
-                                            } else {
-                                                // Composite edge ID - return as tuple (List)
-                                                let tuple_exprs: Vec<LogicalExpr> = columns.iter()
-                                                    .map(|col| LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                        table_alias: TableAlias(alias.0.clone()),
-                                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(col.to_string()),
-                                                    }))
-                                                    .collect();
-                                                return Ok(LogicalExpr::List(tuple_exprs));
-                                            }
-                                        } else {
-                                            // No edge_id defined - use from_id as default
-                                            return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                table_alias: TableAlias(alias.0.clone()),
-                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_schema.from_id.clone()),
-                                            }));
-                                        }
-                                    }
-                                } else {
-                                    // Node ID column - always single
-                                    if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
-                                        return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: TableAlias(alias.0.clone()),
-                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(node_schema.node_id.column.clone()),
-                                        }));
-                                    }
-                                }
-                            }
-                        }
+                // Graph introspection functions (id, type, labels) are handled by ProjectionTagging
+                // which sets proper column aliases. Pass them through unchanged (with mapped args).
+                let fn_name_lower = fn_call.name.to_lowercase();
+                if matches!(fn_name_lower.as_str(), "id" | "type" | "labels") {
+                    // Keep the ScalarFnCall intact - ProjectionTagging will convert it
+                    // and set the appropriate column alias
+                    let mut mapped_args = Vec::new();
+                    for arg in fn_call.args {
+                        mapped_args.push(self.apply_property_mapping(arg, plan_ctx, graph_schema, plan)?);
                     }
+                    return Ok(LogicalExpr::ScalarFnCall(ScalarFnCall {
+                        name: fn_call.name,
+                        args: mapped_args,
+                    }));
                 }
                 
                 // For other scalar functions, recursively apply property mapping to arguments

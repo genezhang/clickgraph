@@ -8,7 +8,7 @@ use crate::{
             errors::{AnalyzerError, Pass},
         },
         logical_expr::{
-            AggregateFnCall, LogicalCase, LogicalExpr, Operator, OperatorApplication,
+            AggregateFnCall, ColumnAlias, LogicalCase, LogicalExpr, Operator, OperatorApplication,
             PropertyAccess, ScalarFnCall, TableAlias,
         },
         logical_plan::{LogicalPlan, Projection, ProjectionItem},
@@ -454,6 +454,10 @@ impl ProjectionTagging {
                                 // - Polymorphic edge with type_column -> PropertyAccessExp(r.type_column)
                                 // - Non-polymorphic -> Literal string of the relationship type
                                 if table_ctx.is_relation() {
+                                    // If no explicit alias, use "type(r)" as the column alias
+                                    if item.col_alias.is_none() {
+                                        item.col_alias = Some(ColumnAlias(format!("type({})", alias)));
+                                    }
                                     if let Some(labels) = table_ctx.get_labels() {
                                         if let Some(first_label) = labels.first() {
                                             // Check if this relationship has a type_column (polymorphic)
@@ -484,6 +488,10 @@ impl ProjectionTagging {
                             }
                             "id" => {
                                 // For id(n): return the id column(s) as PropertyAccessExp or Tuple
+                                // If no explicit alias, use "id(r)" or "id(n)" as the column alias
+                                if item.col_alias.is_none() {
+                                    item.col_alias = Some(ColumnAlias(format!("id({})", alias)));
+                                }
                                 if let Ok(label) = table_ctx.get_label_str() {
                                     if table_ctx.is_relation() {
                                         // Relationship ID - may be single or composite
@@ -540,6 +548,10 @@ impl ProjectionTagging {
                             }
                             "labels" => {
                                 // For labels(n): return an array literal with the node's label(s)
+                                // If no explicit alias, use "labels(n)" as the column alias
+                                if item.col_alias.is_none() {
+                                    item.col_alias = Some(ColumnAlias(format!("labels({})", alias)));
+                                }
                                 if !table_ctx.is_relation() {
                                     if let Some(labels) = table_ctx.get_labels() {
                                         // Create array literal: ['Label1', 'Label2', ...]
