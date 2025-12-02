@@ -26,6 +26,8 @@
 
 - Update CHANGELOG.md [skip ci]
 - Release v0.5.3
+- Update CHANGELOG.md [skip ci]
+- Update Cargo.lock for v0.5.3
 ## [0.5.2] - 2025-11-30
 
 ### 🚀 Features
