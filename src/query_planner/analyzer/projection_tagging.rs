@@ -438,7 +438,7 @@ impl ProjectionTagging {
                 
                 // Handle graph introspection functions specially
                 // These functions take a node/relationship alias and shouldn't be expanded to .*
-                if matches!(fn_name_lower.as_str(), "type" | "id" | "labels") {
+                if matches!(fn_name_lower.as_str(), "type" | "id" | "labels" | "label") {
                     // Get the first argument (the node/relationship alias)
                     if let Some(LogicalExpr::TableAlias(TableAlias(alias))) = scalar_fn_call.args.first() {
                         let table_ctx = plan_ctx.get_mut_table_ctx(alias).map_err(|e| {
@@ -562,6 +562,25 @@ impl ProjectionTagging {
                                             .collect();
                                         item.expression = LogicalExpr::List(label_exprs);
                                         return Ok(());
+                                    }
+                                }
+                            }
+                            "label" => {
+                                // For label(n): return a single label as a scalar string
+                                // This is useful when you know a node has exactly one label
+                                // If no explicit alias, use "label(n)" as the column alias
+                                if item.col_alias.is_none() {
+                                    item.col_alias = Some(ColumnAlias(format!("label({})", alias)));
+                                }
+                                if !table_ctx.is_relation() {
+                                    if let Some(labels) = table_ctx.get_labels() {
+                                        if let Some(first_label) = labels.first() {
+                                            // Return the first label as a scalar string
+                                            item.expression = LogicalExpr::Literal(
+                                                crate::query_planner::logical_expr::Literal::String(first_label.clone())
+                                            );
+                                            return Ok(());
+                                        }
                                     }
                                 }
                             }

@@ -518,10 +518,10 @@ impl FilterTagging {
                 Ok(LogicalExpr::OperatorApplicationExp(op))
             }
             LogicalExpr::ScalarFnCall(fn_call) => {
-                // Graph introspection functions (id, type, labels) are handled by ProjectionTagging
+                // Graph introspection functions (id, type, labels, label) are handled by ProjectionTagging
                 // which sets proper column aliases. Pass them through unchanged (with mapped args).
                 let fn_name_lower = fn_call.name.to_lowercase();
-                if matches!(fn_name_lower.as_str(), "id" | "type" | "labels") {
+                if matches!(fn_name_lower.as_str(), "id" | "type" | "labels" | "label") {
                     // Keep the ScalarFnCall intact - ProjectionTagging will convert it
                     // and set the appropriate column alias
                     let mut mapped_args = Vec::new();
