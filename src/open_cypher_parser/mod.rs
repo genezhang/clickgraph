@@ -404,6 +404,8 @@ mod tests {
                     alias: Some("foaf"),
                 },
             ],
+            subsequent_match: None,
+            subsequent_optional_matches: vec![],
         };
         assert_eq!(with_clause, expected_with_clause);
 

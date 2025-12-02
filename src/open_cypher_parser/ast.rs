@@ -90,6 +90,10 @@ pub struct ReturnItem<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct WithClause<'a> {
     pub with_items: Vec<WithItem<'a>>,
+    /// Optional subsequent MATCH clause after WITH (for WITH ... MATCH chaining)
+    pub subsequent_match: Option<Box<MatchClause<'a>>>,
+    /// Optional subsequent OPTIONAL MATCH clauses after WITH
+    pub subsequent_optional_matches: Vec<OptionalMatchClause<'a>>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -451,6 +455,21 @@ pub enum Expression<'a> {
     /// A CASE expression.
     /// `expr` is used for the simple CASE (e.g. CASE x WHEN ...), and if absent, it's the searched CASE.
     Case(Case<'a>),
+    /// EXISTS subquery expression: EXISTS { (pattern) } or EXISTS { MATCH (pattern) WHERE ... }
+    /// Evaluates to true if the pattern matches at least one result
+    ExistsExpression(Box<ExistsSubquery<'a>>),
+}
+
+/// EXISTS subquery: checks if a pattern exists
+/// Examples:
+///   EXISTS { (u)-[:FOLLOWS]->(:User) }
+///   EXISTS { MATCH (u)-[:FOLLOWS]->(f) WHERE f.active = true }
+#[derive(Debug, PartialEq, Clone)]
+pub struct ExistsSubquery<'a> {
+    /// The pattern to check for existence
+    pub pattern: PathPattern<'a>,
+    /// Optional WHERE clause for filtering the pattern
+    pub where_clause: Option<Box<WhereClause<'a>>>,
 }
 
 impl fmt::Display for Expression<'_> {

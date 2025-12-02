@@ -283,6 +283,11 @@ impl AliasResolverContext {
                 LogicalExpr::InSubquery(subq)
             }
             
+            LogicalExpr::ExistsSubquery(subq) => {
+                // EXISTS subqueries have their own subplan that doesn't need alias transformation
+                LogicalExpr::ExistsSubquery(subq)
+            }
+            
             // These don't contain PropertyAccess
             LogicalExpr::Literal(_) |
             LogicalExpr::Raw(_) |

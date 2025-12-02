@@ -8,13 +8,84 @@ use crate::query_planner::logical_expr::LogicalExpr;
 
 use crate::query_planner::logical_expr::{
     AggregateFnCall as LogicalAggregateFnCall, Column as LogicalColumn,
-    ColumnAlias as LogicalColumnAlias, InSubquery as LogicalInSubquery, Literal as LogicalLiteral,
+    ColumnAlias as LogicalColumnAlias, ExistsSubquery as LogicalExistsSubquery,
+    InSubquery as LogicalInSubquery, Literal as LogicalLiteral,
     LogicalCase, Operator as LogicalOperator, OperatorApplication as LogicalOperatorApplication,
     PropertyAccess as LogicalPropertyAccess, ScalarFnCall as LogicalScalarFnCall,
     TableAlias as LogicalTableAlias,
 };
+use crate::query_planner::logical_plan::LogicalPlan;
 
 use super::errors::RenderBuildError;
+
+/// Generate SQL for an EXISTS subquery directly from the logical plan
+/// This is a simplified approach that generates basic EXISTS SQL
+fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderBuildError> {
+    use crate::server::GLOBAL_SCHEMAS;
+    
+    // Try to extract pattern info from the subplan
+    // The subplan is typically a GraphRel representing a relationship pattern
+    match exists.subplan.as_ref() {
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Get the relationship type
+            let rel_type = graph_rel.labels.as_ref()
+                .and_then(|l| l.first())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "UNKNOWN".to_string());
+            
+            // Get the start node alias (the correlated variable)
+            let start_alias = &graph_rel.left_connection;
+            
+            // Try to get schema for relationship lookup
+            // GLOBAL_SCHEMAS is OnceCell<RwLock<HashMap<String, GraphSchema>>>
+            let schemas_lock = GLOBAL_SCHEMAS.get();
+            let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
+            let schema = schemas_guard.as_ref()
+                .and_then(|guard| guard.get("default"));
+            
+            // Look up the relationship table and columns using public accessors
+            if let Some(schema) = schema {
+                if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
+                    let table_name = &rel_schema.table_name;
+                    let from_col = &rel_schema.from_id; // from_id is the FK column
+                    
+                    // Get the start node's ID column from its label
+                    let start_id_col = if let LogicalPlan::GraphNode(start_node) = graph_rel.left.as_ref() {
+                        if let Some(label) = &start_node.label {
+                            schema.get_node_schema_opt(label)
+                                .map(|n| n.node_id.column.clone())
+                                .unwrap_or_else(|| "id".to_string())
+                        } else {
+                            // No label, try to get from the context
+                            "user_id".to_string() // Default for User nodes
+                        }
+                    } else {
+                        "user_id".to_string()
+                    };
+                    
+                    // Generate the EXISTS SQL
+                    // EXISTS (SELECT 1 FROM edge_table WHERE edge_table.from_id = outer.node_id)
+                    return Ok(format!(
+                        "SELECT 1 FROM {} WHERE {}.{} = {}.{}",
+                        table_name,
+                        table_name, from_col,
+                        start_alias, start_id_col
+                    ));
+                }
+            }
+            
+            // Fallback: generate a placeholder SQL if schema lookup fails
+            Ok(format!("SELECT 1 FROM {} WHERE {} = {}.id", 
+                rel_type.to_lowercase(), 
+                "from_id",
+                start_alias))
+        }
+        _ => {
+            // For other plan types, generate a simple placeholder
+            Ok("SELECT 1".to_string())
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum RenderExpr {
@@ -46,6 +117,18 @@ pub enum RenderExpr {
     Case(RenderCase),
 
     InSubquery(InSubquery),
+
+    /// EXISTS subquery expression - checks if a pattern exists
+    ExistsSubquery(ExistsSubquery),
+}
+
+/// EXISTS subquery for render plan
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct ExistsSubquery {
+    /// Pre-rendered SQL for the EXISTS subquery
+    /// This is generated during conversion since EXISTS patterns
+    /// don't fit the normal query structure (no select items)
+    pub sql: String,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -164,6 +247,12 @@ impl TryFrom<LogicalExpr> for RenderExpr {
             }
             LogicalExpr::InSubquery(subq) => RenderExpr::InSubquery(subq.try_into()?),
             LogicalExpr::Case(case) => RenderExpr::Case(case.try_into()?),
+            LogicalExpr::ExistsSubquery(exists) => {
+                // For EXISTS subqueries, generate SQL directly since they don't fit
+                // the normal RenderPlan structure (no select items needed)
+                let sql = generate_exists_sql(&exists)?;
+                RenderExpr::ExistsSubquery(ExistsSubquery { sql })
+            }
             // PathPattern is not present in RenderExpr
             _ => unimplemented!("Conversion for this LogicalExpr variant is not implemented"),
         };

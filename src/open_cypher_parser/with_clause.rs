@@ -4,7 +4,7 @@ use nom::{
     character::complete::{char, multispace0},
     combinator::{cut, opt},
     error::context,
-    multi::separated_list1,
+    multi::{many0, separated_list1},
     sequence::{delimited, preceded},
 };
 
@@ -13,6 +13,8 @@ use super::{
     common::ws,
     errors::OpenCypherParsingError,
     expression::{parse_expression, parse_identifier},
+    match_clause::parse_match_clause,
+    optional_match_clause::parse_optional_match_clause,
 };
 
 fn parse_with_item(input: &'_ str) -> IResult<&'_ str, WithItem<'_>> {
@@ -26,8 +28,7 @@ fn parse_with_item(input: &'_ str) -> IResult<&'_ str, WithItem<'_>> {
 pub fn parse_with_clause(
     input: &'_ str,
 ) -> IResult<&'_ str, WithClause<'_>, OpenCypherParsingError<'_>> {
-    // Parse the RETURN statement
-
+    // Parse the WITH keyword
     let (input, _) = ws(tag_no_case("WITH")).parse(input)?;
 
     let (input, with_items) = context(
@@ -39,7 +40,19 @@ pub fn parse_with_clause(
     )
     .parse(input)?;
 
-    let with_clause = WithClause { with_items };
+    // Parse optional subsequent MATCH clause after WITH
+    // This handles: WITH u MATCH (u)-[:FOLLOWS]->(f) ...
+    let (input, subsequent_match) = opt(parse_match_clause).parse(input)?;
+    
+    // Parse optional subsequent OPTIONAL MATCH clauses after WITH
+    // This handles: WITH u OPTIONAL MATCH (u)-[:FOLLOWS]->(f) ...
+    let (input, subsequent_optional_matches) = many0(parse_optional_match_clause).parse(input)?;
+
+    let with_clause = WithClause { 
+        with_items,
+        subsequent_match: subsequent_match.map(Box::new),
+        subsequent_optional_matches,
+    };
 
     Ok((input, with_clause))
 }

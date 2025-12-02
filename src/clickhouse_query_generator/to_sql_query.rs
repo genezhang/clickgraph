@@ -19,6 +19,32 @@ use super::to_sql::ToSql as LogicalToSql;
 // Import function translator for Neo4j -> ClickHouse function mappings
 use super::function_registry::get_function_mapping;
 
+/// Check if an expression contains a string literal (recursively for nested + operations)
+fn contains_string_literal(expr: &RenderExpr) -> bool {
+    match expr {
+        RenderExpr::Literal(Literal::String(_)) => true,
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().any(|o| contains_string_literal(o))
+        }
+        _ => false,
+    }
+}
+
+/// Check if any operand in the expression contains a string
+fn has_string_operand(operands: &[RenderExpr]) -> bool {
+    operands.iter().any(|op| contains_string_literal(op))
+}
+
+/// Flatten nested + operations into a list of operands for concat()
+fn flatten_addition_operands(expr: &RenderExpr) -> Vec<String> {
+    match expr {
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().flat_map(|o| flatten_addition_operands(o)).collect()
+        }
+        _ => vec![expr.to_sql()],
+    }
+}
+
 /// Generate SQL from RenderPlan with configurable CTE depth limit
 pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     let mut sql = String::new();
@@ -641,6 +667,16 @@ impl RenderExpr {
                     return format!("match({}, {})", &rendered[0], &rendered[1]);
                 }
 
+                // Special handling for Addition with string operands - use concat()
+                // ClickHouse doesn't support + for string concatenation
+                // Flatten nested + operations to handle cases like: a + ' - ' + b
+                if op.operator == Operator::Addition && has_string_operand(&op.operands) {
+                    let flattened: Vec<String> = op.operands.iter()
+                        .flat_map(|o| flatten_addition_operands(o))
+                        .collect();
+                    return format!("concat({})", flattened.join(", "));
+                }
+
                 let sql_op = op_str(op.operator);
 
                 match rendered.len() {
@@ -722,6 +758,10 @@ impl RenderExpr {
                 let body = body.split_whitespace().collect::<Vec<&str>>().join(" ");
 
                 format!("{} IN ({})", left, body)
+            }
+            RenderExpr::ExistsSubquery(exists) => {
+                // Use the pre-generated SQL from the ExistsSubquery
+                format!("EXISTS ({})", exists.sql)
             }
         }
     }
@@ -847,6 +887,16 @@ impl ToSql for OperatorApplication {
         // Special handling for RegexMatch - ClickHouse uses match() function
         if self.operator == Operator::RegexMatch && rendered.len() == 2 {
             return format!("match({}, {})", &rendered[0], &rendered[1]);
+        }
+
+        // Special handling for Addition with string operands - use concat()
+        // ClickHouse doesn't support + for string concatenation
+        // Flatten nested + operations to handle cases like: a + ' - ' + b
+        if self.operator == Operator::Addition && has_string_operand(&self.operands) {
+            let flattened: Vec<String> = self.operands.iter()
+                .flat_map(|o| flatten_addition_operands(o))
+                .collect();
+            return format!("concat({})", flattened.join(", "));
         }
 
         let sql_op = op_str(self.operator);

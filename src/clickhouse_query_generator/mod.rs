@@ -5,7 +5,7 @@ mod errors;
 mod function_registry;
 mod function_translator;
 pub mod pagerank;
-mod to_sql;
+pub mod to_sql;  // Made public for EXISTS subquery support
 mod to_sql_query;
 pub mod variable_length_cte;
 mod view_query;

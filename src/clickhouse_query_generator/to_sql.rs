@@ -6,6 +6,39 @@ use crate::query_planner::logical_expr::{
 use crate::query_planner::logical_plan::LogicalPlan;
 use std::sync::Arc;
 
+/// Check if an expression contains a string literal (recursively for nested + operations)
+fn contains_string_literal_logical(expr: &LogicalExpr) -> bool {
+    match expr {
+        LogicalExpr::Literal(Literal::String(_)) => true,
+        LogicalExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().any(|o| contains_string_literal_logical(o))
+        }
+        _ => false,
+    }
+}
+
+/// Check if any operand in the expression is a string literal
+fn has_string_operand_logical(operands: &[LogicalExpr]) -> bool {
+    operands.iter().any(|op| contains_string_literal_logical(op))
+}
+
+/// Flatten nested + operations into a list of SQL strings for concat()
+fn flatten_addition_operands_logical(expr: &LogicalExpr) -> Result<Vec<String>, ClickhouseQueryGeneratorError> {
+    match expr {
+        LogicalExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            let mut result = Vec::new();
+            for operand in &op.operands {
+                result.extend(flatten_addition_operands_logical(operand)?);
+            }
+            Ok(result)
+        }
+        _ => {
+            // Use the ToSql trait impl for LogicalExpr
+            Ok(vec![ToSql::to_sql(expr)?])
+        }
+    }
+}
+
 /// Convert a plan node to SQL
 #[allow(dead_code)]
 pub trait ToSql {
@@ -64,7 +97,19 @@ impl ToSql for LogicalExpr {
                     .collect::<Result<Vec<String>, _>>()?;
                 match op.operator {
                     Operator::Addition => {
-                        Ok(format!("({} + {})", operands_sql[0], operands_sql[1]))
+                        // Use concat() for string concatenation, + for numeric
+                        // Flatten nested + operations for cases like: a + ' - ' + b
+                        if has_string_operand_logical(&op.operands) {
+                            let flattened: Vec<String> = op.operands.iter()
+                                .map(|o| flatten_addition_operands_logical(o))
+                                .collect::<Result<Vec<Vec<String>>, _>>()?
+                                .into_iter()
+                                .flatten()
+                                .collect();
+                            Ok(format!("concat({})", flattened.join(", ")))
+                        } else {
+                            Ok(format!("({} + {})", operands_sql[0], operands_sql[1]))
+                        }
                     }
                     Operator::Subtraction => {
                         Ok(format!("({} - {})", operands_sql[0], operands_sql[1]))
@@ -142,6 +187,11 @@ impl ToSql for LogicalExpr {
                 let expr_sql = in_subquery.expr.to_sql()?;
                 let subquery_sql = in_subquery.subplan.to_sql()?;
                 Ok(format!("{} IN ({})", expr_sql, subquery_sql))
+            }
+            LogicalExpr::ExistsSubquery(exists_subquery) => {
+                // Generate EXISTS (SELECT 1 FROM ... WHERE ...)
+                let subquery_sql = exists_subquery.subplan.to_sql()?;
+                Ok(format!("EXISTS ({})", subquery_sql))
             }
             LogicalExpr::PathPattern(_) => {
                 // Path patterns are handled at the logical plan level, not expression level

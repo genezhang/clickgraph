@@ -114,20 +114,22 @@ This checklist tracks which query patterns work correctly across standard and de
 ### 4.1 Basic Aggregations
 | Pattern | Standard | Denormalized | Notes |
 |---------|----------|--------------|-------|
-| `RETURN COUNT(*)` | ✅ | 🔄 | Count all |
+| `RETURN COUNT(*)` | ✅ | 🔄 | Count all (Dec 2 verified) |
 | `RETURN COUNT(n)` | ✅ | 🔄 | Count nodes |
-| `RETURN COUNT(DISTINCT n.prop)` | ✅ | 🔄 | Distinct count |
-| `RETURN SUM(n.value)` | ✅ | 🔄 | Sum |
-| `RETURN AVG(n.value)` | ✅ | 🔄 | Average |
-| `RETURN MIN(n.value), MAX(n.value)` | ✅ | 🔄 | Min/Max |
-| `RETURN collect(n.name)` | ✅ | 🔄 | Collects into array (Dec 1 fixed) |
+| `RETURN COUNT(DISTINCT n.prop)` | ✅ | 🔄 | Distinct count (Dec 2 verified) |
+| `RETURN SUM(n.value)` | ✅ | 🔄 | Sum (Dec 2 verified) |
+| `RETURN AVG(n.value)` | ✅ | 🔄 | Average (Dec 2 verified) |
+| `RETURN MIN(n.value), MAX(n.value)` | ✅ | 🔄 | Min/Max (Dec 2 verified) |
+| `RETURN collect(n.name)` | ✅ | 🔄 | Collects into array → groupArray() (Dec 2 verified) |
+| Multiple aggregates in one query | ✅ | 🔄 | COUNT, AVG, MAX together (Dec 2 verified) |
 
 ### 4.2 GROUP BY Patterns
 | Pattern | Standard | Denormalized | Notes |
 |---------|----------|--------------|-------|
-| `RETURN n.type, COUNT(*)` | ✅ | 🔄 | Group by property |
+| `RETURN n.type, COUNT(*)` | ✅ | 🔄 | Group by property (Dec 2 verified) |
 | `RETURN n.category, SUM(n.value)` | ✅ | 🔄 | Group with aggregation |
-| `WITH n, COUNT(*) AS cnt WHERE cnt > 5` | ✅ | 🔄 | HAVING equivalent (Dec 1 verified) |
+| `WITH n, COUNT(*) AS cnt WHERE cnt > 5` | ✅ | 🔄 | HAVING equivalent (Dec 2 verified) |
+| `OPTIONAL MATCH + COUNT()` | ✅ | 🔄 | LEFT JOIN + aggregate (Dec 2 verified) |
 
 ---
 
@@ -137,9 +139,11 @@ This checklist tracks which query patterns work correctly across standard and de
 | Pattern | Standard | Denormalized | Notes |
 |---------|----------|--------------|-------|
 | `p = (a)-[*]->(b) RETURN p` | ✅ | 🔄 | Path assignment |
-| `RETURN length(p)` | ✅ | 🔄 | Path length |
-| `RETURN nodes(p)` | ✅ | 🔄 | Nodes in path |
-| `RETURN relationships(p)` | ✅ | 🔄 | Relationships in path |
+| `RETURN length(p)` | ✅ | 🔄 | Path length → hop_count (Dec 2 verified) |
+| `RETURN nodes(p)` | ✅ | 🔄 | Nodes in path → path_nodes (Dec 2 verified) |
+| `RETURN relationships(p)` | ✅ | 🔄 | Relationships → path_relationships (Dec 2 verified) |
+| `collect(length(p))` | ✅ | 🔄 | Path + aggregate (Dec 2 verified) |
+| Path + COUNT + ORDER BY | ✅ | 🔄 | Complex path aggregation (Dec 2 verified) |
 
 ### 5.2 Shortest Path
 | Pattern | Standard | Denormalized | Notes |
@@ -147,6 +151,7 @@ This checklist tracks which query patterns work correctly across standard and de
 | `shortestPath((a)-[*]-(b))` | ✅ | 🔄 | Single shortest |
 | `allShortestPaths((a)-[*]-(b))` | ✅ | 🔄 | All shortest |
 | `shortestPath((a)-[:TYPE*]-(b))` | ✅ | 🔄 | Typed shortest path |
+| `shortestPath + length(p)` | ✅ | 🔄 | Shortest path length (Dec 2 verified) |
 
 ---
 
@@ -210,12 +215,12 @@ This checklist tracks which query patterns work correctly across standard and de
 ### 8.4 ID and Type Functions
 | Pattern | Standard | Denormalized | Notes |
 |---------|----------|--------------|-------|
-| `id(n)` | ✅ | ✅ | Node ID (single column) |
-| `id(r)` | ✅ | ✅ | Relationship ID (single column) |
+| `id(n)` | ✅ | ✅ | Node ID (single column) (Dec 2 verified) |
+| `id(r)` | ✅ | ✅ | Relationship ID (single column) (Dec 2 verified) |
 | `id(r)` (composite) | ✅ | ✅ | **NEW** - Returns `tuple(...)` for multi-column edge_id |
 | `WHERE id(r) = tuple(...)` | ✅ | ✅ | **NEW** - Filter by composite edge ID |
-| `type(r)` | ✅ | 🔄 | Relationship type name (Dec 1 verified) |
-| `labels(n)` | ✅ | 🔄 | Node labels (Dec 1 verified) |
+| `type(r)` | ✅ | 🔄 | Relationship type name |
+| `labels(n)` | ✅ | 🔄 | Node labels → tuple('Label') (Dec 2 verified) |
 
 ---
 

@@ -54,6 +54,18 @@ pub enum LogicalExpr {
     Case(LogicalCase),
 
     InSubquery(InSubquery),
+
+    /// EXISTS subquery expression
+    /// Checks if a pattern exists in the graph
+    ExistsSubquery(ExistsSubquery),
+}
+
+/// EXISTS subquery for checking pattern existence
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct ExistsSubquery {
+    /// The logical plan representing the EXISTS pattern
+    #[serde(with = "serde_arc")]
+    pub subplan: Arc<LogicalPlan>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -402,6 +414,117 @@ impl<'a> From<open_cypher_parser::ast::Case<'a>> for LogicalCase {
     }
 }
 
+impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
+    fn from(exists: open_cypher_parser::ast::ExistsSubquery<'a>) -> Self {
+        use open_cypher_parser::ast::PathPattern as AstPathPattern;
+        use crate::query_planner::logical_plan::{LogicalPlan, Scan, GraphNode, GraphRel, Filter};
+        
+        // Convert the pattern to a logical plan structure
+        // The EXISTS pattern gets converted to a subplan that can be checked for existence
+        let pattern = exists.pattern;
+        
+        // Build the logical plan from the pattern based on its type
+        let base_plan = match pattern {
+            AstPathPattern::Node(node) => {
+                // Single node pattern - create a scan
+                let scan = LogicalPlan::Scan(Scan {
+                    table_alias: node.name.map(|s| s.to_string()),
+                    table_name: node.label.map(|s| s.to_string()),
+                });
+                Arc::new(LogicalPlan::GraphNode(GraphNode {
+                    input: Arc::new(scan),
+                    alias: node.name.unwrap_or("").to_string(),
+                    label: node.label.map(|s| s.to_string()),
+                    is_denormalized: false,
+                }))
+            }
+            AstPathPattern::ConnectedPattern(connected_patterns) => {
+                // Connected patterns - create a relationship traversal
+                if connected_patterns.is_empty() {
+                    Arc::new(LogicalPlan::Empty)
+                } else {
+                    // Handle the first connected pattern
+                    let cp = &connected_patterns[0];
+                    let start = cp.start_node.borrow();
+                    let end = cp.end_node.borrow();
+                    let rel = &cp.relationship;
+                    
+                    let start_scan = LogicalPlan::Scan(Scan {
+                        table_alias: start.name.map(|s| s.to_string()),
+                        table_name: start.label.map(|s| s.to_string()),
+                    });
+                    let start_node = LogicalPlan::GraphNode(GraphNode {
+                        input: Arc::new(start_scan),
+                        alias: start.name.unwrap_or("").to_string(),
+                        label: start.label.map(|s| s.to_string()),
+                        is_denormalized: false,
+                    });
+                    
+                    let rel_scan = LogicalPlan::Scan(Scan {
+                        table_alias: rel.name.map(|s| s.to_string()),
+                        table_name: rel.labels.as_ref().and_then(|l| l.first()).map(|s| s.to_string()),
+                    });
+                    
+                    let end_scan = LogicalPlan::Scan(Scan {
+                        table_alias: end.name.map(|s| s.to_string()),
+                        table_name: end.label.map(|s| s.to_string()),
+                    });
+                    let end_node = LogicalPlan::GraphNode(GraphNode {
+                        input: Arc::new(end_scan),
+                        alias: end.name.unwrap_or("").to_string(),
+                        label: end.label.map(|s| s.to_string()),
+                        is_denormalized: false,
+                    });
+                    
+                    let direction = match rel.direction {
+                        open_cypher_parser::ast::Direction::Outgoing => Direction::Outgoing,
+                        open_cypher_parser::ast::Direction::Incoming => Direction::Incoming,
+                        open_cypher_parser::ast::Direction::Either => Direction::Either,
+                    };
+                    
+                    Arc::new(LogicalPlan::GraphRel(GraphRel {
+                        left: Arc::new(start_node),
+                        center: Arc::new(rel_scan),
+                        right: Arc::new(end_node),
+                        alias: rel.name.unwrap_or("").to_string(),
+                        direction,
+                        left_connection: start.name.unwrap_or("").to_string(),
+                        right_connection: end.name.unwrap_or("").to_string(),
+                        is_rel_anchor: false,
+                        variable_length: None,
+                        shortest_path_mode: None,
+                        path_variable: None,
+                        where_predicate: None,
+                        labels: rel.labels.as_ref().map(|l| l.iter().map(|s| s.to_string()).collect()),
+                        is_optional: None,
+                        anchor_connection: None,
+                    }))
+                }
+            }
+            AstPathPattern::ShortestPath(inner) | AstPathPattern::AllShortestPaths(inner) => {
+                // For shortest path patterns, recursively convert the inner pattern
+                let inner_exists = open_cypher_parser::ast::ExistsSubquery {
+                    pattern: *inner,
+                    where_clause: None,
+                };
+                return ExistsSubquery::from(inner_exists);
+            }
+        };
+        
+        // If there's a WHERE clause, add a filter
+        let plan = if let Some(where_clause) = exists.where_clause {
+            Arc::new(LogicalPlan::Filter(Filter {
+                input: base_plan,
+                predicate: LogicalExpr::from(where_clause.conditions),
+            }))
+        } else {
+            base_plan
+        };
+        
+        ExistsSubquery { subplan: plan }
+    }
+}
+
 impl<'a> From<open_cypher_parser::ast::Expression<'a>> for LogicalExpr {
     fn from(expr: open_cypher_parser::ast::Expression<'a>) -> Self {
         use open_cypher_parser::ast::Expression;
@@ -429,6 +552,11 @@ impl<'a> From<open_cypher_parser::ast::Expression<'a>> for LogicalExpr {
             }
             Expression::PathPattern(pp) => LogicalExpr::PathPattern(PathPattern::from(pp)),
             Expression::Case(case) => LogicalExpr::Case(LogicalCase::from(case)),
+            Expression::ExistsExpression(exists) => {
+                // Convert the EXISTS pattern to a logical plan
+                // The pattern needs to be converted to a scan + filter structure
+                LogicalExpr::ExistsSubquery(ExistsSubquery::from(*exists))
+            }
         }
     }
 }

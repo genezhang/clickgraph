@@ -16,6 +16,32 @@ use super::render_expr::{
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_plan::LogicalPlan;
 
+/// Check if an expression contains a string literal (recursively for nested + operations)
+fn contains_string_literal(expr: &RenderExpr) -> bool {
+    match expr {
+        RenderExpr::Literal(Literal::String(_)) => true,
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().any(|o| contains_string_literal(o))
+        }
+        _ => false,
+    }
+}
+
+/// Check if any operand is a string literal (for string concatenation detection)
+fn has_string_operand(operands: &[RenderExpr]) -> bool {
+    operands.iter().any(|op| contains_string_literal(op))
+}
+
+/// Flatten nested + operations into a list of operands for concat()
+fn flatten_addition_operands(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> Vec<String> {
+    match expr {
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().flat_map(|o| flatten_addition_operands(o, alias_mapping)).collect()
+        }
+        _ => vec![render_expr_to_sql_string(expr, alias_mapping)],
+    }
+}
+
 /// Helper function to check if a LogicalPlan node represents a denormalized node
 /// For denormalized nodes, the node data lives on the edge table, not a separate node table
 /// For nested GraphRels, we recursively check the leaf nodes
@@ -136,7 +162,18 @@ pub(super) fn render_expr_to_sql_string(
                 Operator::And => format!("({})", operands.join(" AND ")),
                 Operator::Or => format!("({})", operands.join(" OR ")),
                 Operator::Not => format!("NOT ({})", operands[0]),
-                Operator::Addition => format!("{} + {}", operands[0], operands[1]),
+                Operator::Addition => {
+                    // Use concat() for string concatenation
+                    // Flatten nested + operations for cases like: a + ' - ' + b
+                    if has_string_operand(&op.operands) {
+                        let flattened: Vec<String> = op.operands.iter()
+                            .flat_map(|o| flatten_addition_operands(o, alias_mapping))
+                            .collect();
+                        format!("concat({})", flattened.join(", "))
+                    } else {
+                        format!("{} + {}", operands[0], operands[1])
+                    }
+                }
                 Operator::Subtraction => format!("{} - {}", operands[0], operands[1]),
                 Operator::Multiplication => format!("{} * {}", operands[0], operands[1]),
                 Operator::Division => format!("{} / {}", operands[0], operands[1]),
@@ -266,7 +303,8 @@ pub(super) fn is_standalone_expression(expr: &RenderExpr) -> bool {
         | RenderExpr::TableAlias(_)
         | RenderExpr::ColumnAlias(_)
         | RenderExpr::AggregateFnCall(_)
-        | RenderExpr::InSubquery(_) => false,
+        | RenderExpr::InSubquery(_)
+        | RenderExpr::ExistsSubquery(_) => false,
         RenderExpr::Raw(_) => false, // Be conservative with raw SQL
     }
 }

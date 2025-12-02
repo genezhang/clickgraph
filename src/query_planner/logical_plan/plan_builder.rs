@@ -70,6 +70,26 @@ pub fn build_logical_plan(
             with_clause_ast.with_items.len()
         );
         logical_plan = with_clause::evaluate_with_clause(with_clause_ast, logical_plan);
+        
+        // Process subsequent MATCH clause if present (e.g., WITH u MATCH (u)-[:FOLLOWS]->(f))
+        if let Some(subsequent_match) = &with_clause_ast.subsequent_match {
+            log::debug!("build_logical_plan: Processing subsequent MATCH clause after WITH");
+            logical_plan =
+                match_clause::evaluate_match_clause(subsequent_match, logical_plan, &mut plan_ctx)?;
+        }
+        
+        // Process subsequent OPTIONAL MATCH clauses if present
+        for (idx, optional_match) in with_clause_ast.subsequent_optional_matches.iter().enumerate() {
+            log::debug!(
+                "build_logical_plan: Processing subsequent OPTIONAL MATCH clause {} after WITH",
+                idx
+            );
+            logical_plan = optional_match_clause::evaluate_optional_match_clause(
+                optional_match,
+                logical_plan,
+                &mut plan_ctx,
+            )?;
+        }
     }
 
     // Process WHERE clause after WITH so it can reference WITH projection aliases

@@ -14,8 +14,9 @@ use nom::character::complete::char;
 use crate::open_cypher_parser::common::{self, ws};
 
 use super::{
-    ast::{Expression, FunctionCall, Literal, Operator, OperatorApplication, PropertyAccess},
+    ast::{Expression, ExistsSubquery, FunctionCall, Literal, Operator, OperatorApplication, PropertyAccess},
     path_pattern,
+    where_clause,
 };
 
 pub fn parse_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
@@ -63,6 +64,43 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
     } else {
         Ok((input, expr))
     }
+}
+
+/// Parse EXISTS subquery expression
+/// Syntax: EXISTS { pattern } or EXISTS { MATCH pattern WHERE condition }
+/// Examples:
+///   EXISTS { (u)-[:FOLLOWS]->(:User) }
+///   EXISTS { MATCH (u)-[:FOLLOWS]->(f) WHERE f.active = true }
+fn parse_exists_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    // Parse EXISTS keyword
+    let (input, _) = ws(tag_no_case("EXISTS")).parse(input)?;
+    
+    // Parse opening brace
+    let (input, _) = ws(char('{')).parse(input)?;
+    
+    // Optionally skip MATCH keyword if present
+    let (input, _) = opt(ws(tag_no_case("MATCH"))).parse(input)?;
+    
+    // Parse the pattern
+    let (input, pattern) = ws(path_pattern::parse_path_pattern).parse(input)?;
+    
+    // Parse optional WHERE clause - convert the error type
+    let (input, where_clause) = match opt(where_clause::parse_where_clause).parse(input) {
+        Ok((rest, wc)) => (rest, wc),
+        Err(nom::Err::Error(_)) | Err(nom::Err::Failure(_)) => (input, None),
+        Err(nom::Err::Incomplete(n)) => return Err(nom::Err::Incomplete(n)),
+    };
+    
+    // Parse closing brace
+    let (input, _) = ws(char('}')).parse(input)?;
+    
+    Ok((
+        input,
+        Expression::ExistsExpression(Box::new(ExistsSubquery {
+            pattern,
+            where_clause: where_clause.map(Box::new),
+        })),
+    ))
 }
 
 fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
@@ -124,6 +162,7 @@ fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 
 fn parse_primary(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     alt((
+        parse_exists_expression,  // Must be before parse_function_call to catch EXISTS { }
         parse_case_expression,
         parse_path_pattern_expression,
         parse_function_call,

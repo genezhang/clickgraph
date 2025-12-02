@@ -27,6 +27,8 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
                     .map_or(false, |else_expr| references_alias(else_expr, alias))
         }
         RenderExpr::InSubquery(subquery) => references_alias(&subquery.expr, alias),
+        // EXISTS subqueries don't reference aliases in the outer scope directly
+        RenderExpr::ExistsSubquery(_) => false,
         // Simple expressions that don't contain aliases
         RenderExpr::Literal(_)
         | RenderExpr::Raw(_)

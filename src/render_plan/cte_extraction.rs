@@ -11,7 +11,7 @@ use super::errors::RenderBuildError;
 use super::filter_pipeline::categorize_filters;
 use super::plan_builder::RenderPlanBuilder;
 use super::render_expr::{
-    Operator, PropertyAccess,
+    Literal, Operator, PropertyAccess,
     RenderExpr,
 };
 use super::{
@@ -20,6 +20,32 @@ use super::{
 };
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
+
+/// Check if an expression contains a string literal (recursively for nested + operations)
+fn contains_string_literal(expr: &RenderExpr) -> bool {
+    match expr {
+        RenderExpr::Literal(Literal::String(_)) => true,
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().any(|o| contains_string_literal(o))
+        }
+        _ => false,
+    }
+}
+
+/// Check if any operand is a string literal (for string concatenation detection)
+fn has_string_operand(operands: &[RenderExpr]) -> bool {
+    operands.iter().any(|op| contains_string_literal(op))
+}
+
+/// Flatten nested + operations into a list of operands for concat()
+fn flatten_addition_operands(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> Vec<String> {
+    match expr {
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().flat_map(|o| flatten_addition_operands(o, alias_mapping)).collect()
+        }
+        _ => vec![render_expr_to_sql_string(expr, alias_mapping)],
+    }
+}
 
 /// Helper function to extract the node alias from a GraphNode
 fn extract_node_alias(plan: &LogicalPlan) -> Option<String> {
@@ -107,7 +133,18 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
                 Operator::And => format!("({})", operands.join(" AND ")),
                 Operator::Or => format!("({})", operands.join(" OR ")),
                 Operator::Not => format!("NOT ({})", operands[0]),
-                Operator::Addition => format!("{} + {}", operands[0], operands[1]),
+                Operator::Addition => {
+                    // Use concat() for string concatenation
+                    // Flatten nested + operations for cases like: a + ' - ' + b
+                    if has_string_operand(&op.operands) {
+                        let flattened: Vec<String> = op.operands.iter()
+                            .flat_map(|o| flatten_addition_operands(o, alias_mapping))
+                            .collect();
+                        format!("concat({})", flattened.join(", "))
+                    } else {
+                        format!("{} + {}", operands[0], operands[1])
+                    }
+                }
                 Operator::Subtraction => format!("{} - {}", operands[0], operands[1]),
                 Operator::Multiplication => format!("{} * {}", operands[0], operands[1]),
                 Operator::Division => format!("{} / {}", operands[0], operands[1]),
@@ -176,6 +213,10 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
                     .unwrap_or_default(),
                 when_clauses.join(" ") + &else_clause
             )
+        }
+        RenderExpr::ExistsSubquery(exists) => {
+            // Use the pre-generated SQL from ExistsSubquery
+            format!("EXISTS ({})", exists.sql)
         }
         RenderExpr::Star => "*".to_string(),
         RenderExpr::Parameter(param) => format!("${}", param),
