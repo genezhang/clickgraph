@@ -11,6 +11,7 @@
 - Remove unused schemas volume from docker-compose
 - Parser now rejects invalid syntax with unparsed input
 - Column alias for type(), id(), labels() graph introspection functions
+- Update release workflow to use clickgraph binary name
 
 ### 📚 Documentation
 
@@ -28,6 +29,7 @@
 - Release v0.5.3
 - Update CHANGELOG.md [skip ci]
 - Update Cargo.lock for v0.5.3
+- Update CHANGELOG.md [skip ci]
 ## [0.5.2] - 2025-11-30
 
 ### 🚀 Features
