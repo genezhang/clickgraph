@@ -2,7 +2,7 @@
 
 **Current Status**: 🔧 **Undirected patterns need UNION ALL implementation**  
 **Test Results**: 534/534 unit tests passing (100%)  
-**Active Issues**: 4 bugs (undirected OR-JOIN, undirected uniqueness, disconnected patterns, WHERE AND syntax)
+**Active Issues**: 3 bugs (undirected OR-JOIN, undirected uniqueness, disconnected patterns)
 
 **Date Updated**: December 2, 2025  
 **Neo4j Semantics Verified**: November 22, 2025 (see `notes/CRITICAL_relationship_vs_node_uniqueness.md`)
@@ -13,10 +13,8 @@
 
 **Note**: Some integration tests have incorrect expectations or test unimplemented features. Known feature gaps documented below.
 
-**Active Issues**:
-- 🚨 **WHERE AND syntax error not caught**: `WHERE AND r.prop = value` parses without error instead of failing with syntax error - parses `AND` as a variable name
-
 **Recently Resolved** (December 2, 2025):
+- ✅ **WHERE AND/OR syntax error**: Parser now catches unparsed input after query - invalid syntax rejected
 - ✅ **Regex operator (=~)**: Now generates `match(column, 'pattern')` for ClickHouse
 - ✅ **Inline property filters with integers**: `{user_id: 1}` now works correctly
 - ✅ **WITH aggregation SQL generation**: Generates correct CTE pattern for aggregations
@@ -40,32 +38,34 @@
 
 ---
 
-## 🚨 WHERE AND Syntax Error Not Caught
+## ✅ RESOLVED: WHERE AND Syntax Error Now Caught
 
-**Status**: 🔧 **BUG** - Parser should reject invalid syntax  
+**Status**: ✅ **FIXED** - December 2, 2025  
 **Severity**: **MEDIUM** - Confusing error messages for users  
 **Identified**: December 2, 2025
 
-### The Problem
+### The Problem (Now Fixed)
 
-Invalid Cypher syntax `WHERE AND` is not caught by the parser - it parses `AND` as a variable name:
+Invalid Cypher syntax `WHERE AND` was not caught by the parser - it parsed `AND` as a variable name:
 
 ```cypher
--- ❌ Should fail with syntax error, but parses AND as a variable
+-- Was parsing AND as variable name, then continuing
 MATCH (u:User) WHERE AND u.name = "Alice" RETURN u
--- Generates invalid SQL: WHERE AND
 ```
 
-### Expected Behavior
+### Solution
 
-Parser should fail with:
+Parser now checks for unparsed input after query parsing and rejects queries with trailing tokens:
+- Modified `parse_query()` to verify all input is consumed
+- Returns error: "Unexpected tokens after query: ..."
+
+### Current Behavior
+
 ```
-Syntax error: Unexpected AND after WHERE
+Brahmand Error: Unexpected tokens after query: u.name = 'Alice' RETURN u
 ```
 
-### Fix Location
-
-`src/open_cypher_parser/expression.rs` - Need to add reserved word checking in identifier parsing to reject keywords like `AND`, `OR`, `NOT`, etc. as variable names.
+The error occurs because `AND` is parsed as a variable name, then the remaining `u.name = 'Alice' RETURN u` fails as unconsumed input. The query is correctly rejected.
 
 ---
 
