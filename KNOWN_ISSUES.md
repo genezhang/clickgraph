@@ -78,19 +78,6 @@ MATCH (user:User), (other:User) WHERE user.user_id = 1 RETURN other.user_id
 
 ---
 
-## Known Limitations
-
-### Zero-Length Path Pattern (*0)
-Patterns like `*0..3` are not supported. Use `*1..3` instead.
-
-### RETURN Node on Denormalized Schemas
-`RETURN a` (whole node) returns empty for denormalized schemas. Workaround: explicitly list properties `RETURN a.prop1, a.prop2`.
-
-### Bolt Protocol PackStream
-PackStream binary parsing is stubbed. Works with Neo4j drivers that send text-based messages.
-
----
-
 ## Recently Resolved
 
 See [CHANGELOG.md](CHANGELOG.md) for full history.
@@ -104,6 +91,9 @@ See [CHANGELOG.md](CHANGELOG.md) for full history.
 - ✅ Fixed-length VLP inline JOINs
 - ✅ RETURN whole relationship expansion
 - ✅ Graph functions (type, id, labels)
+- ✅ RETURN whole node (all schema types)
+- ✅ Zero-length path patterns (*0..N)
+- ✅ Bolt protocol PackStream support
 
 **November 2025**:
 - ✅ OPTIONAL MATCH support
