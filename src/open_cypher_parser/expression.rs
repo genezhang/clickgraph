@@ -142,6 +142,7 @@ pub fn parse_operator_symbols(input: &str) -> IResult<&str, Operator> {
         map(tag_no_case(">="), |_| Operator::GreaterThanEqual),
         map(tag_no_case("<="), |_| Operator::LessThanEqual),
         map(tag_no_case("<>"), |_| Operator::NotEqual),
+        map(tag_no_case("=~"), |_| Operator::RegexMatch),  // Must be before "=" to match first
         map(tag_no_case(">"), |_| Operator::GreaterThan),
         map(tag_no_case("<"), |_| Operator::LessThan),
         map(tag_no_case("="), |_| Operator::Equal),

@@ -313,6 +313,15 @@ lazy_static::lazy_static! {
             }),
         });
 
+        // ===== AGGREGATION FUNCTIONS =====
+
+        // collect() -> groupArray() [collect elements into array]
+        m.insert("collect", FunctionMapping {
+            neo4j_name: "collect",
+            clickhouse_name: "groupArray",
+            arg_transform: None,
+        });
+
         m
     };
 }

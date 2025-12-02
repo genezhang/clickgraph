@@ -552,8 +552,9 @@ impl RenderExpr {
                     .map(|e| e.to_sql())
                     .collect::<Vec<_>>()
                     .join(", ");
-                // ClickHouse uses square brackets for arrays
-                format!("[{}]", inner)
+                // Use tuple() for mixed-type composite IDs (supports comparison)
+                // This enables id(r) = tuple(val1, val2, ...) for composite edge IDs
+                format!("tuple({})", inner)
             }
             RenderExpr::ScalarFnCall(fn_call) => {
                 // Check if we have a Neo4j -> ClickHouse mapping
@@ -621,6 +622,7 @@ impl RenderExpr {
                         Operator::GreaterThan => ">",
                         Operator::LessThanEqual => "<=",
                         Operator::GreaterThanEqual => ">=",
+                        Operator::RegexMatch => "REGEX",  // Special handling below
                         Operator::And => "AND",
                         Operator::Or => "OR",
                         Operator::In => "IN",
@@ -632,8 +634,14 @@ impl RenderExpr {
                     }
                 }
 
-                let sql_op = op_str(op.operator);
                 let rendered: Vec<String> = op.operands.iter().map(|e| e.to_sql()).collect();
+
+                // Special handling for RegexMatch - ClickHouse uses match() function
+                if op.operator == Operator::RegexMatch && rendered.len() == 2 {
+                    return format!("match({}, {})", &rendered[0], &rendered[1]);
+                }
+
+                let sql_op = op_str(op.operator);
 
                 match rendered.len() {
                     0 => "".into(), // should not happen
@@ -743,6 +751,7 @@ impl RenderExpr {
                         Operator::GreaterThan => ">",
                         Operator::LessThanEqual => "<=",
                         Operator::GreaterThanEqual => ">=",
+                        Operator::RegexMatch => "REGEX",  // Special handling below
                         Operator::And => "AND",
                         Operator::Or => "OR",
                         Operator::In => "IN",
@@ -754,13 +763,19 @@ impl RenderExpr {
                     }
                 }
 
-                let sql_op = op_str(op.operator);
                 // Recursively render operands without table alias
                 let rendered: Vec<String> = op
                     .operands
                     .iter()
                     .map(|e| e.to_sql_without_table_alias())
                     .collect();
+
+                // Special handling for RegexMatch - ClickHouse uses match() function
+                if op.operator == Operator::RegexMatch && rendered.len() == 2 {
+                    return format!("match({}, {})", &rendered[0], &rendered[1]);
+                }
+
+                let sql_op = op_str(op.operator);
 
                 match rendered.len() {
                     0 => "".into(),
@@ -815,6 +830,7 @@ impl ToSql for OperatorApplication {
                 Operator::GreaterThan => ">",
                 Operator::LessThanEqual => "<=",
                 Operator::GreaterThanEqual => ">=",
+                Operator::RegexMatch => "REGEX",  // Special handling below
                 Operator::And => "AND",
                 Operator::Or => "OR",
                 Operator::In => "IN",
@@ -826,8 +842,14 @@ impl ToSql for OperatorApplication {
             }
         }
 
-        let sql_op = op_str(self.operator);
         let rendered: Vec<String> = self.operands.iter().map(|e| e.to_sql()).collect();
+
+        // Special handling for RegexMatch - ClickHouse uses match() function
+        if self.operator == Operator::RegexMatch && rendered.len() == 2 {
+            return format!("match({}, {})", &rendered[0], &rendered[1]);
+        }
+
+        let sql_op = op_str(self.operator);
 
         match rendered.len() {
             0 => "".into(),                              // should not happen

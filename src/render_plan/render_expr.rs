@@ -96,6 +96,7 @@ pub enum Operator {
     GreaterThan,
     LessThanEqual,
     GreaterThanEqual,
+    RegexMatch,  // =~ (regex match)
     And,
     Or,
     In,
@@ -279,6 +280,7 @@ impl TryFrom<LogicalOperator> for Operator {
             LogicalOperator::GreaterThan => Operator::GreaterThan,
             LogicalOperator::LessThanEqual => Operator::LessThanEqual,
             LogicalOperator::GreaterThanEqual => Operator::GreaterThanEqual,
+            LogicalOperator::RegexMatch => Operator::RegexMatch,
             LogicalOperator::And => Operator::And,
             LogicalOperator::Or => Operator::Or,
             LogicalOperator::In => Operator::In,

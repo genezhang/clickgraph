@@ -483,34 +483,59 @@ impl ProjectionTagging {
                                 // type() on a node doesn't make sense in standard Cypher, keep as-is
                             }
                             "id" => {
-                                // For id(n): return the id column as PropertyAccessExp
+                                // For id(n): return the id column(s) as PropertyAccessExp or Tuple
                                 if let Ok(label) = table_ctx.get_label_str() {
-                                    let id_column = if table_ctx.is_relation() {
-                                        // Relationship ID column
+                                    if table_ctx.is_relation() {
+                                        // Relationship ID - may be single or composite
                                         if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
-                                            // Use first column from edge_id if defined, else from_id
                                             if let Some(ref edge_id) = rel_schema.edge_id {
-                                                edge_id.columns().first().map(|s| s.to_string())
-                                                    .unwrap_or_else(|| rel_schema.from_id.clone())
+                                                let columns = edge_id.columns();
+                                                if columns.len() == 1 {
+                                                    // Single column edge ID
+                                                    item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                        table_alias: TableAlias(alias.clone()),
+                                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(columns[0].to_string()),
+                                                    });
+                                                } else {
+                                                    // Composite edge ID - return as tuple (List)
+                                                    // This enables round-trip: id(r) returns (col1, col2, ...)
+                                                    // and WHERE id(r) = (val1, val2, ...) works
+                                                    let tuple_exprs: Vec<LogicalExpr> = columns.iter()
+                                                        .map(|col| LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                            table_alias: TableAlias(alias.clone()),
+                                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(col.to_string()),
+                                                        }))
+                                                        .collect();
+                                                    item.expression = LogicalExpr::List(tuple_exprs);
+                                                }
                                             } else {
-                                                rel_schema.from_id.clone()
+                                                // No edge_id defined - use from_id as default
+                                                item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                    table_alias: TableAlias(alias.clone()),
+                                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_schema.from_id.clone()),
+                                                });
                                             }
-                                        } else {
-                                            "id".to_string()
+                                            return Ok(());
                                         }
+                                        // Fallback for unknown relationship
+                                        item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(alias.clone()),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column("id".to_string()),
+                                        });
+                                        return Ok(());
                                     } else {
-                                        // Node ID column
-                                        if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
+                                        // Node ID column - always single
+                                        let id_column = if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
                                             node_schema.node_id.column.clone()
                                         } else {
                                             "id".to_string()
-                                        }
-                                    };
-                                    item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(alias.clone()),
-                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
-                                    });
-                                    return Ok(());
+                                        };
+                                        item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(alias.clone()),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
+                                        });
+                                        return Ok(());
+                                    }
                                 }
                             }
                             "labels" => {

@@ -118,6 +118,7 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
                 Operator::IsNull => format!("{} IS NULL", operands[0]),
                 Operator::IsNotNull => format!("{} IS NOT NULL", operands[0]),
                 Operator::Distinct => format!("{} IS DISTINCT FROM {}", operands[0], operands[1]),
+                Operator::RegexMatch => format!("match({}, {})", operands[0], operands[1]),
             }
         }
         RenderExpr::ScalarFnCall(func) => {

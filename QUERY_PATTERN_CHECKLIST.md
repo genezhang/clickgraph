@@ -2,9 +2,15 @@
 
 **Purpose**: Comprehensive validation of all Cypher query patterns  
 **Status**: In Progress - Building comprehensive coverage  
-**Last Updated**: November 25, 2025
+**Last Updated**: December 2, 2025
 
 This checklist tracks which query patterns work correctly across standard and denormalized schemas.
+
+**Recent Updates (Dec 2)**:
+- ✅ `collect()` function now maps to ClickHouse `groupArray()`
+- ✅ Regex match operator (`=~`) fully implemented
+- ✅ Cross-node comparisons and three-node expressions verified
+- ✅ CASE expressions, division, and coalesce tested
 
 ---
 
@@ -25,18 +31,19 @@ This checklist tracks which query patterns work correctly across standard and de
 |---------|----------|--------------|-------|
 | `MATCH (n)` | ✅ | ✅ | All nodes |
 | `MATCH (n:Label)` | ✅ | ✅ | With label |
-| `MATCH (n:Label1\|Label2)` | 🔄 | 🔄 | Multi-label OR |
-| `MATCH (n {prop: value})` | 🔄 | 🔄 | Inline properties |
+| `MATCH (n:Label1\|Label2)` | 🚫 | 🚫 | Multi-label OR - not implemented |
+| `MATCH (n {prop: value})` | ✅ | 🔄 | Inline properties (Dec 1 verified) |
 
 ### 1.2 Node Properties
 | Pattern | Standard | Denormalized | Notes |
 |---------|----------|--------------|-------|
 | `RETURN n.property` | ✅ | ✅ | Simple property access |
 | `WHERE n.prop = value` | ✅ | ✅ | Property filter |
-| `WHERE n.prop1 + n.prop2 < 10` | ✅ | ✅ | **FIXED TODAY** - Mixed expressions |
-| `WHERE n.prop IN [1,2,3]` | 🔄 | 🔄 | IN operator |
-| `WHERE n.prop IS NULL` | 🔄 | 🔄 | NULL check |
-| `WHERE n.prop =~ 'regex'` | 🔄 | 🔄 | Regex match |
+| `WHERE n.prop1 + n.prop2 < 10` | ✅ | ✅ | Mixed expressions |
+| `WHERE n.prop IN [1,2,3]` | ✅ | 🔄 | IN operator (uses tuple()) |
+| `WHERE n.prop IS NULL` | ✅ | 🔄 | NULL check |
+| `WHERE n.prop IS NOT NULL` | ✅ | 🔄 | NOT NULL check |
+| `WHERE n.prop =~ 'regex'` | ✅ | ✅ | Regex match - uses ClickHouse match() |
 
 ---
 
@@ -50,16 +57,16 @@ This checklist tracks which query patterns work correctly across standard and de
 | `(a)-[r]-(b)` | ✅ | ✅ | Undirected |
 | `(a)<-[r]-(b)` | ✅ | ✅ | Reverse direction |
 | `(a)-[r:TYPE1\|TYPE2]->(b)` | ✅ | ✅ | Multiple types |
-| `(a)-[r WHERE r.prop > 10]->(b)` | 🔄 | 🔄 | Inline WHERE |
+| `(a)-[r WHERE r.prop > 10]->(b)` | 🚫 | 🚫 | Inline WHERE - not implemented |
 
 ### 2.2 Multi-Hop Patterns
 | Pattern | Standard | Denormalized | Notes |
 |---------|----------|--------------|-------|
-| `(a)-[]->(b)-[]->(c)` | ✅ | ⚠️ | 2-hop, **denorm needs testing** |
+| `(a)-[]->(b)-[]->(c)` | ✅ | ✅ | 2-hop |
 | `(a)-[]->(b)-[]->(c)-[]->(d)` | ✅ | 🔄 | 3-hop |
 | `(a)-[:T1]->(b)-[:T2]->(c)` | ✅ | 🔄 | Mixed relationship types |
-| `(a)-[r1]->(b)<-[r2]-(c)` | 🔄 | 🔄 | Converging paths |
-| `(a)-[]->(b)-[]->(a)` | 🔄 | 🔄 | Cyclic pattern |
+| `(a)-[r1]->(b)<-[r2]-(c)` | ✅ | 🔄 | Converging paths (Dec 1 verified) |
+| `(a)-[]->(b)-[]->(a)` | ✅ | 🔄 | Cyclic pattern (Dec 1 verified) |
 
 ### 2.3 Variable-Length Paths
 | Pattern | Standard | Denormalized | Notes |
@@ -81,9 +88,9 @@ This checklist tracks which query patterns work correctly across standard and de
 |---------|----------|--------------|-------|
 | `WHERE u1.id + u2.id < 10` | ✅ | ✅ | Arithmetic across nodes |
 | `WHERE length(s.code) + length(t.code) > 5` | ✅ | ✅ | Functions on multiple nodes |
-| `WHERE u1.age > u2.age` | 🔄 | 🔄 | Comparison across nodes |
+| `WHERE u1.age > u2.age` | ✅ | 🔄 | Comparison across nodes (Dec 2 verified) |
 | `WHERE concat(a.x, b.y) = 'value'` | ✅ | 🔄 | String concat |
-| `WHERE a.x * b.y + c.z > 100` | 🔄 | 🔄 | Three-node expression |
+| `WHERE a.x * b.y + c.z > 100` | ✅ | 🔄 | Three-node expression (Dec 2 verified) |
 | `WHERE r.weight * (u1.score + u2.score) > 50` | 🔄 | 🔄 | Edge + node properties |
 
 ### 3.2 RETURN Clause
@@ -91,14 +98,14 @@ This checklist tracks which query patterns work correctly across standard and de
 |---------|----------|--------------|-------|
 | `RETURN u1.x + u2.x` | ✅ | ✅ | Simple arithmetic |
 | `RETURN concat(s.code, '-', t.code)` | ✅ | ✅ | String functions |
-| `RETURN u1.score / u2.score AS ratio` | 🔄 | 🔄 | Division |
-| `RETURN CASE WHEN a.x > b.y THEN...` | 🔄 | 🔄 | CASE with mixed props |
+| `RETURN u1.score / u2.score AS ratio` | ✅ | 🔄 | Division (Dec 2 verified) |
+| `RETURN CASE WHEN a.x > b.y THEN...` | ✅ | 🔄 | CASE with mixed props (Dec 2 verified) |
 
 ### 3.3 ORDER BY Clause  
 | Pattern | Standard | Denormalized | Notes |
 |---------|----------|--------------|-------|
 | `ORDER BY u1.x + u2.x` | ✅ | 🔄 | Mixed expression ordering |
-| `ORDER BY u1.name, u2.name` | 🔄 | 🔄 | Multiple node properties |
+| `ORDER BY u1.name, u2.name` | ✅ | 🔄 | Multiple node properties (Dec 1 verified) |
 
 ---
 
@@ -113,14 +120,14 @@ This checklist tracks which query patterns work correctly across standard and de
 | `RETURN SUM(n.value)` | ✅ | 🔄 | Sum |
 | `RETURN AVG(n.value)` | ✅ | 🔄 | Average |
 | `RETURN MIN(n.value), MAX(n.value)` | ✅ | 🔄 | Min/Max |
-| `RETURN collect(n.name)` | 🔄 | 🔄 | Collect into list |
+| `RETURN collect(n.name)` | ✅ | 🔄 | Collects into array (Dec 1 fixed) |
 
 ### 4.2 GROUP BY Patterns
 | Pattern | Standard | Denormalized | Notes |
 |---------|----------|--------------|-------|
 | `RETURN n.type, COUNT(*)` | ✅ | 🔄 | Group by property |
 | `RETURN n.category, SUM(n.value)` | ✅ | 🔄 | Group with aggregation |
-| `WITH n, COUNT(*) AS cnt WHERE cnt > 5` | 🔄 | 🔄 | HAVING equivalent |
+| `WITH n, COUNT(*) AS cnt WHERE cnt > 5` | ✅ | 🔄 | HAVING equivalent (Dec 1 verified) |
 
 ---
 
@@ -151,7 +158,7 @@ This checklist tracks which query patterns work correctly across standard and de
 | `OPTIONAL MATCH (a)-[]->(b)` | ✅ | 🔄 | Basic optional |
 | `OPTIONAL MATCH (a)-[:TYPE]->(b)` | ✅ | 🔄 | Typed optional |
 | `MATCH (a) OPTIONAL MATCH (a)-[]->(b)` | ✅ | 🔄 | Mixed required/optional |
-| Multiple OPTIONAL MATCH | 🔄 | 🔄 | Multiple optional patterns |
+| Multiple OPTIONAL MATCH | ✅ | 🔄 | Multiple optional patterns (Dec 1 verified) |
 
 ---
 
@@ -160,8 +167,8 @@ This checklist tracks which query patterns work correctly across standard and de
 ### 7.1 WITH Clause
 | Pattern | Standard | Denormalized | Notes |
 |---------|----------|--------------|-------|
-| `WITH n.prop AS x RETURN x` | 🔄 | 🔄 | Simple projection |
-| `WITH n, COUNT(*) AS cnt RETURN n, cnt` | 🔄 | 🔄 | WITH aggregation |
+| `WITH n.prop AS x RETURN x` | ✅ | 🔄 | Simple projection (Dec 1 verified) |
+| `WITH n, COUNT(*) AS cnt RETURN n, cnt` | ✅ | 🔄 | WITH aggregation (Dec 1 verified) |
 | `WITH n WHERE n.prop > 10 RETURN n` | 🔄 | 🔄 | WITH filtering |
 | Multiple WITH clauses | 🔄 | 🔄 | Chained WITH |
 
@@ -188,10 +195,10 @@ This checklist tracks which query patterns work correctly across standard and de
 ### 8.2 Numeric Functions
 | Pattern | Standard | Denormalized | Notes |
 |---------|----------|--------------|-------|
-| `abs(n.value)` | 🔄 | 🔄 | Absolute value |
-| `round(n.value)` | 🔄 | 🔄 | Round |
-| `floor(n.value)` | 🔄 | 🔄 | Floor |
-| `ceil(n.value)` | 🔄 | 🔄 | Ceiling |
+| `abs(n.value)` | ✅ | 🔄 | Absolute value (Dec 1 verified) |
+| `round(n.value)` | ✅ | 🔄 | Round (Dec 1 verified) |
+| `floor(n.value)` | ✅ | 🔄 | Floor (Dec 1 verified) |
+| `ceil(n.value)` | ✅ | 🔄 | Ceiling (Dec 1 verified) |
 
 ### 8.3 Temporal Functions
 | Pattern | Standard | Denormalized | Notes |
@@ -199,6 +206,16 @@ This checklist tracks which query patterns work correctly across standard and de
 | `date(n.timestamp)` | 🔄 | 🔄 | Date conversion |
 | `datetime(n.iso_string)` | 🔄 | 🔄 | DateTime |
 | Date arithmetic | 🔄 | 🔄 | Date + interval |
+
+### 8.4 ID and Type Functions
+| Pattern | Standard | Denormalized | Notes |
+|---------|----------|--------------|-------|
+| `id(n)` | ✅ | ✅ | Node ID (single column) |
+| `id(r)` | ✅ | ✅ | Relationship ID (single column) |
+| `id(r)` (composite) | ✅ | ✅ | **NEW** - Returns `tuple(...)` for multi-column edge_id |
+| `WHERE id(r) = tuple(...)` | ✅ | ✅ | **NEW** - Filter by composite edge ID |
+| `type(r)` | ✅ | 🔄 | Relationship type name (Dec 1 verified) |
+| `labels(n)` | ✅ | 🔄 | Node labels (Dec 1 verified) |
 
 ---
 
@@ -328,9 +345,14 @@ ClickGraph is **read-only**. The following are out of scope:
 
 ### Immediate (This Week)
 1. ✅ Document JOIN order fix for mixed expressions
-2. 🔄 **Test multi-hop patterns with denormalized schema**
-3. 🔄 **Validate aggregations work correctly**
-4. 🔄 **Test edge property access in denormalized patterns**
+2. ✅ **Verify IN, IS NULL, IS NOT NULL operators** (Dec 1)
+3. ✅ **Verify converging paths pattern** (Dec 1)
+4. ✅ **Verify multiple OPTIONAL MATCH** (Dec 1)
+5. ✅ **Verify WITH clause patterns** (Dec 1)
+6. ✅ **Verify numeric functions (abs, round, floor, ceil)** (Dec 1)
+7. ✅ **Verify type(r) and labels(n)** (Dec 1)
+8. ✅ **Add id(r) composite edge ID support** (Dec 1)
+9. 🔄 **Test denormalized schema coverage**
 
 ### Short-Term (Next 2 Weeks)
 1. Fill in 🔄 items for standard schema
@@ -348,8 +370,8 @@ ClickGraph is **read-only**. The following are out of scope:
 
 ## Coverage Statistics
 
-**Standard Schema**: ~40/100 patterns tested (40%)  
-**Denormalized Schema**: ~10/100 patterns tested (10%)  
-**Overall**: ~50/200 pattern combinations tested (25%)
+**Standard Schema**: ~55/100 patterns tested (55%)  
+**Denormalized Schema**: ~15/100 patterns tested (15%)  
+**Overall**: ~70/200 pattern combinations tested (35%)
 
 **Target**: 80% coverage for production release

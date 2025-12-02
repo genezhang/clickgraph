@@ -124,6 +124,7 @@ pub enum Operator {
     GreaterThan,
     LessThanEqual,
     GreaterThanEqual,
+    RegexMatch,  // =~ (regex match)
     And,
     Or,
     In,
@@ -239,6 +240,7 @@ impl From<open_cypher_parser::ast::Operator> for Operator {
             open_cypher_parser::ast::Operator::GreaterThan => Operator::GreaterThan,
             open_cypher_parser::ast::Operator::LessThanEqual => Operator::LessThanEqual,
             open_cypher_parser::ast::Operator::GreaterThanEqual => Operator::GreaterThanEqual,
+            open_cypher_parser::ast::Operator::RegexMatch => Operator::RegexMatch,
             open_cypher_parser::ast::Operator::And => Operator::And,
             open_cypher_parser::ast::Operator::Or => Operator::Or,
             open_cypher_parser::ast::Operator::In => Operator::In,

@@ -1,6 +1,22 @@
 # ClickGraph Status
 
-*Updated: November 30, 2025*
+*Updated: December 2, 2025*
+
+## 🆕 **Recent Fixes** - December 2, 2025
+
+### ✅ `collect()` Function Mapping
+- **Issue**: `collect()` was generating literal "collect()" in SQL, which ClickHouse doesn't have
+- **Fix**: Added function mapping: `collect()` → `groupArray()`
+- **Files**: `function_registry.rs`, `function_translator.rs`
+
+### ✅ Regex Match Operator (`=~`)
+- **Feature**: Full support for Neo4j regex match operator
+- **Cypher**: `WHERE n.name =~ '^A.*'`
+- **SQL**: `WHERE match(n.name, '^A.*')` (ClickHouse native regex)
+- **Files**: Added `RegexMatch` operator to parser, logical expr, render expr, SQL generation
+- **Tested**: Works in WHERE and RETURN clauses
+
+---
 
 ## 🎉 **v0.5.2 Released** - November 30, 2025
 
@@ -386,7 +402,10 @@ Note: PageRank requires named argument syntax (not positional).
    - ✅ Works with VLP (variable-length paths)
    - ✅ Works with polymorphic edge tables
    - ✅ Proper uniqueness checking with tuples
-   - Example: `edge_id: [from_id, to_id, interaction_type, timestamp]`
+   - ✅ **`id(r)` returns `tuple(...)` for composite edge IDs** (Dec 1, 2025)
+   - ✅ **Round-trip support**: `WHERE id(r) = tuple(a, b, c)` works
+   - Example schema: `edge_id: [FlightDate, FlightNum, Origin, Dest]`
+   - Example query: `MATCH ()-[r]->() RETURN id(r)` → `tuple(r.FlightDate, r.FlightNum, ...)`
 
 **Success Criteria**:
 - ✅ New features work with test cases

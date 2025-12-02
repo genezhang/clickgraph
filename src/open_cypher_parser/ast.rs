@@ -351,6 +351,7 @@ pub enum Operator {
     GreaterThan,      // >
     LessThanEqual,    // <=
     GreaterThanEqual, // >=
+    RegexMatch,       // =~ (regex match)
     And,
     Or,
     In, // IN [...]
@@ -378,6 +379,7 @@ impl From<Operator> for String {
             Operator::GreaterThan => ">".to_string(),
             Operator::LessThanEqual => "<=".to_string(),
             Operator::GreaterThanEqual => ">=".to_string(),
+            Operator::RegexMatch => "=~".to_string(),
             Operator::And => "AND".to_string(),
             Operator::Or => "OR".to_string(),
             Operator::In => "IN".to_string(),

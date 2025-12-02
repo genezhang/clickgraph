@@ -107,6 +107,8 @@ pub fn get_supported_functions() -> Vec<&'static str> {
         "toFloat",
         "toString",
         "toBoolean",
+        // Aggregation
+        "collect",
     ]
 }
 

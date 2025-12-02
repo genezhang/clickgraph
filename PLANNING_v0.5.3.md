@@ -1,0 +1,201 @@
+# v0.5.3 Planning: Query Quality Release
+
+**Goal**: Systematic bug fixes and comprehensive testing to ensure query correctness across all schema variations.
+
+**Target**: December 2025
+
+---
+
+## Phase 1: Bug Fixes (Priority Order)
+
+### Bug #1: RETURN Node on Denormalized Schema (HIGH)
+**Issue**: `MATCH (a:Airport) RETURN a LIMIT 5` returns empty
+**Root Cause**: Wildcard expansion looks at `property_mapping` (empty) instead of `from_node_properties`/`to_node_properties`
+**Fix Location**: `src/render_plan/plan_builder.rs` - `extract_select_items` function
+**Status**: 🔴 Not Started
+
+### Bug #2: WHERE AND Syntax Error (MEDIUM)
+**Issue**: `WHERE AND r.prop = value` not caught by parser
+**Root Cause**: Parser doesn't validate expression follows WHERE
+**Fix Location**: `src/open_cypher_parser/where_clause.rs`
+**Status**: 🔴 Not Started
+
+### Bug #3: WITH Aggregation SQL Generation (HIGH)
+**Issue**: Generates duplicate FROM clause with unnecessary JOIN
+**Root Cause**: Plan builder not recognizing WITH→RETURN flow correctly
+**Fix Location**: `src/render_plan/plan_builder.rs`
+**Status**: 🔴 Not Started
+
+### Bug #3b: Date Literal Parsing (MEDIUM)
+**Issue**: `toDate('2024-01-15')` parsed as arithmetic `toDate(2024-1-15)`
+**Root Cause**: String literal not preserved in function arguments
+**Fix Location**: `src/open_cypher_parser/expression.rs`
+**Status**: 🔴 Not Started
+
+---
+
+## Phase 2: Test Matrix Design
+
+### Schema Variations (4 Types)
+
+| Type | Description | Example Schema |
+|------|-------------|----------------|
+| **Standard** | Separate node/edge tables | `social_benchmark.yaml` |
+| **Denormalized** | Node properties embedded in edge table | `ontime_denormalized.yaml` |
+| **Polymorphic** | Single edge table with type column | `social_polymorphic.yaml` |
+| **Coupled** | Multiple edge types share same table | `zeek_dns_log.yaml` |
+
+### Query Patterns to Test (15 Categories)
+
+#### Basic Patterns
+1. **Node Scan**: `MATCH (n:Label) RETURN ...`
+2. **Node + Filter**: `MATCH (n:Label) WHERE n.prop = value RETURN ...`
+3. **Return Node**: `MATCH (n) RETURN n` (whole node)
+4. **Return Properties**: `MATCH (n) RETURN n.prop1, n.prop2`
+
+#### Relationship Patterns
+5. **Single Hop**: `MATCH (a)-[r:TYPE]->(b) RETURN ...`
+6. **Multi Hop**: `MATCH (a)-[r1]->(b)-[r2]->(c) RETURN ...`
+7. **Undirected**: `MATCH (a)-[r]-(b) RETURN ...`
+8. **Return Relationship**: `MATCH ()-[r]->() RETURN r`
+
+#### Variable-Length Paths
+9. **VLP Exact**: `MATCH (a)-[*2]->(b) RETURN ...`
+10. **VLP Range**: `MATCH (a)-[*1..3]->(b) RETURN ...`
+11. **VLP + Path Variable**: `MATCH p = (a)-[*]->(b) RETURN p, nodes(p)`
+
+#### Aggregation Patterns
+12. **Simple Aggregation**: `MATCH (n) RETURN count(n)`
+13. **GROUP BY**: `MATCH (n) RETURN n.type, count(n)`
+14. **WITH Aggregation**: `MATCH ... WITH x, count(y) as c RETURN ...`
+
+#### Advanced Patterns
+15. **OPTIONAL MATCH**: `MATCH (a) OPTIONAL MATCH (a)-[r]->(b) RETURN ...`
+16. **Multiple Relationship Types**: `MATCH (a)-[:T1|T2]->(b) RETURN ...`
+17. **Shortest Path**: `MATCH p = shortestPath((a)-[*]->(b)) RETURN p`
+18. **ORDER BY + LIMIT**: `MATCH (n) RETURN n ORDER BY n.prop LIMIT 10`
+
+#### Functions
+19. **Graph Functions**: `id(n)`, `labels(n)`, `type(r)`
+20. **Aggregation Functions**: `count()`, `sum()`, `avg()`, `collect()`
+21. **Path Functions**: `length(p)`, `nodes(p)`, `relationships(p)`
+22. **Scalar Functions**: `toUpper()`, `substring()`, `coalesce()`
+
+---
+
+## Phase 3: Test Implementation
+
+### Test File Structure
+
+```
+tests/
+├── integration/
+│   └── query_patterns/
+│       ├── test_standard_schema.py      # All patterns on standard schema
+│       ├── test_denormalized_schema.py  # All patterns on denormalized schema
+│       ├── test_polymorphic_schema.py   # All patterns on polymorphic schema
+│       ├── test_coupled_schema.py       # All patterns on coupled schema
+│       └── conftest.py                  # Shared fixtures, schema setup
+```
+
+### Test Naming Convention
+
+```python
+def test_{pattern}_{schema_type}():
+    """
+    Pattern: {pattern description}
+    Schema: {schema type}
+    Expected: {expected behavior}
+    """
+```
+
+### Test Matrix: 22 Patterns × 4 Schema Types = 88 Test Cases
+
+| Pattern | Standard | Denorm | Poly | Coupled |
+|---------|----------|--------|------|---------|
+| Node Scan | ✅ | 🔴 | ✅ | ✅ |
+| Node + Filter | ✅ | 🔴 | ✅ | ✅ |
+| Return Node | ✅ | 🔴 | ✅ | ✅ |
+| Return Props | ✅ | ✅ | ✅ | ✅ |
+| Single Hop | ✅ | ✅ | ✅ | ✅ |
+| Multi Hop | ✅ | ✅ | ✅ | ✅ |
+| Undirected | 🟡 | 🟡 | 🟡 | 🟡 |
+| Return Rel | ✅ | ✅ | ✅ | ✅ |
+| VLP Exact | ✅ | ✅ | ✅ | ✅ |
+| VLP Range | ✅ | ✅ | ✅ | ✅ |
+| VLP + Path | ✅ | ✅ | ✅ | ✅ |
+| Simple Agg | ✅ | 🔴 | ✅ | ✅ |
+| GROUP BY | ✅ | 🔴 | ✅ | ✅ |
+| WITH Agg | 🔴 | 🔴 | 🔴 | 🔴 |
+| OPTIONAL | ✅ | ✅ | ✅ | ✅ |
+| Multi-Type | ✅ | N/A | ✅ | ✅ |
+| Shortest Path | ✅ | ✅ | ✅ | ✅ |
+| ORDER/LIMIT | ✅ | ✅ | ✅ | ✅ |
+| Graph Funcs | ✅ | ✅ | ✅ | ✅ |
+| Agg Funcs | ✅ | 🔴 | ✅ | ✅ |
+| Path Funcs | ✅ | ✅ | ✅ | ✅ |
+| Scalar Funcs | ✅ | ✅ | ✅ | ✅ |
+
+**Legend**: ✅ Working | 🔴 Known Bug | 🟡 Known Limitation | N/A Not Applicable
+
+---
+
+## Phase 4: Execution Plan
+
+### Week 1: Bug Fixes
+- [ ] Day 1-2: Fix Bug #1 (RETURN node denormalized)
+- [ ] Day 2-3: Fix Bug #3 (WITH aggregation)
+- [ ] Day 3-4: Fix Bug #2 (WHERE AND syntax)
+- [ ] Day 4-5: Fix Bug #3b (Date literal parsing)
+
+### Week 2: Test Infrastructure
+- [ ] Create test fixtures for all 4 schema types
+- [ ] Set up parameterized test framework
+- [ ] Create test data generators
+
+### Week 3: Test Implementation
+- [ ] Implement all 88 test cases
+- [ ] Document expected vs actual for each
+- [ ] Identify additional bugs
+
+### Week 4: Stabilization
+- [ ] Fix newly discovered bugs
+- [ ] Update KNOWN_ISSUES.md
+- [ ] Release v0.5.3
+
+---
+
+## Success Criteria for v0.5.3
+
+1. **All 3 reported bugs fixed** and verified
+2. **Test coverage**: 80%+ of test matrix passing
+3. **Documentation**: All limitations documented with workarounds
+4. **Regression**: No new regressions from v0.5.2
+
+---
+
+## Appendix: Schema Files for Testing
+
+### Standard Schema
+- `benchmarks/schemas/social_benchmark.yaml`
+- Tables: `users_bench`, `user_follows_bench`, `posts_bench`, `post_likes_bench`
+
+### Denormalized Schema  
+- `schemas/examples/ontime_denormalized.yaml`
+- Table: `flights` (node properties embedded)
+
+### Polymorphic Schema
+- `schemas/examples/social_polymorphic.yaml`
+- Table: `interactions` with `type_column`
+
+### Coupled Schema
+- `schemas/examples/zeek_dns_log.yaml`
+- Table: `dns_log` for multiple edge types
+
+---
+
+## Next Actions
+
+1. Start with Bug #1 (RETURN node) - highest impact
+2. Create minimal test case for each schema type
+3. Iterate: fix → test → fix → test

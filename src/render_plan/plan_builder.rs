@@ -169,7 +169,28 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GraphNode(node) if node.alias == alias => {
                 // Found the matching node - extract all properties from its ViewScan
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
-                    // Convert property_mapping HashMap to Vec of tuples
+                    // For denormalized nodes, properties are in from_node_properties or to_node_properties
+                    // not in property_mapping (which is empty for denormalized nodes)
+                    if scan.is_denormalized {
+                        // Try from_node_properties first, then to_node_properties
+                        let props = scan.from_node_properties.as_ref()
+                            .or(scan.to_node_properties.as_ref());
+                        
+                        if let Some(prop_map) = props {
+                            let properties: Vec<(String, String)> = prop_map
+                                .iter()
+                                .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
+                                .collect();
+                            println!(
+                                "DEBUG: get_all_properties_for_alias - denormalized node '{}' has {} properties",
+                                alias,
+                                properties.len()
+                            );
+                            return Ok(properties);
+                        }
+                    }
+                    
+                    // Standard nodes: use property_mapping
                     let properties: Vec<(String, String)> = scan
                         .property_mapping
                         .iter()
@@ -225,6 +246,15 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             LogicalPlan::Limit(limit) => {
                 return limit.input.get_all_properties_for_alias(alias);
+            }
+            LogicalPlan::Union(union) => {
+                // For Union (used for denormalized nodes with both from/to properties),
+                // try to get properties from the first branch
+                if let Some(first_input) = union.inputs.first() {
+                    if let Ok(props) = first_input.get_all_properties_for_alias(alias) {
+                        return Ok(props);
+                    }
+                }
             }
             _ => {}
         }

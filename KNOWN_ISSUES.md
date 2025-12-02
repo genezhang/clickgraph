@@ -16,7 +16,11 @@
 **New Issues** (December 2, 2025):
 - 🚨 **RETURN node for denormalized schemas**: `RETURN a` on denormalized nodes returns empty - wildcard expansion looks at empty `property_mapping` instead of `from_node_properties`/`to_node_properties`
 - 🚨 **WHERE AND syntax error not caught**: `WHERE AND r.prop = value` parses without error instead of failing with syntax error
-- 🚨 **WITH aggregation SQL generation**: `WITH r.month as month, count(r) as r_count` generates incorrect SQL with duplicate FROM clause
+- ⚠️ **WITH aggregation SQL generation**: `WITH r.month as month, count(r) as r_count` generates incorrect SQL - **Workaround: Use `RETURN` directly** (WITH is redundant for simple aggregations)
+- ⚠️ **Regex operator (=~)**: Parses but generates incomplete SQL (WHERE clause missing regex match)
+
+**Recently Resolved** (December 1, 2025):
+- ✅ **collect() function**: Now correctly maps to `groupArray()` in ClickHouse
 
 **Recently Resolved** (December 2, 2025):
 - ✅ **Polymorphic Multi-Type JOIN Filter**: Fixed - Now uses `IN ('TYPE1', 'TYPE2')` for multi-type patterns
@@ -143,7 +147,7 @@ Syntax error: Unexpected AND after WHERE
 ## 🚨 NEW: WITH Aggregation Generates Incorrect SQL
 
 **Status**: 🔧 **BUG** - SQL generation issue with WITH clause  
-**Severity**: **HIGH** - Breaks aggregation queries with relationships  
+**Severity**: **MEDIUM** - Workaround available  
 **Identified**: December 2, 2025
 
 ### The Problem
@@ -181,6 +185,25 @@ WHERE r.FlightDate = toDate('2024-01-15')
 GROUP BY r.month
 ORDER BY r.month ASC
 ```
+
+### Workaround ✅
+
+**The WITH clause is redundant in this case** - use RETURN directly with aggregation:
+
+```cypher
+-- ✅ WORKS - equivalent query without WITH
+MATCH (a:Airport)-[r:FLIGHT]->(b:Airport)
+WHERE r.FlightDate = toDate('2024-01-15')
+RETURN r.month as month, count(r) as r_count
+ORDER BY month
+```
+
+This generates correct SQL. The `WITH ... RETURN` pattern is only necessary when:
+1. You need to filter on aggregated results (HAVING equivalent)
+2. You need to do further processing after aggregation
+3. You're chaining multiple aggregation stages
+
+For simple "group by and return" queries, skip WITH and use RETURN directly.
 
 ### Additional Issue: Date Literal Parsing
 

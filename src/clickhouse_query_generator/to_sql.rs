@@ -36,8 +36,11 @@ impl ToSql for LogicalExpr {
             LogicalExpr::Column(col) => Ok(col.0.clone()),
             LogicalExpr::Parameter(param) => Ok(format!("${}", param)),
             LogicalExpr::List(items) => {
+                // Use array syntax [...] for Cypher compatibility
+                // ClickHouse arrays support = comparison and work with mixed types via tuple()
                 let items_sql: Result<Vec<String>, _> = items.iter().map(|e| e.to_sql()).collect();
-                Ok(format!("({})", items_sql?.join(", ")))
+                // Use tuple() for comparison to handle mixed types (date, int, string, etc.)
+                Ok(format!("tuple({})", items_sql?.join(", ")))
             }
             LogicalExpr::AggregateFnCall(fn_call) => {
                 let args_sql: Result<Vec<String>, _> =
@@ -93,6 +96,10 @@ impl ToSql for LogicalExpr {
                     }
                     Operator::GreaterThanEqual => {
                         Ok(format!("({} >= {})", operands_sql[0], operands_sql[1]))
+                    }
+                    Operator::RegexMatch => {
+                        // ClickHouse uses match() function for regex matching
+                        Ok(format!("match({}, {})", operands_sql[0], operands_sql[1]))
                     }
                     Operator::And => Ok(format!("({} AND {})", operands_sql[0], operands_sql[1])),
                     Operator::Or => Ok(format!("({} OR {})", operands_sql[0], operands_sql[1])),
