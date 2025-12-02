@@ -12,84 +12,45 @@
 
 ---
 
-## 🚀 What's New in v0.5.2 (November 30, 2025)
+## 🚀 What's New in v0.5.3 (December 2, 2025)
 
-### Schema Variations Release - Complete Support for All Edge Table Patterns! 🎉
+### Cypher Functions & Syntax Improvements
 
-**v0.5.2 delivers comprehensive support for advanced schema patterns including polymorphic edges, coupled edges, and denormalized tables.**
+**v0.5.3 adds new Cypher functions, improved syntax validation, and pattern matching capabilities.**
 
-### Polymorphic Edge Tables ✨
+### New Features ✨
 
-**Single table containing multiple edge types with dynamic filtering:**
-```yaml
-edges:
-  - polymorphic: true
-    table: interactions
-    type_column: interaction_type      # FOLLOWS, LIKES, AUTHORED
-    from_label_column: from_type       # Source node type
-    to_label_column: to_type           # Target node type
-```
+- **`label()` function**: Get scalar label for nodes: `RETURN label(n)` → `'User'`
+- **EXISTS subqueries**: Filter based on pattern existence: `WHERE EXISTS { (n)-[:FOLLOWS]->() }`
+- **WITH + MATCH chaining**: Multi-stage query pipelines: `MATCH ... WITH ... MATCH ...`
+- **Regex matching (`=~`)**: Pattern matching via ClickHouse `match()`: `WHERE n.name =~ '.*Smith'`
+- **`collect()` function**: Aggregate to arrays via `groupArray()`: `RETURN collect(n.name)`
 
-```cypher
--- Multi-type filter generates IN clause
-MATCH (u:User)-[:FOLLOWS|LIKES]->(target)
-RETURN u.name, target.name
-```
+### Bug Fixes 🐛
 
-**What Works:**
-- ✅ **Single-hop wildcard edges**: `(u:User)-[r]->(target)` with unlabeled targets
-- ✅ **Multi-hop CTE chaining**: `(u)-[r1]->(m)-[r2]->(t)` with proper JOINs
-- ✅ **Bidirectional edges**: `(u:User)<-[r]-(source)` using correct JOIN direction
-- ✅ **Composite edge IDs**: `[from_id, to_id, type, timestamp]` for uniqueness
-
-### Coupled Edge Optimization ⚡
-
-**Automatic JOIN elimination when edges share the same table:**
-```cypher
--- Zeek DNS pattern: IP → Domain → ResolvedIP (all in dns_log table)
-MATCH (ip:IP)-[:REQUESTED]->(d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)
-WHERE ip.ip = '192.168.4.76'
-RETURN ip.ip, d.name, rip.ips
-```
-Generates optimized SQL with NO self-join - single table scan!
-
-### VLP + UNWIND Support 🔄
-
-**Decompose paths with ARRAY JOIN:**
-```cypher
-MATCH p = (u:User)-[:FOLLOWS*1..3]->(f:User)
-UNWIND nodes(p) AS n
-RETURN n
-```
-
-### OPTIONAL MATCH + VLP Fix 🐛
-
-**Anchor nodes now preserved when no path exists:**
-```cypher
-MATCH (a:User) WHERE a.name = 'Eve'
-OPTIONAL MATCH (a)-[:FOLLOWS*1..3]->(b:User)
-RETURN a.name, COUNT(b) as reachable
--- Eve (no followers) now correctly returns 1 row with reachable = 0
-```
+- **Graph function aliases**: `type()`, `id()`, `labels()` now return proper column names
+- **Syntax validation**: Parser rejects invalid input like `WHERE AND x = 1` with clear error messages
 
 ### Test Coverage 🧪
 
 - **534 library tests passing** (100%)
-- **73 schema variation tests** across 4 schema types:
-  - Standard: 30 tests
-  - Denormalized: 14 tests
-  - Polymorphic: 24 tests
-  - Coupled: 5 tests
-
-### Additional Features
-- Property mapping to SQL expressions in schema
-- Filters on nodes and edges in schema
-- Inline property filters in queries
-- `id()`, `label()`, and `type()` functions in queries
+- All graph introspection functions verified working
 
 ---
 
 ## 📦 Previous Releases
+
+<details>
+<summary><b>v0.5.2 (November 30, 2025)</b> - Schema Variations Release 🎉</summary>
+
+**Comprehensive support for advanced schema patterns including polymorphic edges, coupled edges, and denormalized tables.**
+
+- **Polymorphic Edge Tables**: Single table with multiple edge types
+- **Coupled Edge Optimization**: Automatic JOIN elimination for same-table edges
+- **VLP + UNWIND Support**: Path decomposition with ARRAY JOIN
+- **OPTIONAL MATCH + VLP Fix**: Anchor nodes preserved when no path exists
+
+</details>
 
 <details>
 <summary><b>v0.5.1 (November 21, 2025)</b> - Docker Hub Release 🐳</summary>
@@ -443,7 +404,7 @@ See `docs/configuration.md` for complete configuration documentation.
 
 ## 🧪 Development Status
 
-**Current Version**: v0.5.2 (November 30, 2025)
+**Current Version**: v0.5.3 (December 2, 2025)
 
 ### Test Coverage
 - ✅ **Rust Unit Tests**: 534/534 passing (100%)
@@ -470,6 +431,7 @@ See [STATUS.md](STATUS.md) and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 **Phase 1 (v0.4.0)** ✅ - Query cache, parameters, Bolt protocol, Neo4j functions
 **Phase 2 (v0.5.0)** ✅ - Multi-tenancy, RBAC, auto-schema discovery
 **Phase 2.5 (v0.5.2)** ✅ - Schema variations (polymorphic, coupled edges)
+**Phase 2.6 (v0.5.3)** ✅ - Cypher functions (label, EXISTS, regex, collect)
 **Phase 3 (v0.6.0)** 🔄 - Additional graph algorithms, query optimization
 
 See [ROADMAP.md](ROADMAP.md) for detailed feature tracking.
