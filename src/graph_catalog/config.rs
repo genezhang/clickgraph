@@ -610,6 +610,22 @@ fn build_relationship_schema(
     let to_node_props = nodes.get(&to_node)
         .and_then(|n| n.to_properties.clone());
     
+    // Detect self-referencing FK pattern:
+    // - Edge table = Node table for from_node
+    // - from_node == to_node (same node type on both ends)
+    // - No denormalized properties (from_node_props and to_node_props are None)
+    let from_node_schema = nodes.get(&from_node);
+    let is_self_referencing_fk = from_node_schema
+        .map(|n| {
+            let edge_table = format!("{}.{}", rel_def.database, rel_def.table);
+            let node_table = format!("{}.{}", n.database, n.table_name);
+            edge_table == node_table 
+                && from_node == to_node
+                && from_node_props.is_none() 
+                && to_node_props.is_none()
+        })
+        .unwrap_or(false);
+    
     Ok(RelationshipSchema {
         database: rel_def.database.clone(),
         table_name: rel_def.table.clone(),
@@ -634,6 +650,7 @@ fn build_relationship_schema(
         to_label_column: None,
         from_node_properties: from_node_props,
         to_node_properties: to_node_props,
+        is_self_referencing_fk,
     })
 }
 
@@ -674,6 +691,22 @@ fn build_standard_edge_schema(
     let to_node_props = nodes.get(&std_edge.to_node)
         .and_then(|n| n.to_properties.clone());
     
+    // Detect self-referencing FK pattern:
+    // - Edge table = Node table for from_node
+    // - from_node == to_node (same node type on both ends)
+    // - No denormalized properties (from_node_props and to_node_props are None)
+    let from_node_schema = nodes.get(&std_edge.from_node);
+    let is_self_referencing_fk = from_node_schema
+        .map(|n| {
+            let edge_table = format!("{}.{}", std_edge.database, std_edge.table);
+            let node_table = format!("{}.{}", n.database, n.table_name);
+            edge_table == node_table 
+                && std_edge.from_node == std_edge.to_node
+                && from_node_props.is_none() 
+                && to_node_props.is_none()
+        })
+        .unwrap_or(false);
+    
     Ok(RelationshipSchema {
         database: std_edge.database.clone(),
         table_name: std_edge.table.clone(),
@@ -698,6 +731,7 @@ fn build_standard_edge_schema(
         to_label_column: None,
         from_node_properties: from_node_props,
         to_node_properties: to_node_props,
+        is_self_referencing_fk,
     })
 }
 
@@ -751,6 +785,7 @@ fn build_polymorphic_edge_schemas(
             to_label_column: Some(poly_edge.to_label_column.clone()),
             from_node_properties: None,
             to_node_properties: None,
+            is_self_referencing_fk: false, // Polymorphic edges are never self-referencing FK
         };
         results.push((type_val.clone(), rel_schema));
     }
@@ -845,35 +880,52 @@ impl GraphSchemaConfig {
             if let EdgeDefinition::Standard(std_edge) = edge {
                 let edge_table_key = (std_edge.database.clone(), std_edge.table.clone());
 
-                // Check if from_node shares the same table (denormalized)
+                // Check if from_node shares the same table
                 if let Some(from_node_def) = node_by_table.get(&edge_table_key) {
                     if from_node_def.label == std_edge.from_node {
-                        // Denormalized! Node definition must have from_node_properties
-                        if from_node_def.from_node_properties.is_none() || 
-                           from_node_def.from_node_properties.as_ref().unwrap().is_empty() {
-                            return Err(GraphSchemaError::InvalidConfig {
-                                message: format!(
-                                    "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing from_node_properties on node definition",
-                                    std_edge.from_node, std_edge.type_name, std_edge.table
-                                ),
-                            });
+                        // Same table - but is it self-referencing FK or denormalized?
+                        // Self-referencing FK: from_node == to_node, no denormalized properties
+                        let is_self_referencing_fk = std_edge.from_node == std_edge.to_node
+                            && from_node_def.from_node_properties.is_none()
+                            && from_node_def.to_node_properties.is_none();
+                        
+                        if !is_self_referencing_fk {
+                            // Denormalized pattern - must have from_node_properties
+                            if from_node_def.from_node_properties.is_none() || 
+                               from_node_def.from_node_properties.as_ref().unwrap().is_empty() {
+                                return Err(GraphSchemaError::InvalidConfig {
+                                    message: format!(
+                                        "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing from_node_properties on node definition",
+                                        std_edge.from_node, std_edge.type_name, std_edge.table
+                                    ),
+                                });
+                            }
                         }
+                        // Self-referencing FK pattern is valid without denormalized properties
                     }
                 }
 
-                // Check if to_node shares the same table (denormalized)
+                // Check if to_node shares the same table
                 if let Some(to_node_def) = node_by_table.get(&edge_table_key) {
                     if to_node_def.label == std_edge.to_node {
-                        // Denormalized! Node definition must have to_node_properties
-                        if to_node_def.to_node_properties.is_none() || 
-                           to_node_def.to_node_properties.as_ref().unwrap().is_empty() {
-                            return Err(GraphSchemaError::InvalidConfig {
-                                message: format!(
-                                    "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing to_node_properties on node definition",
-                                    std_edge.to_node, std_edge.type_name, std_edge.table
-                                ),
-                            });
+                        // Same table - but is it self-referencing FK or denormalized?
+                        let is_self_referencing_fk = std_edge.from_node == std_edge.to_node
+                            && to_node_def.from_node_properties.is_none()
+                            && to_node_def.to_node_properties.is_none();
+                        
+                        if !is_self_referencing_fk {
+                            // Denormalized pattern - must have to_node_properties
+                            if to_node_def.to_node_properties.is_none() || 
+                               to_node_def.to_node_properties.as_ref().unwrap().is_empty() {
+                                return Err(GraphSchemaError::InvalidConfig {
+                                    message: format!(
+                                        "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing to_node_properties on node definition",
+                                        std_edge.to_node, std_edge.type_name, std_edge.table
+                                    ),
+                                });
+                            }
                         }
+                        // Self-referencing FK pattern is valid without denormalized properties
                     }
                 }
             }
@@ -1374,7 +1426,7 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
-            filter: None,
+                    filter: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1401,7 +1453,7 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
-            filter: None,
+                    filter: None,
                 })],
             },
         };
@@ -1423,7 +1475,7 @@ graph_schema:
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
-            filter: None,
+                    filter: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),

@@ -261,6 +261,124 @@ impl GraphJoinInference {
         }
     }
 
+    /// Handle self-referencing FK join pattern
+    /// 
+    /// For edges where the edge table = node table and the relationship is
+    /// represented by a FK column (e.g., parent_id pointing to object_id),
+    /// we skip the edge table scan and create a direct node-to-node JOIN.
+    /// 
+    /// Example: (child:Object)-[:PARENT]->(parent:Object) on fs_objects table
+    /// Generated SQL: child.parent_id = parent.object_id (no edge table)
+    #[allow(clippy::too_many_arguments)]
+    fn handle_self_referencing_fk_join(
+        &self,
+        graph_rel: &GraphRel,
+        left_alias: &String,
+        rel_alias: &String,
+        right_alias: &String,
+        left_cte_name: &String,
+        right_cte_name: &String,
+        rel_schema: &RelationshipSchema,
+        left_node_id_column: String,
+        right_node_id_column: String,
+        left_is_optional: bool,
+        right_is_optional: bool,
+        left_is_referenced: bool,
+        right_is_referenced: bool,
+        plan_ctx: &mut PlanCtx,
+        collected_graph_joins: &mut Vec<Join>,
+        joined_entities: &mut HashSet<String>,
+    ) -> AnalyzerResult<()> {
+        // For self-referencing FK:
+        // - from_id = FK column (e.g., parent_id) on the "from" node
+        // - to_id = PK column (e.g., object_id) on the "to" node
+        // 
+        // For Outgoing direction: child.parent_id = parent.object_id
+        // For Incoming direction: parent.object_id = child.parent_id (swap)
+        
+        let (fk_col, pk_col) = if graph_rel.direction == Direction::Incoming {
+            // Incoming: swap - the "to" node has the FK pointing back
+            (rel_schema.to_id.clone(), rel_schema.from_id.clone())
+        } else {
+            // Outgoing (or Either): normal - "from" node has FK pointing to "to" node
+            (rel_schema.from_id.clone(), rel_schema.to_id.clone())
+        };
+        
+        eprintln!("    🔗 FK column: {}, PK column: {}", fk_col, pk_col);
+        
+        // Mark the relationship alias as joined (even though we're not scanning its table)
+        // This is needed for the query planner to understand the relationship exists
+        joined_entities.insert(rel_alias.to_string());
+        
+        // Determine if left is the anchor (FROM table)
+        let left_is_anchor = !joined_entities.contains(left_alias);
+        
+        if left_is_anchor {
+            // Left node is the anchor (FROM clause)
+            joined_entities.insert(left_alias.to_string());
+            eprintln!("    🔗 LEFT '{}' is anchor (FROM clause)", left_alias);
+            
+            // Create JOIN for right node: right.pk_col = left.fk_col
+            if right_is_referenced {
+                let right_join = Join {
+                    table_name: right_cte_name.clone(),
+                    table_alias: right_alias.to_string(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(right_alias.to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(pk_col.clone()),
+                            }),
+                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(left_alias.to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(fk_col.clone()),
+                            }),
+                        ],
+                    }],
+                    join_type: Self::determine_join_type(right_is_optional),
+                    pre_filter: None,
+                };
+                eprintln!("    🔗 Created JOIN for RIGHT '{}': {}.{} = {}.{}", 
+                    right_alias, right_alias, pk_col, left_alias, fk_col);
+                collected_graph_joins.push(right_join);
+                joined_entities.insert(right_alias.to_string());
+            }
+        } else {
+            // Right node is the anchor (or left already joined)
+            eprintln!("    🔗 LEFT '{}' already joined, joining RIGHT", left_alias);
+            
+            // Create JOIN for right node: right.pk_col = left.fk_col
+            if right_is_referenced && !joined_entities.contains(right_alias) {
+                let right_join = Join {
+                    table_name: right_cte_name.clone(),
+                    table_alias: right_alias.to_string(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(right_alias.to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(pk_col.clone()),
+                            }),
+                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(left_alias.to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(fk_col.clone()),
+                            }),
+                        ],
+                    }],
+                    join_type: Self::determine_join_type(right_is_optional),
+                    pre_filter: None,
+                };
+                eprintln!("    🔗 Created JOIN for RIGHT '{}': {}.{} = {}.{}", 
+                    right_alias, right_alias, pk_col, left_alias, fk_col);
+                collected_graph_joins.push(right_join);
+                joined_entities.insert(right_alias.to_string());
+            }
+        }
+        
+        Ok(())
+    }
+
     /// Check if a node is actually referenced in the query (SELECT, WHERE, ORDER BY, etc.)
     /// Returns true if the node has any projections or filters, meaning it must be joined.
     fn is_node_referenced(alias: &str, plan_ctx: &PlanCtx, logical_plan: &LogicalPlan) -> bool {
@@ -1545,6 +1663,39 @@ impl GraphJoinInference {
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
         // Aliases and CTE names are now passed as parameters
+        
+        // ============================================================
+        // SELF-REFERENCING FK PATTERN CHECK
+        // ============================================================
+        // For self-referencing FK edges (e.g., parent_id pointing to same table's id):
+        // - Skip the edge table JOIN entirely
+        // - Create a direct node-to-node JOIN using the FK column
+        // Example: child.parent_id = parent.object_id (no edge table)
+        if rel_schema.is_self_referencing_fk {
+            eprintln!("    🔗 SELF-REFERENCING FK PATTERN DETECTED");
+            eprintln!("    🔗 Skipping edge table JOIN, creating direct node-to-node JOIN");
+            eprintln!("    🔗 from_id (FK): {}, to_id (PK): {}", rel_schema.from_id, rel_schema.to_id);
+            
+            return self.handle_self_referencing_fk_join(
+                graph_rel,
+                left_alias,
+                rel_alias,
+                right_alias,
+                left_cte_name,
+                right_cte_name,
+                rel_schema,
+                left_node_id_column.clone(),
+                right_node_id_column.clone(),
+                left_is_optional,
+                right_is_optional,
+                left_is_referenced,
+                right_is_referenced,
+                plan_ctx,
+                collected_graph_joins,
+                joined_entities,
+            );
+        }
+        // ============================================================
         
         // For coupled edge checking and other single-type operations, use the first type
         // For polymorphic edge filters, we pass all types to generate IN clause if needed
@@ -2957,6 +3108,7 @@ mod tests {
                 to_label_column: None,
                 from_node_properties: None,
                 to_node_properties: None,
+            is_self_referencing_fk: false,
             },
         );
 
@@ -2988,6 +3140,7 @@ mod tests {
                 to_label_column: None,
                 from_node_properties: None,
                 to_node_properties: None,
+            is_self_referencing_fk: false,
             },
         );
 

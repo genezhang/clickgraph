@@ -56,6 +56,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            is_self_referencing_fk: false,
         };
         relationships.insert("FOLLOWS".to_string(), rel_schema);
 

@@ -1,0 +1,54 @@
+# File Storage System Graph Schema - Two Table Design
+# Models folders and files as objects with parent relationships
+#
+# Design: 
+#   - fs_objects: stores all objects (files and folders)
+#   - fs_parent: stores parent relationships (child_id -> parent_id)
+#
+# The parent relationship table is essentially denormalized from the objects table,
+# but having it separate makes the graph schema simpler and query generation cleaner.
+#
+# Example queries:
+#   Find files in a folder:
+#     MATCH (f:Object)-[:PARENT]->(folder:Object) 
+#     WHERE folder.name = 'Documents' AND f.type = 'file'
+#     RETURN f.name, f.size
+#
+#   Find folder path (ancestors):
+#     MATCH p = (f:Object)-[:PARENT*1..10]->(ancestor:Object)
+#     WHERE f.name = 'report.pdf'
+#     RETURN ancestor.name
+#
+#   Find all children of a folder:
+#     MATCH (folder:Object)<-[:PARENT]-(child:Object)
+#     WHERE folder.name = 'Projects'
+#     RETURN child.name, child.type
+
+name: filesystem
+version: "1.0"
+description: "File storage system with separate objects and parent relationship tables"
+
+graph_schema:
+  nodes:
+    - label: Object
+      database: test_integration
+      table: fs_objects
+      id_column: object_id
+      property_mappings:
+        object_id: object_id
+        name: name
+        type: object_type       # 'file' or 'folder'
+        size: size_bytes        # file size, 0 for folders
+        mime_type: mime_type    # e.g., 'application/pdf', null for folders
+        created_at: created_at
+        modified_at: modified_at
+        owner: owner_id
+
+  edges:
+    - type: PARENT
+      database: test_integration
+      table: fs_parent          # Separate relationship table
+      from_id: child_id         # the child object
+      to_id: parent_id          # the parent folder
+      from_node: Object
+      to_node: Object

@@ -1,0 +1,68 @@
+# File Storage System Graph Schema - Single Table Self-Referencing FK Pattern
+#
+# This models the standard relational pattern where a many-to-one relationship
+# is represented by a FK column on the "many" side:
+#
+#   fs_objects
+#   +------------+--------+----------+-----------+
+#   | object_id  | name   | type     | parent_id |  <- FK to same table
+#   +------------+--------+----------+-----------+
+#   | 1          | /      | folder   | NULL      |  <- root (no parent)
+#   | 2          | docs   | folder   | 1         |  <- child of root
+#   | 3          | file.txt | file   | 2         |  <- child of docs
+#   +------------+--------+----------+-----------+
+#
+# Cypher pattern: (child:Object)-[:PARENT]->(parent:Object)
+# Expected SQL:   child.parent_id = parent.object_id
+#
+# This is NOT denormalized - the edge and node ARE the same table, with:
+# - Each row being a node (an object)
+# - The parent_id column being the "edge" (FK to another row)
+#
+# Example queries:
+#   Find parent of a file:
+#     MATCH (f:Object)-[:PARENT]->(p:Object)
+#     WHERE f.name = 'file.txt'
+#     RETURN p.name
+#
+#   Find all children of a folder:
+#     MATCH (f:Object)<-[:PARENT]-(c:Object)  
+#     WHERE f.name = 'docs'
+#     RETURN c.name
+#
+#   Find ancestors (path to root):
+#     MATCH (f:Object)-[:PARENT*1..10]->(a:Object)
+#     WHERE f.name = 'file.txt'
+#     RETURN a.name
+
+name: filesystem_single
+version: "1.0"
+description: "File storage system using single table with self-referencing FK"
+
+graph_schema:
+  nodes:
+    - label: Object
+      database: test_integration
+      table: fs_objects_single
+      id_column: object_id
+      property_mappings:
+        object_id: object_id
+        name: name
+        type: object_type       # 'file' or 'folder'
+        size: size_bytes        # file size, 0 for folders
+        mime_type: mime_type    # e.g., 'application/pdf', null for folders
+        created_at: created_at
+        modified_at: modified_at
+        owner: owner_id
+
+  edges:
+    - type: PARENT
+      database: test_integration
+      table: fs_objects_single  # Same table as the node!
+      # Key insight: This is a self-referencing FK pattern
+      # Each row in fs_objects_single has parent_id pointing to another row's object_id
+      # We want: child_alias.parent_id = parent_alias.object_id
+      from_id: parent_id       # The FK column (join condition LHS will be child.parent_id)
+      to_id: object_id         # The target PK (join condition RHS will be parent.object_id)
+      from_node: Object
+      to_node: Object
