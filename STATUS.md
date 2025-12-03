@@ -1,20 +1,26 @@
 # ClickGraph Status
 
-*Updated: December 2, 2025*
+*Updated: December 3, 2025*
 
-## 🆕 **Recent Fixes** - December 2, 2025
+## 🆕 **Recent Fixes** - December 3, 2025
+
+### ✅ Undirected Multi-Hop Patterns Fixed
+- **Issue**: `(a)-[r1]-(b)-[r2]-(c)` was generating broken SQL with wrong aliases
+- **Fix**: BidirectionalUnion optimizer now generates 2^n UNION branches with:
+  - Proper column swapping for denormalized nodes when direction is Incoming
+  - Direction-aware `is_from_node` flags in GraphJoinInference
+  - Correct JOIN conditions for all direction combinations
+- **Files**: `bidirectional_union.rs`, `graph_join_inference.rs`
+- **Example**: 2-hop undirected pattern now generates 4 correct UNION branches
 
 ### ✅ `collect()` Function Mapping
 - **Issue**: `collect()` was generating literal "collect()" in SQL, which ClickHouse doesn't have
 - **Fix**: Added function mapping: `collect()` → `groupArray()`
-- **Files**: `function_registry.rs`, `function_translator.rs`
 
 ### ✅ Regex Match Operator (`=~`)
 - **Feature**: Full support for Neo4j regex match operator
 - **Cypher**: `WHERE n.name =~ '^A.*'`
 - **SQL**: `WHERE match(n.name, '^A.*')` (ClickHouse native regex)
-- **Files**: Added `RegexMatch` operator to parser, logical expr, render expr, SQL generation
-- **Tested**: Works in WHERE and RETURN clauses
 
 ---
 

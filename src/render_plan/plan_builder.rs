@@ -2,6 +2,7 @@ use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGen
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_plan::{GraphRel, LogicalPlan, ProjectionItem};
+use crate::query_planner::logical_expr::Direction;
 use std::sync::Arc;
 
 use super::cte_generation::{
@@ -230,37 +231,56 @@ impl RenderPlanBuilder for LogicalPlan {
                 
                 // For denormalized nodes, properties are in the relationship center's ViewScan
                 // not in the GraphNode itself (which has Empty input)
+                // IMPORTANT: Direction affects which properties to use!
+                // - Outgoing: left_connection → from_node_properties, right_connection → to_node_properties
+                // - Incoming: left_connection → to_node_properties, right_connection → from_node_properties
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                    // Check if alias matches left_connection and we have from_node_properties
+                    let is_incoming = rel.direction == Direction::Incoming;
+                    
+                    // Check if alias matches left_connection
                     if alias == rel.left_connection {
-                        if let Some(from_props) = &scan.from_node_properties {
-                            let mut properties: Vec<(String, String)> = from_props
+                        // For Incoming direction, left node is on the TO side of the edge
+                        let props = if is_incoming {
+                            &scan.to_node_properties
+                        } else {
+                            &scan.from_node_properties
+                        };
+                        if let Some(node_props) = props {
+                            let mut properties: Vec<(String, String)> = node_props
                                 .iter()
                                 .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
                                 .collect();
                             properties.sort_by(|a, b| a.0.cmp(&b.0));
                             if !properties.is_empty() {
                                 println!(
-                                    "DEBUG: get_all_properties_for_alias - denormalized FROM node '{}' has {} properties from rel center",
+                                    "DEBUG: get_all_properties_for_alias - denormalized node '{}' (direction={:?}) has {} properties from rel center",
                                     alias,
+                                    rel.direction,
                                     properties.len()
                                 );
                                 return Ok(properties);
                             }
                         }
                     }
-                    // Check if alias matches right_connection and we have to_node_properties
+                    // Check if alias matches right_connection
                     if alias == rel.right_connection {
-                        if let Some(to_props) = &scan.to_node_properties {
-                            let mut properties: Vec<(String, String)> = to_props
+                        // For Incoming direction, right node is on the FROM side of the edge
+                        let props = if is_incoming {
+                            &scan.from_node_properties
+                        } else {
+                            &scan.to_node_properties
+                        };
+                        if let Some(node_props) = props {
+                            let mut properties: Vec<(String, String)> = node_props
                                 .iter()
                                 .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
                                 .collect();
                             properties.sort_by(|a, b| a.0.cmp(&b.0));
                             if !properties.is_empty() {
                                 println!(
-                                    "DEBUG: get_all_properties_for_alias - denormalized TO node '{}' has {} properties from rel center",
+                                    "DEBUG: get_all_properties_for_alias - denormalized node '{}' (direction={:?}) has {} properties from rel center",
                                     alias,
+                                    rel.direction,
                                     properties.len()
                                 );
                                 return Ok(properties);
@@ -377,31 +397,48 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
                 
                 // For denormalized nodes, properties are in the relationship center's ViewScan
+                // IMPORTANT: Direction affects which properties to use!
+                // - Outgoing: left_connection → from_node_properties, right_connection → to_node_properties
+                // - Incoming: left_connection → to_node_properties, right_connection → from_node_properties
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                    // Check if alias matches left_connection (from node)
+                    let is_incoming = rel.direction == Direction::Incoming;
+                    
+                    // Check if alias matches left_connection
                     if alias == rel.left_connection {
-                        if let Some(from_props) = &scan.from_node_properties {
-                            let mut properties: Vec<(String, String)> = from_props
+                        // For Incoming direction, left node is on the TO side of the edge
+                        let props = if is_incoming {
+                            &scan.to_node_properties
+                        } else {
+                            &scan.from_node_properties
+                        };
+                        if let Some(node_props) = props {
+                            let mut properties: Vec<(String, String)> = node_props
                                 .iter()
                                 .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
                                 .collect();
                             properties.sort_by(|a, b| a.0.cmp(&b.0));
                             if !properties.is_empty() {
-                                // IMPORTANT: Use relationship alias for denormalized FROM nodes
+                                // IMPORTANT: Use relationship alias for denormalized nodes
                                 return Ok((properties, Some(rel.alias.clone())));
                             }
                         }
                     }
-                    // Check if alias matches right_connection (to node)
+                    // Check if alias matches right_connection
                     if alias == rel.right_connection {
-                        if let Some(to_props) = &scan.to_node_properties {
-                            let mut properties: Vec<(String, String)> = to_props
+                        // For Incoming direction, right node is on the FROM side of the edge
+                        let props = if is_incoming {
+                            &scan.from_node_properties
+                        } else {
+                            &scan.to_node_properties
+                        };
+                        if let Some(node_props) = props {
+                            let mut properties: Vec<(String, String)> = node_props
                                 .iter()
                                 .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
                                 .collect();
                             properties.sort_by(|a, b| a.0.cmp(&b.0));
                             if !properties.is_empty() {
-                                // IMPORTANT: Use relationship alias for denormalized TO nodes
+                                // IMPORTANT: Use relationship alias for denormalized nodes
                                 return Ok((properties, Some(rel.alias.clone())));
                             }
                         }

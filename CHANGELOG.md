@@ -2,6 +2,7 @@
 
 ### 🐛 Bug Fixes
 
+- **Fix undirected multi-hop patterns** - Patterns like `(a)-[r1]-(b)-[r2]-(c)` now correctly generate 2^n UNION branches with proper column swapping for denormalized nodes and direction-aware JOIN conditions
 - **Fix UNION column order mismatch for denormalized nodes** - Sort properties alphabetically to ensure consistent column order across UNION ALL branches
 - **Fix count(p) for path variables** - Path variables (from `MATCH p = ...`) now correctly resolve to `count(*)` instead of failing with "Missing Label" error
 

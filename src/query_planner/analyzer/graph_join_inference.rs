@@ -1565,10 +1565,16 @@ impl GraphJoinInference {
         } else {
             (rel_cols.from_id, rel_cols.to_id)  // Normal for outgoing/either
         };
+        
+        // Direction-aware is_from_node flags for denormalized alias registration
+        // For Outgoing: left=from_node (true), right=to_node (false)
+        // For Incoming: left=to_node (false), right=from_node (true)
+        let left_is_from_node = graph_rel.direction != Direction::Incoming;
+        let right_is_from_node = graph_rel.direction == Direction::Incoming;
 
         eprintln!(
-            "    🔹 DEBUG REL COLUMNS: direction={:?}, rel_from_col = '{}', rel_to_col = '{}'",
-            graph_rel.direction, rel_from_col, rel_to_col
+            "    🔹 DEBUG REL COLUMNS: direction={:?}, rel_from_col = '{}', rel_to_col = '{}', left_is_from_node={}, right_is_from_node={}",
+            graph_rel.direction, rel_from_col, rel_to_col, left_is_from_node, right_is_from_node
         );
 
         // If both nodes are of the same type then check the direction to determine where are the left and right nodes present in the edgelist.
@@ -1683,7 +1689,7 @@ impl GraphJoinInference {
                 let left_is_denormalized = is_node_denormalized_on_edge(
                     &left_node_schema,
                     &rel_schema,
-                    true  // is_from_node = true
+                    left_is_from_node  // Direction-aware: true for outgoing, false for incoming
                 );
                 
                 if left_is_denormalized {
@@ -1691,13 +1697,13 @@ impl GraphJoinInference {
                     plan_ctx.register_denormalized_alias(
                         left_alias.to_string(),
                         rel_alias.to_string(),
-                        true,  // is_from_node
+                        left_is_from_node,  // Direction-aware
                         left_label.clone(),
                         rel_type.to_string(),
                     );
                     eprintln!(
-                        "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (from_node)",
-                        left_alias, rel_alias
+                        "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (is_from_node={})",
+                        left_alias, rel_alias, left_is_from_node
                     );
                     // DON'T add to joined_entities - denormalized nodes don't exist as physical tables
                     // The relationship table will be the physical table
@@ -1938,7 +1944,7 @@ impl GraphJoinInference {
                     let left_is_denormalized = is_node_denormalized_on_edge(
                         &left_node_schema,
                         &rel_schema,
-                        true  // is_from_node = true (LEFT connects to rel's from_node)
+                        left_is_from_node  // Direction-aware: true for outgoing, false for incoming
                     );
                     
                     if left_is_denormalized {
@@ -1946,13 +1952,13 @@ impl GraphJoinInference {
                         plan_ctx.register_denormalized_alias(
                             left_alias.to_string(),
                             rel_alias.to_string(),
-                            true,  // is_from_node
+                            left_is_from_node,  // Direction-aware
                             left_label.clone(),
                             rel_type.to_string(),
                         );
                         eprintln!(
-                            "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (from_node)",
-                            left_alias, rel_alias
+                            "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (is_from_node={})",
+                            left_alias, rel_alias, left_is_from_node
                         );
                         // DON'T mark as joined - denormalized nodes are virtual, not physical tables
                     } else {
@@ -1988,12 +1994,12 @@ impl GraphJoinInference {
                 let left_is_denormalized = is_node_denormalized_on_edge(
                     &left_node_schema,
                     &rel_schema,
-                    true  // is_from_node
+                    left_is_from_node  // Direction-aware
                 );
                 let right_is_denormalized = is_node_denormalized_on_edge(
                     &right_node_schema,
                     &rel_schema,
-                    false  // is_from_node
+                    right_is_from_node  // Direction-aware
                 );
                 
                 if left_is_denormalized && right_is_denormalized {
@@ -2168,20 +2174,20 @@ impl GraphJoinInference {
                             let left_is_denormalized = is_node_denormalized_on_edge(
                                 &left_node_schema,
                                 &rel_schema,
-                                true  // is_from_node = true
+                                left_is_from_node  // Direction-aware
                             );
                             
                             if left_is_denormalized {
                                 plan_ctx.register_denormalized_alias(
                                     left_alias.to_string(),
                                     rel_alias.to_string(),
-                                    true,  // is_from_node
+                                    left_is_from_node,  // Direction-aware
                                     left_label.clone(),
                                     rel_type.to_string(),
                                 );
                                 eprintln!(
-                                    "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (from_node)",
-                                    left_alias, rel_alias
+                                    "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (is_from_node={})",
+                                    left_alias, rel_alias, left_is_from_node
                                 );
                                 joined_entities.insert(left_alias.to_string());
                             } else {
@@ -2250,20 +2256,20 @@ impl GraphJoinInference {
                     let right_is_denormalized = is_node_denormalized_on_edge(
                         &right_node_schema,
                         &rel_schema,
-                        false  // is_from_node = false (RIGHT connects to rel's to_node)
+                        right_is_from_node  // Direction-aware
                     );
                     
                     if right_is_denormalized {
                         plan_ctx.register_denormalized_alias(
                             right_alias.to_string(),
                             rel_alias.to_string(),
-                            false,  // is_from_node
+                            right_is_from_node,  // Direction-aware
                             right_label.clone(),
                             rel_type.to_string(),
                         );
                         eprintln!(
-                            "    DENORMALIZED: Registered RIGHT alias '{}' → rel '{}' (to_node)",
-                            right_alias, rel_alias
+                            "    DENORMALIZED: Registered RIGHT alias '{}' → rel '{}' (is_from_node={})",
+                            right_alias, rel_alias, right_is_from_node
                         );
                         joined_entities.insert(right_alias.to_string());
                     } else {
@@ -2409,20 +2415,20 @@ impl GraphJoinInference {
                 let left_is_denormalized = is_node_denormalized_on_edge(
                     &left_node_schema,
                     &rel_schema,
-                    true  // is_from_node = true
+                    left_is_from_node  // Direction-aware
                 );
                 
                 if left_is_denormalized {
                     plan_ctx.register_denormalized_alias(
                         left_alias.to_string(),
                         rel_alias.to_string(),
-                        true,  // is_from_node
+                        left_is_from_node,  // Direction-aware
                         left_label.clone(),
                         rel_type.to_string(),
                     );
                     eprintln!(
-                        "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (from_node)",
-                        left_alias, rel_alias
+                        "    DENORMALIZED: Registered LEFT alias '{}' → rel '{}' (is_from_node={})",
+                        left_alias, rel_alias, left_is_from_node
                     );
                 } else {
                     let left_graph_join = Join {
