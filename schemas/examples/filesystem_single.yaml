@@ -1,7 +1,9 @@
-# File Storage System Graph Schema - Single Table Self-Referencing FK Pattern
+# File Storage System Graph Schema - FK-Edge Pattern (Self-Referencing)
 #
-# This models the standard relational pattern where a many-to-one relationship
-# is represented by a FK column on the "many" side:
+# This models the FK-edge pattern where a relationship is represented by a
+# foreign key column on a node table (no separate edge table).
+#
+# This is the SELF-REFERENCING variant: edge table = from_node = to_node
 #
 #   fs_objects
 #   +------------+--------+----------+-----------+
@@ -37,7 +39,7 @@
 
 name: filesystem_single
 version: "1.0"
-description: "File storage system using single table with self-referencing FK"
+description: "File storage system using FK-edge pattern (self-referencing)"
 
 graph_schema:
   nodes:

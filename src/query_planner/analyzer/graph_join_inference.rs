@@ -261,16 +261,20 @@ impl GraphJoinInference {
         }
     }
 
-    /// Handle self-referencing FK join pattern
+    /// Handle FK-edge join pattern
     /// 
-    /// For edges where the edge table = node table and the relationship is
-    /// represented by a FK column (e.g., parent_id pointing to object_id),
-    /// we skip the edge table scan and create a direct node-to-node JOIN.
+    /// For edges where the edge table = one of the node tables and the relationship
+    /// is represented by a FK column, we skip the edge table scan and create a
+    /// direct node-to-node JOIN.
     /// 
-    /// Example: (child:Object)-[:PARENT]->(parent:Object) on fs_objects table
-    /// Generated SQL: child.parent_id = parent.object_id (no edge table)
+    /// Two variants:
+    /// 1. Self-referencing: (child:Object)-[:PARENT]->(parent:Object) on same table
+    ///    SQL: child.parent_id = parent.object_id
+    /// 
+    /// 2. Non-self-referencing: (o:Order)-[:PLACED_BY]->(c:Customer) 
+    ///    SQL: o.customer_id = c.customer_id
     #[allow(clippy::too_many_arguments)]
-    fn handle_self_referencing_fk_join(
+    fn handle_fk_edge_join(
         &self,
         graph_rel: &GraphRel,
         left_alias: &String,
@@ -289,12 +293,12 @@ impl GraphJoinInference {
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
-        // For self-referencing FK:
-        // - from_id = FK column (e.g., parent_id) on the "from" node
-        // - to_id = PK column (e.g., object_id) on the "to" node
+        // For FK-edge pattern:
+        // - from_id = FK column (e.g., parent_id, customer_id) on the "from" node
+        // - to_id = PK column (e.g., object_id, customer_id) on the "to" node
         // 
-        // For Outgoing direction: child.parent_id = parent.object_id
-        // For Incoming direction: parent.object_id = child.parent_id (swap)
+        // For Outgoing direction: from_node.fk_col = to_node.pk_col
+        // For Incoming direction: swap the columns
         
         let (fk_col, pk_col) = if graph_rel.direction == Direction::Incoming {
             // Incoming: swap - the "to" node has the FK pointing back
@@ -1665,18 +1669,18 @@ impl GraphJoinInference {
         // Aliases and CTE names are now passed as parameters
         
         // ============================================================
-        // SELF-REFERENCING FK PATTERN CHECK
+        // FK-EDGE PATTERN CHECK
         // ============================================================
         // For self-referencing FK edges (e.g., parent_id pointing to same table's id):
         // - Skip the edge table JOIN entirely
         // - Create a direct node-to-node JOIN using the FK column
         // Example: child.parent_id = parent.object_id (no edge table)
-        if rel_schema.is_self_referencing_fk {
-            eprintln!("    🔗 SELF-REFERENCING FK PATTERN DETECTED");
+        if rel_schema.is_fk_edge {
+            eprintln!("    🔗 FK-EDGE PATTERN DETECTED");
             eprintln!("    🔗 Skipping edge table JOIN, creating direct node-to-node JOIN");
             eprintln!("    🔗 from_id (FK): {}, to_id (PK): {}", rel_schema.from_id, rel_schema.to_id);
             
-            return self.handle_self_referencing_fk_join(
+            return self.handle_fk_edge_join(
                 graph_rel,
                 left_alias,
                 rel_alias,
@@ -3108,7 +3112,7 @@ mod tests {
                 to_label_column: None,
                 from_node_properties: None,
                 to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
             },
         );
 
@@ -3140,7 +3144,7 @@ mod tests {
                 to_label_column: None,
                 from_node_properties: None,
                 to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
             },
         );
 
@@ -4118,7 +4122,216 @@ mod tests {
             _ => panic!("Expected transformation"),
         }
     }
+
+    // ===== FK-Edge Pattern Tests =====
+    
+    fn create_self_referencing_fk_schema() -> GraphSchema {
+        use crate::graph_catalog::expression_parser::PropertyValue;
+        
+        let mut nodes = HashMap::new();
+        let mut relationships = HashMap::new();
+
+        // Create Object node (filesystem objects - same table for all)
+        nodes.insert(
+            "Object".to_string(),
+            NodeSchema {
+                database: "test".to_string(),
+                table_name: "fs_objects".to_string(),
+                column_names: vec!["object_id".to_string(), "name".to_string(), "type".to_string(), "parent_id".to_string()],
+                primary_keys: "object_id".to_string(),
+                node_id: NodeIdSchema {
+                    column: "object_id".to_string(),
+                    dtype: "UInt64".to_string(),
+                },
+                property_mappings: {
+                    let mut props = HashMap::new();
+                    props.insert("object_id".to_string(), PropertyValue::Column("object_id".to_string()));
+                    props.insert("name".to_string(), PropertyValue::Column("name".to_string()));
+                    props.insert("type".to_string(), PropertyValue::Column("type".to_string()));
+                    props
+                },
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+            },
+        );
+
+        // Create PARENT relationship (self-referencing FK)
+        // parent_id column on fs_objects points to object_id on same table
+        relationships.insert(
+            "PARENT".to_string(),
+            RelationshipSchema {
+                database: "test".to_string(),
+                table_name: "fs_objects".to_string(),  // Same as node table!
+                column_names: vec![],
+                from_node: "Object".to_string(),
+                to_node: "Object".to_string(),  // Self-referencing
+                from_id: "parent_id".to_string(),  // FK column
+                to_id: "object_id".to_string(),    // PK column
+                from_node_id_dtype: "UInt64".to_string(),
+                to_node_id_dtype: "UInt64".to_string(),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                edge_id: None,
+                type_column: None,
+                from_label_column: None,
+                to_label_column: None,
+                from_node_properties: None,
+                to_node_properties: None,
+                is_fk_edge: true,  // Self-referencing FK pattern
+            },
+        );
+
+        GraphSchema::build(1, "test".to_string(), nodes, relationships)
+    }
+    
+    fn create_non_self_referencing_fk_schema() -> GraphSchema {
+        use crate::graph_catalog::expression_parser::PropertyValue;
+        
+        let mut nodes = HashMap::new();
+        let mut relationships = HashMap::new();
+
+        // Create Order node
+        nodes.insert(
+            "Order".to_string(),
+            NodeSchema {
+                database: "test".to_string(),
+                table_name: "orders".to_string(),
+                column_names: vec!["order_id".to_string(), "customer_id".to_string(), "total".to_string()],
+                primary_keys: "order_id".to_string(),
+                node_id: NodeIdSchema {
+                    column: "order_id".to_string(),
+                    dtype: "UInt64".to_string(),
+                },
+                property_mappings: {
+                    let mut props = HashMap::new();
+                    props.insert("order_id".to_string(), PropertyValue::Column("order_id".to_string()));
+                    props.insert("total".to_string(), PropertyValue::Column("total".to_string()));
+                    props
+                },
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+            },
+        );
+        
+        // Create Customer node
+        nodes.insert(
+            "Customer".to_string(),
+            NodeSchema {
+                database: "test".to_string(),
+                table_name: "customers".to_string(),
+                column_names: vec!["customer_id".to_string(), "name".to_string()],
+                primary_keys: "customer_id".to_string(),
+                node_id: NodeIdSchema {
+                    column: "customer_id".to_string(),
+                    dtype: "UInt64".to_string(),
+                },
+                property_mappings: {
+                    let mut props = HashMap::new();
+                    props.insert("customer_id".to_string(), PropertyValue::Column("customer_id".to_string()));
+                    props.insert("name".to_string(), PropertyValue::Column("name".to_string()));
+                    props
+                },
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+            },
+        );
+
+        // Create PLACED_BY relationship (non-self-referencing FK)
+        // customer_id column on orders points to customer_id on customers
+        relationships.insert(
+            "PLACED_BY".to_string(),
+            RelationshipSchema {
+                database: "test".to_string(),
+                table_name: "orders".to_string(),  // Same as Order node table!
+                column_names: vec![],
+                from_node: "Order".to_string(),
+                to_node: "Customer".to_string(),  // Different table
+                from_id: "order_id".to_string(),  // Order's PK
+                to_id: "customer_id".to_string(), // FK pointing to Customer
+                from_node_id_dtype: "UInt64".to_string(),
+                to_node_id_dtype: "UInt64".to_string(),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                edge_id: None,
+                type_column: None,
+                from_label_column: None,
+                to_label_column: None,
+                from_node_properties: None,
+                to_node_properties: None,
+                is_fk_edge: true,  // FK-edge pattern (non-self-ref)
+            },
+        );
+
+        GraphSchema::build(1, "test".to_string(), nodes, relationships)
+    }
+    
+    #[test]
+    fn test_fk_edge_pattern_self_referencing() {
+        // Test self-referencing FK: (child:Object)-[:PARENT]->(parent:Object)
+        let schema = create_self_referencing_fk_schema();
+        
+        // Verify schema detected FK pattern
+        let rel_schema = schema.get_relationships_schemas().get("PARENT").unwrap();
+        assert!(rel_schema.is_fk_edge, "PARENT relationship should be FK-edge pattern");
+        assert_eq!(rel_schema.from_node, "Object");
+        assert_eq!(rel_schema.to_node, "Object");
+        assert_eq!(rel_schema.from_id, "parent_id");  // FK column
+        assert_eq!(rel_schema.to_id, "object_id");    // PK column
+    }
+    
+    #[test]
+    fn test_fk_edge_pattern_non_self_referencing() {
+        // Test non-self-ref FK: (o:Order)-[:PLACED_BY]->(c:Customer)
+        let schema = create_non_self_referencing_fk_schema();
+        
+        // Verify schema detected FK pattern
+        let rel_schema = schema.get_relationships_schemas().get("PLACED_BY").unwrap();
+        assert!(rel_schema.is_fk_edge, "PLACED_BY relationship should be FK-edge pattern");
+        assert_eq!(rel_schema.from_node, "Order");
+        assert_eq!(rel_schema.to_node, "Customer");
+        assert_eq!(rel_schema.from_id, "order_id");     // Order's PK
+        assert_eq!(rel_schema.to_id, "customer_id");   // FK to Customer
+    }
+    
+    #[test]
+    fn test_standard_edge_is_not_fk_pattern() {
+        // Verify standard edge tables are NOT marked as FK pattern
+        let schema = create_test_graph_schema();
+        
+        let follows = schema.get_relationships_schemas().get("FOLLOWS").unwrap();
+        assert!(!follows.is_fk_edge, "FOLLOWS should NOT be FK-edge pattern");
+        
+        let works_at = schema.get_relationships_schemas().get("WORKS_AT").unwrap();
+        assert!(!works_at.is_fk_edge, "WORKS_AT should NOT be FK-edge pattern");
+    }
 }
+
+
+
 
 
 

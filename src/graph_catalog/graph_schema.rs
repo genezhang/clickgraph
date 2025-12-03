@@ -175,17 +175,24 @@ pub struct RelationshipSchema {
     #[serde(skip)]
     pub to_node_properties: Option<HashMap<String, String>>,
     
-    /// If true, this is a self-referencing FK pattern where:
-    /// - Edge table = Node table (same table for from_node and to_node)
-    /// - from_id = FK column on the "from" node (e.g., parent_id)
-    /// - to_id = PK column on the "to" node (e.g., object_id)
-    /// - No separate edge table scan needed - just a direct self-join
+    /// If true, this is an FK-edge pattern where the edge is represented by a
+    /// foreign key column on one of the node tables (no separate edge table).
     /// 
-    /// Example: fs_objects table with parent_id FK
-    /// Query: (child)-[:PARENT]->(parent)
-    /// SQL:   child.parent_id = parent.object_id
+    /// Two variants:
+    /// 1. Self-referencing: edge table = from_node table = to_node table
+    ///    Example: fs_objects.parent_id → fs_objects.object_id
+    ///    Query: (child:Object)-[:PARENT]->(parent:Object)
+    ///    SQL:   child.parent_id = parent.object_id
+    /// 
+    /// 2. Non-self-referencing: edge table = from_node table ≠ to_node table  
+    ///    Example: orders.customer_id → customers.customer_id
+    ///    Query: (o:Order)-[:PLACED_BY]->(c:Customer)
+    ///    SQL:   o.customer_id = c.customer_id
+    /// 
+    /// Detection: edge table matches from_node OR to_node table, with no
+    /// denormalized node properties (from_node_properties/to_node_properties).
     #[serde(skip)]
-    pub is_self_referencing_fk: bool,
+    pub is_fk_edge: bool,
 }
 
 impl RelationshipSchema {
@@ -749,7 +756,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(from_props),
             to_node_properties: Some(to_props),
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         relationships.insert("FLIGHT".to_string(), flight_rel);
@@ -810,7 +817,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(user_props),
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         relationships.insert("AUTHORED".to_string(), authored_rel);
@@ -882,7 +889,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(from_props),
             to_node_properties: Some(to_props),
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         // Test detection
@@ -943,7 +950,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,  // No denormalized props
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         // Test detection
@@ -1032,7 +1039,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(from_props),
             to_node_properties: None,  // User is traditional
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         // Test detection
@@ -1123,7 +1130,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: Some(to_props),
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         // Test detection
@@ -1201,7 +1208,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(from_props),
             to_node_properties: Some(to_props),
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         // Should still be detected as denormalized (1-2 mappings allowed)
@@ -1254,7 +1261,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,  // Missing!
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         // Should NOT be detected as denormalized (missing props)
@@ -1314,7 +1321,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(from_props),
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         // Should NOT be detected (different databases)
@@ -1376,7 +1383,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(from_props),
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         // Should NOT be detected (too many property_mappings)
@@ -1414,7 +1421,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         // RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)
@@ -1439,7 +1446,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         relationships.insert("REQUESTED".to_string(), requested);
@@ -1485,7 +1492,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         let edge2 = RelationshipSchema {
@@ -1509,7 +1516,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         relationships.insert("REL1".to_string(), edge1);
@@ -1548,7 +1555,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         let edge2 = RelationshipSchema {
@@ -1572,7 +1579,7 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         };
         
         relationships.insert("REL1".to_string(), edge1);

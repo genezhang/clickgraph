@@ -108,7 +108,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             to_label_column: Some("to_type".to_string()),
             from_node_properties: None,
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         },
     );
 
@@ -143,7 +143,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             to_label_column: Some("to_type".to_string()),
             from_node_properties: None,
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         },
     );
 
@@ -178,7 +178,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             to_label_column: Some("to_type".to_string()),
             from_node_properties: None,
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         },
     );
 
@@ -327,7 +327,7 @@ fn test_non_polymorphic_relationship() {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         },
     );
 

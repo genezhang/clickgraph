@@ -1,0 +1,54 @@
+# Order-Customer FK-Edge Pattern Example
+#
+# This demonstrates a non-self-referencing FK pattern where:
+# - Order table has a customer_id FK column
+# - The FK column IS the relationship (no separate edge table)
+#
+# Table structure:
+#   orders                          customers
+#   +----------+-------------+      +-------------+--------+
+#   | order_id | customer_id | ---> | customer_id | name   |
+#   +----------+-------------+      +-------------+--------+
+#   | 1        | 100         |      | 100         | Alice  |
+#   | 2        | 100         |      | 101         | Bob    |
+#   | 3        | 101         |      +-------------+--------+
+#   +----------+-------------+
+#
+# Cypher pattern: (o:Order)-[:PLACED_BY]->(c:Customer)
+# Expected SQL:   orders AS o JOIN customers AS c ON o.customer_id = c.customer_id
+#
+# Note: The edge table IS the orders table, but the target node is customers.
+# This is FK-edge pattern, NOT denormalized (no customer properties embedded in orders).
+
+name: orders_customers_fk
+version: "1.0"
+description: "Order-Customer relationship using FK-edge pattern"
+
+graph_schema:
+  nodes:
+    - label: Order
+      database: test_integration
+      table: orders_fk
+      id_column: order_id
+      property_mappings:
+        order_id: order_id
+        order_date: order_date
+        total_amount: total_amount
+    
+    - label: Customer
+      database: test_integration
+      table: customers_fk
+      id_column: customer_id
+      property_mappings:
+        customer_id: customer_id
+        name: name
+        email: email
+
+  edges:
+    - type: PLACED_BY
+      database: test_integration
+      table: orders_fk           # Same as Order node table!
+      from_id: order_id          # Order's PK
+      to_id: customer_id         # FK pointing to Customer
+      from_node: Order
+      to_node: Customer

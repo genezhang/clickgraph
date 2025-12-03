@@ -91,7 +91,7 @@ fn setup_denormalized_schema() -> GraphSchema {
             to_label_column: None,
             from_node_properties: Some(from_node_props.into_iter().map(|(k, v)| (k, v.raw().to_string())).collect()),
             to_node_properties: Some(to_node_props.into_iter().map(|(k, v)| (k, v.raw().to_string())).collect()),
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         },
     );
 
@@ -257,7 +257,7 @@ fn test_multiple_relationships_same_node() {
             to_label_column: None,
             from_node_properties: Some(author_props.into_iter().map(|(k, v)| (k, v.raw().to_string())).collect()),
             to_node_properties: None,
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         },
     );
     
@@ -370,7 +370,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             to_label_column: None,
             from_node_properties: Some(from_node_props.into_iter().map(|(k, v)| (k, v.raw().to_string())).collect()),
             to_node_properties: Some(to_node_props.into_iter().map(|(k, v)| (k, v.raw().to_string())).collect()),
-            is_self_referencing_fk: false,
+            is_fk_edge: false,
         },
     );
 

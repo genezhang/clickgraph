@@ -610,21 +610,24 @@ fn build_relationship_schema(
     let to_node_props = nodes.get(&to_node)
         .and_then(|n| n.to_properties.clone());
     
-    // Detect self-referencing FK pattern:
-    // - Edge table = Node table for from_node
-    // - from_node == to_node (same node type on both ends)
+    // Detect FK-edge pattern:
+    // The edge is represented by a FK column on one of the node tables.
+    // - Edge table = from_node table OR to_node table
     // - No denormalized properties (from_node_props and to_node_props are None)
-    let from_node_schema = nodes.get(&from_node);
-    let is_self_referencing_fk = from_node_schema
-        .map(|n| {
-            let edge_table = format!("{}.{}", rel_def.database, rel_def.table);
-            let node_table = format!("{}.{}", n.database, n.table_name);
-            edge_table == node_table 
-                && from_node == to_node
-                && from_node_props.is_none() 
-                && to_node_props.is_none()
-        })
-        .unwrap_or(false);
+    // 
+    // This covers both:
+    // 1. Self-referencing FK: from_node == to_node (e.g., parent_id in same table)
+    // 2. Non-self-ref FK: from_node != to_node (e.g., orders.customer_id → customers)
+    let edge_table = format!("{}.{}", rel_def.database, rel_def.table);
+    let from_node_table = nodes.get(&from_node)
+        .map(|n| format!("{}.{}", n.database, n.table_name));
+    let to_node_table = nodes.get(&to_node)
+        .map(|n| format!("{}.{}", n.database, n.table_name));
+    
+    let is_fk_edge = from_node_props.is_none() 
+        && to_node_props.is_none()
+        && (from_node_table.as_ref() == Some(&edge_table) 
+            || to_node_table.as_ref() == Some(&edge_table));
     
     Ok(RelationshipSchema {
         database: rel_def.database.clone(),
@@ -650,7 +653,7 @@ fn build_relationship_schema(
         to_label_column: None,
         from_node_properties: from_node_props,
         to_node_properties: to_node_props,
-        is_self_referencing_fk,
+        is_fk_edge,
     })
 }
 
@@ -691,21 +694,24 @@ fn build_standard_edge_schema(
     let to_node_props = nodes.get(&std_edge.to_node)
         .and_then(|n| n.to_properties.clone());
     
-    // Detect self-referencing FK pattern:
-    // - Edge table = Node table for from_node
-    // - from_node == to_node (same node type on both ends)
+    // Detect FK-edge pattern:
+    // The edge is represented by a FK column on one of the node tables.
+    // - Edge table = from_node table OR to_node table
     // - No denormalized properties (from_node_props and to_node_props are None)
-    let from_node_schema = nodes.get(&std_edge.from_node);
-    let is_self_referencing_fk = from_node_schema
-        .map(|n| {
-            let edge_table = format!("{}.{}", std_edge.database, std_edge.table);
-            let node_table = format!("{}.{}", n.database, n.table_name);
-            edge_table == node_table 
-                && std_edge.from_node == std_edge.to_node
-                && from_node_props.is_none() 
-                && to_node_props.is_none()
-        })
-        .unwrap_or(false);
+    // 
+    // This covers both:
+    // 1. Self-referencing FK: from_node == to_node (e.g., parent_id in same table)
+    // 2. Non-self-ref FK: from_node != to_node (e.g., orders.customer_id → customers)
+    let edge_table = format!("{}.{}", std_edge.database, std_edge.table);
+    let from_node_table = nodes.get(&std_edge.from_node)
+        .map(|n| format!("{}.{}", n.database, n.table_name));
+    let to_node_table = nodes.get(&std_edge.to_node)
+        .map(|n| format!("{}.{}", n.database, n.table_name));
+    
+    let is_fk_edge = from_node_props.is_none() 
+        && to_node_props.is_none()
+        && (from_node_table.as_ref() == Some(&edge_table) 
+            || to_node_table.as_ref() == Some(&edge_table));
     
     Ok(RelationshipSchema {
         database: std_edge.database.clone(),
@@ -731,7 +737,7 @@ fn build_standard_edge_schema(
         to_label_column: None,
         from_node_properties: from_node_props,
         to_node_properties: to_node_props,
-        is_self_referencing_fk,
+        is_fk_edge,
     })
 }
 
@@ -785,7 +791,7 @@ fn build_polymorphic_edge_schemas(
             to_label_column: Some(poly_edge.to_label_column.clone()),
             from_node_properties: None,
             to_node_properties: None,
-            is_self_referencing_fk: false, // Polymorphic edges are never self-referencing FK
+            is_fk_edge: false, // Polymorphic edges are never FK-edge pattern
         };
         results.push((type_val.clone(), rel_schema));
     }
@@ -879,54 +885,56 @@ impl GraphSchemaConfig {
         for edge in &self.graph_schema.edges {
             if let EdgeDefinition::Standard(std_edge) = edge {
                 let edge_table_key = (std_edge.database.clone(), std_edge.table.clone());
+                
+                // Look up both node definitions
+                let from_node_def = node_by_table.get(&edge_table_key)
+                    .filter(|n| n.label == std_edge.from_node);
+                let to_node_def = node_by_table.get(&edge_table_key)
+                    .filter(|n| n.label == std_edge.to_node);
+                
+                // FK-edge pattern: edge table = from_node OR to_node table,
+                // with NO denormalized properties on either side
+                let has_any_node_props = from_node_def
+                    .map(|n| n.from_node_properties.is_some() || n.to_node_properties.is_some())
+                    .unwrap_or(false)
+                    || to_node_def
+                    .map(|n| n.from_node_properties.is_some() || n.to_node_properties.is_some())
+                    .unwrap_or(false);
+                
+                let is_fk_edge = (from_node_def.is_some() || to_node_def.is_some()) && !has_any_node_props;
 
                 // Check if from_node shares the same table
-                if let Some(from_node_def) = node_by_table.get(&edge_table_key) {
-                    if from_node_def.label == std_edge.from_node {
-                        // Same table - but is it self-referencing FK or denormalized?
-                        // Self-referencing FK: from_node == to_node, no denormalized properties
-                        let is_self_referencing_fk = std_edge.from_node == std_edge.to_node
-                            && from_node_def.from_node_properties.is_none()
-                            && from_node_def.to_node_properties.is_none();
-                        
-                        if !is_self_referencing_fk {
-                            // Denormalized pattern - must have from_node_properties
-                            if from_node_def.from_node_properties.is_none() || 
-                               from_node_def.from_node_properties.as_ref().unwrap().is_empty() {
-                                return Err(GraphSchemaError::InvalidConfig {
-                                    message: format!(
-                                        "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing from_node_properties on node definition",
-                                        std_edge.from_node, std_edge.type_name, std_edge.table
-                                    ),
-                                });
-                            }
+                if let Some(from_node_def) = from_node_def {
+                    if !is_fk_edge {
+                        // Denormalized pattern - must have from_node_properties
+                        if from_node_def.from_node_properties.is_none() || 
+                           from_node_def.from_node_properties.as_ref().unwrap().is_empty() {
+                            return Err(GraphSchemaError::InvalidConfig {
+                                message: format!(
+                                    "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing from_node_properties on node definition",
+                                    std_edge.from_node, std_edge.type_name, std_edge.table
+                                ),
+                            });
                         }
-                        // Self-referencing FK pattern is valid without denormalized properties
                     }
+                    // FK-edge pattern is valid without denormalized properties
                 }
 
                 // Check if to_node shares the same table
-                if let Some(to_node_def) = node_by_table.get(&edge_table_key) {
-                    if to_node_def.label == std_edge.to_node {
-                        // Same table - but is it self-referencing FK or denormalized?
-                        let is_self_referencing_fk = std_edge.from_node == std_edge.to_node
-                            && to_node_def.from_node_properties.is_none()
-                            && to_node_def.to_node_properties.is_none();
-                        
-                        if !is_self_referencing_fk {
-                            // Denormalized pattern - must have to_node_properties
-                            if to_node_def.to_node_properties.is_none() || 
-                               to_node_def.to_node_properties.as_ref().unwrap().is_empty() {
-                                return Err(GraphSchemaError::InvalidConfig {
-                                    message: format!(
-                                        "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing to_node_properties on node definition",
-                                        std_edge.to_node, std_edge.type_name, std_edge.table
-                                    ),
-                                });
-                            }
+                if let Some(to_node_def) = to_node_def {
+                    if !is_fk_edge {
+                        // Denormalized pattern - must have to_node_properties
+                        if to_node_def.to_node_properties.is_none() || 
+                           to_node_def.to_node_properties.as_ref().unwrap().is_empty() {
+                            return Err(GraphSchemaError::InvalidConfig {
+                                message: format!(
+                                    "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing to_node_properties on node definition",
+                                    std_edge.to_node, std_edge.type_name, std_edge.table
+                                ),
+                            });
                         }
-                        // Self-referencing FK pattern is valid without denormalized properties
                     }
+                    // FK-edge pattern is valid without denormalized properties
                 }
             }
         }
