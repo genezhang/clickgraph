@@ -1,10 +1,22 @@
 ## [Unreleased]
 
+### 🚀 Features
+
+- **FK-Edge pattern support** - Self-referencing foreign key patterns (file systems, org charts) now work correctly with variable-length paths and exact hop counts. Added `VlpSchemaType::FkEdge` detection and dual expansion CTE strategy (APPEND for ancestors, PREPEND for descendants).
+- **Relationship uniqueness enforcement for undirected patterns** - Multi-hop undirected patterns now enforce Neo4j-style relationship uniqueness. Uses `edge_id` columns from schema (e.g., `[FlightDate, FlightNum, Origin, Dest]`) to prevent the same physical edge from being matched by multiple relationship variables. Falls back to `[from_id, to_id]` if edge_id is not defined.
+
 ### 🐛 Bug Fixes
 
+- **Fix FK-Edge variable-length paths** - CTE generation now uses 2-way joins (node→node via FK) instead of incorrect 3-way joins for FK-edge schemas
+- **Fix FK-Edge exact hop counts** - ChainedJoinGenerator now supports FK-edge patterns with direct `child.parent_id = parent.object_id` joins
 - **Fix undirected multi-hop patterns** - Patterns like `(a)-[r1]-(b)-[r2]-(c)` now correctly generate 2^n UNION branches with proper column swapping for denormalized nodes and direction-aware JOIN conditions
 - **Fix UNION column order mismatch for denormalized nodes** - Sort properties alphabetically to ensure consistent column order across UNION ALL branches
 - **Fix count(p) for path variables** - Path variables (from `MATCH p = ...`) now correctly resolve to `count(*)` instead of failing with "Missing Label" error
+
+### 📚 Documentation
+
+- **Add FK-Edge Patterns wiki page** - User-facing documentation for self-referencing FK patterns (`docs/wiki/Schema-FK-Edge-Patterns.md`)
+- **Clean up KNOWN_ISSUES.md** - Removed "Recently Fixed" section; fixed issues now go to CHANGELOG and wiki
 
 ---
 

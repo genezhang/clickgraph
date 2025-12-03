@@ -3,7 +3,6 @@ use crate::clickhouse_query_generator::variable_length_cte::{
 };
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::LogicalPlan;
 
 use super::cte_generation::map_property_to_column_with_schema;
@@ -691,25 +690,13 @@ pub fn extract_ctes_with_context(
                 let from_col = rel_cols.from_id;
                 let to_col = rel_cols.to_id;
 
-                // Define aliases based on traversal direction
-                // For variable-length paths, we need to know which node is the traversal start vs end
-                let (start_alias, end_alias) = match graph_rel.direction {
-                    Direction::Outgoing => (
-                        graph_rel.left_connection.clone(),
-                        graph_rel.right_connection.clone(),
-                    ),
-                    Direction::Incoming => (
-                        graph_rel.right_connection.clone(),
-                        graph_rel.left_connection.clone(),
-                    ),
-                    Direction::Either => {
-                        // For Either, assume left to right traversal
-                        (
-                            graph_rel.left_connection.clone(),
-                            graph_rel.right_connection.clone(),
-                        )
-                    }
-                };
+                // Define aliases for traversal
+                // Note: GraphRel.left_connection and right_connection are ALREADY swapped based on direction
+                // in match_clause.rs (lines 1088-1092), so we always use them directly:
+                // - left_connection = traversal start node alias
+                // - right_connection = traversal end node alias
+                let start_alias = graph_rel.left_connection.clone();
+                let end_alias = graph_rel.right_connection.clone();
 
                 // Extract and categorize filters for variable-length paths from GraphRel.where_predicate
                 let (start_filters_sql, end_filters_sql, categorized_filters_opt) =
@@ -865,7 +852,7 @@ pub fn extract_ctes_with_context(
                     
                     // Get edge_id from relationship schema if available
                     // Use the first relationship label to look up the schema
-                    let (edge_id, type_column, from_label_column, to_label_column) = if let Some(schema) = context.schema() {
+                    let (edge_id, type_column, from_label_column, to_label_column, is_fk_edge) = if let Some(schema) = context.schema() {
                         if let Some(labels) = &graph_rel.labels {
                             if let Some(first_label) = labels.first() {
                                 // Try to get relationship schema by label (not table name)
@@ -875,19 +862,24 @@ pub fn extract_ctes_with_context(
                                         rel_schema.type_column.clone(),
                                         rel_schema.from_label_column.clone(),
                                         rel_schema.to_label_column.clone(),
+                                        rel_schema.is_fk_edge,
                                     )
                                 } else {
-                                    (None, None, None, None)
+                                    (None, None, None, None, false)
                                 }
                             } else {
-                                (None, None, None, None)
+                                (None, None, None, None, false)
                             }
                         } else {
-                            (None, None, None, None)
+                            (None, None, None, None, false)
                         }
                     } else {
-                        (None, None, None, None)
+                        (None, None, None, None, false)
                     };
+                    
+                    if is_fk_edge {
+                        log::debug!("CTE: Detected FK-edge pattern for relationship type");
+                    }
                     
                     // Choose generator based on denormalized status
                     let generator = if both_denormalized {
@@ -933,7 +925,7 @@ pub fn extract_ctes_with_context(
                             end_is_denormalized,
                         )
                     } else {
-                        VariableLengthCteGenerator::new_with_polymorphic(
+                        VariableLengthCteGenerator::new_with_fk_edge(
                             spec.clone(),
                             &start_table,
                             &start_id_col,
@@ -957,6 +949,7 @@ pub fn extract_ctes_with_context(
                             to_label_column, // Polymorphic edge to label column
                             Some(start_label.clone()), // Expected from node label
                             Some(end_label.clone()), // Expected to node label
+                            is_fk_edge, // FK-edge pattern flag
                         )
                     };
                     let var_len_cte = generator.generate_cte();
@@ -1546,6 +1539,7 @@ fn collect_path_aliases_with_ids_recursive(
 /// - Normal: Separate node and edge tables, standard JOIN patterns
 /// - Polymorphic: Single edge table with type_column, nodes still separate
 /// - Denormalized: Nodes embedded in edge table (no separate node tables)
+/// - FkEdge: FK column on node table represents edge (no separate edge table)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VlpSchemaType {
     /// Standard schema: separate tables for nodes and edges
@@ -1561,6 +1555,11 @@ pub enum VlpSchemaType {
     /// Example: flights table with Origin/Dest as node IDs and OriginCity/DestCity as properties
     /// No separate node tables exist
     Denormalized,
+    
+    /// FK-Edge: edge is represented by a FK column on the node table
+    /// Example: fs_objects table with parent_id FK column
+    /// Edge table == Node table (self-referencing)
+    FkEdge,
 }
 
 /// Consolidated VLP context containing all information needed for SQL generation
@@ -1605,6 +1604,9 @@ pub struct VlpContext {
     /// For denormalized edges: property mappings (logical_name -> ClickHouse column/expression)
     pub from_node_properties: Option<std::collections::HashMap<String, PropertyValue>>,
     pub to_node_properties: Option<std::collections::HashMap<String, PropertyValue>>,
+    
+    /// For FK-edge patterns: true if edge is represented by FK on node table
+    pub is_fk_edge: bool,
 }
 
 impl VlpContext {
@@ -1615,7 +1617,12 @@ impl VlpContext {
     
     /// Check if nodes have separate tables (not denormalized)
     pub fn has_separate_node_tables(&self) -> bool {
-        self.schema_type != VlpSchemaType::Denormalized
+        self.schema_type != VlpSchemaType::Denormalized && self.schema_type != VlpSchemaType::FkEdge
+    }
+    
+    /// Check if this is an FK-edge pattern
+    pub fn is_fk_edge(&self) -> bool {
+        self.schema_type == VlpSchemaType::FkEdge || self.is_fk_edge
     }
 }
 
@@ -1629,6 +1636,18 @@ pub fn detect_vlp_schema_type(graph_rel: &crate::query_planner::logical_plan::Gr
         return VlpSchemaType::Denormalized;
     }
     
+    // Check for FK-edge pattern: edge table == node table (self-referencing FK)
+    // This is detected by checking if rel_table == start_table == end_table
+    let rel_table = extract_table_name(&graph_rel.center);
+    let start_table = extract_node_table(&graph_rel.left);
+    let end_table = extract_node_table(&graph_rel.right);
+    
+    if let (Some(rt), Some(st), Some(et)) = (rel_table, start_table, end_table) {
+        if rt == st && rt == et {
+            return VlpSchemaType::FkEdge;
+        }
+    }
+    
     // Check for polymorphic edge (has type_column)
     if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
         if scan.type_column.is_some() {
@@ -1637,6 +1656,20 @@ pub fn detect_vlp_schema_type(graph_rel: &crate::query_planner::logical_plan::Gr
     }
     
     VlpSchemaType::Normal
+}
+
+/// Extract table name from a node plan
+fn extract_node_table(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                Some(scan.source_table.clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Helper to check if a GraphNode is denormalized
@@ -1682,6 +1715,9 @@ pub fn build_vlp_context(graph_rel: &crate::query_planner::logical_plan::GraphRe
         (None, None)
     };
     
+    // Detect FK-edge pattern
+    let is_fk_edge = schema_type == VlpSchemaType::FkEdge;
+    
     Some(VlpContext {
         schema_type,
         is_fixed_length,
@@ -1702,6 +1738,7 @@ pub fn build_vlp_context(graph_rel: &crate::query_planner::logical_plan::GraphRe
         type_value,
         from_node_properties,
         to_node_properties,
+        is_fk_edge,
     })
 }
 
@@ -2081,6 +2118,64 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
             
             println!(
                 "expand_fixed_length_joins_with_context [NORMAL/POLYMORPHIC]: FROM {} AS {}, {} JOINs",
+                from_table, from_alias, joins.len()
+            );
+            
+            (from_table, from_alias, joins)
+        }
+        
+        VlpSchemaType::FkEdge => {
+            // FK-EDGE: Edge is FK column on node table, no separate edge table
+            // FROM: start_node_table AS start_alias
+            // JOINs: m1 ON start.fk_col = m1.id_col, m2 ON m1.fk_col = m2.id_col, ..., end ON mN-1.fk_col = end.id_col
+            //
+            // Example for *2 with parent_id FK:
+            // FROM fs_objects AS child
+            // JOIN fs_objects AS m1 ON child.parent_id = m1.object_id  -- hop 1
+            // JOIN fs_objects AS parent ON m1.parent_id = parent.object_id  -- hop 2
+            
+            let from_table = ctx.start_table.clone();
+            let from_alias = ctx.start_alias.clone();
+            
+            for hop in 1..=exact_hops {
+                let is_last_hop = hop == exact_hops;
+                let current_alias = if is_last_hop {
+                    ctx.end_alias.clone()
+                } else {
+                    format!("m{}", hop)
+                };
+                
+                let prev_alias = if hop == 1 {
+                    ctx.start_alias.clone()
+                } else {
+                    format!("m{}", hop - 1)
+                };
+                
+                // FK-edge: prev_node.fk_col = current_node.id_col
+                // Example: child.parent_id = m1.object_id
+                joins.push(Join {
+                    table_name: ctx.start_table.clone(), // Same table as start (self-referencing)
+                    table_alias: current_alias.clone(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(prev_alias),
+                                column: Column(PropertyValue::Column(ctx.rel_from_col.clone())), // FK column (parent_id)
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(current_alias),
+                                column: Column(PropertyValue::Column(ctx.rel_to_col.clone())), // ID column (object_id)
+                            }),
+                        ],
+                    }],
+                    join_type: JoinType::Inner,
+                    pre_filter: None,
+                });
+            }
+            
+            println!(
+                "expand_fixed_length_joins_with_context [FK-EDGE]: FROM {} AS {}, {} JOINs",
                 from_table, from_alias, joins.len()
             );
             

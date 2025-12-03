@@ -37,6 +37,8 @@ pub struct VariableLengthCteGenerator {
     pub is_denormalized: bool, // True if BOTH nodes are virtual (for backward compat)
     pub start_is_denormalized: bool, // True if start node is virtual (properties come from edge table)
     pub end_is_denormalized: bool, // True if end node is virtual (properties come from edge table)
+    // FK-edge pattern: edge table = node table with FK column (e.g., parent_id -> object_id)
+    pub is_fk_edge: bool, // True if relationship is via FK on node table (no separate edge table)
     // Polymorphic edge fields - for filtering unified edge tables by type
     pub type_column: Option<String>, // Discriminator column for relationship type (e.g., "interaction_type")
     pub from_label_column: Option<String>, // Discriminator column for source node type
@@ -136,6 +138,60 @@ impl VariableLengthCteGenerator {
         from_node_label: Option<String>,
         to_node_label: Option<String>,
     ) -> Self {
+        Self::new_with_fk_edge(
+            spec,
+            start_table,
+            start_id_col,
+            relationship_table,
+            rel_from_col,
+            rel_to_col,
+            end_table,
+            end_id_col,
+            start_alias,
+            end_alias,
+            properties,
+            shortest_path_mode,
+            start_node_filters,
+            end_node_filters,
+            path_variable,
+            relationship_types,
+            edge_id,
+            type_column,
+            from_label_column,
+            to_label_column,
+            from_node_label,
+            to_node_label,
+            false, // is_fk_edge defaults to false
+        )
+    }
+
+    /// Create a generator with polymorphic edge support and FK-edge flag
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_fk_edge(
+        spec: VariableLengthSpec,
+        start_table: &str,
+        start_id_col: &str,
+        relationship_table: &str,
+        rel_from_col: &str,
+        rel_to_col: &str,
+        end_table: &str,
+        end_id_col: &str,
+        start_alias: &str,
+        end_alias: &str,
+        properties: Vec<NodeProperty>,
+        shortest_path_mode: Option<ShortestPathMode>,
+        start_node_filters: Option<String>,
+        end_node_filters: Option<String>,
+        path_variable: Option<String>,
+        relationship_types: Option<Vec<String>>,
+        edge_id: Option<Identifier>,
+        type_column: Option<String>,
+        from_label_column: Option<String>,
+        to_label_column: Option<String>,
+        from_node_label: Option<String>,
+        to_node_label: Option<String>,
+        is_fk_edge: bool,
+    ) -> Self {
         // Try to get database from environment
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
 
@@ -165,6 +221,7 @@ impl VariableLengthCteGenerator {
             is_denormalized: false,
             start_is_denormalized: false,
             end_is_denormalized: false,
+            is_fk_edge,
             type_column,
             from_label_column,
             to_label_column,
@@ -217,6 +274,7 @@ impl VariableLengthCteGenerator {
             is_denormalized: true, // Enable denormalized mode (both nodes)
             start_is_denormalized: true, // Start node is denormalized
             end_is_denormalized: true, // End node is denormalized
+            is_fk_edge: false, // Denormalized edges are not FK-edges
             // Polymorphic edge fields - not used for denormalized edges
             type_column: None,
             from_label_column: None,
@@ -277,6 +335,7 @@ impl VariableLengthCteGenerator {
             is_denormalized: start_is_denormalized && end_is_denormalized, // Both must be denorm for full denorm mode
             start_is_denormalized,
             end_is_denormalized,
+            is_fk_edge: false, // Mixed mode is not FK-edge
             // Polymorphic edge fields - not used for mixed mode yet
             type_column: None,
             from_label_column: None,
@@ -759,6 +818,7 @@ impl VariableLengthCteGenerator {
         // Determine which pattern to use based on denormalization flags
         // Full denormalized: both nodes virtual → use denormalized generator
         // Mixed: one node virtual, one standard → use mixed generator
+        // FK-edge: edge table = node table with FK column → 2-way join (no separate rel)
         // Full standard: both nodes standard → use standard generator
         
         if self.is_denormalized {
@@ -769,6 +829,12 @@ impl VariableLengthCteGenerator {
         // Check for mixed patterns (one side denormalized)
         if self.start_is_denormalized || self.end_is_denormalized {
             return self.generate_mixed_base_case(hop_count);
+        }
+        
+        // FK-edge pattern: edge table = node table with FK column
+        // Use direct 2-way join: start_node.fk_col = end_node.id_col
+        if self.is_fk_edge {
+            return self.generate_fk_edge_base_case(hop_count);
         }
         
         // Standard case: both nodes have their own tables
@@ -893,6 +959,11 @@ impl VariableLengthCteGenerator {
             return self.generate_mixed_recursive_case(max_hops, cte_name);
         }
         
+        // FK-edge pattern: edge table = node table with FK column
+        if self.is_fk_edge {
+            return self.generate_fk_edge_recursive_case(max_hops, cte_name);
+        }
+        
         // Standard case: both nodes have their own tables
         // Build edge tuple for recursive case
         let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
@@ -983,6 +1054,286 @@ impl VariableLengthCteGenerator {
             to_col = self.relationship_to_column,
             rel = self.relationship_alias,
             end_table = self.format_table_name(&self.end_node_table),
+            where_clause = where_clause
+        )
+    }
+
+    // ======================================================================
+    // FK-EDGE PATTERN GENERATION
+    // ======================================================================
+    // For FK-edge patterns, the edge is a foreign key column on the node table.
+    // Both nodes come from the same table, and the relationship is:
+    // start_node.fk_col = end_node.id_col (e.g., child.parent_id = parent.object_id)
+    // No separate relationship table exists.
+    
+    /// Generate base case for FK-edge patterns (first hop)
+    /// For FK-edge: FROM node_table start JOIN node_table end ON start.fk = end.id
+    fn generate_fk_edge_base_case(&self, hop_count: u32) -> String {
+        if hop_count != 1 {
+            // Multi-hop base case not yet supported for FK-edge
+            return format!(
+                "    -- Multi-hop base case for {} hops (FK-edge - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_edges, [] as path_relationships, [] as path_nodes\n    WHERE false",
+                hop_count, hop_count
+            );
+        }
+
+        // Build edge tuple for cycle detection
+        // For FK-edge, the edge is (start_node.fk_col, end_node.id_col)
+        let edge_tuple = format!(
+            "tuple({}.{}, {}.{})",
+            self.start_node_alias, self.relationship_from_column,
+            self.end_node_alias, self.end_node_id_column
+        );
+
+        // Build property selections
+        let mut select_items = vec![
+            format!(
+                "{}.{} as start_id",
+                self.start_node_alias, self.start_node_id_column
+            ),
+            format!(
+                "{}.{} as end_id",
+                self.end_node_alias, self.end_node_id_column
+            ),
+            "1 as hop_count".to_string(),
+            format!("[{}] as path_edges", edge_tuple),
+            self.generate_relationship_type_for_hop(1),
+            format!(
+                "[{}.{}, {}.{}] as path_nodes",
+                self.start_node_alias, self.start_node_id_column,
+                self.end_node_alias, self.end_node_id_column
+            ),
+        ];
+
+        // Add properties for start and end nodes
+        for prop in &self.properties {
+            if prop.cypher_alias == self.start_cypher_alias {
+                select_items.push(format!(
+                    "{}.{} as start_{}",
+                    self.start_node_alias, prop.column_name, prop.alias
+                ));
+            }
+            if prop.cypher_alias == self.end_cypher_alias {
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    self.end_node_alias, prop.column_name, prop.alias
+                ));
+            }
+        }
+
+        let select_clause = select_items.join(",\n        ");
+
+        // FK-edge pattern: direct 2-way join between start and end nodes
+        // start_node.fk_col = end_node.id_col (e.g., child.parent_id = parent.object_id)
+        let mut query = format!(
+            "    SELECT \n        {select}\n    FROM {start_table} {start}\n    JOIN {end_table} {end} ON {start}.{fk_col} = {end}.{end_id_col}",
+            select = select_clause,
+            start = self.start_node_alias,
+            start_table = self.format_table_name(&self.start_node_table),
+            end = self.end_node_alias,
+            fk_col = self.relationship_from_column,  // FK column on start node
+            end_id_col = self.end_node_id_column,     // ID column on end node
+            end_table = self.format_table_name(&self.end_node_table)
+        );
+
+        // Add WHERE clause with start and end node filters
+        let mut where_conditions = Vec::new();
+        
+        if let Some(ref filters) = self.start_node_filters {
+            where_conditions.push(filters.clone());
+        }
+        if self.shortest_path_mode.is_none() {
+            if let Some(ref filters) = self.end_node_filters {
+                where_conditions.push(filters.clone());
+            }
+        }
+
+        if !where_conditions.is_empty() {
+            query.push_str(&format!("\n    WHERE {}", where_conditions.join(" AND ")));
+        }
+
+        query
+    }
+
+    /// Generate recursive case for FK-edge patterns
+    /// 
+    /// The expansion direction depends on which side is filtered:
+    /// 
+    /// **ANCESTORS query** (filter on start/child node, e.g., WHERE child.name = 'notes.txt'):
+    /// - We want to find all ancestors (parents) of notes.txt
+    /// - Base: notes.txt→Work (notes.txt.parent_id = Work.object_id)
+    /// - Recurse: Work→Documents (Work.parent_id = Documents.object_id)
+    /// - Strategy: APPEND expansion - add new edges at the END of the path
+    /// - Anchor on end_id (the parent side), find their parents
+    /// 
+    /// **DESCENDANTS query** (filter on end/parent node, e.g., WHERE parent.name = 'root'):
+    /// - We want to find all descendants (children) of root
+    /// - Base: Documents→root (Documents.parent_id = root.object_id)  
+    /// - Recurse: Work→Documents (Work.parent_id = Documents.object_id)
+    /// - Strategy: PREPEND expansion - add new edges at the START of the path
+    /// - Anchor on start_id (the child side), find their children
+    fn generate_fk_edge_recursive_case(&self, max_hops: u32, cte_name: &str) -> String {
+        // Determine expansion direction based on which side has filters
+        // If start_node_filters is set, we're finding ancestors (APPEND expansion)
+        // If end_node_filters is set, we're finding descendants (PREPEND expansion)
+        let expand_toward_parents = self.start_node_filters.is_some();
+        
+        if expand_toward_parents {
+            self.generate_fk_edge_recursive_append(max_hops, cte_name)
+        } else {
+            self.generate_fk_edge_recursive_prepend(max_hops, cte_name)
+        }
+    }
+    
+    /// APPEND expansion: Find ancestors by following parent_id chain
+    /// Used when start_node has a filter (e.g., WHERE child.name = 'notes.txt')
+    fn generate_fk_edge_recursive_append(&self, max_hops: u32, cte_name: &str) -> String {
+        // Edge tuple for the NEW edge being added (current → new_end)
+        // current.parent_id = new_end.object_id
+        let edge_tuple_recursive = format!(
+            "tuple({}.{}, {}.{})",
+            "current_node", self.relationship_from_column,
+            "new_end", self.end_node_id_column
+        );
+        
+        // Build property selections
+        // start_id stays the same (notes.txt), end_id becomes new_end
+        let mut select_items = vec![
+            "vp.start_id".to_string(),  // start stays the same
+            format!("{}.{} as end_id", "new_end", self.end_node_id_column),  // new parent
+            "vp.hop_count + 1 as hop_count".to_string(),
+            // APPEND the new edge to path_edges
+            format!(
+                "arrayConcat(vp.path_edges, [{}]) as path_edges",
+                edge_tuple_recursive
+            ),
+            format!(
+                "arrayConcat(vp.path_relationships, {}) as path_relationships",
+                self.get_relationship_type_array()
+            ),
+            // APPEND the new node to path_nodes  
+            format!(
+                "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
+                "new_end", self.end_node_id_column
+            ),
+        ];
+
+        // Add properties: start properties from CTE, end properties from new joined node
+        for prop in &self.properties {
+            if prop.cypher_alias == self.start_cypher_alias {
+                select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
+            }
+            if prop.cypher_alias == self.end_cypher_alias {
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    "new_end", prop.column_name, prop.alias
+                ));
+            }
+        }
+
+        let select_clause = select_items.join(",\n        ");
+        
+        let edge_tuple_check = format!(
+            "tuple(current_node.{}, new_end.{})",
+            self.relationship_from_column,
+            self.end_node_id_column
+        );
+
+        let mut where_conditions = vec![
+            format!("vp.hop_count < {}", max_hops),
+            format!("NOT has(vp.path_edges, {})", edge_tuple_check),
+        ];
+
+        let where_clause = where_conditions.join("\n      AND ");
+
+        // APPEND expansion: anchor on end_id, find its parent
+        // current_node = previous end (e.g., Work)
+        // new_end = current_node's parent (e.g., Documents)
+        format!(
+            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON vp.end_id = current_node.{current_id_col}\n    JOIN {end_table} new_end ON current_node.{fk_col} = new_end.{end_id_col}\n    WHERE {where_clause}",
+            select = select_clause,
+            cte_name = cte_name,
+            current_table = self.format_table_name(&self.end_node_table),
+            current_id_col = self.end_node_id_column,
+            end_table = self.format_table_name(&self.end_node_table),
+            fk_col = self.relationship_from_column,
+            end_id_col = self.end_node_id_column,
+            where_clause = where_clause
+        )
+    }
+    
+    /// PREPEND expansion: Find descendants by finding nodes whose parent_id points to current
+    /// Used when end_node has a filter (e.g., WHERE parent.name = 'root')
+    fn generate_fk_edge_recursive_prepend(&self, max_hops: u32, cte_name: &str) -> String {
+        // Edge tuple for the NEW edge being added (new_start → current)
+        // new_start.parent_id = current.object_id
+        let edge_tuple_recursive = format!(
+            "tuple({}.{}, {}.{})",
+            "new_start", self.relationship_from_column,
+            "current_node", self.end_node_id_column
+        );
+        
+        // Build property selections
+        // The NEW start_id is new_start, end_id stays the same (root)
+        let mut select_items = vec![
+            format!("{}.{} as start_id", "new_start", self.start_node_id_column),
+            "vp.end_id".to_string(),  // end_id stays the same (root)
+            "vp.hop_count + 1 as hop_count".to_string(),
+            // PREPEND the new edge to path_edges
+            format!(
+                "arrayConcat([{}], vp.path_edges) as path_edges",
+                edge_tuple_recursive
+            ),
+            format!(
+                "arrayConcat({}, vp.path_relationships) as path_relationships",
+                self.get_relationship_type_array()
+            ),
+            // PREPEND the new node to path_nodes
+            format!(
+                "arrayConcat([{}.{}], vp.path_nodes) as path_nodes",
+                "new_start", self.start_node_id_column
+            ),
+        ];
+
+        // Add properties: end properties from CTE, start properties from new joined node
+        for prop in &self.properties {
+            if prop.cypher_alias == self.start_cypher_alias {
+                select_items.push(format!(
+                    "{}.{} as start_{}",
+                    "new_start", prop.column_name, prop.alias
+                ));
+            }
+            if prop.cypher_alias == self.end_cypher_alias {
+                select_items.push(format!("vp.end_{} as end_{}", prop.alias, prop.alias));
+            }
+        }
+
+        let select_clause = select_items.join(",\n        ");
+        
+        let edge_tuple_check = format!(
+            "tuple(new_start.{}, current_node.{})",
+            self.relationship_from_column,
+            self.end_node_id_column
+        );
+
+        let mut where_conditions = vec![
+            format!("vp.hop_count < {}", max_hops),
+            format!("NOT has(vp.path_edges, {})", edge_tuple_check),
+        ];
+
+        let where_clause = where_conditions.join("\n      AND ");
+
+        // PREPEND expansion: anchor on start_id, find nodes whose parent_id points to it
+        // current_node = previous start (e.g., Documents)
+        // new_start = a child of current (e.g., Work where Work.parent_id = Documents.object_id)
+        format!(
+            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON vp.start_id = current_node.{current_id_col}\n    JOIN {start_table} new_start ON new_start.{fk_col} = current_node.{current_id_col}\n    WHERE {where_clause}",
+            select = select_clause,
+            cte_name = cte_name,
+            current_table = self.format_table_name(&self.start_node_table),
+            current_id_col = self.start_node_id_column,
+            start_table = self.format_table_name(&self.start_node_table),
+            fk_col = self.relationship_from_column,
             where_clause = where_clause
         )
     }

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use crate::graph_catalog::GraphSchema;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult};
-use crate::query_planner::logical_expr::{Direction, LogicalExpr, PropertyAccess, TableAlias};
+use crate::query_planner::logical_expr::{Direction, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias};
 use crate::query_planner::logical_plan::{
     Filter, GraphNode, GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, Union, UnionType,
 };
@@ -34,15 +34,16 @@ impl AnalyzerPass for BidirectionalUnion {
         &self,
         logical_plan: Arc<LogicalPlan>,
         plan_ctx: &mut PlanCtx,
-        _graph_schema: &GraphSchema,
+        graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        transform_bidirectional(&logical_plan, plan_ctx)
+        transform_bidirectional(&logical_plan, plan_ctx, graph_schema)
     }
 }
 
 fn transform_bidirectional(
     plan: &Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
+    graph_schema: &GraphSchema,
 ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
     match plan.as_ref() {
         LogicalPlan::GraphRel(graph_rel) => {
@@ -57,7 +58,7 @@ fn transform_bidirectional(
                 );
                 
                 // Generate all 2^n direction combinations
-                let branches = generate_direction_combinations(plan, undirected_count);
+                let branches = generate_direction_combinations(plan, undirected_count, graph_schema);
                 
                 if branches.len() == 1 {
                     // Only one branch (shouldn't happen if undirected_count > 0, but handle it)
@@ -78,9 +79,9 @@ fn transform_bidirectional(
                 Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(union))))
             } else {
                 // No undirected edges, just recurse into children (they might have undirected patterns)
-                let transformed_left = transform_bidirectional(&graph_rel.left, plan_ctx)?;
-                let transformed_center = transform_bidirectional(&graph_rel.center, plan_ctx)?;
-                let transformed_right = transform_bidirectional(&graph_rel.right, plan_ctx)?;
+                let transformed_left = transform_bidirectional(&graph_rel.left, plan_ctx, graph_schema)?;
+                let transformed_center = transform_bidirectional(&graph_rel.center, plan_ctx, graph_schema)?;
+                let transformed_right = transform_bidirectional(&graph_rel.right, plan_ctx, graph_schema)?;
 
                 if matches!(
                     (&transformed_left, &transformed_center, &transformed_right),
@@ -123,7 +124,7 @@ fn transform_bidirectional(
                 
                 // Generate direction combinations for the ENTIRE Projection(GraphRel) tree
                 // This ensures column swaps are applied to the projection items
-                let branches = generate_direction_combinations(plan, undirected_count);
+                let branches = generate_direction_combinations(plan, undirected_count, graph_schema);
                 
                 if branches.len() == 1 {
                     return Ok(Transformed::Yes(branches.into_iter().next().unwrap()));
@@ -142,7 +143,7 @@ fn transform_bidirectional(
                 Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(union))))
             } else {
                 // No undirected edges, just recurse normally
-                let transformed = transform_bidirectional(&proj.input, plan_ctx)?;
+                let transformed = transform_bidirectional(&proj.input, plan_ctx, graph_schema)?;
                 match transformed {
                     Transformed::Yes(new_input) => {
                         let new_proj = Projection {
@@ -159,7 +160,7 @@ fn transform_bidirectional(
         }
 
         LogicalPlan::Filter(filter) => {
-            let transformed = transform_bidirectional(&filter.input, plan_ctx)?;
+            let transformed = transform_bidirectional(&filter.input, plan_ctx, graph_schema)?;
             match transformed {
                 Transformed::Yes(new_input) => {
                     let new_filter = Filter {
@@ -178,7 +179,7 @@ fn transform_bidirectional(
                 .inputs
                 .iter()
                 .map(|input| {
-                    let result = transform_bidirectional(input, plan_ctx);
+                    let result = transform_bidirectional(input, plan_ctx, graph_schema);
                     match result {
                         Ok(Transformed::Yes(new_plan)) => {
                             any_transformed = true;
@@ -201,7 +202,7 @@ fn transform_bidirectional(
         }
 
         LogicalPlan::Limit(limit) => {
-            let transformed = transform_bidirectional(&limit.input, plan_ctx)?;
+            let transformed = transform_bidirectional(&limit.input, plan_ctx, graph_schema)?;
             match transformed {
                 Transformed::Yes(new_input) => {
                     let new_limit = crate::query_planner::logical_plan::Limit {
@@ -215,7 +216,7 @@ fn transform_bidirectional(
         }
 
         LogicalPlan::OrderBy(order_by) => {
-            let transformed = transform_bidirectional(&order_by.input, plan_ctx)?;
+            let transformed = transform_bidirectional(&order_by.input, plan_ctx, graph_schema)?;
             match transformed {
                 Transformed::Yes(new_input) => {
                     let new_order_by = crate::query_planner::logical_plan::OrderBy {
@@ -231,7 +232,7 @@ fn transform_bidirectional(
         }
 
         LogicalPlan::Skip(skip) => {
-            let transformed = transform_bidirectional(&skip.input, plan_ctx)?;
+            let transformed = transform_bidirectional(&skip.input, plan_ctx, graph_schema)?;
             match transformed {
                 Transformed::Yes(new_input) => {
                     let new_skip = crate::query_planner::logical_plan::Skip {
@@ -245,7 +246,7 @@ fn transform_bidirectional(
         }
 
         LogicalPlan::GraphNode(graph_node) => {
-            let transformed = transform_bidirectional(&graph_node.input, plan_ctx)?;
+            let transformed = transform_bidirectional(&graph_node.input, plan_ctx, graph_schema)?;
             match transformed {
                 Transformed::Yes(new_input) => {
                     let new_node = GraphNode {
@@ -262,7 +263,7 @@ fn transform_bidirectional(
 
         LogicalPlan::GroupBy(group_by) => {
             // Transform bidirectional patterns inside GroupBy
-            let transformed = transform_bidirectional(&group_by.input, plan_ctx)?;
+            let transformed = transform_bidirectional(&group_by.input, plan_ctx, graph_schema)?;
             match transformed {
                 Transformed::Yes(new_input) => {
                     let new_group_by = GroupBy {
@@ -277,7 +278,7 @@ fn transform_bidirectional(
         }
 
         LogicalPlan::Unwind(unwind) => {
-            let transformed = transform_bidirectional(&unwind.input, plan_ctx)?;
+            let transformed = transform_bidirectional(&unwind.input, plan_ctx, graph_schema)?;
             match transformed {
                 Transformed::Yes(new_input) => {
                     let new_unwind = crate::query_planner::logical_plan::Unwind {
@@ -320,9 +321,161 @@ fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
 /// Value: swapped_column like "Dest"
 type ColumnSwapMap = std::collections::HashMap<(String, String), String>;
 
+/// Information about a relationship for uniqueness filtering
+#[derive(Debug, Clone)]
+struct RelInfo {
+    alias: String,
+    /// Edge identity columns for uniqueness filtering.
+    /// If edge_id defined in schema, use those columns.
+    /// Otherwise, default to [from_id, to_id].
+    edge_id_cols: Vec<String>,
+}
+
+/// Collect all relationship info from a plan for uniqueness filtering
+fn collect_relationship_info(plan: &Arc<LogicalPlan>, graph_schema: &GraphSchema) -> Vec<RelInfo> {
+    let mut rels = Vec::new();
+    collect_relationship_info_inner(plan, graph_schema, &mut rels);
+    rels
+}
+
+fn collect_relationship_info_inner(plan: &Arc<LogicalPlan>, graph_schema: &GraphSchema, rels: &mut Vec<RelInfo>) {
+    match plan.as_ref() {
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Get from_id/to_id from the center ViewScan
+            if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+                let from_id = scan.from_id.clone().unwrap_or_else(|| "from_id".to_string());
+                let to_id = scan.to_id.clone().unwrap_or_else(|| "to_id".to_string());
+                
+                // Look up edge_id from schema using relationship labels
+                let edge_id_cols = graph_rel.labels.as_ref()
+                    .and_then(|labels| {
+                        labels.iter().find_map(|label| {
+                            graph_schema.get_relationships_schema_opt(label.as_str())
+                                .and_then(|rel_schema| rel_schema.edge_id.as_ref())
+                                .map(|id| id.columns().iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                        })
+                    })
+                    // Default to [from_id, to_id] if no edge_id defined
+                    .unwrap_or_else(|| vec![from_id, to_id]);
+                
+                rels.push(RelInfo {
+                    alias: graph_rel.alias.clone(),
+                    edge_id_cols,
+                });
+            }
+            // Recurse into left (inner relationships in chain)
+            collect_relationship_info_inner(&graph_rel.left, graph_schema, rels);
+        }
+        LogicalPlan::Projection(proj) => {
+            collect_relationship_info_inner(&proj.input, graph_schema, rels);
+        }
+        LogicalPlan::Filter(filter) => {
+            collect_relationship_info_inner(&filter.input, graph_schema, rels);
+        }
+        _ => {}
+    }
+}
+
+/// Generate relationship uniqueness filter for multiple relationships.
+/// Prevents the same physical edge from being used as both r1 and r2.
+/// Uses edge_id columns from schema (or defaults to [from_id, to_id]).
+fn generate_relationship_uniqueness_filter(rels: &[RelInfo]) -> Option<LogicalExpr> {
+    if rels.len() < 2 {
+        return None; // Need at least 2 relationships
+    }
+    
+    let mut filters = Vec::new();
+    
+    // Generate pairwise filters: NOT (r1.col1 = r2.col1 AND r1.col2 = r2.col2 AND ...)
+    for i in 0..rels.len() {
+        for j in (i + 1)..rels.len() {
+            let r1 = &rels[i];
+            let r2 = &rels[j];
+            
+            // Build equality comparisons for all edge_id columns
+            // If edge_id columns differ between relationships, we can't compare them
+            // (this happens when comparing different relationship types)
+            if r1.edge_id_cols != r2.edge_id_cols {
+                // Different edge types with different edge_id - they can't be the same edge
+                continue;
+            }
+            
+            // Build: NOT (r1.col1 = r2.col1 AND r1.col2 = r2.col2 AND ...)
+            let mut col_equalities = Vec::new();
+            for col in &r1.edge_id_cols {
+                let r1_col = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(r1.alias.clone()),
+                    column: PropertyValue::Column(col.clone()),
+                });
+                let r2_col = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(r2.alias.clone()),
+                    column: PropertyValue::Column(col.clone()),
+                });
+                
+                let col_eq = LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![r1_col, r2_col],
+                });
+                col_equalities.push(col_eq);
+            }
+            
+            if col_equalities.is_empty() {
+                continue;
+            }
+            
+            // AND all column equalities together
+            let all_equal = col_equalities.into_iter().reduce(|acc, eq| {
+                LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::And,
+                    operands: vec![acc, eq],
+                })
+            }).unwrap();
+            
+            // NOT the result
+            let not_equal = LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Not,
+                operands: vec![all_equal],
+            });
+            
+            filters.push(not_equal);
+        }
+    }
+    
+    if filters.is_empty() {
+        return None;
+    }
+    
+    // Combine all filters with AND
+    Some(filters.into_iter().reduce(|acc, filter| {
+        LogicalExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: vec![acc, filter],
+        })
+    }).unwrap())
+}
+
+/// Wrap a plan with a relationship uniqueness filter if needed
+fn wrap_with_uniqueness_filter(plan: Arc<LogicalPlan>, graph_schema: &GraphSchema) -> Arc<LogicalPlan> {
+    let rels = collect_relationship_info(&plan, graph_schema);
+    
+    if let Some(filter_expr) = generate_relationship_uniqueness_filter(&rels) {
+        eprintln!(
+            "🔒 BidirectionalUnion: Adding relationship uniqueness filter for {} relationships (edge_id_cols: {:?})",
+            rels.len(),
+            rels.iter().map(|r| &r.edge_id_cols).collect::<Vec<_>>()
+        );
+        Arc::new(LogicalPlan::Filter(Filter {
+            input: plan,
+            predicate: filter_expr,
+        }))
+    } else {
+        plan
+    }
+}
+
 /// Generate all 2^n direction combinations for a path with n undirected edges.
 /// Each combination produces a fully-directed plan structure with correctly swapped columns.
-fn generate_direction_combinations(plan: &Arc<LogicalPlan>, undirected_count: usize) -> Vec<Arc<LogicalPlan>> {
+fn generate_direction_combinations(plan: &Arc<LogicalPlan>, undirected_count: usize, graph_schema: &GraphSchema) -> Vec<Arc<LogicalPlan>> {
     let total_combinations = 1 << undirected_count; // 2^n
     let mut branches = Vec::with_capacity(total_combinations);
     
@@ -331,7 +484,13 @@ fn generate_direction_combinations(plan: &Arc<LogicalPlan>, undirected_count: us
         // 0 = Outgoing, 1 = Incoming
         let mut column_swaps: ColumnSwapMap = std::collections::HashMap::new();
         let branch = apply_direction_combination(plan, combination, &mut column_swaps);
-        branches.push(branch);
+        
+        // Apply relationship uniqueness filter to prevent same edge from being used twice.
+        // Uses edge_id columns from schema (or defaults to [from_id, to_id]).
+        // This ensures Neo4j-compatible behavior where relationship instances are unique in paths.
+        let filtered_branch = wrap_with_uniqueness_filter(branch, graph_schema);
+        
+        branches.push(filtered_branch);
     }
     
     branches
@@ -524,6 +683,7 @@ fn swap_expr_columns(expr: &LogicalExpr, column_swaps: &ColumnSwapMap) -> Logica
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph_catalog::GraphSchema;
     use crate::query_planner::logical_plan::ViewScan;
     use std::collections::HashMap;
 
@@ -591,8 +751,9 @@ mod tests {
 
         let plan = Arc::new(LogicalPlan::GraphRel(graph_rel));
         let mut plan_ctx = PlanCtx::default();
+        let graph_schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
 
-        let result = transform_bidirectional(&plan, &mut plan_ctx);
+        let result = transform_bidirectional(&plan, &mut plan_ctx, &graph_schema);
         assert!(result.is_ok());
 
         match result.unwrap() {

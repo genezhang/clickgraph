@@ -82,6 +82,7 @@ curl -X POST http://localhost:8080/query \
 ### Schema Configuration
 - **[Schema Basics](Schema-Basics.md)** - YAML schema configuration
 - **[Schema Configuration Advanced](Schema-Configuration-Advanced.md)** - Auto-discovery, FINAL, view parameters
+- **[Schema FK-Edge Patterns](Schema-FK-Edge-Patterns.md)** - Self-referencing FK for hierarchies (file systems, org charts)
 - **[Edge ID Best Practices](Edge-ID-Best-Practices.md)** - Optimize edge uniqueness tracking (v0.5.2+)
 - **[Schema Polymorphic Edges](Schema-Polymorphic-Edges.md)** - Multiple edge types in single table (v0.5.2+)
 - **[Schema Denormalized Properties](Schema-Denormalized-Properties.md)** - 10-100x faster queries without JOINs (v0.5.2+)

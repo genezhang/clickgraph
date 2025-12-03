@@ -4,14 +4,17 @@
 
 # ClickGraph
 
-#### ClickGraph - A graph query layer on top of ClickHouse®, developed on a forked repo of Brahmand, written in Rust.
+#### ClickGraph - A graph query layer on top of ClickHouse®, written in Rust.
 
 **A high-performance, stateless, read-only graph query translator for ClickHouse with Neo4j ecosystem compatibility.**
 
-> **Note: ClickGraph is development-ready for view-based graph analysis with full Neo4j Bolt Protocol 5.8 support. Codebase has diverged from the upstream with DDL/writes feature removal and other structure/code refactoring to follow Rust idiomatic style.**
+> **Note: ClickGraph is development-ready for view-based graph analysis with full Neo4j Bolt Protocol 5.8 support.**
 
 ---
-
+## Motivation and Rationale
+- There are huge volumes of data in ClickHouse databases, viewing them as  graph data with graph analytics capability brings another level of abstraction and boosts productivity with graph tools, in ways beyond relational analytics alone.
+- Research shows relational analytics with columnar stores and vectorized execution engines like ClickHouse provide superior analytical performance and scalability to graph-native technologies, which usually leverage explicit adjacency representations and are more suitable for local-area graph traversals.
+---
 ## 🚀 What's New in v0.5.3 (December 2, 2025)
 
 ### Cypher Functions & Syntax Improvements
