@@ -14,6 +14,8 @@ use super::render_expr::{
     ScalarFnCall, TableAlias,
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
+// Note: Direction import commented out until Issue #1 (Undirected Multi-Hop SQL) is fixed
+// use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::LogicalPlan;
 
 /// Check if an expression contains a string literal (recursively for nested + operations)
@@ -538,6 +540,140 @@ pub(super) fn rewrite_path_functions(expr: &RenderExpr, path_var_name: &str) -> 
     rewrite_path_functions_with_table(expr, path_var_name, "")
 }
 
+use super::cte_extraction::FixedPathInfo;
+
+/// Rewrite path function calls for FIXED multi-hop patterns (no variable length)
+/// For fixed patterns, we know the hop count and aliases at compile time
+/// Converts:
+/// - length(p) → literal hop_count value
+/// - nodes(p) → [r1.from_id, r1.to_id, r2.to_id, ...] array of node IDs
+/// - relationships(p) → [r1, r2, ...] tuple of relationship aliases
+pub(super) fn rewrite_fixed_path_functions_with_info(
+    expr: &RenderExpr,
+    path_info: &FixedPathInfo,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::ScalarFnCall(fn_call) => {
+            // Check if this is a path function call with the path variable as argument
+            if fn_call.args.len() == 1 {
+                if let RenderExpr::TableAlias(TableAlias(alias)) = &fn_call.args[0] {
+                    if alias == &path_info.path_var_name {
+                        match fn_call.name.as_str() {
+                            "length" => {
+                                // Convert length(p) to literal hop count
+                                return RenderExpr::Literal(super::render_expr::Literal::Integer(path_info.hop_count as i64));
+                            }
+                            "nodes" => {
+                                // Build array of node ID references: [r1.Origin, r1.Dest, r2.Dest]
+                                let node_args: Vec<RenderExpr> = path_info.node_aliases
+                                    .iter()
+                                    .filter_map(|node_alias| {
+                                        // Look up the ID column for this node
+                                        path_info.node_id_columns.get(node_alias).map(|(rel_alias, id_col)| {
+                                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(rel_alias.clone()),
+                                                column: Column(PropertyValue::Column(id_col.clone())),
+                                            })
+                                        })
+                                    })
+                                    .collect();
+                                
+                                // Use array() function for ClickHouse arrays
+                                if node_args.is_empty() {
+                                    // Fallback: if no ID columns found, return tuple of aliases
+                                    let fallback_args: Vec<RenderExpr> = path_info.node_aliases
+                                        .iter()
+                                        .map(|a| RenderExpr::TableAlias(TableAlias(a.clone())))
+                                        .collect();
+                                    return RenderExpr::ScalarFnCall(ScalarFnCall {
+                                        name: "tuple".to_string(),
+                                        args: fallback_args,
+                                    });
+                                }
+                                
+                                return RenderExpr::ScalarFnCall(ScalarFnCall {
+                                    name: "array".to_string(),
+                                    args: node_args,
+                                });
+                            }
+                            "relationships" => {
+                                // For relationships, return tuple of relationship aliases
+                                // These will resolve to the full row data via * or specific columns
+                                let rel_args: Vec<RenderExpr> = path_info.rel_aliases
+                                    .iter()
+                                    .map(|alias| RenderExpr::TableAlias(TableAlias(alias.clone())))
+                                    .collect();
+                                return RenderExpr::ScalarFnCall(ScalarFnCall {
+                                    name: "tuple".to_string(),
+                                    args: rel_args,
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            // Recursively rewrite arguments for nested calls
+            let rewritten_args: Vec<RenderExpr> = fn_call
+                .args
+                .iter()
+                .map(|arg| rewrite_fixed_path_functions_with_info(arg, path_info))
+                .collect();
+
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: fn_call.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            // Recursively rewrite operands
+            let rewritten_operands: Vec<RenderExpr> = op
+                .operands
+                .iter()
+                .map(|operand| rewrite_fixed_path_functions_with_info(operand, path_info))
+                .collect();
+
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator.clone(),
+                operands: rewritten_operands,
+            })
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            // Recursively rewrite arguments for aggregate functions
+            let rewritten_args: Vec<RenderExpr> = agg
+                .args
+                .iter()
+                .map(|arg| rewrite_fixed_path_functions_with_info(arg, path_info))
+                .collect();
+
+            RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: agg.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        _ => expr.clone(), // For other expression types, return as-is
+    }
+}
+
+/// Legacy version that only handles length(p)
+/// Kept for backward compatibility
+pub(super) fn rewrite_fixed_path_functions(
+    expr: &RenderExpr,
+    path_var_name: &str,
+    hop_count: u32,
+) -> RenderExpr {
+    // Create minimal path info for length-only rewriting
+    let path_info = FixedPathInfo {
+        path_var_name: path_var_name.to_string(),
+        node_aliases: vec![],
+        rel_aliases: vec![],
+        hop_count,
+        node_id_columns: std::collections::HashMap::new(),
+    };
+    rewrite_fixed_path_functions_with_info(expr, &path_info)
+}
+
 /// Rewrite path function calls with optional table alias
 /// table_alias: if provided, generates PropertyAccessExp (table.column), otherwise Column
 pub(super) fn rewrite_path_functions_with_table(
@@ -795,6 +931,199 @@ pub(super) fn has_polymorphic_or_multi_rel(plan: &LogicalPlan) -> bool {
     // Check for polymorphic edge patterns - look for $any nodes in GraphRel
     has_polymorphic_edge(plan)
 }
+
+// =============================================================================
+// TODO: Relationship Uniqueness Filtering for Undirected Multi-Hop Patterns
+// =============================================================================
+// The following structs and functions are prepared for implementing Issue #2
+// (Undirected Patterns - Relationship Uniqueness) from KNOWN_ISSUES.md.
+//
+// However, they cannot be used yet because Issue #1 (Undirected Multi-Hop 
+// Patterns Generate Broken SQL) must be fixed first. The BidirectionalUnion
+// optimizer transforms Direction::Either patterns into Union nodes, which
+// breaks the multi-hop JOIN inference that these filters depend on.
+//
+// Once Issue #1 is fixed, uncomment and integrate these helpers.
+// =============================================================================
+
+/*
+/// Information about an undirected relationship for uniqueness filtering
+#[derive(Debug, Clone)]
+pub struct UndirectedRelInfo {
+    pub alias: String,          // Relationship alias (e.g., "r1")
+    pub from_id_col: String,    // FROM ID column name
+    pub to_id_col: String,      // TO ID column name
+    pub edge_id_cols: Vec<String>, // Edge ID columns (for composite uniqueness)
+}
+
+/// Collect all undirected (Direction::Either) relationships from a logical plan.
+/// Returns info needed to generate pairwise uniqueness filters.
+pub(super) fn collect_undirected_relationships(plan: &LogicalPlan) -> Vec<UndirectedRelInfo> {
+    fn collect(plan: &LogicalPlan, result: &mut Vec<UndirectedRelInfo>) {
+        match plan {
+            LogicalPlan::GraphRel(graph_rel) => {
+                // Check if this relationship is undirected
+                if graph_rel.direction == Direction::Either {
+                    // Extract relationship columns from the center (ViewScan)
+                    if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+                        let from_col = scan.from_id.clone().unwrap_or_else(|| "from_id".to_string());
+                        let to_col = scan.to_id.clone().unwrap_or_else(|| "to_id".to_string());
+                        
+                        // Try to get edge_id columns from schema
+                        // First, try to look up the relationship schema by type
+                        let edge_id_cols = if let Some(labels) = &graph_rel.labels {
+                            if let Some(rel_type) = labels.first() {
+                                // Look up relationship schema from GLOBAL_SCHEMAS
+                                if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                                    if let Ok(schemas) = schemas_lock.try_read() {
+                                        if let Some(default_schema) = schemas.get("default") {
+                                            if let Some(rel_schema) = default_schema.get_relationships_schema_opt(rel_type) {
+                                                match &rel_schema.edge_id {
+                                                    Some(id) => id.columns().iter().map(|s| s.to_string()).collect(),
+                                                    None => vec![from_col.clone(), to_col.clone()],
+                                                }
+                                            } else {
+                                                vec![from_col.clone(), to_col.clone()]
+                                            }
+                                        } else {
+                                            vec![from_col.clone(), to_col.clone()]
+                                        }
+                                    } else {
+                                        vec![from_col.clone(), to_col.clone()]
+                                    }
+                                } else {
+                                    vec![from_col.clone(), to_col.clone()]
+                                }
+                            } else {
+                                vec![from_col.clone(), to_col.clone()]
+                            }
+                        } else {
+                            vec![from_col.clone(), to_col.clone()]
+                        };
+                        
+                        result.push(UndirectedRelInfo {
+                            alias: graph_rel.alias.clone(),
+                            from_id_col: from_col,
+                            to_id_col: to_col,
+                            edge_id_cols,
+                        });
+                    }
+                }
+                
+                // Recursively check children (for multi-hop patterns)
+                collect(&graph_rel.left, result);
+                collect(&graph_rel.center, result);
+                collect(&graph_rel.right, result);
+            }
+            LogicalPlan::GraphNode(node) => collect(&node.input, result),
+            LogicalPlan::GraphJoins(joins) => collect(&joins.input, result),
+            LogicalPlan::Projection(proj) => collect(&proj.input, result),
+            LogicalPlan::Filter(filter) => collect(&filter.input, result),
+            LogicalPlan::GroupBy(gb) => collect(&gb.input, result),
+            LogicalPlan::OrderBy(ob) => collect(&ob.input, result),
+            LogicalPlan::Limit(limit) => collect(&limit.input, result),
+            LogicalPlan::Skip(skip) => collect(&skip.input, result),
+            LogicalPlan::Unwind(u) => collect(&u.input, result),
+            _ => {}
+        }
+    }
+    
+    let mut result = Vec::new();
+    collect(plan, &mut result);
+    result
+}
+
+/// Generate pairwise relationship uniqueness filters for undirected patterns.
+/// 
+/// For undirected multi-hop patterns like `(a)-[r1]-(b)-[r2]-(c)`, we need to prevent
+/// the same physical edge from being traversed twice (once in each direction).
+/// 
+/// For each pair (r1, r2), generates:
+/// ```sql
+/// NOT (
+///     tuple(r1.col1, r1.col2, ...) = tuple(r2.col1, r2.col2, ...)
+/// )
+/// ```
+pub(super) fn generate_undirected_uniqueness_filters(
+    undirected_rels: &[UndirectedRelInfo],
+) -> Option<RenderExpr> {
+    if undirected_rels.len() < 2 {
+        return None; // Need at least 2 relationships for pairwise comparison
+    }
+    
+    let mut filters = Vec::new();
+    
+    // Generate pairwise filters for all combinations
+    for i in 0..undirected_rels.len() {
+        for j in (i + 1)..undirected_rels.len() {
+            let r1 = &undirected_rels[i];
+            let r2 = &undirected_rels[j];
+            
+            // Generate: NOT (tuple(r1.cols...) = tuple(r2.cols...))
+            // This prevents the same physical edge from being used twice
+            
+            // Build tuple expressions for each relationship's edge_id columns
+            let r1_tuple_args: Vec<RenderExpr> = r1.edge_id_cols.iter().map(|col| {
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(r1.alias.clone()),
+                    column: Column(PropertyValue::Column(col.clone())),
+                })
+            }).collect();
+            
+            let r2_tuple_args: Vec<RenderExpr> = r2.edge_id_cols.iter().map(|col| {
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(r2.alias.clone()),
+                    column: Column(PropertyValue::Column(col.clone())),
+                })
+            }).collect();
+            
+            // Create tuple expressions
+            let r1_tuple = if r1_tuple_args.len() == 1 {
+                r1_tuple_args.into_iter().next().unwrap()
+            } else {
+                RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: "tuple".to_string(),
+                    args: r1_tuple_args,
+                })
+            };
+            
+            let r2_tuple = if r2_tuple_args.len() == 1 {
+                r2_tuple_args.into_iter().next().unwrap()
+            } else {
+                RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: "tuple".to_string(),
+                    args: r2_tuple_args,
+                })
+            };
+            
+            // Generate: NOT (r1_tuple = r2_tuple)
+            let equality_check = RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Equal,
+                operands: vec![r1_tuple, r2_tuple],
+            });
+            
+            let not_equal = RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Not,
+                operands: vec![equality_check],
+            });
+            
+            filters.push(not_equal);
+        }
+    }
+    
+    if filters.is_empty() {
+        return None;
+    }
+    
+    // Combine all filters with AND
+    Some(filters.into_iter().reduce(|acc, filter| {
+        RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: vec![acc, filter],
+        })
+    }).unwrap())
+}
+*/
 
 /// Check if a logical plan contains any polymorphic edge (right node is $any)
 /// A polymorphic edge is detected when the right GraphNode has a Scan with no table_name
@@ -1269,11 +1598,103 @@ pub(super) fn plan_contains_view_scan(plan: &LogicalPlan) -> bool {
     }
 }
 
-/// Apply property mapping to an expression (DISABLED - handled by analyzer)
-pub(super) fn apply_property_mapping_to_expr(_expr: &mut RenderExpr, _plan: &LogicalPlan) {
-    // DISABLED: Property mapping is now handled in the FilterTagging analyzer pass
-    // The analyzer phase maps Cypher properties → database columns, so we should not
-    // attempt to re-map them here in the render phase.
+/// Apply property mapping to an expression
+/// 
+/// Main purpose: Convert TableAlias expressions to PropertyAccess for denormalized schemas.
+/// For GROUP BY with a node alias like `b` in `(a)-[r1]->(b)-[r2]->(c)`, this converts
+/// the TableAlias("b") to PropertyAccess { table_alias: "r2", column: "Origin" }
+/// 
+/// Note: Regular PropertyAccess mapping is handled in the FilterTagging analyzer pass.
+pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
+    match expr {
+        RenderExpr::TableAlias(alias) => {
+            // For denormalized schemas, convert TableAlias to the proper ID column reference
+            // Example: TableAlias("b") -> PropertyAccess { table_alias: "r2", column: "Origin" }
+            if let Some((rel_alias, id_column)) = get_denormalized_node_id_reference(&alias.0, plan) {
+                use crate::graph_catalog::expression_parser::PropertyValue;
+                *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(rel_alias),
+                    column: Column(PropertyValue::Column(id_column)),
+                });
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &mut op.operands {
+                apply_property_mapping_to_expr(operand, plan);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &mut agg.args {
+                apply_property_mapping_to_expr(arg, plan);
+            }
+        }
+        RenderExpr::ScalarFnCall(scalar) => {
+            for arg in &mut scalar.args {
+                apply_property_mapping_to_expr(arg, plan);
+            }
+        }
+        _ => {
+            // PropertyAccess, Column, Literal, etc. don't need modification
+        }
+    }
+}
+
+/// Get the relationship alias and ID column for a denormalized node alias
+/// For example, if `b` is the "to" node of `r1` or the "from" node of `r2`,
+/// this returns (rel_alias, id_column_name).
+fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option<(String, String)> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            // Check if this node alias matches left or right connection
+            if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                // For multi-hop patterns like (a)-[r1]->(b)-[r2]->(c), we prefer
+                // the "from" position because in GROUP BY b, we want r2.Origin
+                // (where b is the origin/source of r2)
+                
+                // Check if node is the "from" node (left_connection) - this takes precedence
+                if alias == rel.left_connection {
+                    if let Some(from_id) = &scan.from_id {
+                        return Some((rel.alias.clone(), from_id.clone()));
+                    }
+                }
+                // Check if node is the "to" node (right_connection)
+                if alias == rel.right_connection {
+                    if let Some(to_id) = &scan.to_id {
+                        return Some((rel.alias.clone(), to_id.clone()));
+                    }
+                }
+            }
+            
+            // Recursively check branches (right first for more recent relationships)
+            if let Some(result) = get_denormalized_node_id_reference(alias, &rel.right) {
+                return Some(result);
+            }
+            if let Some(result) = get_denormalized_node_id_reference(alias, &rel.left) {
+                return Some(result);
+            }
+            None
+        }
+        LogicalPlan::GraphNode(node) => {
+            // Check if this is a denormalized node
+            if node.is_denormalized && node.alias == alias {
+                if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                    if let Some(from_id) = &scan.from_id {
+                        return Some((alias.to_string(), from_id.clone()));
+                    }
+                }
+            }
+            get_denormalized_node_id_reference(alias, &node.input)
+        }
+        LogicalPlan::Filter(filter) => get_denormalized_node_id_reference(alias, &filter.input),
+        LogicalPlan::Projection(proj) => get_denormalized_node_id_reference(alias, &proj.input),
+        LogicalPlan::GraphJoins(joins) => get_denormalized_node_id_reference(alias, &joins.input),
+        LogicalPlan::OrderBy(order_by) => get_denormalized_node_id_reference(alias, &order_by.input),
+        LogicalPlan::Skip(skip) => get_denormalized_node_id_reference(alias, &skip.input),
+        LogicalPlan::Limit(limit) => get_denormalized_node_id_reference(alias, &limit.input),
+        LogicalPlan::GroupBy(group_by) => get_denormalized_node_id_reference(alias, &group_by.input),
+        LogicalPlan::Cte(cte) => get_denormalized_node_id_reference(alias, &cte.input),
+        _ => None,
+    }
 }
 
 /// Check if a filter expression appears to be invalid (e.g., "1 = 0")
@@ -1292,6 +1713,85 @@ pub(super) fn is_invalid_filter_expression(expr: &RenderExpr) -> bool {
         }
         _ => false,
     }
+}
+
+/// Normalize UNION branch SELECT items so all branches have the same columns.
+/// For denormalized node queries where from_node_properties and to_node_properties
+/// might have different property sets, we need to:
+/// 1. Collect all unique column aliases across all branches
+/// 2. For each branch, add NULL for any missing columns
+/// 
+/// Returns normalized RenderPlans with consistent SELECT items.
+pub(super) fn normalize_union_branches(union_plans: Vec<super::RenderPlan>) -> Vec<super::RenderPlan> {
+    use super::{SelectItem, RenderPlan, SelectItems};
+    use std::collections::BTreeSet;
+    
+    if union_plans.is_empty() {
+        return union_plans;
+    }
+    
+    // Collect all unique column aliases across all branches (sorted for deterministic order)
+    let all_aliases: BTreeSet<String> = union_plans.iter()
+        .flat_map(|plan| {
+            plan.select.items.iter()
+                .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+        })
+        .collect();
+    
+    println!(
+        "DEBUG: normalize_union_branches - {} branches, {} total unique aliases: {:?}",
+        union_plans.len(),
+        all_aliases.len(),
+        all_aliases
+    );
+    
+    // If all branches have the same aliases, no normalization needed
+    let all_same = union_plans.iter().all(|plan| {
+        let branch_aliases: BTreeSet<String> = plan.select.items.iter()
+            .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+            .collect();
+        branch_aliases == all_aliases
+    });
+    
+    if all_same {
+        println!("DEBUG: normalize_union_branches - all branches have same aliases, no normalization needed");
+        return union_plans;
+    }
+    
+    println!("DEBUG: normalize_union_branches - branches have different aliases, normalizing...");
+    
+    // Normalize each branch
+    union_plans.into_iter().map(|plan| {
+        // Build a map of existing column aliases in this branch
+        let existing: std::collections::HashMap<String, SelectItem> = plan.select.items.iter()
+            .filter_map(|item| {
+                item.col_alias.as_ref().map(|a| (a.0.clone(), item.clone()))
+            })
+            .collect();
+        
+        // Build normalized SELECT items in consistent order
+        let normalized_items: Vec<SelectItem> = all_aliases.iter()
+            .map(|alias| {
+                if let Some(item) = existing.get(alias) {
+                    item.clone()
+                } else {
+                    // Missing column - use NULL
+                    SelectItem {
+                        expression: RenderExpr::Literal(Literal::Null),
+                        col_alias: Some(super::ColumnAlias(alias.clone())),
+                    }
+                }
+            })
+            .collect();
+        
+        RenderPlan {
+            select: SelectItems {
+                items: normalized_items,
+                distinct: plan.select.distinct,
+            },
+            ..plan
+        }
+    }).collect()
 }
 
 /// Find a Union node nested inside a plan

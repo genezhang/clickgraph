@@ -337,81 +337,101 @@ impl AliasResolverContext {
     
     /// Detect coupled edges (multiple relationships sharing the same table)
     /// When detected, all nodes should use the same (first) relationship's alias
+    /// 
+    /// IMPORTANT: Only truly "coupled" edges should be unified - these are DIFFERENT
+    /// edge types that share the same underlying table (e.g., DNS REQUESTED + RESOLVED_TO).
+    /// Multi-hop on the SAME edge type (e.g., FLIGHT -> FLIGHT) is NOT coupled and each
+    /// edge instance needs its own alias for proper JOIN generation.
     fn detect_coupled_edges(&mut self, plan: &LogicalPlan) {
-        let mut edge_tables: HashMap<String, Vec<String>> = HashMap::new(); // table_name -> [aliases]
+        // Collect table_name -> [(alias, labels)]
+        let mut edge_info: HashMap<String, Vec<(String, Option<Vec<String>>)>> = HashMap::new();
         
-        self.collect_edge_tables(plan, &mut edge_tables);
+        self.collect_edge_tables_with_labels(plan, &mut edge_info);
         
-        log::debug!("Coupled edge detection - edge tables: {:?}", edge_tables);
+        log::debug!("Coupled edge detection - edge info: {:?}", edge_info);
         
-        // For tables with multiple edges, map all aliases to the first one
-        for (table_name, aliases) in edge_tables {
-            if aliases.len() > 1 {
-                let first_alias = aliases[0].clone();
-                log::info!("Coupled edges detected: Table {} has {} edges, unifying aliases to {}", 
-                         table_name, aliases.len(), first_alias);
-                for alias in aliases.iter().skip(1) {
+        // For tables with multiple edges, check if they have DIFFERENT edge types
+        // Only unify aliases for truly coupled edges (different types on same table)
+        for (table_name, entries) in edge_info {
+            if entries.len() > 1 {
+                // Check if all entries have the same edge type
+                let first_labels = &entries[0].1;
+                let all_same_type = entries.iter().all(|(_, labels)| labels == first_labels);
+                
+                if all_same_type {
+                    // MULTI-HOP on same edge type - do NOT unify aliases
+                    // Each edge instance needs its own alias for proper JOINs
+                    log::debug!("Multi-hop detected on table {}: {} edges of same type {:?} - keeping separate aliases",
+                             table_name, entries.len(), first_labels);
+                    continue;
+                }
+                
+                // Different edge types on same table - truly coupled, unify aliases
+                let first_alias = entries[0].0.clone();
+                log::info!("Coupled edges detected: Table {} has {} different edge types, unifying aliases to {}", 
+                         table_name, entries.len(), first_alias);
+                for (alias, _) in entries.iter().skip(1) {
                     self.coupled_edge_aliases.insert(alias.clone(), first_alias.clone());
                 }
                 // Also need to map the edge alias itself (not just node aliases)
                 // The first alias maps to itself, others map to first
-                for alias in &aliases {
+                for (alias, _) in &entries {
                     self.coupled_edge_aliases.insert(alias.clone(), first_alias.clone());
                 }
             }
         }
     }
     
-    /// Collect all edge tables and their aliases from the plan
-    fn collect_edge_tables(&self, plan: &LogicalPlan, edge_tables: &mut HashMap<String, Vec<String>>) {
+    /// Collect all edge tables, their aliases, and their labels from the plan
+    fn collect_edge_tables_with_labels(&self, plan: &LogicalPlan, edge_info: &mut HashMap<String, Vec<(String, Option<Vec<String>>)>>) {
         match plan {
             LogicalPlan::GraphRel(rel) => {
-                // Extract table name from ViewScan
+                // Extract table name from ViewScan and labels from GraphRel
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                    edge_tables.entry(scan.source_table.clone())
+                    edge_info.entry(scan.source_table.clone())
                         .or_default()
-                        .push(rel.alias.clone());
+                        .push((rel.alias.clone(), rel.labels.clone()));
                 }
                 
                 // Recurse into nested GraphRels
-                self.collect_edge_tables(&rel.left, edge_tables);
-                self.collect_edge_tables(&rel.right, edge_tables);
+                self.collect_edge_tables_with_labels(&rel.left, edge_info);
+                self.collect_edge_tables_with_labels(&rel.right, edge_info);
             }
             
             LogicalPlan::GraphNode(node) => {
-                self.collect_edge_tables(&node.input, edge_tables);
+                self.collect_edge_tables_with_labels(&node.input, edge_info);
             }
             
             LogicalPlan::Projection(proj) => {
-                self.collect_edge_tables(&proj.input, edge_tables);
+                self.collect_edge_tables_with_labels(&proj.input, edge_info);
             }
             
             LogicalPlan::Filter(filter) => {
-                self.collect_edge_tables(&filter.input, edge_tables);
+                self.collect_edge_tables_with_labels(&filter.input, edge_info);
             }
             
             LogicalPlan::GraphJoins(joins) => {
-                self.collect_edge_tables(&joins.input, edge_tables);
+                self.collect_edge_tables_with_labels(&joins.input, edge_info);
             }
             
             LogicalPlan::OrderBy(ob) => {
-                self.collect_edge_tables(&ob.input, edge_tables);
+                self.collect_edge_tables_with_labels(&ob.input, edge_info);
             }
             
             LogicalPlan::Skip(skip) => {
-                self.collect_edge_tables(&skip.input, edge_tables);
+                self.collect_edge_tables_with_labels(&skip.input, edge_info);
             }
             
             LogicalPlan::Limit(limit) => {
-                self.collect_edge_tables(&limit.input, edge_tables);
+                self.collect_edge_tables_with_labels(&limit.input, edge_info);
             }
             
             LogicalPlan::GroupBy(gb) => {
-                self.collect_edge_tables(&gb.input, edge_tables);
+                self.collect_edge_tables_with_labels(&gb.input, edge_info);
             }
             
             LogicalPlan::Unwind(u) => {
-                self.collect_edge_tables(&u.input, edge_tables);
+                self.collect_edge_tables_with_labels(&u.input, edge_info);
             }
             
             _ => {}

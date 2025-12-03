@@ -183,15 +183,8 @@ impl AnalyzerPass for GroupByBuilding {
                         non_agg_projections.len()
                     );
 
-                    // Check if input is already a GroupBy (e.g., from UNION + aggregation handling in return_clause.rs)
-                    // In this case, don't create another GroupBy - just recurse
-                    if matches!(projection.input.as_ref(), LogicalPlan::GroupBy(_)) {
-                        println!(
-                            "GroupByBuilding: Input is already GroupBy, skipping duplicate GroupBy creation"
-                        );
-                        let child_tf = self.analyze(projection.input.clone(), _plan_ctx)?;
-                        projection.rebuild_or_clone(child_tf, logical_plan.clone())
-                    } else if non_agg_projections.len() < projection.items.len()
+                    // First check if RETURN has its own aggregations
+                    if non_agg_projections.len() < projection.items.len()
                         && !non_agg_projections.is_empty()
                     {
                         // aggregate fns found. Build the groupby plan here
@@ -208,10 +201,52 @@ impl AnalyzerPass for GroupByBuilding {
                             having_clause: None, // HAVING clause added later if Filter references projection aliases
                         })))
                     } else {
+                        // No aggregations in RETURN - recurse into child first, then check for optimization
                         println!(
                             "GroupByBuilding: No aggregations in this Projection, recursing into child"
                         );
                         let child_tf = self.analyze(projection.input.clone(), _plan_ctx)?;
+                        
+                        // Get the transformed plan (clone it so we can check and potentially return it)
+                        let transformed_child = child_tf.clone().get_plan();
+                        
+                        // OPTIMIZATION: Check if the TRANSFORMED child is now a GroupBy
+                        // and if RETURN just passes through WITH aliases unchanged
+                        if let LogicalPlan::GroupBy(group_by) = transformed_child.as_ref() {
+                            println!(
+                                "GroupByBuilding: Transformed child is GroupBy, checking for pass-through optimization"
+                            );
+                            
+                            // Extract aliases from the inner Projection (WITH clause)
+                            if let LogicalPlan::Projection(inner_proj) = group_by.input.as_ref() {
+                                let with_aliases: std::collections::HashSet<String> = inner_proj
+                                    .items
+                                    .iter()
+                                    .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                                    .collect();
+                                
+                                // Check if all RETURN items are simple TableAlias pass-throughs
+                                let all_pass_through = projection.items.iter().all(|item| {
+                                    if let LogicalExpr::TableAlias(alias) = &item.expression {
+                                        // Check if alias is from WITH and output alias matches
+                                        with_aliases.contains(&alias.0) && 
+                                        item.col_alias.as_ref().map_or(false, |col| col.0 == alias.0)
+                                    } else {
+                                        false
+                                    }
+                                });
+                                
+                                if all_pass_through && projection.items.len() == with_aliases.len() {
+                                    println!(
+                                        "GroupByBuilding: OPTIMIZATION - RETURN passes through all WITH aliases unchanged, eliminating outer Projection"
+                                    );
+                                    // Just return the GroupBy directly, skipping the outer Projection
+                                    return Ok(child_tf);
+                                }
+                            }
+                        }
+                        
+                        // Not a pass-through or child isn't GroupBy - keep the Projection
                         projection.rebuild_or_clone(child_tf, logical_plan.clone())
                     }
                 }

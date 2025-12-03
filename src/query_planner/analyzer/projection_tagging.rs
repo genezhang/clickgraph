@@ -612,20 +612,21 @@ impl ProjectionTagging {
             LogicalExpr::AggregateFnCall(aggregate_fn_call) => {
                 for arg in &aggregate_fn_call.args {
                     // Handle COUNT(a) or COUNT(DISTINCT a)
-                    let table_alias_opt = match arg {
-                        LogicalExpr::TableAlias(TableAlias(t_alias)) => Some(t_alias.as_str()),
+                    // Track whether DISTINCT was used in the original expression
+                    let (table_alias_opt, is_distinct) = match arg {
+                        LogicalExpr::TableAlias(TableAlias(t_alias)) => (Some(t_alias.as_str()), false),
                         LogicalExpr::OperatorApplicationExp(OperatorApplication {
                             operator,
                             operands,
                         }) if *operator == Operator::Distinct && operands.len() == 1 => {
                             // Handle DISTINCT a inside COUNT(DISTINCT a)
                             if let LogicalExpr::TableAlias(TableAlias(t_alias)) = &operands[0] {
-                                Some(t_alias.as_str())
+                                (Some(t_alias.as_str()), true)
                             } else {
-                                None
+                                (None, false)
                             }
                         }
-                        _ => None,
+                        _ => (None, false),
                     };
 
                     if let Some(t_alias) = table_alias_opt {
@@ -638,8 +639,74 @@ impl ProjectionTagging {
                             })?;
 
                             if table_ctx.is_relation() {
-                                // For relationships, count the relationship records
-                                // Convert count(r) or count(distinct r) to count(*) for the relationship table
+                                // For relationships:
+                                // - count(r) -> count(*) (count all relationship rows)
+                                // - count(DISTINCT r) -> count(DISTINCT (edge_id_columns...))
+                                if is_distinct {
+                                    // Get the relationship type from the table context
+                                    if let Some(rel_type) = table_ctx.get_label_opt() {
+                                        // Look up the relationship schema
+                                        if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(&rel_type) {
+                                            // Get edge_id columns or default to (from_id, to_id)
+                                            let edge_columns: Vec<String> = match &rel_schema.edge_id {
+                                                Some(id) => id.columns().iter().map(|s| s.to_string()).collect(),
+                                                None => vec![rel_schema.from_id.clone(), rel_schema.to_id.clone()],
+                                            };
+                                            
+                                            // Create PropertyAccess expressions for each edge column
+                                            let column_exprs: Vec<LogicalExpr> = edge_columns.iter().map(|col| {
+                                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                    table_alias: TableAlias(t_alias.to_string()),
+                                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(col.clone()),
+                                                })
+                                            }).collect();
+                                            
+                                            // Create the DISTINCT tuple expression
+                                            let distinct_arg = if column_exprs.len() == 1 {
+                                                // Single column - just use DISTINCT on that column
+                                                LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                                    operator: Operator::Distinct,
+                                                    operands: column_exprs,
+                                                })
+                                            } else {
+                                                // Multiple columns - create tuple using scalar function: DISTINCT tuple(col1, col2, ...)
+                                                LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                                    operator: Operator::Distinct,
+                                                    operands: vec![LogicalExpr::ScalarFnCall(ScalarFnCall {
+                                                        name: "tuple".to_string(),
+                                                        args: column_exprs,
+                                                    })],
+                                                })
+                                            };
+                                            
+                                            item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                                name: aggregate_fn_call.name.clone(),
+                                                args: vec![distinct_arg],
+                                            });
+                                        } else {
+                                            // Fallback to count(*) if schema lookup fails
+                                            item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                                name: aggregate_fn_call.name.clone(),
+                                                args: vec![LogicalExpr::Star],
+                                            });
+                                        }
+                                    } else {
+                                        // No relationship type found, fallback to count(*)
+                                        item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                            name: aggregate_fn_call.name.clone(),
+                                            args: vec![LogicalExpr::Star],
+                                        });
+                                    }
+                                } else {
+                                    // count(r) without DISTINCT -> count(*)
+                                    item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                        name: aggregate_fn_call.name.clone(),
+                                        args: vec![LogicalExpr::Star],
+                                    });
+                                }
+                            } else if table_ctx.is_path_variable() {
+                                // For path variables (e.g., count(p) where p is from MATCH p = ...),
+                                // count the number of paths which equals the number of rows
                                 item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
                                     name: aggregate_fn_call.name.clone(),
                                     args: vec![LogicalExpr::Star],

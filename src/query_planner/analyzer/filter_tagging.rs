@@ -437,7 +437,48 @@ impl FilterTagging {
                 let mapped_column = if is_denormalized {
                     // For denormalized nodes, look directly at the ViewScan's properties
                     if let Some(plan) = plan {
-                        if let Some(column) = Self::find_property_in_viewscan(plan, &property_access.table_alias.0, property_access.column.raw()) {
+                        // First, check if plan_ctx knows which edge this node belongs to
+                        // This is critical for multi-hop patterns where a node appears in multiple edges
+                        let denorm_info = plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0);
+                        
+                        if let Some((owning_edge, is_from_node, _, _)) = denorm_info {
+                            println!(
+                                "FilterTagging: Node '{}' is denormalized on edge '{}', is_from={}",
+                                property_access.table_alias.0, owning_edge, is_from_node
+                            );
+                            // Use the owning edge info to find the correct property
+                            if let Some(column) = Self::find_property_in_viewscan_with_edge(
+                                plan,
+                                &property_access.table_alias.0,
+                                property_access.column.raw(),
+                                &owning_edge,
+                                is_from_node,
+                            ) {
+                                println!(
+                                    "FilterTagging: Found property '{}' in owning edge '{}' ViewScan -> '{}'",
+                                    property_access.column.raw(), owning_edge, column
+                                );
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(column)
+                            } else {
+                                // Fallback to generic search
+                                if let Some(column) = Self::find_property_in_viewscan(plan, &property_access.table_alias.0, property_access.column.raw()) {
+                                    println!(
+                                        "FilterTagging: Found property '{}' via fallback in ViewScan -> '{}'",
+                                        property_access.column.raw(), column
+                                    );
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(column)
+                                } else {
+                                    // Final fallback to role-aware mapping
+                                    let role = if is_from_node {
+                                        Some(crate::render_plan::cte_generation::NodeRole::From)
+                                    } else {
+                                        Some(crate::render_plan::cte_generation::NodeRole::To)
+                                    };
+                                    let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
+                                    view_resolver.resolve_node_property_with_role(&label, &property_access.column.raw(), role)?
+                                }
+                            }
+                        } else if let Some(column) = Self::find_property_in_viewscan(plan, &property_access.table_alias.0, property_access.column.raw()) {
                             println!(
                                 "FilterTagging: Found property '{}' directly in ViewScan -> '{}'",
                                 property_access.column.raw(), column
@@ -969,6 +1010,89 @@ impl FilterTagging {
         }
     }
 
+    /// Find a property mapping from a specific edge's ViewScan
+    /// This is used for multi-hop denormalized patterns where we know which edge owns the node
+    fn find_property_in_viewscan_with_edge(
+        plan: &LogicalPlan,
+        alias: &str,
+        property: &str,
+        owning_edge: &str,
+        is_from_node: bool,
+    ) -> Option<String> {
+        match plan {
+            LogicalPlan::GraphRel(rel) => {
+                // Only process if this is the owning edge
+                if rel.alias == owning_edge {
+                    if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                        // Use is_from_node to determine which properties to look at
+                        if is_from_node {
+                            if let Some(from_props) = &scan.from_node_properties {
+                                if let Some(prop_value) = from_props.get(property) {
+                                    if let crate::graph_catalog::expression_parser::PropertyValue::Column(col) = prop_value {
+                                        println!(
+                                            "FilterTagging: find_property_in_viewscan_with_edge - edge '{}', found '{}' in from_node_properties -> '{}'",
+                                            owning_edge, property, col
+                                        );
+                                        return Some(col.clone());
+                                    }
+                                }
+                            }
+                        } else {
+                            if let Some(to_props) = &scan.to_node_properties {
+                                if let Some(prop_value) = to_props.get(property) {
+                                    if let crate::graph_catalog::expression_parser::PropertyValue::Column(col) = prop_value {
+                                        println!(
+                                            "FilterTagging: find_property_in_viewscan_with_edge - edge '{}', found '{}' in to_node_properties -> '{}'",
+                                            owning_edge, property, col
+                                        );
+                                        return Some(col.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Recurse to find the owning edge
+                if let Some(col) = Self::find_property_in_viewscan_with_edge(&rel.left, alias, property, owning_edge, is_from_node) {
+                    return Some(col);
+                }
+                Self::find_property_in_viewscan_with_edge(&rel.right, alias, property, owning_edge, is_from_node)
+            }
+            LogicalPlan::GraphNode(node) => {
+                Self::find_property_in_viewscan_with_edge(&node.input, alias, property, owning_edge, is_from_node)
+            }
+            LogicalPlan::Projection(proj) => {
+                Self::find_property_in_viewscan_with_edge(&proj.input, alias, property, owning_edge, is_from_node)
+            }
+            LogicalPlan::Filter(filter) => {
+                Self::find_property_in_viewscan_with_edge(&filter.input, alias, property, owning_edge, is_from_node)
+            }
+            LogicalPlan::GraphJoins(joins) => {
+                Self::find_property_in_viewscan_with_edge(&joins.input, alias, property, owning_edge, is_from_node)
+            }
+            LogicalPlan::OrderBy(ob) => {
+                Self::find_property_in_viewscan_with_edge(&ob.input, alias, property, owning_edge, is_from_node)
+            }
+            LogicalPlan::Skip(skip) => {
+                Self::find_property_in_viewscan_with_edge(&skip.input, alias, property, owning_edge, is_from_node)
+            }
+            LogicalPlan::Limit(limit) => {
+                Self::find_property_in_viewscan_with_edge(&limit.input, alias, property, owning_edge, is_from_node)
+            }
+            LogicalPlan::GroupBy(gb) => {
+                Self::find_property_in_viewscan_with_edge(&gb.input, alias, property, owning_edge, is_from_node)
+            }
+            LogicalPlan::Unwind(u) => {
+                Self::find_property_in_viewscan_with_edge(&u.input, alias, property, owning_edge, is_from_node)
+            }
+            LogicalPlan::Cte(cte) => {
+                Self::find_property_in_viewscan_with_edge(&cte.input, alias, property, owning_edge, is_from_node)
+            }
+            _ => None,
+        }
+    }
+
     /// Find a property mapping directly from a ViewScan in the plan tree
     /// This is the simplest approach - each Union branch's ViewScan has the correct properties
     fn find_property_in_viewscan(
@@ -1005,10 +1129,21 @@ impl FilterTagging {
                 Self::find_property_in_viewscan(&node.input, alias, property)
             }
             LogicalPlan::GraphRel(rel) => {
-                // For denormalized patterns, check if alias is left_connection or right_connection
-                // and look at the corresponding node_properties in the center ViewScan
+                // IMPORTANT: For multi-hop patterns, recurse into inner GraphRels FIRST
+                // This ensures we find a node's properties in the GraphRel where it was DEFINED,
+                // not where it's used as a connection point.
+                // Example: (a)-[r1]->(b)-[r2]->(c)
+                //   - When looking for 'b', we should find it in r1 (where b is right_connection)
+                //   - Not in r2 (where b is left_connection, which would give wrong column)
+                
+                // First, recurse into left (inner GraphRels)
+                if let Some(col) = Self::find_property_in_viewscan(&rel.left, alias, property) {
+                    return Some(col);
+                }
+                
+                // Then check the current GraphRel's connections ONLY if alias wasn't found in inner GraphRels
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                    // Check if alias is the left (from) node
+                    // Check if alias is the left (from) node of THIS relationship
                     if rel.left_connection == alias {
                         if let Some(from_props) = &scan.from_node_properties {
                             if let Some(prop_value) = from_props.get(property) {
@@ -1019,7 +1154,7 @@ impl FilterTagging {
                             }
                         }
                     }
-                    // Check if alias is the right (to) node  
+                    // Check if alias is the right (to) node of THIS relationship
                     if rel.right_connection == alias {
                         if let Some(to_props) = &scan.to_node_properties {
                             if let Some(prop_value) = to_props.get(property) {
@@ -1032,10 +1167,7 @@ impl FilterTagging {
                     }
                 }
                 
-                // Check left, center, and right (original logic)
-                if let Some(col) = Self::find_property_in_viewscan(&rel.left, alias, property) {
-                    return Some(col);
-                }
+                // Finally check center and right
                 if let Some(col) = Self::find_property_in_viewscan(&rel.center, alias, property) {
                     return Some(col);
                 }

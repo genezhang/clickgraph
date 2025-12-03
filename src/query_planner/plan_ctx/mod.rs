@@ -71,6 +71,12 @@ impl TableCtx {
         self.labels.as_ref().and_then(|v| v.first()).cloned()
     }
 
+    /// Check if this TableCtx represents a path variable (not a node or relationship).
+    /// Path variables have no label and are not relationships.
+    pub fn is_path_variable(&self) -> bool {
+        !self.is_rel && self.labels.as_ref().map_or(true, |v| v.is_empty())
+    }
+
     pub fn set_labels(&mut self, labels_opt: Option<Vec<String>>) {
         self.labels = labels_opt;
     }

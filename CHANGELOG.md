@@ -1,3 +1,12 @@
+## [Unreleased]
+
+### 🐛 Bug Fixes
+
+- **Fix UNION column order mismatch for denormalized nodes** - Sort properties alphabetically to ensure consistent column order across UNION ALL branches
+- **Fix count(p) for path variables** - Path variables (from `MATCH p = ...`) now correctly resolve to `count(*)` instead of failing with "Missing Label" error
+
+---
+
 ## [0.5.3] - 2025-12-02
 
 ### 🚀 Features

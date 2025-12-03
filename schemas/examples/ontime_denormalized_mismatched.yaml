@@ -1,0 +1,53 @@
+# OnTime Flight Data - Denormalized Edge Table Example
+# Test version with MISMATCHED from_node_properties and to_node_properties
+# to verify UNION ALL normalization works correctly.
+
+name: ontime_flights_mismatched
+version: "1.0"
+
+graph_schema:
+  nodes:
+    # Airport is a virtual node - data comes from the flights table
+    - label: Airport
+      database: test_integration
+      table: flights  # Same table as the edge!
+      id_column: code  # Logical property name for the airport code
+      property_mappings: {}  # Empty - all properties are denormalized
+      
+      # Properties when Airport appears as origin (from_node)
+      # NOTE: Only 3 properties - missing 'state' compared to to_node_properties
+      from_node_properties:
+        code: Origin
+        city: OriginCityName
+        airport: OriginAirportName
+      
+      # Properties when Airport appears as destination (to_node)
+      # NOTE: Has 'state' property that from_node_properties lacks
+      to_node_properties:
+        code: Dest
+        city: DestCityName
+        state: DestState
+        airport: DestAirportName
+
+  relationships:
+    # Flight relationship - node properties declared in Airport node above
+    - type: FLIGHT
+      database: test_integration
+      table: flights
+      from_id: Origin
+      to_id: Dest
+      from_node: Airport
+      to_node: Airport
+      
+      # Composite edge ID (flights can repeat on different dates)
+      edge_id: [FlightDate, FlightNum, Origin, Dest]
+      
+      # Edge properties (specific to the flight itself)
+      property_mappings:
+        flight_date: FlightDate
+        flight_num: FlightNum
+        carrier: Carrier
+        departure_time: DepTime
+        arrival_time: ArrTime
+        distance: Distance
+        delay: ArrDelay

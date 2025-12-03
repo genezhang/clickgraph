@@ -564,6 +564,7 @@ fn build_node_schema(
 fn build_relationship_schema(
     rel_def: &RelationshipDefinition,
     default_node_type: &str,
+    nodes: &HashMap<String, NodeSchema>,
     discovery: &TableDiscovery,
 ) -> Result<RelationshipSchema, GraphSchemaError> {
     // Build property mappings (with optional auto-discovery)
@@ -602,6 +603,13 @@ fn build_relationship_schema(
         None
     };
     
+    // Look up denormalized node properties from NODE definitions
+    // (same logic as build_standard_edge_schema)
+    let from_node_props = nodes.get(&from_node)
+        .and_then(|n| n.from_properties.clone());
+    let to_node_props = nodes.get(&to_node)
+        .and_then(|n| n.to_properties.clone());
+    
     Ok(RelationshipSchema {
         database: rel_def.database.clone(),
         table_name: rel_def.table.clone(),
@@ -624,8 +632,8 @@ fn build_relationship_schema(
         type_column: None,
         from_label_column: None,
         to_label_column: None,
-        from_node_properties: None,
-        to_node_properties: None,
+        from_node_properties: from_node_props,
+        to_node_properties: to_node_props,
     })
 }
 
@@ -957,7 +965,7 @@ impl GraphSchemaConfig {
 
         // Convert legacy relationship definitions using shared builder
         for rel_def in &self.graph_schema.relationships {
-            let rel_schema = build_relationship_schema(rel_def, &default_node_type, &no_discovery)?;
+            let rel_schema = build_relationship_schema(rel_def, &default_node_type, &nodes, &no_discovery)?;
             relationships.insert(rel_def.type_name.clone(), rel_schema);
         }
 
@@ -1064,7 +1072,7 @@ impl GraphSchemaConfig {
             
             let discovery = TableDiscovery { columns, engine };
             
-            let rel_schema = build_relationship_schema(rel_def, &default_node_type, &discovery)?;
+            let rel_schema = build_relationship_schema(rel_def, &default_node_type, &nodes, &discovery)?;
             relationships.insert(rel_def.type_name.clone(), rel_schema);
         }
 

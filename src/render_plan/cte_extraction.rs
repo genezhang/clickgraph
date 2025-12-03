@@ -472,6 +472,16 @@ fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
                 });
             }
         }
+        RenderExpr::TableAlias(alias) => {
+            // For denormalized nodes, convert TableAlias to PropertyAccess with the ID column
+            // This is especially important for GROUP BY expressions
+            if let Some((rel_alias, id_column)) = get_denormalized_node_id_reference(&alias.0, plan) {
+                *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: super::render_expr::TableAlias(rel_alias),
+                    column: super::render_expr::Column(PropertyValue::Column(id_column)),
+                });
+            }
+        }
         RenderExpr::OperatorApplicationExp(op) => {
             for operand in &mut op.operands {
                 apply_property_mapping_to_expr(operand, plan);
@@ -526,6 +536,62 @@ fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
             }
             None
         }
+        _ => None,
+    }
+}
+
+/// For denormalized schemas: get the relationship alias and ID column for a node alias
+/// Returns (rel_alias, id_column) if the node is denormalized, None otherwise
+fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option<(String, String)> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            // Check if this node alias matches left or right connection
+            if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                // Check if node is the "from" node (left_connection)
+                if alias == rel.left_connection {
+                    if let Some(from_id) = &scan.from_id {
+                        return Some((rel.alias.clone(), from_id.clone()));
+                    }
+                }
+                // Check if node is the "to" node (right_connection)
+                if alias == rel.right_connection {
+                    if let Some(to_id) = &scan.to_id {
+                        return Some((rel.alias.clone(), to_id.clone()));
+                    }
+                }
+            }
+            
+            // Recursively check left and right branches
+            // Check right branch first (more recent relationships take precedence for multi-hop)
+            if let Some(result) = get_denormalized_node_id_reference(alias, &rel.right) {
+                return Some(result);
+            }
+            if let Some(result) = get_denormalized_node_id_reference(alias, &rel.left) {
+                return Some(result);
+            }
+            None
+        }
+        LogicalPlan::GraphNode(node) => {
+            // Check if this is a denormalized node
+            if node.is_denormalized && node.alias == alias {
+                // For standalone denormalized nodes, check their input ViewScan
+                if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                    if let Some(from_id) = &scan.from_id {
+                        // Use a placeholder alias since standalone nodes don't have a rel alias
+                        return Some((alias.to_string(), from_id.clone()));
+                    }
+                }
+            }
+            get_denormalized_node_id_reference(alias, &node.input)
+        }
+        LogicalPlan::Filter(filter) => get_denormalized_node_id_reference(alias, &filter.input),
+        LogicalPlan::Projection(proj) => get_denormalized_node_id_reference(alias, &proj.input),
+        LogicalPlan::GraphJoins(joins) => get_denormalized_node_id_reference(alias, &joins.input),
+        LogicalPlan::OrderBy(order_by) => get_denormalized_node_id_reference(alias, &order_by.input),
+        LogicalPlan::Skip(skip) => get_denormalized_node_id_reference(alias, &skip.input),
+        LogicalPlan::Limit(limit) => get_denormalized_node_id_reference(alias, &limit.input),
+        LogicalPlan::GroupBy(group_by) => get_denormalized_node_id_reference(alias, &group_by.input),
+        LogicalPlan::Cte(cte) => get_denormalized_node_id_reference(alias, &cte.input),
         _ => None,
     }
 }
@@ -1281,7 +1347,7 @@ pub fn get_variable_length_rel_info(plan: &LogicalPlan) -> Option<VariableLength
     }
 }
 
-/// Extract path variable from the plan
+/// Extract path variable from the plan (variable-length paths only, for CTE generation)
 pub fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => rel.path_variable.clone(),
@@ -1296,6 +1362,177 @@ pub fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::Cte(cte) => get_path_variable(&cte.input),
         LogicalPlan::Unwind(u) => get_path_variable(&u.input),
         _ => None,
+    }
+}
+
+/// Extract path variable from fixed multi-hop patterns (no variable_length)
+/// Returns (path_variable_name, hop_count) if found
+pub fn get_fixed_path_variable(plan: &LogicalPlan) -> Option<(String, u32)> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            // Only handle fixed patterns (no variable_length)
+            if rel.variable_length.is_some() {
+                return None;
+            }
+            
+            if let Some(ref path_var) = rel.path_variable {
+                // Count hops by traversing the GraphRel chain
+                let hop_count = count_hops_in_graph_rel(plan);
+                return Some((path_var.clone(), hop_count));
+            }
+            
+            // Check nested GraphRels
+            if let LogicalPlan::GraphRel(_) = rel.left.as_ref() {
+                return get_fixed_path_variable(&rel.left);
+            }
+            None
+        }
+        LogicalPlan::GraphNode(node) => get_fixed_path_variable(&node.input),
+        LogicalPlan::Filter(filter) => get_fixed_path_variable(&filter.input),
+        LogicalPlan::Projection(proj) => get_fixed_path_variable(&proj.input),
+        LogicalPlan::GraphJoins(joins) => get_fixed_path_variable(&joins.input),
+        LogicalPlan::GroupBy(gb) => get_fixed_path_variable(&gb.input),
+        LogicalPlan::OrderBy(ob) => get_fixed_path_variable(&ob.input),
+        LogicalPlan::Skip(skip) => get_fixed_path_variable(&skip.input),
+        LogicalPlan::Limit(limit) => get_fixed_path_variable(&limit.input),
+        LogicalPlan::Cte(cte) => get_fixed_path_variable(&cte.input),
+        LogicalPlan::Unwind(u) => get_fixed_path_variable(&u.input),
+        _ => None,
+    }
+}
+
+/// Count the number of hops (relationships) in a GraphRel chain
+fn count_hops_in_graph_rel(plan: &LogicalPlan) -> u32 {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            // Count this relationship + any nested ones
+            1 + count_hops_in_graph_rel(&rel.left)
+        }
+        LogicalPlan::GraphNode(node) => count_hops_in_graph_rel(&node.input),
+        _ => 0,
+    }
+}
+
+/// Complete information about a fixed path pattern
+/// For `p = (a)-[r1]->(b)-[r2]->(c)`:
+/// - path_var_name: "p"
+/// - node_aliases: ["a", "b", "c"]
+/// - rel_aliases: ["r1", "r2"]
+/// - hop_count: 2
+/// - node_id_columns: mapping from node alias to (rel_alias, id_column)
+///   e.g., {"a" -> ("r1", "Origin"), "b" -> ("r1", "Dest"), "c" -> ("r2", "Dest")}
+#[derive(Debug, Clone)]
+pub struct FixedPathInfo {
+    pub path_var_name: String,
+    pub node_aliases: Vec<String>,
+    pub rel_aliases: Vec<String>,
+    pub hop_count: u32,
+    /// Maps node alias to (relationship_alias, id_column) for denormalized schemas
+    /// e.g., "a" -> ("r", "Origin"), "b" -> ("r", "Dest")
+    pub node_id_columns: std::collections::HashMap<String, (String, String)>,
+}
+
+/// Extract complete path information from fixed multi-hop patterns
+/// Returns FixedPathInfo with all node and relationship aliases
+pub fn get_fixed_path_info(plan: &LogicalPlan) -> Option<FixedPathInfo> {
+    // First find the path variable and hop count
+    let (path_var_name, hop_count) = get_fixed_path_variable(plan)?;
+    
+    // Then extract all aliases and node ID mappings
+    let (node_aliases, rel_aliases, node_id_columns) = collect_path_aliases_with_ids(plan);
+    
+    Some(FixedPathInfo {
+        path_var_name,
+        node_aliases,
+        rel_aliases,
+        hop_count,
+        node_id_columns,
+    })
+}
+
+/// Collect node and relationship aliases plus ID column mappings
+fn collect_path_aliases_with_ids(plan: &LogicalPlan) -> (Vec<String>, Vec<String>, std::collections::HashMap<String, (String, String)>) {
+    let mut node_aliases = Vec::new();
+    let mut rel_aliases = Vec::new();
+    let mut node_id_columns = std::collections::HashMap::new();
+    
+    collect_path_aliases_with_ids_recursive(plan, &mut node_aliases, &mut rel_aliases, &mut node_id_columns);
+    
+    (node_aliases, rel_aliases, node_id_columns)
+}
+
+/// Recursive helper to collect aliases and ID column mappings
+fn collect_path_aliases_with_ids_recursive(
+    plan: &LogicalPlan,
+    node_aliases: &mut Vec<String>,
+    rel_aliases: &mut Vec<String>,
+    node_id_columns: &mut std::collections::HashMap<String, (String, String)>,
+) {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            // Process left side first (may be another GraphRel or the start node)
+            collect_path_aliases_with_ids_recursive(&rel.left, node_aliases, rel_aliases, node_id_columns);
+            
+            // Get the from_id and to_id columns from the ViewScan
+            if let LogicalPlan::ViewScan(view_scan) = rel.center.as_ref() {
+                let from_id = view_scan.from_id.clone().unwrap_or_else(|| "id".to_string());
+                let to_id = view_scan.to_id.clone().unwrap_or_else(|| "id".to_string());
+                
+                // Map left node to this relationship's from_id (if not already mapped)
+                if !node_id_columns.contains_key(&rel.left_connection) {
+                    node_id_columns.insert(
+                        rel.left_connection.clone(),
+                        (rel.alias.clone(), from_id.clone()),
+                    );
+                }
+                
+                // Map right node to this relationship's to_id
+                node_id_columns.insert(
+                    rel.right_connection.clone(),
+                    (rel.alias.clone(), to_id),
+                );
+            }
+            
+            // Add this relationship
+            rel_aliases.push(rel.alias.clone());
+            
+            // Add the right node
+            if let LogicalPlan::GraphNode(right_node) = rel.right.as_ref() {
+                if !node_aliases.contains(&right_node.alias) {
+                    node_aliases.push(right_node.alias.clone());
+                }
+            }
+        }
+        LogicalPlan::GraphNode(node) => {
+            // Start node - add it if not already present
+            if !node_aliases.contains(&node.alias) {
+                node_aliases.push(node.alias.clone());
+            }
+            // Recurse into input
+            collect_path_aliases_with_ids_recursive(&node.input, node_aliases, rel_aliases, node_id_columns);
+        }
+        LogicalPlan::Filter(filter) => {
+            collect_path_aliases_with_ids_recursive(&filter.input, node_aliases, rel_aliases, node_id_columns);
+        }
+        LogicalPlan::Projection(proj) => {
+            collect_path_aliases_with_ids_recursive(&proj.input, node_aliases, rel_aliases, node_id_columns);
+        }
+        LogicalPlan::GraphJoins(joins) => {
+            collect_path_aliases_with_ids_recursive(&joins.input, node_aliases, rel_aliases, node_id_columns);
+        }
+        LogicalPlan::GroupBy(gb) => {
+            collect_path_aliases_with_ids_recursive(&gb.input, node_aliases, rel_aliases, node_id_columns);
+        }
+        LogicalPlan::OrderBy(ob) => {
+            collect_path_aliases_with_ids_recursive(&ob.input, node_aliases, rel_aliases, node_id_columns);
+        }
+        LogicalPlan::Skip(skip) => {
+            collect_path_aliases_with_ids_recursive(&skip.input, node_aliases, rel_aliases, node_id_columns);
+        }
+        LogicalPlan::Limit(limit) => {
+            collect_path_aliases_with_ids_recursive(&limit.input, node_aliases, rel_aliases, node_id_columns);
+        }
+        _ => {}
     }
 }
 

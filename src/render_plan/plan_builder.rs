@@ -28,7 +28,7 @@ use crate::render_plan::cte_extraction::{
     RelationshipColumns, VlpSchemaType,
     build_vlp_context, expand_fixed_length_joins_with_context,
     extract_node_label_from_viewscan, extract_relationship_columns,
-    get_path_variable, get_shortest_path_mode, get_variable_length_spec, get_variable_length_rel_info,
+    get_fixed_path_info, get_path_variable, get_shortest_path_mode, get_variable_length_spec, get_variable_length_rel_info,
     get_variable_length_denorm_info, has_variable_length_rel, is_variable_length_denormalized, 
     is_variable_length_optional,
     label_to_table_name, rel_type_to_table_name, 
@@ -66,6 +66,14 @@ pub(crate) trait RenderPlanBuilder {
         &self,
         alias: &str,
     ) -> RenderPlanBuilderResult<Vec<(String, String)>>;
+
+    /// Get all properties for an alias along with the actual table alias to use for SQL generation.
+    /// For denormalized nodes, this returns the relationship alias instead of the node alias.
+    /// Returns: (properties, actual_table_alias) where actual_table_alias is None to use the original alias
+    fn get_properties_with_table_alias(
+        &self,
+        alias: &str,
+    ) -> RenderPlanBuilderResult<(Vec<(String, String)>, Option<String>)>;
 
     /// Find denormalized properties for a given alias
     /// Returns a HashMap of logical property name -> physical column name
@@ -177,10 +185,12 @@ impl RenderPlanBuilder for LogicalPlan {
                             .or(scan.to_node_properties.as_ref());
                         
                         if let Some(prop_map) = props {
-                            let properties: Vec<(String, String)> = prop_map
+                            // Sort by property name to ensure consistent column order in UNION branches
+                            let mut properties: Vec<(String, String)> = prop_map
                                 .iter()
                                 .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
                                 .collect();
+                            properties.sort_by(|a, b| a.0.cmp(&b.0));
                             println!(
                                 "DEBUG: get_all_properties_for_alias - denormalized node '{}' has {} properties",
                                 alias,
@@ -191,11 +201,13 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                     
                     // Standard nodes: use property_mapping
-                    let properties: Vec<(String, String)> = scan
+                    // Sort by property name to ensure consistent column order
+                    let mut properties: Vec<(String, String)> = scan
                         .property_mapping
                         .iter()
                         .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
                         .collect();
+                    properties.sort_by(|a, b| a.0.cmp(&b.0));
                     return Ok(properties);
                 }
             }
@@ -205,12 +217,55 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Found the matching relationship - extract all properties from its ViewScan (center)
                     if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
                         // Convert property_mapping HashMap to Vec of tuples
-                        let properties: Vec<(String, String)> = scan
+                        // Sort by property name to ensure consistent column order
+                        let mut properties: Vec<(String, String)> = scan
                             .property_mapping
                             .iter()
                             .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
                             .collect();
+                        properties.sort_by(|a, b| a.0.cmp(&b.0));
                         return Ok(properties);
+                    }
+                }
+                
+                // For denormalized nodes, properties are in the relationship center's ViewScan
+                // not in the GraphNode itself (which has Empty input)
+                if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                    // Check if alias matches left_connection and we have from_node_properties
+                    if alias == rel.left_connection {
+                        if let Some(from_props) = &scan.from_node_properties {
+                            let mut properties: Vec<(String, String)> = from_props
+                                .iter()
+                                .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
+                                .collect();
+                            properties.sort_by(|a, b| a.0.cmp(&b.0));
+                            if !properties.is_empty() {
+                                println!(
+                                    "DEBUG: get_all_properties_for_alias - denormalized FROM node '{}' has {} properties from rel center",
+                                    alias,
+                                    properties.len()
+                                );
+                                return Ok(properties);
+                            }
+                        }
+                    }
+                    // Check if alias matches right_connection and we have to_node_properties
+                    if alias == rel.right_connection {
+                        if let Some(to_props) = &scan.to_node_properties {
+                            let mut properties: Vec<(String, String)> = to_props
+                                .iter()
+                                .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
+                                .collect();
+                            properties.sort_by(|a, b| a.0.cmp(&b.0));
+                            if !properties.is_empty() {
+                                println!(
+                                    "DEBUG: get_all_properties_for_alias - denormalized TO node '{}' has {} properties from rel center",
+                                    alias,
+                                    properties.len()
+                                );
+                                return Ok(properties);
+                            }
+                        }
                     }
                 }
                 
@@ -260,6 +315,142 @@ impl RenderPlanBuilder for LogicalPlan {
         }
         Err(RenderBuildError::InvalidRenderPlan(format!(
             "Cannot find properties for alias '{}'",
+            alias
+        )))
+    }
+
+    /// Get all properties for an alias, returning both properties and the actual table alias to use.
+    /// For denormalized nodes, the table alias is the relationship alias (not the node alias).
+    /// Returns: (properties, actual_table_alias) where actual_table_alias is None to use the original alias
+    fn get_properties_with_table_alias(
+        &self,
+        alias: &str,
+    ) -> RenderPlanBuilderResult<(Vec<(String, String)>, Option<String>)> {
+        match self {
+            LogicalPlan::GraphNode(node) if node.alias == alias => {
+                if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                    // For denormalized nodes with properties on the ViewScan (from standalone node query)
+                    if scan.is_denormalized {
+                        if let Some(from_props) = &scan.from_node_properties {
+                            let mut properties: Vec<(String, String)> = from_props
+                                .iter()
+                                .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
+                                .collect();
+                            properties.sort_by(|a, b| a.0.cmp(&b.0));
+                            if !properties.is_empty() {
+                                return Ok((properties, None)); // Use original alias
+                            }
+                        }
+                        if let Some(to_props) = &scan.to_node_properties {
+                            let mut properties: Vec<(String, String)> = to_props
+                                .iter()
+                                .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
+                                .collect();
+                            properties.sort_by(|a, b| a.0.cmp(&b.0));
+                            if !properties.is_empty() {
+                                return Ok((properties, None));
+                            }
+                        }
+                    }
+                    // Standard nodes
+                    let mut properties: Vec<(String, String)> = scan
+                        .property_mapping
+                        .iter()
+                        .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
+                        .collect();
+                    properties.sort_by(|a, b| a.0.cmp(&b.0));
+                    return Ok((properties, None));
+                }
+            }
+            LogicalPlan::GraphRel(rel) => {
+                // Check if this relationship's alias matches
+                if rel.alias == alias {
+                    if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                        let mut properties: Vec<(String, String)> = scan
+                            .property_mapping
+                            .iter()
+                            .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
+                            .collect();
+                        properties.sort_by(|a, b| a.0.cmp(&b.0));
+                        return Ok((properties, None));
+                    }
+                }
+                
+                // For denormalized nodes, properties are in the relationship center's ViewScan
+                if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                    // Check if alias matches left_connection (from node)
+                    if alias == rel.left_connection {
+                        if let Some(from_props) = &scan.from_node_properties {
+                            let mut properties: Vec<(String, String)> = from_props
+                                .iter()
+                                .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
+                                .collect();
+                            properties.sort_by(|a, b| a.0.cmp(&b.0));
+                            if !properties.is_empty() {
+                                // IMPORTANT: Use relationship alias for denormalized FROM nodes
+                                return Ok((properties, Some(rel.alias.clone())));
+                            }
+                        }
+                    }
+                    // Check if alias matches right_connection (to node)
+                    if alias == rel.right_connection {
+                        if let Some(to_props) = &scan.to_node_properties {
+                            let mut properties: Vec<(String, String)> = to_props
+                                .iter()
+                                .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
+                                .collect();
+                            properties.sort_by(|a, b| a.0.cmp(&b.0));
+                            if !properties.is_empty() {
+                                // IMPORTANT: Use relationship alias for denormalized TO nodes
+                                return Ok((properties, Some(rel.alias.clone())));
+                            }
+                        }
+                    }
+                }
+                
+                // Check left and right branches
+                if let Ok(result) = rel.left.get_properties_with_table_alias(alias) {
+                    return Ok(result);
+                }
+                if let Ok(result) = rel.right.get_properties_with_table_alias(alias) {
+                    return Ok(result);
+                }
+                if let Ok(result) = rel.center.get_properties_with_table_alias(alias) {
+                    return Ok(result);
+                }
+            }
+            LogicalPlan::Projection(proj) => {
+                return proj.input.get_properties_with_table_alias(alias);
+            }
+            LogicalPlan::Filter(filter) => {
+                return filter.input.get_properties_with_table_alias(alias);
+            }
+            LogicalPlan::GroupBy(gb) => {
+                return gb.input.get_properties_with_table_alias(alias);
+            }
+            LogicalPlan::GraphJoins(joins) => {
+                return joins.input.get_properties_with_table_alias(alias);
+            }
+            LogicalPlan::OrderBy(order) => {
+                return order.input.get_properties_with_table_alias(alias);
+            }
+            LogicalPlan::Skip(skip) => {
+                return skip.input.get_properties_with_table_alias(alias);
+            }
+            LogicalPlan::Limit(limit) => {
+                return limit.input.get_properties_with_table_alias(alias);
+            }
+            LogicalPlan::Union(union) => {
+                if let Some(first_input) = union.inputs.first() {
+                    if let Ok(result) = first_input.get_properties_with_table_alias(alias) {
+                        return Ok(result);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Err(RenderBuildError::InvalidRenderPlan(format!(
+            "Cannot find properties with table alias for '{}'",
             alias
         )))
     }
@@ -845,88 +1036,58 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Check if input is a Projection(With) - if so, collect its aliases for resolution
                 // The kind might have been changed from With to Return by analyzer passes, so also check
                 // if the inner Projection has aliases (which indicate it was originally a WITH clause)
-                let with_aliases: std::collections::HashMap<
-                    String,
-                    crate::query_planner::logical_expr::LogicalExpr,
-                > = match projection.input.as_ref() {
-                    LogicalPlan::Projection(inner_proj) => {
-                        // Check if this was a WITH projection (either still marked as With, or has aliases)
-                        let has_aliases =
-                            inner_proj.items.iter().any(|item| item.col_alias.is_some());
-                        if matches!(
-                            inner_proj.kind,
-                            crate::query_planner::logical_plan::ProjectionKind::With
-                        ) || has_aliases
-                        {
-                            println!(
-                                "DEBUG: Found projection with aliases (possibly WITH) with {} items",
-                                inner_proj.items.len()
-                            );
-                            // Collect aliases from projection
-                            let aliases: std::collections::HashMap<_, _> = inner_proj
-                                .items
-                                .iter()
-                                .filter_map(|item| {
-                                    item.col_alias.as_ref().map(|alias| {
-                                        println!(
-                                            "DEBUG: Registering alias: {} -> {:?}",
-                                            alias.0, item.expression
-                                        );
-                                        (alias.0.clone(), item.expression.clone())
-                                    })
+                // 
+                // Helper to extract WITH aliases from a Projection
+                fn extract_with_aliases_from_projection(
+                    proj: &crate::query_planner::logical_plan::Projection,
+                ) -> std::collections::HashMap<String, crate::query_planner::logical_expr::LogicalExpr> {
+                    let has_aliases = proj.items.iter().any(|item| item.col_alias.is_some());
+                    if matches!(
+                        proj.kind,
+                        crate::query_planner::logical_plan::ProjectionKind::With
+                    ) || has_aliases
+                    {
+                        proj.items
+                            .iter()
+                            .filter_map(|item| {
+                                item.col_alias.as_ref().map(|alias| {
+                                    (alias.0.clone(), item.expression.clone())
                                 })
-                                .collect();
-                            println!("DEBUG: Collected {} aliases", aliases.len());
-                            aliases
-                        } else {
-                            std::collections::HashMap::new()
-                        }
+                            })
+                            .collect()
+                    } else {
+                        std::collections::HashMap::new()
                     }
-                    LogicalPlan::GraphJoins(graph_joins) => {
-                        // Look through GraphJoins to find the inner Projection(With)
-                        if let LogicalPlan::Projection(inner_proj) = graph_joins.input.as_ref() {
-                            if let LogicalPlan::Projection(with_proj) = inner_proj.input.as_ref() {
-                                let has_aliases =
-                                    with_proj.items.iter().any(|item| item.col_alias.is_some());
-                                if matches!(
-                                    with_proj.kind,
-                                    crate::query_planner::logical_plan::ProjectionKind::With
-                                ) || has_aliases
-                                {
-                                    println!(
-                                        "DEBUG: Found projection with aliases (through GraphJoins) with {} items",
-                                        with_proj.items.len()
-                                    );
-                                    let aliases: std::collections::HashMap<_, _> = with_proj
-                                        .items
-                                        .iter()
-                                        .filter_map(|item| {
-                                            item.col_alias.as_ref().map(|alias| {
-                                                println!(
-                                                    "DEBUG: Registering alias: {} -> {:?}",
-                                                    alias.0, item.expression
-                                                );
-                                                (alias.0.clone(), item.expression.clone())
-                                            })
-                                        })
-                                        .collect();
-                                    println!(
-                                        "DEBUG: Collected {} aliases through GraphJoins",
-                                        aliases.len()
-                                    );
-                                    aliases
-                                } else {
-                                    std::collections::HashMap::new()
-                                }
-                            } else {
-                                std::collections::HashMap::new()
-                            }
-                        } else {
-                            std::collections::HashMap::new()
+                }
+                
+                // Recursively find WITH aliases through Filter, GroupBy, GraphJoins layers
+                fn find_with_aliases(
+                    plan: &LogicalPlan,
+                ) -> std::collections::HashMap<String, crate::query_planner::logical_expr::LogicalExpr> {
+                    match plan {
+                        LogicalPlan::Projection(proj) => {
+                            extract_with_aliases_from_projection(proj)
                         }
+                        LogicalPlan::Filter(filter) => {
+                            // Look through Filter to find WITH aliases
+                            find_with_aliases(&filter.input)
+                        }
+                        LogicalPlan::GroupBy(group_by) => {
+                            // Look through GroupBy to find WITH aliases
+                            find_with_aliases(&group_by.input)
+                        }
+                        LogicalPlan::GraphJoins(graph_joins) => {
+                            // Look through GraphJoins to find WITH aliases
+                            find_with_aliases(&graph_joins.input)
+                        }
+                        _ => std::collections::HashMap::new(),
                     }
-                    _ => std::collections::HashMap::new(),
-                };
+                }
+                
+                let with_aliases = find_with_aliases(projection.input.as_ref());
+                if !with_aliases.is_empty() {
+                    println!("DEBUG: Found {} WITH aliases: {:?}", with_aliases.len(), with_aliases.keys().collect::<Vec<_>>());
+                }
 
                 let path_var = get_path_variable(&projection.input);
 
@@ -944,13 +1105,19 @@ impl RenderPlanBuilder for LogicalPlan {
                             alias.0
                         );
 
-                        // Get all properties for this table alias from the schema
-                        if let Ok(properties) = self.get_all_properties_for_alias(&alias.0) {
+                        // Get all properties AND the actual table alias to use
+                        // For denormalized nodes, actual_table_alias will be the relationship alias
+                        if let Ok((properties, actual_table_alias)) = self.get_properties_with_table_alias(&alias.0) {
                             if !properties.is_empty() {
+                                let table_alias_to_use = actual_table_alias.as_ref()
+                                    .map(|s| crate::query_planner::logical_expr::TableAlias(s.clone()))
+                                    .unwrap_or_else(|| alias.clone());
+                                
                                 println!(
-                                    "DEBUG: Expanding TableAlias {} to {} properties",
+                                    "DEBUG: Expanding TableAlias {} to {} properties (using table alias: {})",
                                     alias.0,
-                                    properties.len()
+                                    properties.len(),
+                                    table_alias_to_use.0
                                 );
 
                                 // Create a separate ProjectionItem for each property
@@ -958,7 +1125,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     expanded_items.push(ProjectionItem {
                                         expression: crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                             crate::query_planner::logical_expr::PropertyAccess {
-                                                table_alias: alias.clone(),
+                                                table_alias: table_alias_to_use.clone(),
                                                 column: PropertyValue::Column(col_name),
                                             }
                                         ),
@@ -982,14 +1149,19 @@ impl RenderPlanBuilder for LogicalPlan {
                                 prop.table_alias.0
                             );
 
-                            // Get all properties for this table alias from the schema
-                            if let Ok(properties) =
-                                self.get_all_properties_for_alias(&prop.table_alias.0)
+                            // Get all properties AND the actual table alias to use
+                            if let Ok((properties, actual_table_alias)) =
+                                self.get_properties_with_table_alias(&prop.table_alias.0)
                             {
+                                let table_alias_to_use = actual_table_alias.as_ref()
+                                    .map(|s| crate::query_planner::logical_expr::TableAlias(s.clone()))
+                                    .unwrap_or_else(|| prop.table_alias.clone());
+                                
                                 println!(
-                                    "DEBUG: Expanding {}.* to {} properties",
+                                    "DEBUG: Expanding {}.* to {} properties (using table alias: {})",
                                     prop.table_alias.0,
-                                    properties.len()
+                                    properties.len(),
+                                    table_alias_to_use.0
                                 );
 
                                 // Create a separate ProjectionItem for each property
@@ -997,7 +1169,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     expanded_items.push(ProjectionItem {
                                         expression: crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                             crate::query_planner::logical_expr::PropertyAccess {
-                                                table_alias: prop.table_alias.clone(),
+                                                table_alias: table_alias_to_use.clone(),
                                                 column: PropertyValue::Column(col_name),
                                             }
                                         ),
@@ -1090,9 +1262,17 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
 
                     // Rewrite path function calls: length(p), nodes(p), relationships(p)
-                    // Use table alias "t" to reference CTE columns
+                    // Use table alias "t" to reference CTE columns (for variable-length paths)
                     if let Some(path_var_name) = &path_var {
                         expr = rewrite_path_functions_with_table(&expr, path_var_name, "t");
+                    }
+
+                    // For fixed multi-hop patterns (no variable length), rewrite path functions
+                    // This handles queries like: MATCH p = (a)-[r1]->(b)-[r2]->(c) RETURN length(p), nodes(p)
+                    if path_var.is_none() {
+                        if let Some(path_info) = get_fixed_path_info(&projection.input) {
+                            expr = rewrite_fixed_path_functions_with_info(&expr, &path_info);
+                        }
                     }
 
                     // IMPORTANT: Property mapping is already done in the analyzer phase by FilterTagging.apply_property_mapping
@@ -1995,6 +2175,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     log::info!("Adding {} schema filter(s) to WHERE clause", schema_filters.len());
                     all_predicates.extend(schema_filters);
                 }
+                
+                // TODO: Add relationship uniqueness filters for undirected multi-hop patterns
+                // This requires fixing Issue #1 (Undirected Multi-Hop Patterns Generate Broken SQL) first.
+                // See KNOWN_ISSUES.md for details.
+                // Currently, undirected multi-hop patterns generate broken SQL with wrong aliases,
+                // so adding uniqueness filters here would not work correctly.
                 
                 // 🚀 ADD CYCLE PREVENTION for fixed-length paths
                 if let Some(spec) = &graph_rel.variable_length {
@@ -2928,21 +3114,46 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn extract_group_by(&self) -> RenderPlanBuilderResult<Vec<RenderExpr>> {
+        use crate::graph_catalog::expression_parser::PropertyValue;
+        
         let group_by = match &self {
             LogicalPlan::Limit(limit) => limit.input.extract_group_by()?,
             LogicalPlan::Skip(skip) => skip.input.extract_group_by()?,
             LogicalPlan::OrderBy(order_by) => order_by.input.extract_group_by()?,
-            LogicalPlan::GroupBy(group_by) => group_by
-                .expressions
-                .iter()
-                .cloned()
-                .map(|expr| {
-                    let mut render_expr: RenderExpr = expr.try_into()?;
-                    // Apply property mapping to the group by expression
+            LogicalPlan::Projection(projection) => projection.input.extract_group_by()?,
+            LogicalPlan::Filter(filter) => filter.input.extract_group_by()?,
+            LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_group_by()?,
+            LogicalPlan::GroupBy(group_by) => {
+                let mut result: Vec<RenderExpr> = vec![];
+                
+                for expr in &group_by.expressions {
+                    // Check if this is a TableAlias that needs expansion
+                    if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) = expr {
+                        // Try to expand TableAlias to all properties (similar to SELECT expansion)
+                        if let Ok((properties, actual_table_alias)) = group_by.input.get_properties_with_table_alias(&alias.0) {
+                            if !properties.is_empty() {
+                                let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.0.clone());
+                                
+                                // Add each property as a GROUP BY expression
+                                for (_prop_name, col_name) in properties {
+                                    result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(table_alias_to_use.clone()),
+                                        column: Column(PropertyValue::Column(col_name)),
+                                    }));
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    
+                    // Not a TableAlias or couldn't expand - convert normally
+                    let mut render_expr: RenderExpr = expr.clone().try_into()?;
                     apply_property_mapping_to_expr(&mut render_expr, &group_by.input);
-                    Ok(render_expr)
-                })
-                .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?, //.collect::<Vec<RenderExpr>>(),
+                    result.push(render_expr);
+                }
+                
+                result
+            },
             _ => vec![],
         };
         Ok(group_by)
@@ -3116,6 +3327,11 @@ impl RenderPlanBuilder for LogicalPlan {
             }).collect();
             
             let union_plans = union_plans?;
+            
+            // Normalize UNION branches so all have the same columns
+            // This handles denormalized nodes where from_node_properties and to_node_properties
+            // might have different property sets - missing properties get NULL values
+            let union_plans = normalize_union_branches(union_plans);
             
             // Check if the OUTER plan has GROUP BY or aggregation
             // This happens when return_clause.rs keeps aggregation at the outer level
@@ -3841,6 +4057,8 @@ impl RenderPlanBuilder for LogicalPlan {
 
                         // Build outer SELECT items from outer_proj
                         // Need to rewrite references to WITH aliases to pull from the CTE
+                        // Also track if ALL RETURN items reference WITH aliases
+                        let mut all_items_from_with = true;
                         let outer_select_items = outer_proj
                             .items
                             .iter()
@@ -3864,10 +4082,16 @@ impl RenderPlanBuilder for LogicalPlan {
                                                 },
                                             )
                                         } else {
+                                            // This is a non-WITH alias (e.g., node/relationship reference)
+                                            all_items_from_with = false;
                                             expr
                                         }
                                     }
-                                    _ => expr,
+                                    _ => {
+                                        // Non-TableAlias expression might reference original table
+                                        all_items_from_with = false;
+                                        expr
+                                    }
                                 };
 
                                 Ok(super::SelectItem {
@@ -3878,6 +4102,75 @@ impl RenderPlanBuilder for LogicalPlan {
                                 })
                             })
                             .collect::<Result<Vec<super::SelectItem>, RenderBuildError>>()?;
+                        
+                        println!(
+                            "DEBUG: all_items_from_with={}, with_aliases={:?}",
+                            all_items_from_with, with_aliases
+                        );
+
+                        // If ALL RETURN items come from WITH aliases, we can SELECT directly from the CTE
+                        // without needing to join back to the original table
+                        if all_items_from_with {
+                            println!(
+                                "DEBUG: All RETURN items come from WITH - selecting directly from CTE"
+                            );
+                            
+                            // Build ORDER BY items for the direct-from-CTE case
+                            let order_by_items = if let Some(order_items) = order_by {
+                                order_items.iter()
+                                    .map(|item| {
+                                        let expr: RenderExpr = item.expression.clone().try_into()?;
+                                        // Rewrite WITH aliases to CTE references
+                                        let rewritten_expr = match &expr {
+                                            RenderExpr::TableAlias(alias) => {
+                                                if with_aliases.contains(&alias.0) {
+                                                    RenderExpr::PropertyAccessExp(super::render_expr::PropertyAccess {
+                                                        table_alias: super::render_expr::TableAlias(cte_name.clone()),
+                                                        column: super::render_expr::Column(PropertyValue::Column(alias.0.clone())),
+                                                    })
+                                                } else {
+                                                    expr
+                                                }
+                                            }
+                                            _ => expr
+                                        };
+                                        Ok(super::OrderByItem {
+                                            expression: rewritten_expr,
+                                            order: match item.order {
+                                                crate::query_planner::logical_plan::OrderByOrder::Asc => super::OrderByOrder::Asc,
+                                                crate::query_planner::logical_plan::OrderByOrder::Desc => super::OrderByOrder::Desc,
+                                            },
+                                        })
+                                    })
+                                    .collect::<Result<Vec<_>, RenderBuildError>>()?
+                            } else {
+                                vec![]
+                            };
+                            
+                            // Return CTE-based plan that SELECT directly from CTE (no join)
+                            return Ok(RenderPlan {
+                                ctes: CteItems(vec![cte]),
+                                select: SelectItems {
+                                    items: outer_select_items,
+                                    distinct: false,
+                                },
+                                from: FromTableItem(Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(LogicalPlan::Empty),
+                                    name: cte_name.clone(),
+                                    alias: Some(cte_name.clone()),
+                                    use_final: false,
+                                })),
+                                joins: JoinItems(vec![]), // No joins needed
+                                array_join: ArrayJoinItem(None),
+                                filters: FilterItems(None),
+                                group_by: GroupByExpressions(vec![]),
+                                having_clause: None,
+                                order_by: OrderByItems(order_by_items),
+                                skip: SkipItem(skip_val),
+                                limit: LimitItem(limit_val),
+                                union: UnionItems(None),
+                            });
+                        }
 
                         // Extract FROM table for the outer query (from the original table)
                         // NOTE: ClickHouse CTE scoping - we need to be careful about table references

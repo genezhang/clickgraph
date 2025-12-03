@@ -514,7 +514,17 @@ impl GraphSchema {
     /// These are coupled because:
     /// - Same table: dns_log
     /// - Coupling node: Domain (REQUESTED.to_node == RESOLVED_TO.from_node)
+    /// 
+    /// IMPORTANT: Same edge type twice is NOT coupled - each hop is a different row!
+    /// For example: (a)-[r1:FLIGHT]->(b)-[r2:FLIGHT]->(c) requires joining two flight rows.
     pub fn are_edges_coupled(&self, edge1_type: &str, edge2_type: &str) -> bool {
+        // CRITICAL FIX: Same edge type is NEVER coupled!
+        // Multi-hop on same edge type means different rows, must JOIN.
+        // Coupled edges are for DIFFERENT edge types on the same table (like DNS REQUESTED + RESOLVED_TO)
+        if edge1_type == edge2_type {
+            return false;
+        }
+        
         let edge1 = match self.get_relationships_schema_opt(edge1_type) {
             Some(e) => e,
             None => return false,
@@ -546,11 +556,18 @@ impl GraphSchema {
     /// 
     /// For pattern: (a)-[e1]->(b)-[e2]->(c)
     /// If e1 and e2 are coupled, returns Some(info) with coupling_node = "b"
+    /// 
+    /// IMPORTANT: Same edge type twice is NOT coupled - each hop is a different row!
     pub fn get_coupled_edge_info(
         &self, 
         edge1_type: &str, 
         edge2_type: &str
     ) -> Option<CoupledEdgeInfo> {
+        // Same edge type is never coupled - multi-hop on same type means different rows
+        if edge1_type == edge2_type {
+            return None;
+        }
+        
         let edge1 = self.get_relationships_schema_opt(edge1_type)?;
         let edge2 = self.get_relationships_schema_opt(edge2_type)?;
         

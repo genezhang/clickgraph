@@ -1,42 +1,96 @@
 # Known Issues
 
-**Active Issues**: 3  
+**Active Issues**: 4  
 **Test Results**: 534/534 unit tests passing (100%)  
-**Last Updated**: December 2, 2025
+**Last Updated**: December 3, 2025
 
 ---
 
 ## Active Issues
 
-### 1. ~~Undirected Patterns - Direction Logic Bug in UNION ALL~~ ✅ FIXED
+### 1. Undirected Multi-Hop Patterns Generate Broken SQL
+
+**Status**: 🐛 Bug  
+**Severity**: HIGH  
+**Identified**: December 3, 2025
+
+**Problem**: Undirected multi-hop patterns like `(a)-[r1]-(b)-[r2]-(c)` generate invalid SQL with wrong table aliases and missing JOINs.
+
+**Example Query**:
+```cypher
+MATCH (a:Airport)-[r1:FLIGHT]-(b:Airport)-[r2:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code
+```
+
+**Current (BROKEN) SQL**:
+```sql
+SELECT r1.Origin AS "a.code"  -- Wrong: r1 not in FROM clause!
+FROM test_integration.flights AS r2
+UNION ALL 
+SELECT r1.Origin AS "a.code"  -- Same wrong reference
+FROM test_integration.flights AS r2
+```
+
+**Expected SQL** (similar to directed multi-hop but with UNION for bidirectionality):
+```sql
+SELECT r1.Origin AS "a.code", r1.Dest AS "b.code", r2.Dest AS "c.code"
+FROM test_integration.flights AS r1
+INNER JOIN test_integration.flights AS r2 ON r2.Origin = r1.Dest
+-- With proper UNION ALL for backward directions
+```
+
+**Root Cause**: The `BidirectionalUnion` optimizer pass transforms `Direction::Either` patterns into `Union { Outgoing, Incoming }`, but this transformation breaks the nested `GraphRel` structure that multi-hop JOIN inference depends on. The JOIN inference works correctly for directed patterns but fails when the plan contains Union nodes.
+
+**Workaround**: Use directed patterns:
+```cypher
+-- ✅ Works correctly
+MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]->(c:Airport) RETURN a.code, b.code, c.code
+```
+
+**Fix Required**: Refactor `BidirectionalUnion` optimizer or `GraphJoinInference` to properly handle Union nodes while preserving multi-hop JOIN relationships. This requires careful coordination between the bidirectional expansion and the join inference phases.
+
+---
+
+### 1b. Denormalized Node UNION Column Order (FIXED in v0.5.4)
 
 **Status**: ✅ FIXED (December 2, 2025)  
-**Fix**: Ensured each UNION branch has independent `joined_entities` state and correctly swaps `from_id`/`to_id` columns based on direction.
+**Fix**: Sort properties alphabetically before expanding them in UNION branches to ensure consistent column order.
 
-**Correct SQL now generated**:
+**Root Cause**: HashMap iteration order is non-deterministic in Rust. When denormalized nodes (like Airport in flight data) generate UNION ALL branches for from/to positions, each branch iterated over properties in different orders.
+
+**Problem SQL** (before fix):
 ```sql
-SELECT ... FROM users AS u1
-JOIN follows AS r ON r.follower_id = u1.user_id  -- Branch 1: outgoing
-JOIN users AS u2 ON u2.user_id = r.followed_id
+SELECT airport, state, code, city FROM flights  -- Branch 1
 UNION ALL
-SELECT ... FROM users AS u1
-JOIN follows AS r ON r.followed_id = u1.user_id  -- Branch 2: incoming (swapped!)
-JOIN users AS u2 ON u2.user_id = r.follower_id
+SELECT code, city, airport, state FROM flights  -- Branch 2 (wrong order!)
+```
+
+**Correct SQL** (after fix):
+```sql
+SELECT airport, city, code, state FROM flights  -- Branch 1 (alphabetical)
+UNION ALL
+SELECT airport, city, code, state FROM flights  -- Branch 2 (same order!)
 ```
 
 ---
 
-### ~~2.~~ 1. Undirected Patterns - Relationship Uniqueness
+### 2. Undirected Patterns - Relationship Uniqueness
 
-**Status**: 🔧 Requires relationship IDs in schema  
+**Status**: 🔧 Blocked by Issue #1  
 **Severity**: HIGH  
-**Identified**: November 22, 2025
+**Identified**: November 22, 2025  
+**Blocker**: Issue #1 (Undirected Multi-Hop Patterns) must be fixed first
 
 **Problem**: For undirected multi-hop patterns, the same relationship can be traversed twice (forward and backward) without proper ID-based uniqueness checks.
 
 **Root Cause**: `(from_id, to_id)` is NOT always a unique key - temporal/transactional graphs can have multiple edges between same nodes.
 
-**Solution**: Add optional `relationship_id` field to schema config:
+**Prepared Solution** (ready to implement once Issue #1 is fixed):  
+Helper functions for generating pairwise uniqueness filters are prepared in `src/render_plan/plan_builder_helpers.rs` (commented out). These generate SQL like:
+```sql
+WHERE NOT (tuple(r1.from_id, r1.to_id) = tuple(r2.from_id, r2.to_id))
+```
+
+**Schema Enhancement**: Add optional `edge_id` field to schema config:
 ```yaml
 relationships:
   - type_name: FOLLOWS
