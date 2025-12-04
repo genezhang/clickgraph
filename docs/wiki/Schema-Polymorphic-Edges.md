@@ -357,6 +357,188 @@ ORDER BY count DESC
 
 ---
 
+## Fixed-Endpoint Polymorphic Edges
+
+**Feature Version**: v0.5.3+  
+**Use Case**: One endpoint is fixed, the other varies dynamically
+
+### Overview
+
+Sometimes you need a **hybrid pattern** where one side of the edge is always the same node type, but the other side can vary. Common examples:
+
+- **Group membership**: Groups can contain Users OR other Groups
+- **File systems**: Folders can contain Files OR other Folders  
+- **Organization charts**: Departments contain Employees OR sub-Departments
+- **Email lists**: Mailing lists contain Users OR other lists
+
+### Schema Configuration
+
+Use `from_node` or `to_node` instead of the corresponding label column:
+
+```yaml
+edges:
+  - polymorphic: true
+    database: brahmand
+    table: memberships
+    from_id: parent_id
+    to_id: member_id
+    
+    # Fixed source: always "Group"
+    from_node: Group
+    
+    # Polymorphic target: "User" or "Group" from column
+    to_label_column: member_type
+    
+    # Single edge type (type_column not needed)
+    type_values:
+      - PARENT_OF
+    
+    edge_id: [parent_id, member_id]
+```
+
+### Key Differences from Full Polymorphic
+
+| Aspect | Full Polymorphic | Fixed-Endpoint |
+|--------|------------------|----------------|
+| Source node | `from_label_column` (dynamic) | `from_node: Group` (fixed) |
+| Target node | `to_label_column` (dynamic) | `to_label_column` (dynamic) |
+| `type_column` | Required if multiple types | Optional if single `type_values` |
+| SQL filter | Filter both label columns | Filter only polymorphic side |
+
+### Complete Example: Group Membership
+
+**Table Schema**:
+```sql
+CREATE TABLE groups (
+    group_id UInt32,
+    name String,
+    description String
+) ENGINE = Memory;
+
+CREATE TABLE users (
+    user_id UInt32,
+    name String,
+    email String
+) ENGINE = Memory;
+
+-- Polymorphic memberships table
+CREATE TABLE memberships (
+    parent_id UInt32,      -- Always refers to groups.group_id
+    member_id UInt32,      -- Refers to users.user_id OR groups.group_id
+    member_type String     -- 'User' or 'Group'
+) ENGINE = Memory;
+```
+
+**Sample Data**:
+```sql
+-- Groups
+INSERT INTO groups VALUES (1, 'Engineering', 'Engineering department');
+INSERT INTO groups VALUES (2, 'Backend', 'Backend team');
+INSERT INTO groups VALUES (3, 'Frontend', 'Frontend team');
+
+-- Users
+INSERT INTO users VALUES (1, 'Alice', 'alice@example.com');
+INSERT INTO users VALUES (2, 'Bob', 'bob@example.com');
+
+-- Memberships (Group hierarchy + user assignments)
+INSERT INTO memberships VALUES (1, 2, 'Group');  -- Engineering -> Backend
+INSERT INTO memberships VALUES (1, 3, 'Group');  -- Engineering -> Frontend
+INSERT INTO memberships VALUES (2, 1, 'User');   -- Backend -> Alice
+INSERT INTO memberships VALUES (2, 2, 'User');   -- Backend -> Bob
+```
+
+**Schema YAML** (`schemas/examples/group_membership.yaml`):
+```yaml
+name: group_membership
+
+graph_schema:
+  nodes:
+    - label: Group
+      database: brahmand
+      table: groups
+      id_column: group_id
+      property_mappings: {}
+
+    - label: User
+      database: brahmand
+      table: users
+      id_column: user_id
+      property_mappings: {}
+
+  edges:
+    - polymorphic: true
+      database: brahmand
+      table: memberships
+      from_id: parent_id
+      to_id: member_id
+      from_node: Group              # Fixed source
+      to_label_column: member_type  # Polymorphic target
+      type_values:
+        - PARENT_OF
+      edge_id: [parent_id, member_id]
+```
+
+**Queries**:
+```cypher
+-- Direct members of a group (users and subgroups)
+MATCH (g:Group {name: 'Engineering'})-[:PARENT_OF]->(member)
+RETURN member
+
+-- Only user members
+MATCH (g:Group {name: 'Backend'})-[:PARENT_OF]->(u:User)
+RETURN u.name
+
+-- Only subgroup members  
+MATCH (g:Group {name: 'Engineering'})-[:PARENT_OF]->(sub:Group)
+RETURN sub.name
+
+-- Recursive: all users under Engineering (including subgroups)
+MATCH (g:Group {name: 'Engineering'})-[:PARENT_OF*1..5]->(u:User)
+RETURN DISTINCT u.name
+```
+
+### Validation Rules
+
+The schema validation enforces:
+
+1. **Exactly one source specification**: Either `from_label_column` OR `from_node` (not both, not neither)
+2. **Exactly one target specification**: Either `to_label_column` OR `to_node` (not both, not neither)
+3. **`type_column` optionality**: Only required when `type_values` has multiple entries
+
+**Valid configurations**:
+```yaml
+# Full polymorphic (both sides dynamic)
+from_label_column: from_type
+to_label_column: to_type
+type_column: edge_type
+type_values: [FOLLOWS, LIKES]
+
+# Fixed source (Group -> User|Group)
+from_node: Group
+to_label_column: member_type
+type_values: [PARENT_OF]
+
+# Fixed target (User|Group -> Document)
+from_label_column: author_type
+to_node: Document
+type_values: [AUTHORED]
+```
+
+**Invalid configurations**:
+```yaml
+# ❌ Both from_node AND from_label_column
+from_node: Group
+from_label_column: from_type  # Error!
+
+# ❌ Neither from_node NOR from_label_column
+to_label_column: to_type  # Error: missing source specification
+
+# ❌ Multiple type_values without type_column
+type_values: [PARENT_OF, MEMBER_OF]  # Error: needs type_column
+```
+
+---
+
 ## Comparison with Standard Edges
 
 ### When to Use Polymorphic Edges
