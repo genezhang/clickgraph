@@ -52,6 +52,8 @@ fn setup_test_schema() {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         },
     );
@@ -80,6 +82,8 @@ fn setup_test_schema() {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         },
     );
@@ -108,6 +112,8 @@ fn setup_test_schema() {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         },
     );
@@ -136,6 +142,8 @@ fn setup_test_schema() {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         },
     );
@@ -164,6 +172,8 @@ fn setup_test_schema() {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         },
     );

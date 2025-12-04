@@ -1,8 +1,8 @@
 # Known Issues
 
-**Active Issues**: 2  
-**Test Results**: 537/537 unit tests passing (100%)  
-**Last Updated**: December 3, 2025
+**Active Issues**: 3  
+**Test Results**: 542/542 unit tests passing (100%)  
+**Last Updated**: December 4, 2025
 
 For recently fixed issues, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -50,3 +50,58 @@ MATCH (user:User), (other:User) WHERE user.user_id = 1 RETURN other.user_id
 **Expected**: Either throw `DisconnectedPatternFound` error OR generate CROSS JOIN
 
 **Location**: `src/query_planner/logical_plan/match_clause.rs` - disconnection check not triggering
+
+---
+
+### 3. ✅ FIXED: Variable-Length Paths + Chained Patterns Missing Property JOINs
+
+**Status**: ✅ Fixed (December 4, 2025)  
+**Severity**: HIGH  
+**Identified**: December 4, 2025
+
+**Problem**: When a variable-length path (VLP) is chained with additional graph patterns, the generated SQL failed because the start/end nodes of the VLP were not JOINed back to fetch their properties.
+
+**Fix Applied**:
+1. `src/render_plan/plan_builder.rs` (lines ~5257-5277): Added logic to preserve subsequent pattern JOINs before clearing, then re-add them after VLP endpoint JOINs
+2. `src/render_plan/cte_extraction.rs`: Fixed nested GraphRel recursion in `has_variable_length_rel()`, `is_variable_length_denormalized()`, and `get_variable_length_denorm_info()` to properly detect VLP when nested inside other patterns
+
+**Example Query Now Working**:
+```cypher
+MATCH (u:User)-[:MEMBER_OF*]->(g:Group)-[:HAS_ACCESS]->(f:File)
+RETURN u.name, g.name AS group_name, f.name AS file_name LIMIT 20
+```
+
+**Generated SQL (Now Correct)**:
+```sql
+WITH RECURSIVE variable_path_xxx AS (...)
+SELECT u.name, g.name AS group_name, f.name AS file_name
+FROM variable_path_xxx AS t
+JOIN brahmand.sec_users AS u ON t.start_id = u.user_id        -- ✅ VLP start node
+JOIN brahmand.sec_groups AS g ON t.end_id = g.group_id        -- ✅ VLP end node
+INNER JOIN brahmand.sec_permissions AS ... ON ... = g.group_id -- ✅ Subsequent pattern
+INNER JOIN brahmand.sec_fs_objects AS f ON ...                 -- ✅ Subsequent pattern
+LIMIT 20
+```
+
+---
+
+### 4. VLP + Chained Patterns with Aggregation Missing CTE Path
+
+**Status**: 🐛 Bug  
+**Severity**: MEDIUM  
+**Identified**: December 4, 2025
+
+**Problem**: Aggregation queries combining VLP with chained patterns don't use the CTE path, resulting in missing table JOINs.
+
+**Example Query**:
+```cypher
+MATCH (u:User)-[:MEMBER_OF*]->(g:Group)-[:HAS_ACCESS]->(f:File) 
+RETURN u.name, COUNT(DISTINCT f) AS total_files, SUM(f.sensitive_data) AS sensitive_files
+```
+
+**Current Behavior**: Query planner uses JOIN-based path instead of CTE path, generating SQL that references `u.name` without JOINing the users table.
+
+**Workaround**: Use non-aggregated query first, then aggregate results in application layer, OR split into separate queries.
+
+**Location**: `src/render_plan/plan_builder.rs` - `try_build_join_based_plan` logic doesn't consistently detect VLP+aggregation combinations
+

@@ -54,6 +54,8 @@ mod tests {
             type_column: None,
             from_label_column: None,
             to_label_column: None,
+            from_label_values: None,
+            to_label_values: None,
             from_node_properties: None,
             to_node_properties: None,
             is_fk_edge: false,

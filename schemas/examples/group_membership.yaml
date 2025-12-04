@@ -3,8 +3,8 @@
 # Use case: Organizational hierarchy where Groups contain Users or other Groups
 #
 # Database structure:
-#   - groups table: id, name, description, ...
-#   - users table: id, name, email, ...
+#   - groups table: group_id, name, description
+#   - users table: user_id, name, email, exposure ('internal' or 'external')
 #   - memberships table: parent_id, member_id, member_type ('User' or 'Group')
 #
 # Graph model:
@@ -15,6 +15,89 @@
 #   - File systems (Folder -> File | Folder)
 #   - Organization charts (Department -> Employee | Department)
 #   - Email lists (List -> User | List)
+#
+# =============================================================================
+# QUERY EXAMPLES
+# =============================================================================
+#
+# --- Basic Traversal Queries ---
+#
+# 1. Get all user members belonging to a given group:
+#    MATCH (g:Group)-[:PARENT_OF]->(u:User) WHERE g.name = 'Engineering' RETURN g.name, u.name
+#
+# 2. Find the groups a given user belongs to (reverse direction):
+#    MATCH (u:User)<-[:PARENT_OF]-(g:Group) WHERE u.name = 'Alice' RETURN g.name
+#
+# 3. Get direct members of a group (both users AND subgroups):
+#    MATCH (g:Group {name: 'Engineering'})-[:PARENT_OF]->(member) RETURN member
+#
+# 4. Get only subgroup members:
+#    MATCH (g:Group {name: 'Engineering'})-[:PARENT_OF]->(sub:Group) RETURN sub.name
+#
+# --- Security/Exposure Queries ---
+#
+# 5. Find all groups with external exposure (groups containing external users):
+#    MATCH (g:Group)-[:PARENT_OF]->(u:User) WHERE u.exposure = 'external' RETURN DISTINCT g.name
+#
+# 6. Find all users with internal exposure (internal users and their groups):
+#    MATCH (g:Group)-[:PARENT_OF]->(u:User) WHERE u.exposure = 'internal' RETURN g.name, u.name
+#
+# --- Aggregate Queries ---
+#
+# 7. Find three biggest groups (by member count):
+#    MATCH (g:Group)-[:PARENT_OF]->(u:User) RETURN g.name, count(u) AS member_count ORDER BY member_count DESC LIMIT 3
+#
+# 8. Find groups with more than N members:
+#    MATCH (g:Group)-[:PARENT_OF]->(u:User) WITH g, count(u) AS member_count WHERE member_count > 1000 RETURN g.name, member_count
+#
+# --- Recursive Queries (Indirect Members) ---
+#
+# 9. Find all subgroups under a group (recursive):
+#    MATCH (g:Group)-[:PARENT_OF*1..5]->(sub:Group) WHERE g.name = 'Engineering' RETURN DISTINCT sub.name
+#
+# 10. Find all users (direct AND indirect) under a group hierarchy:
+#     ⚠️ LIMITATION: Variable-length paths with polymorphic edges don't properly traverse 
+#     Group→Group→User chains. The CTE recursion follows the endpoint type (User), 
+#     not intermediate nodes (Group).
+#     
+#     WORKAROUND: Use two-step query or raw SQL:
+#     -- Step 1: Find all subgroups
+#     MATCH (g:Group)-[:PARENT_OF*1..5]->(sub:Group) WHERE g.name = 'Engineering' RETURN sub.group_id
+#     -- Step 2: Find users in those groups (run separately with results from step 1)
+#     MATCH (g:Group)-[:PARENT_OF]->(u:User) WHERE g.group_id IN [1,2,3,4] RETURN u.name
+#
+#     Or use raw SQL:
+#     WITH RECURSIVE subgroups AS (
+#         SELECT group_id, group_id as root_id, 0 as depth 
+#         FROM groups WHERE name = 'Engineering'
+#         UNION ALL
+#         SELECT m.member_id, s.root_id, s.depth + 1 
+#         FROM subgroups s 
+#         JOIN memberships m ON m.parent_id = s.group_id AND m.member_type = 'Group'
+#         WHERE s.depth < 5
+#     )
+#     SELECT DISTINCT u.name 
+#     FROM subgroups s 
+#     JOIN memberships m ON m.parent_id = s.group_id AND m.member_type = 'User'
+#     JOIN users u ON u.user_id = m.member_id
+#
+# --- Complex Aggregate Queries ---
+#
+# 11. Find groups with >N total members AND >M external users:
+#     ⚠️ LIMITATION: WHERE clause before WITH doesn't filter before aggregation.
+#     This query counts ALL members, not filtered ones:
+#     MATCH (g:Group)-[:PARENT_OF]->(u:User) WHERE u.exposure = 'external'
+#     WITH g, count(u) AS external_count WHERE external_count > 10 RETURN g.name
+#
+#     WORKAROUND: Use raw SQL for complex conditional aggregations:
+#     SELECT g.name, COUNT(*) as total, SUM(CASE WHEN u.exposure='external' THEN 1 ELSE 0 END) as ext
+#     FROM groups g
+#     JOIN memberships m ON m.parent_id = g.group_id AND m.member_type = 'User'
+#     JOIN users u ON u.user_id = m.member_id
+#     GROUP BY g.name
+#     HAVING total > 100 AND ext > 10
+#
+# =============================================================================
 name: group_membership
 
 graph_schema:

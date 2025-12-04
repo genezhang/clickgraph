@@ -882,7 +882,7 @@ pub fn extract_ctes_with_context(
                     }
                     
                     // Choose generator based on denormalized status
-                    let generator = if both_denormalized {
+                    let mut generator = if both_denormalized {
                         log::debug!("CTE: Using denormalized generator for variable-length path (both nodes virtual)");
                         VariableLengthCteGenerator::new_denormalized(
                             spec.clone(),
@@ -944,14 +944,26 @@ pub fn extract_ctes_with_context(
                             graph_rel.path_variable.clone(),
                             graph_rel.labels.clone(),
                             edge_id, // Pass edge_id from schema
-                            type_column, // Polymorphic edge type discriminator
+                            type_column.clone(), // Polymorphic edge type discriminator
                             from_label_column, // Polymorphic edge from label column
-                            to_label_column, // Polymorphic edge to label column
+                            to_label_column.clone(), // Polymorphic edge to label column
                             Some(start_label.clone()), // Expected from node label
                             Some(end_label.clone()), // Expected to node label
                             is_fk_edge, // FK-edge pattern flag
                         )
                     };
+                    
+                    // For heterogeneous polymorphic paths (start_label != end_label with to_label_column),
+                    // set intermediate node info to enable proper recursive traversal.
+                    // The intermediate type is the same as start type (Group→Group recursion).
+                    if to_label_column.is_some() && start_label != end_label {
+                        log::info!("CTE: Setting intermediate node for heterogeneous polymorphic path");
+                        log::info!("  - start_label: {}, end_label: {}", start_label, end_label);
+                        log::info!("  - intermediate: table={}, id_col={}, label={}", 
+                                  start_table, start_id_col, start_label);
+                        generator.set_intermediate_node(&start_table, &start_id_col, &start_label);
+                    }
+                    
                     let var_len_cte = generator.generate_cte();
                     
                     // Also extract CTEs from child plans
@@ -1199,6 +1211,11 @@ pub fn has_variable_length_rel(plan: &LogicalPlan) -> Option<(String, String)> {
         LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
             Some((rel.left_connection.clone(), rel.right_connection.clone()))
         }
+        // For GraphRel without variable_length, check nested GraphRels in left branch
+        // This handles chained patterns like (u)-[*]->(g)-[:REL]->(f)
+        LogicalPlan::GraphRel(rel) => {
+            has_variable_length_rel(&rel.left)
+        }
         LogicalPlan::GraphNode(node) => has_variable_length_rel(&node.input),
         LogicalPlan::Filter(filter) => has_variable_length_rel(&filter.input),
         LogicalPlan::Projection(proj) => has_variable_length_rel(&proj.input),
@@ -1227,6 +1244,10 @@ pub fn is_variable_length_denormalized(plan: &LogicalPlan) -> bool {
         LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
             // Check if either left or right node is denormalized
             check_node_denormalized(&rel.left) || check_node_denormalized(&rel.right)
+        }
+        // For GraphRel without variable_length, check nested GraphRels in left branch
+        LogicalPlan::GraphRel(rel) => {
+            is_variable_length_denormalized(&rel.left)
         }
         LogicalPlan::GraphNode(node) => is_variable_length_denormalized(&node.input),
         LogicalPlan::Filter(filter) => is_variable_length_denormalized(&filter.input),
@@ -1292,6 +1313,12 @@ pub fn get_variable_length_denorm_info(plan: &LogicalPlan) -> Option<VariableLen
                 end_table,
                 end_id_col,
             })
+        }
+        // For GraphRel without variable_length, check nested GraphRels in left branch
+        // This handles chained patterns like (u)-[*]->(g)-[:REL]->(f)
+        LogicalPlan::GraphRel(rel) => {
+            // Recurse into left branch to find nested VLP
+            get_variable_length_denorm_info(&rel.left)
         }
         LogicalPlan::GraphNode(node) => get_variable_length_denorm_info(&node.input),
         LogicalPlan::Filter(filter) => get_variable_length_denorm_info(&filter.input),
@@ -1786,7 +1813,15 @@ fn extract_node_info(
 /// Extract variable length spec from the plan
 pub fn get_variable_length_spec(plan: &LogicalPlan) -> Option<crate::query_planner::logical_plan::VariableLengthSpec> {
     match plan {
-        LogicalPlan::GraphRel(rel) => rel.variable_length.clone(),
+        LogicalPlan::GraphRel(rel) => {
+            // Check if this GraphRel has variable_length
+            if rel.variable_length.is_some() {
+                return rel.variable_length.clone();
+            }
+            // Recursively check nested GraphRels (for chained patterns like (a)-[*]->(b)-[:R]->(c))
+            get_variable_length_spec(&rel.left)
+                .or_else(|| get_variable_length_spec(&rel.right))
+        }
         LogicalPlan::GraphNode(node) => get_variable_length_spec(&node.input),
         LogicalPlan::Filter(filter) => get_variable_length_spec(&filter.input),
         LogicalPlan::Projection(proj) => get_variable_length_spec(&proj.input),

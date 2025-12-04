@@ -3655,6 +3655,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
         // Check for GraphJoins wrapping Projection(Return) -> GroupBy pattern
         if let LogicalPlan::GraphJoins(graph_joins) = core_plan {
+            println!("DEBUG: core_plan is GraphJoins");
             // Check if there's a variable-length or shortest path pattern in the tree
             // These require recursive CTEs and cannot use inline JOINs
             if has_variable_length_or_shortest_path(&graph_joins.input) {
@@ -3737,10 +3738,15 @@ impl RenderPlanBuilder for LogicalPlan {
         // Check if this query needs CTE-based processing
         // First, check if there's any variable-length path anywhere in the plan
         // that isn't fixed-length (which can use inline JOINs)
-        if self.contains_variable_length_path() {
+        let has_vlp = self.contains_variable_length_path();
+        println!("DEBUG: contains_variable_length_path() = {}", has_vlp);
+        if has_vlp {
             // Check if it's truly variable (needs CTE) vs fixed-length (can use JOINs)
-            if let Some(spec) = get_variable_length_spec(self) {
+            let spec_opt = get_variable_length_spec(self);
+            println!("DEBUG: get_variable_length_spec() = {:?}", spec_opt);
+            if let Some(spec) = spec_opt {
                 let is_fixed_length = spec.exact_hop_count().is_some();
+                println!("DEBUG: is_fixed_length = {}", is_fixed_length);
                 if !is_fixed_length {
                     println!("DEBUG: Plan contains variable-length path (range pattern) - need CTE");
                     return Err(RenderBuildError::InvalidRenderPlan(
@@ -5258,11 +5264,23 @@ impl RenderPlanBuilder for LogicalPlan {
 
         // For variable-length paths, add joins to get full user data
         if let Some((start_alias, end_alias)) = has_variable_length_rel(&transformed_plan) {
-            // IMPORTANT: Remove any joins that were extracted from the GraphRel itself
-            // The CTE already handles the path traversal, so we only want to join the
-            // endpoint nodes to the CTE result. Keeping the GraphRel joins causes
-            // "Multiple table expressions with same alias" errors.
-            extracted_joins.clear();
+            // Save subsequent pattern joins (joins that don't target VLP start/end nodes)
+            // These are joins for chained patterns like (u)-[*]->(g)-[:REL]->(f)
+            // where the (g)-[:REL]->(f) part generates joins we need to preserve
+            let subsequent_joins: Vec<Join> = extracted_joins
+                .drain(..)
+                .filter(|j| {
+                    // Keep joins that don't target VLP endpoints
+                    // VLP endpoint JOINs will be re-added explicitly below
+                    j.table_alias != start_alias && j.table_alias != end_alias
+                })
+                .collect();
+            
+            log::debug!(
+                "🔧 VLP CHAINED FIX: Preserved {} subsequent joins (cleared {} VLP-related joins)",
+                subsequent_joins.len(),
+                0 // already drained
+            );
 
             // Check if this VLP is part of an OPTIONAL MATCH
             // If so, we need LEFT JOINs to preserve the anchor node even when no paths exist
@@ -5424,6 +5442,23 @@ impl RenderPlanBuilder for LogicalPlan {
                         });
                     }
                 }
+            }
+            
+            // Re-add the subsequent pattern joins (chained patterns after VLP)
+            // These joins reference the VLP endpoint aliases (e.g., g.group_id)
+            // which are now available from the VLP endpoint JOINs added above
+            if !subsequent_joins.is_empty() {
+                log::info!(
+                    "🔧 VLP CHAINED FIX: Re-adding {} subsequent joins after VLP endpoint JOINs",
+                    subsequent_joins.len()
+                );
+                for join in &subsequent_joins {
+                    log::info!(
+                        "  → JOIN {} AS {} ON {:?}",
+                        join.table_name, join.table_alias, join.joining_on
+                    );
+                }
+                extracted_joins.extend(subsequent_joins);
             }
         }
 

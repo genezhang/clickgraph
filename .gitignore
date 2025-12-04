@@ -66,3 +66,10 @@ archive/
 .claude/
 agent-os/
 .github/copilot-instructions.md
+
+# Private/Sensitive Examples (not for public repo)
+# Security graph schema and data - resembles real-world security scenarios
+schemas/examples/security_graph.yaml
+scripts/setup/setup_security_graph_data.sql
+schemas/examples/security_graph_data.sql
+schemas/examples/security_graph_load.sql

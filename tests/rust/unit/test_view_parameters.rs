@@ -154,6 +154,8 @@ property_mappings:
             database: "brahmand".to_string(),
             table: "users_by_tenant".to_string(),
             id_column: "user_id".to_string(),
+            label_column: None,
+            label_value: None,
             properties: props,
             view_parameters: Some(vec!["tenant_id".to_string()]),
             use_final: None,

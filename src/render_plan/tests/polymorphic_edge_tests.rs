@@ -108,6 +108,8 @@ fn setup_polymorphic_schema() -> GraphSchema {
             to_label_column: Some("to_type".to_string()),
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         },
     );
@@ -143,6 +145,8 @@ fn setup_polymorphic_schema() -> GraphSchema {
             to_label_column: Some("to_type".to_string()),
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         },
     );
@@ -178,6 +182,8 @@ fn setup_polymorphic_schema() -> GraphSchema {
             to_label_column: Some("to_type".to_string()),
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         },
     );
@@ -327,6 +333,8 @@ fn test_non_polymorphic_relationship() {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         },
     );
@@ -440,6 +448,8 @@ fn test_fixed_endpoint_polymorphic_edge() {
             to_label_column: Some("member_type".to_string()), // Polymorphic target!
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         },
     );

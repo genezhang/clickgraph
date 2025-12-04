@@ -45,6 +45,11 @@ pub struct VariableLengthCteGenerator {
     pub to_label_column: Option<String>, // Discriminator column for target node type
     pub from_node_label: Option<String>, // Expected value for from_label_column (e.g., "User")
     pub to_node_label: Option<String>, // Expected value for to_label_column (e.g., "Post")
+    // Heterogeneous polymorphic path fields - for paths like Group→*→User where
+    // intermediate hops traverse Group→Group and only the final hop goes to User
+    pub intermediate_node_table: Option<String>, // Table for intermediate nodes (e.g., "groups")
+    pub intermediate_node_id_column: Option<String>, // ID column for intermediate nodes (e.g., "group_id")
+    pub intermediate_node_label: Option<String>, // Label value for intermediate hops (e.g., "Group")
 }
 
 /// Mode for shortest path queries
@@ -227,6 +232,10 @@ impl VariableLengthCteGenerator {
             to_label_column,
             from_node_label,
             to_node_label,
+            // Heterogeneous polymorphic path fields - set later via setter method
+            intermediate_node_table: None,
+            intermediate_node_id_column: None,
+            intermediate_node_label: None,
         }
     }
 
@@ -281,6 +290,10 @@ impl VariableLengthCteGenerator {
             to_label_column: None,
             from_node_label: None,
             to_node_label: None,
+            // Heterogeneous polymorphic path fields - not used for denormalized edges
+            intermediate_node_table: None,
+            intermediate_node_id_column: None,
+            intermediate_node_label: None,
         }
     }
 
@@ -342,6 +355,10 @@ impl VariableLengthCteGenerator {
             to_label_column: None,
             from_node_label: None,
             to_node_label: None,
+            // Heterogeneous polymorphic path fields - not used for mixed mode
+            intermediate_node_table: None,
+            intermediate_node_id_column: None,
+            intermediate_node_label: None,
         }
     }
 
@@ -449,6 +466,77 @@ impl VariableLengthCteGenerator {
         } else {
             "[]".to_string()
         }
+    }
+
+    /// Check if this is a heterogeneous polymorphic path (e.g., Group→*→User)
+    /// where intermediate hops traverse through one type and final hop goes to another type.
+    /// 
+    /// Conditions for heterogeneous polymorphic path:
+    /// 1. has to_label_column (polymorphic edge with target type discriminator)
+    /// 2. start_node_table != end_node_table (different node types)
+    /// 3. intermediate_node_table is set (specifies intermediate traversal type)
+    fn is_heterogeneous_polymorphic_path(&self) -> bool {
+        self.to_label_column.is_some()
+            && self.start_node_table != self.end_node_table
+            && self.intermediate_node_table.is_some()
+    }
+
+    /// Generate polymorphic edge filter for INTERMEDIATE hops (Group→Group)
+    /// Uses the intermediate_node_label instead of to_node_label
+    fn generate_polymorphic_edge_filter_intermediate(&self) -> Option<String> {
+        let mut filter_parts = Vec::new();
+
+        // Add type filter if type_column is defined
+        if let Some(ref type_col) = self.type_column {
+            if let Some(ref rel_types) = self.relationship_types {
+                if rel_types.len() == 1 {
+                    filter_parts.push(format!(
+                        "{}.{} = '{}'",
+                        self.relationship_alias, type_col, rel_types[0]
+                    ));
+                } else if rel_types.len() > 1 {
+                    let types_list = rel_types
+                        .iter()
+                        .map(|t| format!("'{}'", t))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    filter_parts.push(format!(
+                        "{}.{} IN ({})",
+                        self.relationship_alias, type_col, types_list
+                    ));
+                }
+            }
+        }
+
+        // For intermediate hops: use intermediate_node_label for to_label filter
+        if let Some(ref to_label_col) = self.to_label_column {
+            if let Some(ref intermediate_label) = self.intermediate_node_label {
+                filter_parts.push(format!(
+                    "{}.{} = '{}'",
+                    self.relationship_alias, to_label_col, intermediate_label
+                ));
+            }
+        }
+
+        if filter_parts.is_empty() {
+            None
+        } else {
+            let filter = filter_parts.join(" AND ");
+            eprintln!("    🔹 VLP polymorphic edge filter (intermediate): {}", filter);
+            Some(filter)
+        }
+    }
+
+    /// Set intermediate node info for heterogeneous polymorphic paths
+    pub fn set_intermediate_node(
+        &mut self,
+        table: &str,
+        id_column: &str,
+        label: &str,
+    ) {
+        self.intermediate_node_table = Some(table.to_string());
+        self.intermediate_node_id_column = Some(id_column.to_string());
+        self.intermediate_node_label = Some(label.to_string());
     }
 
     /// Build edge tuple expression for the base case (first hop)
@@ -568,6 +656,11 @@ impl VariableLengthCteGenerator {
 
     /// Generate the actual recursive SQL string
     fn generate_recursive_sql(&self) -> String {
+        // For heterogeneous polymorphic paths, use special two-CTE structure
+        if self.is_heterogeneous_polymorphic_path() {
+            return self.generate_heterogeneous_polymorphic_sql();
+        }
+        
         let min_hops = self.spec.effective_min_hops();
         let max_hops = self.spec.max_hops;
 
@@ -738,6 +831,178 @@ impl VariableLengthCteGenerator {
         };
 
         sql
+    }
+
+    /// Generate SQL for heterogeneous polymorphic paths (e.g., Group→*→User)
+    /// 
+    /// Uses a two-phase CTE structure:
+    /// 1. `reachable_intermediates`: Recursively finds all intermediate nodes (Groups) reachable from start
+    /// 2. Main CTE: Joins ALL reachable intermediates to end nodes (Users) via the relationship
+    /// 
+    /// Key insight: At each intermediate node, we can either:
+    /// - Continue recursion (target is another intermediate/Group)
+    /// - Collect terminal result (target is end node/User)
+    /// 
+    /// The final result includes Users reachable from ANY intermediate Group at ANY depth.
+    fn generate_heterogeneous_polymorphic_sql(&self) -> String {
+        let intermediate_table = self.intermediate_node_table.as_ref()
+            .expect("intermediate_node_table must be set");
+        let intermediate_id_col = self.intermediate_node_id_column.as_ref()
+            .expect("intermediate_node_id_column must be set");
+        let intermediate_label = self.intermediate_node_label.as_ref()
+            .expect("intermediate_node_label must be set");
+        
+        let min_hops = self.spec.effective_min_hops();
+        let max_hops = self.spec.max_hops.unwrap_or(10);
+        
+        eprintln!("    🔸 Generating heterogeneous polymorphic SQL (two-phase):");
+        eprintln!("      - start_table: {}, intermediate_table: {}, end_table: {}",
+            self.start_node_table, intermediate_table, self.end_node_table);
+        eprintln!("      - intermediate_label: {}, to_node_label: {:?}",
+            intermediate_label, self.to_node_label);
+        eprintln!("      - min_hops: {}, max_hops: {}", min_hops, max_hops);
+        
+        let reachable_cte_name = format!("{}_reachable", self.cte_name);
+        
+        // Build qualified table names
+        let start_table_qualified = self.format_table_name(&self.start_node_table);
+        let rel_table_qualified = self.format_table_name(&self.relationship_table);
+        let intermediate_table_qualified = self.format_table_name(intermediate_table);
+        let end_table_qualified = self.format_table_name(&self.end_node_table);
+        
+        // Build start node filter if exists
+        // Replace "start_node." with the actual table name for the base case
+        let start_filter = if let Some(ref filter) = self.start_node_filters {
+            let rewritten = filter.replace("start_node.", &format!("{}.", start_table_qualified));
+            format!("\n    WHERE {}", rewritten)
+        } else {
+            String::new()
+        };
+        
+        // Build polymorphic filter for intermediate hops (member_type = 'Group')
+        let intermediate_poly_filter = if let Some(ref to_label_col) = self.to_label_column {
+            format!("{}.{} = '{}'", self.relationship_alias, to_label_col, intermediate_label)
+        } else {
+            "1=1".to_string()
+        };
+        
+        // Build polymorphic filter for final hop to end nodes (member_type = 'User')
+        let end_poly_filter = if let Some(ref to_label_col) = self.to_label_column {
+            if let Some(ref to_label) = self.to_node_label {
+                format!("{}.{} = '{}'", self.relationship_alias, to_label_col, to_label)
+            } else {
+                "1=1".to_string()
+            }
+        } else {
+            "1=1".to_string()
+        };
+        
+        // ============================================================
+        // CTE 1: Find all reachable intermediate nodes (groups)
+        // This includes the start node at depth 0, then recurses through
+        // intermediate->intermediate relationships (Group->Group)
+        // ============================================================
+        let reachable_cte = format!(
+            "{reachable_cte} AS (\n\
+            -- Base case: Start nodes at depth 0\n\
+            SELECT \n\
+                {start_table}.{start_id} as node_id,\n\
+                0 as depth\n\
+            FROM {start_table}{start_filter}\n\
+            \n\
+            UNION ALL\n\
+            \n\
+            -- Recursive case: Traverse to child intermediates (Group->Group)\n\
+            SELECT \n\
+                {intermediate_table}.{intermediate_id} as node_id,\n\
+                r.depth + 1 as depth\n\
+            FROM {reachable_cte} r\n\
+            JOIN {rel_table} {rel} ON r.node_id = {rel}.{from_col}\n\
+            JOIN {intermediate_table} ON {rel}.{to_col} = {intermediate_table}.{intermediate_id}\n\
+            WHERE r.depth < {max_hops}\n\
+                AND {intermediate_poly_filter}\n\
+        )",
+            reachable_cte = reachable_cte_name,
+            start_table = start_table_qualified,
+            start_id = self.start_node_id_column,
+            start_filter = start_filter,
+            intermediate_table = intermediate_table_qualified,
+            intermediate_id = intermediate_id_col,
+            rel_table = rel_table_qualified,
+            rel = self.relationship_alias,
+            from_col = self.relationship_from_column,
+            to_col = self.relationship_to_column,
+            max_hops = max_hops,
+            intermediate_poly_filter = intermediate_poly_filter,
+        );
+        
+        // ============================================================
+        // CTE 2: Collect end nodes (Users) from ALL reachable intermediates
+        // Users at depth+1 from each reachable Group are included
+        // This is the main CTE that produces the final result
+        // ============================================================
+        
+        // Build property selections for end nodes
+        let mut prop_selects = Vec::new();
+        for prop in &self.properties {
+            if prop.cypher_alias == self.end_cypher_alias {
+                prop_selects.push(format!(
+                    "{}.{} as end_{}",
+                    self.end_node_alias, prop.column_name, prop.alias
+                ));
+            }
+        }
+        let props_clause = if prop_selects.is_empty() {
+            String::new()
+        } else {
+            format!(",\n        {}", prop_selects.join(",\n        "))
+        };
+        
+        // Build end node filter if exists (e.g., user property filters)
+        let end_filter = if let Some(ref filter) = self.end_node_filters {
+            format!("\n    AND {}", filter)
+        } else {
+            String::new()
+        };
+        
+        // Apply min_hops and max_hops filters
+        // The User is at depth+1 from the Group that contains them
+        let hop_filter = format!(
+            "\n    AND r.depth + 1 >= {} AND r.depth + 1 <= {}",
+            min_hops, max_hops
+        );
+        
+        let main_cte = format!(
+            "{main_cte} AS (\n\
+            -- Collect end nodes (Users) from all reachable intermediates (Groups)\n\
+            SELECT \n\
+                r.node_id as start_id,\n\
+                {end_table}.{end_id} as end_id,\n\
+                r.depth + 1 as hop_count,\n\
+                CAST([] AS Array(Tuple(UInt64, UInt64))) as path_edges,\n\
+                CAST([] AS Array(String)) as path_relationships,\n\
+                CAST([] AS Array(UInt64)) as path_nodes{props_clause}\n\
+            FROM {reachable_cte} r\n\
+            JOIN {rel_table} {rel} ON r.node_id = {rel}.{from_col}\n\
+            JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id}\n\
+            WHERE {end_poly_filter}{end_filter}{hop_filter}\n\
+        )",
+            main_cte = self.cte_name,
+            reachable_cte = reachable_cte_name,
+            end_table = end_table_qualified,
+            end_id = self.end_node_id_column,
+            props_clause = props_clause,
+            rel_table = rel_table_qualified,
+            rel = self.relationship_alias,
+            from_col = self.relationship_from_column,
+            to_col = self.relationship_to_column,
+            end = self.end_node_alias,
+            end_poly_filter = end_poly_filter,
+            end_filter = end_filter,
+            hop_filter = hop_filter,
+        );
+        
+        format!("{},\n{}", reachable_cte, main_cte)
     }
 
     /// Generate base case for zero hops (self-loop)
@@ -964,6 +1229,12 @@ impl VariableLengthCteGenerator {
             return self.generate_fk_edge_recursive_case(max_hops, cte_name);
         }
         
+        // Heterogeneous polymorphic path: recurse through intermediate type
+        // e.g., Group→*→User should recurse through Group→Group, not User→User
+        if self.is_heterogeneous_polymorphic_path() {
+            return self.generate_heterogeneous_polymorphic_recursive_case(max_hops, cte_name);
+        }
+        
         // Standard case: both nodes have their own tables
         // Build edge tuple for recursive case
         let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
@@ -1054,6 +1325,101 @@ impl VariableLengthCteGenerator {
             to_col = self.relationship_to_column,
             rel = self.relationship_alias,
             end_table = self.format_table_name(&self.end_node_table),
+            where_clause = where_clause
+        )
+    }
+
+    // ======================================================================
+    // HETEROGENEOUS POLYMORPHIC PATH GENERATION
+    // ======================================================================
+    // For paths like Group→*→User where intermediate hops traverse through
+    // one type (Group→Group) and only the final hop goes to a different type (Group→User).
+    // The recursive case uses the intermediate table (groups), not the end table (users).
+    
+    /// Generate recursive case for heterogeneous polymorphic paths
+    /// Recurses through intermediate_node_table (e.g., groups) with intermediate_node_label filter
+    fn generate_heterogeneous_polymorphic_recursive_case(&self, max_hops: u32, cte_name: &str) -> String {
+        // Get intermediate table info (must be set for heterogeneous polymorphic paths)
+        let intermediate_table = self.intermediate_node_table.as_ref()
+            .expect("intermediate_node_table must be set for heterogeneous polymorphic paths");
+        let intermediate_id_col = self.intermediate_node_id_column.as_ref()
+            .expect("intermediate_node_id_column must be set for heterogeneous polymorphic paths");
+        
+        eprintln!("    🔸 Generating heterogeneous polymorphic recursive case:");
+        eprintln!("      - start_table: {}, end_table: {}, intermediate_table: {}",
+            self.start_node_table, self.end_node_table, intermediate_table);
+        
+        // Build edge tuple for recursive case (using rel alias)
+        let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
+        
+        // Build property selections for recursive case
+        // Note: For heterogeneous polymorphic paths, we track intermediate nodes in path
+        // End properties are not available until the final join (in the outer SELECT)
+        let mut select_items = vec![
+            "vp.start_id".to_string(),
+            // end_id comes from the intermediate node (Group), not the end table (User)
+            format!(
+                "intermediate_node.{} as end_id",
+                intermediate_id_col
+            ),
+            "vp.hop_count + 1 as hop_count".to_string(),
+            format!(
+                "arrayConcat(vp.path_edges, [{}]) as path_edges",
+                edge_tuple_recursive
+            ),
+            format!(
+                "arrayConcat(vp.path_relationships, {}) as path_relationships",
+                self.get_relationship_type_array()
+            ),
+            // Track intermediate node IDs in path_nodes
+            format!(
+                "arrayConcat(vp.path_nodes, [intermediate_node.{}]) as path_nodes",
+                intermediate_id_col
+            ),
+        ];
+
+        // Add properties: start properties pass through, end properties NOT available yet
+        // (end properties will be populated in the final outer SELECT that joins to end_node_table)
+        for prop in &self.properties {
+            if prop.cypher_alias == self.start_cypher_alias {
+                select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
+            }
+            // Note: We don't have end properties in the recursive traversal
+            // They'll be added in the outer SELECT when we join to the actual end table
+        }
+
+        let select_clause = select_items.join(",\n        ");
+        
+        // Build edge tuple check for cycle prevention
+        let edge_tuple_check = self.build_edge_tuple_recursive(&self.relationship_alias);
+
+        let mut where_conditions = vec![
+            format!("vp.hop_count < {}", max_hops),
+            format!(
+                "NOT has(vp.path_edges, {})",
+                edge_tuple_check
+            ),
+        ];
+
+        // Add polymorphic edge filter for INTERMEDIATE hops (e.g., member_type = 'Group')
+        if let Some(poly_filter) = self.generate_polymorphic_edge_filter_intermediate() {
+            where_conditions.push(poly_filter);
+        }
+
+        let where_clause = where_conditions.join("\n      AND ");
+
+        // Recursive case joins through INTERMEDIATE table, not end table
+        // Pattern: vp → current_node (intermediate) → rel → intermediate_node (intermediate)
+        format!(
+            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {intermediate_table} current_node ON vp.end_id = current_node.{intermediate_id_col}\n    JOIN {rel_table} {rel} ON current_node.{intermediate_id_col} = {rel}.{from_col}\n    JOIN {intermediate_table} intermediate_node ON {rel}.{to_col} = intermediate_node.{intermediate_id_col}\n    WHERE {where_clause}",
+            select = select_clause,
+            intermediate_id_col = intermediate_id_col,
+            cte_name = cte_name,
+            intermediate_table = self.format_table_name(intermediate_table),
+            rel_table = self.format_table_name(&self.relationship_table),
+            from_col = self.relationship_from_column,
+            to_col = self.relationship_to_column,
+            rel = self.relationship_alias,
             where_clause = where_clause
         )
     }

@@ -151,6 +151,19 @@ pub struct NodeDefinition {
     pub table: String,
     /// ID column name
     pub id_column: String,
+    
+    /// Optional: Column containing node type discriminator (for shared tables)
+    /// Used when multiple node labels share the same table
+    /// Example: "fs_type" column distinguishes Folder vs File in fs_objects table
+    #[serde(default)]
+    pub label_column: Option<String>,
+    
+    /// Optional: Value in label_column that identifies this node type
+    /// Required when label_column is specified
+    /// Example: "File" for File nodes in fs_objects table where fs_type='File'
+    #[serde(default)]
+    pub label_value: Option<String>,
+    
     /// Property mappings
     #[serde(rename = "property_mappings")]
     pub properties: HashMap<String, String>,
@@ -390,6 +403,20 @@ pub struct PolymorphicEdgeDefinition {
     /// Mutually exclusive with `to_label_column`
     #[serde(default)]
     pub to_node: Option<String>,
+    
+    /// Valid source node labels (for polymorphic from side)
+    /// When from_label_column is used, these restrict which labels are allowed
+    /// Example: ["User", "Group"] - only User and Group can be source nodes
+    /// If not specified, any label is allowed (backward compatible)
+    #[serde(default)]
+    pub from_label_values: Option<Vec<String>>,
+    
+    /// Valid target node labels (for polymorphic to side)
+    /// When to_label_column is used, these restrict which labels are allowed
+    /// Example: ["Folder", "File"] - only Folder and File can be target nodes
+    /// If not specified, any label is allowed (backward compatible)
+    #[serde(default)]
+    pub to_label_values: Option<Vec<String>>,
     
     /// List of edge types in this table (REQUIRED for production)
     /// Example: ["FOLLOWS", "LIKES", "AUTHORED"]
@@ -677,6 +704,8 @@ fn build_relationship_schema(
         type_column: None,
         from_label_column: None,
         to_label_column: None,
+        from_label_values: None,
+        to_label_values: None,
         from_node_properties: from_node_props,
         to_node_properties: to_node_props,
         is_fk_edge,
@@ -761,6 +790,8 @@ fn build_standard_edge_schema(
         type_column: None,
         from_label_column: None,
         to_label_column: None,
+        from_label_values: None,
+        to_label_values: None,
         from_node_properties: from_node_props,
         to_node_properties: to_node_props,
         is_fk_edge,
@@ -821,6 +852,8 @@ fn build_polymorphic_edge_schemas(
             type_column: poly_edge.type_column.clone(),
             from_label_column: poly_edge.from_label_column.clone(),
             to_label_column: poly_edge.to_label_column.clone(),
+            from_label_values: poly_edge.from_label_values.clone(),
+            to_label_values: poly_edge.to_label_values.clone(),
             from_node_properties: None,
             to_node_properties: None,
             is_fk_edge: false, // Polymorphic edges are never FK-edge pattern
@@ -1369,6 +1402,8 @@ graph_schema:
                     database: "brahmand".to_string(),
                     table: "ontime_flights".to_string(),
                     id_column: "airport_code".to_string(),
+                    label_column: None,
+                    label_value: None,
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
@@ -1432,6 +1467,8 @@ graph_schema:
                     database: "brahmand".to_string(),
                     table: "ontime_flights".to_string(),
                     id_column: "airport_code".to_string(),
+                    label_column: None,
+                    label_value: None,
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
@@ -1486,6 +1523,8 @@ graph_schema:
                     database: "brahmand".to_string(),
                     table: "users".to_string(),
                     id_column: "user_id".to_string(),
+                    label_column: None,
+                    label_value: None,
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
@@ -1508,6 +1547,8 @@ graph_schema:
                     to_label_column: Some("to_type".to_string()),
                     from_node: None,
                     to_node: None,
+                    from_label_values: None,
+                    to_label_values: None,
                     type_values: vec!["FOLLOWS".to_string(), "LIKES".to_string()],  // Required!
                     edge_id: Some(Identifier::Composite(vec![
                         "from_id".to_string(),
@@ -1537,6 +1578,8 @@ graph_schema:
                     database: "brahmand".to_string(),
                     table: "users".to_string(),
                     id_column: "user_id".to_string(),
+                    label_column: None,
+                    label_value: None,
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
@@ -1559,6 +1602,8 @@ graph_schema:
                     to_label_column: Some("to_type".to_string()),
                     from_node: None,
                     to_node: None,
+                    from_label_values: None,
+                    to_label_values: None,
                     type_values: vec![],  // Empty!
                     edge_id: None,
                     properties: HashMap::new(),
@@ -1590,6 +1635,8 @@ graph_schema:
                         database: "brahmand".to_string(),
                         table: "groups".to_string(),
                         id_column: "group_id".to_string(),
+                        label_column: None,
+                        label_value: None,
                         properties: HashMap::new(),
                         view_parameters: None,
                         use_final: None,
@@ -1605,6 +1652,8 @@ graph_schema:
                         database: "brahmand".to_string(),
                         table: "users".to_string(),
                         id_column: "user_id".to_string(),
+                        label_column: None,
+                        label_value: None,
                         properties: HashMap::new(),
                         view_parameters: None,
                         use_final: None,
@@ -1628,6 +1677,8 @@ graph_schema:
                     to_label_column: Some("member_type".to_string()),  // Polymorphic target
                     from_node: Some("Group".to_string()),  // Fixed source
                     to_node: None,
+                    from_label_values: None,
+                    to_label_values: None,
                     type_values: vec!["PARENT_OF".to_string()],
                     edge_id: Some(Identifier::Composite(vec![
                         "parent_id".to_string(),
@@ -1657,6 +1708,8 @@ graph_schema:
                     database: "brahmand".to_string(),
                     table: "users".to_string(),
                     id_column: "user_id".to_string(),
+                    label_column: None,
+                    label_value: None,
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
@@ -1679,6 +1732,8 @@ graph_schema:
                     to_label_column: Some("to_type".to_string()),
                     from_node: Some("Group".to_string()),  // Both!
                     to_node: None,
+                    from_label_values: None,
+                    to_label_values: None,
                     type_values: vec!["PARENT_OF".to_string()],
                     edge_id: None,
                     properties: HashMap::new(),
@@ -1707,6 +1762,8 @@ graph_schema:
                     database: "brahmand".to_string(),
                     table: "users".to_string(),
                     id_column: "user_id".to_string(),
+                    label_column: None,
+                    label_value: None,
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
@@ -1729,6 +1786,8 @@ graph_schema:
                     to_label_column: Some("to_type".to_string()),
                     from_node: None,  // Neither!
                     to_node: None,
+                    from_label_values: None,
+                    to_label_values: None,
                     type_values: vec!["PARENT_OF".to_string()],
                     edge_id: None,
                     properties: HashMap::new(),

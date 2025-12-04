@@ -163,6 +163,18 @@ pub struct RelationshipSchema {
     #[serde(skip)]
     pub to_label_column: Option<String>,
     
+    /// Optional: Valid labels for polymorphic from side (closed-world validation)
+    /// When specified, only these labels are allowed for the source node
+    /// Example: Some(["User", "Group"]) for MEMBER_OF edge
+    #[serde(skip)]
+    pub from_label_values: Option<Vec<String>>,
+    
+    /// Optional: Valid labels for polymorphic to side (closed-world validation)
+    /// When specified, only these labels are allowed for the target node
+    /// Example: Some(["Folder", "File"]) for CONTAINS edge
+    #[serde(skip)]
+    pub to_label_values: Option<Vec<String>>,
+    
     /// Optional: Denormalized node properties (source node)
     /// Maps graph property names to table columns
     /// Example: {"city": "OriginCityName", "state": "OriginState"}
@@ -756,6 +768,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(from_props),
             to_node_properties: Some(to_props),
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -817,6 +831,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(user_props),
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -889,6 +905,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(from_props),
             to_node_properties: Some(to_props),
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -950,6 +968,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,  // No denormalized props
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -1037,6 +1057,8 @@ mod tests {
             type_column: None,
             from_label_column: None,
             to_label_column: None,
+            from_label_values: None,
+            to_label_values: None,
             from_node_properties: Some(from_props),
             to_node_properties: None,  // User is traditional
             is_fk_edge: false,
@@ -1130,6 +1152,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: Some(to_props),
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -1208,6 +1232,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(from_props),
             to_node_properties: Some(to_props),
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -1261,6 +1287,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,  // Missing!
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -1321,6 +1349,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(from_props),
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -1383,6 +1413,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: Some(from_props),
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -1421,6 +1453,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -1446,6 +1480,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -1492,6 +1528,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -1516,6 +1554,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -1555,6 +1595,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
@@ -1579,6 +1621,8 @@ mod tests {
             to_label_column: None,
             from_node_properties: None,
             to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
             is_fk_edge: false,
         };
         
