@@ -1,0 +1,53 @@
+# Group Membership Schema
+# Demonstrates fixed-endpoint polymorphic edge pattern
+# Use case: Organizational hierarchy where Groups contain Users or other Groups
+#
+# Database structure:
+#   - groups table: id, name, description, ...
+#   - users table: id, name, email, ...
+#   - memberships table: parent_id, member_id, member_type ('User' or 'Group')
+#
+# Graph model:
+#   - Node types: User, Group
+#   - Edge type: PARENT_OF (Group -> User or Group -> Group)
+#
+# This pattern is also applicable to:
+#   - File systems (Folder -> File | Folder)
+#   - Organization charts (Department -> Employee | Department)
+#   - Email lists (List -> User | List)
+name: group_membership
+
+graph_schema:
+  nodes:
+    - label: Group
+      database: brahmand
+      table: groups
+      id_column: group_id
+      auto_discover_columns: true
+      naming_convention: snake_case
+      property_mappings: {}
+
+    - label: User
+      database: brahmand
+      table: users
+      id_column: user_id
+      auto_discover_columns: true
+      naming_convention: snake_case
+      property_mappings: {}
+
+  edges:
+    # Fixed-endpoint polymorphic edge:
+    # - from_node: fixed "Group" (not from column)
+    # - to_label_column: polymorphic, reads "User" or "Group" from member_type
+    - polymorphic: true
+      database: brahmand
+      table: memberships
+      from_id: parent_id
+      to_id: member_id
+      from_node: Group              # Fixed source type
+      to_label_column: member_type  # Polymorphic target: 'User' or 'Group'
+      type_values:
+        - PARENT_OF                 # Single edge type
+      edge_id:
+        - parent_id
+        - member_id

@@ -340,6 +340,14 @@ pub struct StandardEdgeDefinition {
 }
 
 /// Polymorphic edge definition (one config → many edge types from explicit list)
+/// 
+/// Supports two patterns:
+/// 1. **Full polymorphic**: Both endpoints vary based on label columns
+///    - Requires: `type_column`, `from_label_column`, `to_label_column`
+/// 2. **Fixed-endpoint polymorphic**: One endpoint is fixed, other varies
+///    - Use `from_node` instead of `from_label_column` for fixed source
+///    - Use `to_node` instead of `to_label_column` for fixed target
+///    - `type_column` optional when single `type_values` entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolymorphicEdgeDefinition {
     /// Marker field (must be true)
@@ -353,17 +361,34 @@ pub struct PolymorphicEdgeDefinition {
     /// To ID column name
     pub to_id: String,
     
-    /// Column containing edge type discriminator
+    /// Column containing edge type discriminator (optional if single type_value)
     /// Example: "relation_type"
-    pub type_column: String,
+    #[serde(default)]
+    pub type_column: Option<String>,
     
-    /// Column containing source node label
+    /// Column containing source node label (for full polymorphic)
     /// Example: "from_type"
-    pub from_label_column: String,
+    /// Mutually exclusive with `from_node`
+    #[serde(default)]
+    pub from_label_column: Option<String>,
     
-    /// Column containing target node label
+    /// Fixed source node label (for fixed-endpoint polymorphic)
+    /// Example: "Group"
+    /// Mutually exclusive with `from_label_column`
+    #[serde(default)]
+    pub from_node: Option<String>,
+    
+    /// Column containing target node label (for full polymorphic)
     /// Example: "to_type"
-    pub to_label_column: String,
+    /// Mutually exclusive with `to_node`
+    #[serde(default)]
+    pub to_label_column: Option<String>,
+    
+    /// Fixed target node label (for fixed-endpoint polymorphic)
+    /// Example: "Group"
+    /// Mutually exclusive with `to_label_column`
+    #[serde(default)]
+    pub to_node: Option<String>,
     
     /// List of edge types in this table (REQUIRED for production)
     /// Example: ["FOLLOWS", "LIKES", "AUTHORED"]
@@ -742,6 +767,10 @@ fn build_standard_edge_schema(
 }
 
 /// Build RelationshipSchemas from a PolymorphicEdgeDefinition (one per type_value)
+/// 
+/// Supports two patterns:
+/// 1. Full polymorphic: from_label_column + to_label_column + type_column
+/// 2. Fixed-endpoint: from_node/to_node for fixed sides, label_column for polymorphic side
 fn build_polymorphic_edge_schemas(
     poly_edge: &PolymorphicEdgeDefinition,
     discovery: &TableDiscovery,
@@ -762,6 +791,10 @@ fn build_polymorphic_edge_schemas(
         None
     };
     
+    // Determine node types - fixed or polymorphic ($any)
+    let from_node = poly_edge.from_node.clone().unwrap_or_else(|| "$any".to_string());
+    let to_node = poly_edge.to_node.clone().unwrap_or_else(|| "$any".to_string());
+    
     let mut results = Vec::new();
     
     for type_val in &poly_edge.type_values {
@@ -772,10 +805,8 @@ fn build_polymorphic_edge_schemas(
                 .values()
                 .flat_map(|pv| pv.get_columns())
                 .collect(),
-            // Node types are NOT known at schema load time
-            // They will be matched at query time via from_label_column/to_label_column
-            from_node: "$any".to_string(),
-            to_node: "$any".to_string(),
+            from_node: from_node.clone(),
+            to_node: to_node.clone(),
             from_id: poly_edge.from_id.clone(),
             to_id: poly_edge.to_id.clone(),
             from_node_id_dtype: "UInt64".to_string(),
@@ -786,9 +817,9 @@ fn build_polymorphic_edge_schemas(
             use_final,
             filter: filter.clone(),
             edge_id: poly_edge.edge_id.clone(),
-            type_column: Some(poly_edge.type_column.clone()),
-            from_label_column: Some(poly_edge.from_label_column.clone()),
-            to_label_column: Some(poly_edge.to_label_column.clone()),
+            type_column: poly_edge.type_column.clone(),
+            from_label_column: poly_edge.from_label_column.clone(),
+            to_label_column: poly_edge.to_label_column.clone(),
             from_node_properties: None,
             to_node_properties: None,
             is_fk_edge: false, // Polymorphic edges are never FK-edge pattern
@@ -946,20 +977,43 @@ impl GraphSchemaConfig {
     fn validate_polymorphic_edges(&self) -> Result<(), GraphSchemaError> {
         for edge in &self.graph_schema.edges {
             if let EdgeDefinition::Polymorphic(poly_edge) = edge {
-                // Check required discovery columns
-                if poly_edge.type_column.is_empty() {
+                // Validate source node specification
+                // Must have exactly one of: from_label_column OR from_node
+                let has_from_label = poly_edge.from_label_column.as_ref().map_or(false, |s| !s.is_empty());
+                let has_from_node = poly_edge.from_node.as_ref().map_or(false, |s| !s.is_empty());
+                
+                if has_from_label && has_from_node {
                     return Err(GraphSchemaError::InvalidConfig {
-                        message: "Polymorphic edge requires non-empty type_column".to_string(),
+                        message: "Polymorphic edge cannot have both from_label_column and from_node".to_string(),
                     });
                 }
-                if poly_edge.from_label_column.is_empty() {
+                if !has_from_label && !has_from_node {
                     return Err(GraphSchemaError::InvalidConfig {
-                        message: "Polymorphic edge requires non-empty from_label_column".to_string(),
+                        message: "Polymorphic edge requires either from_label_column or from_node".to_string(),
                     });
                 }
-                if poly_edge.to_label_column.is_empty() {
+                
+                // Validate target node specification
+                // Must have exactly one of: to_label_column OR to_node
+                let has_to_label = poly_edge.to_label_column.as_ref().map_or(false, |s| !s.is_empty());
+                let has_to_node = poly_edge.to_node.as_ref().map_or(false, |s| !s.is_empty());
+                
+                if has_to_label && has_to_node {
                     return Err(GraphSchemaError::InvalidConfig {
-                        message: "Polymorphic edge requires non-empty to_label_column".to_string(),
+                        message: "Polymorphic edge cannot have both to_label_column and to_node".to_string(),
+                    });
+                }
+                if !has_to_label && !has_to_node {
+                    return Err(GraphSchemaError::InvalidConfig {
+                        message: "Polymorphic edge requires either to_label_column or to_node".to_string(),
+                    });
+                }
+                
+                // Validate type_column: required if multiple type_values, optional if single
+                let has_type_column = poly_edge.type_column.as_ref().map_or(false, |s| !s.is_empty());
+                if poly_edge.type_values.len() > 1 && !has_type_column {
+                    return Err(GraphSchemaError::InvalidConfig {
+                        message: "Polymorphic edge with multiple type_values requires type_column".to_string(),
                     });
                 }
 
@@ -1448,9 +1502,11 @@ graph_schema:
                     table: "interactions".to_string(),
                     from_id: "from_id".to_string(),
                     to_id: "to_id".to_string(),
-                    type_column: "interaction_type".to_string(),
-                    from_label_column: "from_type".to_string(),
-                    to_label_column: "to_type".to_string(),
+                    type_column: Some("interaction_type".to_string()),
+                    from_label_column: Some("from_type".to_string()),
+                    to_label_column: Some("to_type".to_string()),
+                    from_node: None,
+                    to_node: None,
                     type_values: vec!["FOLLOWS".to_string(), "LIKES".to_string()],  // Required!
                     edge_id: Some(Identifier::Composite(vec![
                         "from_id".to_string(),
@@ -1497,15 +1553,17 @@ graph_schema:
                     table: "interactions".to_string(),
                     from_id: "from_id".to_string(),
                     to_id: "to_id".to_string(),
-                    type_column: "interaction_type".to_string(),
-                    from_label_column: "from_type".to_string(),
-                    to_label_column: "to_type".to_string(),
+                    type_column: Some("interaction_type".to_string()),
+                    from_label_column: Some("from_type".to_string()),
+                    to_label_column: Some("to_type".to_string()),
+                    from_node: None,
+                    to_node: None,
                     type_values: vec![],  // Empty!
                     edge_id: None,
                     properties: HashMap::new(),
                     view_parameters: None,
                     use_final: None,
-            filter: None,
+                    filter: None,
                 })],
             },
         };
@@ -1517,6 +1575,175 @@ graph_schema:
             let err_msg = format!("{:?}", e);
             assert!(err_msg.contains("type_values"));
         }
+    }
+
+    #[test]
+    fn test_polymorphic_with_fixed_from_node() {
+        // Test fixed-endpoint polymorphic pattern: Group -> User|Group
+        let config = GraphSchemaConfig {
+            name: Some("group_membership".to_string()),
+            graph_schema: GraphSchemaDefinition {
+                nodes: vec![
+                    NodeDefinition {
+                        label: "Group".to_string(),
+                        database: "brahmand".to_string(),
+                        table: "groups".to_string(),
+                        id_column: "group_id".to_string(),
+                        properties: HashMap::new(),
+                        view_parameters: None,
+                        use_final: None,
+                        filter: None,
+                        auto_discover_columns: false,
+                        exclude_columns: vec![],
+                        naming_convention: "snake_case".to_string(),
+                        from_node_properties: None,
+                        to_node_properties: None,
+                    },
+                    NodeDefinition {
+                        label: "User".to_string(),
+                        database: "brahmand".to_string(),
+                        table: "users".to_string(),
+                        id_column: "user_id".to_string(),
+                        properties: HashMap::new(),
+                        view_parameters: None,
+                        use_final: None,
+                        filter: None,
+                        auto_discover_columns: false,
+                        exclude_columns: vec![],
+                        naming_convention: "snake_case".to_string(),
+                        from_node_properties: None,
+                        to_node_properties: None,
+                    },
+                ],
+                relationships: vec![],
+                edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
+                    polymorphic: true,
+                    database: "brahmand".to_string(),
+                    table: "memberships".to_string(),
+                    from_id: "parent_id".to_string(),
+                    to_id: "member_id".to_string(),
+                    type_column: None,  // Not needed with single type_value
+                    from_label_column: None,  // Using fixed from_node instead
+                    to_label_column: Some("member_type".to_string()),  // Polymorphic target
+                    from_node: Some("Group".to_string()),  // Fixed source
+                    to_node: None,
+                    type_values: vec!["PARENT_OF".to_string()],
+                    edge_id: Some(Identifier::Composite(vec![
+                        "parent_id".to_string(),
+                        "member_id".to_string(),
+                    ])),
+                    properties: HashMap::new(),
+                    view_parameters: None,
+                    use_final: None,
+                    filter: None,
+                })],
+            },
+        };
+
+        // Should pass validation
+        let result = config.validate();
+        assert!(result.is_ok(), "Fixed from_node with polymorphic to_label_column should be valid: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_polymorphic_both_from_endpoints_fails() {
+        // Having both from_label_column AND from_node is invalid
+        let config = GraphSchemaConfig {
+            name: Some("invalid".to_string()),
+            graph_schema: GraphSchemaDefinition {
+                nodes: vec![NodeDefinition {
+                    label: "User".to_string(),
+                    database: "brahmand".to_string(),
+                    table: "users".to_string(),
+                    id_column: "user_id".to_string(),
+                    properties: HashMap::new(),
+                    view_parameters: None,
+                    use_final: None,
+                    filter: None,
+                    auto_discover_columns: false,
+                    exclude_columns: vec![],
+                    naming_convention: "snake_case".to_string(),
+                    from_node_properties: None,
+                    to_node_properties: None,
+                }],
+                relationships: vec![],
+                edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
+                    polymorphic: true,
+                    database: "brahmand".to_string(),
+                    table: "memberships".to_string(),
+                    from_id: "parent_id".to_string(),
+                    to_id: "member_id".to_string(),
+                    type_column: None,
+                    from_label_column: Some("from_type".to_string()),  // Both!
+                    to_label_column: Some("to_type".to_string()),
+                    from_node: Some("Group".to_string()),  // Both!
+                    to_node: None,
+                    type_values: vec!["PARENT_OF".to_string()],
+                    edge_id: None,
+                    properties: HashMap::new(),
+                    view_parameters: None,
+                    use_final: None,
+                    filter: None,
+                })],
+            },
+        };
+
+        // Should fail validation
+        let result = config.validate();
+        assert!(result.is_err(), "Having both from_label_column and from_node should be invalid");
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("both"), "Error should mention 'both': {}", err_msg);
+    }
+
+    #[test]
+    fn test_polymorphic_neither_from_endpoint_fails() {
+        // Having neither from_label_column NOR from_node is invalid
+        let config = GraphSchemaConfig {
+            name: Some("invalid".to_string()),
+            graph_schema: GraphSchemaDefinition {
+                nodes: vec![NodeDefinition {
+                    label: "User".to_string(),
+                    database: "brahmand".to_string(),
+                    table: "users".to_string(),
+                    id_column: "user_id".to_string(),
+                    properties: HashMap::new(),
+                    view_parameters: None,
+                    use_final: None,
+                    filter: None,
+                    auto_discover_columns: false,
+                    exclude_columns: vec![],
+                    naming_convention: "snake_case".to_string(),
+                    from_node_properties: None,
+                    to_node_properties: None,
+                }],
+                relationships: vec![],
+                edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
+                    polymorphic: true,
+                    database: "brahmand".to_string(),
+                    table: "memberships".to_string(),
+                    from_id: "parent_id".to_string(),
+                    to_id: "member_id".to_string(),
+                    type_column: None,
+                    from_label_column: None,  // Neither!
+                    to_label_column: Some("to_type".to_string()),
+                    from_node: None,  // Neither!
+                    to_node: None,
+                    type_values: vec!["PARENT_OF".to_string()],
+                    edge_id: None,
+                    properties: HashMap::new(),
+                    view_parameters: None,
+                    use_final: None,
+                    filter: None,
+                })],
+            },
+        };
+
+        // Should fail validation
+        let result = config.validate();
+        assert!(result.is_err(), "Having neither from_label_column nor from_node should be invalid");
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("from_label_column") || err_msg.contains("from_node"), 
+                "Error should mention from_* options: {}", err_msg);
     }
 
     #[test]
@@ -1561,5 +1788,63 @@ mod zeek_tests {
         }
         
         assert!(schema.get_relationships_schemas().len() > 0, "Should have relationships!");
+    }
+}
+
+#[cfg(test)]
+mod group_membership_tests {
+    use super::*;
+
+    #[test]
+    fn test_group_membership_schema_parsing() {
+        let yaml = std::fs::read_to_string("schemas/examples/group_membership.yaml")
+            .expect("Failed to read group_membership schema");
+        
+        let config = GraphSchemaConfig::from_yaml_str(&yaml)
+            .expect("Failed to parse YAML");
+        
+        // Basic structure validation
+        assert_eq!(config.name, Some("group_membership".to_string()));
+        assert_eq!(config.graph_schema.nodes.len(), 2, "Should have User and Group nodes");
+        assert_eq!(config.graph_schema.edges.len(), 1, "Should have one polymorphic edge");
+        
+        // Validate the polymorphic edge configuration
+        if let EdgeDefinition::Polymorphic(poly) = &config.graph_schema.edges[0] {
+            // Verify fixed from_node
+            assert_eq!(poly.from_node, Some("Group".to_string()), 
+                       "from_node should be fixed to 'Group'");
+            assert!(poly.from_label_column.is_none(), 
+                    "from_label_column should be None when using fixed from_node");
+            
+            // Verify polymorphic to_label_column
+            assert_eq!(poly.to_label_column, Some("member_type".to_string()),
+                       "to_label_column should be 'member_type'");
+            assert!(poly.to_node.is_none(),
+                    "to_node should be None when using polymorphic to_label_column");
+            
+            // Verify single type_value (so type_column is not needed)
+            assert_eq!(poly.type_values.len(), 1);
+            assert_eq!(poly.type_values[0], "PARENT_OF");
+            assert!(poly.type_column.is_none(), 
+                    "type_column can be None with single type_value");
+        } else {
+            panic!("Expected Polymorphic edge definition");
+        }
+        
+        // Validate the config
+        assert!(config.validate().is_ok(), "Schema validation should pass");
+        
+        // Convert to GraphSchema
+        let schema = config.to_graph_schema().expect("Failed to convert to GraphSchema");
+        
+        println!("GraphSchema nodes: {}", schema.get_nodes_schemas().len());
+        println!("GraphSchema relationships: {}", schema.get_relationships_schemas().len());
+        for (name, rel) in schema.get_relationships_schemas() {
+            println!("  - Relationship: {} ({} -> {})", name, rel.from_node, rel.to_node);
+        }
+        
+        // Should have generated relationships for PARENT_OF edge
+        assert!(!schema.get_relationships_schemas().is_empty(), 
+                "Should have generated relationships from polymorphic edge");
     }
 }
