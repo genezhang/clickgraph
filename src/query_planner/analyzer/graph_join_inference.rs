@@ -1713,19 +1713,17 @@ impl GraphJoinInference {
             },
         );
         
-        // For Direction::Incoming (from BidirectionalUnion), swap the columns
-        // so that the "from" side of the relationship connects to the "to" node
-        let (rel_from_col, rel_to_col) = if graph_rel.direction == Direction::Incoming {
-            (rel_cols.to_id, rel_cols.from_id)  // Swapped for incoming direction
-        } else {
-            (rel_cols.from_id, rel_cols.to_id)  // Normal for outgoing/either
-        };
+        // The GraphRel construction ensures that regardless of direction:
+        // - left_connection = FROM (source node of the relationship)
+        // - right_connection = TO (target node of the relationship)
+        // For Incoming patterns like (a)<-[r]-(b), construction swaps so left=b (FROM), right=a (TO)
+        // Therefore, we don't need to swap columns here based on direction.
+        let rel_from_col = rel_cols.from_id.clone();
+        let rel_to_col = rel_cols.to_id.clone();
         
-        // Direction-aware is_from_node flags for denormalized alias registration
-        // For Outgoing: left=from_node (true), right=to_node (false)
-        // For Incoming: left=to_node (false), right=from_node (true)
-        let left_is_from_node = graph_rel.direction != Direction::Incoming;
-        let right_is_from_node = graph_rel.direction == Direction::Incoming;
+        // Since construction normalizes left=FROM, right=TO, these are always true/false
+        let left_is_from_node = true;
+        let right_is_from_node = false;
 
         eprintln!(
             "    🔹 DEBUG REL COLUMNS: direction={:?}, rel_from_col = '{}', rel_to_col = '{}', left_is_from_node={}, right_is_from_node={}",
@@ -3757,7 +3755,12 @@ mod tests {
         // plan_ctx.get_mut_table_ctx("f1").unwrap().set_labels(Some(vec!["FOLLOWS_incoming"]));
         plan_ctx.get_mut_table_ctx("f1").unwrap();
 
-        // Create plan: (p1)<-[f1:FOLLOWS]-(p2)
+        // Create plan: (p2)<-[f1:FOLLOWS]-(p1)
+        // This means p1 FOLLOWS p2 (arrow goes from p1 to p2)
+        // After GraphRel construction normalization:
+        //   - left_connection = p1 (FROM node, the source/follower)
+        //   - right_connection = p2 (TO node, the target/followed)
+        //   - direction = Incoming (preserved from pattern)
         let p1_scan = create_scan_plan("p1", "Person");
         let p1_node = create_graph_node(p1_scan, "p1", false);
 
@@ -3766,14 +3769,15 @@ mod tests {
         let p2_scan = create_scan_plan("p2", "Person");
         let p2_node = create_graph_node(p2_scan, "p2", false);
 
+        // After construction normalization: left=FROM (p1), right=TO (p2)
         let graph_rel = create_graph_rel(
-            p2_node,
+            p1_node,  // left = FROM node (p1 is the follower/source)
             f1_scan,
-            p1_node,
+            p2_node,  // right = TO node (p2 is the followed/target)
             "f1",
             Direction::Incoming,
-            "p2",
-            "p1",
+            "p1",     // left_connection = FROM node
+            "p2",     // right_connection = TO node
         );
         let input_logical_plan = Arc::new(LogicalPlan::Projection(Projection {
             input: graph_rel,
@@ -3798,15 +3802,15 @@ mod tests {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        // Anchor node (p2) goes to FROM clause, not JOIN
-                        // Pattern: (p1)<-[f1:FOLLOWS]-(p2) creates 2 joins: f1, p1
-                        // p2 is in anchor_table, not in joins list
+                        // After normalization: left=p1 (FROM), right=p2 (TO)
+                        // Pattern: (p2)<-[f1:FOLLOWS]-(p1) means p1 FOLLOWS p2
+                        // p1 is the anchor (in FROM clause), f1 and p2 are JOINed
                         assert_eq!(graph_joins.joins.len(), 2);
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
-                        assert_eq!(graph_joins.anchor_table, Some("p2".to_string()));
+                        assert_eq!(graph_joins.anchor_table, Some("p1".to_string()));
 
                         // First join: relationship (f1)
                         let rel_join = &graph_joins.joins[0];
@@ -3815,54 +3819,52 @@ mod tests {
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         assert_eq!(rel_join.joining_on.len(), 1);
 
-                        // Assert the joining condition for relationship (incoming direction)
+                        // Assert the joining condition for relationship
                         let rel_join_condition = &rel_join.joining_on[0];
                         assert_eq!(rel_join_condition.operator, Operator::Equal);
                         assert_eq!(rel_join_condition.operands.len(), 2);
 
-                        // For incoming direction, the relationship connects differently
-                        // Pattern (p2)<-[f1]-(p1) means p1 FOLLOWS p2, so:
-                        // - f1.from_id = p1.id (source)
-                        // - f1.to_id = p2.id (target) ← p2 is the anchor, connects via to_id
+                        // After normalization, left=p1=FROM, so:
+                        // - f1.from_id = p1.id (p1 is source/anchor, connects via from_id)
                         match (
                             &rel_join_condition.operands[0],
                             &rel_join_condition.operands[1],
                         ) {
                             (
                                 LogicalExpr::PropertyAccessExp(rel_prop),
-                                LogicalExpr::PropertyAccessExp(right_prop),
+                                LogicalExpr::PropertyAccessExp(anchor_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.raw(), "to_id");  // p2 is target, connects via to_id
-                                assert_eq!(right_prop.table_alias.0, "p2");
-                                assert_eq!(right_prop.column.raw(), "id");
+                                assert_eq!(rel_prop.column.raw(), "from_id");  // p1 is FROM/source, connects via from_id
+                                assert_eq!(anchor_prop.table_alias.0, "p1");
+                                assert_eq!(anchor_prop.column.raw(), "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
 
-                        // Second join: right node (p1)
-                        let p1_join = &graph_joins.joins[1];
-                        assert_eq!(p1_join.table_name, "default.Person");
-                        assert_eq!(p1_join.table_alias, "p1");
-                        assert_eq!(p1_join.join_type, JoinType::Inner);
-                        assert_eq!(p1_join.joining_on.len(), 1);
+                        // Second join: right node (p2)
+                        let p2_join = &graph_joins.joins[1];
+                        assert_eq!(p2_join.table_name, "default.Person");
+                        assert_eq!(p2_join.table_alias, "p2");
+                        assert_eq!(p2_join.join_type, JoinType::Inner);
+                        assert_eq!(p2_join.joining_on.len(), 1);
 
-                        let p1_join_condition = &p1_join.joining_on[0];
-                        assert_eq!(p1_join_condition.operator, Operator::Equal);
+                        let p2_join_condition = &p2_join.joining_on[0];
+                        assert_eq!(p2_join_condition.operator, Operator::Equal);
                         match (
-                            &p1_join_condition.operands[0],
-                            &p1_join_condition.operands[1],
+                            &p2_join_condition.operands[0],
+                            &p2_join_condition.operands[1],
                         ) {
                             (
-                                LogicalExpr::PropertyAccessExp(p1_prop),
+                                LogicalExpr::PropertyAccessExp(p2_prop),
                                 LogicalExpr::PropertyAccessExp(rel_prop),
                             ) => {
-                                assert_eq!(p1_prop.table_alias.0, "p1");
-                                assert_eq!(p1_prop.column.raw(), "id");
+                                assert_eq!(p2_prop.table_alias.0, "p2");
+                                assert_eq!(p2_prop.column.raw(), "id");
                                 assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.raw(), "from_id");  // p1 is source, connects via from_id
+                                assert_eq!(rel_prop.column.raw(), "to_id");  // p2 is TO/target, connects via to_id
                             }
-                            _ => panic!("Expected PropertyAccessExp operands for p1 join"),
+                            _ => panic!("Expected PropertyAccessExp operands for p2 join"),
                         }
                     }
                     _ => panic!("Expected GraphJoins node"),

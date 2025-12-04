@@ -109,12 +109,12 @@ impl AnalyzerPass for QueryValidation {
                             source: e,
                         })?;
 
-                let (from, to) = if graph_rel.direction == Direction::Incoming {
-                    (right_label, left_label)
-                } else {
-                    // Outgoing or Either: from=left, to=right
-                    (left_label, right_label)
-                };
+                // The GraphRel construction ensures that regardless of direction:
+                // - left_connection = FROM (source node of the relationship)
+                // - right_connection = TO (target node of the relationship)
+                // For Incoming patterns like (a)<-[r]-(b), construction swaps so left=b (FROM), right=a (TO)
+                let from = left_label;
+                let to = right_label;
 
                 let rel_ctx = plan_ctx.get_mut_table_ctx(&graph_rel.alias).map_err(|e| {
                     AnalyzerError::PlanCtx {
@@ -150,6 +150,11 @@ impl AnalyzerPass for QueryValidation {
                 // Check if node types match, treating "$any" as wildcard
                 let from_matches = rel_schema.from_node == *from || rel_schema.from_node == "$any";
                 let to_matches = rel_schema.to_node == *to || rel_schema.to_node == "$any";
+                
+                log::debug!(
+                    "QueryValidation: rel={}, from={}, to={}, schema.from={}, schema.to={}, from_matches={}, to_matches={}",
+                    graph_rel.alias, from, to, rel_schema.from_node, rel_schema.to_node, from_matches, to_matches
+                );
                 
                 if (from_matches && to_matches)
                     || (graph_rel.direction == Direction::Either
