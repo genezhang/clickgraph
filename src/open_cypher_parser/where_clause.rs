@@ -133,4 +133,76 @@ mod tests {
             }
         }
     }
+    
+    #[test]
+    fn test_parse_where_and_invalid() {
+        // Bug #2: WHERE AND r.prop = value should be rejected
+        // The AND keyword without a left operand is invalid syntax
+        let input = "WHERE AND r.prop = 1";
+        let result = parse_where_clause(input);
+        match result {
+            Err(_) => {
+                // Expected: should fail because AND needs a left operand
+                println!("Correctly rejected: WHERE AND ...");
+            }
+            Ok((remaining, clause)) => {
+                panic!(
+                    "Expected failure for 'WHERE AND', but parser accepted it!\nRemaining: {:?}\nClause: {:?}",
+                    remaining, clause
+                );
+            }
+        }
+    }
+    
+    #[test]
+    fn test_parse_where_or_invalid() {
+        // OR without a left operand is also invalid
+        let input = "WHERE OR r.prop = 1";
+        let result = parse_where_clause(input);
+        match result {
+            Err(_) => {
+                println!("Correctly rejected: WHERE OR ...");
+            }
+            Ok((remaining, clause)) => {
+                panic!(
+                    "Expected failure for 'WHERE OR', but parser accepted it!\nRemaining: {:?}\nClause: {:?}",
+                    remaining, clause
+                );
+            }
+        }
+    }
+    
+    #[test]
+    fn test_parse_where_xor_invalid() {
+        // XOR without a left operand is also invalid
+        let input = "WHERE XOR r.prop = 1";
+        let result = parse_where_clause(input);
+        match result {
+            Err(_) => {
+                println!("Correctly rejected: WHERE XOR ...");
+            }
+            Ok((remaining, clause)) => {
+                panic!(
+                    "Expected failure for 'WHERE XOR', but parser accepted it!\nRemaining: {:?}\nClause: {:?}",
+                    remaining, clause
+                );
+            }
+        }
+    }
+    
+    #[test]
+    fn test_parse_where_not_valid() {
+        // NOT is a unary prefix operator, so "WHERE NOT x" is valid
+        let input = "WHERE NOT a.active";
+        let result = parse_where_clause(input);
+        match result {
+            Ok((remaining, _clause)) => {
+                assert_eq!(remaining, "", "WHERE NOT should be valid syntax");
+                println!("Correctly accepted: WHERE NOT a.active");
+            }
+            Err(e) => {
+                panic!("WHERE NOT should be valid, but got error: {:?}", e);
+            }
+        }
+    }
 }

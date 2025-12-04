@@ -417,29 +417,45 @@ pub fn parse_parameter_property_access_literal_variable_expression(
     Ok((input, expression))
 }
 
+/// Check if a string is a reserved Cypher keyword that cannot be used as a variable
+/// at the start of an expression. This catches cases like "WHERE AND ..." where AND
+/// is incorrectly treated as a variable name.
+/// 
+/// We only block binary operators that require a left operand:
+/// - Logical: AND, OR, XOR
+/// - Note: NOT is a unary prefix operator, so it IS valid at expression start
+fn is_binary_operator_keyword(s: &str) -> bool {
+    let upper = s.to_uppercase();
+    matches!(upper.as_str(), "AND" | "OR" | "XOR")
+}
+
 pub fn parse_literal_or_variable_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     alt((
         map(ws(parse_string_literal), Expression::Literal),
         map(ws(parse_double_quoted_string_literal), Expression::Literal),
-        map(
-            ws(common::parse_alphanumeric_with_underscore_dot_star),
-            |s: &str| {
-                if s.eq_ignore_ascii_case("null") {
-                    Expression::Literal(Literal::Null)
-                } else if s.eq_ignore_ascii_case("true") {
-                    Expression::Literal(Literal::Boolean(true))
-                } else if s.eq_ignore_ascii_case("false") {
-                    Expression::Literal(Literal::Boolean(false))
-                } else if let Ok(i) = s.parse::<i64>() {
-                    Expression::Literal(Literal::Integer(i))
-                } else if let Ok(f) = s.parse::<f64>() {
-                    Expression::Literal(Literal::Float(f))
-                } else {
-                    // string literal is covered already in parse_string_literal fn. Any other string is variable now.
-                    Expression::Variable(s)
-                }
-            },
-        ),
+        // Parse alphanumeric values but reject binary operators as standalone expressions
+        |input| {
+            let (remaining, s) = ws(common::parse_alphanumeric_with_underscore_dot_star).parse(input)?;
+            
+            if s.eq_ignore_ascii_case("null") {
+                Ok((remaining, Expression::Literal(Literal::Null)))
+            } else if s.eq_ignore_ascii_case("true") {
+                Ok((remaining, Expression::Literal(Literal::Boolean(true))))
+            } else if s.eq_ignore_ascii_case("false") {
+                Ok((remaining, Expression::Literal(Literal::Boolean(false))))
+            } else if let Ok(i) = s.parse::<i64>() {
+                Ok((remaining, Expression::Literal(Literal::Integer(i))))
+            } else if let Ok(f) = s.parse::<f64>() {
+                Ok((remaining, Expression::Literal(Literal::Float(f))))
+            } else if is_binary_operator_keyword(s) {
+                // Reject binary operators as standalone expressions
+                // This catches "WHERE AND ..." patterns
+                Err(nom::Err::Error(Error::new(input, ErrorKind::Tag)))
+            } else {
+                // string literal is covered already in parse_string_literal fn. Any other string is variable now.
+                Ok((remaining, Expression::Variable(s)))
+            }
+        },
     ))
     .parse(input)
 }

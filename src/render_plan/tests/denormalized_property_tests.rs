@@ -643,6 +643,193 @@ fn test_analyzer_denormalized_property_integration() {
     }
 }
 
+/// Test: MATCH (a:Airport) RETURN a  (standalone denormalized node with whole-node return)
+/// This tests the case where a denormalized node is returned without a relationship pattern.
+/// The bug was that get_properties_with_table_alias looked at empty property_mapping
+/// instead of from_node_properties/to_node_properties.
+#[test]
+#[serial]
+fn test_denormalized_standalone_node_return_all_properties() {
+    use std::sync::Arc;
+    use crate::query_planner::logical_plan::{
+        LogicalPlan, GraphNode, ViewScan, Projection, ProjectionKind, ProjectionItem,
+    };
+    use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
+    use crate::render_plan::plan_builder::RenderPlanBuilder;  // Import trait!
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    
+    // Create a denormalized ViewScan with from_node_properties (single position case)
+    let mut from_node_props = HashMap::new();
+    from_node_props.insert("code".to_string(), PropertyValue::Column("Origin".to_string()));
+    from_node_props.insert("city".to_string(), PropertyValue::Column("OriginCityName".to_string()));
+    
+    let mut view_scan = ViewScan::new(
+        "test_db.flights".to_string(),
+        None,
+        HashMap::new(),  // Empty property_mapping - this is the denormalized pattern!
+        "code".to_string(),
+        vec![],
+        vec![],
+    );
+    view_scan.is_denormalized = true;
+    view_scan.from_node_properties = Some(from_node_props);
+    
+    // Wrap in GraphNode (as done by match_clause.rs)
+    let graph_node = LogicalPlan::GraphNode(GraphNode {
+        input: Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))),
+        alias: "a".to_string(),
+        label: Some("Airport".to_string()),
+        is_denormalized: true,
+    });
+    
+    // Create Projection with RETURN a (whole node return)
+    let projection = LogicalPlan::Projection(Projection {
+        items: vec![ProjectionItem {
+            expression: LogicalExpr::TableAlias(TableAlias("a".to_string())),
+            col_alias: None,
+        }],
+        kind: ProjectionKind::Return,
+        input: Arc::new(graph_node),
+        distinct: false,
+    });
+    
+    // Test: get_properties_with_table_alias should find properties from from_node_properties
+    match projection.get_properties_with_table_alias("a") {
+        Ok((props, _table_alias)) => {
+            assert!(!props.is_empty(), "Should find properties from from_node_properties for denormalized node");
+            assert_eq!(props.len(), 2, "Should find 2 properties (code, city)");
+            
+            // Verify the property mappings
+            let prop_map: HashMap<_, _> = props.into_iter().collect();
+            assert_eq!(prop_map.get("code"), Some(&"Origin".to_string()), "code should map to Origin");
+            assert_eq!(prop_map.get("city"), Some(&"OriginCityName".to_string()), "city should map to OriginCityName");
+            
+            println!("SUCCESS: Found {} denormalized properties", prop_map.len());
+        }
+        Err(e) => {
+            panic!("get_properties_with_table_alias failed: {:?}", e);
+        }
+    }
+    
+    // Also test extract_select_items - this is where the actual SQL SELECT columns are generated
+    match projection.extract_select_items() {
+        Ok(select_items) => {
+            assert!(!select_items.is_empty(), "extract_select_items should return non-empty list for RETURN a");
+            println!("extract_select_items returned {} items", select_items.len());
+            for item in &select_items {
+                println!("  {:?}", item);
+            }
+        }
+        Err(e) => {
+            panic!("extract_select_items failed: {:?}", e);
+        }
+    }
+}
+
+/// Test: MATCH (a:Airport) RETURN a  with BOTH positions (UNION case)
+/// This tests the case where a denormalized node has both from_node_properties AND to_node_properties
+/// which results in a UNION ALL structure.
+#[test]
+#[serial]
+fn test_denormalized_standalone_node_both_positions() {
+    use std::sync::Arc;
+    use crate::query_planner::logical_plan::{
+        LogicalPlan, GraphNode, ViewScan, Projection, ProjectionKind, ProjectionItem,
+        Union, UnionType,
+    };
+    use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
+    use crate::render_plan::plan_builder::RenderPlanBuilder;
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    
+    // Create FROM position ViewScan
+    let mut from_props = HashMap::new();
+    from_props.insert("code".to_string(), PropertyValue::Column("Origin".to_string()));
+    from_props.insert("city".to_string(), PropertyValue::Column("OriginCityName".to_string()));
+    
+    let mut from_scan = ViewScan::new(
+        "test_db.flights".to_string(),
+        None,
+        HashMap::new(),
+        "code".to_string(),
+        vec![],
+        vec![],
+    );
+    from_scan.is_denormalized = true;
+    from_scan.from_node_properties = Some(from_props);
+    
+    // Create TO position ViewScan
+    let mut to_props = HashMap::new();
+    to_props.insert("code".to_string(), PropertyValue::Column("Dest".to_string()));
+    to_props.insert("city".to_string(), PropertyValue::Column("DestCityName".to_string()));
+    
+    let mut to_scan = ViewScan::new(
+        "test_db.flights".to_string(),
+        None,
+        HashMap::new(),
+        "code".to_string(),
+        vec![],
+        vec![],
+    );
+    to_scan.is_denormalized = true;
+    to_scan.to_node_properties = Some(to_props);
+    
+    // Create Union with each branch wrapped in GraphNode (as done by match_clause.rs)
+    let from_node = LogicalPlan::GraphNode(GraphNode {
+        input: Arc::new(LogicalPlan::ViewScan(Arc::new(from_scan))),
+        alias: "a".to_string(),
+        label: Some("Airport".to_string()),
+        is_denormalized: true,
+    });
+    
+    let to_node = LogicalPlan::GraphNode(GraphNode {
+        input: Arc::new(LogicalPlan::ViewScan(Arc::new(to_scan))),
+        alias: "a".to_string(),
+        label: Some("Airport".to_string()),
+        is_denormalized: true,
+    });
+    
+    let union = LogicalPlan::Union(Union {
+        inputs: vec![Arc::new(from_node), Arc::new(to_node)],
+        union_type: UnionType::All,
+    });
+    
+    // Create Projection with RETURN a (whole node return)
+    let projection = LogicalPlan::Projection(Projection {
+        items: vec![ProjectionItem {
+            expression: LogicalExpr::TableAlias(TableAlias("a".to_string())),
+            col_alias: None,
+        }],
+        kind: ProjectionKind::Return,
+        input: Arc::new(union),
+        distinct: false,
+    });
+    
+    // Test: get_properties_with_table_alias should find properties from the first Union branch
+    match projection.get_properties_with_table_alias("a") {
+        Ok((props, _table_alias)) => {
+            assert!(!props.is_empty(), "Should find properties from UNION branch for denormalized node");
+            println!("SUCCESS (UNION case): Found {} properties: {:?}", props.len(), props);
+        }
+        Err(e) => {
+            panic!("get_properties_with_table_alias failed for UNION case: {:?}", e);
+        }
+    }
+    
+    // Test extract_select_items for UNION case
+    match projection.extract_select_items() {
+        Ok(select_items) => {
+            assert!(!select_items.is_empty(), "extract_select_items should return non-empty list for UNION RETURN a");
+            println!("UNION extract_select_items returned {} items", select_items.len());
+            for item in &select_items {
+                println!("  {:?}", item);
+            }
+        }
+        Err(e) => {
+            panic!("extract_select_items failed for UNION case: {:?}", e);
+        }
+    }
+}
+
 
 
 
