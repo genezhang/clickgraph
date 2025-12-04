@@ -2426,46 +2426,56 @@ impl RenderPlanBuilder for LogicalPlan {
                 _ => None,
             }?;
             
-            // Check if this is a polymorphic edge (has type_column set)
-            let type_col = view_scan.type_column.as_ref()?;
+            // Check if this is a polymorphic edge (has type_column, from_label_column, or to_label_column)
+            // Fixed-endpoint pattern: may have only from_label_column or to_label_column without type_column
+            let has_polymorphic_fields = view_scan.type_column.is_some() 
+                || view_scan.from_label_column.is_some() 
+                || view_scan.to_label_column.is_some();
+            
+            if !has_polymorphic_fields {
+                return None;
+            }
             
             log::debug!(
-                "Generating polymorphic edge filter for alias='{}', rel_types={:?}, type_col='{}'",
-                alias, rel_types, type_col
+                "Generating polymorphic edge filter for alias='{}', rel_types={:?}, type_col={:?}, from_label_col={:?}, to_label_col={:?}",
+                alias, rel_types, view_scan.type_column, view_scan.from_label_column, view_scan.to_label_column
             );
             
             let mut filters = Vec::new();
             
             // Filter 1: type_column = 'EDGE_TYPE' (single) OR type_column IN ('TYPE1', 'TYPE2') (multiple)
-            if rel_types.len() == 1 {
-                // Single type: use equality
-                filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: Operator::Equal,
-                    operands: vec![
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(alias.to_string()),
-                            column: Column(PropertyValue::Column(type_col.clone())),
-                        }),
-                        RenderExpr::Literal(Literal::String(rel_types[0].clone())),
-                    ],
-                }));
-            } else if rel_types.len() > 1 {
-                // Multiple types: use IN clause
-                let type_list: Vec<RenderExpr> = rel_types.iter()
-                    .map(|t| RenderExpr::Literal(Literal::String(t.clone())))
-                    .collect();
-                filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: Operator::In,
-                    operands: vec![
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(alias.to_string()),
-                            column: Column(PropertyValue::Column(type_col.clone())),
-                        }),
-                        RenderExpr::List(type_list),
-                    ],
-                }));
+            // Only if type_column is present
+            if let Some(type_col) = &view_scan.type_column {
+                if rel_types.len() == 1 {
+                    // Single type: use equality
+                    filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(alias.to_string()),
+                                column: Column(PropertyValue::Column(type_col.clone())),
+                            }),
+                            RenderExpr::Literal(Literal::String(rel_types[0].clone())),
+                        ],
+                    }));
+                } else if rel_types.len() > 1 {
+                    // Multiple types: use IN clause
+                    let type_list: Vec<RenderExpr> = rel_types.iter()
+                        .map(|t| RenderExpr::Literal(Literal::String(t.clone())))
+                        .collect();
+                    filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::In,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(alias.to_string()),
+                                column: Column(PropertyValue::Column(type_col.clone())),
+                            }),
+                            RenderExpr::List(type_list),
+                        ],
+                    }));
+                }
             }
-            // If no types, skip type filter
+            // If no type_column, skip type filter
             
             // Filter 2: from_label_column = 'FromNodeType' (if present and not $any)
             if let Some(from_label_col) = &view_scan.from_label_column {

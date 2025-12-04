@@ -459,15 +459,21 @@ fn try_generate_relationship_view_scan(
     view_scan.view_parameter_values = view_parameter_values;
     
     // Populate polymorphic edge fields from schema
-    if rel_schema.type_column.is_some() {
-        view_scan.type_column = rel_schema.type_column.clone();
-        view_scan.from_label_column = rel_schema.from_label_column.clone();
-        view_scan.to_label_column = rel_schema.to_label_column.clone();
-        
+    // Copy label columns even if type_column is None (fixed-endpoint pattern)
+    view_scan.type_column = rel_schema.type_column.clone();
+    view_scan.from_label_column = rel_schema.from_label_column.clone();
+    view_scan.to_label_column = rel_schema.to_label_column.clone();
+    
+    if rel_schema.type_column.is_some() 
+        || rel_schema.from_label_column.is_some() 
+        || rel_schema.to_label_column.is_some() 
+    {
         log::debug!(
-            "ViewScan: Populated polymorphic fields for rel '{}' - type_column={:?}",
+            "ViewScan: Populated polymorphic fields for rel '{}' - type_column={:?}, from_label={:?}, to_label={:?}",
             rel_type,
-            view_scan.type_column
+            view_scan.type_column,
+            view_scan.from_label_column,
+            view_scan.to_label_column
         );
     }
     

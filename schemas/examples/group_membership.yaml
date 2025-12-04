@@ -51,3 +51,4 @@ graph_schema:
       edge_id:
         - parent_id
         - member_id
+      property_mappings: {}

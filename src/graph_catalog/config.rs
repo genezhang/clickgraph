@@ -271,10 +271,11 @@ pub struct RelationshipDefinition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EdgeDefinition {
+    /// Polymorphic edge: discover types and nodes from data at runtime
+    /// Must be checked first because it has `polymorphic: true` marker
+    Polymorphic(PolymorphicEdgeDefinition),
     /// Standard edge: explicit type, known nodes at config time
     Standard(StandardEdgeDefinition),
-    /// Polymorphic edge: discover types and nodes from data at runtime
-    Polymorphic(PolymorphicEdgeDefinition),
 }
 
 /// Standard edge definition (explicit, one config → one edge type)

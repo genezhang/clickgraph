@@ -356,5 +356,113 @@ fn test_polymorphic_filter_with_different_alias() {
     assert!(sql.contains("my_edge"), "Should use custom alias in filter");
 }
 
+#[test]
+    #[serial]
+fn test_fixed_endpoint_polymorphic_edge() {
+    // Test the fixed-endpoint pattern: from_node is fixed, to_label_column is polymorphic
+    // This is like Group -[PARENT_OF]-> User|Group
+    
+    let mut nodes = HashMap::new();
+    let mut relationships = HashMap::new();
+    
+    // Group node
+    nodes.insert(
+        "Group".to_string(),
+        NodeSchema {
+            database: "test_db".to_string(),
+            table_name: "groups".to_string(),
+            column_names: vec!["group_id".to_string(), "name".to_string()],
+            primary_keys: "group_id".to_string(),
+            node_id: NodeIdSchema {
+                column: "group_id".to_string(),
+                dtype: "UInt64".to_string(),
+            },
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+        },
+    );
+    
+    // User node
+    nodes.insert(
+        "User".to_string(),
+        NodeSchema {
+            database: "test_db".to_string(),
+            table_name: "users".to_string(),
+            column_names: vec!["user_id".to_string(), "name".to_string()],
+            primary_keys: "user_id".to_string(),
+            node_id: NodeIdSchema {
+                column: "user_id".to_string(),
+                dtype: "UInt64".to_string(),
+            },
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+        },
+    );
+    
+    // Fixed-endpoint polymorphic relationship:
+    // - type_column: None (single edge type)
+    // - from_label_column: None (fixed to Group)
+    // - to_label_column: "member_type" (polymorphic target)
+    relationships.insert(
+        "PARENT_OF".to_string(),
+        RelationshipSchema {
+            database: "test_db".to_string(),
+            table_name: "memberships".to_string(),
+            column_names: vec!["parent_id".to_string(), "member_id".to_string(), "member_type".to_string()],
+            from_node: "Group".to_string(),
+            to_node: "$any".to_string(), // Polymorphic target
+            from_id: "parent_id".to_string(),
+            to_id: "member_id".to_string(),
+            from_node_id_dtype: "UInt64".to_string(),
+            to_node_id_dtype: "UInt64".to_string(),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None, // Single edge type, no discriminator needed
+            from_label_column: None, // Fixed source (Group)
+            to_label_column: Some("member_type".to_string()), // Polymorphic target!
+            from_node_properties: None,
+            to_node_properties: None,
+            is_fk_edge: false,
+        },
+    );
+    
+    let schema = GraphSchema::build(1, "test_db".to_string(), nodes, relationships);
+    init_test_schema(schema);
+    
+    // For fixed-endpoint with only to_label_column, generate_polymorphic_edge_filters
+    // currently requires type_column. We need a separate function or update to handle this.
+    // For now, just verify the schema is set up correctly.
+    
+    // This test demonstrates the limitation: generate_polymorphic_edge_filters needs type_column
+    let filter = generate_polymorphic_edge_filters("r", "PARENT_OF", "Group", "User");
+    
+    // Currently returns None because type_column is required
+    // TODO: Update generate_polymorphic_edge_filters to handle fixed-endpoint pattern
+    // For now, document this limitation
+    assert!(filter.is_none(), 
+        "generate_polymorphic_edge_filters currently requires type_column - \
+         fixed-endpoint pattern with only to_label_column is not yet supported by this function. \
+         The plan_builder.get_polymorphic_edge_filter should handle this case.");
+}
+
+
 
 
