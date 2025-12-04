@@ -24,7 +24,7 @@ use crate::{
 use uuid::Uuid;
 
 use crate::{
-    open_cypher_parser::ast::OpenCypherQueryAst,
+    open_cypher_parser::ast::{CypherStatement, OpenCypherQueryAst, UnionType as AstUnionType},
     query_planner::logical_plan::plan_builder::LogicalPlanResult,
 };
 
@@ -54,6 +54,66 @@ pub fn evaluate_query(
     view_parameter_values: Option<HashMap<String, String>>,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
     plan_builder::build_logical_plan(&query_ast, schema, tenant_id, view_parameter_values)
+}
+
+/// Evaluate a complete Cypher statement which may contain UNION clauses
+pub fn evaluate_cypher_statement(
+    statement: CypherStatement<'_>,
+    schema: &GraphSchema,
+    tenant_id: Option<String>,
+    view_parameter_values: Option<HashMap<String, String>>,
+) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
+    // If no union clauses, just evaluate the single query
+    if statement.union_clauses.is_empty() {
+        return evaluate_query(statement.query, schema, tenant_id, view_parameter_values);
+    }
+    
+    // Build logical plans for all queries
+    let mut all_plans: Vec<Arc<LogicalPlan>> = Vec::new();
+    let mut combined_ctx: Option<PlanCtx> = None;
+    
+    // First query
+    let (first_plan, first_ctx) = plan_builder::build_logical_plan(
+        &statement.query, 
+        schema, 
+        tenant_id.clone(), 
+        view_parameter_values.clone()
+    )?;
+    all_plans.push(first_plan);
+    combined_ctx = Some(first_ctx);
+    
+    // Track the union type (all must be the same for simplicity, or we use the first UNION's type)
+    let union_type = if let Some(first_union) = statement.union_clauses.first() {
+        match first_union.union_type {
+            AstUnionType::All => UnionType::All,
+            AstUnionType::Distinct => UnionType::Distinct,
+        }
+    } else {
+        UnionType::All
+    };
+    
+    // Build plans for each union clause
+    for union_clause in statement.union_clauses {
+        let (plan, ctx) = plan_builder::build_logical_plan(
+            &union_clause.query, 
+            schema, 
+            tenant_id.clone(), 
+            view_parameter_values.clone()
+        )?;
+        all_plans.push(plan);
+        // Merge the context from this union branch into combined context
+        if let Some(ref mut combined) = combined_ctx {
+            combined.merge(ctx);
+        }
+    }
+    
+    // Create Union logical plan
+    let union_plan = Arc::new(LogicalPlan::Union(Union {
+        inputs: all_plans,
+        union_type,
+    }));
+    
+    Ok((union_plan, combined_ctx.unwrap()))
 }
 
 pub fn generate_id() -> String {

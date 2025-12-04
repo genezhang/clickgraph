@@ -391,6 +391,38 @@ impl PlanCtx {
     pub fn view_parameter_values(&self) -> Option<&HashMap<String, String>> {
         self.view_parameter_values.as_ref()
     }
+
+    /// Merge another PlanCtx into this one
+    /// Used for UNION queries where each branch has its own context
+    /// Note: This is a simple merge that may have alias conflicts if not careful
+    pub fn merge(&mut self, other: PlanCtx) {
+        // Merge alias-to-table mappings
+        for (alias, table_ctx) in other.alias_table_ctx_map {
+            // Only insert if not already present to avoid conflicts
+            if !self.alias_table_ctx_map.contains_key(&alias) {
+                self.alias_table_ctx_map.insert(alias, table_ctx);
+            }
+        }
+        
+        // Merge optional aliases
+        for alias in other.optional_aliases {
+            self.optional_aliases.insert(alias);
+        }
+        
+        // Merge projection aliases
+        for (alias, expr) in other.projection_aliases {
+            if !self.projection_aliases.contains_key(&alias) {
+                self.projection_aliases.insert(alias, expr);
+            }
+        }
+        
+        // Merge denormalized node edges
+        for (alias, info) in other.denormalized_node_edges {
+            if !self.denormalized_node_edges.contains_key(&alias) {
+                self.denormalized_node_edges.insert(alias, info);
+            }
+        }
+    }
 }
 
 impl fmt::Display for PlanCtx {

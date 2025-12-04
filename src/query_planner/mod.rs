@@ -6,7 +6,7 @@ use types::QueryType;
 
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
-    open_cypher_parser::ast::OpenCypherQueryAst,
+    open_cypher_parser::ast::{CypherStatement, OpenCypherQueryAst},
     query_planner::logical_plan::{LogicalPlan, PageRank},
 };
 
@@ -30,6 +30,11 @@ pub fn get_query_type(query_ast: &OpenCypherQueryAst) -> QueryType {
     } else {
         QueryType::Read
     }
+}
+
+/// Get query type from a CypherStatement (checks the first query)
+pub fn get_statement_query_type(statement: &CypherStatement) -> QueryType {
+    get_query_type(&statement.query)
 }
 
 pub fn evaluate_read_query(
@@ -61,6 +66,38 @@ pub fn evaluate_read_query(
 
     // println!("\n\n plan_ctx after \n {}",plan_ctx);
     // println!("\n plan after{}", logical_plan);
+
+    let logical_plan =
+        Arc::into_inner(logical_plan).ok_or(QueryPlannerError::LogicalPlanExtractor)?;
+    Ok(logical_plan)
+}
+
+/// Evaluate a complete Cypher statement which may contain UNION clauses
+pub fn evaluate_read_statement(
+    statement: CypherStatement,
+    current_graph_schema: &GraphSchema,
+    tenant_id: Option<String>,
+    view_parameter_values: Option<HashMap<String, String>>,
+) -> Result<LogicalPlan, QueryPlannerError> {
+    let (logical_plan, mut plan_ctx) = logical_plan::evaluate_cypher_statement(
+        statement,
+        current_graph_schema,
+        tenant_id,
+        view_parameter_values,
+    )?;
+
+    let logical_plan =
+        analyzer::initial_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
+
+    let logical_plan = optimizer::initial_optimization(logical_plan, &mut plan_ctx)?;
+
+    let logical_plan =
+        analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
+
+    let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx)?;
+
+    let logical_plan =
+        analyzer::final_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
 
     let logical_plan =
         Arc::into_inner(logical_plan).ok_or(QueryPlannerError::LogicalPlanExtractor)?;

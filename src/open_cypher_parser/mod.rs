@@ -1,11 +1,13 @@
 use ast::{
-    CallClause, CreateClause, DeleteClause, LimitClause, MatchClause, OpenCypherQueryAst,
-    OptionalMatchClause, OrderByClause, RemoveClause, ReturnClause, SetClause, SkipClause,
-    UnwindClause, UseClause, WhereClause, WithClause,
+    CallClause, CreateClause, CypherStatement, DeleteClause, LimitClause, MatchClause, 
+    OpenCypherQueryAst, OptionalMatchClause, OrderByClause, RemoveClause, ReturnClause, 
+    SetClause, SkipClause, UnionClause, UnionType, UnwindClause, UseClause, WhereClause, 
+    WithClause,
 };
 use common::ws;
 use errors::OpenCypherParsingError;
-use nom::bytes::complete::tag;
+use nom::branch::alt;
+use nom::bytes::complete::{tag, tag_no_case};
 use nom::character::complete::multispace0;
 use nom::combinator::opt;
 use nom::multi::many0;
@@ -32,6 +34,58 @@ mod use_clause;
 mod where_clause;
 mod with_clause;
 
+/// Parse a complete Cypher statement, potentially with UNION clauses
+pub fn parse_cypher_statement(
+    input: &'_ str,
+) -> IResult<&'_ str, CypherStatement<'_>, OpenCypherParsingError<'_>> {
+    let (input, _) = multispace0.parse(input)?;
+    
+    // Parse the first query
+    let (input, first_query) = parse_query_with_nom.parse(input)?;
+    
+    // Parse zero or more UNION clauses
+    let (input, union_clauses) = many0(parse_union_clause).parse(input)?;
+    
+    // Optional trailing semicolon
+    let (input, _) = opt(ws(tag(";"))).parse(input)?;
+    
+    Ok((input, CypherStatement {
+        query: first_query,
+        union_clauses,
+    }))
+}
+
+/// Parse a UNION clause: UNION [ALL] followed by a query
+fn parse_union_clause(
+    input: &'_ str,
+) -> IResult<&'_ str, UnionClause<'_>, OpenCypherParsingError<'_>> {
+    let (input, _) = multispace0.parse(input)?;
+    
+    // Parse UNION keyword (case-insensitive)
+    let (input, _) = tag_no_case("UNION").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    
+    // Parse optional ALL keyword to determine union type
+    let (input, union_type) = alt((
+        |i| {
+            let (i, _) = tag_no_case("ALL").parse(i)?;
+            Ok((i, UnionType::All))
+        },
+        |i| Ok((i, UnionType::Distinct)),
+    )).parse(input)?;
+    
+    let (input, _) = multispace0.parse(input)?;
+    
+    // Parse the subsequent query
+    let (input, query) = parse_query_with_nom.parse(input)?;
+    
+    Ok((input, UnionClause {
+        union_type,
+        query,
+    }))
+}
+
+/// Legacy function for backward compatibility - parses single query
 pub fn parse_statement(
     input: &'_ str,
 ) -> IResult<&'_ str, OpenCypherQueryAst<'_>, OpenCypherParsingError<'_>> {
@@ -1318,5 +1372,89 @@ mod tests {
             query_ast.limit_clause.is_none(),
             "Expected LIMIT clause to be None"
         );
+    }
+
+    // ==================== UNION PARSING TESTS ====================
+
+    #[test]
+    fn test_parse_cypher_statement_single_query() {
+        // A single query without UNION should have empty union_clauses
+        let query = "MATCH (n:Person) RETURN n.name";
+        let result = parse_cypher_statement(query);
+        assert!(result.is_ok(), "Failed to parse single query: {:?}", result.err());
+        
+        let (remaining, stmt) = result.unwrap();
+        assert!(remaining.trim().is_empty(), "Expected empty remaining, got: '{}'", remaining);
+        assert!(stmt.union_clauses.is_empty(), "Expected no UNION clauses for single query");
+        assert!(stmt.query.match_clause.is_some(), "Expected MATCH clause");
+    }
+
+    #[test]
+    fn test_parse_cypher_statement_union() {
+        // UNION (distinct) combines results removing duplicates
+        let query = "MATCH (a:Person) RETURN a.name UNION MATCH (b:Company) RETURN b.name";
+        let result = parse_cypher_statement(query);
+        assert!(result.is_ok(), "Failed to parse UNION query: {:?}", result.err());
+        
+        let (remaining, stmt) = result.unwrap();
+        assert!(remaining.trim().is_empty(), "Expected empty remaining, got: '{}'", remaining);
+        assert_eq!(stmt.union_clauses.len(), 1, "Expected 1 UNION clause");
+        assert_eq!(stmt.union_clauses[0].union_type, UnionType::Distinct);
+        
+        // Verify first query
+        assert!(stmt.query.match_clause.is_some());
+        // Verify union query
+        assert!(stmt.union_clauses[0].query.match_clause.is_some());
+    }
+
+    #[test]
+    fn test_parse_cypher_statement_union_all() {
+        // UNION ALL combines results keeping duplicates
+        let query = "MATCH (a:Person) RETURN a.name UNION ALL MATCH (b:Company) RETURN b.name";
+        let result = parse_cypher_statement(query);
+        assert!(result.is_ok(), "Failed to parse UNION ALL query: {:?}", result.err());
+        
+        let (remaining, stmt) = result.unwrap();
+        assert!(remaining.trim().is_empty(), "Expected empty remaining, got: '{}'", remaining);
+        assert_eq!(stmt.union_clauses.len(), 1, "Expected 1 UNION clause");
+        assert_eq!(stmt.union_clauses[0].union_type, UnionType::All);
+    }
+
+    #[test]
+    fn test_parse_cypher_statement_multiple_unions() {
+        // Multiple UNION clauses
+        let query = "MATCH (a:Person) RETURN a.name UNION MATCH (b:Company) RETURN b.name UNION ALL MATCH (c:City) RETURN c.name";
+        let result = parse_cypher_statement(query);
+        assert!(result.is_ok(), "Failed to parse multiple UNION query: {:?}", result.err());
+        
+        let (remaining, stmt) = result.unwrap();
+        assert!(remaining.trim().is_empty(), "Expected empty remaining, got: '{}'", remaining);
+        assert_eq!(stmt.union_clauses.len(), 2, "Expected 2 UNION clauses");
+        assert_eq!(stmt.union_clauses[0].union_type, UnionType::Distinct);
+        assert_eq!(stmt.union_clauses[1].union_type, UnionType::All);
+    }
+
+    #[test]
+    fn test_parse_cypher_statement_case_insensitive() {
+        // UNION keywords should be case insensitive
+        let query = "MATCH (a) RETURN a union all MATCH (b) RETURN b";
+        let result = parse_cypher_statement(query);
+        assert!(result.is_ok(), "Failed to parse lowercase UNION: {:?}", result.err());
+        
+        let (_, stmt) = result.unwrap();
+        assert_eq!(stmt.union_clauses.len(), 1);
+        assert_eq!(stmt.union_clauses[0].union_type, UnionType::All);
+    }
+
+    #[test]
+    fn test_parse_cypher_statement_with_semicolon() {
+        // Trailing semicolon should be handled
+        let query = "MATCH (a) RETURN a UNION MATCH (b) RETURN b;";
+        let result = parse_cypher_statement(query);
+        assert!(result.is_ok(), "Failed to parse UNION with semicolon: {:?}", result.err());
+        
+        let (remaining, stmt) = result.unwrap();
+        assert!(remaining.trim().is_empty(), "Expected empty remaining after semicolon");
+        assert_eq!(stmt.union_clauses.len(), 1);
     }
 }

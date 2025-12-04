@@ -2,6 +2,31 @@
 
 use std::{cell::RefCell, fmt, rc::Rc};
 
+/// Type of UNION operation
+#[derive(Debug, PartialEq, Clone)]
+pub enum UnionType {
+    /// UNION - removes duplicates
+    Distinct,
+    /// UNION ALL - keeps duplicates
+    All,
+}
+
+/// A complete Cypher statement that may contain UNION clauses
+#[derive(Debug, PartialEq, Clone)]
+pub struct CypherStatement<'a> {
+    /// The first (or only) query
+    pub query: OpenCypherQueryAst<'a>,
+    /// Optional union with additional queries
+    pub union_clauses: Vec<UnionClause<'a>>,
+}
+
+/// A UNION clause combining queries
+#[derive(Debug, PartialEq, Clone)]
+pub struct UnionClause<'a> {
+    pub union_type: UnionType,
+    pub query: OpenCypherQueryAst<'a>,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct OpenCypherQueryAst<'a> {
     pub use_clause: Option<UseClause<'a>>,

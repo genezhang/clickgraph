@@ -285,11 +285,11 @@ pub async fn query_handler(
             }
         };
 
-        // Phase 1: Parse query
+        // Phase 1: Parse query with UNION support
         // IMPORTANT: Parse the CLEAN query without CYPHER prefix
         let parse_start = Instant::now();
-        let cypher_ast = match open_cypher_parser::parse_query(clean_query) {
-            Ok(ast) => ast,
+        let cypher_statement = match open_cypher_parser::parse_cypher_statement(clean_query) {
+            Ok((_remaining, stmt)) => stmt,
             Err(e) => {
                 metrics.parse_time = parse_start.elapsed().as_secs_f64();
                 log::error!("Query parse failed: {:?}", e);
@@ -310,7 +310,7 @@ pub async fn query_handler(
         };
         metrics.parse_time = parse_start.elapsed().as_secs_f64();
 
-        let query_type = query_planner::get_query_type(&cypher_ast);
+        let query_type = query_planner::get_statement_query_type(&cypher_statement);
         let query_type_str = match query_type {
             QueryType::Read => "read",
             QueryType::Ddl => "ddl",
@@ -324,8 +324,8 @@ pub async fn query_handler(
         let is_call = query_type == QueryType::Call;
 
         if is_call {
-            // Handle CALL queries (like PageRank)
-            let logical_plan = match query_planner::evaluate_call_query(cypher_ast, &graph_schema) {
+            // Handle CALL queries (like PageRank) - use first query's AST
+            let logical_plan = match query_planner::evaluate_call_query(cypher_statement.query, &graph_schema) {
                 Ok(plan) => plan,
                 Err(e) => {
                     if sql_only {
@@ -433,8 +433,8 @@ pub async fn query_handler(
                     .collect()
             });
 
-            let logical_plan = match query_planner::evaluate_read_query(
-                cypher_ast,
+            let logical_plan = match query_planner::evaluate_read_statement(
+                cypher_statement,
                 &graph_schema,
                 payload.tenant_id.clone(),
                 view_parameter_values,
