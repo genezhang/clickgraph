@@ -5120,6 +5120,63 @@ impl RenderPlanBuilder for LogicalPlan {
                         filter_parts.push(RenderExpr::Raw(format!("({})", schema_sql)));
                     }
                     
+                    // 🎯 FIX Issue #5: Add user-defined filters on CHAINED PATTERN nodes
+                    // For queries like (u)-[*]->(g)-[:REL]->(f) WHERE f.sensitive_data = 1
+                    // The filter on 'f' should go into the final WHERE clause, not the CTE.
+                    // Extract all user filters, then exclude VLP start/end filters (already in CTE).
+                    if let Ok(Some(all_user_filters)) = transformed_plan.extract_filters() {
+                        // Helper to check if expression references ONLY VLP aliases (start or end)
+                        fn references_only_vlp_aliases(expr: &RenderExpr, start_alias: &str, end_alias: &str) -> bool {
+                            fn collect_aliases(expr: &RenderExpr, aliases: &mut std::collections::HashSet<String>) {
+                                match expr {
+                                    RenderExpr::PropertyAccessExp(prop) => {
+                                        aliases.insert(prop.table_alias.0.clone());
+                                    }
+                                    RenderExpr::OperatorApplicationExp(op) => {
+                                        for operand in &op.operands {
+                                            collect_aliases(operand, aliases);
+                                        }
+                                    }
+                                    RenderExpr::ScalarFnCall(fn_call) => {
+                                        for arg in &fn_call.args {
+                                            collect_aliases(arg, aliases);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            let mut aliases = std::collections::HashSet::new();
+                            collect_aliases(expr, &mut aliases);
+                            // Returns true if ALL referenced aliases are VLP start or end
+                            !aliases.is_empty() && aliases.iter().all(|a| a == start_alias || a == end_alias)
+                        }
+                        
+                        // Split AND-connected filters
+                        fn split_and_filters(expr: RenderExpr) -> Vec<RenderExpr> {
+                            match expr {
+                                RenderExpr::OperatorApplicationExp(op) if matches!(op.operator, Operator::And) => {
+                                    let mut result = Vec::new();
+                                    for operand in op.operands {
+                                        result.extend(split_and_filters(operand));
+                                    }
+                                    result
+                                }
+                                _ => vec![expr],
+                            }
+                        }
+                        
+                        let all_filters = split_and_filters(all_user_filters);
+                        for filter in all_filters {
+                            // Include filter if it references nodes OUTSIDE the VLP (chained pattern nodes)
+                            if !references_only_vlp_aliases(&filter, &start_alias, &end_alias) {
+                                log::info!("VLP outer query: Adding chained-pattern filter: {:?}", filter);
+                                filter_parts.push(filter);
+                            } else {
+                                log::debug!("VLP outer query: Skipping VLP-only filter (already in CTE): {:?}", filter);
+                            }
+                        }
+                    }
+                    
                     // Combine all filters with AND
                     final_filters = if filter_parts.is_empty() {
                         None

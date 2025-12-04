@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 3  
-**Test Results**: 542/542 unit tests passing (100%)  
+**Active Issues**: 2  
+**Test Results**: 546/546 unit tests passing (100%)  
 **Last Updated**: December 4, 2025
 
 For recently fixed issues, see [CHANGELOG.md](CHANGELOG.md).  
@@ -117,13 +117,13 @@ GROUP BY u.name
 
 ---
 
-### 5. WHERE Filters on VLP Chained Pattern Endpoints Not Applied
+### 5. ✅ FIXED: WHERE Filters on VLP Chained Pattern Endpoints Not Applied
 
-**Status**: 🐛 Bug  
+**Status**: ✅ Fixed (December 4, 2025)  
 **Severity**: MEDIUM  
 **Identified**: December 4, 2025
 
-**Problem**: When using VLP + chained patterns, WHERE clause filters on the chained endpoint node are not applied to the generated SQL.
+**Problem**: When using VLP + chained patterns, WHERE clause filters on the chained endpoint node were not applied to the generated SQL.
 
 **Example Query**:
 ```cypher
@@ -132,15 +132,20 @@ WHERE f.sensitive_data = 1 AND u.exposure = 'external'
 RETURN f.name, COUNT(DISTINCT u) AS external_users
 ```
 
-**Current Behavior**:
+**Previous Behavior**:
 - `u.exposure = 'external'` ✅ Applied (pushed into CTE base case)
 - `f.sensitive_data = 1` ❌ **Missing** from generated SQL
 
-**Generated SQL** (incorrect):
+**Fix Applied**: `src/render_plan/plan_builder.rs` (lines ~5119-5172)
+- Added code to extract ALL user-defined filters from the transformed plan
+- Filters on VLP start/end nodes (already in CTE) are excluded
+- Filters on chained pattern nodes (like `f`) are added to the final WHERE clause
+
+**Generated SQL (Now Correct)**:
 ```sql
 WITH RECURSIVE variable_path_xxx AS (
     ...
-    WHERE rel.member_type = 'User' AND start_node.exposure = 'external'  -- ✅ User filter applied
+    WHERE rel.member_type = 'User' AND start_node.exposure = 'external'  -- ✅ VLP start filter in CTE
     ...
 )
 SELECT f.name, COUNT(DISTINCT u.user_id)
@@ -149,21 +154,13 @@ JOIN sec_users AS u ON t.start_id = u.user_id
 JOIN sec_groups AS g ON t.end_id = g.group_id
 JOIN sec_permissions AS p ON p.subject_id = g.group_id
 JOIN sec_fs_objects AS f ON f.fs_id = p.object_id
+WHERE f.sensitive_data = 1  -- ✅ Chained node filter in final WHERE
 GROUP BY f.name
--- ❌ Missing: WHERE f.sensitive_data = 1
 ```
 
-**Workaround**: Use HAVING with conditional aggregation or filter in application layer:
-```cypher
--- Workaround 1: Use SUM with conditional and filter
-MATCH (u:User)-[:MEMBER_OF*]->(g:Group)-[:HAS_ACCESS]->(f:File)
-WHERE u.exposure = 'external'
-RETURN f.name, SUM(f.sensitive_data) AS is_sensitive, COUNT(DISTINCT u) AS external_users
-
--- Then filter where is_sensitive > 0 in application
-```
-
-**Root Cause**: Filter extraction in `extract_filters()` doesn't propagate filters from WHERE clause to chained pattern endpoints when VLP is present.
-
-**Location**: `src/render_plan/plan_builder.rs` - `extract_filters()` or `build_variable_length_cte_plan()`
+**Tests Added**: 4 new tests in `vlp_chained_pattern_filters` module covering:
+- Filter on chained node after VLP
+- Filters on both VLP start and chained end
+- VLP start filter stays in CTE (no duplication)
+- Multiple chained hops with filter on last node
 

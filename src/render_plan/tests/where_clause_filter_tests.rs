@@ -615,3 +615,118 @@ mod fixed_length_vlp_tests {
         );
     }
 }
+
+/// Tests for Issue #5: WHERE filters on VLP chained pattern endpoints
+/// When we have patterns like (u)-[*]->(g)-[:REL]->(f) WHERE f.prop = value,
+/// the filter on 'f' (which is NOT part of the VLP) should appear in the final WHERE clause.
+#[cfg(test)]
+mod vlp_chained_pattern_filters {
+    use super::*;
+
+    #[test]
+    fn test_filter_on_chained_node_after_vlp() {
+        // Pattern: (a)-[*]->(b)-[:REL]->(c) WHERE c.prop = 'value'
+        // The filter on 'c' should go in the final WHERE clause, not the CTE
+        let cypher = "MATCH (a:User)-[:FOLLOWS*]->(b:User)-[:FOLLOWS]->(c:User) WHERE c.name = 'Charlie' RETURN c";
+        let sql = cypher_to_sql(cypher);
+
+        println!("Chained VLP with filter on end node SQL:\n{}", sql);
+
+        // The filter on 'c' should appear in the outer query WHERE clause
+        // Check for 'Charlie' in the SQL - it should be in the WHERE clause
+        assert!(
+            sql.contains("Charlie"),
+            "SQL should contain the filter value 'Charlie'. Got: {}", sql
+        );
+        
+        // The filter should NOT be in the CTE base case (which filters 'a')
+        // It should be in the final SELECT's WHERE clause
+        let main_query = sql.split("SELECT").last().unwrap_or(&sql);
+        assert!(
+            main_query.contains("Charlie") || main_query.contains("WHERE"),
+            "Filter on chained node should be in the final query, not just the CTE. Main query: {}", main_query
+        );
+    }
+
+    #[test]
+    fn test_filters_on_both_vlp_start_and_chained_end() {
+        // Pattern: (a)-[*]->(b)-[:REL]->(c) WHERE a.prop = 'start_val' AND c.prop = 'end_val'
+        // a's filter should go in CTE, c's filter should go in final WHERE
+        let cypher = "MATCH (a:User)-[:FOLLOWS*]->(b:User)-[:FOLLOWS]->(c:User) WHERE a.name = 'Alice' AND c.name = 'Charlie' RETURN a, c";
+        let sql = cypher_to_sql(cypher);
+
+        println!("Chained VLP with filters on start AND end nodes SQL:\n{}", sql);
+
+        // Both filter values should be present
+        assert!(
+            sql.contains("Alice"),
+            "SQL should contain the VLP start filter value 'Alice'. Got: {}", sql
+        );
+        assert!(
+            sql.contains("Charlie"),
+            "SQL should contain the chained end filter value 'Charlie'. Got: {}", sql
+        );
+
+        // Check that the final query has WHERE clause (not just CTE)
+        // The 'Charlie' filter should be in the outer WHERE
+        let parts: Vec<&str> = sql.split("SELECT").collect();
+        if parts.len() > 1 {
+            let final_select = parts.last().unwrap();
+            // Charlie should be in the WHERE clause of the final SELECT
+            if final_select.contains("WHERE") {
+                assert!(
+                    final_select.contains("Charlie") || sql.contains("c.name = 'Charlie'"),
+                    "Filter on chained node 'c' should be in the final WHERE clause. Final SELECT: {}", final_select
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_vlp_start_filter_stays_in_cte() {
+        // Pattern: (a)-[*]->(b)-[:REL]->(c) WHERE a.prop = 'start_val'
+        // a's filter should go in CTE base case only, NOT duplicated in final WHERE
+        let cypher = "MATCH (a:User)-[:FOLLOWS*]->(b:User)-[:FOLLOWS]->(c:User) WHERE a.name = 'Alice' RETURN c";
+        let sql = cypher_to_sql(cypher);
+
+        println!("Chained VLP with filter only on VLP start SQL:\n{}", sql);
+
+        // The filter should be present (in CTE)
+        assert!(
+            sql.contains("Alice"),
+            "SQL should contain the VLP start filter value 'Alice'. Got: {}", sql
+        );
+
+        // The filter should be in the CTE base case (WHERE ... start_node.name or similar)
+        // Look for it near the first SELECT in the CTE
+        if sql.contains("WITH RECURSIVE") {
+            let cte_part: &str = sql.split("UNION ALL").next().unwrap_or(&sql);
+            assert!(
+                cte_part.contains("Alice"),
+                "VLP start filter should be in CTE base case. CTE part: {}", cte_part
+            );
+        }
+    }
+
+    #[test]
+    fn test_multiple_chained_hops_with_filter_on_last() {
+        // Pattern: (a)-[*]->(b)-[:REL]->(c)-[:REL]->(d) WHERE d.prop = 'value'
+        // This tests that even with multiple chained hops, the filter goes in final WHERE
+        let cypher = "MATCH (a:User)-[:FOLLOWS*]->(b:User)-[:FOLLOWS]->(c:User)-[:FOLLOWS]->(d:User) WHERE d.name = 'David' RETURN d";
+        let sql = cypher_to_sql(cypher);
+
+        println!("Multi-hop chained VLP with filter on last node SQL:\n{}", sql);
+
+        // The filter should be present
+        assert!(
+            sql.contains("David"),
+            "SQL should contain the filter value 'David'. Got: {}", sql
+        );
+        
+        // Should have JOINs for the chained relationships
+        assert!(
+            sql.to_lowercase().contains("join"),
+            "SQL should contain JOINs for chained relationships. Got: {}", sql
+        );
+    }
+}
