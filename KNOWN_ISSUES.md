@@ -1,6 +1,6 @@
 # Known Issues
 
-**Active Issues**: 3  
+**Active Issues**: 2  
 **Test Results**: 542/542 unit tests passing (100%)  
 **Last Updated**: December 4, 2025
 
@@ -85,23 +85,33 @@ LIMIT 20
 
 ---
 
-### 4. VLP + Chained Patterns with Aggregation Missing CTE Path
+### 4. ✅ FIXED: VLP + Chained Patterns with Aggregation Missing CTE Path
 
-**Status**: 🐛 Bug  
+**Status**: ✅ Fixed (December 4, 2025)  
 **Severity**: MEDIUM  
 **Identified**: December 4, 2025
 
-**Problem**: Aggregation queries combining VLP with chained patterns don't use the CTE path, resulting in missing table JOINs.
+**Problem**: Aggregation queries combining VLP with chained patterns didn't use the CTE path, resulting in missing table JOINs.
 
-**Example Query**:
+**Fix Applied**: `src/render_plan/cte_extraction.rs` - `get_variable_length_spec()` now recursively checks `rel.left` and `rel.right` in nested GraphRels. This ensures VLP detection works for chained patterns like `(a)-[*]->(b)-[:R]->(c)` where the VLP is nested inside an outer GraphRel.
+
+**Example Query Now Working**:
 ```cypher
 MATCH (u:User)-[:MEMBER_OF*]->(g:Group)-[:HAS_ACCESS]->(f:File) 
 RETURN u.name, COUNT(DISTINCT f) AS total_files, SUM(f.sensitive_data) AS sensitive_files
 ```
 
-**Current Behavior**: Query planner uses JOIN-based path instead of CTE path, generating SQL that references `u.name` without JOINing the users table.
-
-**Workaround**: Use non-aggregated query first, then aggregate results in application layer, OR split into separate queries.
-
-**Location**: `src/render_plan/plan_builder.rs` - `try_build_join_based_plan` logic doesn't consistently detect VLP+aggregation combinations
+**Generated SQL (Now Correct)**:
+```sql
+WITH RECURSIVE variable_path_xxx AS (...)
+SELECT u.name AS "user_name", 
+       COUNT(DISTINCT f.fs_id) AS "file_count", 
+       SUM(f.sensitive_data) AS "total_sensitive"
+FROM variable_path_xxx AS t
+JOIN brahmand.sec_users AS u ON t.start_id = u.user_id
+JOIN brahmand.sec_groups AS g ON t.end_id = g.group_id
+INNER JOIN brahmand.sec_permissions AS ... ON ...
+INNER JOIN brahmand.sec_fs_objects AS f ON ...
+GROUP BY u.name
+```
 

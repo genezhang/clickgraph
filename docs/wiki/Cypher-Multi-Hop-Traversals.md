@@ -5,6 +5,7 @@ Master advanced graph traversals including variable-length paths, shortest paths
 ## Table of Contents
 - [Fixed-Length Multi-Hop](#fixed-length-multi-hop)
 - [Variable-Length Paths](#variable-length-paths)
+  - [Variable-Length with Chained Patterns](#variable-length-with-chained-patterns)
 - [Shortest Path Algorithms](#shortest-path-algorithms)
 - [Path Variables and Functions](#path-variables-and-functions)
 - [Performance Optimization](#performance-optimization)
@@ -219,6 +220,46 @@ MATCH (a:User)-[edges:FOLLOWS*1..3]->(b:User)
 WHERE a.name = 'Alice' AND all(e IN edges WHERE e.since > '2024-01-01')
 RETURN b.name
 ```
+
+### Variable-Length with Chained Patterns
+
+Combine variable-length paths with additional graph patterns:
+
+```cypher
+-- Recursive group membership + permission access
+MATCH (u:User)-[:MEMBER_OF*]->(g:Group)-[:HAS_ACCESS]->(f:File)
+RETURN u.name, g.name AS via_group, f.name
+
+-- Recursive folder hierarchy + file access
+MATCH (root:Folder)-[:CONTAINS*]->(folder:Folder)-[:CONTAINS]->(f:File)
+WHERE root.name = 'Root'
+RETURN root.path, folder.name AS subfolder, f.name
+
+-- Multi-level with aggregation
+MATCH (u:User)-[:MEMBER_OF*]->(g:Group)-[:HAS_ACCESS]->(f:File)
+RETURN u.name AS user, COUNT(DISTINCT f) AS accessible_files, COUNT(DISTINCT g) AS via_groups
+```
+
+**How it works**:
+1. Variable-length portion (`-[:MEMBER_OF*]->`) uses recursive CTE
+2. CTE results are JOINed back to retrieve start/end node properties
+3. Additional patterns (`-[:HAS_ACCESS]->(f:File)`) are chained as regular JOINs
+
+**Generated SQL structure**:
+```sql
+WITH RECURSIVE path_cte AS (...)
+SELECT u.name, g.name, f.name
+FROM path_cte AS t
+JOIN users AS u ON t.start_id = u.id        -- Start node properties
+JOIN groups AS g ON t.end_id = g.id          -- End node properties
+JOIN permissions AS p ON p.group_id = g.id   -- Chained pattern
+JOIN files AS f ON f.id = p.file_id          -- Chained pattern endpoint
+```
+
+**Use cases**:
+- Security audit: "What files can this user access via group membership?"
+- Permission propagation: "All resources accessible through recursive groups"
+- Folder hierarchies: "Find all files in nested folder structure"
 
 ---
 
