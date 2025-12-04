@@ -8,12 +8,13 @@
 
 **A high-performance, stateless, read-only graph query translator for ClickHouse with Neo4j ecosystem compatibility.**
 
-> **Note: ClickGraph is development-ready for view-based graph analysis with full Neo4j Bolt Protocol 5.8 support.**
+> **Note: ClickGraph is development-ready for view-based graph analytics with full Neo4j Bolt Protocol 5.8 support.**
 
 ---
 ## Motivation and Rationale
 - There are huge volumes of data in ClickHouse databases, viewing them as  graph data with graph analytics capability brings another level of abstraction and boosts productivity with graph tools, in ways beyond relational analytics alone.
 - Research shows relational analytics with columnar stores and vectorized execution engines like ClickHouse provide superior analytical performance and scalability to graph-native technologies, which usually leverage explicit adjacency representations and are more suitable for local-area graph traversals.
+- View-based graph analytics offer zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
 ---
 ## 🚀 What's New in v0.5.3 (December 2, 2025)
 
