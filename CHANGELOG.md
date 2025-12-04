@@ -7,6 +7,7 @@
 
 ### 🐛 Bug Fixes
 
+- **Fix WHERE AND/OR/XOR syntax error** - Binary operators at expression start (e.g., `WHERE AND x = 1`) are now correctly rejected as syntax errors instead of being parsed as variable names. Added `is_binary_operator_keyword()` check in expression parser.
 - **Fix FK-Edge variable-length paths** - CTE generation now uses 2-way joins (node→node via FK) instead of incorrect 3-way joins for FK-edge schemas
 - **Fix FK-Edge exact hop counts** - ChainedJoinGenerator now supports FK-edge patterns with direct `child.parent_id = parent.object_id` joins
 - **Fix undirected multi-hop patterns** - Patterns like `(a)-[r1]-(b)-[r2]-(c)` now correctly generate 2^n UNION branches with proper column swapping for denormalized nodes and direction-aware JOIN conditions
