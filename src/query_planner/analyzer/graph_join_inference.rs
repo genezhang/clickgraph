@@ -51,17 +51,17 @@ fn generate_polymorphic_edge_filter(
     }
 
     // Add from_label filter if from_label_column is defined and we're filtering by from type
-    // Skip if schema uses $any wildcard (polymorphic from any source)
+    // We should filter when from_node is $any (polymorphic) - need to filter by actual node type
     if let Some(ref from_label_col) = rel_schema.from_label_column {
-        if rel_schema.from_node != "$any" && !left_label.is_empty() {
+        if rel_schema.from_node == "$any" && !left_label.is_empty() {
             filter_parts.push(format!("{}.{} = '{}'", rel_alias, from_label_col, left_label));
         }
     }
 
     // Add to_label filter if to_label_column is defined and we're filtering by to type
-    // Skip if schema uses $any wildcard (polymorphic to any target)
+    // We should filter when to_node is $any (polymorphic) - need to filter by actual node type
     if let Some(ref to_label_col) = rel_schema.to_label_column {
-        if rel_schema.to_node != "$any" && !right_label.is_empty() {
+        if rel_schema.to_node == "$any" && !right_label.is_empty() {
             filter_parts.push(format!("{}.{} = '{}'", rel_alias, to_label_col, right_label));
         }
     }
