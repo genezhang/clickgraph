@@ -1,8 +1,10 @@
 # Known Issues
 
 **Active Issues**: 2  
-**Test Results**: 546/546 unit tests passing (100%)  
-**Last Updated**: December 4, 2025
+**Test Results**: 577/577 unit tests passing (100%)  
+**Integration Tests**: 48/51 passing for STANDARD schema (94%)  
+**Security Graph Tests**: 98/98 passing (100%)  
+**Last Updated**: December 5, 2025
 
 For recently fixed issues, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -11,27 +13,47 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Active Issues
 
-### 1. Anonymous Nodes Without Labels Not Supported
+### 1. Anonymous Nodes Without Labels (Partial Support)
 
-**Status**: 📋 Limitation  
-**Severity**: LOW  
-**Identified**: December 2, 2025
+**Status**: ✅ Significantly Improved  
+**Updated**: December 5, 2025
 
-**Problem**: Anonymous nodes without labels cannot be resolved to tables:
-```cypher
-MATCH ()-[r:FOLLOWS]->() RETURN r LIMIT 5  -- ❌ Broken SQL
-MATCH ()-[r]->() RETURN r LIMIT 5          -- ❌ Also broken
-```
+**Supported Inference Scenarios**:
 
-**Root Cause**: Without a label, the query planner cannot determine which node table to use. The anonymous node gets a generated alias (e.g., `aeba9f1d7f`) but no `table_name`, causing invalid SQL with dangling references.
+1. **Label inference from relationship type**:
+   - Query: \`()-[r:FLIGHT]->()\`
+   - Schema: FLIGHT has from_node=Airport, to_node=Airport
+   - Result: Both nodes inferred as Airport ✅
 
-**Workaround**: Always specify node labels:
-```cypher
-MATCH (:User)-[r:FOLLOWS]->(:User) RETURN r LIMIT 5  -- ✅ Works
-MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r LIMIT 5  -- ✅ Works
-```
+2. **Relationship type inference from typed nodes**:
+   - Query: \`(a:Airport)-[r]->()\`
+   - Schema: FLIGHT is the only edge with from_node=Airport
+   - Result: r inferred as :FLIGHT ✅
 
-**Future Enhancement**: For schemas with a single relationship type or polymorphic edge table, the system could infer node types from the relationship's `from_node_label`/`to_node_label` configuration. Deferred for now.
+3. **Single-schema inference**:
+   - Query: \`()-[r]->()\`
+   - Schema: Only one relationship defined
+   - Result: r inferred automatically ✅
+
+4. **Single-node-schema inference**:
+   - Query: \`MATCH (n) RETURN n\`
+   - Schema: Only one node type defined
+   - Result: n inferred automatically ✅
+
+5. **Multi-hop anonymous patterns** (December 5, 2025):
+   - Query: \`()-[r1]->()-[r2]->()-[r3]->()\`
+   - Schema: Only one relationship type
+   - Result: All 3 relationships inferred ✅
+
+**Remaining Limitations**:
+- \`MATCH (n)\` with **multiple** node types in schema still doesn't work (needs UNION)
+- Polymorphic edges use first matching type (future: UNION ALL for all types)
+- Safety limit: max 4 types inferred before requiring explicit specification
+
+**Workaround**: Specify at least one label when multiple types exist:
+\`\`\`cypher
+MATCH (a:User)-[r]->(b:User) RETURN r  -- ✅ Works
+\`\`\`
 
 ---
 
@@ -39,128 +61,56 @@ MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r LIMIT 5  -- ✅ Works
 
 **Status**: 🐛 Bug  
 **Severity**: MEDIUM  
-**Identified**: November 20, 2025
+**Difficulty**: Easy  
+**Estimated Fix Time**: 1-2 days
 
 **Problem**: Comma-separated patterns without shared nodes generate invalid SQL:
-```cypher
+\`\`\`cypher
 MATCH (user:User), (other:User) WHERE user.user_id = 1 RETURN other.user_id
-```
+\`\`\`
 
-**Current**: Generates SQL referencing `user` not in FROM clause → ClickHouse error  
-**Expected**: Either throw `DisconnectedPatternFound` error OR generate CROSS JOIN
+**Current**: Generates SQL referencing \`user\` not in FROM clause → ClickHouse error  
+**Expected**: Either throw \`DisconnectedPatternFound\` error OR generate CROSS JOIN
 
-**Location**: `src/query_planner/logical_plan/match_clause.rs` - disconnection check not triggering
+**Location**: \`src/query_planner/logical_plan/match_clause.rs\` - disconnection check not triggering
 
----
+**Workaround**: Use connected patterns or explicit joins:
+\`\`\`cypher
+-- Option 1: Use connected pattern
+MATCH (user:User)-[:KNOWS]->(other:User) WHERE user.user_id = 1 RETURN other.user_id
 
-### 3. ✅ FIXED: Variable-Length Paths + Chained Patterns Missing Property JOINs
-
-**Status**: ✅ Fixed (December 4, 2025)  
-**Severity**: HIGH  
-**Identified**: December 4, 2025
-
-**Problem**: When a variable-length path (VLP) is chained with additional graph patterns, the generated SQL failed because the start/end nodes of the VLP were not JOINed back to fetch their properties.
-
-**Fix Applied**:
-1. `src/render_plan/plan_builder.rs` (lines ~5257-5277): Added logic to preserve subsequent pattern JOINs before clearing, then re-add them after VLP endpoint JOINs
-2. `src/render_plan/cte_extraction.rs`: Fixed nested GraphRel recursion in `has_variable_length_rel()`, `is_variable_length_denormalized()`, and `get_variable_length_denorm_info()` to properly detect VLP when nested inside other patterns
-
-**Example Query Now Working**:
-```cypher
-MATCH (u:User)-[:MEMBER_OF*]->(g:Group)-[:HAS_ACCESS]->(f:File)
-RETURN u.name, g.name AS group_name, f.name AS file_name LIMIT 20
-```
-
-**Generated SQL (Now Correct)**:
-```sql
-WITH RECURSIVE variable_path_xxx AS (...)
-SELECT u.name, g.name AS group_name, f.name AS file_name
-FROM variable_path_xxx AS t
-JOIN brahmand.sec_users AS u ON t.start_id = u.user_id        -- ✅ VLP start node
-JOIN brahmand.sec_groups AS g ON t.end_id = g.group_id        -- ✅ VLP end node
-INNER JOIN brahmand.sec_permissions AS ... ON ... = g.group_id -- ✅ Subsequent pattern
-INNER JOIN brahmand.sec_fs_objects AS f ON ...                 -- ✅ Subsequent pattern
-LIMIT 20
-```
+-- Option 2: Use subquery (if supported)
+MATCH (user:User) WHERE user.user_id = 1
+WITH user
+MATCH (other:User) WHERE other.user_id <> user.user_id
+RETURN other.user_id
+\`\`\`
 
 ---
 
-### 4. ✅ FIXED: VLP + Chained Patterns with Aggregation Missing CTE Path
+## Recently Fixed (v0.5.4 - December 5, 2025)
 
-**Status**: ✅ Fixed (December 4, 2025)  
-**Severity**: MEDIUM  
-**Identified**: December 4, 2025
-
-**Problem**: Aggregation queries combining VLP with chained patterns didn't use the CTE path, resulting in missing table JOINs.
-
-**Fix Applied**: `src/render_plan/cte_extraction.rs` - `get_variable_length_spec()` now recursively checks `rel.left` and `rel.right` in nested GraphRels. This ensures VLP detection works for chained patterns like `(a)-[*]->(b)-[:R]->(c)` where the VLP is nested inside an outer GraphRel.
-
-**Example Query Now Working**:
-```cypher
-MATCH (u:User)-[:MEMBER_OF*]->(g:Group)-[:HAS_ACCESS]->(f:File) 
-RETURN u.name, COUNT(DISTINCT f) AS total_files, SUM(f.sensitive_data) AS sensitive_files
-```
-
-**Generated SQL (Now Correct)**:
-```sql
-WITH RECURSIVE variable_path_xxx AS (...)
-SELECT u.name AS "user_name", 
-       COUNT(DISTINCT f.fs_id) AS "file_count", 
-       SUM(f.sensitive_data) AS "total_sensitive"
-FROM variable_path_xxx AS t
-JOIN brahmand.sec_users AS u ON t.start_id = u.user_id
-JOIN brahmand.sec_groups AS g ON t.end_id = g.group_id
-INNER JOIN brahmand.sec_permissions AS ... ON ...
-INNER JOIN brahmand.sec_fs_objects AS f ON ...
-GROUP BY u.name
-```
+| Issue | Description | Fix |
+|-------|-------------|-----|
+| OPTIONAL MATCH polymorphic edges | Invalid SQL with undefined aliases | Unified anchor detection in \`graph_join_inference.rs\` |
+| WITH + node ref + aggregate | Wrong FROM table | Exhaustive match in \`find_table_name_for_alias()\` |
+| Polymorphic CONTAINS edge | Untyped target node failed | Label inference from relationship schema |
+| Multi-hop anonymous nodes | Missing JOINs in denormalized schemas | Pre-assigned consistent aliases for shared nodes |
+| STARTS WITH/ENDS WITH/CONTAINS | String predicates not parsed | Added operators and SQL generation |
+| Anonymous VLP wrong table | CTE used node table instead of edge | Relationship type filtering in CTE extraction |
+| Denormalized edge JOIN | Swapped from_id/to_id columns | Fixed FK-edge JOIN generation |
+| Duplicate relationship types | \`[:A|A]\` generated invalid SQL | Deduplication in multiple locations |
+| VLP + chained patterns | Missing table JOINs | Recursive VLP detection in nested GraphRels |
+| VLP endpoint filters | WHERE on chained nodes not applied | Extract all filters for final WHERE clause |
 
 ---
 
-### 5. ✅ FIXED: WHERE Filters on VLP Chained Pattern Endpoints Not Applied
+## Test Statistics
 
-**Status**: ✅ Fixed (December 4, 2025)  
-**Severity**: MEDIUM  
-**Identified**: December 4, 2025
+| Category | Passing | Total | Rate |
+|----------|---------|-------|------|
+| Unit Tests | 577 | 577 | 100% |
+| Integration (Standard) | 48 | 51 | 94% |
+| Security Graph | 98 | 98 | 100% |
 
-**Problem**: When using VLP + chained patterns, WHERE clause filters on the chained endpoint node were not applied to the generated SQL.
-
-**Example Query**:
-```cypher
-MATCH (u:User)-[:MEMBER_OF*]->(g:Group)-[:HAS_ACCESS]->(f:File)
-WHERE f.sensitive_data = 1 AND u.exposure = 'external'
-RETURN f.name, COUNT(DISTINCT u) AS external_users
-```
-
-**Previous Behavior**:
-- `u.exposure = 'external'` ✅ Applied (pushed into CTE base case)
-- `f.sensitive_data = 1` ❌ **Missing** from generated SQL
-
-**Fix Applied**: `src/render_plan/plan_builder.rs` (lines ~5119-5172)
-- Added code to extract ALL user-defined filters from the transformed plan
-- Filters on VLP start/end nodes (already in CTE) are excluded
-- Filters on chained pattern nodes (like `f`) are added to the final WHERE clause
-
-**Generated SQL (Now Correct)**:
-```sql
-WITH RECURSIVE variable_path_xxx AS (
-    ...
-    WHERE rel.member_type = 'User' AND start_node.exposure = 'external'  -- ✅ VLP start filter in CTE
-    ...
-)
-SELECT f.name, COUNT(DISTINCT u.user_id)
-FROM variable_path_xxx AS t
-JOIN sec_users AS u ON t.start_id = u.user_id
-JOIN sec_groups AS g ON t.end_id = g.group_id
-JOIN sec_permissions AS p ON p.subject_id = g.group_id
-JOIN sec_fs_objects AS f ON f.fs_id = p.object_id
-WHERE f.sensitive_data = 1  -- ✅ Chained node filter in final WHERE
-GROUP BY f.name
-```
-
-**Tests Added**: 4 new tests in `vlp_chained_pattern_filters` module covering:
-- Filter on chained node after VLP
-- Filters on both VLP start and chained end
-- VLP start filter stays in CTE (no duplication)
-- Multiple chained hops with filter on last node
-
+**Note**: 3 integration test failures are expected (benchmark-specific tests requiring specific datasets).

@@ -184,6 +184,9 @@ pub enum Operator {
     Or,
     In,
     NotIn,
+    StartsWith,   // STARTS WITH
+    EndsWith,     // ENDS WITH
+    Contains,     // CONTAINS
     Not,
     Distinct,
     IsNull,
@@ -374,6 +377,9 @@ impl TryFrom<LogicalOperator> for Operator {
             LogicalOperator::Or => Operator::Or,
             LogicalOperator::In => Operator::In,
             LogicalOperator::NotIn => Operator::NotIn,
+            LogicalOperator::StartsWith => Operator::StartsWith,
+            LogicalOperator::EndsWith => Operator::EndsWith,
+            LogicalOperator::Contains => Operator::Contains,
             LogicalOperator::Not => Operator::Not,
             LogicalOperator::Distinct => Operator::Distinct,
             LogicalOperator::IsNull => Operator::IsNull,

@@ -1,3 +1,4 @@
+name: social_benchmark
 
 graph_schema:
   nodes:
@@ -60,6 +61,16 @@ graph_schema:
       property_mappings:
         post_date: post_date
     
+    - type: LIKED
+      database: brahmand
+      table: post_likes_bench
+      from_id: user_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+      property_mappings:
+        like_date: like_date
+
     - type: FRIENDS_WITH
       database: brahmand
       table: friendships

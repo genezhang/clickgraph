@@ -86,8 +86,16 @@ pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
 
 /// Helper function to find the table name for a given alias by recursively searching the plan tree
 /// Used to find the anchor node's table in multi-hop queries
+/// Find the table name for a given alias by traversing the LogicalPlan tree.
+/// This is used to determine the correct FROM table in CTE patterns where
+/// the grouping key alias (e.g., "g" in "WITH g, COUNT(u)") needs to be
+/// resolved to its underlying table (e.g., "sec_groups").
+///
+/// IMPORTANT: This function is EXHAUSTIVE - all LogicalPlan variants must be
+/// handled explicitly. This ensures we don't silently miss new plan types.
 pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
     match plan {
+        // === Terminal nodes that can match ===
         LogicalPlan::GraphNode(node) => {
             if node.alias == target_alias {
                 // Found the matching GraphNode, extract table name from its input
@@ -113,11 +121,33 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
             find_table_name_for_alias(&rel.left, target_alias)
                 .or_else(|| find_table_name_for_alias(&rel.right, target_alias))
         }
+        
+        // === Wrapper nodes - recurse into input ===
+        LogicalPlan::Cte(cte) => find_table_name_for_alias(&cte.input, target_alias),
         LogicalPlan::Projection(proj) => find_table_name_for_alias(&proj.input, target_alias),
+        LogicalPlan::GroupBy(group_by) => find_table_name_for_alias(&group_by.input, target_alias),
         LogicalPlan::Filter(filter) => find_table_name_for_alias(&filter.input, target_alias),
         LogicalPlan::OrderBy(order) => find_table_name_for_alias(&order.input, target_alias),
         LogicalPlan::GraphJoins(joins) => find_table_name_for_alias(&joins.input, target_alias),
-        _ => None,
+        LogicalPlan::Skip(skip) => find_table_name_for_alias(&skip.input, target_alias),
+        LogicalPlan::Limit(limit) => find_table_name_for_alias(&limit.input, target_alias),
+        LogicalPlan::Unwind(unwind) => find_table_name_for_alias(&unwind.input, target_alias),
+        
+        // === Union - search all branches ===
+        LogicalPlan::Union(union) => {
+            for input in &union.inputs {
+                if let Some(table) = find_table_name_for_alias(input, target_alias) {
+                    return Some(table);
+                }
+            }
+            None
+        }
+        
+        // === Terminal nodes that cannot contain aliases ===
+        LogicalPlan::Empty => None,
+        LogicalPlan::Scan(_) => None,  // Raw scan without alias info
+        LogicalPlan::ViewScan(_) => None,  // ViewScan itself doesn't have alias, GraphNode wraps it
+        LogicalPlan::PageRank(_) => None,  // PageRank is a computed result, no direct table alias
     }
 }
 
@@ -895,11 +925,14 @@ pub(super) fn is_node_polymorphic(plan: &LogicalPlan, target_alias: &str) -> boo
 }
 
 /// Check if a logical plan contains any GraphRel with multiple relationship types
+/// NOTE: Deduplicates labels first - [:FOLLOWS|FOLLOWS] is treated as single type
 pub(super) fn has_multiple_relationship_types(plan: &LogicalPlan) -> bool {
     match plan {
         LogicalPlan::GraphRel(graph_rel) => {
             if let Some(labels) = &graph_rel.labels {
-                if labels.len() > 1 {
+                // Deduplicate labels - [:FOLLOWS|FOLLOWS] should be treated as single type
+                let unique_labels: std::collections::HashSet<_> = labels.iter().collect();
+                if unique_labels.len() > 1 {
                     return true;
                 }
             }

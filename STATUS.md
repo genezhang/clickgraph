@@ -1,6 +1,83 @@
 # ClickGraph Status
 
-*Updated: December 3, 2025*
+*Updated: December 5, 2025*
+
+## 🆕 **Recent Updates** - December 5, 2025
+
+### ✅ Multi-Hop Patterns with Anonymous Nodes Fixed (Issue #6)
+- **Problem**: `MATCH ()-[r1:FLIGHT]->()-[r2:FLIGHT]->()` only generated SQL for one relationship
+- **Root Cause**: Parser correctly shares middle node via `Rc::clone()`, but alias generation called `generate_id()` unconditionally for each pattern, creating different aliases for the same node
+- **Fix**: Added pre-processing pass in `traverse_connected_pattern_with_mode()`:
+  1. Collect all node patterns and assign aliases using pointer-based identity (`as_ptr() as usize`)
+  2. Shared nodes (same `Rc<RefCell<NodePattern>>`) get the same alias
+- **Result**: Multi-hop anonymous patterns now generate correct SQL with proper JOINs
+- **Files**: `src/query_planner/logical_plan/match_clause.rs`
+
+### ✅ OPTIONAL MATCH with Polymorphic Edges Fixed (Issue #3)
+- **Problem**: `MATCH (g:Group) OPTIONAL MATCH (g)<-[:MEMBER_OF]-(member:User)` generated invalid SQL
+- **Root Cause**: Two issues in `graph_join_inference.rs`:
+  1. Anchor detection logic was only in same-type nodes path, missing for different-type nodes
+  2. Hardcoded `"to_id"` column name instead of using schema's actual column (`group_id`)
+- **Fix**: 
+  1. Unified anchor detection at start of `handle_graph_pattern()` 
+  2. Use `rel_schema.to_id` instead of hardcoded string
+- **Result**: Polymorphic OPTIONAL MATCH now generates correct LEFT JOINs
+- **Files**: `src/query_planner/analyzer/graph_join_inference.rs`
+
+---
+
+## 🆕 **Recent Updates** - December 4, 2025
+
+### ✅ Smart Inference System (NEW)
+**Relationship Type Inference from Typed Nodes**:
+- Query: `(a:Airport)-[r]->()` → infers `r:FLIGHT` if FLIGHT is the only edge from Airport
+- Query: `()-[r]->(p:Post)` → infers `r:LIKES` if LIKES is the only edge to Post
+- Query: `(u:User)-[r]->(p:Post)` → infers `r:LIKES` from both node types
+
+**Single-Relationship-Schema Inference**:
+- Query: `()-[r]->()` → infers r:KNOWS if schema has only one relationship defined
+- Great for simple schemas with a single edge type
+
+**Single-Node-Schema Inference** (NEW):
+- Query: `MATCH (n) RETURN n` → infers n:User if schema has only one node type defined
+- Great for simple schemas with a single node type
+
+**Safety Limit**: Max 4 types can be inferred; more requires explicit type specification
+
+**Unit Tests**: 19 tests for inference scenarios (577 total)
+- Covers standard, denormalized, and polymorphic schema variations
+
+### ✅ Label Inference from Relationship Schema
+- **Feature**: Unlabeled nodes connected to typed relationships now infer labels from schema
+- **Example**: `MATCH (f:Folder)-[:CONTAINS]->(child)` now works on polymorphic schemas
+- **How it works**:
+  - Query planner looks up the relationship schema
+  - Gets `from_label_values`/`to_label_values` based on node position
+  - Single type → use as inferred label
+  - Multiple types → use first type (warning logged)
+- **Issue #5 Fixed**: Polymorphic CONTAINS with untyped target now generates valid SQL
+- **Files**: `src/query_planner/logical_plan/match_clause.rs`
+
+### ✅ WITH + Node Reference + Aggregate Fixed
+- **Issue #4**: `WITH g, COUNT(u) AS cnt WHERE cnt >= 2 RETURN g.name, cnt` was broken
+- **Fix**: Outer query FROM clause now uses correct table for grouping key alias
+- **Files**: `src/render_plan/plan_builder_helpers.rs` - made `find_table_name_for_alias()` exhaustive
+
+### ✅ Test Infrastructure Improvements
+- **Query Pattern Test Matrix**: Fixed schema-aware query generation
+- **STANDARD Schema**: 48/51 tests passing (94%), 3 xfailed (expected)
+- **Security Graph Tests**: 98/98 passing (100%)
+- **Unit Tests**: 577/577 passing (100%)
+- **Key Fixes**:
+  - VLP templates now use explicit relationship types (`[:FOLLOWS*2]` not `[*2]`)
+  - Shortest path templates use explicit relationship types
+  - Query generator prefers cyclic relationships (separate edge tables)
+  - Added `RelationshipInfo` dataclass with connectivity metadata
+
+### 🐛 Known Issues
+See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details and workarounds.
+
+---
 
 ## 🆕 **Recent Fixes** - December 3, 2025
 

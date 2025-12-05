@@ -385,6 +385,10 @@ pub enum Operator {
     Or,
     In, // IN [...]
     NotIn,
+    // String predicates
+    StartsWith,       // STARTS WITH
+    EndsWith,         // ENDS WITH
+    Contains,         // CONTAINS
     // unary
     Not,
     Distinct, // e.g distinct name
@@ -413,6 +417,9 @@ impl From<Operator> for String {
             Operator::Or => "OR".to_string(),
             Operator::In => "IN".to_string(),
             Operator::NotIn => "NOT IN".to_string(),
+            Operator::StartsWith => "STARTS WITH".to_string(),
+            Operator::EndsWith => "ENDS WITH".to_string(),
+            Operator::Contains => "CONTAINS".to_string(),
             Operator::Not => "NOT".to_string(),
             Operator::Distinct => "DISTINCT".to_string(),
             Operator::IsNull => "IS NULL".to_string(),

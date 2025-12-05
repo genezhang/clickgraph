@@ -653,6 +653,9 @@ impl RenderExpr {
                         Operator::Or => "OR",
                         Operator::In => "IN",
                         Operator::NotIn => "NOT IN",
+                        Operator::StartsWith => "STARTS WITH",  // Special handling below
+                        Operator::EndsWith => "ENDS WITH",      // Special handling below
+                        Operator::Contains => "CONTAINS",       // Special handling below
                         Operator::Not => "NOT",
                         Operator::Distinct => "DISTINCT",
                         Operator::IsNull => "IS NULL",
@@ -665,6 +668,17 @@ impl RenderExpr {
                 // Special handling for RegexMatch - ClickHouse uses match() function
                 if op.operator == Operator::RegexMatch && rendered.len() == 2 {
                     return format!("match({}, {})", &rendered[0], &rendered[1]);
+                }
+
+                // Special handling for string predicates - ClickHouse uses functions
+                if op.operator == Operator::StartsWith && rendered.len() == 2 {
+                    return format!("startsWith({}, {})", &rendered[0], &rendered[1]);
+                }
+                if op.operator == Operator::EndsWith && rendered.len() == 2 {
+                    return format!("endsWith({}, {})", &rendered[0], &rendered[1]);
+                }
+                if op.operator == Operator::Contains && rendered.len() == 2 {
+                    return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
                 }
 
                 // Special handling for Addition with string operands - use concat()
@@ -796,6 +810,9 @@ impl RenderExpr {
                         Operator::Or => "OR",
                         Operator::In => "IN",
                         Operator::NotIn => "NOT IN",
+                        Operator::StartsWith => "STARTS WITH",  // Special handling below
+                        Operator::EndsWith => "ENDS WITH",      // Special handling below
+                        Operator::Contains => "CONTAINS",       // Special handling below
                         Operator::Not => "NOT",
                         Operator::Distinct => "DISTINCT",
                         Operator::IsNull => "IS NULL",
@@ -813,6 +830,17 @@ impl RenderExpr {
                 // Special handling for RegexMatch - ClickHouse uses match() function
                 if op.operator == Operator::RegexMatch && rendered.len() == 2 {
                     return format!("match({}, {})", &rendered[0], &rendered[1]);
+                }
+
+                // Special handling for string predicates - ClickHouse uses functions
+                if op.operator == Operator::StartsWith && rendered.len() == 2 {
+                    return format!("startsWith({}, {})", &rendered[0], &rendered[1]);
+                }
+                if op.operator == Operator::EndsWith && rendered.len() == 2 {
+                    return format!("endsWith({}, {})", &rendered[0], &rendered[1]);
+                }
+                if op.operator == Operator::Contains && rendered.len() == 2 {
+                    return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
                 }
 
                 let sql_op = op_str(op.operator);
@@ -847,6 +875,33 @@ impl RenderExpr {
                     }
                 }
             }
+            // For Raw expressions, strip table alias prefixes (e.g., "alias.column" -> "column")
+            // This is needed for LEFT JOIN subqueries where the filter is inside SELECT * FROM table
+            RenderExpr::Raw(raw_sql) => {
+                // Simple approach: look for "word.word" patterns and keep only the part after the dot
+                // This handles cases like "alias.column = 'value'" -> "column = 'value'"
+                let mut result = raw_sql.clone();
+                // Find and replace all "identifier.identifier" patterns
+                let parts: Vec<&str> = result.split_whitespace().collect();
+                let mut new_parts = Vec::new();
+                for part in parts {
+                    if part.contains('.') && !part.starts_with('\'') && !part.starts_with('"') {
+                        // Split on dot and take the last part (the column name)
+                        // But preserve the structure (e.g., "alias.column" becomes "column")
+                        let dot_parts: Vec<&str> = part.split('.').collect();
+                        if dot_parts.len() == 2 && !dot_parts[0].is_empty() && !dot_parts[1].is_empty() {
+                            // Check if first part looks like an identifier (not a number)
+                            let first_char = dot_parts[0].chars().next().unwrap_or('0');
+                            if first_char.is_alphabetic() || first_char == '_' {
+                                new_parts.push(dot_parts[1].to_string());
+                                continue;
+                            }
+                        }
+                    }
+                    new_parts.push(part.to_string());
+                }
+                new_parts.join(" ")
+            }
             // For other expression types, delegate to regular to_sql
             _ => self.to_sql(),
         }
@@ -875,6 +930,9 @@ impl ToSql for OperatorApplication {
                 Operator::Or => "OR",
                 Operator::In => "IN",
                 Operator::NotIn => "NOT IN",
+                Operator::StartsWith => "STARTS WITH",  // Special handling below
+                Operator::EndsWith => "ENDS WITH",      // Special handling below
+                Operator::Contains => "CONTAINS",       // Special handling below
                 Operator::Not => "NOT",
                 Operator::Distinct => "DISTINCT",
                 Operator::IsNull => "IS NULL",
@@ -887,6 +945,17 @@ impl ToSql for OperatorApplication {
         // Special handling for RegexMatch - ClickHouse uses match() function
         if self.operator == Operator::RegexMatch && rendered.len() == 2 {
             return format!("match({}, {})", &rendered[0], &rendered[1]);
+        }
+
+        // Special handling for string predicates - ClickHouse uses functions
+        if self.operator == Operator::StartsWith && rendered.len() == 2 {
+            return format!("startsWith({}, {})", &rendered[0], &rendered[1]);
+        }
+        if self.operator == Operator::EndsWith && rendered.len() == 2 {
+            return format!("endsWith({}, {})", &rendered[0], &rendered[1]);
+        }
+        if self.operator == Operator::Contains && rendered.len() == 2 {
+            return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
         }
 
         // Special handling for Addition with string operands - use concat()

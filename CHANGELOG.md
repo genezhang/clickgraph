@@ -2,11 +2,30 @@
 
 ### 🚀 Features
 
+- **Smart relationship type inference** - Anonymous edge patterns `()-[r]->()` can now infer the relationship type automatically:
+  - **Single-schema inference**: If the schema has only one relationship type, it's used automatically
+  - **Node-type inference**: If nodes are typed (e.g., `(a:Airport)-[r]->()`), finds relationships that match those node types
+  - **Safety limit**: Max 4 types can be inferred; more requires explicit type specification to avoid huge UNIONs
+  - Works for outgoing, incoming, and undirected patterns
+  - Clear error message when too many types match: "Too many possible types for inference: X types found, max allowed is 4"
+- **Smart node type inference** - Standalone node patterns `MATCH (n)` can now infer the node type automatically:
+  - **Single-node-schema inference**: If the schema has only one node type, it's used automatically
+  - Enables `MATCH (n) RETURN n` to work on simple single-node-type schemas
+- **Label inference from relationship schema** - Unlabeled nodes connected to typed relationships now have their labels inferred from the relationship schema's `from_label_values`/`to_label_values`. For polymorphic edges with multiple possible types, the first type is used.
+- **String predicate operators** - Full support for `STARTS WITH`, `ENDS WITH`, and `CONTAINS` string predicates in WHERE clauses. These Cypher operators now generate correct ClickHouse SQL using `startsWith()`, `endsWith()`, and `position()` functions.
 - **FK-Edge pattern support** - Self-referencing foreign key patterns (file systems, org charts) now work correctly with variable-length paths and exact hop counts. Added `VlpSchemaType::FkEdge` detection and dual expansion CTE strategy (APPEND for ancestors, PREPEND for descendants).
 - **Relationship uniqueness enforcement for undirected patterns** - Multi-hop undirected patterns now enforce Neo4j-style relationship uniqueness. Uses `edge_id` columns from schema (e.g., `[FlightDate, FlightNum, Origin, Dest]`) to prevent the same physical edge from being matched by multiple relationship variables. Falls back to `[from_id, to_id]` if edge_id is not defined.
 
 ### 🐛 Bug Fixes
 
+- **Fix multi-hop patterns with anonymous nodes (Issue #6)** - Patterns like `()-[r1:FLIGHT]->()-[r2:FLIGHT]->()` now generate correct SQL with both relationships joined. Fixed by adding pre-processing pass in `traverse_connected_pattern_with_mode()` to assign consistent aliases for shared nodes using pointer-based identity. The middle anonymous node now correctly gets the same alias in both patterns.
+- **Fix OPTIONAL MATCH with polymorphic edges (Issue #3)** - Queries like `MATCH (g:Group) OPTIONAL MATCH (g)<-[:MEMBER_OF]-(member:User)` now generate correct SQL. Fixed two issues in `graph_join_inference.rs`: (1) Added unified anchor detection at start of `handle_graph_pattern()` to pre-seed non-optional nodes before same-type/different-type branching, (2) Changed hardcoded `"to_id"` to use actual schema column names (`rel_schema.to_id`).
+- **Fix polymorphic CONTAINS with unlabeled target** - Queries like `MATCH (f:Folder)-[:CONTAINS]->(child)` on polymorphic schemas now work. The unlabeled `child` node's label is inferred from the CONTAINS relationship schema. (Issue #5)
+- **Fix WITH clause + node reference + aggregate** - Queries like `WITH g, COUNT(u) AS cnt WHERE cnt >= 2 RETURN g.name, cnt` now generate correct SQL. The outer query's FROM clause now correctly uses the table for the grouping key alias (e.g., `sec_groups AS g`) instead of the inner query's table. Made `find_table_name_for_alias()` exhaustive to handle all LogicalPlan variants.
+- **Fix string predicates not being parsed** - `STARTS WITH`, `ENDS WITH`, and `CONTAINS` operators were being silently dropped during parsing. Added operators to all Operator enums and parser rules for multi-word operators.
+- **Fix anonymous VLP wrong table selection** - Variable-length paths without explicit relationship types (e.g., `[*1..3]`) now correctly use the relationship table instead of the node table. Added relationship type filtering in CTE generation.
+- **Fix FK-edge JOIN column swap** - Denormalized relationships where the edge is stored in the target node table now generate correct JOIN conditions with the FK column on the correct side.
+- **Fix multi-type same type deduplication** - `[:FOLLOWS|FOLLOWS]` now correctly deduplicates to single type and uses schema-specific column names (e.g., `follower_id` instead of generic `from_node_id`). Fixed in cte_extraction.rs, plan_builder.rs, plan_builder_helpers.rs, and match_clause.rs.
 - **Fix WHERE AND/OR/XOR syntax error** - Binary operators at expression start (e.g., `WHERE AND x = 1`) are now correctly rejected as syntax errors instead of being parsed as variable names. Added `is_binary_operator_keyword()` check in expression parser.
 - **Fix FK-Edge variable-length paths** - CTE generation now uses 2-way joins (node→node via FK) instead of incorrect 3-way joins for FK-edge schemas
 - **Fix FK-Edge exact hop counts** - ChainedJoinGenerator now supports FK-edge patterns with direct `child.parent_id = parent.object_id` joins
@@ -16,8 +35,13 @@
 
 ### 📚 Documentation
 
+- **Update KNOWN_ISSUES.md** - Issues #3 and #6 marked as fixed with detailed root cause analysis and fix descriptions
 - **Add FK-Edge Patterns wiki page** - User-facing documentation for self-referencing FK patterns (`docs/wiki/Schema-FK-Edge-Patterns.md`)
 - **Clean up KNOWN_ISSUES.md** - Removed "Recently Fixed" section; fixed issues now go to CHANGELOG and wiki
+
+### 🧪 Testing
+
+- **577 unit tests passing** (up from 558) - 19 new tests for inference (13 relationship + 6 node type including schema variations)
 
 ---
 

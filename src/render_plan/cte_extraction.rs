@@ -151,6 +151,9 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
                 Operator::Exponentiation => format!("POWER({}, {})", operands[0], operands[1]),
                 Operator::In => format!("{} IN {}", operands[0], operands[1]),
                 Operator::NotIn => format!("{} NOT IN {}", operands[0], operands[1]),
+                Operator::StartsWith => format!("startsWith({}, {})", operands[0], operands[1]),
+                Operator::EndsWith => format!("endsWith({}, {})", operands[0], operands[1]),
+                Operator::Contains => format!("(position({}, {}) > 0)", operands[0], operands[1]),
                 Operator::IsNull => format!("{} IS NULL", operands[0]),
                 Operator::IsNotNull => format!("{} IS NOT NULL", operands[0]),
                 Operator::Distinct => format!("{} IS DISTINCT FROM {}", operands[0], operands[1]),
@@ -367,6 +370,7 @@ pub fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipCo
                 ))
             }
         }
+        LogicalPlan::Cte(cte) => extract_relationship_columns(&cte.input),
         LogicalPlan::GraphRel(rel) => extract_relationship_columns(&rel.center),
         LogicalPlan::Filter(filter) => extract_relationship_columns(&filter.input),
         LogicalPlan::Projection(proj) => extract_relationship_columns(&proj.input),
@@ -984,18 +988,28 @@ pub fn extract_ctes_with_context(
                     labels,
                     labels.len()
                 );
-                if labels.len() > 1 {
-                    // Multiple relationship types: create a UNION CTE
-                    let rel_tables = rel_types_to_table_names(labels);
+                
+                // Deduplicate labels to handle cases like [:FOLLOWS|FOLLOWS]
+                let unique_labels: Vec<String> = {
+                    let mut seen = std::collections::HashSet::new();
+                    labels.iter()
+                        .filter(|l| seen.insert(l.clone()))
+                        .cloned()
+                        .collect()
+                };
+                
+                if unique_labels.len() > 1 {
+                    // Multiple distinct relationship types: create a UNION CTE
+                    let rel_tables = rel_types_to_table_names(&unique_labels);
                     eprintln!(
                         "DEBUG cte_extraction: Resolved tables for labels {:?}: {:?}",
-                        labels, rel_tables
+                        unique_labels, rel_tables
                     );
 
                     // Check if this is a polymorphic edge (all types map to same table with type_column)
                     let is_polymorphic = if let Some(schema) = context.schema() {
                         // Check if the first relationship type has a type_column (indicates polymorphic)
-                        if let Ok(rel_schema) = schema.get_rel_schema(&labels[0]) {
+                        if let Ok(rel_schema) = schema.get_rel_schema(&unique_labels[0]) {
                             rel_schema.type_column.is_some()
                         } else {
                             false
@@ -1008,7 +1022,7 @@ pub fn extract_ctes_with_context(
                         // Polymorphic edge: all types share the same table, need type filters
                         // Get schema info from context
                         if let Some(schema) = context.schema() {
-                            if let Ok(rel_schema) = schema.get_rel_schema(&labels[0]) {
+                            if let Ok(rel_schema) = schema.get_rel_schema(&unique_labels[0]) {
                                 let table_name = format!("{}.{}", rel_schema.database, rel_schema.table_name);
                                 let from_col = &rel_schema.from_id;
                                 let to_col = &rel_schema.to_id;
@@ -1017,7 +1031,7 @@ pub fn extract_ctes_with_context(
                                 // For polymorphic edges, use a single query with IN clause
                                 // This is more efficient than UNION of identical table scans
                                 // Include type_column for relationship property access
-                                let type_values: Vec<String> = labels.iter().map(|l| format!("'{}'", l)).collect();
+                                let type_values: Vec<String> = unique_labels.iter().map(|l| format!("'{}'", l)).collect();
                                 let type_in_clause = type_values.join(", ");
                                 
                                 vec![format!(

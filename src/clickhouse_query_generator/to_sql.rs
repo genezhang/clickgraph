@@ -152,6 +152,19 @@ impl ToSql for LogicalExpr {
                     Operator::NotIn => {
                         Ok(format!("({} NOT IN {})", operands_sql[0], operands_sql[1]))
                     }
+                    Operator::StartsWith => {
+                        // ClickHouse: startsWith(haystack, prefix)
+                        Ok(format!("startsWith({}, {})", operands_sql[0], operands_sql[1]))
+                    }
+                    Operator::EndsWith => {
+                        // ClickHouse: endsWith(haystack, suffix)
+                        Ok(format!("endsWith({}, {})", operands_sql[0], operands_sql[1]))
+                    }
+                    Operator::Contains => {
+                        // ClickHouse: position(haystack, needle) > 0 or like(haystack, '%needle%')
+                        // Using position() for efficiency
+                        Ok(format!("(position({}, {}) > 0)", operands_sql[0], operands_sql[1]))
+                    }
                     Operator::Not => Ok(format!("NOT ({})", operands_sql[0])),
                     Operator::Distinct => Ok(format!("DISTINCT {}", operands_sql[0])),
                     Operator::IsNull => Ok(format!("({} IS NULL)", operands_sql[0])),

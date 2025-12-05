@@ -1792,7 +1792,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 // NORMAL PATH with JOINs: Try to find GraphRel through any Projection/Filter wrappers
                 if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
                     if let Some(labels) = &graph_rel.labels {
-                        if labels.len() > 1 {
+                        // Deduplicate labels - [:FOLLOWS|FOLLOWS] should be treated as single type
+                        let unique_labels: std::collections::HashSet<_> = labels.iter().collect();
+                        if unique_labels.len() > 1 {
                             // Multiple relationship types: check if right node is polymorphic ($any)
                             // $any nodes have a Scan with no table_name (not a ViewScan)
                             // For polymorphic edges, use LEFT node (the labeled one) as FROM
@@ -4225,9 +4227,24 @@ impl RenderPlanBuilder for LogicalPlan {
                             });
                         }
 
-                        // Extract FROM table for the outer query (from the original table)
-                        // NOTE: ClickHouse CTE scoping - we need to be careful about table references
-                        let outer_from = inner_render_plan.from.clone();
+                        // Extract FROM table for the outer query
+                        // IMPORTANT: The outer query needs to use the table for the grouping key alias,
+                        // not the inner query's FROM table. For example, if we're grouping by g.group_id
+                        // where g is a Group, the outer query should FROM sec_groups AS g, not sec_users.
+                        let outer_from = {
+                            // Find the table name for the grouping key's alias
+                            if let Some(table_name) = find_table_name_for_alias(self, &table_alias) {
+                                FromTableItem(Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(LogicalPlan::Empty),
+                                    name: table_name,
+                                    alias: Some(table_alias.clone()),
+                                    use_final: false,
+                                }))
+                            } else {
+                                // Fallback to inner query's FROM if we can't find the table
+                                inner_render_plan.from.clone()
+                            }
+                        };
 
                         // Create JOIN condition: a.user_id = grouped_data.user_id
                         let cte_key_expr =

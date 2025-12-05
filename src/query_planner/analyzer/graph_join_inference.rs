@@ -293,24 +293,33 @@ impl GraphJoinInference {
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
-        // For FK-edge pattern:
-        // - from_id = FK column (e.g., parent_id, customer_id) on the "from" node
-        // - to_id = PK column (e.g., object_id, customer_id) on the "to" node
-        // 
-        // For Outgoing direction: from_node.fk_col = to_node.pk_col
-        // For Incoming direction: swap the columns
+        // FK-EDGE PATTERN:
+        // For FK-edge relationships, the relationship data is stored in ONE of the node tables
+        // (typically the "to" node table), with a foreign key column pointing to the other node.
+        //
+        // Example: AUTHORED relationship stored in posts_bench table
+        //   - from_id = 'author_id' (FK column ON posts_bench, points to users.user_id)
+        //   - to_id = 'post_id' (PK column ON posts_bench)
+        //   - from_node = User
+        //   - to_node = Post
+        //
+        // For Outgoing (a:User)-[:AUTHORED]->(b:Post):
+        //   LEFT = User (users_bench), RIGHT = Post (posts_bench = relationship table)
+        //   JOIN condition: right.from_id = left.pk
+        //   i.e., b.author_id = a.user_id
+        //
+        // For Incoming (a:Post)<-[:AUTHORED]-(b:User):
+        //   LEFT = User (users_bench), RIGHT = Post (posts_bench = relationship table)  
+        //   Due to GraphRel normalization, left=FROM, right=TO even for incoming
+        //   JOIN condition same: b.author_id = a.user_id
         
-        let (fk_col, pk_col) = if graph_rel.direction == Direction::Incoming {
-            // Incoming: swap - the "to" node has the FK pointing back
-            (rel_schema.to_id.clone(), rel_schema.from_id.clone())
-        } else {
-            // Outgoing (or Either): normal - "from" node has FK pointing to "to" node
-            (rel_schema.from_id.clone(), rel_schema.to_id.clone())
-        };
+        // from_id is the FK column on the relationship table pointing to the from_node's PK
+        // to_id is typically the relationship table's own PK (or the to_node's PK if same table)
+        let fk_col = rel_schema.from_id.clone();  // FK on relationship table
         
-        eprintln!("    🔗 FK column: {}, PK column: {}", fk_col, pk_col);
+        eprintln!("    🔗 FK column (on rel table): {}, left_node_id: {}", fk_col, left_node_id_column);
         
-        // Mark the relationship alias as joined (even though we're not scanning its table)
+        // Mark the relationship alias as joined (even though we're not scanning its table separately)
         // This is needed for the query planner to understand the relationship exists
         joined_entities.insert(rel_alias.to_string());
         
@@ -322,7 +331,9 @@ impl GraphJoinInference {
             joined_entities.insert(left_alias.to_string());
             eprintln!("    🔗 LEFT '{}' is anchor (FROM clause)", left_alias);
             
-            // Create JOIN for right node: right.pk_col = left.fk_col
+            // Create JOIN for right node: right.fk_col = left.pk
+            // The FK column (e.g., author_id) is on the RIGHT table (posts_bench)
+            // and points to the LEFT table's PK (users.user_id)
             if right_is_referenced {
                 let right_join = Join {
                     table_name: right_cte_name.clone(),
@@ -332,11 +343,11 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(pk_col.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(fk_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(fk_col.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
                             }),
                         ],
                     }],
@@ -344,7 +355,7 @@ impl GraphJoinInference {
                     pre_filter: None,
                 };
                 eprintln!("    🔗 Created JOIN for RIGHT '{}': {}.{} = {}.{}", 
-                    right_alias, right_alias, pk_col, left_alias, fk_col);
+                    right_alias, right_alias, fk_col, left_alias, left_node_id_column);
                 collected_graph_joins.push(right_join);
                 joined_entities.insert(right_alias.to_string());
             }
@@ -352,7 +363,8 @@ impl GraphJoinInference {
             // Right node is the anchor (or left already joined)
             eprintln!("    🔗 LEFT '{}' already joined, joining RIGHT", left_alias);
             
-            // Create JOIN for right node: right.pk_col = left.fk_col
+            // Create JOIN for right node: right.fk_col = left.pk
+            // Same logic as above - FK is on the right table, points to left's PK
             if right_is_referenced && !joined_entities.contains(right_alias) {
                 let right_join = Join {
                     table_name: right_cte_name.clone(),
@@ -362,11 +374,11 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(pk_col.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(fk_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(fk_col.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
                             }),
                         ],
                     }],
@@ -374,7 +386,7 @@ impl GraphJoinInference {
                     pre_filter: None,
                 };
                 eprintln!("    🔗 Created JOIN for RIGHT '{}': {}.{} = {}.{}", 
-                    right_alias, right_alias, pk_col, left_alias, fk_col);
+                    right_alias, right_alias, fk_col, left_alias, left_node_id_column);
                 collected_graph_joins.push(right_join);
                 joined_entities.insert(right_alias.to_string());
             }
@@ -571,15 +583,21 @@ impl GraphJoinInference {
         // CRITICAL FIX: The ONLY tables that should start as "available" are those that:
         // 1. Are referenced in JOIN conditions (needed by some JOIN)
         // 2. Are NOT themselves being joined (they go in FROM clause)
+        // 3. Are NOT optional (OPTIONAL MATCH tables can't be anchors - they use LEFT JOIN)
         // This is the true anchor - the table that other JOINs depend on but doesn't need a JOIN itself
         let mut available_tables: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         
         for table in &referenced_tables {
-            if !join_aliases.contains(table) {
+            if !join_aliases.contains(table) && !optional_aliases.contains(table) {
                 available_tables.insert(table.clone());
                 eprintln!(
-                    "  ✅ Found TRUE ANCHOR table (referenced but not joined): {}",
+                    "  ✅ Found TRUE ANCHOR table (referenced but not joined, not optional): {}",
+                    table
+                );
+            } else if !join_aliases.contains(table) && optional_aliases.contains(table) {
+                eprintln!(
+                    "  ⚠️ Skipping optional table as anchor candidate: {}",
                     table
                 );
             }
@@ -1705,21 +1723,15 @@ impl GraphJoinInference {
         // For polymorphic edge filters, we pass all types to generate IN clause if needed
         let rel_type = rel_types.first().map(|s| s.as_str()).unwrap_or("");
         
-        // Extract relationship column names from the ViewScan
-        let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
-            crate::render_plan::cte_extraction::RelationshipColumns {
-                from_id: "from_node_id".to_string(),
-                to_id: "to_node_id".to_string(),
-            },
-        );
+        // Use relationship schema columns directly (more reliable than ViewScan extraction)
+        // rel_schema.from_id and rel_schema.to_id contain the actual column names
+        let rel_from_col = rel_schema.from_id.clone();
+        let rel_to_col = rel_schema.to_id.clone();
         
-        // The GraphRel construction ensures that regardless of direction:
-        // - left_connection = FROM (source node of the relationship)
-        // - right_connection = TO (target node of the relationship)
-        // For Incoming patterns like (a)<-[r]-(b), construction swaps so left=b (FROM), right=a (TO)
-        // Therefore, we don't need to swap columns here based on direction.
-        let rel_from_col = rel_cols.from_id.clone();
-        let rel_to_col = rel_cols.to_id.clone();
+        eprintln!(
+            "    🔹 Using rel_schema columns: from_id='{}', to_id='{}'",
+            rel_from_col, rel_to_col
+        );
         
         // Since construction normalizes left=FROM, right=TO, these are always true/false
         let left_is_from_node = true;
@@ -1729,6 +1741,49 @@ impl GraphJoinInference {
             "    🔹 DEBUG REL COLUMNS: direction={:?}, rel_from_col = '{}', rel_to_col = '{}', left_is_from_node={}, right_is_from_node={}",
             graph_rel.direction, rel_from_col, rel_to_col, left_is_from_node, right_is_from_node
         );
+
+        // ============================================================
+        // UNIFIED ANCHOR DETECTION (applies to ALL paths)
+        // ============================================================
+        // For OPTIONAL MATCH patterns, we need to determine which node is the anchor
+        // (the required node from the base MATCH) BEFORE any branching logic.
+        // This ensures consistent behavior for both same-type and different-type nodes.
+        //
+        // The anchor is the non-optional node that should be connected first.
+        // Without this, different-type branches would fail to find an already-joined node.
+        let is_first_relationship = joined_entities.is_empty() || collected_graph_joins.is_empty();
+        
+        if is_first_relationship {
+            // Determine which node is the anchor (required, not optional)
+            let left_is_anchor = !left_is_optional;
+            let right_is_anchor = !right_is_optional;
+            
+            eprintln!(
+                "    🎯 ANCHOR DETECTION: first_rel={}, left_is_anchor={} (optional={}), right_is_anchor={} (optional={})",
+                is_first_relationship, left_is_anchor, left_is_optional, right_is_anchor, right_is_optional
+            );
+            
+            // Pre-seed joined_entities with the anchor node
+            // This ensures subsequent logic can find an already-joined node to connect to
+            if right_is_anchor && !left_is_anchor {
+                // RIGHT is anchor (e.g., MATCH (g:Group) OPTIONAL MATCH (g)<-[r]-(x))
+                // g is right_connection (due to Incoming direction swap), and g is required
+                eprintln!("    🎯 PRE-SEEDING: RIGHT '{}' is the anchor (required node)", right_alias);
+                joined_entities.insert(right_alias.to_string());
+            } else if left_is_anchor && !right_is_anchor {
+                // LEFT is anchor (e.g., MATCH (u:User) OPTIONAL MATCH (u)-[r]->(x))
+                // u is left_connection, and u is required
+                eprintln!("    🎯 PRE-SEEDING: LEFT '{}' is the anchor (required node)", left_alias);
+                joined_entities.insert(left_alias.to_string());
+            } else if left_is_anchor && right_is_anchor {
+                // Both are required (regular MATCH, not OPTIONAL)
+                // Default to left as anchor
+                eprintln!("    🎯 PRE-SEEDING: Both required, using LEFT '{}' as anchor", left_alias);
+                joined_entities.insert(left_alias.to_string());
+            }
+            // If neither is anchor (both optional) - shouldn't happen in valid queries
+        }
+        // ============================================================
 
         // If both nodes are of the same type then check the direction to determine where are the left and right nodes present in the edgelist.
         if left_node_schema.table_name == right_node_schema.table_name {
@@ -2763,7 +2818,7 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column("to_id".to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_to_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
@@ -2931,7 +2986,7 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column("to_id".to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_to_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),

@@ -141,6 +141,9 @@ pub enum Operator {
     Or,
     In,
     NotIn,
+    StartsWith,   // STARTS WITH
+    EndsWith,     // ENDS WITH
+    Contains,     // CONTAINS
     Not,
     Distinct,
     IsNull,
@@ -257,6 +260,9 @@ impl From<open_cypher_parser::ast::Operator> for Operator {
             open_cypher_parser::ast::Operator::Or => Operator::Or,
             open_cypher_parser::ast::Operator::In => Operator::In,
             open_cypher_parser::ast::Operator::NotIn => Operator::NotIn,
+            open_cypher_parser::ast::Operator::StartsWith => Operator::StartsWith,
+            open_cypher_parser::ast::Operator::EndsWith => Operator::EndsWith,
+            open_cypher_parser::ast::Operator::Contains => Operator::Contains,
             open_cypher_parser::ast::Operator::Not => Operator::Not,
             open_cypher_parser::ast::Operator::Distinct => Operator::Distinct,
             open_cypher_parser::ast::Operator::IsNull => Operator::IsNull,

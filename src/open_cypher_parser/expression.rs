@@ -191,8 +191,12 @@ pub fn parse_operator_symbols(input: &str) -> IResult<&str, Operator> {
         map(tag_no_case("/"), |_| Operator::Division),
         map(tag_no_case("%"), |_| Operator::ModuloDivision),
         map(tag_no_case("^"), |_| Operator::Exponentiation),
-        map(tag_no_case("IN"), |_| Operator::In),
+        // String predicates - must be before IN to avoid partial match
+        map(preceded(ws(tag_no_case("STARTS")), ws(tag_no_case("WITH"))), |_| Operator::StartsWith),
+        map(preceded(ws(tag_no_case("ENDS")), ws(tag_no_case("WITH"))), |_| Operator::EndsWith),
+        map(tag_no_case("CONTAINS"), |_| Operator::Contains),
         map(tag_no_case("NOT IN"), |_| Operator::NotIn),
+        map(tag_no_case("IN"), |_| Operator::In),
     ))
     .parse(input)
 }

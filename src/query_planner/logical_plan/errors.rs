@@ -14,4 +14,12 @@ pub enum LogicalPlanError {
     NodeNotFound(String),
     #[error("Relationship with type {0} not found")]
     RelationshipNotFound(String),
+    #[error("Too many possible types for inference: {count} types found ({types}), max allowed is {max}. Please specify an explicit type to avoid excessive UNION branches.")]
+    TooManyInferredTypes {
+        count: usize,
+        max: usize,
+        types: String,
+    },
+    #[error("Ambiguous pattern: {0}")]
+    AmbiguousPattern(String),
 }
