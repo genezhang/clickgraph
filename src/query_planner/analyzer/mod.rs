@@ -18,6 +18,10 @@ use crate::{
             query_validation::QueryValidation, schema_inference::SchemaInference,
         },
         logical_plan::LogicalPlan,
+        optimizer::{
+            cartesian_join_extraction::CartesianJoinExtraction,
+            optimizer_pass::OptimizerPass,
+        },
     },
 };
 
@@ -60,10 +64,27 @@ pub fn initial_analyzing(
     let plan = transformed_plan.get_plan();
 
     // Step 3: Property Mapping - map Cypher properties to database columns (ONCE)
+    // NOTE: FilterTagging now PRESERVES cross-table filters (those referencing WITH aliases
+    // and having CartesianProduct descendants) instead of extracting them. This allows
+    // CartesianJoinExtraction (step 3.5) to pick up the property-mapped predicate.
     let filter_tagging = FilterTagging::new();
     let transformed_plan =
         filter_tagging.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?;
     let plan = transformed_plan.get_plan();
+
+    // Step 3.5: CartesianJoinExtraction - extract cross-pattern filters into join_condition
+    // CRITICAL: This runs AFTER FilterTagging to get property-mapped predicates.
+    // FilterTagging now preserves cross-table filters in the plan (instead of extracting to plan_ctx).
+    // This enables proper JOIN ... ON generation for correlated WITH clauses.
+    let cartesian_join_extraction = CartesianJoinExtraction::new();
+    let plan = match cartesian_join_extraction.optimize(plan.clone(), plan_ctx) {
+        Ok(transformed) => transformed.get_plan(),
+        Err(e) => {
+            return Err(errors::AnalyzerError::OptimizerError {
+                message: e.to_string(),
+            });
+        }
+    };
 
     // Step 4: Projection Tagging - tag projections into plan_ctx (NO mapping, just tagging)
     let projection_tagging = ProjectionTagging::new();

@@ -6,9 +6,10 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 **Project Scope**: Read-only analytical queries only. Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are explicitly out of scope.
 
 ## Coding Style Guidelines
-- Always prefer idiomatic Rust code styles and best practices
-- Refactor code to be clear and maintainable whenever appropriate, before, during, or after implementing features
-- Follow Rust's official style guidelines: https://doc.rust-lang.org/1.0.0/style/
+- Always prefer idiomatic Rust code styles and best practices, follow Rust's official style guidelines: https://doc.rust-lang.org/1.0.0/style/
+- Check if there are existing functions or modules that can be reused before implementing new code
+- Follow Boy Scout Rule: refactor code to be clear and maintainable whenever appropriate, before, during, or after implementing features
+- Remove unused code, imports, variables, and comments promptly to avoid clutter
 
 ## Development Environment
 
@@ -360,6 +361,9 @@ export CLICKHOUSE_URL="http://localhost:8123"
 export CLICKHOUSE_USER="test_user"
 export CLICKHOUSE_PASSWORD="test_pass"
 export CLICKHOUSE_DATABASE="brahmand"
+
+# Set default graph schema configuration, based on your testing needs
+export GRAPH_CONFIG_PATH="./schemas/examples/zeek_merged.yaml"
 
 # Build and run ClickGraph with default configuration
 cargo build

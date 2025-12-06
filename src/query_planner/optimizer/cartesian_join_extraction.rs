@@ -402,10 +402,17 @@ fn collect_aliases_from_plan_inner(plan: &LogicalPlan, aliases: &mut HashSet<Str
             collect_aliases_from_plan_inner(&gr.right, aliases);
         }
         LogicalPlan::Projection(proj) => {
-            // Also collect aliases from projection items
+            // Collect aliases from projection items:
+            // 1. TableAlias expressions (e.g., RETURN a)
+            // 2. col_alias (e.g., WITH src.ip AS source_ip)
             for item in &proj.items {
                 if let LogicalExpr::TableAlias(ta) = &item.expression {
                     aliases.insert(ta.0.clone());
+                }
+                // CRITICAL: Also collect column aliases defined in WITH clauses
+                // These are the aliases that can be referenced in subsequent MATCH clauses
+                if let Some(col_alias) = &item.col_alias {
+                    aliases.insert(col_alias.0.clone());
                 }
             }
             collect_aliases_from_plan_inner(&proj.input, aliases);

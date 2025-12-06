@@ -82,6 +82,9 @@ pub enum AnalyzerError {
         source: GraphSchemaError,
     },
 
+    #[error("Optimizer error during analysis: {message}")]
+    OptimizerError { message: String },
+
     #[error("Invalid relation query - {rel}")]
     InvalidRelationInQuery { rel: String },
 

@@ -1,15 +1,13 @@
 # Known Issues
 
-**Active Issues**: 3  
+**Active Issues**: 2  
 **Test Results**: 578/578 unit tests passing (100%)  
 **Integration Tests**: 48/51 passing for STANDARD schema (94%)  
 **Security Graph Tests**: 98/98 passing (100%)  
-**Last Updated**: December 5, 2025
+**Last Updated**: December 6, 2025
 
 For recently fixed issues, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
-
-> **Note**: Issue #2 (Cross-Table Patterns) is a fundamental limitation that affects cross-table analytics use cases. See workaround below.
 
 ---
 
@@ -37,9 +35,14 @@ Issues discovered during `zeek_merged.yaml` testing (December 5, 2025):
 
 ---
 
-### TODO-3: Cross-table WITH correlation missing JOIN
-**Priority**: HIGH  
-**Status**: INVESTIGATED - Architectural Change Needed
+### ~~TODO-3: Cross-table WITH correlation missing JOIN~~ ✅ FIXED
+**Fixed**: December 6, 2025  
+**Root Cause**: Cross-table correlations (WHERE clause referencing WITH aliases across tables) were not being converted to JOIN conditions. The CartesianJoinExtraction pass was extracting the condition, but GraphJoinInference wasn't creating the proper JOIN for the second table.
+
+**Fix** (in `graph_join_inference.rs`):
+1. Added `deduplicate_joins()` function to remove duplicate joins for the same table alias, preferring joins that reference TableAlias (cross-table correlation)
+2. Added FROM marker join detection in `reorder_joins_by_dependencies()` to recognize empty `joining_on` as anchor tables
+3. Modified CartesianProduct handling to create both a FROM marker for the left table and a proper JOIN for the right table with the correlation condition
 
 **Query**:
 ```cypher
@@ -49,31 +52,11 @@ MATCH (src2:IP)-[c:CONNECTED_TO]->(dest:IP)
 WHERE src2.ip = source_ip 
 RETURN source_ip, domain, dest.ip
 ```
-**Expected**: JOIN dns_log and conn_log with correlation  
-**Actual Generated**:
+**Now Generates Correct SQL**:
 ```sql
-SELECT source_ip, domain, c."id.resp_h"
+SELECT source_ip AS "source_ip", domain AS "domain", c."id.resp_h" AS "dest.ip"
 FROM zeek.dns_log AS r
-WHERE c."id.orig_h" = source_ip
-```
-**Problem**: The `c` alias (conn_log table) is referenced in SELECT and WHERE but not JOINed.
-
-**Root Cause Analysis** (Dec 5, 2025):
-- Two independent graph patterns connected only by WHERE clause correlation
-- CartesianProduct logic bubbles up joins from both branches but doesn't JOIN them to each other
-- The correlation (`WHERE src2.ip = source_ip`) is treated as a filter, not a join condition
-- The second table (conn_log) needs to be explicitly JOINed or used in a subquery
-
-**Potential Fixes**:
-1. **Subquery approach**: Render first WITH clause as a subquery, JOIN second pattern to it
-2. **CROSS JOIN approach**: Generate explicit CROSS JOIN between tables with correlation in WHERE
-3. **CTE approach**: Use WITH clause (SQL) to materialize first result, join to it
-
-**Workaround**: Use shared variable pattern instead of WITH + correlation:
-```cypher
--- This works because src is shared between patterns
-MATCH (src:IP)-[:DNS_REQUESTED]->(d:Domain), (src)-[:CONNECTED_TO]->(dest:IP)
-RETURN src.ip, d.name, dest.ip
+INNER JOIN zeek.conn_log AS c ON c."id.orig_h" = source_ip
 ```
 
 ---

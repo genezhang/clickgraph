@@ -261,6 +261,66 @@ impl GraphJoinInference {
         }
     }
 
+    /// Deduplicate joins by table_alias
+    /// When there are multiple joins for the same alias, prefer the one that:
+    /// 1. References TableAlias (WITH clause alias like client_ip) over PropertyAccessExp (like src2.ip)
+    /// 2. Has fewer PropertyAccessExp operands (simpler join condition)
+    /// This handles the case where both infer_graph_join and cross-table extraction create joins
+    /// for the same fully denormalized table.
+    fn deduplicate_joins(joins: Vec<Join>) -> Vec<Join> {
+        use std::collections::HashMap;
+        let mut alias_to_join: HashMap<String, Join> = HashMap::new();
+        
+        for join in joins {
+            let alias = join.table_alias.clone();
+            
+            if let Some(existing) = alias_to_join.get(&alias) {
+                // Compare joins - prefer one with TableAlias in joining_on (cross-table join)
+                let new_has_table_alias = Self::join_references_table_alias(&join);
+                let existing_has_table_alias = Self::join_references_table_alias(existing);
+                
+                eprintln!("🔄 deduplicate_joins: alias='{}' has duplicate. new_has_table_alias={}, existing_has_table_alias={}",
+                    alias, new_has_table_alias, existing_has_table_alias);
+                
+                if new_has_table_alias && !existing_has_table_alias {
+                    // Prefer the new join (it references WITH aliases)
+                    eprintln!("🔄 deduplicate_joins: replacing with new join (has TableAlias)");
+                    alias_to_join.insert(alias, join);
+                }
+                // Otherwise keep existing
+            } else {
+                alias_to_join.insert(alias, join);
+            }
+        }
+        
+        alias_to_join.into_values().collect()
+    }
+    
+    /// Check if a join's joining_on condition references a TableAlias (WITH clause alias)
+    fn join_references_table_alias(join: &Join) -> bool {
+        for condition in &join.joining_on {
+            if Self::operator_application_references_table_alias(condition) {
+                return true;
+            }
+        }
+        false
+    }
+    
+    /// Check if an OperatorApplication contains a TableAlias reference
+    fn operator_application_references_table_alias(op_app: &OperatorApplication) -> bool {
+        for operand in &op_app.operands {
+            if matches!(operand, LogicalExpr::TableAlias(_)) {
+                return true;
+            }
+            if let LogicalExpr::OperatorApplicationExp(nested) = operand {
+                if Self::operator_application_references_table_alias(nested) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Extract the right-side anchor table info from a plan
     /// For fully denormalized patterns, this finds the edge table that serves as the anchor
     /// Returns (table_name, alias) for the right-side table
@@ -272,9 +332,11 @@ impl GraphJoinInference {
             LogicalPlan::GraphRel(rel) => {
                 // For GraphRel, the center ViewScan contains the edge table
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                    // Use the left_connection as the alias (this is the from-node alias)
-                    // which should be used as the table alias for the JOIN
-                    return Some((scan.source_table.clone(), rel.left_connection.clone()));
+                    // For denormalized schemas, use the relationship alias since that's what
+                    // property mappings resolve to. The relationship alias is what the SELECT
+                    // clause will use for property references on nodes that belong to this edge.
+                    // This ensures consistency between JOIN alias and SELECT column aliases.
+                    return Some((scan.source_table.clone(), rel.alias.clone()));
                 }
                 None
             }
@@ -288,6 +350,83 @@ impl GraphJoinInference {
                 Self::extract_right_table_from_plan(&node.input, _graph_schema)
             }
             _ => None,
+        }
+    }
+
+    /// Remap node aliases in a join condition to use the relationship alias
+    /// For denormalized patterns where the filter references src2.column but we're aliasing as c
+    fn remap_node_aliases_to_relationship(
+        op_app: OperatorApplication,
+        right_plan: &Arc<LogicalPlan>,
+        target_alias: &str,
+    ) -> OperatorApplication {
+        // Collect all node aliases from the right-side plan that should be remapped
+        let node_aliases = Self::collect_node_aliases_from_plan(right_plan);
+        eprintln!("📦 remap_node_aliases: target_alias='{}', node_aliases={:?}", target_alias, node_aliases);
+        
+        // Remap operands
+        let remapped_operands: Vec<LogicalExpr> = op_app.operands.iter().map(|operand| {
+            Self::remap_alias_in_expr(operand.clone(), &node_aliases, target_alias)
+        }).collect();
+        
+        OperatorApplication {
+            operator: op_app.operator,
+            operands: remapped_operands,
+        }
+    }
+    
+    /// Collect all node aliases from a plan (left_connection, right_connection from GraphRel)
+    fn collect_node_aliases_from_plan(plan: &Arc<LogicalPlan>) -> Vec<String> {
+        let mut aliases = Vec::new();
+        Self::collect_node_aliases_recursive(plan, &mut aliases);
+        aliases
+    }
+    
+    fn collect_node_aliases_recursive(plan: &Arc<LogicalPlan>, aliases: &mut Vec<String>) {
+        match plan.as_ref() {
+            LogicalPlan::GraphRel(rel) => {
+                aliases.push(rel.left_connection.clone());
+                aliases.push(rel.right_connection.clone());
+                Self::collect_node_aliases_recursive(&rel.left, aliases);
+                Self::collect_node_aliases_recursive(&rel.right, aliases);
+            }
+            LogicalPlan::GraphNode(node) => {
+                aliases.push(node.alias.clone());
+                Self::collect_node_aliases_recursive(&node.input, aliases);
+            }
+            LogicalPlan::Projection(proj) => Self::collect_node_aliases_recursive(&proj.input, aliases),
+            LogicalPlan::Filter(filter) => Self::collect_node_aliases_recursive(&filter.input, aliases),
+            _ => {}
+        }
+    }
+    
+    /// Remap table aliases in an expression
+    fn remap_alias_in_expr(expr: LogicalExpr, source_aliases: &[String], target_alias: &str) -> LogicalExpr {
+        match expr {
+            LogicalExpr::PropertyAccessExp(mut prop_acc) => {
+                if source_aliases.contains(&prop_acc.table_alias.0) {
+                    eprintln!("📦 remap_alias_in_expr: remapping '{}' -> '{}'", prop_acc.table_alias.0, target_alias);
+                    prop_acc.table_alias = TableAlias(target_alias.to_string());
+                }
+                LogicalExpr::PropertyAccessExp(prop_acc)
+            }
+            LogicalExpr::OperatorApplicationExp(op_app) => {
+                let remapped_operands: Vec<LogicalExpr> = op_app.operands.into_iter().map(|operand| {
+                    Self::remap_alias_in_expr(operand, source_aliases, target_alias)
+                }).collect();
+                LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: op_app.operator,
+                    operands: remapped_operands,
+                })
+            }
+            LogicalExpr::ScalarFnCall(mut fn_call) => {
+                fn_call.args = fn_call.args.into_iter().map(|arg| {
+                    Self::remap_alias_in_expr(arg, source_aliases, target_alias)
+                }).collect();
+                LogicalExpr::ScalarFnCall(fn_call)
+            }
+            // Other expression types pass through unchanged
+            other => other,
         }
     }
 
@@ -592,6 +731,26 @@ impl GraphJoinInference {
         }
 
         eprintln!("\n🔄 REORDERING {} JOINS by dependencies", joins.len());
+
+        // SPECIAL CASE: Check for FROM marker joins (empty joining_on)
+        // These are explicitly marked as the FROM table by CartesianProduct cross-table handling
+        let mut from_marker_index: Option<usize> = None;
+        for (i, join) in joins.iter().enumerate() {
+            if join.joining_on.is_empty() {
+                eprintln!("  🏠 Found FROM marker join: '{}' (empty joining_on)", join.table_alias);
+                from_marker_index = Some(i);
+                break;
+            }
+        }
+        
+        // If we found a FROM marker, handle it directly
+        if let Some(idx) = from_marker_index {
+            let mut remaining_joins: Vec<Join> = joins.clone();
+            let from_join = remaining_joins.remove(idx);
+            let from_alias = from_join.table_alias.clone();
+            eprintln!("  🏠 Using '{}' as FROM clause (explicit marker)", from_alias);
+            return (Some(from_alias), remaining_joins);
+        }
 
         // Collect all aliases that are being joined
         let mut join_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1022,9 +1181,15 @@ impl GraphJoinInference {
                     distinct: projection.distinct,
                 }));
                 
+                // DEDUPLICATION: Remove duplicate joins for the same table_alias
+                // When there are multiple joins for the same alias (e.g., from both infer_graph_join
+                // and cross-table join extraction), keep the one that references WITH clause aliases
+                // (like client_ip) rather than internal node aliases (like src2).
+                let deduped_joins = Self::deduplicate_joins(collected_graph_joins.clone());
+                
                 // Reorder JOINs before creating GraphJoins to ensure proper dependency order
                 let (anchor_table, reordered_joins) = Self::reorder_joins_by_dependencies(
-                    collected_graph_joins.clone(),
+                    deduped_joins,
                     &optional_aliases,
                     plan_ctx,
                 );
@@ -1230,6 +1395,24 @@ impl GraphJoinInference {
                     if let Some(join_cond) = &cp.join_condition {
                         eprintln!("📦 CartesianProduct: Creating cross-table JOIN for fully denormalized patterns");
                         
+                        // CRITICAL: First, extract the LEFT-side table to use as FROM clause
+                        // This is the anchor table that other tables join TO
+                        if let Some((left_table, left_alias)) = Self::extract_right_table_from_plan(&cp.left, graph_schema) {
+                            eprintln!("📦 CartesianProduct: Left (anchor) table='{}', alias='{}'", left_table, left_alias);
+                            
+                            // Create a "FROM" marker join with empty joining_on
+                            // This will be picked up by reorder_joins_by_dependencies as the anchor
+                            let from_marker = Join {
+                                table_name: left_table,
+                                table_alias: left_alias,
+                                joining_on: vec![],  // Empty = this is the FROM table
+                                join_type: JoinType::Inner,
+                                pre_filter: None,
+                            };
+                            collected_graph_joins.push(from_marker);
+                            eprintln!("📦 CartesianProduct: Added FROM marker for left table");
+                        }
+                        
                         // Extract the right-side table info from the join_condition
                         // The join_condition should be: left_alias.column = right_alias.column
                         if let LogicalExpr::OperatorApplicationExp(op_app) = join_cond {
@@ -1237,11 +1420,20 @@ impl GraphJoinInference {
                             if let Some((right_table, right_alias)) = Self::extract_right_table_from_plan(&cp.right, graph_schema) {
                                 eprintln!("📦 CartesianProduct: Right table='{}', alias='{}'", right_table, right_alias);
                                 
-                                // Create a JOIN for the right-side table using the join_condition
+                                // Remap node aliases in join condition to the relationship alias
+                                // The filter might reference src2.column but we're aliasing as c
+                                // Need to find which operand references the right-side node and remap it
+                                let remapped_join_cond = Self::remap_node_aliases_to_relationship(
+                                    op_app.clone(),
+                                    &cp.right,
+                                    &right_alias,
+                                );
+                                
+                                // Create a JOIN for the right-side table using the remapped join_condition
                                 let cross_join = Join {
                                     table_name: right_table,
                                     table_alias: right_alias,
-                                    joining_on: vec![op_app.clone()],
+                                    joining_on: vec![remapped_join_cond],
                                     join_type: if cp.is_optional { JoinType::Left } else { JoinType::Inner },
                                     pre_filter: None,
                                 };

@@ -130,6 +130,19 @@ impl AnalyzerPass for FilterTagging {
                                     having_clause: Some(mapped_predicate.clone()),
                                 });
                                 return Ok(Transformed::Yes(Arc::new(new_group_by)));
+                            } else if Self::has_cartesian_product_descendant(plan.as_ref()) {
+                                // CROSS-TABLE JOIN CONDITION:
+                                // This filter references a projection alias (from WITH clause) AND has a
+                                // CartesianProduct in its descendants. This is a cross-table join condition
+                                // that should be preserved in the plan for CartesianJoinExtraction to handle.
+                                // Do NOT extract it - keep it as a Filter node with property-mapped predicate.
+                                println!(
+                                    "FilterTagging: Preserving cross-table join condition (has CartesianProduct descendant)"
+                                );
+                                return Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
+                                    input: child_tf.get_plan().clone(),
+                                    predicate: mapped_predicate,
+                                }))));
                             } else {
                                 println!(
                                     "FilterTagging: WARNING - projection alias reference but child is not GroupBy!"
@@ -1069,6 +1082,24 @@ impl FilterTagging {
             LogicalPlan::Limit(limit) => Self::find_owning_edge_for_node(&limit.input, node_alias),
             LogicalPlan::Cte(cte) => Self::find_owning_edge_for_node(&cte.input, node_alias),
             _ => None,
+        }
+    }
+
+    /// Check if a plan has a CartesianProduct descendant
+    /// Used to identify cross-table join conditions that should not be extracted
+    fn has_cartesian_product_descendant(plan: &LogicalPlan) -> bool {
+        match plan {
+            LogicalPlan::CartesianProduct(_) => true,
+            LogicalPlan::Projection(proj) => Self::has_cartesian_product_descendant(&proj.input),
+            LogicalPlan::Filter(filter) => Self::has_cartesian_product_descendant(&filter.input),
+            LogicalPlan::GroupBy(gb) => Self::has_cartesian_product_descendant(&gb.input),
+            LogicalPlan::OrderBy(ob) => Self::has_cartesian_product_descendant(&ob.input),
+            LogicalPlan::Skip(skip) => Self::has_cartesian_product_descendant(&skip.input),
+            LogicalPlan::Limit(limit) => Self::has_cartesian_product_descendant(&limit.input),
+            LogicalPlan::Cte(cte) => Self::has_cartesian_product_descendant(&cte.input),
+            LogicalPlan::GraphNode(node) => Self::has_cartesian_product_descendant(&node.input),
+            LogicalPlan::GraphJoins(joins) => Self::has_cartesian_product_descendant(&joins.input),
+            _ => false,
         }
     }
 

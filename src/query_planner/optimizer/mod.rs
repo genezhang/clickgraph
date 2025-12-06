@@ -15,11 +15,11 @@ use crate::query_planner::{
 
 use super::plan_ctx::PlanCtx;
 pub mod errors;
-mod cartesian_join_extraction;
+pub mod cartesian_join_extraction;
 mod cleanup_viewscan_filters;
 mod filter_into_graph_rel;
 mod filter_push_down;
-mod optimizer_pass;
+pub mod optimizer_pass;
 mod projection_push_down;
 mod view_optimizer;
 
@@ -60,8 +60,31 @@ pub fn initial_optimization(
     plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
 ) -> OptimizerResult<Arc<LogicalPlan>> {
+    eprintln!("🔥 INITIAL_OPTIMIZATION CALLED 🔥");
     log::trace!("Initial optimization: Plan structure before FilterIntoGraphRel:");
     log_plan_structure(&plan, 1);
+
+    // Debug: Check if there's a Filter above CartesianProduct
+    fn check_filter_cartesian(p: &LogicalPlan, depth: usize) {
+        let indent = "  ".repeat(depth);
+        match p {
+            LogicalPlan::Filter(f) => {
+                if let LogicalPlan::CartesianProduct(_) = f.input.as_ref() {
+                    eprintln!("{}🎯 initial_optimization: Found Filter above CartesianProduct!", indent);
+                    eprintln!("{}   predicate: {:?}", indent, f.predicate);
+                }
+                check_filter_cartesian(&f.input, depth + 1);
+            }
+            LogicalPlan::Projection(proj) => check_filter_cartesian(&proj.input, depth + 1),
+            LogicalPlan::CartesianProduct(cp) => {
+                eprintln!("{}📦 CartesianProduct: join_condition={:?}", indent, cp.join_condition);
+                check_filter_cartesian(&cp.left, depth + 1);
+                check_filter_cartesian(&cp.right, depth + 1);
+            }
+            _ => {}
+        }
+    }
+    check_filter_cartesian(&plan, 0);
 
     // Extract cross-pattern filters from CartesianProduct and move to join_condition
     // This must run BEFORE FilterIntoGraphRel to prevent the cross-pattern filter
@@ -69,6 +92,10 @@ pub fn initial_optimization(
     let cartesian_join_extraction = CartesianJoinExtraction::new();
     let transformed_plan = cartesian_join_extraction.optimize(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
+
+    // Debug: Check result after CartesianJoinExtraction
+    eprintln!("🔍 After CartesianJoinExtraction:");
+    check_filter_cartesian(&plan, 0);
 
     // Push filters from plan_ctx into GraphRel nodes
     let filter_into_graph_rel = FilterIntoGraphRel::new();
