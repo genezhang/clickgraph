@@ -2275,3 +2275,208 @@ pub(super) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Optio
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render_plan::render_expr::{ColumnAlias, TableAlias, Literal, Operator, OperatorApplication};
+
+    /// Test for TODO-8: rewrite_with_aliases_to_cte should rewrite TableAlias references
+    /// that are in the with_aliases set to CTE references.
+    #[test]
+    fn test_rewrite_with_aliases_to_cte_basic() {
+        let mut with_aliases = HashSet::new();
+        with_aliases.insert("follows".to_string());
+        
+        // A simple TableAlias reference should be rewritten
+        let expr = RenderExpr::TableAlias(TableAlias("follows".to_string()));
+        let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "grouped_data");
+        
+        assert!(from_with, "Expression should be recognized as coming from WITH");
+        
+        // Should be rewritten to grouped_data.follows
+        match rewritten {
+            RenderExpr::PropertyAccessExp(prop) => {
+                assert_eq!(prop.table_alias.0, "grouped_data");
+                assert_eq!(prop.column.0.raw(), "follows");
+            }
+            _ => panic!("Expected PropertyAccessExp, got {:?}", rewritten),
+        }
+    }
+
+    /// Test that non-WITH aliases are NOT rewritten
+    #[test]
+    fn test_rewrite_with_aliases_to_cte_non_with_alias() {
+        let mut with_aliases = HashSet::new();
+        with_aliases.insert("follows".to_string());
+        
+        // A TableAlias NOT in with_aliases should NOT be rewritten
+        let expr = RenderExpr::TableAlias(TableAlias("other_alias".to_string()));
+        let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "grouped_data");
+        
+        assert!(!from_with, "Expression should NOT be from WITH");
+        
+        // Should remain unchanged
+        match rewritten {
+            RenderExpr::TableAlias(alias) => {
+                assert_eq!(alias.0, "other_alias");
+            }
+            _ => panic!("Expected unchanged TableAlias, got {:?}", rewritten),
+        }
+    }
+
+    /// Test that rewrite_with_aliases_to_cte handles aggregates with WITH aliases
+    #[test]
+    fn test_rewrite_with_aliases_to_cte_aggregate() {
+        let mut with_aliases = HashSet::new();
+        with_aliases.insert("follows".to_string());
+        
+        // AVG(follows) should become AVG(grouped_data.follows)
+        let expr = RenderExpr::AggregateFnCall(AggregateFnCall {
+            name: "AVG".to_string(),
+            args: vec![RenderExpr::TableAlias(TableAlias("follows".to_string()))],
+        });
+        
+        let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "grouped_data");
+        
+        assert!(from_with, "Aggregate argument should be from WITH");
+        
+        // Should be AVG(grouped_data.follows)
+        match rewritten {
+            RenderExpr::AggregateFnCall(agg) => {
+                assert_eq!(agg.name, "AVG");
+                assert_eq!(agg.args.len(), 1);
+                match &agg.args[0] {
+                    RenderExpr::PropertyAccessExp(prop) => {
+                        assert_eq!(prop.table_alias.0, "grouped_data");
+                        assert_eq!(prop.column.0.raw(), "follows");
+                    }
+                    _ => panic!("Expected PropertyAccessExp inside aggregate, got {:?}", agg.args[0]),
+                }
+            }
+            _ => panic!("Expected AggregateFnCall, got {:?}", rewritten),
+        }
+    }
+
+    /// Test that nested expressions are rewritten correctly
+    #[test]
+    fn test_rewrite_with_aliases_to_cte_nested_operator() {
+        let mut with_aliases = HashSet::new();
+        with_aliases.insert("a".to_string());
+        with_aliases.insert("b".to_string());
+        
+        // a + b should become cte.a + cte.b
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![
+                RenderExpr::TableAlias(TableAlias("a".to_string())),
+                RenderExpr::TableAlias(TableAlias("b".to_string())),
+            ],
+        });
+        
+        let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "cte");
+        
+        assert!(from_with, "Both operands are from WITH");
+        
+        match rewritten {
+            RenderExpr::OperatorApplicationExp(op) => {
+                assert_eq!(op.operands.len(), 2);
+                // Check first operand
+                match &op.operands[0] {
+                    RenderExpr::PropertyAccessExp(prop) => {
+                        assert_eq!(prop.table_alias.0, "cte");
+                        assert_eq!(prop.column.0.raw(), "a");
+                    }
+                    _ => panic!("Expected PropertyAccessExp for first operand"),
+                }
+                // Check second operand
+                match &op.operands[1] {
+                    RenderExpr::PropertyAccessExp(prop) => {
+                        assert_eq!(prop.table_alias.0, "cte");
+                        assert_eq!(prop.column.0.raw(), "b");
+                    }
+                    _ => panic!("Expected PropertyAccessExp for second operand"),
+                }
+            }
+            _ => panic!("Expected OperatorApplicationExp, got {:?}", rewritten),
+        }
+    }
+
+    /// Test that mixed expressions (WITH alias + non-WITH alias) are handled correctly
+    #[test]
+    fn test_rewrite_with_aliases_to_cte_mixed() {
+        let mut with_aliases = HashSet::new();
+        with_aliases.insert("from_with".to_string());
+        
+        // from_with + not_from_with should partially rewrite
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![
+                RenderExpr::TableAlias(TableAlias("from_with".to_string())),
+                RenderExpr::TableAlias(TableAlias("not_from_with".to_string())),
+            ],
+        });
+        
+        let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "cte");
+        
+        // from_with should be false because not all operands are from WITH
+        assert!(!from_with, "Mixed expression should not be fully from WITH");
+        
+        match rewritten {
+            RenderExpr::OperatorApplicationExp(op) => {
+                // First operand should be rewritten
+                match &op.operands[0] {
+                    RenderExpr::PropertyAccessExp(prop) => {
+                        assert_eq!(prop.table_alias.0, "cte");
+                        assert_eq!(prop.column.0.raw(), "from_with");
+                    }
+                    _ => panic!("Expected first operand to be rewritten to PropertyAccessExp"),
+                }
+                // Second operand should NOT be rewritten
+                match &op.operands[1] {
+                    RenderExpr::TableAlias(alias) => {
+                        assert_eq!(alias.0, "not_from_with");
+                    }
+                    _ => panic!("Expected second operand to remain as TableAlias"),
+                }
+            }
+            _ => panic!("Expected OperatorApplicationExp"),
+        }
+    }
+
+    /// Test that ColumnAlias references are also rewritten (not just TableAlias)
+    #[test]
+    fn test_rewrite_with_aliases_to_cte_column_alias() {
+        let mut with_aliases = HashSet::new();
+        with_aliases.insert("my_alias".to_string());
+        
+        let expr = RenderExpr::ColumnAlias(ColumnAlias("my_alias".to_string()));
+        let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "grouped_data");
+        
+        assert!(from_with, "ColumnAlias should also be recognized as from WITH");
+        
+        match rewritten {
+            RenderExpr::PropertyAccessExp(prop) => {
+                assert_eq!(prop.table_alias.0, "grouped_data");
+                assert_eq!(prop.column.0.raw(), "my_alias");
+            }
+            _ => panic!("Expected PropertyAccessExp, got {:?}", rewritten),
+        }
+    }
+
+    /// Test that literals are not rewritten and don't claim to be from WITH
+    #[test]
+    fn test_rewrite_with_aliases_to_cte_literal() {
+        let with_aliases = HashSet::new();
+        
+        let expr = RenderExpr::Literal(Literal::Integer(42));
+        let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "cte");
+        
+        assert!(!from_with, "Literal should not be from WITH");
+        
+        match rewritten {
+            RenderExpr::Literal(Literal::Integer(n)) => assert_eq!(n, 42),
+            _ => panic!("Expected unchanged Literal"),
+        }
+    }
+}

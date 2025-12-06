@@ -799,16 +799,25 @@ mod tests {
                         assert_eq!(union.inputs.len(), 2);
                         assert!(matches!(union.union_type, UnionType::All));
 
-                        // Check first branch is Outgoing
+                        // Check first branch is Outgoing with original connections
                         if let LogicalPlan::GraphRel(rel) = union.inputs[0].as_ref() {
                             assert_eq!(rel.direction, Direction::Outgoing);
+                            // Outgoing branch: connections stay as original (a->b)
+                            assert_eq!(rel.left_connection, "a", "Outgoing branch should have left_connection='a'");
+                            assert_eq!(rel.right_connection, "b", "Outgoing branch should have right_connection='b'");
                         } else {
                             panic!("Expected GraphRel in first union branch");
                         }
 
-                        // Check second branch is Incoming
+                        // Check second branch is Incoming with SWAPPED connections
+                        // This is critical for correct JOIN generation!
                         if let LogicalPlan::GraphRel(rel) = union.inputs[1].as_ref() {
                             assert_eq!(rel.direction, Direction::Incoming);
+                            // Incoming branch: connections should be swapped (b->a becomes a<-b)
+                            // The parser normalizes so left=FROM, right=TO
+                            // For incoming, we swap so JOIN conditions generate correctly
+                            assert_eq!(rel.left_connection, "b", "Incoming branch should have left_connection='b' (swapped)");
+                            assert_eq!(rel.right_connection, "a", "Incoming branch should have right_connection='a' (swapped)");
                         } else {
                             panic!("Expected GraphRel in second union branch");
                         }
