@@ -254,12 +254,19 @@ No more forgetting edge cases!
 ### Phase 4: Wire Up and Validate ✅ DONE
 
 1. ✅ Wire `handle_graph_pattern_v2()` to `infer_graph_join()` via `USE_PATTERN_SCHEMA_V2` env var
-2. ✅ Test all 588 tests pass with v2 enabled
-3. ✅ Manual testing: Traditional pattern (User-FOLLOWS-User) works correctly
-4. ✅ SQL output identical between v1 and v2 paths
-5. ⏳ Remaining: Test more schema variations before making v2 default
+2. ✅ All 588 lib tests pass with both v1 and v2
+3. ✅ All 19 Rust integration tests pass with v2
+4. ✅ Manual testing verified: Traditional, Multi-hop, OPTIONAL MATCH, Bidirectional, VLP
+5. ✅ EdgeToEdge (multi-hop denormalized) fixed: now generates correct edge-to-edge JOINs
+6. ✅ SQL output identical between v1 and v2 for all tested patterns
 
-### Phase 5: Cleanup
+**Tested Schema Variations:**
+- Traditional (OwnTable + SeparateTable): ✅
+- Denormalized (Embedded + SingleTableScan): ✅
+- Multi-hop Denormalized (EdgeToEdge): ✅
+- Cross-table (CartesianProduct): ✅
+
+### Phase 5: Cleanup (Next)
 
 1. Remove duplicate detection functions
 2. Update documentation
