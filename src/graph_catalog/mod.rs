@@ -5,6 +5,7 @@ pub mod errors;
 pub mod expression_parser;
 pub mod filter_parser;
 pub mod graph_schema;
+pub mod pattern_schema;
 pub mod schema_validator;
 
 #[cfg(test)]
@@ -20,6 +21,10 @@ pub use engine_detection::{TableEngine, detect_table_engine};
 pub use filter_parser::SchemaFilter;
 pub use graph_schema::{
     Direction, GraphSchema, GraphSchemaElement, NodeIdSchema, NodeSchema, RelationshipSchema,
+};
+pub use pattern_schema::{
+    PatternSchemaContext, NodeAccessStrategy, EdgeAccessStrategy, JoinStrategy,
+    NodePosition, CoupledEdgeContext,
 };
 #[allow(unused_imports)]
 pub use schema_validator::SchemaValidator;
