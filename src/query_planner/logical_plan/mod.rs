@@ -162,6 +162,33 @@ pub enum LogicalPlan {
     /// UNWIND clause: transforms array values into individual rows
     /// Maps to ClickHouse ARRAY JOIN
     Unwind(Unwind),
+
+    /// Cartesian product (CROSS JOIN) of two disconnected patterns
+    /// Used when WITH...MATCH or OPTIONAL MATCH patterns don't share aliases
+    CartesianProduct(CartesianProduct),
+}
+
+/// Cartesian product of two disconnected graph patterns.
+/// Generated when:
+/// 1. `MATCH (a) WITH a MATCH (b)` - subsequent MATCH doesn't share aliases
+/// 2. `MATCH (a) OPTIONAL MATCH (b)` - optional pattern doesn't connect
+/// 
+/// Translates to CROSS JOIN in SQL (or LEFT JOIN for OPTIONAL).
+/// When a join_condition is present, it becomes the ON clause.
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct CartesianProduct {
+    /// The left/base pattern (e.g., from WITH clause)
+    #[serde(with = "serde_arc")]
+    pub left: Arc<LogicalPlan>,
+    /// The right/new pattern (e.g., subsequent MATCH)
+    #[serde(with = "serde_arc")]
+    pub right: Arc<LogicalPlan>,
+    /// Whether this is optional (from OPTIONAL MATCH)
+    /// When true, generates LEFT JOIN instead of CROSS JOIN
+    pub is_optional: bool,
+    /// Join condition extracted from WHERE clause when filter references both sides
+    /// e.g., WHERE ip1.ip = ip2.ip becomes the ON clause for the join
+    pub join_condition: Option<LogicalExpr>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -878,6 +905,10 @@ impl LogicalPlan {
             LogicalPlan::Unwind(unwind) => {
                 children.push(&unwind.input);
             }
+            LogicalPlan::CartesianProduct(cp) => {
+                children.push(&cp.left);
+                children.push(&cp.right);
+            }
             LogicalPlan::ViewScan(_) => {
                 // ViewScan is a leaf node - no children to traverse
             }
@@ -920,6 +951,7 @@ impl LogicalPlan {
             ),
             LogicalPlan::Unwind(unwind) => format!("Unwind(alias: {})", unwind.alias),
             LogicalPlan::ViewScan(scan) => format!("ViewScan({:?})", scan.source_table),
+            LogicalPlan::CartesianProduct(cp) => format!("CartesianProduct(optional: {})", cp.is_optional),
         }
     }
 
@@ -950,6 +982,10 @@ impl LogicalPlan {
                 .iter()
                 .any(|input| input.contains_variable_length_path()),
             LogicalPlan::Unwind(unwind) => unwind.input.contains_variable_length_path(),
+            LogicalPlan::CartesianProduct(cp) => {
+                cp.left.contains_variable_length_path()
+                    || cp.right.contains_variable_length_path()
+            }
             // Leaf nodes
             LogicalPlan::Scan(_)
             | LogicalPlan::ViewScan(_)

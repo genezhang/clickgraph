@@ -220,6 +220,16 @@ impl AliasResolverContext {
                     alias: u.alias.clone(),
                 })
             }
+            LogicalPlan::CartesianProduct(cp) => {
+                let transformed_left = Arc::new(self.transform_plan((*cp.left).clone()));
+                let transformed_right = Arc::new(self.transform_plan((*cp.right).clone()));
+                LogicalPlan::CartesianProduct(crate::query_planner::logical_plan::CartesianProduct {
+                    left: transformed_left,
+                    right: transformed_right,
+                    is_optional: cp.is_optional,
+                    join_condition: cp.join_condition.clone(),
+                })
+            }
         }
     }
     
@@ -454,9 +464,17 @@ impl AliasResolverContext {
                 // Register the relationship itself
                 self.register_standard(rel.alias.clone(), rel.alias.clone());
                 
-                // Check if left node is denormalized
+                // Check if the edge has from_node_properties or to_node_properties
+                // If so, those nodes get their properties from the edge table
+                let (has_from_props, has_to_props) = if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                    (scan.from_node_properties.is_some(), scan.to_node_properties.is_some())
+                } else {
+                    (false, false)
+                };
+                
+                // Check if left node is denormalized OR has properties from edge
                 if let LogicalPlan::GraphNode(left_node) = rel.left.as_ref() {
-                    if left_node.is_denormalized {
+                    if left_node.is_denormalized || has_from_props {
                         self.register_denormalized(
                             left_node.alias.clone(),
                             rel.alias.clone(),
@@ -465,9 +483,9 @@ impl AliasResolverContext {
                     }
                 }
                 
-                // Check if right node is denormalized
+                // Check if right node is denormalized OR has properties from edge  
                 if let LogicalPlan::GraphNode(right_node) = rel.right.as_ref() {
-                    if right_node.is_denormalized {
+                    if right_node.is_denormalized || has_to_props {
                         self.register_denormalized(
                             right_node.alias.clone(),
                             rel.alias.clone(),
@@ -538,6 +556,10 @@ impl AliasResolverContext {
             
             LogicalPlan::Unwind(u) => {
                 self.analyze_plan(&u.input);
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                self.analyze_plan(&cp.left);
+                self.analyze_plan(&cp.right);
             }
         }
     }

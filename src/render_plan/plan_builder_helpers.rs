@@ -148,6 +148,12 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
         LogicalPlan::Scan(_) => None,  // Raw scan without alias info
         LogicalPlan::ViewScan(_) => None,  // ViewScan itself doesn't have alias, GraphNode wraps it
         LogicalPlan::PageRank(_) => None,  // PageRank is a computed result, no direct table alias
+        
+        // === CartesianProduct - search both branches ===
+        LogicalPlan::CartesianProduct(cp) => {
+            find_table_name_for_alias(&cp.left, target_alias)
+                .or_else(|| find_table_name_for_alias(&cp.right, target_alias))
+        }
     }
 }
 
@@ -1568,6 +1574,7 @@ pub(super) fn plan_type_name(plan: &LogicalPlan) -> &'static str {
         LogicalPlan::Union(_) => "Union",
         LogicalPlan::PageRank(_) => "PageRank",
         LogicalPlan::Unwind(_) => "Unwind",
+        LogicalPlan::CartesianProduct(_) => "CartesianProduct",
     }
 }
 
@@ -1637,7 +1644,11 @@ pub(super) fn plan_contains_view_scan(plan: &LogicalPlan) -> bool {
 /// For GROUP BY with a node alias like `b` in `(a)-[r1]->(b)-[r2]->(c)`, this converts
 /// the TableAlias("b") to PropertyAccess { table_alias: "r2", column: "Origin" }
 /// 
-/// Note: Regular PropertyAccess mapping is handled in the FilterTagging analyzer pass.
+/// Also remaps PropertyAccess table aliases for nodes denormalized on edges.
+/// For cross-table patterns like zeek logs, where `src` is denormalized on the DNS_REQUESTED
+/// edge, this changes `src."id.orig_h"` to use the edge alias.
+/// 
+/// Note: Regular PropertyAccess property name mapping is handled in the FilterTagging analyzer pass.
 pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
     match expr {
         RenderExpr::TableAlias(alias) => {
@@ -1649,6 +1660,14 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                     table_alias: TableAlias(rel_alias),
                     column: Column(PropertyValue::Column(id_column)),
                 });
+            }
+        }
+        RenderExpr::PropertyAccessExp(prop) => {
+            // For denormalized nodes, remap the table alias to the edge alias
+            // Example: PropertyAccess { table_alias: "src", column: "id.orig_h" }
+            //       -> PropertyAccess { table_alias: "ad62047b83", column: "id.orig_h" }
+            if let Some((rel_alias, _id_column)) = get_denormalized_node_id_reference(&prop.table_alias.0, plan) {
+                prop.table_alias = TableAlias(rel_alias);
             }
         }
         RenderExpr::OperatorApplicationExp(op) => {

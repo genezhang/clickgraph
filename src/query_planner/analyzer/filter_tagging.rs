@@ -51,6 +51,7 @@ impl AnalyzerPass for FilterTagging {
             LogicalPlan::Union(_) => "Union",
             LogicalPlan::PageRank(_) => "PageRank",
             LogicalPlan::Unwind(_) => "Unwind",
+            LogicalPlan::CartesianProduct(_) => "CartesianProduct",
         };
         println!("FilterTagging: About to match on variant: {}", variant_name);
         Ok(match logical_plan.as_ref() {
@@ -282,6 +283,23 @@ impl AnalyzerPass for FilterTagging {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
+            LogicalPlan::CartesianProduct(cp) => {
+                let left_tf =
+                    self.analyze_with_graph_schema(cp.left.clone(), plan_ctx, graph_schema)?;
+                let right_tf =
+                    self.analyze_with_graph_schema(cp.right.clone(), plan_ctx, graph_schema)?;
+                match (&left_tf, &right_tf) {
+                    (Transformed::No(_), Transformed::No(_)) => Transformed::No(logical_plan.clone()),
+                    _ => Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
+                        crate::query_planner::logical_plan::CartesianProduct {
+                            left: left_tf.get_plan().clone(),
+                            right: right_tf.get_plan().clone(),
+                            is_optional: cp.is_optional,
+                            join_condition: cp.join_condition.clone(),
+                        },
+                    ))),
+                }
+            }
         })
     }
 }
@@ -414,19 +432,32 @@ impl FilterTagging {
                 })?;
 
                 // Check if this is a denormalized node that needs role-specific mapping
-                let is_denormalized = if let Some(plan) = plan {
-                    let denorm = Self::is_node_denormalized(plan, &property_access.table_alias.0);
+                // Three sources of truth:
+                // 1. GraphNode.is_denormalized - set from node schema (for truly denormalized nodes)
+                // 2. plan_ctx.get_denormalized_alias_info - registered by graph_join_inference
+                //    for nodes that appear in relationships with from_node_properties/to_node_properties
+                // 3. find_owning_edge_for_node - traverse plan to find edge with from_node_properties/to_node_properties
+                //    (this works BEFORE graph_join_inference registers the info in plan_ctx)
+                let (is_denormalized, owning_edge_info) = if let Some(plan) = plan {
+                    let denorm_from_plan = Self::is_node_denormalized(plan, &property_access.table_alias.0);
+                    let denorm_from_ctx = plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0).is_some();
+                    
+                    // Also check by traversing the plan to find which edge owns this node
+                    let edge_info = Self::find_owning_edge_for_node(plan, &property_access.table_alias.0);
+                    let denorm_from_edge = edge_info.is_some();
+                    
+                    let denorm = denorm_from_plan || denorm_from_ctx || denorm_from_edge;
                     println!(
-                        "FilterTagging: Checking is_denormalized for alias='{}' - result={}",
-                        property_access.table_alias.0, denorm
+                        "FilterTagging: Checking is_denormalized for alias='{}' - from_plan={}, from_ctx={}, from_edge={:?}, result={}",
+                        property_access.table_alias.0, denorm_from_plan, denorm_from_ctx, edge_info, denorm
                     );
-                    denorm
+                    (denorm, edge_info)
                 } else {
                     println!(
                         "FilterTagging: No plan context provided for alias='{}'",
                         property_access.table_alias.0
                     );
-                    false
+                    (false, None)
                 };
 
                 println!(
@@ -439,7 +470,13 @@ impl FilterTagging {
                     if let Some(plan) = plan {
                         // First, check if plan_ctx knows which edge this node belongs to
                         // This is critical for multi-hop patterns where a node appears in multiple edges
-                        let denorm_info = plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0);
+                        let denorm_info = plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0)
+                            .or_else(|| {
+                                // Fallback: use the edge info we found during is_denormalized check
+                                owning_edge_info.map(|(edge, is_from)| {
+                                    (edge, is_from, String::new(), String::new())
+                                })
+                            });
                         
                         if let Some((owning_edge, is_from_node, _, _)) = denorm_info {
                             println!(
@@ -990,6 +1027,51 @@ impl FilterTagging {
         }
     }
 
+    /// Find which edge "owns" a node alias by looking at GraphRel.left_connection and right_connection
+    /// Returns (edge_alias, is_from_node) where is_from_node=true means it's left_connection
+    /// Only returns Some if the edge has from_node_properties or to_node_properties defined
+    fn find_owning_edge_for_node(plan: &LogicalPlan, node_alias: &str) -> Option<(String, bool)> {
+        match plan {
+            LogicalPlan::GraphRel(rel) => {
+                // Check if this node is the left (from) or right (to) of this relationship
+                // AND the relationship has edge-defined node properties
+                if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                    let has_from_props = scan.from_node_properties.is_some();
+                    let has_to_props = scan.to_node_properties.is_some();
+                    
+                    if rel.left_connection == node_alias && has_from_props {
+                        return Some((rel.alias.clone(), true)); // is_from_node = true
+                    }
+                    if rel.right_connection == node_alias && has_to_props {
+                        return Some((rel.alias.clone(), false)); // is_from_node = false
+                    }
+                }
+                
+                // Recurse into branches
+                if let Some(result) = Self::find_owning_edge_for_node(&rel.left, node_alias) {
+                    return Some(result);
+                }
+                Self::find_owning_edge_for_node(&rel.right, node_alias)
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                // Search both branches of the CartesianProduct for the owning edge
+                if let Some(result) = Self::find_owning_edge_for_node(&cp.left, node_alias) {
+                    return Some(result);
+                }
+                Self::find_owning_edge_for_node(&cp.right, node_alias)
+            }
+            LogicalPlan::GraphNode(node) => Self::find_owning_edge_for_node(&node.input, node_alias),
+            LogicalPlan::Filter(filter) => Self::find_owning_edge_for_node(&filter.input, node_alias),
+            LogicalPlan::Projection(proj) => Self::find_owning_edge_for_node(&proj.input, node_alias),
+            LogicalPlan::GroupBy(gb) => Self::find_owning_edge_for_node(&gb.input, node_alias),
+            LogicalPlan::OrderBy(ob) => Self::find_owning_edge_for_node(&ob.input, node_alias),
+            LogicalPlan::Skip(skip) => Self::find_owning_edge_for_node(&skip.input, node_alias),
+            LogicalPlan::Limit(limit) => Self::find_owning_edge_for_node(&limit.input, node_alias),
+            LogicalPlan::Cte(cte) => Self::find_owning_edge_for_node(&cte.input, node_alias),
+            _ => None,
+        }
+    }
+
     /// Check if a node is denormalized by walking the plan tree
     fn is_node_denormalized(plan: &LogicalPlan, alias: &str) -> bool {
         match plan {
@@ -998,6 +1080,11 @@ impl FilterTagging {
             LogicalPlan::GraphRel(rel) => {
                 Self::is_node_denormalized(&rel.left, alias)
                     || Self::is_node_denormalized(&rel.right, alias)
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                // Search both branches of the CartesianProduct
+                Self::is_node_denormalized(&cp.left, alias)
+                    || Self::is_node_denormalized(&cp.right, alias)
             }
             LogicalPlan::Filter(filter) => Self::is_node_denormalized(&filter.input, alias),
             LogicalPlan::Projection(proj) => Self::is_node_denormalized(&proj.input, alias),
@@ -1088,6 +1175,13 @@ impl FilterTagging {
             }
             LogicalPlan::Cte(cte) => {
                 Self::find_property_in_viewscan_with_edge(&cte.input, alias, property, owning_edge, is_from_node)
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                // Search both branches of the CartesianProduct for the owning edge
+                if let Some(col) = Self::find_property_in_viewscan_with_edge(&cp.left, alias, property, owning_edge, is_from_node) {
+                    return Some(col);
+                }
+                Self::find_property_in_viewscan_with_edge(&cp.right, alias, property, owning_edge, is_from_node)
             }
             _ => None,
         }
@@ -1189,6 +1283,13 @@ impl FilterTagging {
                 }
                 None
             }
+            LogicalPlan::CartesianProduct(cp) => {
+                // Search both branches of the CartesianProduct
+                if let Some(col) = Self::find_property_in_viewscan(&cp.left, alias, property) {
+                    return Some(col);
+                }
+                Self::find_property_in_viewscan(&cp.right, alias, property)
+            }
             _ => None,
         }
     }
@@ -1259,6 +1360,13 @@ impl FilterTagging {
                 Self::find_denormalized_context(&limit.input, alias, _label)
             }
             LogicalPlan::Cte(cte) => Self::find_denormalized_context(&cte.input, alias, _label),
+            LogicalPlan::CartesianProduct(cp) => {
+                // Search both branches of the CartesianProduct
+                if let Some(result) = Self::find_denormalized_context(&cp.left, alias, _label) {
+                    return Some(result);
+                }
+                Self::find_denormalized_context(&cp.right, alias, _label)
+            }
             _ => None,
         }
     }

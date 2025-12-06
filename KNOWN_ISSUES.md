@@ -9,6 +9,8 @@
 For recently fixed issues, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
+> **Note**: Issue #2 (Cross-Table Patterns) is a fundamental limitation that affects cross-table analytics use cases. See workaround below.
+
 ---
 
 ## Active Issues
@@ -57,34 +59,110 @@ MATCH (a:User)-[r]->(b:User) RETURN r  -- ✅ Works
 
 ---
 
-### 2. Disconnected Patterns Generate Invalid SQL
+### 2. Cross-Table Patterns with Disconnected Variables (GitHub Issue #12)
 
-**Status**: 🐛 Bug  
-**Severity**: MEDIUM  
-**Difficulty**: Easy  
-**Estimated Fix Time**: 1-2 days
+**Status**: ✅ FIXED for shared variable patterns (December 2025)  
+**Severity**: LOW (workaround available)  
+**Updated**: December 2025
 
-**Problem**: Comma-separated patterns without shared nodes generate invalid SQL:
-\`\`\`cypher
-MATCH (user:User), (other:User) WHERE user.user_id = 1 RETURN other.user_id
-\`\`\`
+**✅ Working Pattern (Shared Variable - RECOMMENDED)**:
+```cypher
+-- Use shared node variable to connect patterns
+MATCH (src:IP)-[:DNS_REQUESTED]->(d:Domain), (src)-[:CONNECTED_TO]->(dest:IP)
+RETURN src.ip AS source, d.name AS domain, dest.ip AS dest_ip LIMIT 5
+```
 
-**Current**: Generates SQL referencing \`user\` not in FROM clause → ClickHouse error  
-**Expected**: Either throw \`DisconnectedPatternFound\` error OR generate CROSS JOIN
+Generated SQL (correct):
+```sql
+SELECT conn."id.orig_h" AS source, dns.query AS domain, conn."id.resp_h" AS dest_ip
+FROM zeek.dns_log AS dns
+INNER JOIN zeek.conn_log AS conn ON conn."id.orig_h" = dns."id.orig_h"
+LIMIT 5
+```
 
-**Location**: \`src/query_planner/logical_plan/match_clause.rs\` - disconnection check not triggering
+**Key Fix**: 
+- Edge-defined `from_node_properties` and `to_node_properties` now correctly determine column mappings
+- Node aliases are correctly remapped to edge table aliases in SELECT clause
+- Property mapping now uses plan traversal to find owning edge BEFORE graph_join_inference
 
-**Workaround**: Use connected patterns or explicit joins:
-\`\`\`cypher
--- Option 1: Use connected pattern
-MATCH (user:User)-[:KNOWS]->(other:User) WHERE user.user_id = 1 RETURN other.user_id
+**✅ FIXED (December 5, 2025) - Disconnected Patterns with Fully Denormalized Edges**:
+```cypher
+-- Pattern 1: WITH ... MATCH with disconnected patterns
+MATCH (ip1:IP)-[:DNS_REQUESTED]->(d:Domain) 
+WITH ip1, d 
+MATCH (ip2:IP)-[:CONNECTED_TO]->(dest:IP) 
+WHERE ip1.ip = ip2.ip 
+RETURN ip1.ip, d.name, dest.ip
+```
 
--- Option 2: Use subquery (if supported)
-MATCH (user:User) WHERE user.user_id = 1
-WITH user
-MATCH (other:User) WHERE other.user_id <> user.user_id
-RETURN other.user_id
-\`\`\`
+Generated SQL (now correct):
+```sql
+SELECT ip1."id.orig_h" AS "ip1.ip", ip1.query AS "d.name", ip2."id.resp_h" AS "dest.ip"
+FROM zeek.dns_log AS ip1
+INNER JOIN zeek.conn_log AS ip2 ON ip1."id.orig_h" = ip2."id.orig_h"
+LIMIT 5
+```
+
+**Key Fixes Applied**:
+1. **Projection recursion in `build_graph_joins`**: Now recursively processes children before wrapping with GraphJoins
+2. **Cross-table JOIN for fully denormalized CartesianProduct**: When both sides are fully denormalized (0 JOINs each), we create a JOIN using the `join_condition` extracted by `CartesianJoinExtraction`
+3. **`extract_right_table_from_plan` helper**: Extracts table name and alias from CartesianProduct's right side for JOIN creation
+
+**Files Modified**:
+- `src/query_planner/analyzer/graph_join_inference.rs` - Projection recursion + CartesianProduct cross-table JOIN logic
+- `src/query_planner/analyzer/filter_tagging.rs` - Added CartesianProduct support to 5 property resolution functions
+
+**⚠️ Remaining Issue (Separate Problem)**:
+```cypher
+-- Single CONNECTED_TO pattern uses wrong table (dns_log instead of conn_log)
+MATCH (src:IP)-[:CONNECTED_TO]->(dest:IP) RETURN src.ip, dest.ip
+```
+This is a pre-existing node table resolution issue where the IP node's default table (dns_log) is used instead of the edge's table (conn_log). Not related to the cross-table fix.
+
+---
+
+## Previously Documented Issues (for historical reference)
+2. **Unified join collection**: Modify `extract_joins()` to recursively collect all joins from CartesianProduct children
+3. **Two-phase rendering**: Render each side separately, then combine in final SQL
+
+**Recommendation**: Use the shared variable pattern (Form 3) which correctly generates edge-to-edge JOINs. This is semantically equivalent and more explicit about the relationship between patterns.
+
+**Example Schema** (`schemas/examples/zeek_unified.yaml`):
+```yaml
+nodes:
+  - label: IP
+    primary_table: zeek.dns_log
+    primary_key: "id.orig_h"
+    properties:
+      ip: "id.orig_h"
+  - label: Domain
+    primary_table: zeek.dns_log
+    primary_key: query
+    properties:
+      name: query
+
+relationships:
+  - type: DNS_REQUESTED
+    table: zeek.dns_log
+    from_node: IP
+    to_node: Domain
+    from_field: "id.orig_h"
+    to_field: query
+    from_node_properties:
+      ip: "id.orig_h"
+    to_node_properties:
+      name: query
+  - type: CONNECTED_TO
+    table: zeek.conn_log
+    from_node: IP
+    to_node: IP
+    from_field: "id.orig_h"
+    to_field: "id.resp_h"
+    from_node_properties:
+      ip: "id.orig_h"
+    to_node_properties:
+      ip: "id.resp_h"
+```
 
 ---
 

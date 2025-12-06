@@ -7,7 +7,7 @@ use crate::{
         logical_plan::{
             errors::LogicalPlanError,
             plan_builder::LogicalPlanResult,
-            {GraphNode, GraphRel, LogicalPlan, Scan, ShortestPathMode, Union},
+            {CartesianProduct, GraphNode, GraphRel, LogicalPlan, Scan, ShortestPathMode, Union},
         },
         plan_ctx::{PlanCtx, TableCtx},
     },
@@ -1496,6 +1496,20 @@ fn traverse_connected_pattern_with_mode<'a>(
                 return Err(LogicalPlanError::DisconnectedPatternFound);
             }
 
+            eprintln!("=== CHECKING EXISTING PLAN ===");
+            eprintln!("=== plan discriminant: {:?} ===", std::mem::discriminant(&*plan));
+            
+            // Check if we have a non-empty input plan (e.g., from WITH clause or previous MATCH)
+            // If so, we need to create a CartesianProduct to join the previous plan with this new pattern
+            let has_existing_plan = !matches!(plan.as_ref(), LogicalPlan::Empty);
+            
+            eprintln!("=== has_existing_plan: {} ===", has_existing_plan);
+            
+            if has_existing_plan {
+                eprintln!("=== DISCONNECTED PATTERN WITH EXISTING PLAN: Creating CartesianProduct ===");
+                eprintln!("=== Existing plan type: {:?} ===", std::mem::discriminant(&*plan));
+            }
+
             // we will keep start graph node at the right side and end at the left side
             eprintln!("=== DISCONNECTED PATTERN: About to create start_graph_node ===");
             
@@ -1638,10 +1652,24 @@ fn traverse_connected_pattern_with_mode<'a>(
                 );
             }
 
-            plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
-
-            eprintln!("│ ✓ Created GraphRel (first pattern - disconnected)");
-            eprintln!("│   Plan is now: GraphRel");
+            // Create the GraphRel for this pattern
+            let new_pattern = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
+            
+            // If we have an existing plan (e.g., from WITH clause), combine with CartesianProduct
+            if has_existing_plan {
+                plan = Arc::new(LogicalPlan::CartesianProduct(CartesianProduct {
+                    left: plan.clone(), // Previous plan (e.g., Projection from WITH)
+                    right: new_pattern, // New disconnected pattern
+                    is_optional,        // Pass through the is_optional flag
+                    join_condition: None, // Will be populated by optimizer if WHERE bridges both sides
+                }));
+                eprintln!("│ ✓ Created CartesianProduct (combining existing plan with new pattern)");
+                eprintln!("│   Plan is now: CartesianProduct(optional: {})", is_optional);
+            } else {
+                plan = new_pattern;
+                eprintln!("│ ✓ Created GraphRel (first pattern - disconnected)");
+                eprintln!("│   Plan is now: GraphRel");
+            }
             eprintln!("└─ Pattern #{} complete\n", pattern_idx);
         }
     }

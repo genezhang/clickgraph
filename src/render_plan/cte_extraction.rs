@@ -149,8 +149,22 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
                 Operator::Division => format!("{} / {}", operands[0], operands[1]),
                 Operator::ModuloDivision => format!("{} % {}", operands[0], operands[1]),
                 Operator::Exponentiation => format!("POWER({}, {})", operands[0], operands[1]),
-                Operator::In => format!("{} IN {}", operands[0], operands[1]),
-                Operator::NotIn => format!("{} NOT IN {}", operands[0], operands[1]),
+                Operator::In => {
+                    // Check if right operand is a property access (array column)
+                    // Cypher: x IN array_property → ClickHouse: has(array, x)
+                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
+                        format!("has({}, {})", operands[1], operands[0])
+                    } else {
+                        format!("{} IN {}", operands[0], operands[1])
+                    }
+                }
+                Operator::NotIn => {
+                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
+                        format!("NOT has({}, {})", operands[1], operands[0])
+                    } else {
+                        format!("{} NOT IN {}", operands[0], operands[1])
+                    }
+                }
                 Operator::StartsWith => format!("startsWith({}, {})", operands[0], operands[1]),
                 Operator::EndsWith => format!("endsWith({}, {})", operands[0], operands[1]),
                 Operator::Contains => format!("(position({}, {}) > 0)", operands[0], operands[1]),
@@ -595,6 +609,10 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
         LogicalPlan::Limit(limit) => get_denormalized_node_id_reference(alias, &limit.input),
         LogicalPlan::GroupBy(group_by) => get_denormalized_node_id_reference(alias, &group_by.input),
         LogicalPlan::Cte(cte) => get_denormalized_node_id_reference(alias, &cte.input),
+        LogicalPlan::CartesianProduct(cp) => {
+            get_denormalized_node_id_reference(alias, &cp.left)
+                .or_else(|| get_denormalized_node_id_reference(alias, &cp.right))
+        }
         _ => None,
     }
 }
@@ -1148,6 +1166,7 @@ pub fn extract_ctes_with_context(
                     LogicalPlan::Union(_) => "Union",
                     LogicalPlan::PageRank(_) => "PageRank",
                     LogicalPlan::Unwind(_) => "Unwind",
+                    LogicalPlan::CartesianProduct(_) => "CartesianProduct",
                 }
             );
             extract_ctes_with_context(&projection.input, last_node_alias, context)
@@ -1195,6 +1214,11 @@ pub fn extract_ctes_with_context(
         }
         LogicalPlan::PageRank(_) => Ok(vec![]),
         LogicalPlan::Unwind(u) => extract_ctes_with_context(&u.input, last_node_alias, context),
+        LogicalPlan::CartesianProduct(cp) => {
+            let mut ctes = extract_ctes_with_context(&cp.left, last_node_alias, context)?;
+            ctes.append(&mut extract_ctes_with_context(&cp.right, last_node_alias, context)?);
+            Ok(ctes)
+        }
     }
 }
 

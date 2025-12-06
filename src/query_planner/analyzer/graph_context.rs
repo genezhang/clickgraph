@@ -1,5 +1,5 @@
 use crate::{
-    graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema},
+    graph_catalog::graph_schema::{edge_has_node_properties, GraphSchema, NodeSchema, RelationshipSchema},
     query_planner::{
         analyzer::{
             analyzer_pass::AnalyzerResult,
@@ -162,9 +162,29 @@ pub fn get_graph_context<'a>(
     let right_node_id_column = right_schema.node_id.column.clone();
 
     // Use fully qualified table names from schema for CTEs/JOINs
-    let left_cte_name = format!("{}.{}", left_schema.database, left_schema.table_name);
+    // For nodes whose properties are available from the edge table (via from_node_properties/to_node_properties),
+    // use the edge table instead of the node's "primary" table.
+    // This handles cases where node data is denormalized onto edge tables.
     let rel_cte_name = format!("{}.{}", rel_schema.database, rel_schema.table_name);
-    let right_cte_name = format!("{}.{}", right_schema.database, right_schema.table_name);
+    
+    // Left node: check if edge has properties for this node position
+    let left_cte_name = if edge_has_node_properties(rel_schema, true) {
+        // Edge has from_node_properties - node data is on edge table
+        rel_cte_name.clone()
+    } else {
+        format!("{}.{}", left_schema.database, left_schema.table_name)
+    };
+    
+    // Right node: check if edge has properties for this node position (skip for $any polymorphic nodes)
+    let right_cte_name = if right_label == "$any" {
+        // Polymorphic node - doesn't matter, won't be JOINed directly
+        format!("{}.{}", right_schema.database, right_schema.table_name)
+    } else if edge_has_node_properties(rel_schema, false) {
+        // Edge has to_node_properties - node data is on edge table
+        rel_cte_name.clone()
+    } else {
+        format!("{}.{}", right_schema.database, right_schema.table_name)
+    };
 
     // Create the initial GraphContext with schema
     let mut graph_context = GraphContext {

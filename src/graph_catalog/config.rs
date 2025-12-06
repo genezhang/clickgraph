@@ -657,10 +657,15 @@ fn build_relationship_schema(
     };
     
     // Look up denormalized node properties from NODE definitions
-    // (same logic as build_standard_edge_schema)
-    let from_node_props = nodes.get(&from_node)
+    // Try table-specific lookup first (composite key), then fall back to label-only
+    let from_composite_key = format!("{}::{}::{}", rel_def.database, rel_def.table, from_node);
+    let to_composite_key = format!("{}::{}::{}", rel_def.database, rel_def.table, to_node);
+    
+    let from_node_props = nodes.get(&from_composite_key)
+        .or_else(|| nodes.get(&from_node))
         .and_then(|n| n.from_properties.clone());
-    let to_node_props = nodes.get(&to_node)
+    let to_node_props = nodes.get(&to_composite_key)
+        .or_else(|| nodes.get(&to_node))
         .and_then(|n| n.to_properties.clone());
     
     // Detect FK-edge pattern:
@@ -672,9 +677,11 @@ fn build_relationship_schema(
     // 1. Self-referencing FK: from_node == to_node (e.g., parent_id in same table)
     // 2. Non-self-ref FK: from_node != to_node (e.g., orders.customer_id → customers)
     let edge_table = format!("{}.{}", rel_def.database, rel_def.table);
-    let from_node_table = nodes.get(&from_node)
+    let from_node_table = nodes.get(&from_composite_key)
+        .or_else(|| nodes.get(&from_node))
         .map(|n| format!("{}.{}", n.database, n.table_name));
-    let to_node_table = nodes.get(&to_node)
+    let to_node_table = nodes.get(&to_composite_key)
+        .or_else(|| nodes.get(&to_node))
         .map(|n| format!("{}.{}", n.database, n.table_name));
     
     let is_fk_edge = from_node_props.is_none() 
@@ -743,10 +750,16 @@ fn build_standard_edge_schema(
         None
     };
     
-    // Look up denormalized node properties from NODE definitions (not edge)
-    let from_node_props = nodes.get(&std_edge.from_node)
+    // Look up denormalized node properties from NODE definitions
+    // Try table-specific lookup first (composite key), then fall back to label-only
+    let from_composite_key = format!("{}::{}::{}", std_edge.database, std_edge.table, std_edge.from_node);
+    let to_composite_key = format!("{}::{}::{}", std_edge.database, std_edge.table, std_edge.to_node);
+    
+    let from_node_props = nodes.get(&from_composite_key)
+        .or_else(|| nodes.get(&std_edge.from_node))
         .and_then(|n| n.from_properties.clone());
-    let to_node_props = nodes.get(&std_edge.to_node)
+    let to_node_props = nodes.get(&to_composite_key)
+        .or_else(|| nodes.get(&std_edge.to_node))
         .and_then(|n| n.to_properties.clone());
     
     // Detect FK-edge pattern:
@@ -758,9 +771,11 @@ fn build_standard_edge_schema(
     // 1. Self-referencing FK: from_node == to_node (e.g., parent_id in same table)
     // 2. Non-self-ref FK: from_node != to_node (e.g., orders.customer_id → customers)
     let edge_table = format!("{}.{}", std_edge.database, std_edge.table);
-    let from_node_table = nodes.get(&std_edge.from_node)
+    let from_node_table = nodes.get(&from_composite_key)
+        .or_else(|| nodes.get(&std_edge.from_node))
         .map(|n| format!("{}.{}", n.database, n.table_name));
-    let to_node_table = nodes.get(&std_edge.to_node)
+    let to_node_table = nodes.get(&to_composite_key)
+        .or_else(|| nodes.get(&std_edge.to_node))
         .map(|n| format!("{}.{}", n.database, n.table_name));
     
     let is_fk_edge = from_node_props.is_none() 
@@ -890,12 +905,17 @@ impl GraphSchemaConfig {
             });
         }
 
-        // Check for duplicate node labels
-        let mut seen_labels = std::collections::HashSet::new();
+        // Check for duplicate node labels ON THE SAME TABLE
+        // Same label on different tables is allowed (multi-table denormalization)
+        let mut seen_table_labels = std::collections::HashSet::new();
         for node in &self.graph_schema.nodes {
-            if !seen_labels.insert(&node.label) {
+            let table_label_key = format!("{}::{}::{}", node.database, node.table, node.label);
+            if !seen_table_labels.insert(table_label_key) {
                 return Err(GraphSchemaError::InvalidConfig {
-                    message: format!("Duplicate node label: {}", node.label),
+                    message: format!(
+                        "Duplicate node label '{}' on same table '{}.{}'", 
+                        node.label, node.database, node.table
+                    ),
                 });
             }
         }
@@ -1098,8 +1118,13 @@ impl GraphSchemaConfig {
         let mut relationships = HashMap::new();
 
         // Convert node definitions using shared builder
+        // Store with BOTH composite key (table::label) AND label-only for backward compat
         for node_def in &self.graph_schema.nodes {
             let node_schema = build_node_schema(node_def, &no_discovery)?;
+            // Composite key for table-specific lookup
+            let composite_key = format!("{}::{}::{}", node_def.database, node_def.table, node_def.label);
+            nodes.insert(composite_key, node_schema.clone());
+            // Label-only key for backward compat (last one wins if duplicates)
             nodes.insert(node_def.label.clone(), node_schema);
         }
 
@@ -1168,6 +1193,7 @@ impl GraphSchemaConfig {
         let mut relationships = HashMap::new();
 
         // Convert node definitions with auto-discovery
+        // Store with BOTH composite key (table::label) AND label-only for backward compat
         for node_def in &self.graph_schema.nodes {
             // Gather discovery data
             let columns = if node_def.auto_discover_columns {
@@ -1189,6 +1215,10 @@ impl GraphSchemaConfig {
             let discovery = TableDiscovery { columns, engine };
             
             let node_schema = build_node_schema(node_def, &discovery)?;
+            // Composite key for table-specific lookup
+            let composite_key = format!("{}::{}::{}", node_def.database, node_def.table, node_def.label);
+            nodes.insert(composite_key, node_schema.clone());
+            // Label-only key for backward compat (last one wins if duplicates)
             nodes.insert(node_def.label.clone(), node_schema);
         }
 

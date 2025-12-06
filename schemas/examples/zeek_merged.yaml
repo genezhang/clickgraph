@@ -1,0 +1,123 @@
+# Zeek Merged Schema - DNS + Connection Logs
+# 
+# NEW DESIGN: Same label can appear multiple times, once per table.
+# Each <table, label> pair is a unique node definition.
+#
+# Benefits:
+#   - Flexibility for different column names across tables
+#   - Different property sets per table (conn_log has port, dns_log doesn't)
+#   - Clear which table provides which node definition
+#   - Edge references node by label, resolved against edge's own table
+#
+# Graph model:
+#   From dns_log: (src:IP)-[:DNS_REQUESTED]->(d:Domain)
+#   From conn_log: (src:IP)-[:CONNECTED_TO]->(dest:IP)
+#
+# Cross-table correlation query:
+#   MATCH (src:IP)-[req:DNS_REQUESTED]->(d:Domain)
+#   WITH src, d, req
+#   MATCH (src2:IP)-[:CONNECTED_TO]->(dest:IP)
+#   WHERE src2.ip = src.ip AND has(req.answers, dest.ip)
+#   RETURN src.ip AS source, d.name AS domain, dest.ip AS accessed_ip
+#
+# Standalone node query: MATCH (ip:IP) RETURN count(DISTINCT ip.ip)
+#   -- Requires UNION from all tables where IP is defined
+
+name: zeek_merged
+version: "1.0"
+
+graph_schema:
+  nodes:
+    # ========================================
+    # IP node definitions (one per table)
+    # ========================================
+    
+    # IP in dns_log table
+    - label: IP
+      database: zeek
+      table: dns_log
+      id_column: ip
+      property_mappings: {}
+      from_node_properties:
+        ip: "id.orig_h"
+      to_node_properties:
+        ip: "id.resp_h"
+
+    # IP in conn_log table (same label, different table)
+    # Could have different columns or properties if needed
+    - label: IP
+      database: zeek
+      table: conn_log
+      id_column: ip
+      property_mappings: {}
+      from_node_properties:
+        ip: "id.orig_h"
+        port: "id.orig_p"    # Additional property only in conn_log!
+      to_node_properties:
+        ip: "id.resp_h"
+        port: "id.resp_p"    # Additional property only in conn_log!
+
+    # ========================================
+    # Domain node (only in dns_log)
+    # ========================================
+    - label: Domain
+      database: zeek
+      table: dns_log
+      id_column: name
+      property_mappings: {}
+      from_node_properties:
+        name: query
+      to_node_properties:
+        name: query
+        resolved_ips: answers
+
+  edges:
+    # ========================================
+    # DNS relationships (from dns_log table)
+    # ========================================
+    
+    # DNS_REQUESTED: Source IP requested a domain lookup
+    - type: DNS_REQUESTED
+      database: zeek
+      table: dns_log
+      from_id: "id.orig_h"
+      to_id: query
+      from_node: IP
+      to_node: Domain
+      
+      edge_id: uid
+      
+      # Edge properties only - node properties come from node definitions
+      property_mappings:
+        uid: uid
+        timestamp: ts
+        dns_server: "id.resp_h"
+        qtype: qtype_name
+        rcode: rcode_name
+        answers: answers
+
+    # ========================================
+    # Connection relationships (from conn_log table)
+    # ========================================
+    
+    # CONNECTED_TO: Source IP connected to destination IP
+    - type: CONNECTED_TO
+      database: zeek
+      table: conn_log
+      from_id: "id.orig_h"
+      to_id: "id.resp_h"
+      from_node: IP
+      to_node: IP
+      
+      edge_id: uid
+      
+      # Edge properties only - node properties come from node definitions
+      property_mappings:
+        uid: uid
+        timestamp: ts
+        protocol: proto
+        service: service
+        duration: duration
+        orig_bytes: orig_bytes
+        resp_bytes: resp_bytes
+        conn_state: conn_state

@@ -466,6 +466,7 @@ mod tests {
                     alias: Some("foaf"),
                 },
             ],
+            subsequent_unwind: None,
             subsequent_match: None,
             subsequent_optional_matches: vec![],
         };

@@ -174,6 +174,23 @@ impl SchemaInference {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
+            LogicalPlan::CartesianProduct(cp) => {
+                let left_tf =
+                    Self::push_inferred_table_names_to_scan(cp.left.clone(), plan_ctx)?;
+                let right_tf =
+                    Self::push_inferred_table_names_to_scan(cp.right.clone(), plan_ctx)?;
+                match (&left_tf, &right_tf) {
+                    (Transformed::No(_), Transformed::No(_)) => Transformed::No(logical_plan.clone()),
+                    _ => Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
+                        crate::query_planner::logical_plan::CartesianProduct {
+                            left: left_tf.get_plan().clone(),
+                            right: right_tf.get_plan().clone(),
+                            is_optional: cp.is_optional,
+                            join_condition: cp.join_condition.clone(),
+                        },
+                    ))),
+                }
+            }
         };
         Ok(transformed_plan)
     }
@@ -387,6 +404,10 @@ impl SchemaInference {
             LogicalPlan::ViewScan(_) => Ok(()),
             LogicalPlan::Unwind(u) => {
                 self.infer_schema(u.input.clone(), plan_ctx, graph_schema)
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                self.infer_schema(cp.left.clone(), plan_ctx, graph_schema)?;
+                self.infer_schema(cp.right.clone(), plan_ctx, graph_schema)
             }
         }
     }

@@ -148,9 +148,27 @@ impl ToSql for LogicalExpr {
                     }
                     Operator::And => Ok(format!("({} AND {})", operands_sql[0], operands_sql[1])),
                     Operator::Or => Ok(format!("({} OR {})", operands_sql[0], operands_sql[1])),
-                    Operator::In => Ok(format!("({} IN {})", operands_sql[0], operands_sql[1])),
+                    Operator::In => {
+                        // Check if right operand is a property access (array column) vs literal list
+                        // Cypher: x IN array_property → ClickHouse: has(array, x)
+                        // Cypher: x IN [1, 2, 3] → ClickHouse: x IN (1, 2, 3)
+                        if matches!(&op.operands[1], LogicalExpr::PropertyAccessExp(_)) {
+                            // Array column membership: use has(array, value)
+                            Ok(format!("has({}, {})", operands_sql[1], operands_sql[0]))
+                        } else {
+                            // Literal list: use standard IN
+                            Ok(format!("({} IN {})", operands_sql[0], operands_sql[1]))
+                        }
+                    }
                     Operator::NotIn => {
-                        Ok(format!("({} NOT IN {})", operands_sql[0], operands_sql[1]))
+                        // Same logic for NOT IN
+                        if matches!(&op.operands[1], LogicalExpr::PropertyAccessExp(_)) {
+                            // Array column: NOT has(array, value)
+                            Ok(format!("NOT has({}, {})", operands_sql[1], operands_sql[0]))
+                        } else {
+                            // Literal list: standard NOT IN
+                            Ok(format!("({} NOT IN {})", operands_sql[0], operands_sql[1]))
+                        }
                     }
                     Operator::StartsWith => {
                         // ClickHouse: startsWith(haystack, prefix)

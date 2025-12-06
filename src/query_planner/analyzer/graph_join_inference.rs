@@ -1,7 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
 use crate::{
-    graph_catalog::graph_schema::{GraphSchema, is_node_denormalized_on_edge, NodeSchema, RelationshipSchema},
+    graph_catalog::graph_schema::{edge_has_node_properties, GraphSchema, is_node_denormalized_on_edge, NodeSchema, RelationshipSchema},
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
@@ -258,6 +258,36 @@ impl GraphJoinInference {
             JoinType::Left
         } else {
             JoinType::Inner
+        }
+    }
+
+    /// Extract the right-side anchor table info from a plan
+    /// For fully denormalized patterns, this finds the edge table that serves as the anchor
+    /// Returns (table_name, alias) for the right-side table
+    fn extract_right_table_from_plan(
+        plan: &Arc<LogicalPlan>,
+        _graph_schema: &GraphSchema,
+    ) -> Option<(String, String)> {
+        match plan.as_ref() {
+            LogicalPlan::GraphRel(rel) => {
+                // For GraphRel, the center ViewScan contains the edge table
+                if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                    // Use the left_connection as the alias (this is the from-node alias)
+                    // which should be used as the table alias for the JOIN
+                    return Some((scan.source_table.clone(), rel.left_connection.clone()));
+                }
+                None
+            }
+            LogicalPlan::Projection(proj) => {
+                Self::extract_right_table_from_plan(&proj.input, _graph_schema)
+            }
+            LogicalPlan::Filter(filter) => {
+                Self::extract_right_table_from_plan(&filter.input, _graph_schema)
+            }
+            LogicalPlan::GraphNode(node) => {
+                Self::extract_right_table_from_plan(&node.input, _graph_schema)
+            }
+            _ => None,
         }
     }
 
@@ -966,7 +996,32 @@ impl GraphJoinInference {
                     Transformed::No(logical_plan.clone())
                 }
             }
-            LogicalPlan::Projection(_) => {
+            LogicalPlan::Projection(projection) => {
+                // CRITICAL FIX: Process the projection's input first!
+                // This allows CartesianProduct (and other nodes) to add their joins
+                // to collected_graph_joins before we wrap with GraphJoins.
+                let child_tf = Self::build_graph_joins(
+                    projection.input.clone(),
+                    collected_graph_joins,
+                    optional_aliases.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                
+                // Get the processed child (or original if unchanged)
+                let processed_child = match &child_tf {
+                    Transformed::Yes(p) => p.clone(),
+                    Transformed::No(p) => p.clone(),
+                };
+                
+                // Build the new projection with the processed child
+                let new_projection = Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
+                    input: processed_child,
+                    items: projection.items.clone(),
+                    kind: projection.kind.clone(),
+                    distinct: projection.distinct,
+                }));
+                
                 // Reorder JOINs before creating GraphJoins to ensure proper dependency order
                 let (anchor_table, reordered_joins) = Self::reorder_joins_by_dependencies(
                     collected_graph_joins.clone(),
@@ -978,12 +1033,12 @@ impl GraphJoinInference {
                 let joins_with_pre_filter = Self::attach_pre_filters_to_joins(
                     reordered_joins,
                     &optional_aliases,
-                    &logical_plan,
+                    &new_projection,
                 );
 
                 // wrap the outer projection i.e. first occurance in the tree walk with Graph joins
                 Transformed::Yes(Arc::new(LogicalPlan::GraphJoins(GraphJoins {
-                    input: logical_plan.clone(),
+                    input: new_projection,
                     joins: joins_with_pre_filter,
                     optional_aliases,
                     anchor_table,
@@ -1129,6 +1184,88 @@ impl GraphJoinInference {
                         alias: u.alias.clone(),
                     }))),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                // CartesianProduct with join_condition represents a cross-table join pattern
+                // We need to:
+                // 1. Process both sides to get their joins
+                // 2. Combine all joins into the parent collected_graph_joins
+                // 3. Add the join_condition as a join between the patterns
+                
+                eprintln!("📦 CartesianProduct: Processing with join_condition={:?}", 
+                    cp.join_condition.is_some());
+                
+                // Create separate join collections for each side
+                let mut left_joins: Vec<Join> = vec![];
+                let mut right_joins: Vec<Join> = vec![];
+                
+                let left_tf = Self::build_graph_joins(
+                    cp.left.clone(),
+                    &mut left_joins,
+                    optional_aliases.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                let right_tf = Self::build_graph_joins(
+                    cp.right.clone(),
+                    &mut right_joins,
+                    optional_aliases.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                
+                eprintln!("📦 CartesianProduct: left_joins={}, right_joins={}", 
+                    left_joins.len(), right_joins.len());
+                
+                // CRITICAL: Bubble up all joins to the parent collected_graph_joins
+                // The left side joins need to come first
+                collected_graph_joins.extend(left_joins.clone());
+                collected_graph_joins.extend(right_joins.clone());
+                
+                // CROSS-TABLE DENORMALIZED FIX: If both sides have 0 joins (fully denormalized)
+                // AND there's a join_condition, we need to create a JOIN for the right-side table.
+                // This connects the two fully denormalized patterns.
+                if left_joins.is_empty() && right_joins.is_empty() {
+                    if let Some(join_cond) = &cp.join_condition {
+                        eprintln!("📦 CartesianProduct: Creating cross-table JOIN for fully denormalized patterns");
+                        
+                        // Extract the right-side table info from the join_condition
+                        // The join_condition should be: left_alias.column = right_alias.column
+                        if let LogicalExpr::OperatorApplicationExp(op_app) = join_cond {
+                            // Find the right-side alias and table from the right GraphRel
+                            if let Some((right_table, right_alias)) = Self::extract_right_table_from_plan(&cp.right, graph_schema) {
+                                eprintln!("📦 CartesianProduct: Right table='{}', alias='{}'", right_table, right_alias);
+                                
+                                // Create a JOIN for the right-side table using the join_condition
+                                let cross_join = Join {
+                                    table_name: right_table,
+                                    table_alias: right_alias,
+                                    joining_on: vec![op_app.clone()],
+                                    join_type: if cp.is_optional { JoinType::Left } else { JoinType::Inner },
+                                    pre_filter: None,
+                                };
+                                collected_graph_joins.push(cross_join);
+                                eprintln!("📦 CartesianProduct: Added cross-table JOIN, total joins now={}", 
+                                    collected_graph_joins.len());
+                            }
+                        }
+                    }
+                }
+                
+                eprintln!("📦 CartesianProduct: Total bubbled up joins={}", 
+                    collected_graph_joins.len());
+                
+                match (&left_tf, &right_tf) {
+                    (Transformed::No(_), Transformed::No(_)) => Transformed::No(logical_plan.clone()),
+                    _ => Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
+                        crate::query_planner::logical_plan::CartesianProduct {
+                            left: left_tf.get_plan().clone(),
+                            right: right_tf.get_plan().clone(),
+                            is_optional: cp.is_optional,
+                            join_condition: cp.join_condition.clone(),
+                        },
+                    ))),
                 }
             }
         };
@@ -1342,6 +1479,35 @@ impl GraphJoinInference {
                 eprintln!("� ? Unwind, recursing into input");
                 self.collect_graph_joins(
                     u.input.clone(),
+                    root_plan.clone(),
+                    plan_ctx,
+                    graph_schema,
+                    collected_graph_joins,
+                    joined_entities,
+                )
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                eprintln!("� ? CartesianProduct, processing children INDEPENDENTLY");
+                // IMPORTANT: CartesianProduct children should be collected INDEPENDENTLY
+                // because they represent separate graph patterns that will be CROSS JOINed.
+                // We DON'T want aliases from one side affecting the other side's join inference.
+                
+                // Process LEFT side into the shared collections
+                // The left side is the "base" pattern (e.g., from WITH clause)
+                self.collect_graph_joins(
+                    cp.left.clone(),
+                    root_plan.clone(),
+                    plan_ctx,
+                    graph_schema,
+                    collected_graph_joins,
+                    joined_entities,
+                )?;
+                
+                // For the RIGHT side, we still collect into shared collections,
+                // but the key is that joined_entities from LEFT will prevent 
+                // the RIGHT side from trying to create conflicting joins
+                self.collect_graph_joins(
+                    cp.right.clone(),
                     root_plan.clone(),
                     plan_ctx,
                     graph_schema,
@@ -1751,7 +1917,14 @@ impl GraphJoinInference {
         //
         // The anchor is the non-optional node that should be connected first.
         // Without this, different-type branches would fail to find an already-joined node.
-        let is_first_relationship = joined_entities.is_empty() || collected_graph_joins.is_empty();
+        //
+        // IMPORTANT: We check ONLY joined_entities, not collected_graph_joins.
+        // When edges are fully denormalized, no JOINs are added but entities ARE tracked.
+        // Using "||" would incorrectly trigger pre-seeding for second GraphRel in patterns like:
+        // MATCH (src:IP)-[:DNS_REQUESTED]->(d:Domain), (src)-[:CONNECTED_TO]->(dest:IP)
+        // Both edges are denormalized, so collected_graph_joins stays empty, but the second
+        // GraphRel should NOT re-seed the anchor - it should create an edge-to-edge JOIN.
+        let is_first_relationship = joined_entities.is_empty();
         
         if is_first_relationship {
             // Determine which node is the anchor (required, not optional)
@@ -1770,16 +1943,52 @@ impl GraphJoinInference {
                 // g is right_connection (due to Incoming direction swap), and g is required
                 eprintln!("    🎯 PRE-SEEDING: RIGHT '{}' is the anchor (required node)", right_alias);
                 joined_entities.insert(right_alias.to_string());
+                
+                // Also register as denormalized if edge has properties for this node
+                if edge_has_node_properties(&rel_schema, right_is_from_node) {
+                    plan_ctx.register_denormalized_alias(
+                        right_alias.to_string(),
+                        rel_alias.to_string(),
+                        right_is_from_node,
+                        right_label.clone(),
+                        rel_type.to_string(),
+                    );
+                    eprintln!("    🎯 PRE-SEEDING: Registered anchor '{}' as denormalized on edge '{}'", right_alias, rel_alias);
+                }
             } else if left_is_anchor && !right_is_anchor {
                 // LEFT is anchor (e.g., MATCH (u:User) OPTIONAL MATCH (u)-[r]->(x))
                 // u is left_connection, and u is required
                 eprintln!("    🎯 PRE-SEEDING: LEFT '{}' is the anchor (required node)", left_alias);
                 joined_entities.insert(left_alias.to_string());
+                
+                // Also register as denormalized if edge has properties for this node
+                if edge_has_node_properties(&rel_schema, left_is_from_node) {
+                    plan_ctx.register_denormalized_alias(
+                        left_alias.to_string(),
+                        rel_alias.to_string(),
+                        left_is_from_node,
+                        left_label.clone(),
+                        rel_type.to_string(),
+                    );
+                    eprintln!("    🎯 PRE-SEEDING: Registered anchor '{}' as denormalized on edge '{}'", left_alias, rel_alias);
+                }
             } else if left_is_anchor && right_is_anchor {
                 // Both are required (regular MATCH, not OPTIONAL)
                 // Default to left as anchor
                 eprintln!("    🎯 PRE-SEEDING: Both required, using LEFT '{}' as anchor", left_alias);
                 joined_entities.insert(left_alias.to_string());
+                
+                // Also register as denormalized if edge has properties for this node
+                if edge_has_node_properties(&rel_schema, left_is_from_node) {
+                    plan_ctx.register_denormalized_alias(
+                        left_alias.to_string(),
+                        rel_alias.to_string(),
+                        left_is_from_node,
+                        left_label.clone(),
+                        rel_type.to_string(),
+                    );
+                    eprintln!("    🎯 PRE-SEEDING: Registered anchor '{}' as denormalized on edge '{}'", left_alias, rel_alias);
+                }
             }
             // If neither is anchor (both optional) - shouldn't happen in valid queries
         }
@@ -1960,7 +2169,9 @@ impl GraphJoinInference {
                 let right_is_joined = joined_entities.contains(right_alias);
 
                 // Check if LEFT or RIGHT is the anchor (first relationship AND required)
-                let is_first_relationship = collected_graph_joins.is_empty();
+                // Use joined_entities.is_empty() NOT collected_graph_joins - fully denormalized edges
+                // add to joined_entities but not to collected_graph_joins!
+                let is_first_relationship = joined_entities.is_empty();
                 let left_is_anchor = is_first_relationship && !left_is_optional;
                 let right_is_anchor = is_first_relationship && !right_is_optional;
 
@@ -2105,7 +2316,9 @@ impl GraphJoinInference {
                 }
 
                 // Check if this is the first relationship (before pushing the rel)
-                let is_first_relationship = collected_graph_joins.is_empty();
+                // Use joined_entities.is_empty() NOT collected_graph_joins - fully denormalized edges
+                // add to joined_entities but not to collected_graph_joins!
+                let is_first_relationship = joined_entities.is_empty();
 
                 // JOIN ORDER FIX: The rel_graph_join created above references LEFT node in its condition.
                 // If LEFT is not yet joined, we MUST join LEFT before the relationship!
@@ -2148,9 +2361,10 @@ impl GraphJoinInference {
                         left_alias
                     );
                     
-                    // DENORMALIZED EDGE CHECK: Register alias if node is on edge table
-                    let left_is_denormalized = is_node_denormalized_on_edge(
-                        &left_node_schema,
+                    // DENORMALIZED EDGE CHECK: Use edge_has_node_properties which checks if
+                    // the edge has from_node_properties/to_node_properties defined, meaning
+                    // node data can be read from the edge table (even if different primary table)
+                    let left_is_denormalized = edge_has_node_properties(
                         &rel_schema,
                         left_is_from_node  // Direction-aware: true for outgoing, false for incoming
                     );
@@ -2197,8 +2411,17 @@ impl GraphJoinInference {
                     }
                 }
 
-                // DENORMALIZED EDGE PATTERN: Check if BOTH nodes are denormalized
-                // If so, the relationship table IS the entire pattern (no JOINs needed!)
+                // DENORMALIZED EDGE PATTERN: Check if BOTH nodes have properties on the edge table
+                // If so, the relationship table IS the entire pattern (no node JOINs needed!)
+                // 
+                // We use edge_has_node_properties() which checks if the edge has from_node_properties
+                // or to_node_properties defined, meaning node data can be read from the edge table.
+                // This is more flexible than is_node_denormalized_on_edge() which requires the node's
+                // primary table to match the edge table.
+                let left_has_props_on_edge = edge_has_node_properties(&rel_schema, left_is_from_node);
+                let right_has_props_on_edge = edge_has_node_properties(&rel_schema, right_is_from_node);
+                
+                // Also check the stricter condition for fully denormalized (same table)
                 let left_is_denormalized = is_node_denormalized_on_edge(
                     &left_node_schema,
                     &rel_schema,
@@ -2210,7 +2433,14 @@ impl GraphJoinInference {
                     right_is_from_node  // Direction-aware
                 );
                 
-                if left_is_denormalized && right_is_denormalized {
+                // Consider the edge "fully denormalized" if either:
+                // 1. Both nodes share the same table as the edge (strict denormalization)
+                // 2. Both nodes have properties available on the edge (from_node_properties/to_node_properties)
+                let edge_is_fully_denormalized = 
+                    (left_is_denormalized && right_is_denormalized) || 
+                    (left_has_props_on_edge && right_has_props_on_edge);
+                
+                if edge_is_fully_denormalized {
                     // FULLY DENORMALIZED EDGE: Both nodes are virtual on this edge table
                     // But we STILL may need a JOIN if the left node was ALREADY on a PREVIOUS edge!
                     
@@ -2331,6 +2561,9 @@ impl GraphJoinInference {
                                 left_alias, right_alias, rel_alias
                             );
                             joined_entities.insert(rel_alias.to_string());
+                            // Also mark both nodes as joined since they're on the same row as the edge
+                            joined_entities.insert(left_alias.to_string());
+                            joined_entities.insert(right_alias.to_string());
                         }
                     } else {
                         // First denormalized edge - this becomes the FROM anchor
@@ -2339,6 +2572,9 @@ impl GraphJoinInference {
                             left_alias, right_alias, rel_alias
                         );
                         joined_entities.insert(rel_alias.to_string());
+                        // Also mark both nodes as joined since they're on the same row as the edge
+                        joined_entities.insert(left_alias.to_string());
+                        joined_entities.insert(right_alias.to_string());
                     }
                 } else {
                     // Traditional or Mixed: Push the relationship JOIN
@@ -2378,11 +2614,11 @@ impl GraphJoinInference {
                                 left_alias
                             );
                             
-                            // DENORMALIZED EDGE CHECK: Register alias if node is on edge table
-                            let left_is_denormalized = is_node_denormalized_on_edge(
-                                &left_node_schema,
+                            // DENORMALIZED EDGE CHECK: Use edge_has_node_properties which checks if
+                            // the edge has node properties defined, regardless of node's primary table
+                            let left_is_denormalized = edge_has_node_properties(
                                 &rel_schema,
-                                left_is_from_node  // Direction-aware
+                                left_is_from_node  // Direction-aware: true for left/from node
                             );
                             
                             if left_is_denormalized {
@@ -2441,7 +2677,13 @@ impl GraphJoinInference {
                 let left_is_anchor = is_first_relationship && !left_is_optional;
                 let is_anchor = is_first_relationship && !right_is_optional && !left_is_anchor;
 
-                if is_anchor {
+                // Skip if RIGHT is already joined (e.g., from FULLY DENORMALIZED case)
+                if joined_entities.contains(right_alias) {
+                    eprintln!(
+                        "    � ?? RIGHT node '{}' already in joined_entities - skipping JOIN creation",
+                        right_alias
+                    );
+                } else if is_anchor {
                     // This is the anchor node - it should go in FROM clause, not as a JOIN
                     eprintln!(
                         "    � ?? RIGHT node '{}' is the ANCHOR (required + first) - will go in FROM, not JOIN",
@@ -2460,11 +2702,11 @@ impl GraphJoinInference {
                 } else {
                     eprintln!("    � ? Creating JOIN for RIGHT '{}'", right_alias);
                     
-                    // DENORMALIZED EDGE CHECK: Register alias if node is on edge table
-                    let right_is_denormalized = is_node_denormalized_on_edge(
-                        &right_node_schema,
+                    // DENORMALIZED EDGE CHECK: Use edge_has_node_properties which checks if
+                    // the edge has node properties defined, regardless of node's primary table
+                    let right_is_denormalized = edge_has_node_properties(
                         &rel_schema,
-                        right_is_from_node  // Direction-aware
+                        right_is_from_node  // Direction-aware: false for right/to node
                     );
                     
                     if right_is_denormalized {

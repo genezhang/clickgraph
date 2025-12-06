@@ -403,6 +403,21 @@ impl RenderPlanBuilder for LogicalPlan {
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
                     let is_incoming = rel.direction == Direction::Incoming;
                     
+                    // Check if BOTH nodes are denormalized on this edge
+                    // If so, right_connection should use left_connection's alias (the FROM table)
+                    // because the edge is fully denormalized - no separate JOIN for the edge
+                    let left_props_exist = if is_incoming {
+                        scan.to_node_properties.is_some()
+                    } else {
+                        scan.from_node_properties.is_some()
+                    };
+                    let right_props_exist = if is_incoming {
+                        scan.from_node_properties.is_some()
+                    } else {
+                        scan.to_node_properties.is_some()
+                    };
+                    let both_nodes_denormalized = left_props_exist && right_props_exist;
+                    
                     // Check if alias matches left_connection
                     if alias == rel.left_connection {
                         // For Incoming direction, left node is on the TO side of the edge
@@ -418,8 +433,9 @@ impl RenderPlanBuilder for LogicalPlan {
                                 .collect();
                             properties.sort_by(|a, b| a.0.cmp(&b.0));
                             if !properties.is_empty() {
-                                // IMPORTANT: Use relationship alias for denormalized nodes
-                                return Ok((properties, Some(rel.alias.clone())));
+                                // Left connection uses its own alias as the FROM table
+                                // Return None to use the original alias (which IS the FROM)
+                                return Ok((properties, None));
                             }
                         }
                     }
@@ -438,8 +454,16 @@ impl RenderPlanBuilder for LogicalPlan {
                                 .collect();
                             properties.sort_by(|a, b| a.0.cmp(&b.0));
                             if !properties.is_empty() {
-                                // IMPORTANT: Use relationship alias for denormalized nodes
-                                return Ok((properties, Some(rel.alias.clone())));
+                                // For fully denormalized edges (both nodes on edge), use left_connection
+                                // alias because it's the FROM table and right node shares the same row
+                                // For partially denormalized, use relationship alias as before
+                                if both_nodes_denormalized {
+                                    // Use left_connection alias (the FROM table)
+                                    return Ok((properties, Some(rel.left_connection.clone())));
+                                } else {
+                                    // Use relationship alias for denormalized nodes
+                                    return Ok((properties, Some(rel.alias.clone())));
+                                }
                             }
                         }
                     }
@@ -482,6 +506,15 @@ impl RenderPlanBuilder for LogicalPlan {
                     if let Ok(result) = first_input.get_properties_with_table_alias(alias) {
                         return Ok(result);
                     }
+                }
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                // Search both branches for the alias
+                if let Ok(result) = cp.left.get_properties_with_table_alias(alias) {
+                    return Ok(result);
+                }
+                if let Ok(result) = cp.right.get_properties_with_table_alias(alias) {
+                    return Ok(result);
                 }
             }
             _ => {}
@@ -532,6 +565,13 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::OrderBy(order) => order.input.find_denormalized_properties(alias),
             LogicalPlan::Skip(skip) => skip.input.find_denormalized_properties(alias),
             LogicalPlan::Limit(limit) => limit.input.find_denormalized_properties(alias),
+            LogicalPlan::CartesianProduct(cp) => {
+                // Search both branches
+                if let Some(props) = cp.left.find_denormalized_properties(alias) {
+                    return Some(props);
+                }
+                cp.right.find_denormalized_properties(alias)
+            }
             _ => None,
         }
     }
@@ -635,6 +675,11 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             LogicalPlan::PageRank(_) => None,
             LogicalPlan::Unwind(u) => u.input.extract_last_node_cte()?,
+            LogicalPlan::CartesianProduct(cp) => {
+                // Try left first, then right
+                cp.left.extract_last_node_cte()?
+                    .or(cp.right.extract_last_node_cte()?)
+            }
         };
         Ok(last_node_cte)
     }
@@ -925,6 +970,11 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             LogicalPlan::PageRank(_) => Ok(vec![]),
             LogicalPlan::Unwind(u) => u.input.extract_ctes(last_node_alias),
+            LogicalPlan::CartesianProduct(cp) => {
+                let mut ctes = cp.left.extract_ctes(last_node_alias)?;
+                ctes.append(&mut cp.right.extract_ctes(last_node_alias)?);
+                Ok(ctes)
+            }
         }
     }
 
@@ -1250,29 +1300,40 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Apply denormalized property mapping for denormalized nodes
                     let expr: RenderExpr = resolved_expr.try_into()?;
                     
-                    // DENORMALIZED PROPERTY TRANSLATION:
-                    // For denormalized nodes, translate logical property names to physical columns
-                    // e.g., a.code -> a.origin_code (using from_node_properties)
+                    // DENORMALIZED TABLE ALIAS RESOLUTION:
+                    // For denormalized nodes on fully denormalized edges (like (ip1)-[]->(d) where both
+                    // ip1 and d are from the same row), the table alias `d` doesn't exist in SQL.
+                    // We need to resolve `d` to the actual table alias (e.g., `ip1`).
+                    // Note: By this point, property names have already been converted to column names
+                    // by the analyzer, so we just need to fix the table alias.
                     let translated_expr = if let RenderExpr::PropertyAccessExp(ref prop_access) = expr {
-                        // Try to find a denormalized ViewScan for this alias
-                        if let Some(denorm_props) = self.find_denormalized_properties(&prop_access.table_alias.0) {
-                            let prop_name = prop_access.column.0.raw();
-                            if let Some(physical_col) = denorm_props.get(prop_name) {
-                                // Replace with physical column
-                                println!(
-                                    "DEBUG: Translated denormalized property {}.{} -> {}.{}",
-                                    prop_access.table_alias.0, prop_name,
-                                    prop_access.table_alias.0, physical_col
-                                );
-                                Some(RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: prop_access.table_alias.clone(),
-                                    column: Column(PropertyValue::Column(physical_col.clone())),
-                                }))
-                            } else {
+                        println!("DEBUG: Checking denormalized alias for {}.{}", prop_access.table_alias.0, prop_access.column.0.raw());
+                        // Check if this alias is denormalized and needs to point to a different table
+                        match self.get_properties_with_table_alias(&prop_access.table_alias.0) {
+                            Ok((props, actual_table_alias)) => {
+                                println!("DEBUG: get_properties_with_table_alias for '{}' returned Ok: {} properties, actual_alias={:?}", 
+                                    prop_access.table_alias.0, props.len(), actual_table_alias);
+                                if let Some(actual_alias) = actual_table_alias {
+                                    // This is a denormalized alias - use the actual table alias
+                                    println!(
+                                        "DEBUG: Translated denormalized alias {}.{} -> {}.{}",
+                                        prop_access.table_alias.0, prop_access.column.0.raw(),
+                                        actual_alias, prop_access.column.0.raw()
+                                    );
+                                    Some(RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(actual_alias),
+                                        column: prop_access.column.clone(),
+                                    }))
+                                } else {
+                                    println!("DEBUG: No actual_table_alias for '{}'", prop_access.table_alias.0);
+                                    None // Use original alias
+                                }
+                            }
+                            Err(e) => {
+                                println!("DEBUG: get_properties_with_table_alias for '{}' returned Err: {:?}", 
+                                    prop_access.table_alias.0, e);
                                 None
                             }
-                        } else {
-                            None
                         }
                     } else {
                         None
@@ -1341,6 +1402,12 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Union(_) => vec![],
             LogicalPlan::PageRank(_) => vec![],
             LogicalPlan::Unwind(u) => u.input.extract_select_items()?,
+            LogicalPlan::CartesianProduct(cp) => {
+                // Combine select items from both sides
+                let mut items = cp.left.extract_select_items()?;
+                items.extend(cp.right.extract_select_items()?);
+                items
+            }
         };
 
         Ok(select_items)
@@ -1679,13 +1746,15 @@ impl RenderPlanBuilder for LogicalPlan {
                 from_table_to_view_ref(projection.input.extract_from()?)
             }
             LogicalPlan::GraphJoins(graph_joins) => {
-                // Helper to find GraphRel through Projection/Filter wrappers
+                // Helper to find GraphRel through Projection/Filter/GraphJoins wrappers
+                // Must traverse GraphJoins for WITH clause scenarios where we have nested GraphJoins
                 fn find_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
                     match plan {
                         LogicalPlan::GraphRel(gr) => Some(gr),
                         LogicalPlan::Projection(proj) => find_graph_rel(&proj.input),
                         LogicalPlan::Filter(filter) => find_graph_rel(&filter.input),
                         LogicalPlan::Unwind(u) => find_graph_rel(&u.input),
+                        LogicalPlan::GraphJoins(gj) => find_graph_rel(&gj.input),
                         _ => None,
                     }
                 }
@@ -1697,6 +1766,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         LogicalPlan::Projection(proj) => find_graph_node(&proj.input),
                         LogicalPlan::Filter(filter) => find_graph_node(&filter.input),
                         LogicalPlan::Unwind(u) => find_graph_node(&u.input),
+                        LogicalPlan::GraphJoins(gj) => find_graph_node(&gj.input),
                         _ => None,
                     }
                 }
@@ -1945,6 +2015,10 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Union(_) => None,
             LogicalPlan::PageRank(_) => None,
             LogicalPlan::Unwind(u) => from_table_to_view_ref(u.input.extract_from()?),
+            LogicalPlan::CartesianProduct(cp) => {
+                // Use left side as primary FROM source
+                from_table_to_view_ref(cp.left.extract_from()?)
+            }
         };
         Ok(view_ref_to_from_table(from_ref))
     }
@@ -2331,6 +2405,20 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Union(_) => None,
             LogicalPlan::PageRank(_) => None,
             LogicalPlan::Unwind(u) => u.input.extract_filters()?,
+            LogicalPlan::CartesianProduct(cp) => {
+                // Combine filters from both sides with AND
+                let left_filters = cp.left.extract_filters()?;
+                let right_filters = cp.right.extract_filters()?;
+                match (left_filters, right_filters) {
+                    (None, None) => None,
+                    (Some(l), None) => Some(l),
+                    (None, Some(r)) => Some(r),
+                    (Some(l), Some(r)) => Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::And,
+                        operands: vec![l, r],
+                    })),
+                }
+            }
         };
         Ok(filters)
     }
@@ -3157,6 +3245,58 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 joins
             }
+            LogicalPlan::CartesianProduct(cp) => {
+                // For CartesianProduct, generate JOIN with ON clause if join_condition exists
+                // or CROSS JOIN semantics if no join_condition
+                let mut joins = cp.left.extract_joins()?;
+                
+                // Get the right side's FROM table to create a JOIN
+                if let Some(right_from) = cp.right.extract_from()? {
+                    let join_type = if cp.is_optional {
+                        JoinType::Left
+                    } else {
+                        JoinType::Inner
+                    };
+                    
+                    if let Some(right_table) = right_from.table {
+                        // Convert join_condition to OperatorApplication for the ON clause
+                        let joining_on = if let Some(ref join_cond) = cp.join_condition {
+                            // Convert LogicalExpr to RenderExpr, then extract OperatorApplication
+                            let render_expr: Result<RenderExpr, _> = join_cond.clone().try_into();
+                            match render_expr {
+                                Ok(RenderExpr::OperatorApplicationExp(op)) => vec![op],
+                                Ok(other) => {
+                                    // Wrap non-operator expressions in equality check
+                                    eprintln!("CartesianProduct: join_condition is not OperatorApplication: {:?}", other);
+                                    vec![]
+                                }
+                                Err(e) => {
+                                    eprintln!("CartesianProduct: Failed to convert join_condition: {:?}", e);
+                                    vec![]
+                                }
+                            }
+                        } else {
+                            vec![] // No join condition - pure CROSS JOIN semantics
+                        };
+                        
+                        eprintln!("CartesianProduct extract_joins: table={}, alias={}, joining_on={:?}",
+                            right_table.name, right_table.alias.as_deref().unwrap_or(""), joining_on);
+                        
+                        joins.push(super::Join {
+                            table_name: right_table.name.clone(),
+                            table_alias: right_table.alias.clone().unwrap_or_default(),
+                            joining_on,
+                            join_type,
+                            pre_filter: None,
+                        });
+                    }
+                }
+                
+                // Also include any joins from the right side
+                joins.extend(cp.right.extract_joins()?);
+                
+                joins
+            }
             _ => vec![],
         };
         Ok(joins)
@@ -3164,6 +3304,60 @@ impl RenderPlanBuilder for LogicalPlan {
 
     fn extract_group_by(&self) -> RenderPlanBuilderResult<Vec<RenderExpr>> {
         use crate::graph_catalog::expression_parser::PropertyValue;
+        
+        /// Helper to find node properties when the alias is a relationship alias with "*" column.
+        /// For denormalized schemas, the node alias gets remapped to the relationship alias,
+        /// so we need to look up which node this represents and get its properties.
+        fn find_node_properties_for_rel_alias(
+            plan: &LogicalPlan,
+            rel_alias: &str,
+        ) -> Option<(Vec<(String, String)>, String)> {
+            match plan {
+                LogicalPlan::GraphRel(rel) if rel.alias == rel_alias => {
+                    // This relationship matches - get the left node's properties (most common case)
+                    // Left node is typically the one being grouped in WITH clause
+                    if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+                        // Check direction to determine which properties to use
+                        let is_incoming = rel.direction == Direction::Incoming;
+                        let props = if is_incoming {
+                            &scan.to_node_properties
+                        } else {
+                            &scan.from_node_properties
+                        };
+                        
+                        if let Some(node_props) = props {
+                            let properties: Vec<(String, String)> = node_props
+                                .iter()
+                                .map(|(prop_name, prop_value)| (prop_name.clone(), prop_value.raw().to_string()))
+                                .collect();
+                            if !properties.is_empty() {
+                                // Return properties and the actual table alias to use
+                                return Some((properties, rel.alias.clone()));
+                            }
+                        }
+                    }
+                    None
+                }
+                LogicalPlan::GraphRel(rel) => {
+                    // Not this relationship - search children
+                    if let Some(result) = find_node_properties_for_rel_alias(&rel.left, rel_alias) {
+                        return Some(result);
+                    }
+                    if let Some(result) = find_node_properties_for_rel_alias(&rel.center, rel_alias) {
+                        return Some(result);
+                    }
+                    find_node_properties_for_rel_alias(&rel.right, rel_alias)
+                }
+                LogicalPlan::Projection(proj) => find_node_properties_for_rel_alias(&proj.input, rel_alias),
+                LogicalPlan::Filter(filter) => find_node_properties_for_rel_alias(&filter.input, rel_alias),
+                LogicalPlan::GroupBy(gb) => find_node_properties_for_rel_alias(&gb.input, rel_alias),
+                LogicalPlan::GraphJoins(joins) => find_node_properties_for_rel_alias(&joins.input, rel_alias),
+                LogicalPlan::OrderBy(order) => find_node_properties_for_rel_alias(&order.input, rel_alias),
+                LogicalPlan::Skip(skip) => find_node_properties_for_rel_alias(&skip.input, rel_alias),
+                LogicalPlan::Limit(limit) => find_node_properties_for_rel_alias(&limit.input, rel_alias),
+                _ => None,
+            }
+        }
         
         let group_by = match &self {
             LogicalPlan::Limit(limit) => limit.input.extract_group_by()?,
@@ -3195,7 +3389,48 @@ impl RenderPlanBuilder for LogicalPlan {
                         }
                     }
                     
-                    // Not a TableAlias or couldn't expand - convert normally
+                    // Check if this is a PropertyAccessExp with wildcard column "*"
+                    // This happens when ProjectionTagging converts TableAlias to PropertyAccessExp(alias.*)
+                    if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop_access) = expr {
+                        if prop_access.column.raw() == "*" {
+                            // First try: look up as node alias
+                            if let Ok((properties, actual_table_alias)) = group_by.input.get_properties_with_table_alias(&prop_access.table_alias.0) {
+                                // Check if we got relationship properties (bad) or node properties (good)
+                                // Node properties are in from_node_properties/to_node_properties
+                                // Relationship properties are in property_mapping
+                                // Heuristic: if we got more than a few properties and none are common node properties,
+                                // it's probably relationship properties
+                                
+                                // Better approach: try to find node properties for this rel alias
+                                if let Some((node_props, table_alias)) = find_node_properties_for_rel_alias(&group_by.input, &prop_access.table_alias.0) {
+                                    // Found denormalized node properties
+                                    for (_prop_name, col_name) in node_props {
+                                        result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(table_alias.clone()),
+                                            column: Column(PropertyValue::Column(col_name)),
+                                        }));
+                                    }
+                                    continue;
+                                }
+                                
+                                // Fallback: use what get_properties_with_table_alias returned
+                                if !properties.is_empty() {
+                                    let table_alias_to_use = actual_table_alias.unwrap_or_else(|| prop_access.table_alias.0.clone());
+                                    
+                                    // Add each property as a GROUP BY expression
+                                    for (_prop_name, col_name) in properties {
+                                        result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(table_alias_to_use.clone()),
+                                            column: Column(PropertyValue::Column(col_name)),
+                                        }));
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Not a TableAlias/wildcard or couldn't expand - convert normally
                     let mut render_expr: RenderExpr = expr.clone().try_into()?;
                     apply_property_mapping_to_expr(&mut render_expr, &group_by.input);
                     result.push(render_expr);
@@ -4342,8 +4577,18 @@ impl RenderPlanBuilder for LogicalPlan {
         }
 
         let mut final_select_items = self.extract_select_items()?;
-        println!(
-            "DEBUG: build_simple_relationship_render_plan - final_select_items: {:?}",
+        log::debug!(
+            "build_simple_relationship_render_plan - final_select_items BEFORE alias remap: {:?}",
+            final_select_items
+        );
+        
+        // For denormalized patterns (zeek unified, etc.), remap node aliases to edge aliases
+        // This ensures SELECT src."id.orig_h" becomes SELECT a06963149f."id.orig_h" when src is denormalized on edge a06963149f
+        for item in &mut final_select_items {
+            apply_property_mapping_to_expr(&mut item.expression, self);
+        }
+        log::debug!(
+            "build_simple_relationship_render_plan - final_select_items AFTER alias remap: {:?}",
             final_select_items
         );
 
@@ -4641,6 +4886,14 @@ impl RenderPlanBuilder for LogicalPlan {
                 final_filters = Some(rewrite_aliases_in_expr_vlp(filter, simple_map, column_map, rel_alias));
             }
         }
+        
+        // Apply property mapping to filters to translate denormalized node aliases to their SQL table aliases.
+        // For denormalized nodes (like `d:Domain` stored on edge table), the Cypher alias `d`
+        // doesn't exist in SQL. We must rewrite `d.answers` to `edge_alias.answers`.
+        // Uses the same apply_property_mapping_to_expr that works for SELECT items.
+        if let Some(ref mut filter) = final_filters {
+            apply_property_mapping_to_expr(filter, self);
+        }
 
         // Validate that filters don't contain obviously invalid expressions
         if let Some(ref filter_expr) = final_filters {
@@ -4808,6 +5061,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::Union(_) => "Union",
                 LogicalPlan::PageRank(_) => "PageRank",
                 LogicalPlan::Unwind(_) => "Unwind",
+                LogicalPlan::CartesianProduct(_) => "CartesianProduct",
             }
         );
 
@@ -5289,6 +5543,12 @@ impl RenderPlanBuilder for LogicalPlan {
         }
 
         let mut final_select_items = transformed_plan.extract_select_items()?;
+
+        // For all denormalized patterns, apply property mapping to remap node aliases to edge aliases
+        // This ensures SELECT src."id.orig_h" becomes SELECT ad62047b83."id.orig_h" when src is denormalized on edge ad62047b83
+        for item in &mut final_select_items {
+            apply_property_mapping_to_expr(&mut item.expression, &transformed_plan);
+        }
 
         // For denormalized variable-length paths, rewrite SELECT items to reference CTE columns
         // Standard patterns keep a.*, b.* since they JOIN to node tables

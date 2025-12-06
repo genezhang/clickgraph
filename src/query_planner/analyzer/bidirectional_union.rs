@@ -292,6 +292,29 @@ fn transform_bidirectional(
             }
         }
 
+        LogicalPlan::CartesianProduct(cp) => {
+            let transformed_left = transform_bidirectional(&cp.left, plan_ctx, graph_schema)?;
+            let transformed_right = transform_bidirectional(&cp.right, plan_ctx, graph_schema)?;
+            
+            if matches!((&transformed_left, &transformed_right), (Transformed::No(_), Transformed::No(_))) {
+                Ok(Transformed::No(plan.clone()))
+            } else {
+                let new_cp = crate::query_planner::logical_plan::CartesianProduct {
+                    left: match transformed_left {
+                        Transformed::Yes(p) => p,
+                        Transformed::No(p) => p,
+                    },
+                    right: match transformed_right {
+                        Transformed::Yes(p) => p,
+                        Transformed::No(p) => p,
+                    },
+                    is_optional: cp.is_optional,
+                    join_condition: cp.join_condition.clone(),
+                };
+                Ok(Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(new_cp))))
+            }
+        }
+
         // Leaf nodes - no transformation needed
         LogicalPlan::ViewScan(_)
         | LogicalPlan::Empty

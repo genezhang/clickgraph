@@ -670,6 +670,19 @@ impl RenderExpr {
                     return format!("match({}, {})", &rendered[0], &rendered[1]);
                 }
 
+                // Special handling for IN/NOT IN with array columns
+                // Cypher: x IN array_property → ClickHouse: has(array, x)
+                if op.operator == Operator::In && rendered.len() == 2 {
+                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
+                        return format!("has({}, {})", &rendered[1], &rendered[0]);
+                    }
+                }
+                if op.operator == Operator::NotIn && rendered.len() == 2 {
+                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
+                        return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
+                    }
+                }
+
                 // Special handling for string predicates - ClickHouse uses functions
                 if op.operator == Operator::StartsWith && rendered.len() == 2 {
                     return format!("startsWith({}, {})", &rendered[0], &rendered[1]);
@@ -832,6 +845,18 @@ impl RenderExpr {
                     return format!("match({}, {})", &rendered[0], &rendered[1]);
                 }
 
+                // Special handling for IN/NOT IN with array columns
+                if op.operator == Operator::In && rendered.len() == 2 {
+                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
+                        return format!("has({}, {})", &rendered[1], &rendered[0]);
+                    }
+                }
+                if op.operator == Operator::NotIn && rendered.len() == 2 {
+                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
+                        return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
+                    }
+                }
+
                 // Special handling for string predicates - ClickHouse uses functions
                 if op.operator == Operator::StartsWith && rendered.len() == 2 {
                     return format!("startsWith({}, {})", &rendered[0], &rendered[1]);
@@ -945,6 +970,18 @@ impl ToSql for OperatorApplication {
         // Special handling for RegexMatch - ClickHouse uses match() function
         if self.operator == Operator::RegexMatch && rendered.len() == 2 {
             return format!("match({}, {})", &rendered[0], &rendered[1]);
+        }
+
+        // Special handling for IN/NOT IN with array columns
+        if self.operator == Operator::In && rendered.len() == 2 {
+            if matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_)) {
+                return format!("has({}, {})", &rendered[1], &rendered[0]);
+            }
+        }
+        if self.operator == Operator::NotIn && rendered.len() == 2 {
+            if matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_)) {
+                return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
+            }
         }
 
         // Special handling for string predicates - ClickHouse uses functions

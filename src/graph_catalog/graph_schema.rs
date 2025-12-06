@@ -697,6 +697,20 @@ pub fn is_node_denormalized_on_edge(
         && node.denormalized_source_table.as_ref().map(|t| t == &edge.full_table_name()).unwrap_or(false)
 }
 
+/// Check if the edge has denormalized properties for a node position
+/// 
+/// This checks if the edge table contains the node's properties, allowing 
+/// the node data to be read directly from the edge table without a separate JOIN.
+/// 
+/// Use this to determine if a node should use the edge table as its data source.
+pub fn edge_has_node_properties(edge: &RelationshipSchema, is_from_node: bool) -> bool {
+    if is_from_node {
+        edge.from_node_properties.as_ref().map_or(false, |p| !p.is_empty())
+    } else {
+        edge.to_node_properties.as_ref().map_or(false, |p| !p.is_empty())
+    }
+}
+
 /// Check if BOTH nodes in a relationship use the denormalized pattern
 pub fn is_fully_denormalized_edge_table(
     left_node: &NodeSchema,

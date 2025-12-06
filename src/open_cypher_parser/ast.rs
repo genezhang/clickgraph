@@ -115,6 +115,8 @@ pub struct ReturnItem<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct WithClause<'a> {
     pub with_items: Vec<WithItem<'a>>,
+    /// Optional subsequent UNWIND clause after WITH (for WITH ... UNWIND chaining)
+    pub subsequent_unwind: Option<UnwindClause<'a>>,
     /// Optional subsequent MATCH clause after WITH (for WITH ... MATCH chaining)
     pub subsequent_match: Option<Box<MatchClause<'a>>>,
     /// Optional subsequent OPTIONAL MATCH clauses after WITH

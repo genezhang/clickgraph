@@ -234,6 +234,28 @@ impl AnalyzerPass for QueryValidation {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
+            LogicalPlan::CartesianProduct(cp) => {
+                let transformed_left = self.analyze_with_graph_schema(cp.left.clone(), plan_ctx, graph_schema)?;
+                let transformed_right = self.analyze_with_graph_schema(cp.right.clone(), plan_ctx, graph_schema)?;
+                
+                if matches!((&transformed_left, &transformed_right), (Transformed::No(_), Transformed::No(_))) {
+                    Transformed::No(logical_plan.clone())
+                } else {
+                    let new_cp = crate::query_planner::logical_plan::CartesianProduct {
+                        left: match transformed_left {
+                            Transformed::Yes(p) => p,
+                            Transformed::No(p) => p,
+                        },
+                        right: match transformed_right {
+                            Transformed::Yes(p) => p,
+                            Transformed::No(p) => p,
+                        },
+                        is_optional: cp.is_optional,
+                        join_condition: cp.join_condition.clone(),
+                    };
+                    Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(new_cp)))
+                }
+            }
         };
         Ok(transformed_plan)
     }

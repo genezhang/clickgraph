@@ -15,6 +15,7 @@ use super::{
     expression::{parse_expression, parse_identifier},
     match_clause::parse_match_clause,
     optional_match_clause::parse_optional_match_clause,
+    unwind_clause::parse_unwind_clause,
 };
 
 fn parse_with_item(input: &'_ str) -> IResult<&'_ str, WithItem<'_>> {
@@ -40,6 +41,10 @@ pub fn parse_with_clause(
     )
     .parse(input)?;
 
+    // Parse optional subsequent UNWIND clause after WITH
+    // This handles: WITH d, rip UNWIND rip.ips AS ip ...
+    let (input, subsequent_unwind) = opt(parse_unwind_clause).parse(input)?;
+    
     // Parse optional subsequent MATCH clause after WITH
     // This handles: WITH u MATCH (u)-[:FOLLOWS]->(f) ...
     let (input, subsequent_match) = opt(parse_match_clause).parse(input)?;
@@ -50,6 +55,7 @@ pub fn parse_with_clause(
 
     let with_clause = WithClause { 
         with_items,
+        subsequent_unwind,
         subsequent_match: subsequent_match.map(Box::new),
         subsequent_optional_matches,
     };

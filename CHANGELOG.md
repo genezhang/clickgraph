@@ -2,6 +2,8 @@
 
 ### 🚀 Features
 
+- **Cross-table query support with disconnected patterns (Issue #12)** - Cross-table queries using WITH...MATCH and WHERE clause correlation now work correctly for fully denormalized edges. Example: `MATCH (ip1:IP)-[:DNS_REQUESTED]->(d:Domain) WITH ip1, d MATCH (ip2:IP)-[:CONNECTED_TO]->(dest:IP) WHERE ip1.ip = ip2.ip RETURN ip1.ip, d.name, dest.ip` correctly generates INNER JOIN between dns_log and conn_log tables. This completes Issue #12 for the Form 1 pattern (disconnected patterns with WHERE clause join condition).
+- **Cross-table query support with shared variables (Issue #12)** - Zeek log correlation and similar cross-table analytics now work using shared node variable patterns. Example: `MATCH (src:IP)-[:DNS_REQUESTED]->(d:Domain), (src)-[:CONNECTED_TO]->(dest:IP)` correctly generates edge-to-edge JOINs between dns_log and conn_log tables. Added `zeek_unified.yaml` example schema demonstrating the pattern.
 - **Smart relationship type inference** - Anonymous edge patterns `()-[r]->()` can now infer the relationship type automatically:
   - **Single-schema inference**: If the schema has only one relationship type, it's used automatically
   - **Node-type inference**: If nodes are typed (e.g., `(a:Airport)-[r]->()`), finds relationships that match those node types
@@ -18,6 +20,8 @@
 
 ### 🐛 Bug Fixes
 
+- **Fix disconnected pattern JOIN generation for fully denormalized edges** - When both sides of a CartesianProduct (disconnected patterns from WITH...MATCH) are fully denormalized (no JOINs needed within each pattern), the cross-table JOIN is now correctly generated. Fixed by: (1) Making Projection case in `build_graph_joins` recursively process children before wrapping with GraphJoins, (2) Adding cross-table JOIN creation in CartesianProduct handling using the extracted `join_condition`.
+- **Fix cross-table JOIN generation for denormalized schemas** - When nodes are denormalized on edges (properties defined in `from_node_properties`/`to_node_properties`), the system now correctly detects this using `edge_has_node_properties()` instead of checking node primary table. Fixed `is_first_relationship` condition in `graph_join_inference.rs` to use `joined_entities.is_empty()` instead of `collected_graph_joins.is_empty()`. This allows comma-separated patterns across different tables to generate correct edge-to-edge JOINs.
 - **Fix multi-hop patterns with anonymous nodes (Issue #6)** - Patterns like `()-[r1:FLIGHT]->()-[r2:FLIGHT]->()` now generate correct SQL with both relationships joined. Fixed by adding pre-processing pass in `traverse_connected_pattern_with_mode()` to assign consistent aliases for shared nodes using pointer-based identity. The middle anonymous node now correctly gets the same alias in both patterns.
 - **Fix OPTIONAL MATCH with polymorphic edges (Issue #3)** - Queries like `MATCH (g:Group) OPTIONAL MATCH (g)<-[:MEMBER_OF]-(member:User)` now generate correct SQL. Fixed two issues in `graph_join_inference.rs`: (1) Added unified anchor detection at start of `handle_graph_pattern()` to pre-seed non-optional nodes before same-type/different-type branching, (2) Changed hardcoded `"to_id"` to use actual schema column names (`rel_schema.to_id`).
 - **Fix polymorphic CONTAINS with unlabeled target** - Queries like `MATCH (f:Folder)-[:CONTAINS]->(child)` on polymorphic schemas now work. The unlabeled `child` node's label is inferred from the CONTAINS relationship schema. (Issue #5)
@@ -41,7 +45,7 @@
 
 ### 🧪 Testing
 
-- **577 unit tests passing** (up from 558) - 19 new tests for inference (13 relationship + 6 node type including schema variations)
+- **578 unit tests passing** (up from 558) - 20 new tests for inference and CartesianProduct handling
 
 ---
 

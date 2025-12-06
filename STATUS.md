@@ -4,6 +4,51 @@
 
 ## 🆕 **Recent Updates** - December 5, 2025
 
+### ✅ Cross-Table Query Support - FULLY WORKING (Issue #12)
+**Disconnected Patterns with Fully Denormalized Edges Now Supported!**
+
+- **Problem**: Cross-table queries with WITH...MATCH pattern failed with "No FROM clause found"
+- **Root Cause**: `build_graph_joins` Projection case didn't recursively process children before wrapping with GraphJoins, so CartesianProduct was never visited
+- **Fix**: Three key changes:
+  1. Modified Projection case in `build_graph_joins` to recursively process input first
+  2. Added cross-table JOIN creation in CartesianProduct handling when both sides are fully denormalized
+  3. Added `extract_right_table_from_plan` helper to extract table info from CartesianProduct's right side
+
+- **Working Pattern (Form 1 - Disconnected with WHERE clause)**:
+  ```cypher
+  MATCH (ip1:IP)-[:DNS_REQUESTED]->(d:Domain) 
+  WITH ip1, d 
+  MATCH (ip2:IP)-[:CONNECTED_TO]->(dest:IP) 
+  WHERE ip1.ip = ip2.ip 
+  RETURN ip1.ip, d.name, dest.ip LIMIT 5
+  ```
+- **Generated SQL** (correct):
+  ```sql
+  SELECT ip1."id.orig_h" AS "ip1.ip", ip1.query AS "d.name", ip2."id.resp_h" AS "dest.ip"
+  FROM zeek.dns_log AS ip1
+  INNER JOIN zeek.conn_log AS ip2 ON ip1."id.orig_h" = ip2."id.orig_h"
+  LIMIT 5
+  ```
+
+- **Working Pattern (Form 3 - Shared Variables)**:
+  ```cypher
+  MATCH (src:IP)-[:DNS_REQUESTED]->(d:Domain), (src)-[:CONNECTED_TO]->(dest:IP)
+  RETURN src.ip AS source, d.name AS domain, dest.ip AS dest_ip
+  ```
+  
+- **Key Technical Details**:
+  - `CartesianJoinExtraction` optimizer moves WHERE filter → CartesianProduct.join_condition
+  - `GraphJoinInference.build_graph_joins` now:
+    - Recursively processes Projection children
+    - Creates cross-table JOIN when both CartesianProduct sides are fully denormalized
+  - Property resolution correctly uses `from_node_properties`/`to_node_properties` from edges
+
+- **Files Modified**:
+  - `src/query_planner/analyzer/graph_join_inference.rs` - Projection recursion + CartesianProduct JOIN
+  - `src/query_planner/analyzer/filter_tagging.rs` - CartesianProduct property resolution
+
+### Previous Fixes (Earlier December 5)
+
 ### ✅ Multi-Hop Patterns with Anonymous Nodes Fixed (Issue #6)
 - **Problem**: `MATCH ()-[r1:FLIGHT]->()-[r2:FLIGHT]->()` only generated SQL for one relationship
 - **Root Cause**: Parser correctly shares middle node via `Rc::clone()`, but alias generation called `generate_id()` unconditionally for each pattern, creating different aliases for the same node

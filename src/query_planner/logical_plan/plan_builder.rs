@@ -71,6 +71,12 @@ pub fn build_logical_plan(
         );
         logical_plan = with_clause::evaluate_with_clause(with_clause_ast, logical_plan);
         
+        // Process subsequent UNWIND clause if present (e.g., WITH d, rip UNWIND rip.ips AS ip)
+        if let Some(subsequent_unwind) = &with_clause_ast.subsequent_unwind {
+            log::debug!("build_logical_plan: Processing subsequent UNWIND clause after WITH");
+            logical_plan = unwind_clause::evaluate_unwind_clause(subsequent_unwind, logical_plan, &mut plan_ctx);
+        }
+        
         // Process subsequent MATCH clause if present (e.g., WITH u MATCH (u)-[:FOLLOWS]->(f))
         if let Some(subsequent_match) = &with_clause_ast.subsequent_match {
             log::debug!("build_logical_plan: Processing subsequent MATCH clause after WITH");

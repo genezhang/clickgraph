@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::query_planner::{
     logical_plan::LogicalPlan,
     optimizer::{
+        cartesian_join_extraction::CartesianJoinExtraction,
         cleanup_viewscan_filters::CleanupViewScanFilters,
         filter_into_graph_rel::FilterIntoGraphRel,
         filter_push_down::FilterPushDown,
@@ -14,6 +15,7 @@ use crate::query_planner::{
 
 use super::plan_ctx::PlanCtx;
 pub mod errors;
+mod cartesian_join_extraction;
 mod cleanup_viewscan_filters;
 mod filter_into_graph_rel;
 mod filter_push_down;
@@ -60,6 +62,13 @@ pub fn initial_optimization(
 ) -> OptimizerResult<Arc<LogicalPlan>> {
     log::trace!("Initial optimization: Plan structure before FilterIntoGraphRel:");
     log_plan_structure(&plan, 1);
+
+    // Extract cross-pattern filters from CartesianProduct and move to join_condition
+    // This must run BEFORE FilterIntoGraphRel to prevent the cross-pattern filter
+    // from being pushed into a single GraphRel
+    let cartesian_join_extraction = CartesianJoinExtraction::new();
+    let transformed_plan = cartesian_join_extraction.optimize(plan.clone(), plan_ctx)?;
+    let plan = transformed_plan.get_plan();
 
     // Push filters from plan_ctx into GraphRel nodes
     let filter_into_graph_rel = FilterIntoGraphRel::new();
