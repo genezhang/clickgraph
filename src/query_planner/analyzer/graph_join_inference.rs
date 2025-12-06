@@ -2762,6 +2762,21 @@ impl GraphJoinInference {
                             // Also mark both nodes as joined since they're on the same row as the edge
                             joined_entities.insert(left_alias.to_string());
                             joined_entities.insert(right_alias.to_string());
+                            
+                            // FIX: Register RIGHT node on this edge for multi-hop detection!
+                            // LEFT was already registered (e.g., by pre-seeding), but RIGHT wasn't.
+                            // When processing r2, we need to know that 'b' is on 'r1'.
+                            plan_ctx.register_denormalized_alias(
+                                right_alias.to_string(),
+                                rel_alias.to_string(),
+                                false, // right is TO node (in same-edge context)
+                                right_label.clone(),
+                                rel_type.to_string(),
+                            );
+                            eprintln!(
+                                "    📝 Registered right alias '{}' → edge '{}' for multi-hop tracking",
+                                right_alias, rel_alias
+                            );
                         }
                     } else {
                         // First denormalized edge - this becomes the FROM anchor
@@ -2773,6 +2788,28 @@ impl GraphJoinInference {
                         // Also mark both nodes as joined since they're on the same row as the edge
                         joined_entities.insert(left_alias.to_string());
                         joined_entities.insert(right_alias.to_string());
+                        
+                        // FIX: Register BOTH left and right nodes as being on this edge!
+                        // This is CRITICAL for multi-hop: when processing r2, we need to know
+                        // that 'b' (right_alias of r1) was on r1 so we can create the edge-to-edge JOIN.
+                        plan_ctx.register_denormalized_alias(
+                            left_alias.to_string(),
+                            rel_alias.to_string(),
+                            true, // left is FROM node
+                            left_label.clone(),
+                            rel_type.to_string(),
+                        );
+                        plan_ctx.register_denormalized_alias(
+                            right_alias.to_string(),
+                            rel_alias.to_string(),
+                            false, // right is TO node
+                            right_label.clone(),
+                            rel_type.to_string(),
+                        );
+                        eprintln!(
+                            "    📝 Registered denormalized aliases: '{}' (from) and '{}' (to) → edge '{}'",
+                            left_alias, right_alias, rel_alias
+                        );
                     }
                 } else {
                     // Traditional or Mixed: Push the relationship JOIN

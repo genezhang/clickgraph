@@ -654,7 +654,7 @@ class TestDenormalizedSchema:
         Multi-hop traversal
         Schema: ontime_flights
         """
-        query = "MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]->(c:Airport) RETURN a.airport, c.airport LIMIT 5"
+        query = "MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]->(c:Airport) RETURN a.state, c.state LIMIT 5"
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
