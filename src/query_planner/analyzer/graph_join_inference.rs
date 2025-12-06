@@ -2558,43 +2558,105 @@ impl GraphJoinInference {
         // In case of f3, both of its nodes a and b are already joined. So just join f3 on both a and b's joining keys.
         let is_standalone_rel: bool = matches!(graph_rel.left.as_ref(), LogicalPlan::Empty);
 
-        eprintln!("    � Creating joins for relationship...");
+        eprintln!("    📋 Creating joins for relationship...");
         let joins_before = collected_graph_joins.len();
 
-        // ClickGraph uses view-mapped graph storage where relationships are tables
-        // with from_id/to_id columns. Process the graph pattern to generate JOINs.
-        eprintln!("    � ? Processing graph pattern");
-        let result = self.handle_graph_pattern(
-            graph_rel,
-            &left_alias,
-            &rel_alias,
-            &right_alias,
-            &left_cte_name,
-            &rel_cte_name,
-            &right_cte_name,
-            &left_node_schema,
-            &rel_schema,
-            &right_node_schema,
-            left_node_id_column,
-            right_node_id_column,
-            is_standalone_rel,
-            left_is_optional,
-            rel_is_optional,
-            right_is_optional,
-            left_is_referenced,
-            right_is_referenced,
-            left_label,
-            right_label,
-            rel_labels,
-            plan_ctx,
-            graph_schema,
-            collected_graph_joins,
-            joined_entities,
-        );
+        // ============================================================
+        // Phase 4: Use PatternSchemaContext-based v2 function
+        // ============================================================
+        // Enable v2 path with USE_PATTERN_SCHEMA_V2=1 environment variable
+        // This allows gradual migration and A/B testing
+        let use_v2 = std::env::var("USE_PATTERN_SCHEMA_V2")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        let result = if use_v2 {
+            // V2 path: Use PatternSchemaContext for exhaustive pattern matching
+            eprintln!("    🔬 Using handle_graph_pattern_v2 (PatternSchemaContext)");
+            
+            // Compute PatternSchemaContext for this pattern
+            if let Some(ctx) = self.compute_pattern_context(graph_rel, plan_ctx, graph_schema, None) {
+                self.handle_graph_pattern_v2(
+                    &ctx,
+                    &left_alias,
+                    &rel_alias,
+                    &right_alias,
+                    &left_cte_name,
+                    &rel_cte_name,
+                    &right_cte_name,
+                    left_is_optional,
+                    rel_is_optional,
+                    right_is_optional,
+                    plan_ctx,
+                    collected_graph_joins,
+                    joined_entities,
+                )
+            } else {
+                // Fallback to v1 if schema context cannot be computed
+                eprintln!("    ⚠️ PatternSchemaContext unavailable, falling back to v1");
+                self.handle_graph_pattern(
+                    graph_rel,
+                    &left_alias,
+                    &rel_alias,
+                    &right_alias,
+                    &left_cte_name,
+                    &rel_cte_name,
+                    &right_cte_name,
+                    &left_node_schema,
+                    &rel_schema,
+                    &right_node_schema,
+                    left_node_id_column.clone(),
+                    right_node_id_column.clone(),
+                    is_standalone_rel,
+                    left_is_optional,
+                    rel_is_optional,
+                    right_is_optional,
+                    left_is_referenced,
+                    right_is_referenced,
+                    left_label.clone(),
+                    right_label.clone(),
+                    rel_labels.clone(),
+                    plan_ctx,
+                    graph_schema,
+                    collected_graph_joins,
+                    joined_entities,
+                )
+            }
+        } else {
+            // V1 path: Original handle_graph_pattern (default)
+            eprintln!("    📊 Processing graph pattern (v1)");
+            self.handle_graph_pattern(
+                graph_rel,
+                &left_alias,
+                &rel_alias,
+                &right_alias,
+                &left_cte_name,
+                &rel_cte_name,
+                &right_cte_name,
+                &left_node_schema,
+                &rel_schema,
+                &right_node_schema,
+                left_node_id_column,
+                right_node_id_column,
+                is_standalone_rel,
+                left_is_optional,
+                rel_is_optional,
+                right_is_optional,
+                left_is_referenced,
+                right_is_referenced,
+                left_label,
+                right_label,
+                rel_labels,
+                plan_ctx,
+                graph_schema,
+                collected_graph_joins,
+                joined_entities,
+            )
+        };
 
         let joins_added = collected_graph_joins.len() - joins_before;
-        eprintln!("    � ? Added {} joins", joins_added);
-        eprintln!("    � joined_entities after: {:?}", joined_entities);
+        eprintln!("    📊 Added {} joins", joins_added);
+        eprintln!("    📋 joined_entities after: {:?}", joined_entities);
         eprintln!("    +- infer_graph_join EXIT\n");
 
         result
