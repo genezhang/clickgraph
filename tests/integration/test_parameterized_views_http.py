@@ -3,9 +3,11 @@ Test parameterized views with ClickGraph HTTP API
 Tests multi-tenancy feature end-to-end
 """
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 
 # Load the schema first
 print("1. Loading multi-tenant schema...")

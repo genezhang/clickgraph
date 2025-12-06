@@ -2,6 +2,8 @@
 """Test multiple relationships with social_network schema"""
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import time
 
@@ -18,7 +20,7 @@ with open(schema_path, "r", encoding="utf-8") as f:
     schema_content = f.read()
 
 load_response = requests.post(
-    "http://localhost:8080/schemas/load",
+    f"{CLICKGRAPH_URL}/schemas/load",
     json={
         "schema_name": "social_network",
         "config_content": schema_content,
@@ -43,7 +45,7 @@ LIMIT 5
 print(f"\nTesting query: {query}\n")
 
 response = requests.post(
-    "http://localhost:8080/query",
+    f"{CLICKGRAPH_URL}/query",
     json={"query": query}
 )
 

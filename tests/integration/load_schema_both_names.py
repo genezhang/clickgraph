@@ -2,6 +2,8 @@
 """Load test schema into running server as both test_graph_schema and default."""
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import yaml
 
 # Load the test schema
@@ -14,7 +16,7 @@ print(f"Loading schema: {schema.get('name', 'N/A')}")
 
 # Load as test_graph_schema
 response = requests.post(
-    "http://localhost:8080/schemas/load",
+    f"{CLICKGRAPH_URL}/schemas/load",
     json={
         "schema_name": "test_graph_schema",
         "config_content": schema_content
@@ -28,7 +30,7 @@ else:
 
 # Also load as "default" to work around hardcoded schema lookup
 response2 = requests.post(
-    "http://localhost:8080/schemas/load",
+    f"{CLICKGRAPH_URL}/schemas/load",
     json={
         "schema_name": "default",
         "config_content": schema_content

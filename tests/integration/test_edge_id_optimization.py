@@ -4,9 +4,11 @@ Verifies that single-column edge_id avoids tuple() overhead
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 SCHEMA_NAME = "social_benchmark"  # Using benchmark schema with edge_id
 
 def execute_cypher(query: str, schema_name: str = SCHEMA_NAME) -> dict:

@@ -8,10 +8,12 @@ before refactoring the property resolution logic.
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import sys
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 
 def run_query(query, description, sql_only=False):
     """Run a query and return result with status"""

@@ -10,10 +10,12 @@ Tests that verify:
 
 import pytest
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 
 
 def test_query_without_role():

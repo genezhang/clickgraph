@@ -5,6 +5,8 @@ Tests MATCH p = (a)-[r*]->(b) RETURN p, length(p), nodes(p), relationships(p)
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import sys
 
@@ -24,7 +26,7 @@ def test_path_variables():
     try:
         # Make request to ClickGraph server
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json=payload,
             headers={"Content-Type": "application/json"}
         )

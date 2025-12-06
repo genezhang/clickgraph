@@ -7,8 +7,9 @@ Tests both plain queries and parameterized queries with actual execution
 import requests
 import json
 import time
+import os
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
 def load_schema():
     """Load the social network demo schema"""

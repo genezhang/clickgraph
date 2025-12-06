@@ -4,6 +4,8 @@ Test OPTIONAL MATCH queries with ViewScan implementation.
 Verifies that LEFT JOIN works correctly with view-based table names.
 """
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
 def test_query(query, description):
@@ -15,7 +17,7 @@ def test_query(query, description):
     
     try:
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json={"query": query},
             headers={"Content-Type": "application/json"},
             timeout=10

@@ -14,9 +14,11 @@ This schema tests complex patterns:
 
 import pytest
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 SCHEMA_NAME = "security_graph"
 
 

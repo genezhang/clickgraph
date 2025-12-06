@@ -6,6 +6,9 @@ Tests Neo4j Python driver connecting to ClickGraph via Bolt protocol
 
 from neo4j import GraphDatabase
 import sys
+import os
+
+BOLT_URL = os.getenv("BOLT_URL", "bolt://localhost:7687")
 
 def print_section(title):
     print("\n" + "="*60)
@@ -17,7 +20,7 @@ def test_connection():
     print_section("TEST 1: Basic Connection")
     try:
         driver = GraphDatabase.driver(
-            "bolt://localhost:7687",
+            BOLT_URL,
             auth=("neo4j", "password"),
             database="ecommerce_demo"  # Specify the schema to use
         )
@@ -138,7 +141,7 @@ def main():
     
     # Create driver for subsequent tests
     driver = GraphDatabase.driver(
-        "bolt://localhost:7687",
+        BOLT_URL,
         auth=("neo4j", "password"),
         database="ecommerce_demo"  # Use the loaded schema
     )

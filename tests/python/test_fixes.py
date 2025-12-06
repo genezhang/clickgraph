@@ -2,9 +2,11 @@
 """Quick test of the bug fixes for variable-length paths, shortest path, and aggregation."""
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
-SERVER_URL = "http://localhost:8080/query"
+SERVER_URL = f"{CLICKGRAPH_URL}/query"
 
 test_queries = [
     {

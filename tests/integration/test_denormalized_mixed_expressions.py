@@ -7,9 +7,11 @@ need edge context to resolve properties correctly.
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 
 def test_denormalized_where_mixed_expression():
     """Test WHERE clause with mixed FROM/TO properties in expression"""

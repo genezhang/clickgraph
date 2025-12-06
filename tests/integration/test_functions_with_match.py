@@ -3,8 +3,10 @@
 Test Neo4j functions in actual graph queries (not standalone RETURN)
 """
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
-API_URL = "http://localhost:8080/query"
+API_URL = f"{CLICKGRAPH_URL}/query"
 
 def test_with_match(cypher_query, description):
     """Test a function in a MATCH query"""

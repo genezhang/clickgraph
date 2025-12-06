@@ -2,9 +2,11 @@
 """Test relationship query SQL generation after graph_context fix."""
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
-BASE_URL = "http://localhost:8080/query"
+BASE_URL = f"{CLICKGRAPH_URL}/query"
 
 test_cases = [
     {

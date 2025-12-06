@@ -4,9 +4,11 @@ Test that queries with errors are NOT cached
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import time
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 
 def test_parse_error_not_cached():
     """Test that parse errors don't get cached"""

@@ -2,6 +2,8 @@
 """Quick test for multiple relationship types"""
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
 def test_query(query_str, description):
@@ -11,7 +13,7 @@ def test_query(query_str, description):
     print(f"Query:\n{query_str}\n")
     
     response = requests.post(
-        "http://localhost:8080/query",
+        f"{CLICKGRAPH_URL}/query",
         json={"query": query_str}
     )
     

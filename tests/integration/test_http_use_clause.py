@@ -1,8 +1,10 @@
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
 # Test USE clause via HTTP API
 response = requests.post(
-    "http://localhost:8080/query",
+    f"{CLICKGRAPH_URL}/query",
     json={"query": "USE ecommerce_demo MATCH (c:Customer) RETURN c.first_name AS name LIMIT 1"}
 )
 

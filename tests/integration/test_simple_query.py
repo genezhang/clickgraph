@@ -2,11 +2,13 @@
 """Test simple query to debug schema issues."""
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
 # Shortest path query
 response = requests.post(
-    "http://localhost:8080/query",
+    f"{CLICKGRAPH_URL}/query",
     json={
         "query": """
             MATCH path = shortestPath((a:User)-[:FOLLOWS*]-(b:User))

@@ -10,9 +10,11 @@ This test verifies:
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 
 def test_use_clause_override_parameter():
     """Test that USE clause overrides schema_name parameter"""

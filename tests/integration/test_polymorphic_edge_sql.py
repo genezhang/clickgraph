@@ -10,10 +10,12 @@ Expected behavior:
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import sys
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 SCHEMA_PATH = "schemas/examples/social_polymorphic.yaml"
 
 def get_sql(cypher: str) -> str:

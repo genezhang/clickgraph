@@ -6,11 +6,13 @@ null values correctly for unmatched patterns.
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import sys
 
 # ClickGraph server URL
-SERVER_URL = "http://localhost:8080"
+SERVER_URL = f"{CLICKGRAPH_URL}"
 
 def send_query(cypher_query):
     """Send a Cypher query to ClickGraph and return the response."""

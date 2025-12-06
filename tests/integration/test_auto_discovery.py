@@ -19,9 +19,11 @@ Status: API endpoints verified working (Nov 18, 2025)
 import os
 import pytest
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import yaml
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 
 # Expected benchmark schema columns (based on social_benchmark.yaml setup)
 EXPECTED_USER_COLUMNS = {

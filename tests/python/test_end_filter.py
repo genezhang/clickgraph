@@ -1,4 +1,6 @@
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
 # Test end node filter specifically
@@ -6,7 +8,7 @@ query = 'MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE b.name = "David Lee" RET
 payload = {'query': query}
 
 try:
-    response = requests.post('http://localhost:8080/query', json=payload, timeout=10)
+    response = requests.post(f'{CLICKGRAPH_URL}/query', json=payload, timeout=10)
     print(f"Status Code: {response.status_code}")
     print(f"Response Text: {response.text}")
 

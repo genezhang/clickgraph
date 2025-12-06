@@ -7,9 +7,11 @@ causing ClickHouse error: "Unknown expression or function identifier `u1.user_id
 Expected: Complete JOIN chain with all intermediate nodes
 """
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 
 def test_multi_hop_anonymous_intermediate():
     """Test: (u1)-[:FOLLOWS]->()-[:FOLLOWS]->(u2) with anonymous intermediate node"""

@@ -14,20 +14,35 @@ Test groups:
 - Common patterns: Neighbors, counting, existence checks
 """
 
+import os
 import pytest
 import requests
 from typing import Dict, Any
 
 # Test configuration
-BASE_URL = "http://localhost:8080"
+BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 QUERY_ENDPOINT = f"{BASE_URL}/query"
 
 
 def execute_query(cypher: str) -> Dict[str, Any]:
-    """Execute a Cypher query against ClickGraph."""
-    response = requests.post(QUERY_ENDPOINT, json={"query": cypher})
+    """Execute a Cypher query against ClickGraph.
+    
+    Returns normalized result with:
+    - success: True if 'results' key exists, False if 'error' key exists
+    - data: The results array (alias for 'results')
+    - error: Error message if any
+    """
+    response = requests.post(QUERY_ENDPOINT, json={"query": cypher, "schema_name": "social_benchmark"})
     response.raise_for_status()
-    return response.json()
+    raw = response.json()
+    
+    # Normalize response format
+    if "results" in raw:
+        return {"success": True, "data": raw["results"]}
+    elif "error" in raw:
+        return {"success": False, "error": raw["error"]}
+    else:
+        return {"success": False, "data": [], "error": "Unknown response format"}
 
 
 # ============================================================================

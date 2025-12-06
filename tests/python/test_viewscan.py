@@ -1,4 +1,6 @@
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
 # Test ViewScan query
@@ -7,7 +9,7 @@ query = {
 }
 
 try:
-    response = requests.post('http://localhost:8080/query', json=query)
+    response = requests.post(f'{CLICKGRAPH_URL}/query', json=query)
     print("Status Code:", response.status_code)
     print("\nResponse:")
     print(json.dumps(response.json(), indent=2))

@@ -9,11 +9,13 @@ This test validates that ClickGraph correctly generates filter clauses for polym
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import sys
 
 # Test configuration
-SERVER_URL = "http://localhost:8080"
+SERVER_URL = f"{CLICKGRAPH_URL}"
 
 def test_polymorphic_edge_query(query: str, expected_filter: str, description: str) -> bool:
     """

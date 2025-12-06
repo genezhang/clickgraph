@@ -3,6 +3,8 @@
 Test path variable SQL generation
 """
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import sys
 
@@ -45,7 +47,7 @@ def test_query(query_obj):
     
     try:
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json={"query": query_obj['query']},
             timeout=10
         )

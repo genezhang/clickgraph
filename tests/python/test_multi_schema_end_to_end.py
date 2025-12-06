@@ -7,10 +7,12 @@ It creates two schemas with different table mappings for the same label "User".
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 from pathlib import Path
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 
 # Schema 1: Maps User -> test_integration.users
 SCHEMA1_YAML = """

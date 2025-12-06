@@ -6,6 +6,8 @@ MATCH (c:Customer)-[:PURCHASED|PLACED_ORDER|ORDER_CONTAINS|REVIEWED]->(target) R
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import sys
 
@@ -27,7 +29,7 @@ def test_multiple_relationships():
     try:
         # Make request to ClickGraph server
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json=payload,
             headers={"Content-Type": "application/json"}
         )
@@ -92,7 +94,7 @@ def test_three_relationships():
 
     try:
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json=payload,
             headers={"Content-Type": "application/json"}
         )

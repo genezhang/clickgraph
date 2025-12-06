@@ -77,7 +77,7 @@ def denormalized_flights_graph(clickhouse_client, test_database):
         schema_content = f.read()
     
     response = requests.post(
-        'http://localhost:8080/schemas/load',
+        f'{CLICKGRAPH_URL}/schemas/load',
         json={
             'schema_name': 'denormalized_flights_test',
             'config_content': schema_content

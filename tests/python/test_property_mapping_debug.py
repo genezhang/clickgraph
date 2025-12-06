@@ -4,6 +4,8 @@ Test script to reproduce the property mapping issue in multi-variable queries.
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
 def test_property_mapping():
@@ -24,7 +26,7 @@ def test_property_mapping():
 
     try:
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json={"query": query},
             headers={"Content-Type": "application/json"}
         )
@@ -56,7 +58,7 @@ def test_property_mapping():
 
     try:
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json={"query": query_a},
             headers={"Content-Type": "application/json"}
         )
@@ -85,7 +87,7 @@ def test_property_mapping():
 
     try:
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json={"query": query_b},
             headers={"Content-Type": "application/json"}
         )

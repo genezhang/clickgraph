@@ -5,9 +5,11 @@ This is what originally triggered the debugging session
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 
 def test_shortest_path_query(description, query, check_strings):
     print(f"\n{'='*80}")

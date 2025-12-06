@@ -9,8 +9,10 @@ injected into the WHERE clause of generated SQL queries.
 import requests
 import json
 import sys
+import os
 
-ENDPOINT = "http://localhost:8080/query"
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+ENDPOINT = f"{CLICKGRAPH_URL}/query"
 HEADERS = {"Content-Type": "application/json"}
 
 def query_sql_only(cypher: str, schema_name: str = None):

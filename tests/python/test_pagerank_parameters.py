@@ -5,6 +5,8 @@ Tests all parameter combinations and edge cases.
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import time
 import sys
@@ -12,7 +14,7 @@ import sys
 def test_pagerank_parameters():
     """Test various PageRank parameter combinations"""
 
-    base_url = "http://localhost:8080"
+    base_url = f"{CLICKGRAPH_URL}"
 
     test_cases = [
         # Test 1: Basic graph parameter (backward compatibility)

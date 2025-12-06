@@ -5,12 +5,14 @@ Tests what happens when both 'graph' and 'nodeLabels' are specified.
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
 def test_parameter_precedence():
     """Test parameter precedence when both graph and nodeLabels are specified"""
 
-    base_url = "http://localhost:8080"
+    base_url = f"{CLICKGRAPH_URL}"
 
     # Test: Both graph and nodeLabels specified
     # According to current implementation, nodeLabels should take precedence

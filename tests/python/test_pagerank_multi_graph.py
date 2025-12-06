@@ -4,13 +4,15 @@ Test script for PageRank multi-graph support
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import time
 
 def test_pagerank_multi_graph():
     """Test PageRank with different graph specifications"""
 
-    base_url = "http://localhost:8080"
+    base_url = f"{CLICKGRAPH_URL}"
 
     # Test 1: PageRank without graph parameter (should default to User)
     print("Test 1: PageRank without graph parameter")

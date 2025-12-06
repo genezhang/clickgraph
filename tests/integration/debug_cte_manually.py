@@ -1,5 +1,7 @@
 import clickhouse_connect
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
 # Connect to ClickHouse
 client = clickhouse_connect.get_client(
@@ -117,7 +119,7 @@ except Exception as e:
 
 # Now test via ClickGraph
 print("\n=== Test 3: Query via ClickGraph ===")
-response = requests.post('http://localhost:8080/query', json={
+response = requests.post(f'{CLICKGRAPH_URL}/query', json={
     'query': '''
         MATCH path = shortestPath((a:User)-[:FOLLOWS*]-(b:User))
         WHERE a.name = "Alice" AND b.name = "Eve"

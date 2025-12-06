@@ -2,11 +2,13 @@
 """Test script for query cache functionality."""
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import time
 import yaml
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = f"{CLICKGRAPH_URL}"
 
 def load_schema():
     """Load social network schema."""

@@ -14,6 +14,8 @@ The fix ensures:
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import sys
 
 def test_query(name, query, expected_rows, expected_contains=None):
@@ -22,7 +24,7 @@ def test_query(name, query, expected_rows, expected_contains=None):
     print(f"TEST: {name}")
     print(f"{'='*60}")
     
-    response = requests.post('http://localhost:8080/query', json={
+    response = requests.post(f'{CLICKGRAPH_URL}/query', json={
         'query': query,
         'schema_name': 'test_graph_schema'
     })

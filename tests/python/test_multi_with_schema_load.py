@@ -2,6 +2,8 @@
 """Load schema and test multiple relationships"""
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import time
 
@@ -18,7 +20,7 @@ with open(schema_path, "r", encoding="utf-8") as f:
     schema_content = f.read()
 
 load_response = requests.post(
-    "http://localhost:8080/schemas/load",
+    f"{CLICKGRAPH_URL}/schemas/load",
     json={
         "schema_name": "test_multi_rel_schema",
         "config_content": schema_content,
@@ -44,7 +46,7 @@ print(f"\nTesting query...")
 print(f"Query: {query}\n")
 
 response = requests.post(
-    "http://localhost:8080/query",
+    f"{CLICKGRAPH_URL}/query",
     json={"query": query}
 )
 

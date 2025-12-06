@@ -1,4 +1,6 @@
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
 # Test path variables query
@@ -9,7 +11,7 @@ LIMIT 5
 """
 
 response = requests.post(
-    "http://localhost:8080/query",
+    f"{CLICKGRAPH_URL}/query",
     json={"query": query},
     headers={"Content-Type": "application/json"}
 )

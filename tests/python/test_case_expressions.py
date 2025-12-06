@@ -5,6 +5,8 @@ Tests both simple CASE (CASE x WHEN val THEN result) and searched CASE (CASE WHE
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import sys
 import os
@@ -82,7 +84,7 @@ def test_case_expressions():
         print("\nTesting simple CASE expression...")
         print(f"Query: {simple_case_query.strip()}")
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json={"query": simple_case_query},
             headers={"Content-Type": "application/json"}
         )
@@ -99,7 +101,7 @@ def test_case_expressions():
         print("\nTesting searched CASE expression...")
         print(f"Query: {searched_case_query.strip()}")
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json={"query": searched_case_query},
             headers={"Content-Type": "application/json"}
         )
@@ -116,7 +118,7 @@ def test_case_expressions():
         print("\nTesting CASE expression in WHERE clause...")
         print(f"Query: {case_in_where_query.strip()}")
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json={"query": case_in_where_query},
             headers={"Content-Type": "application/json"}
         )
@@ -133,7 +135,7 @@ def test_case_expressions():
         print("\nTesting CASE expression inside a function...")
         print(f"Query: {case_in_function_query.strip()}")
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json={"query": case_in_function_query},
             headers={"Content-Type": "application/json"}
         )
@@ -150,7 +152,7 @@ def test_case_expressions():
         print("\nTesting CASE expression in complex expression...")
         print(f"Query: {case_in_complex_query.strip()}")
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{CLICKGRAPH_URL}/query",
             json={"query": case_in_complex_query},
             headers={"Content-Type": "application/json"}
         )

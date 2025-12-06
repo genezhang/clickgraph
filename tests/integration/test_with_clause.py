@@ -5,10 +5,12 @@ Tests various WITH clause patterns including chaining with multiple MATCHes
 """
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 import sys
 
-SERVER_URL = "http://localhost:8080"
+SERVER_URL = f"{CLICKGRAPH_URL}"
 
 class TestResult:
     def __init__(self):

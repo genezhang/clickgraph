@@ -3,9 +3,11 @@
 Load schema and test Neo4j functions with actual graph data
 """
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
-API_URL = "http://localhost:8080"
+API_URL = f"{CLICKGRAPH_URL}"
 
 def load_schema():
     """Load the social network schema"""

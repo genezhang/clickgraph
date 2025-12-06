@@ -2,6 +2,8 @@
 """Test multiple relationship types with schema-only approach."""
 
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
 # Test query with single relationship first (to verify ViewScan fix works)
@@ -18,7 +20,7 @@ print()
 
 try:
     response = requests.post(
-        "http://localhost:8080/query",
+        f"{CLICKGRAPH_URL}/query",
         json={"query": query, "sql_only": True},  # Get SQL to debug
         headers={"Content-Type": "application/json"},
         timeout=10

@@ -1,8 +1,10 @@
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
 # Test just FRIENDS_WITH to see if it works
 query = {'query': 'MATCH (a:User)-[:FRIENDS_WITH]->(b:User) RETURN a.name, b.name'}
-r = requests.post('http://localhost:8080/query', json=query, timeout=10)
+r = requests.post(f'{CLICKGRAPH_URL}/query', json=query, timeout=10)
 print('FRIENDS_WITH query:')
 print(f'Status: {r.status_code}')
 if r.status_code == 200:

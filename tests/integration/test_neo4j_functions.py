@@ -3,9 +3,11 @@
 Test script for Neo4j function support
 """
 import requests
+import os
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
-API_URL = "http://localhost:8080/query"
+API_URL = f"{CLICKGRAPH_URL}/query"
 
 def test_function(cypher_query, description):
     """Test a single function and print results"""
