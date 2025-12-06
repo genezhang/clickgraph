@@ -2,6 +2,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     graph_catalog::graph_schema::{edge_has_node_properties, GraphSchema, is_node_denormalized_on_edge, NodeSchema, RelationshipSchema},
+    graph_catalog::pattern_schema::{PatternSchemaContext, JoinStrategy, NodeAccessStrategy},
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
@@ -1719,6 +1720,101 @@ impl GraphJoinInference {
         result
     }
 
+    // ========================================================================
+    // PatternSchemaContext Integration (Phase 2)
+    // ========================================================================
+    
+    /// Compute PatternSchemaContext for a GraphRel.
+    /// 
+    /// This is the bridge between the logical plan (GraphRel) and the unified
+    /// schema abstraction (PatternSchemaContext). Once computed, the context
+    /// can be used for exhaustive pattern matching instead of scattered detection.
+    /// 
+    /// # Arguments
+    /// * `graph_rel` - The relationship pattern from the logical plan
+    /// * `plan_ctx` - Planning context with table contexts
+    /// * `graph_schema` - The graph schema for schema lookups
+    /// * `prev_edge_info` - Info about previous edge for multi-hop patterns
+    /// 
+    /// # Returns
+    /// * `Some(PatternSchemaContext)` - If schemas can be resolved
+    /// * `None` - If node/relationship schemas cannot be found (anonymous patterns)
+    #[allow(dead_code)]
+    fn compute_pattern_context(
+        &self,
+        graph_rel: &GraphRel,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+        prev_edge_info: Option<(&str, &str, bool)>,
+    ) -> Option<PatternSchemaContext> {
+        // 1. Get node labels from plan_ctx
+        let left_alias = &graph_rel.left_connection;
+        let right_alias = &graph_rel.right_connection;
+        
+        let left_ctx = plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone())).ok()?;
+        let right_ctx = plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone())).ok()?;
+        
+        let left_label = left_ctx.get_label_str().ok()?;
+        let right_label = right_ctx.get_label_str().ok()?;
+        
+        // 2. Get relationship type(s) from labels
+        let rel_types: Vec<String> = graph_rel.labels.as_ref()
+            .map(|labels| labels.clone())
+            .unwrap_or_default();
+        
+        if rel_types.is_empty() {
+            eprintln!("    ⚠️ compute_pattern_context: no relationship types found");
+            return None;
+        }
+        
+        // 3. Look up schemas
+        let left_node_schema = graph_schema.get_node_schema_opt(&left_label)?;
+        let right_node_schema = graph_schema.get_node_schema_opt(&right_label)?;
+        let rel_schema = graph_schema.get_relationships_schema_opt(&rel_types[0])?;
+        
+        // 4. Compute PatternSchemaContext
+        let ctx = PatternSchemaContext::analyze(
+            left_node_schema,
+            right_node_schema,
+            rel_schema,
+            graph_schema,
+            &graph_rel.alias,
+            rel_types,
+            prev_edge_info,
+        );
+        
+        eprintln!("    ✅ compute_pattern_context: {}", ctx.debug_summary());
+        Some(ctx)
+    }
+    
+    /// Log the pattern context for debugging purposes.
+    /// This helps verify that the new abstraction correctly identifies schema patterns.
+    #[allow(dead_code)]
+    fn log_pattern_context_comparison(
+        &self,
+        graph_rel: &GraphRel,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+    ) {
+        if let Some(ctx) = self.compute_pattern_context(graph_rel, plan_ctx, graph_schema, None) {
+            eprintln!("    📊 PatternSchemaContext for {}:", graph_rel.alias);
+            eprintln!("       Left node:  {}", match &ctx.left_node {
+                NodeAccessStrategy::OwnTable { table, .. } => format!("OwnTable({})", table),
+                NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => format!("Embedded({})", edge_alias),
+                NodeAccessStrategy::Virtual { label } => format!("Virtual({})", label),
+            });
+            eprintln!("       Right node: {}", match &ctx.right_node {
+                NodeAccessStrategy::OwnTable { table, .. } => format!("OwnTable({})", table),
+                NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => format!("Embedded({})", edge_alias),
+                NodeAccessStrategy::Virtual { label } => format!("Virtual({})", label),
+            });
+            eprintln!("       Join:       {}", ctx.join_strategy.description());
+            eprintln!("       Rel types:  {:?}", ctx.rel_types);
+        } else {
+            eprintln!("    📊 PatternSchemaContext: Unable to compute (missing schemas)");
+        }
+    }
+
     fn infer_graph_join(
         &self,
         graph_rel: &GraphRel,
@@ -1737,6 +1833,10 @@ impl GraphJoinInference {
             graph_rel.left_connection, graph_rel.right_connection
         );
         eprintln!("    � joined_entities before: {:?}", joined_entities);
+
+        // Phase 2: Log PatternSchemaContext for validation
+        // This compares the new unified abstraction against the old detection logic
+        self.log_pattern_context_comparison(graph_rel, plan_ctx, graph_schema);
 
         // Skip join inference for TRULY variable-length paths (need recursive CTEs)
         // But DO process fixed-length patterns (*1, *2, *3) - they use inline JOINs
