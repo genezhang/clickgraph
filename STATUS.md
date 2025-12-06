@@ -4,6 +4,42 @@
 
 ## 🆕 **Recent Updates** - December 7, 2025
 
+### ✅ Unified Schema Abstraction (Phase 4 Complete)
+**New `PatternSchemaContext` provides clean, exhaustive schema pattern handling!**
+
+- **Problem**: 4,800+ lines in `graph_join_inference.rs` with scattered detection functions and nested conditionals for different schema types
+- **Solution**: Created unified abstraction that computes schema context ONCE per pattern
+
+- **New Types** (in `src/graph_catalog/pattern_schema.rs`):
+  ```rust
+  NodeAccessStrategy: OwnTable | EmbeddedInEdge | Virtual
+  EdgeAccessStrategy: SeparateTable | Polymorphic | FkEdge
+  JoinStrategy: Traditional | SingleTableScan | MixedAccess | EdgeToEdge | CoupledSameRow | FkEdgeJoin
+  ```
+
+- **Runtime Toggle**: `USE_PATTERN_SCHEMA_V2=1` enables v2 code path for A/B testing
+- **All 588 tests pass** with both v1 and v2 paths
+- **Identical SQL output** between v1 and v2 for Traditional pattern
+
+- **Progress**:
+  - ✅ Phase 1: PatternSchemaContext types created
+  - ✅ Phase 2: Integration helpers
+  - ✅ Phase 3: handle_graph_pattern_v2() with exhaustive matching
+  - ✅ Phase 3.5: FkEdgeJoin strategy for FK-edge patterns
+  - ✅ Phase 4: Wire up v2 with env toggle - tested and working
+  - ⏳ Phase 5: Test more schema variations, make v2 default
+
+- **Benefits**:
+  - Exhaustive `match` prevents "forgot this case" bugs
+  - Single point of schema analysis instead of scattered checks
+  - Clear intent, clean code structure
+  - Easy to add new schema types (add enum variant, compiler shows all places to update)
+
+- **Files**: `src/graph_catalog/pattern_schema.rs`, `src/query_planner/analyzer/graph_join_inference.rs`
+- **Documentation**: `notes/unified-schema-abstraction-proposal.md`
+
+---
+
 ### ✅ Single-Node Patterns for Denormalized Schemas Fixed
 **Multi-table UNION for nodes appearing in multiple tables now supported!**
 
