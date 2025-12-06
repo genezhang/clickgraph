@@ -233,25 +233,31 @@ No more forgetting edge cases!
 
 ## Implementation Plan
 
-### Phase 1: Create Unified Types (Low Risk)
+### Phase 1: Create Unified Types (Low Risk) ✅ DONE
 
 1. Add `PatternSchemaContext` and related types to `src/graph_catalog/pattern_schema.rs`
 2. Implement `PatternSchemaContext::analyze()` using existing detection functions
 3. Add comprehensive unit tests for all schema combinations
 
-### Phase 2: Parallel Path (Safe Refactor)
+### Phase 2: Parallel Path (Safe Refactor) ✅ DONE
 
-1. Add new `infer_graph_join_v2()` that uses `PatternSchemaContext`
-2. Run BOTH old and new paths, compare outputs
-3. Gradually migrate call sites to new path
+1. Add new `compute_pattern_context()` that bridges GraphRel → PatternSchemaContext
+2. Add logging to compare new vs old detection logic
+3. Wire into `infer_graph_join()` entry point
 
-### Phase 3: Simplify `graph_join_inference.rs`
+### Phase 3: Add `handle_graph_pattern_v2()` ✅ DONE
 
-1. Replace scattered detection logic with `PatternSchemaContext` usage
-2. Use exhaustive `match` statements
-3. Target: reduce from 4800+ lines to ~2000 lines
+1. Create `handle_graph_pattern_v2()` using exhaustive pattern matching
+2. Handle all `JoinStrategy` variants with clean match arms
+3. Add FK-edge pattern support (`FkEdgeJoin` strategy)
 
-### Phase 4: Cleanup
+### Phase 4: Wire Up and Validate (IN PROGRESS)
+
+1. Wire `handle_graph_pattern_v2()` to `infer_graph_join()`
+2. Test all schema variations
+3. Remove old code path once validated
+
+### Phase 5: Cleanup
 
 1. Remove duplicate detection functions
 2. Update documentation
@@ -259,20 +265,72 @@ No more forgetting edge cases!
 
 ---
 
-## Schema Combination Matrix
+## Complete Schema Variation Matrix
 
-The unified abstraction should handle ALL combinations:
+The unified abstraction handles ALL these combinations:
 
-| Left Node | Right Node | Edge | Join Strategy | Example |
-|-----------|------------|------|---------------|---------|
-| OwnTable | OwnTable | Separate | Traditional | users→follows→users |
-| OwnTable | OwnTable | Polymorphic | Traditional + Filter | users→interactions→posts |
-| Embedded | Embedded | Same Table | SingleTableScan | airports→flights→airports |
-| Embedded | Embedded | Same Table (multi-hop) | EdgeToEdge | airport→f1→airport→f2→airport |
-| OwnTable | Embedded | Same Table | MixedAccess | user→flights→airports |
-| Embedded | OwnTable | Same Table | MixedAccess | airports→flights→user |
-| Virtual ($any) | OwnTable | Polymorphic | Traditional + Filter | ?→interactions→users |
-| Embedded | Embedded | Coupled | CoupledSameRow | ip→dns→domain→dns→resolved |
+### Node Data Location Strategies
+
+| Strategy | Description | SQL Pattern | Example |
+|----------|-------------|-------------|---------|
+| `OwnTable` | Node has dedicated table | `JOIN node_table` | users, posts |
+| `EmbeddedInEdge` | Properties in edge table | Read from edge columns | airports in flights |
+| `Virtual` | Polymorphic $any | Runtime label resolution | `?` node in polymorphic query |
+
+### Edge Data Location Strategies
+
+| Strategy | Description | SQL Pattern | Example |
+|----------|-------------|-------------|---------|
+| `SeparateTable` | Standard edge table | `FROM edge_table` | follows, likes |
+| `Polymorphic` | Type discriminator column | `WHERE type = 'X'` | interactions table |
+| `FkEdge` | FK column on node table | No separate edge table | parent_id, customer_id |
+
+### Join Strategies
+
+| Strategy | Description | SQL Generated | When Used |
+|----------|-------------|---------------|-----------|
+| `Traditional` | node→edge→node | 2-3 JOINs | Separate tables |
+| `SingleTableScan` | All from one table | No JOINs | Fully denormalized |
+| `MixedAccess` | One node embedded | 1 JOIN | Mixed schema |
+| `EdgeToEdge` | Edge-to-edge JOIN | `e2.col = e1.col` | Multi-hop denormalized |
+| `CoupledSameRow` | Alias unification | No additional JOIN | Coupled edges |
+| `FkEdgeJoin` | FK self-join | `child.fk = parent.id` | Hierarchical/FK patterns |
+
+### Full Combination Matrix
+
+| # | Left Node | Right Node | Edge | Join Strategy | Real-World Example |
+|---|-----------|------------|------|---------------|-------------------|
+| 1 | OwnTable | OwnTable | Separate | Traditional | `(u:User)-[:FOLLOWS]->(f:User)` |
+| 2 | OwnTable | OwnTable | Polymorphic | Traditional+Filter | `(u:User)-[:LIKES]->(p:Post)` |
+| 3 | OwnTable | OwnTable | FkEdge (self) | FkEdgeJoin | `(c:Object)-[:PARENT]->(p:Object)` |
+| 4 | OwnTable | OwnTable | FkEdge (cross) | FkEdgeJoin | `(o:Order)-[:PLACED_BY]->(c:Customer)` |
+| 5 | Embedded | Embedded | Same Table | SingleTableScan | `(a:Airport)-[:FLIGHT]->(b:Airport)` |
+| 6 | Embedded | Embedded | Same (multi-hop) | EdgeToEdge | `(a)-[f1:FLIGHT]->(b)-[f2:FLIGHT]->(c)` |
+| 7 | Embedded | Embedded | Coupled | CoupledSameRow | `(ip)-[:DNS]->(domain)-[:RESOLVED]->(resolved_ip)` |
+| 8 | OwnTable | Embedded | Mixed | MixedAccess(Right) | `(u:User)-[:PILOTED]->(a:Airport)` |
+| 9 | Embedded | OwnTable | Mixed | MixedAccess(Left) | `(a:Airport)-[:PILOTED_BY]->(u:User)` |
+| 10 | Virtual | OwnTable | Polymorphic | Traditional+Filter | `(?)-[:INTERACTION]->(u:User)` |
+| 11 | OwnTable | Virtual | Polymorphic | Traditional+Filter | `(u:User)-[:INTERACTION]->(?)` |
+| 12 | Virtual | Virtual | Polymorphic | Varies | `(?)-[:INTERACTION]->(?)` |
+
+### UNION ALL Cases (Handled at CTE Level, Not Join Level)
+
+| Pattern | Description | SQL Generated |
+|---------|-------------|---------------|
+| `[:TYPE1\|TYPE2]` | Multiple rel types | `UNION ALL` of type CTEs |
+| `(a)-[r]-(b)` | Bidirectional | `UNION ALL` of both directions |
+| `(n:Label)` standalone | Multi-source label | `UNION ALL` across sources |
+
+---
+
+## Key Abstraction Principle
+
+**Where is the table and properties?** → Determines `NodeAccessStrategy` and `EdgeAccessStrategy`
+
+**What SQL operation is needed?** → Determines `JoinStrategy`:
+- **JOIN**: Separate tables need explicit joins
+- **UNION ALL**: Multiple sources/types need union (handled at CTE level)
+- **None**: Same table, just read columns
 
 ---
 

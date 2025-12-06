@@ -2239,6 +2239,71 @@ impl GraphJoinInference {
                 
                 Ok(())
             }
+            
+            // ================================================================
+            // FkEdgeJoin: FK column on node table (self-ref or cross-table)
+            // ================================================================
+            JoinStrategy::FkEdgeJoin { fk_column, target_id_column, is_self_referencing } => {
+                eprintln!("    🔑 FkEdgeJoin: FK pattern (self_ref={})", is_self_referencing);
+                eprintln!("       {}.{} → target.{}", left_alias, fk_column, target_id_column);
+                
+                // FK-edge pattern: edge IS the node table with a FK column
+                // For self-referencing: (child)-[:PARENT]->(parent) both are same table
+                // For cross-table: (order)-[:PLACED_BY]->(customer) different tables
+                
+                // Determine anchor
+                let is_first_relationship = joined_entities.is_empty();
+                let left_is_anchor = is_first_relationship && !left_is_optional;
+                
+                // Get node ID columns
+                let left_id_col = match &ctx.left_node {
+                    NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
+                    _ => fk_column.clone(), // Fallback to FK column
+                };
+                let right_id_col = match &ctx.right_node {
+                    NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
+                    _ => target_id_column.clone(),
+                };
+                
+                // For FK-edge, left node IS the edge table
+                // Mark left as anchor if first relationship
+                if left_is_anchor {
+                    eprintln!("       LEFT '{}' is anchor (FK source)", left_alias);
+                    joined_entities.insert(left_alias.to_string());
+                }
+                
+                // For FK-edge, the "edge" shares the left node's table
+                // Mark the relationship as joined (it's conceptual, same as left)
+                joined_entities.insert(rel_alias.to_string());
+                
+                // JOIN: Right node (target of FK) to left node via FK column
+                // Pattern: SELECT * FROM left_table l JOIN right_table r ON r.id = l.fk_column
+                if !joined_entities.contains(right_alias) {
+                    let right_join = Join {
+                        table_name: right_cte_name.to_string(),
+                        table_alias: right_alias.to_string(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(right_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_id_col),
+                                }),
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(left_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(fk_column.clone()),
+                                }),
+                            ],
+                        }],
+                        join_type: Self::determine_join_type(right_is_optional),
+                        pre_filter: None,
+                    };
+                    collected_graph_joins.push(right_join);
+                    joined_entities.insert(right_alias.to_string());
+                }
+                
+                Ok(())
+            }
         }
     }
 

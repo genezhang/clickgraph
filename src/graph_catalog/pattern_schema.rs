@@ -322,6 +322,30 @@ pub enum JoinStrategy {
         /// The unified alias for both edges
         unified_alias: String,
     },
+
+    /// FK-edge pattern: edge is a foreign key column in the node table.
+    /// 
+    /// Self-referencing example (parent_id on same table):
+    /// ```sql
+    /// SELECT child.*, parent.*
+    /// FROM objects child
+    /// JOIN objects parent ON parent.object_id = child.parent_id
+    /// ```
+    /// 
+    /// Non-self-referencing example (order.customer_id → customer.id):
+    /// ```sql
+    /// SELECT o.*, c.* 
+    /// FROM orders o
+    /// JOIN customers c ON c.id = o.customer_id
+    /// ```
+    FkEdgeJoin {
+        /// The FK column on the source table (e.g., "parent_id", "customer_id")
+        fk_column: String,
+        /// The ID column on the target table (e.g., "object_id", "id")
+        target_id_column: String,
+        /// True if self-referencing (same table for both nodes)
+        is_self_referencing: bool,
+    },
 }
 
 impl JoinStrategy {
@@ -341,6 +365,13 @@ impl JoinStrategy {
             JoinStrategy::MixedAccess { .. } => "Mixed (partial JOIN)",
             JoinStrategy::EdgeToEdge { .. } => "Edge-to-edge (multi-hop denormalized)",
             JoinStrategy::CoupledSameRow { .. } => "Coupled (same row, no JOIN)",
+            JoinStrategy::FkEdgeJoin { is_self_referencing, .. } => {
+                if *is_self_referencing {
+                    "FK-edge self-join (same table)"
+                } else {
+                    "FK-edge (cross-table FK)"
+                }
+            }
         }
     }
 }
@@ -694,6 +725,19 @@ impl PatternSchemaContext {
                     }
                 }
             }
+        }
+
+        // Check for FK-edge pattern first (edge table IS a node table with FK column)
+        if rel_schema.is_fk_edge {
+            let is_self_referencing = rel_schema.from_node == rel_schema.to_node;
+            return (
+                JoinStrategy::FkEdgeJoin {
+                    fk_column: rel_schema.from_id.clone(),
+                    target_id_column: rel_schema.to_id.clone(),
+                    is_self_referencing,
+                },
+                None,
+            );
         }
 
         // No coupling - determine by edge pattern
