@@ -24,7 +24,7 @@
 #           "testmyids.com resolved_to 31.3.245.133"
 #           NOTE: Requires ARRAY JOIN to flatten the answers array
 
-name: zeek_dns_log
+name: zeek_dns
 version: "1.0"
 
 graph_schema:
@@ -33,27 +33,27 @@ graph_schema:
     - label: IP
       database: zeek
       table: dns_log
-      id_column: ip
+      id_column: ip_address
       property_mappings: {}
       
       from_node_properties:
-        ip: "id.orig_h"
+        ip_address: "id.orig_h"
       
       to_node_properties:
-        ip: "id.resp_h"  # Could be used for DNS server relationships
+        ip_address: "id.resp_h"  # Could be used for DNS server relationships
 
     # Domain node - queried domain names
     - label: Domain
       database: zeek
       table: dns_log  # Same table - domain is embedded
-      id_column: name
+      id_column: domain_name
       property_mappings: {}
       
       from_node_properties:
-        name: query  # When domain is source (in RESOLVED_TO)
+        domain_name: query  # When domain is source (in RESOLVED_TO)
       
       to_node_properties:
-        name: query  # When domain is target (in REQUESTED)
+        domain_name: query  # When domain is target (in REQUESTED)
 
     # ResolvedIP node - resolved IP addresses from answers array
     # NOTE: answers is an array - use UNWIND to flatten
@@ -104,4 +104,3 @@ graph_schema:
         timestamp: ts
         query: query
         ttl: ttl  # After ARRAY JOIN TTLs, individual TTL (if needed)
-        rcode: rcode_name

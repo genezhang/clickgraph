@@ -19,14 +19,12 @@ graph_schema:
         code: Origin
         city: OriginCityName
         state: OriginState
-        airport: OriginAirportName
       
       # Properties when Airport appears as destination (to_node)
       to_node_properties:
         code: Dest
         city: DestCityName
         state: DestState
-        airport: DestAirportName
 
   relationships:
     # Flight relationship - node properties declared in Airport node above
@@ -38,15 +36,14 @@ graph_schema:
       from_node: Airport
       to_node: Airport
       
-      # Composite edge ID (flights can repeat on different dates)
-      edge_id: [FlightDate, FlightNum, Origin, Dest]
+      # Composite edge ID
+      edge_id: [flight_id, flight_number]
       
       # Edge properties (specific to the flight itself)
       property_mappings:
-        flight_date: FlightDate
-        flight_num: FlightNum
-        carrier: Carrier
-        departure_time: DepTime
-        arrival_time: ArrTime
-        distance: Distance
-        delay: ArrDelay
+        flight_id: flight_id
+        flight_num: flight_number
+        carrier: airline
+        departure_time: dep_time
+        arrival_time: arr_time
+        distance: distance_miles

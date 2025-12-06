@@ -11,9 +11,8 @@ graph_schema:
       table: users
       id_column: user_id
       property_mappings:
-        name: username
+        name: name
         email: email
-        joined: created_at
 
     - label: Post
       database: brahmand
