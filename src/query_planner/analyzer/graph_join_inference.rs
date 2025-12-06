@@ -2524,7 +2524,7 @@ impl GraphJoinInference {
                             // This edge's column is from_id (left node connects to from_id)
                             let current_edge_col = rel_from_col.clone();
                             
-                            eprintln!("    🔹 MULTI-HOP JOIN: {}.{} = {}.{}", rel_alias, current_edge_col, prev_rel_alias, prev_edge_col);
+                            eprintln!("    🔹 MULTI-HOP JOIN: {}.{} = {}.{} (rel_is_optional={})", rel_alias, current_edge_col, prev_rel_alias, prev_edge_col, rel_is_optional);
                             
                             let polymorphic_filter = generate_polymorphic_edge_filter(
                                 rel_alias,
@@ -2549,7 +2549,7 @@ impl GraphJoinInference {
                                         }),
                                     ],
                                 }],
-                                join_type: JoinType::Inner,
+                                join_type: Self::determine_join_type(rel_is_optional),
                     pre_filter: polymorphic_filter,
                             };
                             collected_graph_joins.push(edge_to_edge_join);

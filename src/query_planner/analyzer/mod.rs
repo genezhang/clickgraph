@@ -131,9 +131,25 @@ pub fn final_analyzing(
     plan_ctx: &mut PlanCtx,
     _: &GraphSchema,
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
+    // Debug: Print projection items before sanitization
+    if let LogicalPlan::Projection(proj) = plan.as_ref() {
+        eprintln!("final_analyzing BEFORE sanitization: {} projection items", proj.items.len());
+        for (i, item) in proj.items.iter().enumerate() {
+            eprintln!("  item {}: expr={:?}", i, item.expression);
+        }
+    }
+    
     let plan_sanitization = PlanSanitization::new();
     let transformed_plan = plan_sanitization.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
+    
+    // Debug: Print projection items after sanitization
+    if let LogicalPlan::Projection(proj) = plan.as_ref() {
+        eprintln!("final_analyzing AFTER sanitization: {} projection items", proj.items.len());
+        for (i, item) in proj.items.iter().enumerate() {
+            eprintln!("  item {}: expr={:?}", i, item.expression);
+        }
+    }
 
     Ok(plan)
 }

@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 2  
-**Test Results**: 577/577 unit tests passing (100%)  
+**Active Issues**: 3  
+**Test Results**: 578/578 unit tests passing (100%)  
 **Integration Tests**: 48/51 passing for STANDARD schema (94%)  
 **Security Graph Tests**: 98/98 passing (100%)  
 **Last Updated**: December 5, 2025
@@ -10,6 +10,88 @@ For recently fixed issues, see [CHANGELOG.md](CHANGELOG.md).
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 > **Note**: Issue #2 (Cross-Table Patterns) is a fundamental limitation that affects cross-table analytics use cases. See workaround below.
+
+---
+
+## TODO: Denormalized Schema Query Patterns
+
+Issues discovered during `zeek_merged.yaml` testing (December 5, 2025):
+
+### ~~TODO-1: Cross-table OPTIONAL MATCH uses INNER JOIN instead of LEFT JOIN~~ ✅ FIXED
+**Fixed**: December 5, 2025  
+**Root Cause**: Multi-hop denormalized edge-to-edge JOIN was hardcoded to `JoinType::Inner`  
+**Fix**: Changed to use `Self::determine_join_type(rel_is_optional)` in `graph_join_inference.rs:2552`
+
+---
+
+### ~~TODO-2: Chained WITH clauses include unexpected fields~~ ✅ FIXED
+**Fixed**: December 5, 2025  
+**Root Cause**: When `TableAlias("src")` was converted to `PropertyAccessExp("src", "*")`, the `col_alias` was not set. Later when the alias was remapped to the edge alias, the original node context was lost.
+
+**Fix**: 
+1. In `projection_tagging.rs`: Set `col_alias = "src.*"` when converting TableAlias to wildcard PropertyAccessExp
+2. In `plan_builder.rs`: Use `col_alias` to recover original node name and lookup correct properties from `from_node_properties`
+
+**Query**: `MATCH (src:IP)-[:DNS_REQUESTED]->(d:Domain) WITH src, COUNT(d) AS dns_count RETURN src.ip, dns_count`  
+**Result**: Correctly generates SELECT with only src.ip (1 property) instead of all edge properties (6)
+
+---
+
+### TODO-3: Cross-table WITH correlation missing JOIN
+**Priority**: HIGH  
+**Status**: INVESTIGATED - Architectural Change Needed
+
+**Query**:
+```cypher
+MATCH (src:IP)-[r:DNS_REQUESTED]->(d:Domain) 
+WITH src.ip AS source_ip, d.name AS domain 
+MATCH (src2:IP)-[c:CONNECTED_TO]->(dest:IP) 
+WHERE src2.ip = source_ip 
+RETURN source_ip, domain, dest.ip
+```
+**Expected**: JOIN dns_log and conn_log with correlation  
+**Actual Generated**:
+```sql
+SELECT source_ip, domain, c."id.resp_h"
+FROM zeek.dns_log AS r
+WHERE c."id.orig_h" = source_ip
+```
+**Problem**: The `c` alias (conn_log table) is referenced in SELECT and WHERE but not JOINed.
+
+**Root Cause Analysis** (Dec 5, 2025):
+- Two independent graph patterns connected only by WHERE clause correlation
+- CartesianProduct logic bubbles up joins from both branches but doesn't JOIN them to each other
+- The correlation (`WHERE src2.ip = source_ip`) is treated as a filter, not a join condition
+- The second table (conn_log) needs to be explicitly JOINed or used in a subquery
+
+**Potential Fixes**:
+1. **Subquery approach**: Render first WITH clause as a subquery, JOIN second pattern to it
+2. **CROSS JOIN approach**: Generate explicit CROSS JOIN between tables with correlation in WHERE
+3. **CTE approach**: Use WITH clause (SQL) to materialize first result, join to it
+
+**Workaround**: Use shared variable pattern instead of WITH + correlation:
+```cypher
+-- This works because src is shared between patterns
+MATCH (src:IP)-[:DNS_REQUESTED]->(d:Domain), (src)-[:CONNECTED_TO]->(dest:IP)
+RETURN src.ip, d.name, dest.ip
+```
+
+---
+
+### ~~TODO-4: Node wildcard only expands one node~~ ✅ FIXED
+**Fixed**: December 5, 2025  
+**Root Cause**: Two issues:
+1. Parser's `parse_alphanumeric_with_underscore` rejected `*` as property name
+2. Wildcard expansion used edge alias lookup, losing distinction between `src.*` and `dest.*`
+
+**Fix**: 
+1. Added `parse_property_name()` in `expression.rs` that accepts `*`
+2. In `plan_builder.rs`, use `col_alias` ("src.*", "dest.*") to determine node role
+3. Added `get_properties_for_node_role()` helper to lookup from/to node properties
+4. Prefixed column aliases with original node name for clarity
+
+**Query**: `MATCH (src:IP)-[:CONNECTED_TO]->(dest:IP) RETURN src.*, dest.*`  
+**Result**: Correctly generates 4 columns: src.ip, src.port, dest.ip, dest.port
 
 ---
 

@@ -371,22 +371,38 @@ pub fn parse_list_literal(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     Ok((input, Expression::List(exprs)))
 }
 
+/// Parse a property name which can be either an identifier or a wildcard (*)
+fn parse_property_name(input: &str) -> IResult<&str, &str> {
+    nom::branch::alt((
+        nom::bytes::complete::tag("*"),
+        common::parse_alphanumeric_with_underscore,
+    ))
+    .parse(input)
+}
+
 pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let (input, property_access_pair) =
-        separated_list1(char('.'), common::parse_alphanumeric_with_underscore).parse(input)?;
-
-    if property_access_pair.len() != 2 {
-        return Err(nom::Err::Error(Error::new(input, ErrorKind::Float)));
-    }
-
-    let base = match parse_literal_or_variable_expression(property_access_pair[0]) {
+    // First part: the base (e.g., "src")
+    let (input, base_str) = common::parse_alphanumeric_with_underscore(input)?;
+    
+    // Then: a dot
+    let (input, _) = char('.')(input)?;
+    
+    // Then: the property name (can be identifier or *)
+    let (input, key_str) = parse_property_name(input)?;
+    
+    let base = match parse_literal_or_variable_expression(base_str) {
         Ok((_, Expression::Variable(base))) => base,
         _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
     };
 
-    let key = match parse_literal_or_variable_expression(property_access_pair[1]) {
-        Ok((_, Expression::Variable(key))) => key,
-        _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
+    // For wildcard (*), key is just "*"
+    let key = if key_str == "*" {
+        "*"
+    } else {
+        match parse_literal_or_variable_expression(key_str) {
+            Ok((_, Expression::Variable(key))) => key,
+            _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
+        }
     };
 
     let property_access = Expression::PropertyAccessExp(PropertyAccess { base, key });

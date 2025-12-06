@@ -346,6 +346,7 @@ impl RenderPlanBuilder for LogicalPlan {
         &self,
         alias: &str,
     ) -> RenderPlanBuilderResult<(Vec<(String, String)>, Option<String>)> {
+        eprintln!("DEBUG get_properties_with_table_alias: alias='{}', plan type={:?}", alias, std::mem::discriminant(self));
         match self {
             LogicalPlan::GraphNode(node) if node.alias == alias => {
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
@@ -402,6 +403,12 @@ impl RenderPlanBuilder for LogicalPlan {
                 // - Incoming: left_connection → to_node_properties, right_connection → from_node_properties
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
                     let is_incoming = rel.direction == Direction::Incoming;
+                    
+                    eprintln!("DEBUG GraphRel: alias='{}' checking left='{}', right='{}', rel_alias='{}', direction={:?}",
+                        alias, rel.left_connection, rel.right_connection, rel.alias, rel.direction);
+                    eprintln!("DEBUG GraphRel: from_node_properties={:?}, to_node_properties={:?}",
+                        scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
+                        scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()));
                     
                     // Check if BOTH nodes are denormalized on this edge
                     // If so, right_connection should use left_connection's alias (the FROM table)
@@ -1173,7 +1180,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 
                 let with_aliases = find_with_aliases(projection.input.as_ref());
                 if !with_aliases.is_empty() {
-                    println!("DEBUG: Found {} WITH aliases: {:?}", with_aliases.len(), with_aliases.keys().collect::<Vec<_>>());
+                    eprintln!("DEBUG: Found {} WITH aliases: {:?}", with_aliases.len(), with_aliases.keys().collect::<Vec<_>>());
                 }
 
                 let path_var = get_path_variable(&projection.input);
@@ -1182,12 +1189,14 @@ impl RenderPlanBuilder for LogicalPlan {
                 // This happens when users write `RETURN u` (returning whole node)
                 // The ProjectionTagging analyzer may convert this to `u.*`, OR it may leave it as TableAlias
                 let mut expanded_items = Vec::new();
-                for item in &projection.items {
+                eprintln!("DEBUG: Processing {} projection items", projection.items.len());
+                for (idx, item) in projection.items.iter().enumerate() {
+                    eprintln!("DEBUG: Projection item {}: expr={:?}, alias={:?}", idx, item.expression, item.col_alias);
                     // Check for TableAlias (u) - expand to all properties
                     if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) =
                         &item.expression
                     {
-                        println!(
+                        eprintln!(
                             "DEBUG: Found TableAlias {} - checking if should expand to properties",
                             alias.0
                         );
@@ -1231,28 +1240,39 @@ impl RenderPlanBuilder for LogicalPlan {
                     {
                         if prop.column.raw() == "*" {
                             // This is u.* - need to expand to all properties from schema
-                            println!(
-                                "DEBUG: Found wildcard property access {}.* - expanding to all properties",
-                                prop.table_alias.0
+                            // IMPORTANT: For denormalized nodes, the table_alias may have been converted
+                            // to the edge alias, but we can use col_alias to recover the original node name
+                            let original_alias = item.col_alias.as_ref()
+                                .and_then(|ca| ca.0.strip_suffix(".*"))
+                                .unwrap_or(&prop.table_alias.0);
+                            
+                            eprintln!(
+                                "DEBUG: Found wildcard property access {}.* - original alias: '{}', looking up properties",
+                                prop.table_alias.0, original_alias
                             );
 
                             // Get all properties AND the actual table alias to use
-                            if let Ok((properties, actual_table_alias)) =
-                                self.get_properties_with_table_alias(&prop.table_alias.0)
+                            // Try original alias first (for recovering denormalized node properties)
+                            let lookup_result = self.get_properties_with_table_alias(original_alias)
+                                .or_else(|_| self.get_properties_with_table_alias(&prop.table_alias.0));
+                            
+                            if let Ok((properties, actual_table_alias)) = lookup_result
                             {
                                 let table_alias_to_use = actual_table_alias.as_ref()
                                     .map(|s| crate::query_planner::logical_expr::TableAlias(s.clone()))
                                     .unwrap_or_else(|| prop.table_alias.clone());
                                 
-                                println!(
+                                eprintln!(
                                     "DEBUG: Expanding {}.* to {} properties (using table alias: {})",
-                                    prop.table_alias.0,
+                                    original_alias,
                                     properties.len(),
                                     table_alias_to_use.0
                                 );
 
                                 // Create a separate ProjectionItem for each property
+                                // Use original_alias as prefix for column names to disambiguate
                                 for (prop_name, col_name) in properties {
+                                    let col_alias_name = format!("{}.{}", original_alias, prop_name);
                                     expanded_items.push(ProjectionItem {
                                         expression: crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                             crate::query_planner::logical_expr::PropertyAccess {
@@ -1260,14 +1280,14 @@ impl RenderPlanBuilder for LogicalPlan {
                                                 column: PropertyValue::Column(col_name),
                                             }
                                         ),
-                                        col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(prop_name)),
+                                        col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(col_alias_name)),
                                     });
                                 }
                                 continue; // Skip adding the wildcard item itself
                             } else {
-                                println!(
+                                eprintln!(
                                     "DEBUG: Could not expand {}.* - falling back to wildcard",
-                                    prop.table_alias.0
+                                    original_alias
                                 );
                             }
                         }
