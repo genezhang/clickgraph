@@ -6,7 +6,7 @@ use crate::{
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
-            errors::Pass,
+            errors::{AnalyzerError, Pass},
             graph_context,
         },
         logical_expr::{
@@ -1812,6 +1812,433 @@ impl GraphJoinInference {
             eprintln!("       Rel types:  {:?}", ctx.rel_types);
         } else {
             eprintln!("    📊 PatternSchemaContext: Unable to compute (missing schemas)");
+        }
+    }
+
+    // ========================================================================
+    // PatternSchemaContext-Based Join Generation (Phase 3)
+    // ========================================================================
+    
+    /// Generate graph JOINs using PatternSchemaContext for exhaustive pattern matching.
+    ///
+    /// This is the new implementation that replaces the scattered detection logic
+    /// with unified schema abstraction. The key insight is:
+    ///
+    /// 1. `PatternSchemaContext::analyze()` computes all schema decisions ONCE
+    /// 2. Exhaustive `match` on `ctx.join_strategy` handles all cases cleanly
+    /// 3. Each variant produces the appropriate JOINs without nested conditionals
+    ///
+    /// # Strategy Mapping
+    ///
+    /// | JoinStrategy      | JOINs Generated                                    |
+    /// |-------------------|---------------------------------------------------|
+    /// | SingleTableScan   | None - all data from one table                    |
+    /// | Traditional       | node-edge-node: LEFT JOIN rel, RIGHT JOIN rel     |
+    /// | MixedAccess       | Partial: only JOIN the non-embedded node          |
+    /// | EdgeToEdge        | Multi-hop: edge2.from_id = edge1.to_id           |
+    /// | CoupledSameRow    | None - unify aliases, same physical row           |
+    #[allow(dead_code)]
+    fn handle_graph_pattern_v2(
+        &self,
+        ctx: &PatternSchemaContext,
+        left_alias: &str,
+        rel_alias: &str,
+        right_alias: &str,
+        left_cte_name: &str,
+        rel_cte_name: &str,
+        right_cte_name: &str,
+        left_is_optional: bool,
+        rel_is_optional: bool,
+        right_is_optional: bool,
+        plan_ctx: &mut PlanCtx,
+        collected_graph_joins: &mut Vec<Join>,
+        joined_entities: &mut HashSet<String>,
+    ) -> AnalyzerResult<()> {
+        eprintln!("    📐 handle_graph_pattern_v2: {}", ctx.debug_summary());
+        
+        // Pre-filter for polymorphic edges (type_column IN (...))
+        // Use LogicalExpr::Raw for raw SQL filter expressions
+        let pre_filter: Option<LogicalExpr> = ctx.edge.get_type_filter(rel_alias)
+            .map(|filter_str| LogicalExpr::Raw(filter_str));
+        
+        match &ctx.join_strategy {
+            // ================================================================
+            // SingleTableScan: Fully denormalized - NO JOINs needed
+            // ================================================================
+            JoinStrategy::SingleTableScan { table: _ } => {
+                eprintln!("    ✅ SingleTableScan: No JOINs needed (fully denormalized)");
+                
+                // Register both nodes as embedded on the edge for property resolution
+                if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.left_node {
+                    let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
+                    plan_ctx.register_denormalized_alias(
+                        left_alias.to_string(),
+                        rel_alias.to_string(),
+                        *is_from_node,
+                        String::new(), // label not needed for property resolution
+                        rel_type.clone(),
+                    );
+                }
+                if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.right_node {
+                    let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
+                    plan_ctx.register_denormalized_alias(
+                        right_alias.to_string(),
+                        rel_alias.to_string(),
+                        *is_from_node,
+                        String::new(),
+                        rel_type,
+                    );
+                }
+                
+                // Mark all entities as "joined" (they share the same FROM table)
+                joined_entities.insert(left_alias.to_string());
+                joined_entities.insert(rel_alias.to_string());
+                joined_entities.insert(right_alias.to_string());
+                
+                Ok(())
+            }
+            
+            // ================================================================
+            // Traditional: Standard node-edge-node JOINs
+            // ================================================================
+            JoinStrategy::Traditional { left_join_col, right_join_col } => {
+                eprintln!("    🔗 Traditional: Creating node-edge-node JOINs");
+                
+                // Determine which node is anchor (goes in FROM, not JOIN)
+                let is_first_relationship = joined_entities.is_empty();
+                let left_is_anchor = is_first_relationship && !left_is_optional;
+                
+                // Get node ID columns from NodeAccessStrategy
+                let left_id_col = match &ctx.left_node {
+                    NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
+                    _ => return Err(AnalyzerError::OptimizerError { message: 
+                        "Traditional strategy requires OwnTable nodes".to_string() }),
+                };
+                let right_id_col = match &ctx.right_node {
+                    NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
+                    _ => return Err(AnalyzerError::OptimizerError { message: 
+                        "Traditional strategy requires OwnTable nodes".to_string() }),
+                };
+                
+                // If left is anchor, mark it joined but don't create JOIN
+                if left_is_anchor {
+                    eprintln!("       LEFT '{}' is anchor - will be FROM table", left_alias);
+                    joined_entities.insert(left_alias.to_string());
+                }
+                
+                // JOIN 1: Relationship to left node (if left not yet joined)
+                if !joined_entities.contains(left_alias) {
+                    let left_join = Join {
+                        table_name: left_cte_name.to_string(),
+                        table_alias: left_alias.to_string(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(left_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_id_col.clone()),
+                                }),
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(rel_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_join_col.clone()),
+                                }),
+                            ],
+                        }],
+                        join_type: Self::determine_join_type(left_is_optional),
+                        pre_filter: None,
+                    };
+                    collected_graph_joins.push(left_join);
+                    joined_entities.insert(left_alias.to_string());
+                }
+                
+                // JOIN 2: Relationship table
+                let rel_join = Join {
+                    table_name: rel_cte_name.to_string(),
+                    table_alias: rel_alias.to_string(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(rel_alias.to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_join_col.clone()),
+                            }),
+                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(left_alias.to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_id_col),
+                            }),
+                        ],
+                    }],
+                    join_type: Self::determine_join_type(rel_is_optional),
+                    pre_filter: pre_filter.clone(),
+                };
+                collected_graph_joins.push(rel_join);
+                joined_entities.insert(rel_alias.to_string());
+                
+                // JOIN 3: Right node to relationship
+                if !joined_entities.contains(right_alias) {
+                    let right_join = Join {
+                        table_name: right_cte_name.to_string(),
+                        table_alias: right_alias.to_string(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(right_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_id_col),
+                                }),
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(rel_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_join_col.clone()),
+                                }),
+                            ],
+                        }],
+                        join_type: Self::determine_join_type(right_is_optional),
+                        pre_filter: None,
+                    };
+                    collected_graph_joins.push(right_join);
+                    joined_entities.insert(right_alias.to_string());
+                }
+                
+                Ok(())
+            }
+            
+            // ================================================================
+            // MixedAccess: One node embedded, one requires JOIN
+            // ================================================================
+            JoinStrategy::MixedAccess { joined_node, join_col } => {
+                use crate::graph_catalog::pattern_schema::NodePosition;
+                
+                eprintln!("    🔀 MixedAccess: {:?} node requires JOIN", joined_node);
+                
+                // Register the embedded node for property resolution
+                let (embedded_alias, embedded_is_from) = match joined_node {
+                    NodePosition::Left => {
+                        // Right is embedded
+                        if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.right_node {
+                            (right_alias, *is_from_node)
+                        } else {
+                            return Err(AnalyzerError::OptimizerError { message: 
+                                "MixedAccess but right node not embedded".to_string() });
+                        }
+                    }
+                    NodePosition::Right => {
+                        // Left is embedded
+                        if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.left_node {
+                            (left_alias, *is_from_node)
+                        } else {
+                            return Err(AnalyzerError::OptimizerError { message: 
+                                "MixedAccess but left node not embedded".to_string() });
+                        }
+                    }
+                };
+                
+                let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
+                plan_ctx.register_denormalized_alias(
+                    embedded_alias.to_string(),
+                    rel_alias.to_string(),
+                    embedded_is_from,
+                    String::new(),
+                    rel_type,
+                );
+                joined_entities.insert(embedded_alias.to_string());
+                
+                // Join the relationship table
+                // The join connects to the non-embedded node
+                let (join_node_alias, join_node_cte, join_node_id_col, join_node_optional) = match joined_node {
+                    NodePosition::Left => {
+                        let id = match &ctx.left_node {
+                            NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
+                            _ => return Err(AnalyzerError::OptimizerError { message: 
+                                "MixedAccess joined node must be OwnTable".to_string() }),
+                        };
+                        (left_alias, left_cte_name, id, left_is_optional)
+                    }
+                    NodePosition::Right => {
+                        let id = match &ctx.right_node {
+                            NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
+                            _ => return Err(AnalyzerError::OptimizerError { message: 
+                                "MixedAccess joined node must be OwnTable".to_string() }),
+                        };
+                        (right_alias, right_cte_name, id, right_is_optional)
+                    }
+                };
+                
+                // Determine anchor
+                let is_first_relationship = joined_entities.is_empty();
+                let node_is_anchor = is_first_relationship && !join_node_optional;
+                
+                if node_is_anchor {
+                    eprintln!("       {:?} node '{}' is anchor", joined_node, join_node_alias);
+                    joined_entities.insert(join_node_alias.to_string());
+                }
+                
+                // JOIN: Relationship to non-embedded node
+                if !joined_entities.contains(join_node_alias) {
+                    let node_join = Join {
+                        table_name: join_node_cte.to_string(),
+                        table_alias: join_node_alias.to_string(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(join_node_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(join_node_id_col.clone()),
+                                }),
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(rel_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(join_col.clone()),
+                                }),
+                            ],
+                        }],
+                        join_type: Self::determine_join_type(join_node_optional),
+                        pre_filter: None,
+                    };
+                    collected_graph_joins.push(node_join);
+                    joined_entities.insert(join_node_alias.to_string());
+                }
+                
+                // JOIN: Relationship table itself
+                let rel_join = Join {
+                    table_name: rel_cte_name.to_string(),
+                    table_alias: rel_alias.to_string(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(rel_alias.to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(join_col.clone()),
+                            }),
+                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(join_node_alias.to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(join_node_id_col),
+                            }),
+                        ],
+                    }],
+                    join_type: Self::determine_join_type(rel_is_optional),
+                    pre_filter,
+                };
+                collected_graph_joins.push(rel_join);
+                joined_entities.insert(rel_alias.to_string());
+                
+                Ok(())
+            }
+            
+            // ================================================================
+            // EdgeToEdge: Multi-hop denormalized (edge-to-edge JOIN)
+            // ================================================================
+            JoinStrategy::EdgeToEdge { prev_edge_col, curr_edge_col } => {
+                eprintln!("    ⛓️ EdgeToEdge: Multi-hop denormalized JOIN");
+                eprintln!("       prev_edge.{} = curr_edge.{}", prev_edge_col, curr_edge_col);
+                
+                // For edge-to-edge, we need to know the previous edge alias
+                // This comes from the coupled_context or must be tracked externally
+                // For now, extract from plan_ctx denormalized aliases
+                // The previous edge alias should be in joined_entities
+                let prev_rel_alias = joined_entities.iter()
+                    .find(|alias| plan_ctx.get_denormalized_alias_info(*alias).is_some())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        // Fallback: use last joined entity that looks like a relationship
+                        joined_entities.iter()
+                            .filter(|a| a.starts_with('r') || a.contains("rel"))
+                            .last()
+                            .cloned()
+                            .unwrap_or_default()
+                    });
+                
+                if prev_rel_alias.is_empty() {
+                    return Err(AnalyzerError::OptimizerError { message: 
+                        "EdgeToEdge requires previous edge alias".to_string() });
+                }
+                
+                // Register nodes as embedded
+                let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
+                if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.left_node {
+                    plan_ctx.register_denormalized_alias(
+                        left_alias.to_string(),
+                        rel_alias.to_string(),
+                        *is_from_node,
+                        String::new(),
+                        rel_type.clone(),
+                    );
+                }
+                if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.right_node {
+                    plan_ctx.register_denormalized_alias(
+                        right_alias.to_string(),
+                        rel_alias.to_string(),
+                        *is_from_node,
+                        String::new(),
+                        rel_type,
+                    );
+                }
+                
+                // JOIN: Current edge to previous edge
+                let edge_join = Join {
+                    table_name: rel_cte_name.to_string(),
+                    table_alias: rel_alias.to_string(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(rel_alias.to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(curr_edge_col.clone()),
+                            }),
+                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(prev_rel_alias),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(prev_edge_col.clone()),
+                            }),
+                        ],
+                    }],
+                    join_type: Self::determine_join_type(rel_is_optional),
+                    pre_filter,
+                };
+                collected_graph_joins.push(edge_join);
+                
+                // Mark all as joined
+                joined_entities.insert(left_alias.to_string());
+                joined_entities.insert(rel_alias.to_string());
+                joined_entities.insert(right_alias.to_string());
+                
+                Ok(())
+            }
+            
+            // ================================================================
+            // CoupledSameRow: Same physical row, no additional JOIN
+            // ================================================================
+            JoinStrategy::CoupledSameRow { unified_alias } => {
+                eprintln!("    🔄 CoupledSameRow: Unifying with '{}'", unified_alias);
+                
+                // Both edges read from the same row - just unify aliases
+                // The previous edge already created the FROM/JOIN, this one shares it
+                
+                // Register property resolution to use unified alias
+                let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
+                if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.left_node {
+                    plan_ctx.register_denormalized_alias(
+                        left_alias.to_string(),
+                        unified_alias.clone(),
+                        *is_from_node,
+                        String::new(),
+                        rel_type.clone(),
+                    );
+                }
+                if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.right_node {
+                    plan_ctx.register_denormalized_alias(
+                        right_alias.to_string(),
+                        unified_alias.clone(),
+                        *is_from_node,
+                        String::new(),
+                        rel_type,
+                    );
+                }
+                
+                // Mark all as joined (they share the unified alias's table)
+                joined_entities.insert(left_alias.to_string());
+                joined_entities.insert(rel_alias.to_string());
+                joined_entities.insert(right_alias.to_string());
+                
+                Ok(())
+            }
         }
     }
 
