@@ -2091,7 +2091,10 @@ impl GraphJoinInference {
             rel_from_col, rel_to_col
         );
         
-        // Since construction normalizes left=FROM, right=TO, these are always true/false
+        // The parser normalizes GraphRel such that left_connection is always the FROM node
+        // and right_connection is always the TO node, regardless of the Direction.
+        // For Incoming (a)<-[r]-(b), the parser swaps to left=b, right=a.
+        // So left_is_from_node is always true.
         let left_is_from_node = true;
         let right_is_from_node = false;
 
@@ -2200,6 +2203,7 @@ impl GraphJoinInference {
             if joined_entities.contains(right_alias) {
                 eprintln!("    Branch: RIGHT already joined");
                 // join the rel with right first and then join the left with rel
+                // The parser normalizes positions, so right is always TO side
                 let rel_conn_with_right_node = rel_to_col.clone();
                 let left_conn_with_rel = rel_from_col.clone();
                 let polymorphic_filter = generate_polymorphic_edge_filter(
@@ -2367,40 +2371,42 @@ impl GraphJoinInference {
                 let left_is_anchor = is_first_relationship && !left_is_optional;
                 let right_is_anchor = is_first_relationship && !right_is_optional;
 
+                // The parser normalizes GraphRel such that left_connection is always the FROM node
+                // and right_connection is always the TO node.
                 let rel_conn_with_left_node = rel_from_col.clone();
                 let right_conn_with_rel = rel_to_col.clone();
 
                 // Choose which node to connect the relationship to (priority order)
                 let (rel_connect_column, node_alias, node_id_column) = if left_is_joined {
-                    eprintln!("    � LEFT joined - connecting to LEFT");
+                    eprintln!("    ➡ LEFT joined - connecting to LEFT");
                     (
                         rel_conn_with_left_node.clone(),
                         left_alias.to_string(),
                         left_node_id_column.clone(),
                     )
                 } else if right_is_joined {
-                    eprintln!("    � RIGHT joined - connecting to RIGHT");
+                    eprintln!("    ➡ RIGHT joined - connecting to RIGHT");
                     (
                         right_conn_with_rel.clone(),
                         right_alias.to_string(),
                         right_node_id_column.clone(),
                     )
                 } else if left_is_anchor {
-                    eprintln!("    � LEFT is ANCHOR - connecting to LEFT");
+                    eprintln!("    ➡ LEFT is ANCHOR - connecting to LEFT");
                     (
                         rel_conn_with_left_node.clone(),
                         left_alias.to_string(),
                         left_node_id_column.clone(),
                     )
                 } else if right_is_anchor {
-                    eprintln!("    � RIGHT is ANCHOR - connecting to RIGHT");
+                    eprintln!("    ➡ RIGHT is ANCHOR - connecting to RIGHT");
                     (
                         right_conn_with_rel.clone(),
                         right_alias.to_string(),
                         right_node_id_column.clone(),
                     )
                 } else {
-                    eprintln!("    🔹 FALLBACK - connecting to LEFT");
+                    eprintln!("    ➡ FALLBACK - connecting to LEFT");
                     (
                         rel_conn_with_left_node.clone(),
                         left_alias.to_string(),

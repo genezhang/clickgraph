@@ -17,6 +17,153 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 // Note: Direction import commented out until Issue #1 (Undirected Multi-Hop SQL) is fixed
 // use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::LogicalPlan;
+use std::collections::HashSet;
+
+/// Recursively rewrite TableAlias references that are in `with_aliases` to reference the CTE.
+/// This handles the case where `AVG(follows)` needs to become `AVG(grouped_data.follows)`.
+///
+/// # Arguments
+/// * `expr` - The expression to rewrite
+/// * `with_aliases` - Set of WITH alias names that should be rewritten
+/// * `cte_name` - The name of the CTE to reference (e.g., "grouped_data")
+///
+/// # Returns
+/// A tuple of (rewritten_expression, all_from_with) where `all_from_with` is true
+/// if all leaf references in the expression came from WITH aliases.
+pub(super) fn rewrite_with_aliases_to_cte(
+    expr: RenderExpr,
+    with_aliases: &HashSet<String>,
+    cte_name: &str,
+) -> (RenderExpr, bool) {
+    match expr {
+        RenderExpr::TableAlias(alias) => {
+            if with_aliases.contains(&alias.0) {
+                // Rewrite to CTE reference: grouped_data.follows
+                let rewritten = RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(cte_name.to_string()),
+                    column: Column(PropertyValue::Column(alias.0.clone())),
+                });
+                (rewritten, true)
+            } else {
+                (RenderExpr::TableAlias(alias), false)
+            }
+        }
+        RenderExpr::ColumnAlias(alias) => {
+            if with_aliases.contains(&alias.0) {
+                // Rewrite to CTE reference
+                let rewritten = RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(cte_name.to_string()),
+                    column: Column(PropertyValue::Column(alias.0.clone())),
+                });
+                (rewritten, true)
+            } else {
+                (RenderExpr::ColumnAlias(alias), false)
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            // Recursively rewrite arguments
+            let mut all_from_with = true;
+            let new_args: Vec<RenderExpr> = agg.args.into_iter().map(|arg| {
+                let (rewritten, from_with) = rewrite_with_aliases_to_cte(arg, with_aliases, cte_name);
+                if !from_with {
+                    all_from_with = false;
+                }
+                rewritten
+            }).collect();
+            
+            (RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: agg.name,
+                args: new_args,
+            }), all_from_with)
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            // Recursively rewrite arguments
+            let mut all_from_with = true;
+            let new_args: Vec<RenderExpr> = func.args.into_iter().map(|arg| {
+                let (rewritten, from_with) = rewrite_with_aliases_to_cte(arg, with_aliases, cte_name);
+                if !from_with {
+                    all_from_with = false;
+                }
+                rewritten
+            }).collect();
+            
+            (RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: func.name,
+                args: new_args,
+            }), all_from_with)
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            // Recursively rewrite operands
+            let mut all_from_with = true;
+            let new_operands: Vec<RenderExpr> = op.operands.into_iter().map(|operand| {
+                let (rewritten, from_with) = rewrite_with_aliases_to_cte(operand, with_aliases, cte_name);
+                if !from_with {
+                    all_from_with = false;
+                }
+                rewritten
+            }).collect();
+            
+            (RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: new_operands,
+            }), all_from_with)
+        }
+        RenderExpr::Case(case) => {
+            // Recursively rewrite CASE expression
+            use super::render_expr::RenderCase;
+            let mut all_from_with = true;
+            
+            // Rewrite the optional CASE expression (for simple CASE syntax)
+            let new_expr = case.expr.map(|e| {
+                let (rewritten, from_with) = rewrite_with_aliases_to_cte(*e, with_aliases, cte_name);
+                if !from_with {
+                    all_from_with = false;
+                }
+                Box::new(rewritten)
+            });
+            
+            let new_when_then: Vec<(RenderExpr, RenderExpr)> = case.when_then.into_iter().map(|(cond, result)| {
+                let (new_cond, cond_from_with) = rewrite_with_aliases_to_cte(cond, with_aliases, cte_name);
+                let (new_result, result_from_with) = rewrite_with_aliases_to_cte(result, with_aliases, cte_name);
+                if !cond_from_with || !result_from_with {
+                    all_from_with = false;
+                }
+                (new_cond, new_result)
+            }).collect();
+            
+            let new_else = case.else_expr.map(|e| {
+                let (new_else, else_from_with) = rewrite_with_aliases_to_cte(*e, with_aliases, cte_name);
+                if !else_from_with {
+                    all_from_with = false;
+                }
+                Box::new(new_else)
+            });
+            
+            (RenderExpr::Case(RenderCase {
+                expr: new_expr,
+                when_then: new_when_then,
+                else_expr: new_else,
+            }), all_from_with)
+        }
+        RenderExpr::PropertyAccessExp(prop) => {
+            // Property access doesn't come from WITH
+            (RenderExpr::PropertyAccessExp(prop), false)
+        }
+        RenderExpr::List(items) => {
+            let mut all_from_with = true;
+            let new_items: Vec<RenderExpr> = items.into_iter().map(|item| {
+                let (rewritten, from_with) = rewrite_with_aliases_to_cte(item, with_aliases, cte_name);
+                if !from_with {
+                    all_from_with = false;
+                }
+                rewritten
+            }).collect();
+            (RenderExpr::List(new_items), all_from_with)
+        }
+        // Literals, Star, Column, Parameter, Raw don't need rewriting and don't come from WITH
+        other => (other, false)
+    }
+}
 
 /// Check if an expression contains a string literal (recursively for nested + operations)
 fn contains_string_literal(expr: &RenderExpr) -> bool {
@@ -1694,6 +1841,11 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
 /// Get the relationship alias and ID column for a denormalized node alias
 /// For example, if `b` is the "to" node of `r1` or the "from" node of `r2`,
 /// this returns (rel_alias, id_column_name).
+/// 
+/// IMPORTANT: This function should ONLY return a result for truly denormalized nodes
+/// (where node properties are stored on the edge table, indicated by from_node_properties/to_node_properties).
+/// For standard schemas where nodes have their own tables, this should return None so
+/// the node alias stays pointing to the node table.
 fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option<(String, String)> {
     match plan {
         LogicalPlan::GraphRel(rel) => {
@@ -1704,15 +1856,23 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
                 // (where b is the origin/source of r2)
                 
                 // Check if node is the "from" node (left_connection) - this takes precedence
+                // ONLY if the edge has from_node_properties (denormalized schema)
                 if alias == rel.left_connection {
-                    if let Some(from_id) = &scan.from_id {
-                        return Some((rel.alias.clone(), from_id.clone()));
+                    // Only remap if this is a denormalized node (properties on edge table)
+                    if scan.from_node_properties.is_some() {
+                        if let Some(from_id) = &scan.from_id {
+                            return Some((rel.alias.clone(), from_id.clone()));
+                        }
                     }
                 }
                 // Check if node is the "to" node (right_connection)
+                // ONLY if the edge has to_node_properties (denormalized schema)
                 if alias == rel.right_connection {
-                    if let Some(to_id) = &scan.to_id {
-                        return Some((rel.alias.clone(), to_id.clone()));
+                    // Only remap if this is a denormalized node (properties on edge table)
+                    if scan.to_node_properties.is_some() {
+                        if let Some(to_id) = &scan.to_id {
+                            return Some((rel.alias.clone(), to_id.clone()));
+                        }
                     }
                 }
             }

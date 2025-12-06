@@ -595,6 +595,18 @@ fn apply_direction_combination_inner(
                 graph_rel.direction.clone()
             };
             
+            // For Incoming direction (from bidirectional transformation), swap left/right connections
+            // This maintains the invariant that left_connection is at FROM and right_connection is at TO.
+            // The parser already does this swap for explicitly-written incoming patterns like (a)<-[r]-(b),
+            // so we need to do the same when we create an Incoming branch from an Either pattern.
+            let (new_left_connection, new_right_connection) = if new_direction == Direction::Incoming 
+                && graph_rel.direction == Direction::Either {
+                // Swap connections for the Incoming branch of a bidirectional pattern
+                (graph_rel.right_connection.clone(), graph_rel.left_connection.clone())
+            } else {
+                (graph_rel.left_connection.clone(), graph_rel.right_connection.clone())
+            };
+            
             // Create new GraphRel with the determined direction
             Arc::new(LogicalPlan::GraphRel(GraphRel {
                 left: new_left,
@@ -602,8 +614,8 @@ fn apply_direction_combination_inner(
                 right: graph_rel.right.clone(),
                 alias: graph_rel.alias.clone(),
                 direction: new_direction,
-                left_connection: graph_rel.left_connection.clone(),
-                right_connection: graph_rel.right_connection.clone(),
+                left_connection: new_left_connection,
+                right_connection: new_right_connection,
                 is_rel_anchor: graph_rel.is_rel_anchor,
                 variable_length: graph_rel.variable_length.clone(),
                 shortest_path_mode: graph_rel.shortest_path_mode.clone(),

@@ -4179,16 +4179,28 @@ impl RenderPlanBuilder for LogicalPlan {
                     // 3. References to WITH projection aliases that aren't in the inner projection
 
                     // Collect all WITH projection aliases from the inner Projection
-                    let with_aliases: std::collections::HashSet<String> =
-                        if let LogicalPlan::Projection(inner_proj) = group_by.input.as_ref() {
-                            inner_proj
-                                .items
-                                .iter()
-                                .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
-                                .collect()
-                        } else {
-                            std::collections::HashSet::new()
-                        };
+                    // Handle GraphJoins wrapper by looking inside it
+                    let with_aliases: std::collections::HashSet<String> = {
+                        // Helper to extract WITH aliases from Projection(With)
+                        fn extract_with_aliases(plan: &LogicalPlan) -> std::collections::HashSet<String> {
+                            match plan {
+                                LogicalPlan::Projection(proj) => {
+                                    proj.items
+                                        .iter()
+                                        .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                                        .collect()
+                                }
+                                LogicalPlan::GraphJoins(graph_joins) => {
+                                    // Look inside GraphJoins for the Projection
+                                    extract_with_aliases(&graph_joins.input)
+                                }
+                                _ => std::collections::HashSet::new(),
+                            }
+                        }
+                        extract_with_aliases(group_by.input.as_ref())
+                    };
+                    
+                    println!("DEBUG: WITH aliases found: {:?}", with_aliases);
 
                     // CTE is always needed when there are WITH aliases (aggregates)
                     // because the outer query needs to reference them from the CTE
@@ -4203,6 +4215,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     if needs_cte {
                         println!(
                             "DEBUG: Detected Projection(Return) over GroupBy where RETURN needs data beyond WITH output - using CTE pattern"
+
                         );
 
                         // Build the GROUP BY subquery as a CTE
@@ -4218,39 +4231,74 @@ impl RenderPlanBuilder for LogicalPlan {
                         let inner_render_plan = group_by.input.to_render_plan(&empty_schema)?;
 
                         // Step 2: Extract GROUP BY expressions and HAVING clause
-                        // Fix wildcard grouping: a.* -> a.user_id (use ID column from schema)
-                        let group_by_exprs: Vec<RenderExpr> = group_by.expressions
-                            .iter()
-                            .cloned()
-                            .map(|expr| {
-                                // Check if this is a wildcard (PropertyAccess with column="*" or TableAlias)
-                                let fixed_expr = match &expr {
-                                    crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop) if prop.column.raw() == "*" => {
-                                        // Replace a.* with a.{id_column}
-                                        // Extract ID column from the schema
+                        // For wildcards, we need to either:
+                        // 1. GROUP BY all properties (to match SELECT), or
+                        // 2. Only SELECT the ID column (to match GROUP BY)
+                        // We'll do option 1: expand wildcards to all properties in GROUP BY
+                        let mut group_by_exprs: Vec<RenderExpr> = Vec::new();
+                        for expr in group_by.expressions.iter() {
+                            match expr {
+                                crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop) if prop.column.raw() == "*" => {
+                                    // Expand a.* to all properties: a.age, a.name, a.user_id
+                                    if let Ok((properties, actual_table_alias)) = self.get_properties_with_table_alias(&prop.table_alias.0) {
+                                        let table_alias_to_use = actual_table_alias.as_ref()
+                                            .map(|s| crate::query_planner::logical_expr::TableAlias(s.clone()))
+                                            .unwrap_or_else(|| prop.table_alias.clone());
+                                        
+                                        for (_prop_name, col_name) in properties {
+                                            let expr = crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
+                                                crate::query_planner::logical_expr::PropertyAccess {
+                                                    table_alias: table_alias_to_use.clone(),
+                                                    column: PropertyValue::Column(col_name),
+                                                }
+                                            );
+                                            group_by_exprs.push(expr.try_into()?);
+                                        }
+                                    } else {
+                                        // Fallback to just ID column
                                         let id_column = self.find_id_column_for_alias(&prop.table_alias.0)?;
-                                        crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
+                                        let expr = crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                             crate::query_planner::logical_expr::PropertyAccess {
                                                 table_alias: prop.table_alias.clone(),
                                                 column: PropertyValue::Column(id_column),
                                             }
-                                        )
+                                        );
+                                        group_by_exprs.push(expr.try_into()?);
                                     }
-                                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
-                                        // Replace table alias with table_alias.id_column
+                                }
+                                crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
+                                    // Expand table alias to all properties
+                                    if let Ok((properties, actual_table_alias)) = self.get_properties_with_table_alias(&alias.0) {
+                                        let table_alias_to_use = actual_table_alias.as_ref()
+                                            .map(|s| crate::query_planner::logical_expr::TableAlias(s.clone()))
+                                            .unwrap_or_else(|| alias.clone());
+                                        
+                                        for (_prop_name, col_name) in properties {
+                                            let expr = crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
+                                                crate::query_planner::logical_expr::PropertyAccess {
+                                                    table_alias: table_alias_to_use.clone(),
+                                                    column: PropertyValue::Column(col_name),
+                                                }
+                                            );
+                                            group_by_exprs.push(expr.try_into()?);
+                                        }
+                                    } else {
+                                        // Fallback to just ID column
                                         let id_column = self.find_id_column_for_alias(&alias.0)?;
-                                        crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
+                                        let expr = crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                             crate::query_planner::logical_expr::PropertyAccess {
                                                 table_alias: alias.clone(),
                                                 column: PropertyValue::Column(id_column),
                                             }
-                                        )
+                                        );
+                                        group_by_exprs.push(expr.try_into()?);
                                     }
-                                    _ => expr.clone()
-                                };
-                                fixed_expr.try_into()
-                            })
-                            .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?;
+                                }
+                                _ => {
+                                    group_by_exprs.push(expr.clone().try_into()?);
+                                }
+                            }
+                        }
 
                         let having_expr: Option<RenderExpr> =
                             if let Some(having) = &group_by.having_clause {
@@ -4375,34 +4423,18 @@ impl RenderPlanBuilder for LogicalPlan {
                             .map(|item| {
                                 let expr: RenderExpr = item.expression.clone().try_into()?;
 
-                                // Rewrite TableAlias references that are WITH aliases to reference the CTE
-                                let rewritten_expr = match &expr {
-                                    RenderExpr::TableAlias(alias) => {
-                                        // Check if this is a WITH alias (from the CTE)
-                                        if with_aliases.contains(&alias.0) {
-                                            // Reference it from the CTE: grouped_data.follows
-                                            RenderExpr::PropertyAccessExp(
-                                                super::render_expr::PropertyAccess {
-                                                    table_alias: super::render_expr::TableAlias(
-                                                        cte_name.clone(),
-                                                    ),
-                                                    column: super::render_expr::Column(
-                                                        PropertyValue::Column(alias.0.clone()),
-                                                    ),
-                                                },
-                                            )
-                                        } else {
-                                            // This is a non-WITH alias (e.g., node/relationship reference)
-                                            all_items_from_with = false;
-                                            expr
-                                        }
-                                    }
-                                    _ => {
-                                        // Non-TableAlias expression might reference original table
-                                        all_items_from_with = false;
-                                        expr
-                                    }
-                                };
+                                // Recursively rewrite TableAlias/ColumnAlias references that are WITH aliases
+                                // This handles cases like AVG(follows) -> AVG(grouped_data.follows)
+                                let (rewritten_expr, from_with) = 
+                                    super::plan_builder_helpers::rewrite_with_aliases_to_cte(
+                                        expr, 
+                                        &with_aliases, 
+                                        &cte_name
+                                    );
+                                
+                                if !from_with {
+                                    all_items_from_with = false;
+                                }
 
                                 Ok(super::SelectItem {
                                     expression: rewritten_expr,
@@ -4430,20 +4462,13 @@ impl RenderPlanBuilder for LogicalPlan {
                                 order_items.iter()
                                     .map(|item| {
                                         let expr: RenderExpr = item.expression.clone().try_into()?;
-                                        // Rewrite WITH aliases to CTE references
-                                        let rewritten_expr = match &expr {
-                                            RenderExpr::TableAlias(alias) => {
-                                                if with_aliases.contains(&alias.0) {
-                                                    RenderExpr::PropertyAccessExp(super::render_expr::PropertyAccess {
-                                                        table_alias: super::render_expr::TableAlias(cte_name.clone()),
-                                                        column: super::render_expr::Column(PropertyValue::Column(alias.0.clone())),
-                                                    })
-                                                } else {
-                                                    expr
-                                                }
-                                            }
-                                            _ => expr
-                                        };
+                                        // Recursively rewrite WITH aliases to CTE references
+                                        let (rewritten_expr, _) = 
+                                            super::plan_builder_helpers::rewrite_with_aliases_to_cte(
+                                                expr, 
+                                                &with_aliases, 
+                                                &cte_name
+                                            );
                                         Ok(super::OrderByItem {
                                             expression: rewritten_expr,
                                             order: match item.order {
@@ -4532,21 +4557,13 @@ impl RenderPlanBuilder for LogicalPlan {
                             order_items.iter()
                                 .map(|item| {
                                     let expr: RenderExpr = item.expression.clone().try_into()?;
-
-                                    // Rewrite TableAlias references to WITH aliases
-                                    let rewritten_expr = match &expr {
-                                        RenderExpr::TableAlias(alias) => {
-                                            if with_aliases.contains(&alias.0) {
-                                                RenderExpr::PropertyAccessExp(super::render_expr::PropertyAccess {
-                                                    table_alias: super::render_expr::TableAlias(cte_name.clone()),
-                                                    column: super::render_expr::Column(PropertyValue::Column(alias.0.clone())),
-                                                })
-                                            } else {
-                                                expr
-                                            }
-                                        }
-                                        _ => expr
-                                    };
+                                    // Recursively rewrite WITH aliases to CTE references
+                                    let (rewritten_expr, _) = 
+                                        super::plan_builder_helpers::rewrite_with_aliases_to_cte(
+                                            expr, 
+                                            &with_aliases, 
+                                            &cte_name
+                                        );
 
                                     Ok(super::OrderByItem {
                                         expression: rewritten_expr,

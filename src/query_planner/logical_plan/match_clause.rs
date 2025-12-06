@@ -537,16 +537,109 @@ fn try_generate_view_scan(
     // For denormalized nodes (virtual nodes that exist as columns on edge tables),
     // we need to generate queries from the edge table itself.
     //
-    // Three cases:
-    // 1. Node only in FROM position → Single ViewScan with from_node_properties
-    // 2. Node only in TO position → Single ViewScan with to_node_properties  
-    // 3. Node in BOTH positions → Union(All) of two ViewScans
+    // For nodes that appear in MULTIPLE edge tables (like IP in dns_log and conn_log),
+    // we create a UNION ALL of all possible sources.
+    //
+    // For each relationship where this node appears:
+    // - If node is FROM → ViewScan with from_node_properties from that edge table  
+    // - If node is TO → ViewScan with to_node_properties from that edge table
     if node_schema.is_denormalized {
         log::info!(
-            "✓ Denormalized node-only query for label '{}' - will generate from edge table",
+            "✓ Denormalized node-only query for label '{}' - checking all tables",
             label
         );
         
+        // Check if this node appears in multiple relationships/tables
+        if let Some(metadata) = schema.get_denormalized_node_metadata(label) {
+            let rel_types = metadata.get_relationship_types();
+            
+            if rel_types.len() > 1 || metadata.id_sources.values().any(|v| v.len() > 1) {
+                // MULTI-TABLE CASE: Node appears in multiple tables/positions
+                log::info!(
+                    "✓ Denormalized node '{}' appears in {} relationship types - creating multi-table UNION",
+                    label, rel_types.len()
+                );
+                
+                let mut union_inputs: Vec<Arc<LogicalPlan>> = Vec::new();
+                
+                for rel_type in &rel_types {
+                    if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
+                        let full_table_name = rel_schema.full_table_name();
+                        
+                        // Check if this node is in FROM position
+                        if rel_schema.from_node == label {
+                            if let Some(ref from_props) = rel_schema.from_node_properties {
+                                log::debug!(
+                                    "✓ Adding FROM branch for '{}' from table '{}' (rel: {})",
+                                    label, full_table_name, rel_type
+                                );
+                                let mut from_scan = ViewScan::new(
+                                    full_table_name.clone(),
+                                    None,
+                                    HashMap::new(),
+                                    String::new(),
+                                    vec![],
+                                    vec![],
+                                );
+                                from_scan.is_denormalized = true;
+                                from_scan.from_node_properties = Some(
+                                    from_props.iter()
+                                        .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+                                        .collect()
+                                );
+                                union_inputs.push(Arc::new(LogicalPlan::ViewScan(Arc::new(from_scan))));
+                            }
+                        }
+                        
+                        // Check if this node is in TO position
+                        if rel_schema.to_node == label {
+                            if let Some(ref to_props) = rel_schema.to_node_properties {
+                                log::debug!(
+                                    "✓ Adding TO branch for '{}' from table '{}' (rel: {})",
+                                    label, full_table_name, rel_type
+                                );
+                                let mut to_scan = ViewScan::new(
+                                    full_table_name.clone(),
+                                    None,
+                                    HashMap::new(),
+                                    String::new(),
+                                    vec![],
+                                    vec![],
+                                );
+                                to_scan.is_denormalized = true;
+                                to_scan.to_node_properties = Some(
+                                    to_props.iter()
+                                        .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+                                        .collect()
+                                );
+                                union_inputs.push(Arc::new(LogicalPlan::ViewScan(Arc::new(to_scan))));
+                            }
+                        }
+                    }
+                }
+                
+                if union_inputs.is_empty() {
+                    log::error!("No ViewScans generated for denormalized node '{}'", label);
+                    return None;
+                }
+                
+                if union_inputs.len() == 1 {
+                    log::info!("✓ Single ViewScan for denormalized node '{}' (only one source)", label);
+                    return Some(union_inputs.pop().unwrap());
+                }
+                
+                use crate::query_planner::logical_plan::{Union, UnionType};
+                let union = Union {
+                    inputs: union_inputs,
+                    union_type: UnionType::All,
+                };
+                
+                log::info!("✓ Created UNION ALL with {} branches for denormalized node '{}'", union.inputs.len(), label);
+                return Some(Arc::new(LogicalPlan::Union(union)));
+            }
+        }
+        
+        // SINGLE-TABLE CASE: Fall through to existing logic
         let has_from_props = node_schema.from_properties.is_some();
         let has_to_props = node_schema.to_properties.is_some();
         let source_table = node_schema.denormalized_source_table.as_ref()

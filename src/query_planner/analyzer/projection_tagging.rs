@@ -746,43 +746,88 @@ impl ProjectionTagging {
                                 });
                             } else {
                                 // For nodes, count distinct node IDs
+                                // Check if this is a denormalized node first
                                 let table_label = table_ctx.get_label_str().map_err(|e| {
                                     AnalyzerError::PlanCtx {
                                         pass: Pass::ProjectionTagging,
                                         source: e,
                                     }
                                 })?;
-                                let table_schema = graph_schema
-                                    .get_node_schema(&table_label)
-                                    .map_err(|e| AnalyzerError::GraphSchema {
-                                        pass: Pass::ProjectionTagging,
-                                        source: e,
-                                    })?;
-                                let table_node_id = table_schema.node_id.column.clone();
-
-                                // Preserve DISTINCT if it was in the original expression
-                                let new_arg = if matches!(arg, LogicalExpr::OperatorApplicationExp(OperatorApplication { operator, .. }) if *operator == Operator::Distinct)
-                                {
-                                    LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                                        operator: Operator::Distinct,
-                                        operands: vec![LogicalExpr::PropertyAccessExp(
-                                            PropertyAccess {
-                                                table_alias: TableAlias(t_alias.to_string()),
-                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(table_node_id),
-                                            },
-                                        )],
-                                    })
-                                } else {
-                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                
+                                // Check if node is denormalized
+                                if graph_schema.is_denormalized_node(&table_label) {
+                                    // For denormalized nodes, get the node schema to find the id_column property name
+                                    // The id_column specifies which property represents the node's identity
+                                    // e.g., for IP nodes, id_column = "ip", so count(distinct ip) -> count(distinct ip.ip)
+                                    let node_schema = graph_schema
+                                        .get_node_schema(&table_label)
+                                        .map_err(|e| AnalyzerError::GraphSchema {
+                                            pass: Pass::ProjectionTagging,
+                                            source: e,
+                                        })?;
+                                    let id_property_name = node_schema.node_id.column.clone();
+                                    
+                                    log::debug!(
+                                        "ProjectionTagging: Denormalized node '{}' (label={}), using id property '{}'",
+                                        t_alias, table_label, id_property_name
+                                    );
+                                    
+                                    // Check if DISTINCT was specified
+                                    let is_distinct = matches!(arg, LogicalExpr::OperatorApplicationExp(OperatorApplication { operator, .. }) if *operator == Operator::Distinct);
+                                    
+                                    // Create PropertyAccess expression for node.id_property
+                                    let property_expr = LogicalExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(t_alias.to_string()),
-                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(table_node_id),
-                                    })
-                                };
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_property_name),
+                                    });
+                                    
+                                    let new_arg = if is_distinct {
+                                        LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                            operator: Operator::Distinct,
+                                            operands: vec![property_expr],
+                                        })
+                                    } else {
+                                        property_expr
+                                    };
+                                    
+                                    item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                        name: aggregate_fn_call.name.clone(),
+                                        args: vec![new_arg],
+                                    });
+                                } else {
+                                    // Standard node - use node schema's ID column
+                                    let table_schema = graph_schema
+                                        .get_node_schema(&table_label)
+                                        .map_err(|e| AnalyzerError::GraphSchema {
+                                            pass: Pass::ProjectionTagging,
+                                            source: e,
+                                        })?;
+                                    let table_node_id = table_schema.node_id.column.clone();
 
-                                item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                    name: aggregate_fn_call.name.clone(),
-                                    args: vec![new_arg],
-                                });
+                                    // Preserve DISTINCT if it was in the original expression
+                                    let new_arg = if matches!(arg, LogicalExpr::OperatorApplicationExp(OperatorApplication { operator, .. }) if *operator == Operator::Distinct)
+                                    {
+                                        LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                            operator: Operator::Distinct,
+                                            operands: vec![LogicalExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: TableAlias(t_alias.to_string()),
+                                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(table_node_id),
+                                                },
+                                            )],
+                                        })
+                                    } else {
+                                        LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(t_alias.to_string()),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(table_node_id),
+                                        })
+                                    };
+
+                                    item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                        name: aggregate_fn_call.name.clone(),
+                                        args: vec![new_arg],
+                                    });
+                                }
                             }
                         }
                     }

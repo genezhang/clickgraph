@@ -1,6 +1,6 @@
 use crate::{
     open_cypher_parser::ast::ReturnClause,
-    query_planner::logical_expr::{AggregateFnCall, ColumnAlias, LogicalExpr, PropertyAccess},
+    query_planner::logical_expr::{AggregateFnCall, ColumnAlias, LogicalExpr, PropertyAccess, TableAlias},
     query_planner::logical_plan::{LogicalPlan, Projection, ProjectionItem, ProjectionKind, Union, UnionType},
 };
 use std::sync::Arc;
@@ -85,6 +85,92 @@ fn extract_property_accesses(expr: &LogicalExpr, properties: &mut Vec<PropertyAc
         // TableAlias (like `a`) doesn't give us specific columns - skip
         // Star is handled in aggregate case
         _ => {}
+    }
+}
+
+/// Extract TableAliases from aggregate function arguments (for count(node) patterns).
+/// These will need to be expanded to include the node's ID property.
+fn extract_table_aliases_from_aggregates(expr: &LogicalExpr, aliases: &mut Vec<String>) {
+    match expr {
+        LogicalExpr::AggregateFnCall(agg) => {
+            for arg in &agg.args {
+                extract_table_aliases_inner(arg, aliases);
+            }
+        }
+        LogicalExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                extract_table_aliases_from_aggregates(operand, aliases);
+            }
+        }
+        LogicalExpr::ScalarFnCall(func) => {
+            for arg in &func.args {
+                extract_table_aliases_from_aggregates(arg, aliases);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Helper to extract TableAlias from expression (used for aggregate args)
+fn extract_table_aliases_inner(expr: &LogicalExpr, aliases: &mut Vec<String>) {
+    match expr {
+        LogicalExpr::TableAlias(alias) => {
+            aliases.push(alias.0.clone());
+        }
+        LogicalExpr::OperatorApplicationExp(op) => {
+            // Handle DISTINCT node case: OperatorApplication { operator: Distinct, operands: [TableAlias] }
+            for operand in &op.operands {
+                extract_table_aliases_inner(operand, aliases);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Look up ID property for a node alias from a Union plan.
+/// Returns the first available ID property found in the GraphNode's ViewScan.
+fn lookup_node_id_property(alias: &str, union: &Union) -> Option<String> {
+    // Look in first branch for the GraphNode with this alias
+    for branch in &union.inputs {
+        if let Some(id_prop) = find_node_id_in_plan(alias, branch) {
+            return Some(id_prop);
+        }
+    }
+    None
+}
+
+/// Recursively search for a GraphNode with the given alias and extract its ID property name.
+fn find_node_id_in_plan(alias: &str, plan: &Arc<LogicalPlan>) -> Option<String> {
+    match plan.as_ref() {
+        LogicalPlan::GraphNode(gn) => {
+            if gn.alias == alias {
+                // Found the node - get first property from from_node_properties or to_node_properties
+                if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                    // The first property in from/to_node_properties is typically the ID
+                    // Look for a property that matches a common ID pattern or just return the first one
+                    if let Some(ref props) = vs.from_node_properties {
+                        // Return the first property name (which is the graph property, e.g., "ip")
+                        return props.keys().next().cloned();
+                    }
+                    if let Some(ref props) = vs.to_node_properties {
+                        return props.keys().next().cloned();
+                    }
+                }
+            }
+            // Recurse into input
+            find_node_id_in_plan(alias, &gn.input)
+        }
+        LogicalPlan::Projection(proj) => find_node_id_in_plan(alias, &proj.input),
+        LogicalPlan::ViewScan(_) => None,
+        LogicalPlan::Union(u) => {
+            for branch in &u.inputs {
+                if let Some(id) = find_node_id_in_plan(alias, branch) {
+                    return Some(id);
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -192,6 +278,28 @@ fn build_union_with_aggregation(
             if !seen_keys.contains(&key) {
                 seen_keys.insert(key);
                 all_properties.push(prop);
+            }
+        }
+    }
+    
+    // Step 1b: Also collect TableAliases from aggregate function arguments
+    // These represent count(node) patterns that need the node's ID property
+    let mut table_aliases_in_aggs: Vec<String> = Vec::new();
+    for item in projection_items {
+        extract_table_aliases_from_aggregates(&item.expression, &mut table_aliases_in_aggs);
+    }
+    
+    // For each TableAlias in an aggregate, look up its ID property and add to all_properties
+    for alias in &table_aliases_in_aggs {
+        if let Some(id_prop) = lookup_node_id_property(alias, union) {
+            let key = format!("{}.{}", alias, id_prop);
+            if !seen_keys.contains(&key) {
+                println!("DEBUG: Adding ID property '{}.{}' for count({})", alias, id_prop, alias);
+                seen_keys.insert(key);
+                all_properties.push(PropertyAccess {
+                    table_alias: TableAlias(alias.clone()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_prop),
+                });
             }
         }
     }

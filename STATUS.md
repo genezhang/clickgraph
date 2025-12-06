@@ -1,6 +1,49 @@
 # ClickGraph Status
 
-*Updated: December 5, 2025*
+*Updated: December 7, 2025*
+
+## 🆕 **Recent Updates** - December 7, 2025
+
+### ✅ Single-Node Patterns for Denormalized Schemas Fixed
+**Multi-table UNION for nodes appearing in multiple tables now supported!**
+
+- **Problem**: For denormalized schemas where the same label (e.g., IP) appears in multiple tables and positions, standalone `MATCH (ip:IP)` only generated a single ViewScan instead of querying all sources
+- **Root Causes**: 
+  1. `try_generate_view_scan()` only checked first table for label
+  2. `count(node_alias)` generated invalid SQL because inner UNION didn't include ID column
+- **Fixes**:
+  1. In `match_clause.rs`: Use `ProcessedNodeMetadata.id_sources` to enumerate ALL tables/positions for a label and generate UNION ALL
+  2. In `projection_tagging.rs`: Expand `count(node)` to `count(node.id_property)` using schema's `id_column` - matches Neo4j behavior
+  3. In `return_clause.rs`: Detect `TableAlias` in aggregate args and include node's ID property in inner UNION projection
+
+- **Working Patterns**:
+  ```cypher
+  -- All IPs from both tables (generates 3-branch UNION)
+  MATCH (ip:IP) RETURN count(ip), count(distinct ip)
+  
+  -- Explicit property works the same
+  MATCH (ip:IP) RETURN count(ip), count(distinct ip.ip)
+  
+  -- Constrained by relationship (uses specific table)
+  MATCH (ip:IP)-[:DNS_REQUESTED]-() RETURN count(ip), count(distinct ip.ip)
+  MATCH ()-[:CONNECTED_TO]->(ip:IP) RETURN count(ip), count(distinct ip.ip)
+  ```
+
+- **Generated SQL for `MATCH (ip:IP) RETURN count(ip), count(distinct ip)`**:
+  ```sql
+  SELECT count(ip.ip), count(DISTINCT ip.ip)
+  FROM (
+      SELECT ip."id.orig_h" AS "ip.ip" FROM zeek.dns_log AS ip
+      UNION ALL 
+      SELECT ip."id.orig_h" AS "ip.ip" FROM zeek.conn_log AS ip
+      UNION ALL 
+      SELECT ip."id.resp_h" AS "ip.ip" FROM zeek.conn_log AS ip
+  ) AS __union
+  ```
+
+- **Neo4j Compatibility**: `count(DISTINCT node)` now counts distinct node identities (via ID column), matching Neo4j's behavior
+
+---
 
 ## 🆕 **Recent Updates** - December 5, 2025
 
