@@ -1,4 +1,5 @@
 use super::errors::ClickhouseQueryGeneratorError;
+use super::function_registry::get_function_mapping;
 use super::function_translator::translate_scalar_function;
 use crate::query_planner::logical_expr::{
     Literal, LogicalExpr, Operator,
@@ -78,7 +79,22 @@ impl ToSql for LogicalExpr {
             LogicalExpr::AggregateFnCall(fn_call) => {
                 let args_sql: Result<Vec<String>, _> =
                     fn_call.args.iter().map(|e| e.to_sql()).collect();
-                Ok(format!("{}({})", fn_call.name, args_sql?.join(", ")))
+                let args_sql = args_sql?;
+                
+                // Use function registry to translate Neo4j -> ClickHouse function names
+                let fn_name_lower = fn_call.name.to_lowercase();
+                if let Some(mapping) = get_function_mapping(&fn_name_lower) {
+                    // Apply argument transformation if provided
+                    let transformed_args = if let Some(transform_fn) = mapping.arg_transform {
+                        transform_fn(&args_sql)
+                    } else {
+                        args_sql
+                    };
+                    Ok(format!("{}({})", mapping.clickhouse_name, transformed_args.join(", ")))
+                } else {
+                    // No mapping, use name directly (standard SQL functions like count, sum, etc.)
+                    Ok(format!("{}({})", fn_call.name, args_sql.join(", ")))
+                }
             }
             LogicalExpr::ScalarFnCall(fn_call) => {
                 // Use function translator for Neo4j -> ClickHouse mapping

@@ -618,13 +618,29 @@ impl RenderExpr {
                 }
             }
             RenderExpr::AggregateFnCall(agg) => {
-                let args = agg
-                    .args
-                    .iter()
-                    .map(|e| e.to_sql())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{}({})", agg.name, args)
+                // Check if we have a Neo4j -> ClickHouse mapping for aggregate functions
+                let fn_name_lower = agg.name.to_lowercase();
+                match get_function_mapping(&fn_name_lower) {
+                    Some(mapping) => {
+                        let args_sql: Vec<String> = agg.args.iter().map(|e| e.to_sql()).collect();
+                        let transformed_args = if let Some(transform_fn) = mapping.arg_transform {
+                            transform_fn(&args_sql)
+                        } else {
+                            args_sql
+                        };
+                        format!("{}({})", mapping.clickhouse_name, transformed_args.join(", "))
+                    }
+                    None => {
+                        // No mapping - use original name (count, sum, min, max, avg, etc.)
+                        let args = agg
+                            .args
+                            .iter()
+                            .map(|e| e.to_sql())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{}({})", agg.name, args)
+                    }
+                }
             }
             RenderExpr::PropertyAccessExp(PropertyAccess {
                 table_alias,

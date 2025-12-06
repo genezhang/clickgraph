@@ -307,7 +307,7 @@ impl<'a> From<open_cypher_parser::ast::OperatorApplication<'a>> for OperatorAppl
 
 impl<'a> From<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
     fn from(value: open_cypher_parser::ast::FunctionCall<'a>) -> Self {
-        let agg_fns = ["count", "min", "max", "avg", "sum"];
+        let agg_fns = ["count", "min", "max", "avg", "sum", "collect"];
         let name_lower = value.name.to_lowercase();
         if agg_fns.contains(&name_lower.as_str()) {
             LogicalExpr::AggregateFnCall(AggregateFnCall {
@@ -921,7 +921,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_function_classification() {
-        let agg_functions = ["count", "min", "max", "avg", "sum"];
+        let agg_functions = ["count", "min", "max", "avg", "sum", "collect"];
 
         for func_name in &agg_functions {
             let ast_function_call = ast::FunctionCall {

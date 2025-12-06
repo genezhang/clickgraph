@@ -5,7 +5,7 @@ use crate::{
     query_planner::{
         logical_plan::{LogicalPlan, Unwind},
         logical_expr::LogicalExpr,
-        plan_ctx::PlanCtx,
+        plan_ctx::{PlanCtx, TableCtx},
     },
 };
 
@@ -41,6 +41,18 @@ pub fn evaluate_unwind_clause(
         unwind_clause.alias.to_string()
     ));
     plan_ctx.register_projection_alias(unwind_clause.alias.to_string(), alias_expr);
+    
+    // Also register as table context so projection tagging can find it
+    // UNWIND aliases represent scalar values (array elements), not nodes/relationships
+    // They have no label or properties, but need to be in table context for lookups
+    let unwind_table_ctx = TableCtx::build(
+        unwind_clause.alias.to_string(),
+        None,  // No labels - UNWIND produces scalar values, not nodes
+        vec![], // No properties
+        false,  // Not a relationship
+        true,   // Explicit alias (user-defined)
+    );
+    plan_ctx.insert_table_ctx(unwind_clause.alias.to_string(), unwind_table_ctx);
     
     let unwind = Unwind {
         input: plan,
