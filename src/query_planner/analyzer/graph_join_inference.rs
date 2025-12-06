@@ -2126,30 +2126,9 @@ impl GraphJoinInference {
             // ================================================================
             // EdgeToEdge: Multi-hop denormalized (edge-to-edge JOIN)
             // ================================================================
-            JoinStrategy::EdgeToEdge { prev_edge_col, curr_edge_col } => {
+            JoinStrategy::EdgeToEdge { prev_edge_alias, prev_edge_col, curr_edge_col } => {
                 eprintln!("    ⛓️ EdgeToEdge: Multi-hop denormalized JOIN");
-                eprintln!("       prev_edge.{} = curr_edge.{}", prev_edge_col, curr_edge_col);
-                
-                // For edge-to-edge, we need to know the previous edge alias
-                // This comes from the coupled_context or must be tracked externally
-                // For now, extract from plan_ctx denormalized aliases
-                // The previous edge alias should be in joined_entities
-                let prev_rel_alias = joined_entities.iter()
-                    .find(|alias| plan_ctx.get_denormalized_alias_info(*alias).is_some())
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        // Fallback: use last joined entity that looks like a relationship
-                        joined_entities.iter()
-                            .filter(|a| a.starts_with('r') || a.contains("rel"))
-                            .last()
-                            .cloned()
-                            .unwrap_or_default()
-                    });
-                
-                if prev_rel_alias.is_empty() {
-                    return Err(AnalyzerError::OptimizerError { message: 
-                        "EdgeToEdge requires previous edge alias".to_string() });
-                }
+                eprintln!("       {}.{} = {}.{}", prev_edge_alias, prev_edge_col, rel_alias, curr_edge_col);
                 
                 // Register nodes as embedded
                 let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
@@ -2184,7 +2163,7 @@ impl GraphJoinInference {
                                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(curr_edge_col.clone()),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(prev_rel_alias),
+                                table_alias: TableAlias(prev_edge_alias.clone()),
                                 column: crate::graph_catalog::expression_parser::PropertyValue::Column(prev_edge_col.clone()),
                             }),
                         ],
@@ -2574,8 +2553,24 @@ impl GraphJoinInference {
             // V2 path: Use PatternSchemaContext for exhaustive pattern matching
             eprintln!("    🔬 Using handle_graph_pattern_v2 (PatternSchemaContext)");
             
+            // Get previous edge info for multi-hop detection
+            // This is critical for EdgeToEdge and CoupledSameRow strategies
+            // Store in locals to avoid lifetime issues with borrowed references
+            let prev_edge_data: Option<(String, String, bool)> = plan_ctx
+                .get_denormalized_alias_info(&left_alias)
+                .filter(|(prev_alias, _, _, _)| prev_alias != &rel_alias)
+                .map(|(prev_alias, is_from, _, prev_type)| {
+                    eprintln!("    📍 MULTI-HOP detected: left '{}' was on prev edge '{}' (type={}, is_from={})",
+                        left_alias, prev_alias, prev_type, is_from);
+                    (prev_alias.clone(), prev_type.clone(), is_from)
+                });
+            
+            // Convert owned strings to borrowed references for the API
+            let prev_edge_info: Option<(&str, &str, bool)> = prev_edge_data.as_ref()
+                .map(|(alias, rel_type, is_from)| (alias.as_str(), rel_type.as_str(), *is_from));
+            
             // Compute PatternSchemaContext for this pattern
-            if let Some(ctx) = self.compute_pattern_context(graph_rel, plan_ctx, graph_schema, None) {
+            if let Some(ctx) = self.compute_pattern_context(graph_rel, plan_ctx, graph_schema, prev_edge_info) {
                 self.handle_graph_pattern_v2(
                     &ctx,
                     &left_alias,

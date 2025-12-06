@@ -309,6 +309,8 @@ pub enum JoinStrategy {
     /// JOIN flights f2 ON f2.Origin = f1.Dest
     /// ```
     EdgeToEdge {
+        /// Alias of the previous edge (e.g., "f1")
+        prev_edge_alias: String,
         /// Column on previous edge (e.g., "Dest" from f1)
         prev_edge_col: String,
         /// Column on current edge (e.g., "Origin" of f2)
@@ -717,6 +719,7 @@ impl PatternSchemaContext {
                         };
                         return (
                             JoinStrategy::EdgeToEdge {
+                                prev_edge_alias: prev_alias.to_string(),
                                 prev_edge_col: prev_col,
                                 curr_edge_col: rel_schema.from_id.clone(),
                             },
