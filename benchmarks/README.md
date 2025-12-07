@@ -19,30 +19,41 @@ benchmarks/
 │   ├── data/                 # Data generation scripts
 │   ├── queries/              # Benchmark query suites
 │   ├── results/              # Benchmark results
-│   └── schemas/              # Schema YAML files
+│   ├── schemas/              # Schema YAML files
+│   ├── docker-compose.benchmark.yaml
+│   ├── run_benchmark.ps1     # Windows benchmark runner
+│   └── run_regression.ps1    # Windows regression test
 │
-├── ontime_flights/           # Denormalized edge pattern
-│   ├── data/                 # Data setup instructions
-│   ├── queries/              # Benchmark queries
-│   ├── results/              # Benchmark results
-│   └── schemas/              # Schema YAML files
-│
-├── docker-compose.benchmark.yaml
-├── run_benchmark.ps1         # Windows benchmark runner
-└── run_regression.ps1        # Windows regression test
+└── ontime_flights/           # Denormalized edge pattern
+    ├── data/                 # Data setup instructions
+    ├── queries/              # Benchmark queries
+    ├── results/              # Benchmark results
+    └── schemas/              # Schema YAML files
 ```
 
 ## Quick Start
+
+### Prerequisites
+
+1. **ClickHouse running** (via `docker-compose up -d` from project root)
+2. **Environment variables set**:
+
+```bash
+export CLICKHOUSE_URL="http://localhost:8123"
+export CLICKHOUSE_USER="test_user"
+export CLICKHOUSE_PASSWORD="test_pass"
+export CLICKHOUSE_DATABASE="brahmand"
+```
 
 ### Social Network Benchmark (Default)
 
 ```bash
 # Generate data and run
-cd benchmarks/social_network
-python3 data/setup_unified.py --scale 1
+cd /path/to/clickgraph
+python3 benchmarks/social_network/data/setup_unified.py --scale 1
 export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
 cargo run --release --bin clickgraph &
-python3 queries/suite.py
+python3 benchmarks/social_network/queries/suite.py
 ```
 
 ### OnTime Flights Benchmark
@@ -69,16 +80,16 @@ python3 run_ontime_benchmark.py
 
 ```powershell
 # Small benchmark (1K users) - Quick validation
-.\benchmarks\run_benchmark.ps1 -Scale 1 -Iterations 3
+.\benchmarks\social_network\run_benchmark.ps1 -Scale 1 -Iterations 3
 
 # Medium benchmark (10K users) - Performance testing
-.\benchmarks\run_benchmark.ps1 -Scale 10 -Iterations 5
+.\benchmarks\social_network\run_benchmark.ps1 -Scale 10 -Iterations 5
 
 # Large benchmark (100K users) - Stress testing
-.\benchmarks\run_benchmark.ps1 -Scale 100 -Iterations 3
+.\benchmarks\social_network\run_benchmark.ps1 -Scale 100 -Iterations 3
 
 # XLarge benchmark (1M users) - Production scale
-.\benchmarks\run_benchmark.ps1 -Scale 1000 -Iterations 3
+.\benchmarks\social_network\run_benchmark.ps1 -Scale 1000 -Iterations 3
 ```
 
 The script automatically:
@@ -94,7 +105,7 @@ Before releases or after major changes, run the regression test:
 
 ```powershell
 # Quick regression test (scale 1, 1 iteration, ~1 minute)
-.\benchmarks\run_regression.ps1
+.\benchmarks\social_network\run_regression.ps1
 ```
 
 This validates that all working queries still pass. Exits with code 1 if any regression detected.
