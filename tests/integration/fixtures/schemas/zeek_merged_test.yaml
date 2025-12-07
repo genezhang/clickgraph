@@ -10,7 +10,7 @@ graph_schema:
     - label: IP
       database: test_zeek
       table: dns_log
-      id_column: ip
+      id_column: orig_h
       property_mappings: {}
       from_node_properties:
         ip: orig_h
@@ -21,7 +21,7 @@ graph_schema:
     - label: IP
       database: test_zeek
       table: conn_log
-      id_column: ip
+      id_column: orig_h
       property_mappings: {}
       from_node_properties:
         ip: orig_h
@@ -34,7 +34,7 @@ graph_schema:
     - label: Domain
       database: test_zeek
       table: dns_log
-      id_column: name
+      id_column: query
       property_mappings: {}
       from_node_properties:
         name: query
