@@ -791,7 +791,7 @@ fn try_generate_view_scan(
         full_table_name,                    // Use fully qualified table name (database.table)
         None,                               // No filter condition yet
         property_mapping,                   // Property mappings from schema
-        node_schema.node_id.column.clone(), // ID column from schema
+        node_schema.node_id.column().to_string(), // ID column from schema
         vec!["id".to_string()],             // Basic output schema
         vec![],                             // No projections yet
     );
@@ -2513,10 +2513,8 @@ mod tests {
                 table_name: "airports".to_string(),
                 column_names: vec!["id".to_string(), "code".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "id".to_string(),
-                    dtype: "UInt64".to_string(),
-                },
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
+                ),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -2535,10 +2533,8 @@ mod tests {
                 table_name: "users".to_string(),
                 column_names: vec!["id".to_string(), "name".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "id".to_string(),
-                    dtype: "UInt64".to_string(),
-                },
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
+                ),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -2557,10 +2553,8 @@ mod tests {
                 table_name: "posts".to_string(),
                 column_names: vec!["id".to_string(), "title".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "id".to_string(),
-                    dtype: "UInt64".to_string(),
-                },
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
+                ),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -2674,10 +2668,8 @@ mod tests {
                 table_name: "persons".to_string(),
                 column_names: vec!["id".to_string(), "name".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "id".to_string(),
-                    dtype: "UInt64".to_string(),
-                },
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
+                ),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -2965,10 +2957,8 @@ mod tests {
                 table_name: "users".to_string(),
                 column_names: vec!["id".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "id".to_string(),
-                    dtype: "UInt64".to_string(),
-                },
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
+                ),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -3050,10 +3040,8 @@ mod tests {
                 table_name: "persons".to_string(),
                 column_names: vec!["id".to_string(), "name".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "id".to_string(),
-                    dtype: "UInt64".to_string(),
-                },
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
+                ),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -3085,10 +3073,8 @@ mod tests {
                     table_name: format!("{}s", node_type.to_lowercase()),
                     column_names: vec!["id".to_string()],
                     primary_keys: "id".to_string(),
-                    node_id: NodeIdSchema {
-                        column: "id".to_string(),
-                        dtype: "UInt64".to_string(),
-                    },
+                    node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
+                    ),
                     property_mappings: HashMap::new(),
                     view_parameters: None,
                     engine: None,
@@ -3163,10 +3149,8 @@ mod tests {
                     table_name: format!("type_{}", i),
                     column_names: vec!["id".to_string()],
                     primary_keys: "id".to_string(),
-                    node_id: NodeIdSchema {
-                        column: "id".to_string(),
-                        dtype: "UInt64".to_string(),
-                    },
+                    node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
+                    ),
                     property_mappings: HashMap::new(),
                     view_parameters: None,
                     engine: None,
@@ -3203,10 +3187,8 @@ mod tests {
                 table_name: "flights".to_string(),  // Edge table
                 column_names: vec!["Origin".to_string(), "Dest".to_string()],
                 primary_keys: "Origin".to_string(),
-                node_id: NodeIdSchema {
-                    column: "Origin".to_string(),
-                    dtype: "String".to_string(),
-                },
+                node_id: NodeIdSchema::single("Origin".to_string(), "String".to_string(),
+                ),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -3249,10 +3231,8 @@ mod tests {
                     table_name: format!("{}s", node_type.to_lowercase()),
                     column_names: vec!["id".to_string()],
                     primary_keys: "id".to_string(),
-                    node_id: NodeIdSchema {
-                        column: "id".to_string(),
-                        dtype: "UInt64".to_string(),
-                    },
+                    node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
+                    ),
                     property_mappings: HashMap::new(),
                     view_parameters: None,
                     engine: None,

@@ -975,7 +975,7 @@ pub(super) fn get_node_id_column_for_alias(alias: &str) -> String {
             if let Some(schema) = schemas.get("default") {
                 // Look up the node type from the alias - this is a simplified lookup
                 if let Some(user_node) = schema.get_node_schema_opt("User") {
-                    return user_node.node_id.column.clone();
+                    return user_node.node_id.column().to_string();
                 }
             }
         }
@@ -1039,7 +1039,7 @@ pub(super) fn get_node_info_from_schema(node_label: &str) -> Option<(String, Str
                 if let Ok(node_schema) = schema.get_node_schema(node_label) {
                     return Some((
                         node_schema.table_name.clone(),
-                        node_schema.node_id.column.clone(),
+                        node_schema.node_id.column().to_string(),
                     ));
                 }
             }

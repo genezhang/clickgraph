@@ -158,8 +158,8 @@ pub fn get_graph_context<'a>(
             .map_err(|e| AnalyzerError::GraphSchema { pass: pass.clone(), source: e })?
     };
 
-    let left_node_id_column = left_schema.node_id.column.clone();
-    let right_node_id_column = right_schema.node_id.column.clone();
+    let left_node_id_column = left_schema.node_id.column().to_string();
+    let right_node_id_column = right_schema.node_id.column().to_string();
 
     // Use fully qualified table names from schema for CTEs/JOINs
     // For nodes whose properties are available from the edge table (via from_node_properties/to_node_properties),

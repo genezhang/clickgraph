@@ -53,7 +53,7 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                     let start_id_col = if let LogicalPlan::GraphNode(start_node) = graph_rel.left.as_ref() {
                         if let Some(label) = &start_node.label {
                             schema.get_node_schema_opt(label)
-                                .map(|n| n.node_id.column.clone())
+                                .map(|n| n.node_id.column().to_string())
                                 .unwrap_or_else(|| "id".to_string())
                         } else {
                             // No label, try to get from the context

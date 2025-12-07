@@ -2546,8 +2546,8 @@ impl GraphJoinInference {
                 graph_context.left.alias.to_string(),
                 graph_context.rel.alias.to_string(),
                 graph_context.right.alias.to_string(),
-                graph_context.left.schema.node_id.column.clone(),
-                graph_context.right.schema.node_id.column.clone(),
+                graph_context.left.schema.node_id.column().to_string(),
+                graph_context.right.schema.node_id.column().to_string(),
                 graph_context.left.label.clone(),
                 graph_context.right.label.clone(),
                 // Get all labels from table_ctx for polymorphic IN clause support
@@ -4242,10 +4242,8 @@ mod tests {
                 table_name: "Person".to_string(),
                 column_names: vec!["id".to_string(), "name".to_string(), "age".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "id".to_string(),
-                    dtype: "UInt64".to_string(),
-                },
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
+                ),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -4266,10 +4264,8 @@ mod tests {
                 table_name: "Company".to_string(),
                 column_names: vec!["id".to_string(), "name".to_string(), "founded".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "id".to_string(),
-                    dtype: "UInt64".to_string(),
-                },
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
+                ),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -5345,10 +5341,8 @@ mod tests {
                 table_name: "fs_objects".to_string(),
                 column_names: vec!["object_id".to_string(), "name".to_string(), "type".to_string(), "parent_id".to_string()],
                 primary_keys: "object_id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "object_id".to_string(),
-                    dtype: "UInt64".to_string(),
-                },
+                node_id: NodeIdSchema::single("object_id".to_string(), "UInt64".to_string(),
+                ),
                 property_mappings: {
                     let mut props = HashMap::new();
                     props.insert("object_id".to_string(), PropertyValue::Column("object_id".to_string()));
@@ -5415,10 +5409,8 @@ mod tests {
                 table_name: "orders".to_string(),
                 column_names: vec!["order_id".to_string(), "customer_id".to_string(), "total".to_string()],
                 primary_keys: "order_id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "order_id".to_string(),
-                    dtype: "UInt64".to_string(),
-                },
+                node_id: NodeIdSchema::single("order_id".to_string(), "UInt64".to_string(),
+                ),
                 property_mappings: {
                     let mut props = HashMap::new();
                     props.insert("order_id".to_string(), PropertyValue::Column("order_id".to_string()));
@@ -5444,10 +5436,8 @@ mod tests {
                 table_name: "customers".to_string(),
                 column_names: vec!["customer_id".to_string(), "name".to_string()],
                 primary_keys: "customer_id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "customer_id".to_string(),
-                    dtype: "UInt64".to_string(),
-                },
+                node_id: NodeIdSchema::single("customer_id".to_string(), "UInt64".to_string(),
+                ),
                 property_mappings: {
                     let mut props = HashMap::new();
                     props.insert("customer_id".to_string(), PropertyValue::Column("customer_id".to_string()));

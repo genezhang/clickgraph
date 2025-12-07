@@ -266,10 +266,51 @@ pub enum GraphSchemaElement {
     Rel(RelationshipSchema),
 }
 
+/// Node identifier schema - supports both single and composite node IDs.
+/// 
+/// For traditional nodes with own tables:
+/// - `id` contains the column name(s) directly
+/// 
+/// For denormalized nodes (virtual nodes on edge tables):
+/// - `id` contains property name(s) that get resolved via from_node_properties/to_node_properties
+/// 
+/// This mirrors `Identifier` used for `edge_id` in relationship schemas.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodeIdSchema {
-    pub column: String,
+    /// The identifier - can be single column or composite
+    pub id: Identifier,
+    /// Data type (e.g., "UInt64", "String") - informational, may be unused
     pub dtype: String,
+}
+
+impl NodeIdSchema {
+    /// Create a new NodeIdSchema with a single column identifier
+    pub fn single(column: String, dtype: String) -> Self {
+        NodeIdSchema {
+            id: Identifier::Single(column),
+            dtype,
+        }
+    }
+    
+    /// Create a new NodeIdSchema with a composite identifier  
+    pub fn composite(columns: Vec<String>, dtype: String) -> Self {
+        NodeIdSchema {
+            id: Identifier::Composite(columns),
+            dtype,
+        }
+    }
+    
+    /// Get the column name for single-column identifiers.
+    /// Panics if called on composite identifier.
+    /// Use `id.columns()` for safe access to all columns.
+    pub fn column(&self) -> &str {
+        self.id.as_single()
+    }
+    
+    /// Check if this is a composite identifier
+    pub fn is_composite(&self) -> bool {
+        self.id.is_composite()
+    }
 }
 
 /// Metadata for denormalized node property access
@@ -883,10 +924,8 @@ mod tests {
             table_name: "flights".to_string(),
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema {
-                column: "code".to_string(),
-                dtype: "String".to_string(),
-            },
+            node_id: NodeIdSchema::single("code".to_string(), "String".to_string(),
+            ),
             property_mappings: HashMap::new(),  // Empty = denormalized
             view_parameters: None,
             engine: None,
@@ -941,10 +980,8 @@ mod tests {
             table_name: "airports".to_string(),  // Different table
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema {
-                column: "code".to_string(),
-                dtype: "String".to_string(),
-            },
+            node_id: NodeIdSchema::single("code".to_string(), "String".to_string(),
+            ),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("code".to_string(), PropertyValue::Column("airport_code".to_string()));
@@ -1008,10 +1045,8 @@ mod tests {
             table_name: "flights".to_string(),  // Same as edge
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema {
-                column: "code".to_string(),
-                dtype: "String".to_string(),
-            },
+            node_id: NodeIdSchema::single("code".to_string(), "String".to_string(),
+            ),
             property_mappings: HashMap::new(),  // Empty
             view_parameters: None,
             engine: None,
@@ -1028,10 +1063,8 @@ mod tests {
             table_name: "users".to_string(),  // Different from edge
             column_names: vec![],
             primary_keys: "user_id".to_string(),
-            node_id: NodeIdSchema {
-                column: "user_id".to_string(),
-                dtype: "UInt64".to_string(),
-            },
+            node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string(),
+            ),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("user_id".to_string(), PropertyValue::Column("id".to_string()));
@@ -1098,10 +1131,8 @@ mod tests {
             table_name: "users".to_string(),
             column_names: vec![],
             primary_keys: "user_id".to_string(),
-            node_id: NodeIdSchema {
-                column: "user_id".to_string(),
-                dtype: "UInt64".to_string(),
-            },
+            node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string(),
+            ),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("name".to_string(), PropertyValue::Column("full_name".to_string()));
@@ -1126,10 +1157,8 @@ mod tests {
             table_name: "posts".to_string(),  // Same as edge
             column_names: vec![],
             primary_keys: "post_id".to_string(),
-            node_id: NodeIdSchema {
-                column: "post_id".to_string(),
-                dtype: "UInt64".to_string(),
-            },
+            node_id: NodeIdSchema::single("post_id".to_string(), "UInt64".to_string(),
+            ),
             property_mappings: HashMap::new(),  // Empty - denormalized
             view_parameters: None,
             engine: None,
@@ -1198,10 +1227,8 @@ mod tests {
             table_name: "flights".to_string(),
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema {
-                column: "code".to_string(),
-                dtype: "String".to_string(),
-            },
+            node_id: NodeIdSchema::single("code".to_string(), "String".to_string(),
+            ),
             property_mappings: {
                 let mut props = HashMap::new();
                 // One or two direct mappings allowed
@@ -1265,10 +1292,8 @@ mod tests {
             table_name: "flights".to_string(),
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema {
-                column: "code".to_string(),
-                dtype: "String".to_string(),
-            },
+            node_id: NodeIdSchema::single("code".to_string(), "String".to_string(),
+            ),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -1324,10 +1349,8 @@ mod tests {
             table_name: "flights".to_string(),
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema {
-                column: "code".to_string(),
-                dtype: "String".to_string(),
-            },
+            node_id: NodeIdSchema::single("code".to_string(), "String".to_string(),
+            ),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -1381,10 +1404,8 @@ mod tests {
             table_name: "flights".to_string(),
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema {
-                column: "code".to_string(),
-                dtype: "String".to_string(),
-            },
+            node_id: NodeIdSchema::single("code".to_string(), "String".to_string(),
+            ),
             is_denormalized: false,
             from_properties: None,
             to_properties: None,

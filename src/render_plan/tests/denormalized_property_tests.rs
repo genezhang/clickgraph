@@ -28,10 +28,8 @@ fn setup_denormalized_schema() -> GraphSchema {
             table_name: "airports".to_string(),
             column_names: vec!["airport_code".to_string(), "city_name".to_string(), "state_code".to_string()],
             primary_keys: "airport_id".to_string(),
-            node_id: NodeIdSchema {
-                column: "airport_id".to_string(),
-                dtype: "UInt64".to_string(),
-            },
+            node_id: NodeIdSchema::single("airport_id".to_string(), "UInt64".to_string(),
+            ),
             property_mappings: airport_props,
             view_parameters: None,
             engine: None,
@@ -313,10 +311,10 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             table_name: "flights".to_string(),  // ✅ Same table as edge!
             column_names: vec!["origin_code".to_string(), "dest_code".to_string(), "origin_city".to_string(), "dest_city".to_string()],
             primary_keys: "code".to_string(),  // Logical ID property
-            node_id: NodeIdSchema {
-                column: "code".to_string(),  // Maps to origin_code/dest_code
-                dtype: "String".to_string(),
-            },
+            node_id: NodeIdSchema::single(
+                "code".to_string(),  // Maps to origin_code/dest_code
+                "String".to_string(),
+            ),
             property_mappings: airport_props,  // Empty - derived from edge
             view_parameters: None,
             engine: None,

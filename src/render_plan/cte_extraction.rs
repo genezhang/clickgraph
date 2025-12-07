@@ -417,7 +417,7 @@ pub fn table_to_id_column_with_schema(
     for node_schema in schema.get_nodes_schemas().values() {
         let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
         if node_schema.table_name == table || fully_qualified == table {
-            return node_schema.node_id.column.clone();
+            return node_schema.node_id.column().to_string();
         }
     }
 

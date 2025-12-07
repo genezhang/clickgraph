@@ -593,10 +593,10 @@ fn build_node_schema(
             .flat_map(|pv| pv.get_columns())
             .collect(),
         primary_keys: node_def.id_column.clone(),
-        node_id: NodeIdSchema {
-            column: node_def.id_column.clone(),
-            dtype: "UInt64".to_string(),
-        },
+        node_id: NodeIdSchema::single(
+            node_def.id_column.clone(),
+            "UInt64".to_string(),
+        ),
         property_mappings,
         view_parameters: node_def.view_parameters.clone(),
         engine: discovery.engine.clone(),

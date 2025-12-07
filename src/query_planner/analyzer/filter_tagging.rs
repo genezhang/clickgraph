@@ -655,7 +655,7 @@ impl FilterTagging {
                                                 // Use find_property_in_viewscan_with_edge to get the actual column
                                                 // Node id_column in schema is the logical property name (e.g., "id")
                                                 let id_property = if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
-                                                    node_schema.node_id.column.clone()
+                                                    node_schema.node_id.column().to_string()
                                                 } else {
                                                     "id".to_string()
                                                 };
@@ -670,7 +670,7 @@ impl FilterTagging {
                                     } else {
                                         // For regular (non-denormalized) nodes, use the node_id column directly
                                         if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
-                                            Some(node_schema.node_id.column.clone())
+                                            Some(node_schema.node_id.column().to_string())
                                         } else {
                                             None
                                         }
@@ -1598,10 +1598,8 @@ mod tests {
                     "status".to_string(),
                 ],
                 primary_keys: "user_id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "user_id".to_string(),
-                    dtype: "UInt32".to_string(),
-                },
+                node_id: NodeIdSchema::single("user_id".to_string(), "UInt32".to_string(),
+                ),
                 property_mappings: person_props,
                 view_parameters: None,
                 engine: None,
@@ -1630,10 +1628,8 @@ mod tests {
                     "owner_id".to_string(),
                 ],
                 primary_keys: "company_id".to_string(),
-                node_id: NodeIdSchema {
-                    column: "company_id".to_string(),
-                    dtype: "UInt32".to_string(),
-                },
+                node_id: NodeIdSchema::single("company_id".to_string(), "UInt32".to_string(),
+                ),
                 property_mappings: company_props,
                 view_parameters: None,
                 engine: None,

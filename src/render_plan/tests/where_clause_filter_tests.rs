@@ -79,10 +79,8 @@ fn setup_test_graph_schema() -> GraphSchema {
             "user_id".to_string(),
         ],
         primary_keys: "id".to_string(),
-        node_id: NodeIdSchema {
-            column: "id".to_string(),
-            dtype: "UInt64".to_string(),
-        },
+        node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
+        ),
         property_mappings: [
             ("name".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string())),
             ("age".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("age".to_string())),

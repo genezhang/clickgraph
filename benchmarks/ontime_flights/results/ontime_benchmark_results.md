@@ -177,7 +177,7 @@ Key features:
 
 ## Comparison with PuppyGraph
 
-All 4 original PuppyGraph benchmark queries now work with full fidelity. ClickGraph generates equivalent SQL and achieves comparable or better performance on ClickHouse (notice that PuppyGraph incurs overhead of pulling data from ClickHouse when non-cached).
+All 4 original PuppyGraph benchmark queries now work with full fidelity. ClickGraph generates equivalent SQL and achieves comparable or better performance on ClickHouse (notice that PuppyGraph incurs overhead of pulling data from ClickHouse to its own runtime engine when non-cached).
 
 ### Syntax Differences
 

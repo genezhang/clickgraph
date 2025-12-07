@@ -131,7 +131,7 @@ ORDER BY (Year, Quarter, Month, DayofMonth, FlightDate, IATA_CODE_Reporting_Airl
 ### 2. Download and Load Data
 
 ```bash
-# Download data files (2021-2023)
+# Download data files (2021-2023), adjust according to your needs
 for year in {2021..2023}; do
     for month in {1..12}; do
         url="https://transtats.bts.gov/PREZIP/On_Time_Reporting_Carrier_On_Time_Performance_1987_present_${year}_${month}.zip"

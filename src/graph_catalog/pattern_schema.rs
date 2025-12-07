@@ -579,14 +579,14 @@ impl PatternSchemaContext {
             EdgeTablePattern::Traditional => {
                 let left = NodeAccessStrategy::OwnTable {
                     table: left_node_schema.full_table_name(),
-                    id_column: left_node_schema.node_id.column.clone(),
+                    id_column: left_node_schema.node_id.column().to_string(),
                     properties: left_node_schema.property_mappings.iter()
                         .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                         .collect(),
                 };
                 let right = NodeAccessStrategy::OwnTable {
                     table: right_node_schema.full_table_name(),
-                    id_column: right_node_schema.node_id.column.clone(),
+                    id_column: right_node_schema.node_id.column().to_string(),
                     properties: right_node_schema.property_mappings.iter()
                         .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                         .collect(),
@@ -603,7 +603,7 @@ impl PatternSchemaContext {
                 } else {
                     NodeAccessStrategy::OwnTable {
                         table: left_node_schema.full_table_name(),
-                        id_column: left_node_schema.node_id.column.clone(),
+                        id_column: left_node_schema.node_id.column().to_string(),
                         properties: left_node_schema.property_mappings.iter()
                             .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                             .collect(),
@@ -618,7 +618,7 @@ impl PatternSchemaContext {
                 } else {
                     NodeAccessStrategy::OwnTable {
                         table: right_node_schema.full_table_name(),
-                        id_column: right_node_schema.node_id.column.clone(),
+                        id_column: right_node_schema.node_id.column().to_string(),
                         properties: right_node_schema.property_mappings.iter()
                             .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                             .collect(),
@@ -654,7 +654,7 @@ impl PatternSchemaContext {
         } else {
             NodeAccessStrategy::OwnTable {
                 table: node_schema.full_table_name(),
-                id_column: node_schema.node_id.column.clone(),
+                id_column: node_schema.node_id.column().to_string(),
                 properties: node_schema.property_mappings.iter()
                     .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                     .collect(),
@@ -852,10 +852,8 @@ mod tests {
             table_name: table.to_string(),
             column_names: vec![id_col.to_string(), "name".to_string()],
             primary_keys: id_col.to_string(),
-            node_id: NodeIdSchema {
-                column: id_col.to_string(),
-                dtype: "Int64".to_string(),
-            },
+            node_id: NodeIdSchema::single(id_col.to_string(), "Int64".to_string(),
+            ),
             property_mappings: HashMap::from([
                 ("id".to_string(), PropertyValue::Column(id_col.to_string())),
                 ("name".to_string(), PropertyValue::Column("name".to_string())),
@@ -877,10 +875,8 @@ mod tests {
             table_name: table.to_string(),
             column_names: vec![id_col.to_string()],
             primary_keys: id_col.to_string(),
-            node_id: NodeIdSchema {
-                column: id_col.to_string(),
-                dtype: "String".to_string(),
-            },
+            node_id: NodeIdSchema::single(id_col.to_string(), "String".to_string(),
+            ),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,

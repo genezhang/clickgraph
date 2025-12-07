@@ -18,10 +18,8 @@ mod tests {
             table_name: "users".to_string(),
             column_names: vec!["user_id".to_string(), "name".to_string()],
             primary_keys: "user_id".to_string(),
-            node_id: crate::graph_catalog::graph_schema::NodeIdSchema {
-                column: "user_id".to_string(),
-                dtype: "UInt64".to_string(),
-            },
+            node_id: crate::graph_catalog::graph_schema::NodeIdSchema::single("user_id".to_string(), "UInt64".to_string(),
+            ),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -92,7 +90,7 @@ mod tests {
         // Test resolving a node
         let node_schema = resolver.resolve_node("User").unwrap();
         assert_eq!(node_schema.table_name, "users");
-        assert_eq!(node_schema.node_id.column, "user_id");
+        assert_eq!(node_schema.node_id.column(), "user_id");
     }
 
     #[test]
