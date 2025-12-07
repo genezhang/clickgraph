@@ -66,7 +66,7 @@ echo "==========================================================================
 echo "TEST 1: Standard Schema (users/follows)"
 echo "================================================================================"
 
-start_server "benchmarks/schemas/social_benchmark.yaml" "Standard Schema"
+start_server "benchmarks/social_network/schemas/social_benchmark.yaml" "Standard Schema"
 python3 tests/integration/test_mixed_expressions.py
 STANDARD_EXIT=$?
 stop_server

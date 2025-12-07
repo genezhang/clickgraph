@@ -25,7 +25,7 @@ from typing import Optional, List
 SCHEMAS = {
     "standard": {
         "name": "social_benchmark",
-        "path": "benchmarks/schemas/social_benchmark.yaml",
+        "path": "benchmarks/social_network/schemas/social_benchmark.yaml",
         "description": "Standard schema - separate tables per edge type",
         "edge_types": ["FOLLOWS", "AUTHORED", "FRIENDS_WITH"],
         "multi_type_pattern": "[:FOLLOWS|FRIENDS_WITH]",  # Both User->User

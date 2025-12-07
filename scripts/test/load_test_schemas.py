@@ -21,7 +21,7 @@ CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 # Schemas to load for testing
 SCHEMAS_TO_LOAD = [
     # Standard schema (social_benchmark) - usually loaded via GRAPH_CONFIG_PATH
-    ("benchmarks/schemas/social_benchmark.yaml", "social_benchmark"),
+    ("benchmarks/social_network/schemas/social_benchmark.yaml", "social_benchmark"),
     # Denormalized schema
     ("schemas/examples/ontime_denormalized.yaml", "ontime_flights"),
     # Polymorphic schema

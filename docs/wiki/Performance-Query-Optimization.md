@@ -598,7 +598,7 @@ LIMIT 10;
 **ClickGraph SQL Inspection**:
 ```bash
 # Generate SQL without executing
-export GRAPH_CONFIG_PATH="benchmarks/schemas/social_benchmark.yaml"
+export GRAPH_CONFIG_PATH="benchmarks/social_network/schemas/social_benchmark.yaml"
 
 # Use sql_only parameter (not implemented yet, coming soon!)
 # For now, check server logs with debug level

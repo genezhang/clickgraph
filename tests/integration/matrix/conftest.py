@@ -61,7 +61,7 @@ SCHEMAS: Dict[str, SchemaConfig] = {
     "social_benchmark": SchemaConfig(
         name="social_benchmark",
         schema_type=SchemaType.TRADITIONAL,
-        yaml_path="benchmarks/schemas/social_benchmark.yaml",
+        yaml_path="benchmarks/social_network/schemas/social_benchmark.yaml",
         database="brahmand",
         node_labels=["User", "Post"],
         edge_types=["FOLLOWS", "AUTHORED", "LIKED"],

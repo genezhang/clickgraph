@@ -54,7 +54,7 @@ MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]->(c:Airport) RETURN a.cod
 ## Quick Start Commands
 ```bash
 # Start server
-export GRAPH_CONFIG_PATH="./benchmarks/schemas/social_benchmark.yaml"
+export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
 cargo run --release
 
 # Test directed (works)

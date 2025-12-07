@@ -32,7 +32,7 @@ def execute_query(query: str, schema_name: str = None) -> dict:
 class TestStandardSchema:
     """Tests for standard schema type"""
 
-    SCHEMA_YAML = "benchmarks/schemas/social_benchmark.yaml"
+    SCHEMA_YAML = "benchmarks/social_network/schemas/social_benchmark.yaml"
 
     def test_node_scan_0(self):
         """

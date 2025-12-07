@@ -193,7 +193,7 @@ export CLICKHOUSE_URL="http://localhost:8123"
 export CLICKHOUSE_USER="test_user"
 export CLICKHOUSE_PASSWORD="test_pass"
 export CLICKHOUSE_DATABASE="brahmand"
-export GRAPH_CONFIG_PATH="./benchmarks/schemas/social_benchmark.yaml"
+export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
 cargo run --bin clickgraph
 
 # Or inline (all on one command):
@@ -201,7 +201,7 @@ CLICKHOUSE_URL="http://localhost:8123" \
 CLICKHOUSE_USER="test_user" \
 CLICKHOUSE_PASSWORD="test_pass" \
 CLICKHOUSE_DATABASE="brahmand" \
-GRAPH_CONFIG_PATH="./benchmarks/schemas/social_benchmark.yaml" \
+GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml" \
 cargo run --bin clickgraph -- --http-port 8080 --bolt-port 7687
 ```
 

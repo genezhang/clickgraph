@@ -203,7 +203,7 @@ See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 ## Appendix: Schema Files for Testing
 
 ### Standard Schema
-- `benchmarks/schemas/social_benchmark.yaml`
+- `benchmarks/social_network/schemas/social_benchmark.yaml`
 - Tables: `users_bench`, `user_follows_bench`, `posts_bench`, `post_likes_bench`
 
 ### Denormalized Schema  

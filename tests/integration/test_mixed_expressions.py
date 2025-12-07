@@ -252,13 +252,13 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n❌ Server is not running: {e}")
         print("Please start the server with:")
-        print("  export GRAPH_CONFIG_PATH=benchmarks/schemas/social_benchmark.yaml")
+        print("  export GRAPH_CONFIG_PATH=benchmarks/social_network/schemas/social_benchmark.yaml")
         print("  cargo run --bin clickgraph -- --http-port 8080 --disable-bolt")
         sys.exit(1)
     
     # Run tests
     print("\nNote: Switch schema between runs with GRAPH_CONFIG_PATH")
-    print("  Standard: benchmarks/schemas/social_benchmark.yaml")
+    print("  Standard: benchmarks/social_network/schemas/social_benchmark.yaml")
     print("  Denormalized: benchmarks/schemas/ontime_denormalized.yaml")
     
     # Detect which schema is loaded by trying a test query

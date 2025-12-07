@@ -114,7 +114,7 @@
 
 ```bash
 # Set up environment
-export GRAPH_CONFIG_PATH=./benchmarks/schemas/social_benchmark.yaml
+export GRAPH_CONFIG_PATH=./benchmarks/social_network/schemas/social_benchmark.yaml
 export CLICKHOUSE_URL=http://localhost:8123
 export CLICKHOUSE_USER=test_user
 export CLICKHOUSE_PASSWORD=test_pass

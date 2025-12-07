@@ -325,7 +325,7 @@ python benchmarks\data\setup_unified.py --scale 10
 ```
 
 ### Test Schema
-**Standard Schema**: `benchmarks/schemas/social_benchmark.yaml`
+**Standard Schema**: `benchmarks/social_network/schemas/social_benchmark.yaml`
 
 **Tables**:
 - `users_bench` (node)

@@ -109,7 +109,7 @@ SCHEMAS = {
     SchemaType.STANDARD: SchemaConfig(
         name="social_benchmark",
         schema_type=SchemaType.STANDARD,
-        yaml_path="benchmarks/schemas/social_benchmark.yaml",
+        yaml_path="benchmarks/social_network/schemas/social_benchmark.yaml",
         node_labels=["User", "Post"],
         rel_types=["FOLLOWS", "AUTHORED", "LIKED"],
         node_props={

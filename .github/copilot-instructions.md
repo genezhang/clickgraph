@@ -51,7 +51,7 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 
 ### The One True Schema for Development
 
-**Schema File**: `benchmarks/schemas/social_benchmark.yaml`
+**Schema File**: `benchmarks/social_network/schemas/social_benchmark.yaml`
 
 **Tables** (all in `brahmand` database):
 - `users_bench` (node)
@@ -88,7 +88,7 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 **Testing Discipline**:
 ```bash
 # ✅ CORRECT: Always set GRAPH_CONFIG_PATH to benchmark schema
-export GRAPH_CONFIG_PATH="./benchmarks/schemas/social_benchmark.yaml"
+export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
 
 # ❌ WRONG: Using inconsistent schema
 export GRAPH_CONFIG_PATH="./schemas/demo/users.yaml"  # Different property mappings!

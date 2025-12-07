@@ -1,10 +1,64 @@
-# ClickGraph Benchmark Results
+# ClickGraph Benchmarks
 
-**Last Updated**: November 12, 2025
+**Last Updated**: December 7, 2025
 
 ---
 
-## 🚀 Quick Start - Running Benchmarks
+## Benchmark Suites
+
+| Benchmark | Pattern | Description |
+|-----------|---------|-------------|
+| [social_network](./social_network/) | Traditional (normalized) | Separate node/edge tables, property mappings |
+| [ontime_flights](./ontime_flights/) | Denormalized edge | Virtual nodes, properties embedded in edge table |
+
+## Directory Structure
+
+```
+benchmarks/
+├── social_network/           # Traditional node/edge pattern
+│   ├── data/                 # Data generation scripts
+│   ├── queries/              # Benchmark query suites
+│   ├── results/              # Benchmark results
+│   └── schemas/              # Schema YAML files
+│
+├── ontime_flights/           # Denormalized edge pattern
+│   ├── data/                 # Data setup instructions
+│   ├── queries/              # Benchmark queries
+│   ├── results/              # Benchmark results
+│   └── schemas/              # Schema YAML files
+│
+├── docker-compose.benchmark.yaml
+├── run_benchmark.ps1         # Windows benchmark runner
+└── run_regression.ps1        # Windows regression test
+```
+
+## Quick Start
+
+### Social Network Benchmark (Default)
+
+```bash
+# Generate data and run
+cd benchmarks/social_network
+python3 data/setup_unified.py --scale 1
+export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
+cargo run --release --bin clickgraph &
+python3 queries/suite.py
+```
+
+### OnTime Flights Benchmark
+
+See [ontime_flights/README.md](./ontime_flights/README.md) for data download and setup.
+
+```bash
+export GRAPH_CONFIG_PATH="./benchmarks/ontime_flights/schemas/ontime_benchmark.yaml"
+cargo run --release --bin clickgraph &
+cd benchmarks/ontime_flights/queries
+python3 run_ontime_benchmark.py
+```
+
+---
+
+## 🚀 Running Benchmarks (Windows)
 
 ### Prerequisites
 1. ClickHouse running (via `docker-compose up -d` from project root)
@@ -31,8 +85,8 @@ The script automatically:
 1. ✅ Starts ClickGraph server in background (if not running)
 2. ✅ Loads benchmark schema (`social_benchmark.yaml`)
 3. ✅ Generates data using **MergeTree tables** (Windows-compatible!)
-4. ✅ Runs 13 benchmark queries (3 disabled due to known multi-hop bug)
-5. ✅ Saves results to `benchmarks/results/benchmark_scale{N}_{timestamp}.json`
+4. ✅ Runs benchmark queries
+5. ✅ Saves results to benchmark-specific results directory
 
 ### Regression Testing
 
@@ -43,11 +97,7 @@ Before releases or after major changes, run the regression test:
 .\benchmarks\run_regression.ps1
 ```
 
-This validates that all 13 working queries still pass. Exits with code 1 if any regression detected.
-
-**Expected Results (as of Nov 12, 2025)**:
-- 13/13 queries passing (100%)
-- 3 queries disabled due to known multi-hop query planner bug
+This validates that all working queries still pass. Exits with code 1 if any regression detected.
 - ~2 second average query time
 
 ### Manual Steps (Advanced)
@@ -68,7 +118,7 @@ $job = Start-Job -ScriptBlock {
 # 2. Wait for server (check: Invoke-RestMethod http://localhost:8080/health)
 
 # 3. Load schema
-python scripts/utils/load_schema.py benchmarks/schemas/social_benchmark.yaml
+python scripts/utils/load_schema.py benchmarks/social_network/schemas/social_benchmark.yaml
 
 # 4. Generate data (MergeTree for persistence)
 python benchmarks/data/setup_unified.py --scale 10 --engine MergeTree
