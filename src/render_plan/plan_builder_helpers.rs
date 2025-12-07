@@ -2609,4 +2609,150 @@ mod tests {
             _ => panic!("Expected unchanged Literal"),
         }
     }
+
+    // ==========================================================================
+    // Tests for predicate analysis helpers
+    // ==========================================================================
+
+    use crate::query_planner::logical_expr::{
+        LogicalExpr, 
+        Operator as LogicalOperator, 
+        OperatorApplication as LogicalOpApp,
+        PropertyAccess as LogicalPropertyAccess,
+        TableAlias as LogicalTableAlias,
+        Literal as LogicalLiteral,
+    };
+    use crate::graph_catalog::expression_parser::PropertyValue as LogicalPropertyValue;
+
+    /// Test collect_aliases_from_logical_expr with simple property access
+    #[test]
+    fn test_collect_aliases_from_logical_expr_property() {
+        let expr = LogicalExpr::PropertyAccessExp(LogicalPropertyAccess {
+            table_alias: LogicalTableAlias("user".to_string()),
+            column: LogicalPropertyValue::Column("name".to_string()),
+        });
+        
+        let mut aliases = HashSet::new();
+        collect_aliases_from_logical_expr(&expr, &mut aliases);
+        
+        assert_eq!(aliases.len(), 1);
+        assert!(aliases.contains("user"));
+    }
+
+    /// Test collect_aliases_from_logical_expr with operator containing multiple aliases
+    #[test]
+    fn test_collect_aliases_from_logical_expr_operator() {
+        let expr = LogicalExpr::OperatorApplicationExp(LogicalOpApp {
+            operator: LogicalOperator::Equal,
+            operands: vec![
+                LogicalExpr::PropertyAccessExp(LogicalPropertyAccess {
+                    table_alias: LogicalTableAlias("a".to_string()),
+                    column: LogicalPropertyValue::Column("id".to_string()),
+                }),
+                LogicalExpr::PropertyAccessExp(LogicalPropertyAccess {
+                    table_alias: LogicalTableAlias("b".to_string()),
+                    column: LogicalPropertyValue::Column("id".to_string()),
+                }),
+            ],
+        });
+        
+        let mut aliases = HashSet::new();
+        collect_aliases_from_logical_expr(&expr, &mut aliases);
+        
+        assert_eq!(aliases.len(), 2);
+        assert!(aliases.contains("a"));
+        assert!(aliases.contains("b"));
+    }
+
+    /// Test references_only_alias_logical - returns true when only one alias
+    #[test]
+    fn test_references_only_alias_logical_single() {
+        let expr = LogicalExpr::PropertyAccessExp(LogicalPropertyAccess {
+            table_alias: LogicalTableAlias("user".to_string()),
+            column: LogicalPropertyValue::Column("name".to_string()),
+        });
+        
+        assert!(references_only_alias_logical(&expr, "user"));
+        assert!(!references_only_alias_logical(&expr, "other"));
+    }
+
+    /// Test references_only_alias_logical - returns false when multiple aliases
+    #[test]
+    fn test_references_only_alias_logical_multiple() {
+        let expr = LogicalExpr::OperatorApplicationExp(LogicalOpApp {
+            operator: LogicalOperator::Equal,
+            operands: vec![
+                LogicalExpr::PropertyAccessExp(LogicalPropertyAccess {
+                    table_alias: LogicalTableAlias("a".to_string()),
+                    column: LogicalPropertyValue::Column("id".to_string()),
+                }),
+                LogicalExpr::PropertyAccessExp(LogicalPropertyAccess {
+                    table_alias: LogicalTableAlias("b".to_string()),
+                    column: LogicalPropertyValue::Column("id".to_string()),
+                }),
+            ],
+        });
+        
+        assert!(!references_only_alias_logical(&expr, "a"));
+        assert!(!references_only_alias_logical(&expr, "b"));
+    }
+
+    /// Test split_and_predicates_logical
+    #[test]
+    fn test_split_and_predicates_logical() {
+        // Create: a.x = 1 AND b.y = 2
+        let expr = LogicalExpr::OperatorApplicationExp(LogicalOpApp {
+            operator: LogicalOperator::And,
+            operands: vec![
+                LogicalExpr::OperatorApplicationExp(LogicalOpApp {
+                    operator: LogicalOperator::Equal,
+                    operands: vec![
+                        LogicalExpr::PropertyAccessExp(LogicalPropertyAccess {
+                            table_alias: LogicalTableAlias("a".to_string()),
+                            column: LogicalPropertyValue::Column("x".to_string()),
+                        }),
+                        LogicalExpr::Literal(LogicalLiteral::Integer(1)),
+                    ],
+                }),
+                LogicalExpr::OperatorApplicationExp(LogicalOpApp {
+                    operator: LogicalOperator::Equal,
+                    operands: vec![
+                        LogicalExpr::PropertyAccessExp(LogicalPropertyAccess {
+                            table_alias: LogicalTableAlias("b".to_string()),
+                            column: LogicalPropertyValue::Column("y".to_string()),
+                        }),
+                        LogicalExpr::Literal(LogicalLiteral::Integer(2)),
+                    ],
+                }),
+            ],
+        });
+        
+        let predicates = split_and_predicates_logical(&expr);
+        assert_eq!(predicates.len(), 2);
+    }
+
+    /// Test combine_predicates_with_and_logical
+    #[test]
+    fn test_combine_predicates_with_and_logical() {
+        // Empty list
+        assert!(combine_predicates_with_and_logical(vec![]).is_none());
+        
+        // Single predicate
+        let single = LogicalExpr::Literal(LogicalLiteral::Boolean(true));
+        let combined = combine_predicates_with_and_logical(vec![single.clone()]);
+        assert_eq!(combined, Some(single));
+        
+        // Multiple predicates
+        let p1 = LogicalExpr::Literal(LogicalLiteral::Boolean(true));
+        let p2 = LogicalExpr::Literal(LogicalLiteral::Boolean(false));
+        let combined = combine_predicates_with_and_logical(vec![p1.clone(), p2.clone()]);
+        
+        match combined {
+            Some(LogicalExpr::OperatorApplicationExp(op)) => {
+                assert!(matches!(op.operator, LogicalOperator::And));
+                assert_eq!(op.operands.len(), 2);
+            }
+            _ => panic!("Expected OperatorApplicationExp with AND"),
+        }
+    }
 }
