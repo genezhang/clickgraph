@@ -1837,7 +1837,6 @@ impl GraphJoinInference {
     /// | MixedAccess       | Partial: only JOIN the non-embedded node          |
     /// | EdgeToEdge        | Multi-hop: edge2.from_id = edge1.to_id           |
     /// | CoupledSameRow    | None - unify aliases, same physical row           |
-    #[allow(dead_code)]
     fn handle_graph_pattern_v2(
         &self,
         ctx: &PatternSchemaContext,
@@ -2541,85 +2540,47 @@ impl GraphJoinInference {
         let joins_before = collected_graph_joins.len();
 
         // ============================================================
-        // Phase 4: Use PatternSchemaContext-based v2 function
+        // Phase 4: Use PatternSchemaContext for exhaustive pattern matching
         // ============================================================
-        // Enable v2 path with USE_PATTERN_SCHEMA_V2=1 environment variable
-        // This allows gradual migration and A/B testing
-        let use_v2 = std::env::var("USE_PATTERN_SCHEMA_V2")
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false);
-
-        let result = if use_v2 {
-            // V2 path: Use PatternSchemaContext for exhaustive pattern matching
-            eprintln!("    🔬 Using handle_graph_pattern_v2 (PatternSchemaContext)");
-            
-            // Get previous edge info for multi-hop detection
-            // This is critical for EdgeToEdge and CoupledSameRow strategies
-            // Store in locals to avoid lifetime issues with borrowed references
-            let prev_edge_data: Option<(String, String, bool)> = plan_ctx
-                .get_denormalized_alias_info(&left_alias)
-                .filter(|(prev_alias, _, _, _)| prev_alias != &rel_alias)
-                .map(|(prev_alias, is_from, _, prev_type)| {
-                    eprintln!("    📍 MULTI-HOP detected: left '{}' was on prev edge '{}' (type={}, is_from={})",
-                        left_alias, prev_alias, prev_type, is_from);
-                    (prev_alias.clone(), prev_type.clone(), is_from)
-                });
-            
-            // Convert owned strings to borrowed references for the API
-            let prev_edge_info: Option<(&str, &str, bool)> = prev_edge_data.as_ref()
-                .map(|(alias, rel_type, is_from)| (alias.as_str(), rel_type.as_str(), *is_from));
-            
-            // Compute PatternSchemaContext for this pattern
-            if let Some(ctx) = self.compute_pattern_context(graph_rel, plan_ctx, graph_schema, prev_edge_info) {
-                self.handle_graph_pattern_v2(
-                    &ctx,
-                    &left_alias,
-                    &rel_alias,
-                    &right_alias,
-                    &left_cte_name,
-                    &rel_cte_name,
-                    &right_cte_name,
-                    left_is_optional,
-                    rel_is_optional,
-                    right_is_optional,
-                    plan_ctx,
-                    collected_graph_joins,
-                    joined_entities,
-                )
-            } else {
-                // Fallback to v1 if schema context cannot be computed
-                eprintln!("    ⚠️ PatternSchemaContext unavailable, falling back to v1");
-                self.handle_graph_pattern(
-                    graph_rel,
-                    &left_alias,
-                    &rel_alias,
-                    &right_alias,
-                    &left_cte_name,
-                    &rel_cte_name,
-                    &right_cte_name,
-                    &left_node_schema,
-                    &rel_schema,
-                    &right_node_schema,
-                    left_node_id_column.clone(),
-                    right_node_id_column.clone(),
-                    is_standalone_rel,
-                    left_is_optional,
-                    rel_is_optional,
-                    right_is_optional,
-                    left_is_referenced,
-                    right_is_referenced,
-                    left_label.clone(),
-                    right_label.clone(),
-                    rel_labels.clone(),
-                    plan_ctx,
-                    graph_schema,
-                    collected_graph_joins,
-                    joined_entities,
-                )
-            }
+        // V2 is now the default path. Falls back to v1 only if compute_pattern_context fails.
+        
+        // Get previous edge info for multi-hop detection
+        // This is critical for EdgeToEdge and CoupledSameRow strategies
+        // Store in locals to avoid lifetime issues with borrowed references
+        let prev_edge_data: Option<(String, String, bool)> = plan_ctx
+            .get_denormalized_alias_info(&left_alias)
+            .filter(|(prev_alias, _, _, _)| prev_alias != &rel_alias)
+            .map(|(prev_alias, is_from, _, prev_type)| {
+                eprintln!("    📍 MULTI-HOP detected: left '{}' was on prev edge '{}' (type={}, is_from={})",
+                    left_alias, prev_alias, prev_type, is_from);
+                (prev_alias.clone(), prev_type.clone(), is_from)
+            });
+        
+        // Convert owned strings to borrowed references for the API
+        let prev_edge_info: Option<(&str, &str, bool)> = prev_edge_data.as_ref()
+            .map(|(alias, rel_type, is_from)| (alias.as_str(), rel_type.as_str(), *is_from));
+        
+        // Compute PatternSchemaContext for this pattern
+        let result = if let Some(ctx) = self.compute_pattern_context(graph_rel, plan_ctx, graph_schema, prev_edge_info) {
+            eprintln!("    🔬 Using PatternSchemaContext: {}", ctx.debug_summary());
+            self.handle_graph_pattern_v2(
+                &ctx,
+                &left_alias,
+                &rel_alias,
+                &right_alias,
+                &left_cte_name,
+                &rel_cte_name,
+                &right_cte_name,
+                left_is_optional,
+                rel_is_optional,
+                right_is_optional,
+                plan_ctx,
+                collected_graph_joins,
+                joined_entities,
+            )
         } else {
-            // V1 path: Original handle_graph_pattern (default)
-            eprintln!("    📊 Processing graph pattern (v1)");
+            // Fallback to legacy path if schema context cannot be computed
+            eprintln!("    ⚠️ PatternSchemaContext unavailable, using legacy path");
             self.handle_graph_pattern(
                 graph_rel,
                 &left_alias,
@@ -2657,12 +2618,13 @@ impl GraphJoinInference {
         result
     }
 
-    /// Handle graph pattern traversal for view-mapped tables
-    ///
-    /// ClickGraph always uses view-mapped edge list storage where relationships are stored
-    /// as tables with from_id/to_id columns connecting to node tables.
-    /// The function name reflects that we traverse graph patterns, not the storage format.
+    /// Legacy handler for graph pattern traversal.
+    /// 
+    /// DEPRECATED: This is kept as a fallback when PatternSchemaContext cannot be computed.
+    /// The v2 handler (handle_graph_pattern_v2) is now the primary path.
+    /// TODO: Remove this function once compute_pattern_context handles all cases.
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)]
     fn handle_graph_pattern(
         &self,
         graph_rel: &GraphRel,
