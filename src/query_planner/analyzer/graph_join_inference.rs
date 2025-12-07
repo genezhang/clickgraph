@@ -1853,6 +1853,8 @@ impl GraphJoinInference {
         left_cte_name: &str,
         rel_cte_name: &str,
         right_cte_name: &str,
+        left_label: &str,
+        right_label: &str,
         left_is_optional: bool,
         rel_is_optional: bool,
         right_is_optional: bool,
@@ -1861,11 +1863,25 @@ impl GraphJoinInference {
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
         eprintln!("    📐 handle_graph_pattern_v2: {}", ctx.debug_summary());
+        eprintln!("    📐 Node labels: left='{}', right='{}'", left_label, right_label);
         
-        // Pre-filter for polymorphic edges (type_column IN (...))
-        // Use LogicalExpr::Raw for raw SQL filter expressions
-        let pre_filter: Option<LogicalExpr> = ctx.edge.get_type_filter(rel_alias)
-            .map(|filter_str| LogicalExpr::Raw(filter_str));
+        // Pre-filter for polymorphic edges:
+        // 1. type_column IN (...) for relationship type
+        // 2. from_label_column = 'X' and to_label_column = 'Y' for node type
+        let type_filter = ctx.edge.get_type_filter(rel_alias);
+        let label_filter = ctx.edge.get_label_filter(rel_alias, left_label, right_label);
+        
+        // Combine filters
+        let pre_filter: Option<LogicalExpr> = match (type_filter, label_filter) {
+            (Some(tf), Some(lf)) => Some(LogicalExpr::Raw(format!("{} AND {}", tf, lf))),
+            (Some(tf), None) => Some(LogicalExpr::Raw(tf)),
+            (None, Some(lf)) => Some(LogicalExpr::Raw(lf)),
+            (None, None) => None,
+        };
+        
+        if pre_filter.is_some() {
+            eprintln!("    🔹 Polymorphic pre_filter: {:?}", pre_filter);
+        }
         
         match &ctx.join_strategy {
             // ================================================================
@@ -2628,6 +2644,8 @@ impl GraphJoinInference {
                 &left_cte_name,
                 &rel_cte_name,
                 &right_cte_name,
+                &left_label,
+                &right_label,
                 left_is_optional,
                 rel_is_optional,
                 right_is_optional,

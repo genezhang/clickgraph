@@ -179,8 +179,8 @@ pub enum EdgeAccessStrategy {
         from_id: String,
         /// Column for target node ID
         to_id: String,
-        /// Column containing edge type (e.g., "interaction_type")
-        type_column: String,
+        /// Column containing edge type (e.g., "interaction_type") - optional for label-only polymorphism
+        type_column: Option<String>,
         /// Valid type values for this relationship
         type_values: Vec<String>,
         /// Optional: column for source node label (for $any nodes)
@@ -239,14 +239,17 @@ impl EdgeAccessStrategy {
     pub fn get_type_filter(&self, alias: &str) -> Option<String> {
         match self {
             EdgeAccessStrategy::Polymorphic { type_column, type_values, .. } => {
+                // Only generate type filter if type_column exists
+                let type_col = type_column.as_ref()?;
+                
                 if type_values.len() == 1 {
-                    Some(format!("{}.{} = '{}'", alias, type_column, type_values[0]))
+                    Some(format!("{}.{} = '{}'", alias, type_col, type_values[0]))
                 } else if !type_values.is_empty() {
                     let types_str = type_values.iter()
                         .map(|t| format!("'{}'", t))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    Some(format!("{}.{} IN ({})", alias, type_column, types_str))
+                    Some(format!("{}.{} IN ({})", alias, type_col, types_str))
                 } else {
                     None
                 }
@@ -254,10 +257,48 @@ impl EdgeAccessStrategy {
             _ => None,
         }
     }
-}
 
-// ============================================================================
-// Join Strategy
+    /// Get label filter for polymorphic edges that filter by node type.
+    /// 
+    /// For polymorphic edges with from_label_column/to_label_column, we need
+    /// to filter by the actual node type when the query specifies concrete labels.
+    /// 
+    /// # Arguments
+    /// * `alias` - The edge table alias
+    /// * `left_label` - The left node label from the query (e.g., "User")
+    /// * `right_label` - The right node label from the query (e.g., "Group")
+    /// 
+    /// # Returns
+    /// A SQL filter string like "r.member_type = 'User'" or combined filters
+    pub fn get_label_filter(&self, alias: &str, left_label: &str, right_label: &str) -> Option<String> {
+        match self {
+            EdgeAccessStrategy::Polymorphic { from_label_column, to_label_column, .. } => {
+                let mut parts = Vec::new();
+                
+                // Add from_label filter if column exists and left_label is specified
+                if let Some(ref col) = from_label_column {
+                    if !left_label.is_empty() {
+                        parts.push(format!("{}.{} = '{}'", alias, col, left_label));
+                    }
+                }
+                
+                // Add to_label filter if column exists and right_label is specified
+                if let Some(ref col) = to_label_column {
+                    if !right_label.is_empty() {
+                        parts.push(format!("{}.{} = '{}'", alias, col, right_label));
+                    }
+                }
+                
+                if parts.is_empty() {
+                    None
+                } else {
+                    Some(parts.join(" AND "))
+                }
+            }
+            _ => None,
+        }
+    }
+}
 // ============================================================================
 
 /// How to generate SQL JOINs for a graph pattern.
@@ -510,13 +551,16 @@ impl PatternSchemaContext {
 
     /// Build edge access strategy from relationship schema
     fn build_edge_strategy(rel_schema: &RelationshipSchema, rel_types: &[String]) -> EdgeAccessStrategy {
-        // Check if polymorphic (has type_column)
-        if let Some(ref type_col) = rel_schema.type_column {
+        // Check if polymorphic: either has type_column, from_label_column, or to_label_column
+        let has_type_column = rel_schema.type_column.is_some();
+        let has_label_columns = rel_schema.from_label_column.is_some() || rel_schema.to_label_column.is_some();
+        
+        if has_type_column || has_label_columns {
             EdgeAccessStrategy::Polymorphic {
                 table: rel_schema.full_table_name(),
                 from_id: rel_schema.from_id.clone(),
                 to_id: rel_schema.to_id.clone(),
-                type_column: type_col.clone(),
+                type_column: rel_schema.type_column.clone(),
                 type_values: rel_types.to_vec(),
                 from_label_column: rel_schema.from_label_column.clone(),
                 to_label_column: rel_schema.to_label_column.clone(),
@@ -983,7 +1027,7 @@ mod tests {
             table: "interactions".to_string(),
             from_id: "from_id".to_string(),
             to_id: "to_id".to_string(),
-            type_column: "interaction_type".to_string(),
+            type_column: Some("interaction_type".to_string()),
             type_values: vec!["FOLLOWS".to_string()],
             from_label_column: None,
             to_label_column: None,
@@ -998,7 +1042,7 @@ mod tests {
             table: "interactions".to_string(),
             from_id: "from_id".to_string(),
             to_id: "to_id".to_string(),
-            type_column: "interaction_type".to_string(),
+            type_column: Some("interaction_type".to_string()),
             type_values: vec!["FOLLOWS".to_string(), "LIKES".to_string()],
             from_label_column: None,
             to_label_column: None,
@@ -1016,6 +1060,137 @@ mod tests {
             properties: HashMap::new(),
         };
         assert_eq!(separate.get_type_filter("r"), None);
+    }
+
+    #[test]
+    fn test_edge_access_strategy_label_filter() {
+        // Test from_label_column only (MEMBER_OF with User|Group on left)
+        let from_only = EdgeAccessStrategy::Polymorphic {
+            table: "memberships".to_string(),
+            from_id: "member_id".to_string(),
+            to_id: "group_id".to_string(),
+            type_column: None, // No type discriminator
+            type_values: vec![],
+            from_label_column: Some("member_type".to_string()),
+            to_label_column: None,
+            properties: HashMap::new(),
+        };
+        // User on left side
+        assert_eq!(
+            from_only.get_label_filter("r", "User", "Group"),
+            Some("r.member_type = 'User'".to_string())
+        );
+        // Group on left side
+        assert_eq!(
+            from_only.get_label_filter("r", "Group", "Group"),
+            Some("r.member_type = 'Group'".to_string())
+        );
+        
+        // Test to_label_column only (CONTAINS with Folder|File on right)
+        let to_only = EdgeAccessStrategy::Polymorphic {
+            table: "fs_contents".to_string(),
+            from_id: "parent_id".to_string(),
+            to_id: "child_id".to_string(),
+            type_column: None,
+            type_values: vec![],
+            from_label_column: None,
+            to_label_column: Some("child_type".to_string()),
+            properties: HashMap::new(),
+        };
+        // Folder on right
+        assert_eq!(
+            to_only.get_label_filter("r", "Folder", "Folder"),
+            Some("r.child_type = 'Folder'".to_string())
+        );
+        // File on right
+        assert_eq!(
+            to_only.get_label_filter("r", "Folder", "File"),
+            Some("r.child_type = 'File'".to_string())
+        );
+        
+        // Test both label columns (HAS_ACCESS: User|Group -> Folder|File)
+        let both = EdgeAccessStrategy::Polymorphic {
+            table: "permissions".to_string(),
+            from_id: "subject_id".to_string(),
+            to_id: "object_id".to_string(),
+            type_column: None,
+            type_values: vec![],
+            from_label_column: Some("subject_type".to_string()),
+            to_label_column: Some("object_type".to_string()),
+            properties: HashMap::new(),
+        };
+        // User -> Folder
+        assert_eq!(
+            both.get_label_filter("r", "User", "Folder"),
+            Some("r.subject_type = 'User' AND r.object_type = 'Folder'".to_string())
+        );
+        // Group -> File
+        assert_eq!(
+            both.get_label_filter("r", "Group", "File"),
+            Some("r.subject_type = 'Group' AND r.object_type = 'File'".to_string())
+        );
+        
+        // Test with type_column + label columns (full polymorphic)
+        let full = EdgeAccessStrategy::Polymorphic {
+            table: "interactions".to_string(),
+            from_id: "from_id".to_string(),
+            to_id: "to_id".to_string(),
+            type_column: Some("interaction_type".to_string()),
+            type_values: vec!["FOLLOWS".to_string()],
+            from_label_column: Some("from_type".to_string()),
+            to_label_column: Some("to_type".to_string()),
+            properties: HashMap::new(),
+        };
+        // Label filter should still work (type filter is separate)
+        assert_eq!(
+            full.get_label_filter("r", "User", "User"),
+            Some("r.from_type = 'User' AND r.to_type = 'User'".to_string())
+        );
+        // And type filter should also work
+        assert_eq!(
+            full.get_type_filter("r"),
+            Some("r.interaction_type = 'FOLLOWS'".to_string())
+        );
+        
+        // Test no label columns (separate table - no label filtering needed)
+        let separate = EdgeAccessStrategy::SeparateTable {
+            table: "follows".to_string(),
+            from_id: "follower_id".to_string(),
+            to_id: "followed_id".to_string(),
+            properties: HashMap::new(),
+        };
+        assert_eq!(separate.get_label_filter("r", "User", "User"), None);
+        
+        // Test Polymorphic with no label columns (only type_column)
+        let type_only = EdgeAccessStrategy::Polymorphic {
+            table: "interactions".to_string(),
+            from_id: "from_id".to_string(),
+            to_id: "to_id".to_string(),
+            type_column: Some("interaction_type".to_string()),
+            type_values: vec!["FOLLOWS".to_string()],
+            from_label_column: None,
+            to_label_column: None,
+            properties: HashMap::new(),
+        };
+        assert_eq!(type_only.get_label_filter("r", "User", "User"), None);
+    }
+
+    #[test]
+    fn test_edge_access_strategy_type_filter_with_none_type_column() {
+        // Regression test: Polymorphic with type_column = None should return None for type filter
+        // This is the case for edges like MEMBER_OF that only have from_label_column
+        let label_only = EdgeAccessStrategy::Polymorphic {
+            table: "memberships".to_string(),
+            from_id: "member_id".to_string(),
+            to_id: "group_id".to_string(),
+            type_column: None, // <-- This was the bug: type_column can be None
+            type_values: vec![],
+            from_label_column: Some("member_type".to_string()),
+            to_label_column: None,
+            properties: HashMap::new(),
+        };
+        // Should NOT panic, should return None
+        assert_eq!(label_only.get_type_filter("r"), None);
     }
 
     #[test]
