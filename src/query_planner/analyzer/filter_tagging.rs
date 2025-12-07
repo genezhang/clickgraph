@@ -1048,15 +1048,24 @@ impl FilterTagging {
             LogicalPlan::GraphRel(rel) => {
                 // Check if this node is the left (from) or right (to) of this relationship
                 // AND the relationship has edge-defined node properties
+                // IMPORTANT: Only match if the child is a GraphNode (not another GraphRel)
+                // This ensures we find the DIRECT owning edge, not an ancestor GraphRel
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
                     let has_from_props = scan.from_node_properties.is_some();
                     let has_to_props = scan.to_node_properties.is_some();
                     
-                    if rel.left_connection == node_alias && has_from_props {
-                        return Some((rel.alias.clone(), true)); // is_from_node = true
+                    // Check if left child is a GraphNode with this alias
+                    if let LogicalPlan::GraphNode(left_node) = rel.left.as_ref() {
+                        if left_node.alias == node_alias && has_from_props {
+                            return Some((rel.alias.clone(), true)); // is_from_node = true
+                        }
                     }
-                    if rel.right_connection == node_alias && has_to_props {
-                        return Some((rel.alias.clone(), false)); // is_from_node = false
+                    
+                    // Check if right child is a GraphNode with this alias
+                    if let LogicalPlan::GraphNode(right_node) = rel.right.as_ref() {
+                        if right_node.alias == node_alias && has_to_props {
+                            return Some((rel.alias.clone(), false)); // is_from_node = false
+                        }
                     }
                 }
                 

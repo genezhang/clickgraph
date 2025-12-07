@@ -37,6 +37,13 @@ def clickhouse_client():
     client.close()
 
 
+# Alias for backward compatibility with some test files
+@pytest.fixture(scope="module")
+def clickhouse_conn(clickhouse_client):
+    """Alias for clickhouse_client fixture (module-scoped for test isolation)."""
+    return clickhouse_client
+
+
 @pytest.fixture(scope="session")
 def test_database():
     """Returns the test database name."""
