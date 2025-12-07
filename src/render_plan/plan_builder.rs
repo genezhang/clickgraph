@@ -2137,135 +2137,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 log::trace!("GraphRel node detected, collecting filters from ALL nested where_predicates");
 
                 // Collect all where_predicates from this GraphRel and nested GraphRel nodes
-                // This fixes the bug where only ONE GraphRel's predicate was being used
-                // 
-                // IMPORTANT: For optional (LEFT JOIN) patterns, predicates that reference ONLY
-                // optional aliases are moved to pre_filter (subquery form) and should NOT be
-                // included in the main WHERE clause. We filter them out here.
-                fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr> {
-                    // Use shared helper functions from plan_builder_helpers
-                    use super::plan_builder_helpers::{
-                        references_only_alias_logical,
-                        split_and_predicates_logical,
-                    };
-                    
-                    let mut predicates = Vec::new();
-                    match plan {
-                        LogicalPlan::GraphRel(gr) => {
-                            // Add this GraphRel's predicate, but filter out optional-only predicates
-                            if let Some(ref pred) = gr.where_predicate {
-                                let is_optional = gr.is_optional.unwrap_or(false);
-                                
-                                if is_optional {
-                                    // For OPTIONAL MATCH patterns, we need to determine which node is the anchor
-                                    // (required from base MATCH) and which is the optional target.
-                                    //
-                                    // anchor_connection is set during GraphRel creation based on which alias
-                                    // already existed in the plan context (from base MATCH).
-                                    //
-                                    // Only filter out predicates that reference ONLY:
-                                    // - The relationship (alias)
-                                    // - The optional target node (NOT the anchor)
-                                    // 
-                                    // Keep predicates that reference the anchor!
-                                    
-                                    // Determine anchor and optional aliases
-                                    let anchor_alias = gr.anchor_connection.as_ref();
-                                    let optional_alias = if anchor_alias == Some(&gr.left_connection) {
-                                        Some(&gr.right_connection)
-                                    } else if anchor_alias == Some(&gr.right_connection) {
-                                        Some(&gr.left_connection)
-                                    } else {
-                                        // No anchor set - fall back to keeping all predicates
-                                        None
-                                    };
-                                    
-                                    if let (Some(anchor), Some(optional)) = (anchor_alias, optional_alias) {
-                                        let all_preds = split_and_predicates_logical(pred);
-                                        for p in all_preds {
-                                            // Only filter if predicate references ONLY the optional parts
-                                            let refs_only_rel = references_only_alias_logical(&p, &gr.alias);
-                                            let refs_only_optional = references_only_alias_logical(&p, optional);
-                                            
-                                            // Keep predicate in WHERE if it:
-                                            // - References the anchor (required node from base MATCH)
-                                            // - References multiple aliases
-                                            // Filter out if it references ONLY rel or ONLY the optional node
-                                            if refs_only_rel || refs_only_optional {
-                                                log::debug!(
-                                                    "Excluding optional-alias predicate from WHERE: refs_rel={}, refs_optional={}, anchor={}, optional={}",
-                                                    refs_only_rel, refs_only_optional, anchor, optional
-                                                );
-                                            } else {
-                                                if let Ok(render_expr) = RenderExpr::try_from(p) {
-                                                    predicates.push(render_expr);
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        // No anchor determined - keep all predicates (conservative)
-                                        if let Ok(render_expr) = RenderExpr::try_from(pred.clone()) {
-                                            predicates.push(render_expr);
-                                        }
-                                    }
-                                } else {
-                                    // Non-optional: include all predicates
-                                    if let Ok(render_expr) = RenderExpr::try_from(pred.clone()) {
-                                        predicates.push(render_expr);
-                                    }
-                                }
-                            }
-                            // Recursively collect from children (to get nested GraphRel predicates)
-                            predicates.extend(collect_graphrel_predicates(&gr.left));
-                            predicates.extend(collect_graphrel_predicates(&gr.center));
-                            predicates.extend(collect_graphrel_predicates(&gr.right));
-                        }
-                        LogicalPlan::GraphNode(gn) => {
-                            predicates.extend(collect_graphrel_predicates(&gn.input));
-                        }
-                        LogicalPlan::ViewScan(_scan) => {
-                            // ViewScan.view_filter should be empty after CleanupViewScanFilters optimizer
-                            // All filters come from GraphRel.where_predicate
-                        }
-                        // Don't recurse into other node types - only GraphRel/GraphNode/ViewScan
-                        _ => {}
-                    }
-                    predicates
-                }
-                
-                // Collect schema filters from all ViewScans (defined in YAML schema)
-                fn collect_schema_filters(plan: &LogicalPlan, alias_hint: Option<&str>) -> Vec<RenderExpr> {
-                    let mut filters = Vec::new();
-                    match plan {
-                        LogicalPlan::ViewScan(scan) => {
-                            // If ViewScan has a schema_filter, convert it to RenderExpr::Raw with table alias
-                            if let Some(ref schema_filter) = scan.schema_filter {
-                                // We need the table alias to properly prefix columns
-                                // Use alias_hint if provided, otherwise extract from context
-                                let table_alias = alias_hint.unwrap_or("t");
-                                if let Ok(sql) = schema_filter.to_sql(table_alias) {
-                                    log::debug!(
-                                        "Collected schema filter for table '{}' with alias '{}': {}",
-                                        scan.source_table, table_alias, sql
-                                    );
-                                    filters.push(RenderExpr::Raw(sql));
-                                }
-                            }
-                        }
-                        LogicalPlan::GraphRel(gr) => {
-                            // For GraphRel, use the connection aliases as hints for child ViewScans
-                            filters.extend(collect_schema_filters(&gr.left, Some(&gr.left_connection)));
-                            filters.extend(collect_schema_filters(&gr.center, Some(&gr.alias)));
-                            filters.extend(collect_schema_filters(&gr.right, Some(&gr.right_connection)));
-                        }
-                        LogicalPlan::GraphNode(gn) => {
-                            filters.extend(collect_schema_filters(&gn.input, Some(&gn.alias)));
-                        }
-                        _ => {}
-                    }
-                    filters
-                }
-
+                // Using helper functions from plan_builder_helpers module
                 let all_predicates = collect_graphrel_predicates(&LogicalPlan::GraphRel(graph_rel.clone()));
                 
                 let mut all_predicates = all_predicates;
@@ -2455,153 +2327,11 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn extract_joins(&self) -> RenderPlanBuilderResult<Vec<Join>> {
-        // Helper to extract schema filter from a LogicalPlan for LEFT JOIN pre_filter
-        // This ensures schema filters are applied BEFORE the LEFT JOIN (correct semantics)
-        fn get_schema_filter_for_node(plan: &LogicalPlan, alias: &str) -> Option<RenderExpr> {
-            match plan {
-                LogicalPlan::GraphNode(gn) => {
-                    if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                        if let Some(ref sf) = vs.schema_filter {
-                            if let Ok(sql) = sf.to_sql(alias) {
-                                return Some(RenderExpr::Raw(sql));
-                            }
-                        }
-                    }
-                    None
-                }
-                LogicalPlan::ViewScan(vs) => {
-                    if let Some(ref sf) = vs.schema_filter {
-                        if let Ok(sql) = sf.to_sql(alias) {
-                            return Some(RenderExpr::Raw(sql));
-                        }
-                    }
-                    None
-                }
-                _ => None,
-            }
-        }
-        
-        // Helper to generate polymorphic edge type filter
-        // For polymorphic edges, adds: r.type_column IN ('TYPE1', 'TYPE2') AND r.from_label = 'NodeType' AND r.to_label = 'NodeType'
-        // For single type: r.type_column = 'EDGE_TYPE'
-        fn get_polymorphic_edge_filter(
-            center: &LogicalPlan,
-            alias: &str,
-            rel_types: &[String],
-            from_label: &str,
-            to_label: &str,
-        ) -> Option<RenderExpr> {
-            // Extract ViewScan from center (might be wrapped in GraphNode)
-            let view_scan = match center {
-                LogicalPlan::ViewScan(vs) => Some(vs.as_ref()),
-                LogicalPlan::GraphNode(gn) => {
-                    if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                        Some(vs.as_ref())
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            }?;
-            
-            // Check if this is a polymorphic edge (has type_column, from_label_column, or to_label_column)
-            // Fixed-endpoint pattern: may have only from_label_column or to_label_column without type_column
-            let has_polymorphic_fields = view_scan.type_column.is_some() 
-                || view_scan.from_label_column.is_some() 
-                || view_scan.to_label_column.is_some();
-            
-            if !has_polymorphic_fields {
-                return None;
-            }
-            
-            log::debug!(
-                "Generating polymorphic edge filter for alias='{}', rel_types={:?}, type_col={:?}, from_label_col={:?}, to_label_col={:?}",
-                alias, rel_types, view_scan.type_column, view_scan.from_label_column, view_scan.to_label_column
-            );
-            
-            let mut filters = Vec::new();
-            
-            // Filter 1: type_column = 'EDGE_TYPE' (single) OR type_column IN ('TYPE1', 'TYPE2') (multiple)
-            // Only if type_column is present
-            if let Some(type_col) = &view_scan.type_column {
-                if rel_types.len() == 1 {
-                    // Single type: use equality
-                    filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(alias.to_string()),
-                                column: Column(PropertyValue::Column(type_col.clone())),
-                            }),
-                            RenderExpr::Literal(Literal::String(rel_types[0].clone())),
-                        ],
-                    }));
-                } else if rel_types.len() > 1 {
-                    // Multiple types: use IN clause
-                    let type_list: Vec<RenderExpr> = rel_types.iter()
-                        .map(|t| RenderExpr::Literal(Literal::String(t.clone())))
-                        .collect();
-                    filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::In,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(alias.to_string()),
-                                column: Column(PropertyValue::Column(type_col.clone())),
-                            }),
-                            RenderExpr::List(type_list),
-                        ],
-                    }));
-                }
-            }
-            // If no type_column, skip type filter
-            
-            // Filter 2: from_label_column = 'FromNodeType' (if present and not $any)
-            if let Some(from_label_col) = &view_scan.from_label_column {
-                if !from_label.is_empty() && from_label != "$any" {
-                    filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(alias.to_string()),
-                                column: Column(PropertyValue::Column(from_label_col.clone())),
-                            }),
-                            RenderExpr::Literal(Literal::String(from_label.to_string())),
-                        ],
-                    }));
-                }
-            }
-            
-            // Filter 3: to_label_column = 'ToNodeType' (if present and not $any)
-            if let Some(to_label_col) = &view_scan.to_label_column {
-                if !to_label.is_empty() && to_label != "$any" {
-                    filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(alias.to_string()),
-                                column: Column(PropertyValue::Column(to_label_col.clone())),
-                            }),
-                            RenderExpr::Literal(Literal::String(to_label.to_string())),
-                        ],
-                    }));
-                }
-            }
-            
-            // Combine filters with AND
-            if filters.is_empty() {
-                None
-            } else if filters.len() == 1 {
-                Some(filters.into_iter().next().unwrap())
-            } else {
-                Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: Operator::And,
-                    operands: filters,
-                }))
-            }
-        }
-        
-        // NOTE: extract_predicates_for_alias moved to plan_builder_helpers.rs
-        // Use the shared version: extract_predicates_for_alias_logical()
+        // Use helper functions from plan_builder_helpers module
+        // get_schema_filter_for_node() - extracts schema filter from LogicalPlan
+        // get_polymorphic_edge_filter_for_join() - generates polymorphic edge type filter
+        // extract_predicates_for_alias_logical() - extracts predicates for specific alias
+        // combine_render_exprs_with_and() - combines filters with AND
         
         let joins = match &self {
             LogicalPlan::Limit(limit) => limit.input.extract_joins()?,
@@ -2929,7 +2659,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 let rel_types_for_filter: Vec<String> = graph_rel.labels.as_ref()
                     .map(|labels| labels.clone())
                     .unwrap_or_default();
-                let polymorphic_filter = get_polymorphic_edge_filter(
+                let polymorphic_filter = get_polymorphic_edge_filter_for_join(
                     &graph_rel.center,
                     &graph_rel.alias,
                     &rel_types_for_filter,
@@ -2939,23 +2669,13 @@ impl RenderPlanBuilder for LogicalPlan {
                 
                 // Combine schema filter + user predicates for each alias's pre_filter
                 // Note: left_connection is anchor, so we only use schema filter (no user predicate extraction)
-                fn combine_pre_filters(filters: Vec<Option<RenderExpr>>) -> Option<RenderExpr> {
-                    let active: Vec<RenderExpr> = filters.into_iter().flatten().collect();
-                    match active.len() {
-                        0 => None,
-                        1 => Some(active.into_iter().next().unwrap()),
-                        _ => Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                            operator: Operator::And,
-                            operands: active,
-                        })),
-                    }
-                }
+                // Using combine_optional_filters_with_and from plan_builder_helpers
                 
                 // left_node uses ONLY schema filter (no user predicates - anchor node predicates stay in WHERE)
                 let _left_node_pre_filter = left_schema_filter;
                 // Relationship pre_filter combines: schema filter + polymorphic filter + user predicates
-                let rel_pre_filter = combine_pre_filters(vec![rel_schema_filter, polymorphic_filter, rel_user_pred]);
-                let right_node_pre_filter = combine_pre_filters(vec![right_schema_filter, right_user_pred]);
+                let rel_pre_filter = combine_optional_filters_with_and(vec![rel_schema_filter, polymorphic_filter, rel_user_pred]);
+                let right_node_pre_filter = combine_optional_filters_with_and(vec![right_schema_filter, right_user_pred]);
 
                 // Standard join order: relationship first, then end node
                 // The FROM clause is always the left/anchor node.
