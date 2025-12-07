@@ -1,0 +1,47 @@
+MATCH p = (a)-[r1]->(b)-[r2]->(c)
+WHERE r1.flight_date = r2.flight_date
+AND r1.crs_arrival_time + 100 <= r2.crs_departure_time
+AND id(a) = 12892
+AND id(c) = 12953
+AND r1.Year = 2022
+WITH r1.Month as month, count(p) as path_count
+RETURN month, path_count
+ORDER BY month
+
+
+MATCH p =(a)-[r1]->(b)-[r2]->(c)
+WHERE r1.flight_date = r2.flight_date
+AND r1.crs_arrival_time + 100 <= r2.crs_departure_time
+AND r1.ArrTime >= r2.DepTime
+AND id(a) = 12892
+AND id(c) = 12953
+AND r1.Year = 2022
+WITH r1.Month as month, count(p) as path_count
+RETURN month, path_count
+ORDER BY month
+
+
+MATCH (a)-[r1]->(n)-[r2]->(c)
+WHERE r1.flight_date = date("2022-06-08")
+AND r1.flight_date = r2.flight_date
+AND r1.tail_num = r2.tail_num
+AND r1.tail_num IS NOT NULL
+AND r1.tail_num <> ""
+AND r1.crs_arrival_time < r2.crs_departure_time
+WITH n, count(DISTINCT r1.tail_num) as cnt
+RETURN n, cnt
+ORDER BY cnt DESC
+LIMIT 10
+
+
+MATCH (a)-[r1]->(n)-[r2]->(c)-[r3]->()
+WHERE r1.flight_date = date(:2022-08-08")
+AND r1.flight_date = r2.flight_date
+AND r2.flight_date = r3.flight_date
+AND r1.tail_num = r2.tail_num
+AND r1.tail_num = r3.tail_num
+AND r1.tail_num IS NOT NULL
+AND r1.tail_num <> ""
+AND r1.crs_arrival_time < r2.crs_departure_time
+AND r2.crs_arrival_time < r3.crs_departure_time
+RETURN count(DISTINCT r1.tail_num) as cnt

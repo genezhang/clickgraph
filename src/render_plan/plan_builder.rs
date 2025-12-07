@@ -1217,7 +1217,10 @@ impl RenderPlanBuilder for LogicalPlan {
                                 );
 
                                 // Create a separate ProjectionItem for each property
+                                // Use original alias (e.g., "a") as prefix for column names to avoid
+                                // duplicate aliases when returning multiple nodes (e.g., RETURN a, b)
                                 for (prop_name, col_name) in properties {
+                                    let col_alias_name = format!("{}.{}", alias.0, prop_name);
                                     expanded_items.push(ProjectionItem {
                                         expression: crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                             crate::query_planner::logical_expr::PropertyAccess {
@@ -1225,7 +1228,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                                 column: PropertyValue::Column(col_name),
                                             }
                                         ),
-                                        col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(prop_name)),
+                                        col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(col_alias_name)),
                                     });
                                 }
                                 continue; // Skip adding the TableAlias item itself

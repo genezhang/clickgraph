@@ -150,6 +150,43 @@ pub enum Operator {
     IsNotNull,
 }
 
+impl Operator {
+    /// Returns true if this operator produces a boolean result and can be extracted as a filter.
+    /// Arithmetic operators (Addition, Subtraction, etc.) return false because they produce
+    /// numeric results and should not be extracted as standalone filters.
+    pub fn is_filter_extractable(&self) -> bool {
+        match self {
+            // Arithmetic operators - NOT filter extractable
+            Operator::Addition
+            | Operator::Subtraction
+            | Operator::Multiplication
+            | Operator::Division
+            | Operator::ModuloDivision
+            | Operator::Exponentiation => false,
+
+            // Comparison and boolean operators - filter extractable
+            Operator::Equal
+            | Operator::NotEqual
+            | Operator::LessThan
+            | Operator::GreaterThan
+            | Operator::LessThanEqual
+            | Operator::GreaterThanEqual
+            | Operator::RegexMatch
+            | Operator::And
+            | Operator::Or
+            | Operator::In
+            | Operator::NotIn
+            | Operator::StartsWith
+            | Operator::EndsWith
+            | Operator::Contains
+            | Operator::Not
+            | Operator::Distinct
+            | Operator::IsNull
+            | Operator::IsNotNull => true,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct OperatorApplication {
     pub operator: Operator,

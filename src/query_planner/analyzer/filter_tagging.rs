@@ -609,12 +609,96 @@ impl FilterTagging {
                 Ok(LogicalExpr::OperatorApplicationExp(op))
             }
             LogicalExpr::ScalarFnCall(fn_call) => {
-                // Graph introspection functions (id, type, labels, label) are handled by ProjectionTagging
-                // which sets proper column aliases. Pass them through unchanged (with mapped args).
                 let fn_name_lower = fn_call.name.to_lowercase();
-                if matches!(fn_name_lower.as_str(), "id" | "type" | "labels" | "label") {
-                    // Keep the ScalarFnCall intact - ProjectionTagging will convert it
-                    // and set the appropriate column alias
+                
+                // Handle id() function - resolve to actual ID column for WHERE clause usage
+                if fn_name_lower == "id" && fn_call.args.len() == 1 {
+                    // Extract the alias from the argument
+                    if let LogicalExpr::TableAlias(ref alias) = fn_call.args[0] {
+                        let alias_str = &alias.0;
+                        
+                        // Get the table context to determine if it's a node or relationship
+                        if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias_str) {
+                            if let Some(label) = table_ctx.get_label_opt() {
+                                let id_column = if table_ctx.is_relation() {
+                                    // For relationships, get the from_id column (or edge_id if defined)
+                                    if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
+                                        if let Some(ref edge_id) = rel_schema.edge_id {
+                                            let columns = edge_id.columns();
+                                            if columns.len() == 1 {
+                                                Some(columns[0].to_string())
+                                            } else {
+                                                // Composite ID - return first column for simple comparison
+                                                // TODO: Handle composite IDs properly in WHERE clause
+                                                Some(columns[0].to_string())
+                                            }
+                                        } else {
+                                            Some(rel_schema.from_id.clone())
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    // For nodes, check if it's denormalized and get the proper ID column
+                                    // First check if this node is denormalized (has properties in edge table)
+                                    let is_denormalized = if let Some(plan) = plan {
+                                        Self::is_node_denormalized(plan, alias_str) ||
+                                        Self::find_owning_edge_for_node(plan, alias_str).is_some()
+                                    } else {
+                                        false
+                                    };
+                                    
+                                    if is_denormalized {
+                                        // For denormalized nodes, find the owning edge and get the ID from from_node/to_node properties
+                                        if let Some(plan) = plan {
+                                            if let Some((owning_edge, is_from_node)) = Self::find_owning_edge_for_node(plan, alias_str) {
+                                                // Use find_property_in_viewscan_with_edge to get the actual column
+                                                // Node id_column in schema is the logical property name (e.g., "id")
+                                                let id_property = if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
+                                                    node_schema.node_id.column.clone()
+                                                } else {
+                                                    "id".to_string()
+                                                };
+                                                
+                                                Self::find_property_in_viewscan_with_edge(plan, alias_str, &id_property, &owning_edge, is_from_node)
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        // For regular (non-denormalized) nodes, use the node_id column directly
+                                        if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
+                                            Some(node_schema.node_id.column.clone())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                };
+                                
+                                if let Some(column) = id_column {
+                                    println!(
+                                        "FilterTagging: Resolved id({}) to PropertyAccess with column '{}'",
+                                        alias_str, column
+                                    );
+                                    return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(alias_str.clone()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(column),
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                    // If we couldn't resolve id(), fall through to pass it unchanged
+                    println!(
+                        "FilterTagging: Could not resolve id() function, passing through unchanged"
+                    );
+                }
+                
+                // Other graph introspection functions (type, labels, label) are handled by ProjectionTagging
+                // for RETURN clauses. In WHERE clauses, pass them through with mapped args.
+                if matches!(fn_name_lower.as_str(), "type" | "labels" | "label") {
                     let mut mapped_args = Vec::new();
                     for arg in fn_call.args {
                         mapped_args.push(self.apply_property_mapping(arg, plan_ctx, graph_schema, plan)?);
@@ -894,10 +978,21 @@ impl FilterTagging {
                 // if it is a multinode condition then we are not extracting. It will be kept at overall conditions
                 // and applied at the end in the final query. This applies to OR conditions.
                 // We won't extract OR conditions but add projections to their respective tables.
-                if !new_in_or && !agg_operand_found && condition_belongs_to.len() == 1 {
+                // IMPORTANT: Only extract if the operator is a filter-extractable operator (comparisons, boolean).
+                // Arithmetic operators like Addition should NOT be extracted as standalone filters.
+                // IMPORTANT: Use get_table_alias_if_single_table_condition to RECURSIVELY check all table aliases,
+                // not just direct operands. This handles cases like `r1.x + 100 <= r2.y` where the Addition 
+                // references r1 but is nested inside the comparison, so condition_belongs_to only saw r2.
+                let single_table_alias = Self::get_table_alias_if_single_table_condition(
+                    &LogicalExpr::OperatorApplicationExp(op_app.clone()),
+                    false, // not checking aggregate functions
+                );
+                let is_single_table_condition = single_table_alias.is_some();
+                
+                if !new_in_or && !agg_operand_found && is_single_table_condition && op_app.operator.is_filter_extractable() {
                     extracted_filters.push(op_app);
                     return None;
-                } else if new_in_or || condition_belongs_to.len() > 1 {
+                } else if new_in_or || !is_single_table_condition {
                     extracted_projections.append(&mut temp_prop_acc);
                 }
 

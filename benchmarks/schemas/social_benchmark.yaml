@@ -21,9 +21,8 @@ graph_schema:
       id_column: post_id
       property_mappings:
         post_id: post_id
-        title: post_title
-        content: post_content
-        date: post_date
+        content: content
+        date: created_at
 
     # Zeek log node for testing UNWIND on array columns
     - label: ZeekLog

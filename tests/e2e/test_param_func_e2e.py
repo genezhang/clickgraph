@@ -64,9 +64,10 @@ class TestParameterFunctionBasics:
         assert len(result["results"]) > 0
         
         # All users should have age > 30
+        # Note: Properties without explicit AS clause are returned with table prefix (u.age)
         for row in result["results"]:
-            assert row["age"] > 30
-            # Name should be uppercase
+            assert row["u.age"] > 30
+            # Name should be uppercase (has explicit alias)
             assert row["upper_name"].isupper()
     
     def test_function_on_property_with_parameter_comparison(self, clickgraph_client, param_func_bucket):
@@ -85,8 +86,9 @@ class TestParameterFunctionBasics:
         assert len(result["results"]) > 0
         
         # All results should have active status
+        # Note: Properties without explicit AS clause are returned with table prefix
         for row in result["results"]:
-            assert row["status"].upper() == "ACTIVE"
+            assert row["u.status"].upper() == "ACTIVE"
     
     def test_math_function_with_parameters(self, clickgraph_client, param_func_bucket):
         """Test: Math function in WHERE with parameter."""
@@ -104,8 +106,9 @@ class TestParameterFunctionBasics:
         assert "results" in result
         
         # All results should be within tolerance
+        # Note: Properties without explicit AS clause are returned with table prefix
         for row in result["results"]:
-            assert abs(row["age"] - 30) < 5
+            assert abs(row["u.age"] - 30) < 5
 
 
 class TestParameterFunctionComplex:
@@ -131,9 +134,9 @@ class TestParameterFunctionComplex:
         assert len(result["results"]) > 0
         
         for row in result["results"]:
-            # Age in range
-            assert 25 <= row["age"] <= 35
-            # Functions applied correctly
+            # Age in range (note: u.age has table prefix)
+            assert 25 <= row["u.age"] <= 35
+            # Functions applied correctly (have explicit aliases)
             assert row["upper_name"].isupper()
             assert row["lower_email"].islower()
     
@@ -185,9 +188,10 @@ class TestParameterFunctionComplex:
         assert len(result["results"]) > 0
         
         for row in result["results"]:
-            if row["age"] < 30:
+            # Note: u.age and u.name have table prefix, age_category has explicit alias
+            if row["u.age"] < 30:
                 assert row["age_category"] == "young"
-            elif row["age"] < 40:
+            elif row["u.age"] < 40:
                 assert row["age_category"] == "middle"
             else:
                 assert row["age_category"] == "senior"
@@ -223,16 +227,16 @@ class TestParameterFunctionWithRelationships:
             print(f"DEBUG: First row: {result['results'][0]}")
 
         # NOTE: Properties without explicit AS clauses are returned with table prefix
-        # e.g., u.age is returned as 'age', o.total as 'o.total' (ClickHouse behavior)
+        # e.g., u.age is returned as 'u.age', o.total as 'o.total'
         for row in result["results"]:
-            # Check for total (can be 'total' or 'o.total' depending on CH version)
-            total = row.get("total") or row.get("o.total")
+            # Check for total with table prefix
+            total = row.get("o.total")
             assert total > 100
             assert row["user_name"]  # Has explicit alias
             assert row["rounded_total"] >= total  # Has explicit alias
             assert row["user_name"].isupper()
-            # Ceiling should round up - use the variable we already extracted
-            assert row["rounded_total"] >= total
+            # Also verify age is present with table prefix
+            assert "u.age" in row
     
     def test_aggregation_on_relationships_with_parameters(self, clickgraph_client, param_func_bucket):
         """Test: Aggregate relationship data with parameter filters."""

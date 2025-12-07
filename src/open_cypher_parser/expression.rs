@@ -412,7 +412,7 @@ pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>>
 
 /// Helper function to determine if a character is valid in a parameter name.
 fn is_param_char(c: char) -> bool {
-    c.is_alphanumeric() //|| c == '_'
+    c.is_alphanumeric() || c == '_'
 }
 
 pub fn parse_parameter(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {

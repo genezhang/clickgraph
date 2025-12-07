@@ -1,0 +1,66 @@
+# OnTime Flight Data - Denormalized Edge Table Example
+# This schema demonstrates denormalized nodes where Airport properties
+# are embedded directly in the flights table (OnTime dataset pattern).
+
+name: ontime_flights
+version: "1.0"
+
+graph_schema:
+  nodes:
+    # Airport is a virtual node - all data comes from the flights table
+    - label: Airport
+      database: default
+      table: flights  # Same table as the edge!
+      id_column: id   # Logical property name for the airport code
+      property_mappings: {}  # Empty - all properties are denormalized
+      
+      # Properties when Airport appears as origin (from_node)
+      from_node_properties:
+        id: OriginAirportID
+        code: Origin
+        city: OriginCityName
+        state: OriginState
+        wac: OriginWac
+      
+      # Properties when Airport appears as destination (to_node)
+      to_node_properties:
+        id: DestAirportID
+        code: Dest
+        city: DestCityName
+        state: DestState
+        wac: DestWac
+
+  edges:
+    # Flight relationship - node properties declared in Airport node above
+    - type: FLIGHT
+      database: default
+      table: flights
+      from_id: OriginAirportID
+      to_id: DestAirportID
+      from_node: Airport
+      to_node: Airport
+      
+      # Composite edge ID (flights can repeat on different dates)
+      edge_id: [FlightDate, Flight_Number_Reporting_Airline, OriginAirportID, DestAirportID]
+      
+      # Edge properties (specific to the flight itself)
+      property_mappings:
+        flight_date: FlightDate
+        flight_num: FlightNumber_Reporting_Airline
+        carrier: IATA_CODE_Reporting_Aireline
+        tail_num: Tail_Number
+        departure_time: DepTime
+        arrival_time: ArrTime
+        distance: Distance
+        departure_delay: DepDelay
+        arrival_delay: ArrDelay
+        actual_elapsed_time: ActualElapsedTime
+        crs_departure_time: CRSDepTime
+        crs_arrival_time: CRSArrTime
+        crs_elapsed_time: CRSElapsedTime
+        air_time: AirTime
+        year: Year
+        quarter: Quarter
+        month: Month
+        day_of_month: DayOfMonth
+        day_of_week: DayOfWeek

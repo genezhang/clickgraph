@@ -1404,43 +1404,50 @@ impl GraphJoinInference {
                             // Create a "FROM" marker join with empty joining_on
                             // This will be picked up by reorder_joins_by_dependencies as the anchor
                             let from_marker = Join {
-                                table_name: left_table,
-                                table_alias: left_alias,
+                                table_name: left_table.clone(),
+                                table_alias: left_alias.clone(),
                                 joining_on: vec![],  // Empty = this is the FROM table
                                 join_type: JoinType::Inner,
                                 pre_filter: None,
                             };
                             collected_graph_joins.push(from_marker);
                             eprintln!("📦 CartesianProduct: Added FROM marker for left table");
-                        }
                         
-                        // Extract the right-side table info from the join_condition
-                        // The join_condition should be: left_alias.column = right_alias.column
-                        if let LogicalExpr::OperatorApplicationExp(op_app) = join_cond {
-                            // Find the right-side alias and table from the right GraphRel
-                            if let Some((right_table, right_alias)) = Self::extract_right_table_from_plan(&cp.right, graph_schema) {
-                                eprintln!("📦 CartesianProduct: Right table='{}', alias='{}'", right_table, right_alias);
-                                
-                                // Remap node aliases in join condition to the relationship alias
-                                // The filter might reference src2.column but we're aliasing as c
-                                // Need to find which operand references the right-side node and remap it
-                                let remapped_join_cond = Self::remap_node_aliases_to_relationship(
-                                    op_app.clone(),
-                                    &cp.right,
-                                    &right_alias,
-                                );
-                                
-                                // Create a JOIN for the right-side table using the remapped join_condition
-                                let cross_join = Join {
-                                    table_name: right_table,
-                                    table_alias: right_alias,
-                                    joining_on: vec![remapped_join_cond],
-                                    join_type: if cp.is_optional { JoinType::Left } else { JoinType::Inner },
-                                    pre_filter: None,
-                                };
-                                collected_graph_joins.push(cross_join);
-                                eprintln!("📦 CartesianProduct: Added cross-table JOIN, total joins now={}", 
-                                    collected_graph_joins.len());
+                            // Extract the right-side table info from the join_condition
+                            // The join_condition should be: left_alias.column = right_alias.column
+                            if let LogicalExpr::OperatorApplicationExp(op_app) = join_cond {
+                                // Find the right-side alias and table from the right GraphRel
+                                if let Some((right_table, right_alias)) = Self::extract_right_table_from_plan(&cp.right, graph_schema) {
+                                    eprintln!("📦 CartesianProduct: Right table='{}', alias='{}'", right_table, right_alias);
+                                    
+                                    // Remap node aliases in join condition to the relationship aliases
+                                    // BOTH sides need remapping:
+                                    // - left-side node aliases (e.g., ip1) -> left_alias (dns_log alias)
+                                    // - right-side node aliases (e.g., ip2) -> right_alias (conn_log alias)
+                                    let mut remapped_join_cond = Self::remap_node_aliases_to_relationship(
+                                        op_app.clone(),
+                                        &cp.right,
+                                        &right_alias,
+                                    );
+                                    // Also remap left-side node aliases to the left table alias
+                                    remapped_join_cond = Self::remap_node_aliases_to_relationship(
+                                        remapped_join_cond,
+                                        &cp.left,
+                                        &left_alias,
+                                    );
+                                    
+                                    // Create a JOIN for the right-side table using the remapped join_condition
+                                    let cross_join = Join {
+                                        table_name: right_table,
+                                        table_alias: right_alias,
+                                        joining_on: vec![remapped_join_cond],
+                                        join_type: if cp.is_optional { JoinType::Left } else { JoinType::Inner },
+                                        pre_filter: None,
+                                    };
+                                    collected_graph_joins.push(cross_join);
+                                    eprintln!("📦 CartesianProduct: Added cross-table JOIN, total joins now={}", 
+                                        collected_graph_joins.len());
+                                }
                             }
                         }
                     }
@@ -2219,65 +2226,115 @@ impl GraphJoinInference {
             }
             
             // ================================================================
-            // FkEdgeJoin: FK column on node table (self-ref or cross-table)
+            // FkEdgeJoin: Edge table IS one of the node tables (FK pattern)
             // ================================================================
-            JoinStrategy::FkEdgeJoin { fk_column, target_id_column, is_self_referencing } => {
-                eprintln!("    🔑 FkEdgeJoin: FK pattern (self_ref={})", is_self_referencing);
-                eprintln!("       {}.{} → target.{}", left_alias, fk_column, target_id_column);
+            JoinStrategy::FkEdgeJoin { from_id, to_id, join_side, is_self_referencing } => {
+                use crate::graph_catalog::pattern_schema::NodePosition;
                 
-                // FK-edge pattern: edge IS the node table with a FK column
-                // For self-referencing: (child)-[:PARENT]->(parent) both are same table
-                // For cross-table: (order)-[:PLACED_BY]->(customer) different tables
+                eprintln!("    🔑 FkEdgeJoin: join_side={:?}, self_ref={}", join_side, is_self_referencing);
                 
-                // Determine anchor
+                // FK-edge pattern: edge table IS one of the node tables
+                // We only need ONE join (to the node that ISN'T the edge table)
+                //
+                // join_side=Left: edge IS right node table
+                //   Example: (u:User)-[:PLACED]->(o:Order) where orders IS the edge
+                //   Right (o/orders) is anchor, JOIN left (u/users)
+                //   JOIN condition: orders.from_id = users.id  ->  o.user_id = u.id
+                //
+                // join_side=Right: edge IS left node table
+                //   Example: (o:Order)-[:PLACED_BY]->(c:Customer) where orders IS the edge
+                //   Left (o/orders) is anchor, JOIN right (c/customers)  
+                //   JOIN condition: customers.id = orders.to_id  ->  c.id = o.customer_id
+                
                 let is_first_relationship = joined_entities.is_empty();
-                let left_is_anchor = is_first_relationship && !left_is_optional;
                 
                 // Get node ID columns
                 let left_id_col = match &ctx.left_node {
                     NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
-                    _ => fk_column.clone(), // Fallback to FK column
+                    _ => from_id.clone(),
                 };
                 let right_id_col = match &ctx.right_node {
                     NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
-                    _ => target_id_column.clone(),
+                    _ => to_id.clone(),
                 };
                 
-                // For FK-edge, left node IS the edge table
-                // Mark left as anchor if first relationship
-                if left_is_anchor {
-                    eprintln!("       LEFT '{}' is anchor (FK source)", left_alias);
-                    joined_entities.insert(left_alias.to_string());
-                }
-                
-                // For FK-edge, the "edge" shares the left node's table
-                // Mark the relationship as joined (it's conceptual, same as left)
-                joined_entities.insert(rel_alias.to_string());
-                
-                // JOIN: Right node (target of FK) to left node via FK column
-                // Pattern: SELECT * FROM left_table l JOIN right_table r ON r.id = l.fk_column
-                if !joined_entities.contains(right_alias) {
-                    let right_join = Join {
-                        table_name: right_cte_name.to_string(),
-                        table_alias: right_alias.to_string(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(right_alias.to_string()),
-                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_id_col),
-                                }),
-                                LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(left_alias.to_string()),
-                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(fk_column.clone()),
-                                }),
-                            ],
-                        }],
-                        join_type: Self::determine_join_type(right_is_optional),
-                        pre_filter: None,
-                    };
-                    collected_graph_joins.push(right_join);
-                    joined_entities.insert(right_alias.to_string());
+                match join_side {
+                    NodePosition::Left => {
+                        // Edge IS the right/to_node table
+                        // Right node is the anchor, JOIN left node
+                        let right_is_anchor = is_first_relationship && !right_is_optional;
+                        if right_is_anchor {
+                            eprintln!("       RIGHT '{}' is anchor (IS edge table)", right_alias);
+                            joined_entities.insert(right_alias.to_string());
+                        }
+                        
+                        // Edge conceptually lives on right node's table
+                        joined_entities.insert(rel_alias.to_string());
+                        
+                        // JOIN left: left.id = right.from_id (right table has the FK column)
+                        eprintln!("       JOIN: {}.{} = {}.{}", left_alias, left_id_col, right_alias, from_id);
+                        if !joined_entities.contains(left_alias) {
+                            let left_join = Join {
+                                table_name: left_cte_name.to_string(),
+                                table_alias: left_alias.to_string(),
+                                joining_on: vec![OperatorApplication {
+                                    operator: Operator::Equal,
+                                    operands: vec![
+                                        LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(left_alias.to_string()),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_id_col),
+                                        }),
+                                        LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(right_alias.to_string()),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(from_id.clone()),
+                                        }),
+                                    ],
+                                }],
+                                join_type: Self::determine_join_type(left_is_optional),
+                                pre_filter: None,
+                            };
+                            collected_graph_joins.push(left_join);
+                            joined_entities.insert(left_alias.to_string());
+                        }
+                    }
+                    NodePosition::Right => {
+                        // Edge IS the left/from_node table  
+                        // Left node is the anchor, JOIN right node
+                        let left_is_anchor = is_first_relationship && !left_is_optional;
+                        if left_is_anchor {
+                            eprintln!("       LEFT '{}' is anchor (IS edge table)", left_alias);
+                            joined_entities.insert(left_alias.to_string());
+                        }
+                        
+                        // Edge conceptually lives on left node's table
+                        joined_entities.insert(rel_alias.to_string());
+                        
+                        // JOIN right: right.id = left.to_id (left table has the FK column)
+                        eprintln!("       JOIN: {}.{} = {}.{}", right_alias, right_id_col, left_alias, to_id);
+                        if !joined_entities.contains(right_alias) {
+                            let right_join = Join {
+                                table_name: right_cte_name.to_string(),
+                                table_alias: right_alias.to_string(),
+                                joining_on: vec![OperatorApplication {
+                                    operator: Operator::Equal,
+                                    operands: vec![
+                                        LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(right_alias.to_string()),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_id_col),
+                                        }),
+                                        LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(left_alias.to_string()),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(to_id.clone()),
+                                        }),
+                                    ],
+                                }],
+                                join_type: Self::determine_join_type(right_is_optional),
+                                pre_filter: None,
+                            };
+                            collected_graph_joins.push(right_join);
+                            joined_entities.insert(right_alias.to_string());
+                        }
+                    }
                 }
                 
                 Ok(())

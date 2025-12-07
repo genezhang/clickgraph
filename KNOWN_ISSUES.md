@@ -1,13 +1,27 @@
 # Known Issues
 
-**Active Issues**: 3  
-**Test Results**: 578/578 unit tests passing (100%)  
+**Active Issues**: 2  
+**Test Results**: 588/588 unit tests passing (100%)  
 **Integration Tests**: 110/118 core tests passing (93%) - improved with WITH clause fix  
 **Security Graph Tests**: 98/98 passing (100%)  
 **Last Updated**: December 7, 2025
 
 For recently fixed issues, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
+
+---
+
+## ~~Polymorphic Edge Queries Fail with "Traditional strategy requires OwnTable"~~ ✅ FIXED
+**Fixed**: December 7, 2025  
+**Root Cause**: When a relationship schema defined polymorphic endpoints (`from_node: $any` or `to_node: $any`), the code incorrectly created `NodeAccessStrategy::Virtual` nodes even when the actual query specified concrete node labels (e.g., `User`, `Group`) that have their own tables.
+
+**Fix**: Modified `build_node_strategies()` in `src/graph_catalog/pattern_schema.rs` to always use the concrete node schema for building node access strategies, regardless of whether the edge schema is polymorphic. The polymorphic flags are still used for edge type filtering.
+
+**Impact**: All polymorphic edge queries now work:
+- `MATCH (u:User)-[:MEMBER_OF]->(g:Group)` - from-side polymorphic
+- `MATCH (f:Folder)-[:CONTAINS]->(c:File)` - to-side polymorphic  
+- `MATCH (u:User)-[:HAS_ACCESS]->(f:File)` - both-sides polymorphic
+- Multi-hop traversals through polymorphic edges
 
 ---
 

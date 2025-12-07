@@ -578,9 +578,9 @@ impl RenderExpr {
                     .map(|e| e.to_sql())
                     .collect::<Vec<_>>()
                     .join(", ");
-                // Use tuple() for mixed-type composite IDs (supports comparison)
-                // This enables id(r) = tuple(val1, val2, ...) for composite edge IDs
-                format!("tuple({})", inner)
+                // Use array literal syntax [...] for ClickHouse
+                // This works for both ARRAY JOIN (UNWIND) and IN clauses
+                format!("[{}]", inner)
             }
             RenderExpr::ScalarFnCall(fn_call) => {
                 // Check if we have a Neo4j -> ClickHouse mapping

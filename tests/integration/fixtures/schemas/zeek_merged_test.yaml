@@ -1,27 +1,49 @@
 # Test Schema for Zeek Merged Logs (DNS + Connection)
-# Tests cross-table correlation patterns with denormalized IP nodes
+# 
+# Merged from zeek_dns_log.yaml and zeek_conn_log.yaml for cross-table correlation.
+# DNS log has 2 coupled edges (REQUESTED + RESOLVED_TO), conn_log has 1 edge (ACCESSED).
+#
+# Graph model from dns_log:
+#   (src:IP)-[:REQUESTED]->(d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)
+#   "192.168.1.10 requested example.com which resolved_to 93.184.216.34"
+#
+# Graph model from conn_log:
+#   (src:IP)-[:ACCESSED]->(dest:IP)
+#   "192.168.1.10 accessed 93.184.216.34"
+#
+# Key correlation query (from GitHub issue #12):
+#   MATCH (src:IP)-[:REQUESTED]->(d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP),
+#         (src)-[:ACCESSED]->(dest:IP)
+#   WHERE rip.ip = dest.ip   -- or use array contains
+#   RETURN src.ip, d.name, dest.ip
+#
+# This finds: DNS lookups followed by connections to the resolved IPs
 
 name: zeek_merged_test
 version: "1.0"
 
 graph_schema:
   nodes:
-    # IP in dns_log table
+    # ========================================
+    # IP node definitions (one per table)
+    # ========================================
+    
+    # IP in dns_log table (source of DNS requests)
     - label: IP
       database: test_zeek
       table: dns_log
-      id_column: orig_h
+      id_column: ip
       property_mappings: {}
       from_node_properties:
         ip: orig_h
       to_node_properties:
-        ip: resp_h
+        ip: resp_h  # DNS server IP
 
-    # IP in conn_log table (same label, different table)
+    # IP in conn_log table (source/dest of connections)
     - label: IP
       database: test_zeek
       table: conn_log
-      id_column: orig_h
+      id_column: ip
       property_mappings: {}
       from_node_properties:
         ip: orig_h
@@ -30,21 +52,39 @@ graph_schema:
         ip: resp_h
         port: resp_p
 
+    # ========================================
     # Domain node (only in dns_log)
+    # ========================================
     - label: Domain
       database: test_zeek
       table: dns_log
-      id_column: query
+      id_column: name
       property_mappings: {}
       from_node_properties:
         name: query
       to_node_properties:
         name: query
-        resolved_ips: answers
+
+    # ========================================
+    # ResolvedIP node (from dns_log answers array)
+    # NOTE: answers is an array - queries may need ARRAY JOIN or UNWIND
+    # ========================================
+    - label: ResolvedIP
+      database: test_zeek
+      table: dns_log
+      id_column: ip
+      property_mappings: {}
+      to_node_properties:
+        ip: answers  # Array of resolved IPs
 
   relationships:
-    # DNS_REQUESTED: Source IP requested a domain lookup (dns_log)
-    - type: DNS_REQUESTED
+    # ========================================
+    # DNS relationships (from dns_log table) - 2 coupled edges
+    # ========================================
+    
+    # REQUESTED: Source IP requested a domain lookup
+    # (src:IP)-[:REQUESTED]->(d:Domain)
+    - type: REQUESTED
       database: test_zeek
       table: dns_log
       from_id: orig_h
@@ -61,8 +101,30 @@ graph_schema:
         rcode: rcode_name
         answers: answers
 
-    # CONNECTED_TO: Source IP connected to destination IP (conn_log)
-    - type: CONNECTED_TO
+    # RESOLVED_TO: Domain resolved to IP address(es)
+    # (d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)
+    # NOTE: answers is an array - this creates multiple edges per DNS response
+    - type: RESOLVED_TO
+      database: test_zeek
+      table: dns_log
+      from_id: query
+      to_id: answers
+      from_node: Domain
+      to_node: ResolvedIP
+      edge_id: [uid, answers]  # Composite ID for uniqueness
+      
+      property_mappings:
+        uid: uid
+        timestamp: ts
+        ttls: TTLs
+
+    # ========================================
+    # Connection relationships (from conn_log table)
+    # ========================================
+    
+    # ACCESSED: Source IP accessed destination IP
+    # (src:IP)-[:ACCESSED]->(dest:IP)
+    - type: ACCESSED
       database: test_zeek
       table: conn_log
       from_id: orig_h

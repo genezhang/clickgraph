@@ -334,17 +334,22 @@ pub enum JoinStrategy {
     /// JOIN objects parent ON parent.object_id = child.parent_id
     /// ```
     /// 
-    /// Non-self-referencing example (order.customer_id → customer.id):
+    /// Non-self-referencing example (orders.user_id → users.id):
+    /// Edge table IS the to_node table (orders), so we JOIN the from_node (users).
     /// ```sql
-    /// SELECT o.*, c.* 
-    /// FROM orders o
-    /// JOIN customers c ON c.id = o.customer_id
+    /// SELECT u.*, o.* 
+    /// FROM users u
+    /// JOIN orders o ON o.user_id = u.id
     /// ```
     FkEdgeJoin {
-        /// The FK column on the source table (e.g., "parent_id", "customer_id")
-        fk_column: String,
-        /// The ID column on the target table (e.g., "object_id", "id")
-        target_id_column: String,
+        /// The FK column in the edge table that references the from_node's ID
+        from_id: String,
+        /// The column in the edge table that identifies the to_node
+        to_id: String,
+        /// Which node table needs to be JOINed (the one that ISN'T the edge table)
+        /// Left = edge_table == to_node_table, need to JOIN from_node (left)
+        /// Right = edge_table == from_node_table, need to JOIN to_node (right)
+        join_side: NodePosition,
         /// True if self-referencing (same table for both nodes)
         is_self_referencing: bool,
     },
@@ -483,6 +488,8 @@ impl PatternSchemaContext {
         let (join_strategy, coupled_context) = Self::determine_join_strategy(
             &edge_pattern,
             rel_schema,
+            left_node_schema,
+            right_node_schema,
             graph_schema,
             rel_alias,
             &rel_types,
@@ -536,37 +543,23 @@ impl PatternSchemaContext {
         right_node_schema: &NodeSchema,
         rel_schema: &RelationshipSchema,
         rel_alias: &str,
-        left_is_polymorphic: bool,
-        right_is_polymorphic: bool,
+        _left_is_polymorphic: bool,
+        _right_is_polymorphic: bool,
         edge_pattern: &EdgeTablePattern,
     ) -> (NodeAccessStrategy, NodeAccessStrategy) {
-        // Handle polymorphic $any nodes
-        // Note: Virtual nodes use the rel_schema.from_node/to_node which is "$any"
-        if left_is_polymorphic {
-            let left = NodeAccessStrategy::Virtual {
-                label: rel_schema.from_node.clone(),
-            };
-            let right = if right_is_polymorphic {
-                NodeAccessStrategy::Virtual {
-                    label: rel_schema.to_node.clone(),
-                }
-            } else {
-                Self::node_strategy_for_position(
-                    right_node_schema, rel_schema, rel_alias, false, edge_pattern
-                )
-            };
-            return (left, right);
-        }
-
-        if right_is_polymorphic {
-            let left = Self::node_strategy_for_position(
-                left_node_schema, rel_schema, rel_alias, true, edge_pattern
-            );
-            let right = NodeAccessStrategy::Virtual {
-                label: rel_schema.to_node.clone(),
-            };
-            return (left, right);
-        }
+        // IMPORTANT: Even when the relationship schema defines polymorphic endpoints ($any),
+        // the actual query provides concrete node labels. The caller resolves these labels
+        // to actual NodeSchema objects (left_node_schema, right_node_schema).
+        //
+        // Therefore, we should NOT create Virtual nodes when we have concrete schemas.
+        // Virtual nodes were previously created based on rel_schema.from_node == "$any",
+        // but this ignores the fact that the query specifies concrete types like User, Group.
+        //
+        // The fix: Always use node_strategy_for_position() which builds OwnTable/Embedded
+        // strategies based on the actual node schema, not the edge's polymorphic endpoint.
+        //
+        // Note: _left_is_polymorphic and _right_is_polymorphic are kept for API compatibility
+        // and may be used for edge filtering (type_column filters), but not for node strategies.
 
         // Non-polymorphic: use edge pattern classification
         match edge_pattern {
@@ -687,6 +680,8 @@ impl PatternSchemaContext {
     fn determine_join_strategy(
         edge_pattern: &EdgeTablePattern,
         rel_schema: &RelationshipSchema,
+        left_node_schema: &NodeSchema,
+        right_node_schema: &NodeSchema,
         graph_schema: &GraphSchema,
         rel_alias: &str,
         rel_types: &[String],
@@ -733,10 +728,30 @@ impl PatternSchemaContext {
         // Check for FK-edge pattern first (edge table IS a node table with FK column)
         if rel_schema.is_fk_edge {
             let is_self_referencing = rel_schema.from_node == rel_schema.to_node;
+            
+            // Determine which node needs to be JOINed (the one that ISN'T the edge table)
+            // - If edge_table == to_node_table: edge IS right node, need to JOIN left (from_node)
+            // - If edge_table == from_node_table: edge IS left node, need to JOIN right (to_node)
+            let edge_table = rel_schema.full_table_name();
+            let left_table = left_node_schema.full_table_name();
+            let right_table = right_node_schema.full_table_name();
+            
+            let join_side = if edge_table == right_table {
+                // Edge IS the to_node table, need to JOIN the from_node (left)
+                NodePosition::Left
+            } else if edge_table == left_table {
+                // Edge IS the from_node table, need to JOIN the to_node (right)
+                NodePosition::Right
+            } else {
+                // Shouldn't happen if is_fk_edge is set correctly
+                NodePosition::Right // Default fallback
+            };
+            
             return (
                 JoinStrategy::FkEdgeJoin {
-                    fk_column: rel_schema.from_id.clone(),
-                    target_id_column: rel_schema.to_id.clone(),
+                    from_id: rel_schema.from_id.clone(),
+                    to_id: rel_schema.to_id.clone(),
+                    join_side,
                     is_self_referencing,
                 },
                 None,

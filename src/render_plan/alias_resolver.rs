@@ -227,7 +227,7 @@ impl AliasResolverContext {
                     left: transformed_left,
                     right: transformed_right,
                     is_optional: cp.is_optional,
-                    join_condition: cp.join_condition.clone(),
+                    join_condition: cp.join_condition.clone().map(|jc| self.transform_expr(jc)),
                 })
             }
         }
@@ -393,19 +393,21 @@ impl AliasResolverContext {
     }
     
     /// Collect all edge tables, their aliases, and their labels from the plan
+    /// IMPORTANT: Collect in inside-out order (inner edges first) to match graph_join_inference
     fn collect_edge_tables_with_labels(&self, plan: &LogicalPlan, edge_info: &mut HashMap<String, Vec<(String, Option<Vec<String>>)>>) {
         match plan {
             LogicalPlan::GraphRel(rel) => {
-                // Extract table name from ViewScan and labels from GraphRel
+                // FIRST: Recurse into nested GraphRels (inner edges processed first)
+                // This matches the order that graph_join_inference uses
+                self.collect_edge_tables_with_labels(&rel.left, edge_info);
+                self.collect_edge_tables_with_labels(&rel.right, edge_info);
+                
+                // THEN: Extract table name from ViewScan and labels from GraphRel
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
                     edge_info.entry(scan.source_table.clone())
                         .or_default()
                         .push((rel.alias.clone(), rel.labels.clone()));
                 }
-                
-                // Recurse into nested GraphRels
-                self.collect_edge_tables_with_labels(&rel.left, edge_info);
-                self.collect_edge_tables_with_labels(&rel.right, edge_info);
             }
             
             LogicalPlan::GraphNode(node) => {

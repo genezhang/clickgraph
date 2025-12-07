@@ -21,6 +21,7 @@
 
 ### 🐛 Bug Fixes
 
+- **Fix polymorphic edge queries failing with "Traditional strategy requires OwnTable nodes"** - Polymorphic edge schemas (where `from_node` or `to_node` is `$any`) now correctly generate SQL when queries specify concrete node types. The fix ensures that concrete node schemas from the query are used for access strategies, regardless of whether the edge definition is polymorphic. All three polymorphic edge patterns now work: from-side polymorphic (User|Group→Group), to-side polymorphic (Folder→Folder|File), and both-sides polymorphic (User|Group→Folder|File).
 - **Fix disconnected pattern JOIN generation for fully denormalized edges** - When both sides of a CartesianProduct (disconnected patterns from WITH...MATCH) are fully denormalized (no JOINs needed within each pattern), the cross-table JOIN is now correctly generated. Fixed by: (1) Making Projection case in `build_graph_joins` recursively process children before wrapping with GraphJoins, (2) Adding cross-table JOIN creation in CartesianProduct handling using the extracted `join_condition`.
 - **Fix cross-table JOIN generation for denormalized schemas** - When nodes are denormalized on edges (properties defined in `from_node_properties`/`to_node_properties`), the system now correctly detects this using `edge_has_node_properties()` instead of checking node primary table. Fixed `is_first_relationship` condition in `graph_join_inference.rs` to use `joined_entities.is_empty()` instead of `collected_graph_joins.is_empty()`. This allows comma-separated patterns across different tables to generate correct edge-to-edge JOINs.
 - **Fix multi-hop patterns with anonymous nodes (Issue #6)** - Patterns like `()-[r1:FLIGHT]->()-[r2:FLIGHT]->()` now generate correct SQL with both relationships joined. Fixed by adding pre-processing pass in `traverse_connected_pattern_with_mode()` to assign consistent aliases for shared nodes using pointer-based identity. The middle anonymous node now correctly gets the same alias in both patterns.
@@ -47,7 +48,7 @@
 
 ### 🧪 Testing
 
-- **578 unit tests passing** (up from 558) - 20 new tests for inference and CartesianProduct handling
+- **588 unit tests passing** (up from 558) - 20 new tests for inference and CartesianProduct handling
 
 ---
 
