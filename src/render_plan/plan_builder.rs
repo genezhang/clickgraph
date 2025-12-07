@@ -2143,46 +2143,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 // optional aliases are moved to pre_filter (subquery form) and should NOT be
                 // included in the main WHERE clause. We filter them out here.
                 fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr> {
-                    use crate::query_planner::logical_expr::{LogicalExpr, Operator as LogicalOp};
-                    
-                    // Helper to check if expression references ONLY a specific alias
-                    fn references_only_alias(expr: &LogicalExpr, alias: &str) -> bool {
-                        fn collect_aliases(expr: &LogicalExpr, aliases: &mut std::collections::HashSet<String>) {
-                            match expr {
-                                LogicalExpr::PropertyAccessExp(prop) => {
-                                    aliases.insert(prop.table_alias.0.clone());
-                                }
-                                LogicalExpr::OperatorApplicationExp(op) => {
-                                    for operand in &op.operands {
-                                        collect_aliases(operand, aliases);
-                                    }
-                                }
-                                LogicalExpr::ScalarFnCall(func) => {
-                                    for arg in &func.args {
-                                        collect_aliases(arg, aliases);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        let mut aliases = std::collections::HashSet::new();
-                        collect_aliases(expr, &mut aliases);
-                        aliases.len() == 1 && aliases.contains(alias)
-                    }
-                    
-                    // Split AND-connected predicates
-                    fn split_and_predicates(expr: &LogicalExpr) -> Vec<LogicalExpr> {
-                        match expr {
-                            LogicalExpr::OperatorApplicationExp(op) if matches!(op.operator, LogicalOp::And) => {
-                                let mut result = Vec::new();
-                                for operand in &op.operands {
-                                    result.extend(split_and_predicates(operand));
-                                }
-                                result
-                            }
-                            _ => vec![expr.clone()],
-                        }
-                    }
+                    // Use shared helper functions from plan_builder_helpers
+                    use super::plan_builder_helpers::{
+                        references_only_alias_logical,
+                        split_and_predicates_logical,
+                    };
                     
                     let mut predicates = Vec::new();
                     match plan {
@@ -2216,11 +2181,11 @@ impl RenderPlanBuilder for LogicalPlan {
                                     };
                                     
                                     if let (Some(anchor), Some(optional)) = (anchor_alias, optional_alias) {
-                                        let all_preds = split_and_predicates(pred);
+                                        let all_preds = split_and_predicates_logical(pred);
                                         for p in all_preds {
                                             // Only filter if predicate references ONLY the optional parts
-                                            let refs_only_rel = references_only_alias(&p, &gr.alias);
-                                            let refs_only_optional = references_only_alias(&p, optional);
+                                            let refs_only_rel = references_only_alias_logical(&p, &gr.alias);
+                                            let refs_only_optional = references_only_alias_logical(&p, optional);
                                             
                                             // Keep predicate in WHERE if it:
                                             // - References the anchor (required node from base MATCH)
@@ -2635,98 +2600,8 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
         
-        /// Helper to extract predicates from where_predicate that reference ONLY a specific alias.
-        /// Returns (predicates_for_alias, remaining_predicates).
-        /// This is used to move optional-alias predicates into LEFT JOIN pre_filter.
-        fn extract_predicates_for_alias(
-            where_predicate: &Option<crate::query_planner::logical_expr::LogicalExpr>,
-            target_alias: &str,
-        ) -> (Option<RenderExpr>, Option<crate::query_planner::logical_expr::LogicalExpr>) {
-            use crate::query_planner::logical_expr::{LogicalExpr, Operator as LogicalOperator, OperatorApplication as LogicalOpApp};
-            
-            let predicate = match where_predicate {
-                Some(p) => p,
-                None => return (None, None),
-            };
-            
-            // Helper to check if an expression references ONLY the target alias
-            fn references_only_alias(expr: &LogicalExpr, alias: &str) -> bool {
-                fn collect_aliases(expr: &LogicalExpr, aliases: &mut std::collections::HashSet<String>) {
-                    match expr {
-                        LogicalExpr::PropertyAccessExp(prop) => {
-                            aliases.insert(prop.table_alias.0.clone());
-                        }
-                        LogicalExpr::OperatorApplicationExp(op) => {
-                            for operand in &op.operands {
-                                collect_aliases(operand, aliases);
-                            }
-                        }
-                        LogicalExpr::ScalarFnCall(func) => {
-                            for arg in &func.args {
-                                collect_aliases(arg, aliases);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                
-                let mut aliases = std::collections::HashSet::new();
-                collect_aliases(expr, &mut aliases);
-                
-                // Must reference ONLY the target alias (not zero, not multiple)
-                aliases.len() == 1 && aliases.contains(alias)
-            }
-            
-            // Split AND-connected predicates
-            fn split_and_predicates(expr: &LogicalExpr) -> Vec<LogicalExpr> {
-                match expr {
-                    LogicalExpr::OperatorApplicationExp(op) if matches!(op.operator, LogicalOperator::And) => {
-                        let mut result = Vec::new();
-                        for operand in &op.operands {
-                            result.extend(split_and_predicates(operand));
-                        }
-                        result
-                    }
-                    _ => vec![expr.clone()],
-                }
-            }
-            
-            // Combine predicates with AND
-            fn combine_with_and(predicates: Vec<LogicalExpr>) -> Option<LogicalExpr> {
-                if predicates.is_empty() {
-                    None
-                } else if predicates.len() == 1 {
-                    Some(predicates.into_iter().next().unwrap())
-                } else {
-                    Some(LogicalExpr::OperatorApplicationExp(LogicalOpApp {
-                        operator: LogicalOperator::And,
-                        operands: predicates,
-                    }))
-                }
-            }
-            
-            let all_predicates = split_and_predicates(predicate);
-            let mut for_alias = Vec::new();
-            let mut remaining = Vec::new();
-            
-            for pred in all_predicates {
-                if references_only_alias(&pred, target_alias) {
-                    for_alias.push(pred);
-                } else {
-                    remaining.push(pred);
-                }
-            }
-            
-            // Convert for_alias predicates to RenderExpr
-            let alias_filter = if for_alias.is_empty() {
-                None
-            } else {
-                let combined = combine_with_and(for_alias).unwrap();
-                RenderExpr::try_from(combined).ok()
-            };
-            
-            (alias_filter, combine_with_and(remaining))
-        }
+        // NOTE: extract_predicates_for_alias moved to plan_builder_helpers.rs
+        // Use the shared version: extract_predicates_for_alias_logical()
         
         let joins = match &self {
             LogicalPlan::Limit(limit) => limit.input.extract_joins()?,
@@ -3020,13 +2895,13 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Extract user predicates ONLY for optional aliases (rel and right)
                 // DO NOT extract for left_connection - it's the required anchor!
                 let (rel_user_pred, remaining_after_rel) = if is_optional {
-                    extract_predicates_for_alias(&graph_rel.where_predicate, &graph_rel.alias)
+                    extract_predicates_for_alias_logical(&graph_rel.where_predicate, &graph_rel.alias)
                 } else {
                     (None, graph_rel.where_predicate.clone())
                 };
                 
                 let (right_user_pred, _remaining) = if is_optional {
-                    extract_predicates_for_alias(&remaining_after_rel, &graph_rel.right_connection)
+                    extract_predicates_for_alias_logical(&remaining_after_rel, &graph_rel.right_connection)
                 } else {
                     (None, remaining_after_rel)
                 };

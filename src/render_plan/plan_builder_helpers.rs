@@ -2276,6 +2276,136 @@ pub(super) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Optio
     }
 }
 
+// ============================================================================
+// Predicate Analysis Helpers
+// These functions help analyze and manipulate logical expressions (predicates)
+// ============================================================================
+
+use crate::query_planner::logical_expr::{
+    LogicalExpr, 
+    Operator as LogicalOperator, 
+    OperatorApplication as LogicalOpApp
+};
+
+/// Collect all table aliases referenced in a LogicalExpr.
+/// Used to determine which aliases a predicate depends on.
+pub(super) fn collect_aliases_from_logical_expr(
+    expr: &LogicalExpr, 
+    aliases: &mut HashSet<String>
+) {
+    match expr {
+        LogicalExpr::PropertyAccessExp(prop) => {
+            aliases.insert(prop.table_alias.0.clone());
+        }
+        LogicalExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                collect_aliases_from_logical_expr(operand, aliases);
+            }
+        }
+        LogicalExpr::ScalarFnCall(func) => {
+            for arg in &func.args {
+                collect_aliases_from_logical_expr(arg, aliases);
+            }
+        }
+        LogicalExpr::AggregateFnCall(agg) => {
+            for arg in &agg.args {
+                collect_aliases_from_logical_expr(arg, aliases);
+            }
+        }
+        LogicalExpr::Case(case) => {
+            if let Some(expr) = &case.expr {
+                collect_aliases_from_logical_expr(expr, aliases);
+            }
+            for (cond, result) in &case.when_then {
+                collect_aliases_from_logical_expr(cond, aliases);
+                collect_aliases_from_logical_expr(result, aliases);
+            }
+            if let Some(else_expr) = &case.else_expr {
+                collect_aliases_from_logical_expr(else_expr, aliases);
+            }
+        }
+        LogicalExpr::List(items) => {
+            for item in items {
+                collect_aliases_from_logical_expr(item, aliases);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Check if a LogicalExpr references ONLY the specified alias.
+/// Returns true if the expression contains exactly one alias and it matches `alias`.
+pub(super) fn references_only_alias_logical(expr: &LogicalExpr, alias: &str) -> bool {
+    let mut aliases = HashSet::new();
+    collect_aliases_from_logical_expr(expr, &mut aliases);
+    aliases.len() == 1 && aliases.contains(alias)
+}
+
+/// Split an AND-connected LogicalExpr into individual predicates.
+/// For example: `a AND b AND c` becomes `[a, b, c]`.
+pub(super) fn split_and_predicates_logical(expr: &LogicalExpr) -> Vec<LogicalExpr> {
+    match expr {
+        LogicalExpr::OperatorApplicationExp(op) if matches!(op.operator, LogicalOperator::And) => {
+            let mut result = Vec::new();
+            for operand in &op.operands {
+                result.extend(split_and_predicates_logical(operand));
+            }
+            result
+        }
+        _ => vec![expr.clone()],
+    }
+}
+
+/// Combine multiple LogicalExpr predicates with AND.
+/// Returns None if the input is empty.
+pub(super) fn combine_predicates_with_and_logical(predicates: Vec<LogicalExpr>) -> Option<LogicalExpr> {
+    if predicates.is_empty() {
+        None
+    } else if predicates.len() == 1 {
+        Some(predicates.into_iter().next().unwrap())
+    } else {
+        Some(LogicalExpr::OperatorApplicationExp(LogicalOpApp {
+            operator: LogicalOperator::And,
+            operands: predicates,
+        }))
+    }
+}
+
+/// Extract predicates from a where_predicate that reference ONLY a specific alias.
+/// Returns (predicates_for_alias, remaining_predicates).
+/// This is used to move optional-alias predicates into LEFT JOIN pre_filter.
+pub(super) fn extract_predicates_for_alias_logical(
+    where_predicate: &Option<LogicalExpr>,
+    target_alias: &str,
+) -> (Option<RenderExpr>, Option<LogicalExpr>) {
+    let predicate = match where_predicate {
+        Some(p) => p,
+        None => return (None, None),
+    };
+    
+    let all_predicates = split_and_predicates_logical(predicate);
+    let mut for_alias = Vec::new();
+    let mut remaining = Vec::new();
+    
+    for pred in all_predicates {
+        if references_only_alias_logical(&pred, target_alias) {
+            for_alias.push(pred);
+        } else {
+            remaining.push(pred);
+        }
+    }
+    
+    // Convert for_alias predicates to RenderExpr
+    let alias_filter = if for_alias.is_empty() {
+        None
+    } else {
+        let combined = combine_predicates_with_and_logical(for_alias).unwrap();
+        RenderExpr::try_from(combined).ok()
+    };
+    
+    (alias_filter, combine_predicates_with_and_logical(remaining))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
