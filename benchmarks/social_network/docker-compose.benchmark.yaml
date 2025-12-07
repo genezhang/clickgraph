@@ -23,7 +23,7 @@ services:
 
   clickgraph-benchmark:
     build:
-      context: ..
+      context: ../..
       dockerfile: Dockerfile
     container_name: clickgraph-benchmark
     depends_on:

@@ -19,7 +19,7 @@ Log "========================================================================"
 
 # 1. Generate data with MergeTree
 Log "[1/4] Generating data (scale=$Scale, MergeTree)..."
-python benchmarks/data/setup_unified.py --scale $Scale --engine MergeTree
+python benchmarks/social_network/data/setup_unified.py --scale $Scale --engine MergeTree
 if ($LASTEXITCODE -ne 0) { Log "❌ Data generation failed"; exit 1 }
 Log "✅ Data generated"
 
@@ -33,7 +33,7 @@ $env:CLICKHOUSE_URL = "http://localhost:8123"
 $env:CLICKHOUSE_USER = "test_user"
 $env:CLICKHOUSE_PASSWORD = "test_pass"
 $env:CLICKHOUSE_DATABASE = "brahmand"
-$env:GRAPH_CONFIG_PATH = "benchmarks\schemas\social_benchmark.yaml"
+$env:GRAPH_CONFIG_PATH = "benchmarks\social_network\schemas\social_benchmark.yaml"
 $env:RUST_LOG = "warn"
 
 Start-Process -FilePath ".\target\release\clickgraph.exe" -WindowStyle Hidden
@@ -45,9 +45,9 @@ Log "✅ Server running"
 
 Log "[3/4] Running benchmark suite..."
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$output = "benchmarks\results\benchmark_scale${Scale}_${timestamp}.json"
+$output = "benchmarks\social_network\results\benchmark_scale${Scale}_${timestamp}.json"
 
-python benchmarks/queries/suite.py --scale $Scale --iterations $Iterations --output $output
+python benchmarks/social_network/queries/suite.py --scale $Scale --iterations $Iterations --output $output
 
 Log "[4/4] Complete!"
 if (Test-Path $output) {

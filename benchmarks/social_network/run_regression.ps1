@@ -24,11 +24,11 @@ $EXPECTED_TOTAL = 13  # 3 queries disabled due to known bug
 
 # Run benchmark
 Log "[1/3] Running scale 1 benchmark..." "Yellow"
-.\benchmarks\run_benchmark.ps1 -Scale 1 -Iterations 1
+.\benchmarks\social_network\run_benchmark.ps1 -Scale 1 -Iterations 1
 
 # Check results
 Log "[2/3] Checking results..." "Yellow"
-$resultFiles = Get-ChildItem "benchmarks\results\benchmark_scale1_*.json" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$resultFiles = Get-ChildItem "benchmarks\social_network\results\benchmark_scale1_*.json" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
 if (-not $resultFiles) {
     Log "❌ REGRESSION: No benchmark results found!" "Red"
