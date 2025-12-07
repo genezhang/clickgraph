@@ -204,7 +204,7 @@ RETURN u2.name
 nodes:
   - label: User
     table: users
-    id_column: user_id
+    node_id: user_id
 
 edges:
   - polymorphic: true

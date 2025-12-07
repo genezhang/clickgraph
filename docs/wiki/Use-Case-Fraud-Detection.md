@@ -53,7 +53,7 @@ graph_schema:
     - label: Account
       database: fraud_db
       table: accounts
-      id_column: account_id
+      node_id: account_id
       property_mappings:
         account_id: account_id
         account_number: acct_number
@@ -69,7 +69,7 @@ graph_schema:
     - label: Customer
       database: fraud_db
       table: customers
-      id_column: customer_id
+      node_id: customer_id
       property_mappings:
         customer_id: customer_id
         name: full_name
@@ -87,7 +87,7 @@ graph_schema:
     - label: Merchant
       database: fraud_db
       table: merchants
-      id_column: merchant_id
+      node_id: merchant_id
       property_mappings:
         merchant_id: merchant_id
         name: merchant_name
@@ -98,7 +98,7 @@ graph_schema:
     - label: Device
       database: fraud_db
       table: devices
-      id_column: device_id
+      node_id: device_id
       property_mappings:
         device_id: device_id
         fingerprint: device_fingerprint
@@ -111,7 +111,7 @@ graph_schema:
     - label: IPAddress
       database: fraud_db
       table: ip_addresses
-      id_column: ip_id
+      node_id: ip_id
       property_mappings:
         ip_id: ip_id
         ip: ip_address

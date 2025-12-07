@@ -40,7 +40,7 @@ graph_schema:
 | `label` | string | Node label (e.g., "User", "Airport") |
 | `database` | string | ClickHouse database name |
 | `table` | string | Source table name |
-| `id_column` | string | Column used as node identifier |
+| `node_id` | string | Column used as node identifier |
 
 ### Optional Attributes
 
@@ -176,7 +176,7 @@ graph_schema:
     - label: User
       database: social
       table: users
-      id_column: user_id
+      node_id: user_id
       property_mappings:
         name: full_name       # u.name → users.full_name
         email: email_address  # u.email → users.email_address
@@ -184,7 +184,7 @@ graph_schema:
     - label: Post
       database: social
       table: posts
-      id_column: post_id
+      node_id: post_id
       property_mappings:
         title: title
         content: body
@@ -213,12 +213,12 @@ graph_schema:
     - label: User
       database: activity
       table: users
-      id_column: user_id
+      node_id: user_id
       
     - label: Post
       database: activity
       table: posts
-      id_column: post_id
+      node_id: post_id
       
   edges:
     - polymorphic: true
@@ -244,24 +244,24 @@ graph_schema:
     - label: User
       database: security
       table: sec_users
-      id_column: user_id
+      node_id: user_id
       
     - label: Group
       database: security  
       table: sec_groups
-      id_column: group_id
+      node_id: group_id
       
     - label: Folder
       database: security
       table: sec_fs_objects
-      id_column: object_id
+      node_id: object_id
       label_column: fs_type      # Discriminator column
       label_value: Folder        # This row represents a Folder
       
     - label: File
       database: security
       table: sec_fs_objects
-      id_column: object_id
+      node_id: object_id
       label_column: fs_type
       label_value: File
       
@@ -303,7 +303,7 @@ graph_schema:
     - label: Airport
       database: flights
       table: ontime_flights      # No separate airport table!
-      id_column: origin          # Will be resolved from edge
+      node_id: origin          # Will be resolved from edge
       from_node_properties:       # Properties when Airport is source
         code: Origin
         city: OriginCityName
@@ -341,12 +341,12 @@ graph_schema:
     - label: Order
       database: shop
       table: orders
-      id_column: order_id
+      node_id: order_id
       
     - label: Customer
       database: shop
       table: customers
-      id_column: customer_id
+      node_id: customer_id
       
   edges:
     # Edge uses orders table, customer_id column points to customers
@@ -425,7 +425,7 @@ nodes:
 | `polymorphic` | ❌ | ❌ | ❌ | ✅ |
 | `database` | ✅ | ✅ | ✅ | ✅ |
 | `table` | ✅ | ✅ | ✅ | ✅ |
-| `id_column` | ✅ | ✅ | ❌ | ❌ |
+| `node_id` | ✅ | ✅ | ❌ | ❌ |
 | `from_id` / `to_id` | ❌ | ❌ | ✅ | ✅ |
 | `from_node` / `to_node` | ❌ | ❌ | ✅ | ⚠️ Optional |
 | `label_column` | ❌ | ✅ | ❌ | ❌ |

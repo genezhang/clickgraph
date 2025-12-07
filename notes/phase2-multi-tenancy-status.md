@@ -60,7 +60,7 @@ pub struct NodeDefinition {
     pub label: String,
     pub database: String,
     pub table: String,
-    pub id_column: String,
+    pub node_id: String,
     pub properties: HashMap<String, String>,
     // ❌ MISSING: pub view_parameters: Option<Vec<String>>,
 }
@@ -119,7 +119,7 @@ pub struct NodeDefinition {
     pub label: String,
     pub database: String,
     pub table: String,
-    pub id_column: String,
+    pub node_id: String,
     pub properties: HashMap<String, String>,
     
     // ✅ ADD THIS:
@@ -208,7 +208,7 @@ pub struct ViewScan {
     pub source_table: String,
     pub view_filter: Option<LogicalExpr>,
     pub property_mapping: HashMap<String, String>,
-    pub id_column: String,
+    pub node_id: String,
     pub output_schema: Vec<String>,
     pub projections: Vec<LogicalExpr>,
     pub from_id: Option<String>,
@@ -422,7 +422,7 @@ graph_schema:
     - label: User
       database: brahmand
       table: users_secure
-      id_column: user_id
+      node_id: user_id
       view_parameters: [tenant_id, region]  # ← KEY FIELD
       property_mappings:
         user_id: user_id

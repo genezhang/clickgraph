@@ -30,7 +30,7 @@ database: "my_db"
 nodes:
   - label: User
     table: users
-    id_column: id
+    node_id: id
     properties:
       user_id: id
       name: name
@@ -38,7 +38,7 @@ nodes:
       
   - label: Post
     table: posts
-    id_column: id
+    node_id: id
     properties:
       post_id: id
       title: title
@@ -46,7 +46,7 @@ nodes:
       
   - label: Comment
     table: comments
-    id_column: id
+    node_id: id
     properties:
       comment_id: id
       text: text

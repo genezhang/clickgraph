@@ -100,7 +100,7 @@ INNER JOIN zeek.conn_log AS c ON c."id.orig_h" = source_ip
 
 **Fix**:
 1. In `match_clause.rs`: Added multi-table UNION support for standalone node queries using `ProcessedNodeMetadata.id_sources` to enumerate all tables/positions where a label appears
-2. In `projection_tagging.rs`: Expanded `count(denormalized_node)` to `count(node.id_property)` using schema's `id_column` - consistent with Neo4j behavior (count by node identity)
+2. In `projection_tagging.rs`: Expanded `count(denormalized_node)` to `count(node.id_property)` using schema's `node_id` - consistent with Neo4j behavior (count by node identity)
 3. In `return_clause.rs`: Added logic to detect `TableAlias` in aggregate args and include the node's ID property in the inner UNION projection
 
 **Queries Now Working**:

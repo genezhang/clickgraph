@@ -149,8 +149,13 @@ pub struct NodeDefinition {
     pub database: String,
     /// Source table name
     pub table: String,
-    /// ID column name
-    pub id_column: String,
+    /// Node identifier - column name(s) for node ID
+    /// Supports single column: `node_id: user_id` 
+    /// Or composite (future): `node_id: [tenant_id, user_id]`
+    /// 
+    /// Note: `id_column` is deprecated, use `node_id` instead
+    #[serde(alias = "id_column")]
+    pub node_id: Identifier,
     
     /// Optional: Column containing node type discriminator (for shared tables)
     /// Used when multiple node labels share the same table
@@ -592,11 +597,11 @@ fn build_node_schema(
             .values()
             .flat_map(|pv| pv.get_columns())
             .collect(),
-        primary_keys: node_def.id_column.clone(),
-        node_id: NodeIdSchema::single(
-            node_def.id_column.clone(),
-            "UInt64".to_string(),
-        ),
+        primary_keys: node_def.node_id.as_single().to_string(),
+        node_id: NodeIdSchema {
+            id: node_def.node_id.clone(),
+            dtype: "UInt64".to_string(),
+        },
         property_mappings,
         view_parameters: node_def.view_parameters.clone(),
         engine: discovery.engine.clone(),
@@ -1431,7 +1436,7 @@ graph_schema:
                     label: "Airport".to_string(),
                     database: "brahmand".to_string(),
                     table: "ontime_flights".to_string(),
-                    id_column: "airport_code".to_string(),
+                    node_id: Identifier::Single("airport_code".to_string()),
                     label_column: None,
                     label_value: None,
                     properties: HashMap::new(),
@@ -1496,7 +1501,7 @@ graph_schema:
                     label: "Airport".to_string(),
                     database: "brahmand".to_string(),
                     table: "ontime_flights".to_string(),
-                    id_column: "airport_code".to_string(),
+                    node_id: Identifier::Single("airport_code".to_string()),
                     label_column: None,
                     label_value: None,
                     properties: HashMap::new(),
@@ -1552,7 +1557,7 @@ graph_schema:
                     label: "User".to_string(),
                     database: "brahmand".to_string(),
                     table: "users".to_string(),
-                    id_column: "user_id".to_string(),
+                    node_id: Identifier::Single("user_id".to_string()),
                     label_column: None,
                     label_value: None,
                     properties: HashMap::new(),
@@ -1607,7 +1612,7 @@ graph_schema:
                     label: "User".to_string(),
                     database: "brahmand".to_string(),
                     table: "users".to_string(),
-                    id_column: "user_id".to_string(),
+                    node_id: Identifier::Single("user_id".to_string()),
                     label_column: None,
                     label_value: None,
                     properties: HashMap::new(),
@@ -1664,7 +1669,7 @@ graph_schema:
                         label: "Group".to_string(),
                         database: "brahmand".to_string(),
                         table: "groups".to_string(),
-                        id_column: "group_id".to_string(),
+                        node_id: Identifier::Single("group_id".to_string()),
                         label_column: None,
                         label_value: None,
                         properties: HashMap::new(),
@@ -1681,7 +1686,7 @@ graph_schema:
                         label: "User".to_string(),
                         database: "brahmand".to_string(),
                         table: "users".to_string(),
-                        id_column: "user_id".to_string(),
+                        node_id: Identifier::Single("user_id".to_string()),
                         label_column: None,
                         label_value: None,
                         properties: HashMap::new(),
@@ -1737,7 +1742,7 @@ graph_schema:
                     label: "User".to_string(),
                     database: "brahmand".to_string(),
                     table: "users".to_string(),
-                    id_column: "user_id".to_string(),
+                    node_id: Identifier::Single("user_id".to_string()),
                     label_column: None,
                     label_value: None,
                     properties: HashMap::new(),
@@ -1791,7 +1796,7 @@ graph_schema:
                     label: "User".to_string(),
                     database: "brahmand".to_string(),
                     table: "users".to_string(),
-                    id_column: "user_id".to_string(),
+                    node_id: Identifier::Single("user_id".to_string()),
                     label_column: None,
                     label_value: None,
                     properties: HashMap::new(),

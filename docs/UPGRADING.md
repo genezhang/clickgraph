@@ -16,7 +16,7 @@ Relationship field names have been renamed for improved semantic clarity and con
 
 **Why the Change:**
 - Improved semantic clarity - "id" indicates identity/key semantics
-- Consistency with node schemas (which use `id_column`)
+- Consistency with node schemas (which use `node_id`)
 - Prepares for future composite key support
 - No logic changes - pure field rename refactoring
 
@@ -34,7 +34,7 @@ views:
     nodes:
       user:
         source_table: users
-        id_column: user_id
+        node_id: user_id
         property_mappings:
           name: full_name
     relationships:
@@ -54,7 +54,7 @@ views:
     nodes:
       user:
         source_table: users
-        id_column: user_id
+        node_id: user_id
         property_mappings:
           name: full_name
     relationships:

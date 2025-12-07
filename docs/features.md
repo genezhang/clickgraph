@@ -104,7 +104,7 @@ views:
     nodes:
       User:
         source_table: users
-        id_column: user_id
+        node_id: user_id
         property_mappings:
           name: full_name
           email: email_address
@@ -114,7 +114,7 @@ views:
           
       Post:
         source_table: posts  
-        id_column: post_id
+        node_id: post_id
         property_mappings:
           title: post_title
           content: post_content

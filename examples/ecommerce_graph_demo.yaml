@@ -5,7 +5,7 @@ views:
     nodes:
       Customer:
         source_table: "customers"
-        id_column: "customer_id"
+        node_id: "customer_id"
         label: "Customer"
         property_mappings:
           name: "CONCAT(first_name, ' ', last_name)"
@@ -21,7 +21,7 @@ views:
 
       Product:
         source_table: "products"
-        id_column: "product_id"
+        node_id: "product_id"
         label: "Product"
         property_mappings:
           name: "name"

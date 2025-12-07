@@ -17,7 +17,7 @@ graph_schema:
     - label: User
       database: brahmand
       table: users_bench
-      id_column: user_id
+      node_id: user_id
       
       # Enable auto-discovery: All columns become properties
       auto_discover_columns: true
@@ -39,7 +39,7 @@ graph_schema:
     - label: Post
       database: brahmand
       table: posts_bench
-      id_column: post_id
+      node_id: post_id
       
       # Auto-discover without exclusions
       auto_discover_columns: true

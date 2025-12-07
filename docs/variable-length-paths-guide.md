@@ -648,7 +648,7 @@ brahmand \
 nodes:
   User:
     table: social.users
-    id_column: user_id
+    node_id: user_id
     properties:
       name: full_name
       email: email_address

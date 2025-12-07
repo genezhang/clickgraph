@@ -390,7 +390,7 @@ views:
     nodes:
       User:
         source_table: users
-        id_column: user_id
+        node_id: user_id
         property_mappings:
           name: full_name
           age: user_age

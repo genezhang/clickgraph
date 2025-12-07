@@ -105,7 +105,7 @@ graph_schema:
     - label: Group
       database: brahmand
       table: groups
-      id_column: group_id
+      node_id: group_id
       auto_discover_columns: true
       naming_convention: snake_case
       property_mappings: {}
@@ -113,7 +113,7 @@ graph_schema:
     - label: User
       database: brahmand
       table: users
-      id_column: user_id
+      node_id: user_id
       auto_discover_columns: true
       naming_convention: snake_case
       property_mappings: {}

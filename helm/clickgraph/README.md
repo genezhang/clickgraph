@@ -69,7 +69,7 @@ schemas:
           - label: User
             database: brahmand
             table: users_bench
-            id_column: user_id
+            node_id: user_id
             property_mappings:
               user_id: user_id
               name: full_name

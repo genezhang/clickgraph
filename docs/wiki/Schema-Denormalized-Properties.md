@@ -89,7 +89,7 @@ nodes:
   - label: Airport
     database: brahmand
     table: flights  # Virtual node - properties come from edge table
-    id_column: airport_code
+    node_id: airport_code
     property_mappings: {}
 
 edges:
@@ -359,7 +359,7 @@ nodes:
   - label: Airport
     database: brahmand
     table: airports  # Node table still exists
-    id_column: airport_code
+    node_id: airport_code
     property_mappings:
       code: airport_code
       timezone: timezone        # Only in node table
@@ -407,7 +407,7 @@ graph_schema:
     - label: Airport
       database: brahmand
       table: flights
-      id_column: airport_code
+      node_id: airport_code
       property_mappings: {}
 
   edges:
@@ -626,7 +626,7 @@ graph_schema:
     - label: IP
       database: zeek
       table: dns_log
-      id_column: ip
+      node_id: ip
       property_mappings: {}
       from_node_properties:
         ip: "id.orig_h"
@@ -636,7 +636,7 @@ graph_schema:
     - label: Domain
       database: zeek
       table: dns_log
-      id_column: name
+      node_id: name
       property_mappings: {}
       from_node_properties:
         name: query
@@ -646,7 +646,7 @@ graph_schema:
     - label: ResolvedIP
       database: zeek
       table: dns_log
-      id_column: answers
+      node_id: answers
       property_mappings: {}
       to_node_properties:
         ips: answers

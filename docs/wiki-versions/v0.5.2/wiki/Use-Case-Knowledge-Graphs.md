@@ -58,7 +58,7 @@ graph_schema:
     - label: Entity
       database: knowledge_db
       table: entities
-      id_column: entity_id
+      node_id: entity_id
       property_mappings:
         entity_id: entity_id
         name: entity_name
@@ -73,7 +73,7 @@ graph_schema:
     - label: Concept
       database: knowledge_db
       table: concepts
-      id_column: concept_id
+      node_id: concept_id
       property_mappings:
         concept_id: concept_id
         name: concept_name
@@ -85,7 +85,7 @@ graph_schema:
     - label: Document
       database: knowledge_db
       table: documents
-      id_column: doc_id
+      node_id: doc_id
       property_mappings:
         doc_id: doc_id
         title: title
@@ -99,7 +99,7 @@ graph_schema:
     - label: Organization
       database: knowledge_db
       table: organizations
-      id_column: org_id
+      node_id: org_id
       property_mappings:
         org_id: org_id
         name: org_name
@@ -112,7 +112,7 @@ graph_schema:
     - label: Person
       database: knowledge_db
       table: people
-      id_column: person_id
+      node_id: person_id
       property_mappings:
         person_id: person_id
         name: full_name
@@ -124,7 +124,7 @@ graph_schema:
     - label: Product
       database: knowledge_db
       table: products
-      id_column: product_id
+      node_id: product_id
       property_mappings:
         product_id: product_id
         name: product_name
@@ -137,7 +137,7 @@ graph_schema:
     - label: Topic
       database: knowledge_db
       table: topics
-      id_column: topic_id
+      node_id: topic_id
       property_mappings:
         topic_id: topic_id
         name: topic_name

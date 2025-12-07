@@ -249,7 +249,7 @@ fn parse_engine(engine: &str, engine_full: &str) -> Result<TableEngine> {
 pub struct NodeDefinition {
     pub label: String,
     pub table: String,
-    pub id_column: String,
+    pub node_id: String,
     pub properties: HashMap<String, String>,
     pub view_parameters: Option<Vec<String>>,
     pub use_final: Option<bool>,  // ← New field
@@ -259,8 +259,8 @@ pub struct NodeDefinition {
 pub struct RelationshipDefinition {
     pub type_name: String,
     pub table: String,
-    pub from_id_column: String,
-    pub to_id_column: String,
+    pub from_node_id: String,
+    pub to_node_id: String,
     pub properties: Option<HashMap<String, String>>,
     pub view_parameters: Option<Vec<String>>,
     pub use_final: Option<bool>,  // ← New field
@@ -273,7 +273,7 @@ pub struct RelationshipDefinition {
 pub struct NodeSchema {
     pub label: String,
     pub table: String,
-    pub id_column: String,
+    pub node_id: String,
     pub properties: HashMap<String, String>,
     pub view_parameters: Option<Vec<String>>,
     pub engine: TableEngine,      // ← New field (detected)
@@ -366,7 +366,7 @@ impl GraphSchemaConfig {
                 NodeSchema {
                     label: node_def.label.clone(),
                     table: node_def.table.clone(),
-                    id_column: node_def.id_column.clone(),
+                    node_id: node_def.id_column.clone(),
                     properties: node_def.properties.clone(),
                     view_parameters: node_def.view_parameters.clone(),
                     engine,              // ← Store detected engine
@@ -522,7 +522,7 @@ def test_auto_detect_replacing_merge_tree():
     nodes:
       - label: User
         table: users_replacing
-        id_column: user_id
+        node_id: user_id
     """
     
     # Query should use FINAL automatically

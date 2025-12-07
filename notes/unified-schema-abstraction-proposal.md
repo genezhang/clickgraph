@@ -59,7 +59,7 @@ pub enum NodeAccessStrategy {
     /// Node has its own table, JOIN required
     OwnTable {
         table: String,
-        id_column: String,
+        node_id: String,
         properties: PropertyMappings,
     },
     /// Node properties embedded in edge table

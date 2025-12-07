@@ -12,7 +12,7 @@ graphs:
         nodes:
           User:
             source_table: users_bench
-            id_column: user_id
+            node_id: user_id
             label: User
             property_mappings:
               user_id: user_id
@@ -43,7 +43,7 @@ graphs:
         nodes:
           Customer:
             source_table: customers_bench
-            id_column: customer_id
+            node_id: customer_id
             label: Customer
             property_mappings:
               customer_id: customer_id
@@ -54,7 +54,7 @@ graphs:
 
           Product:
             source_table: products_bench
-            id_column: product_id
+            node_id: product_id
             label: Product
             property_mappings:
               product_id: product_id

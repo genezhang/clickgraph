@@ -4,7 +4,7 @@ graph_schema:
     - label: Customer
       database: brahmand
       table: customers
-      id_column: customer_id
+      node_id: customer_id
       properties:
         customer_id: customer_id
         email: email
@@ -21,7 +21,7 @@ graph_schema:
     - label: Product
       database: brahmand
       table: products
-      id_column: product_id
+      node_id: product_id
       properties:
         product_id: product_id
         name: name

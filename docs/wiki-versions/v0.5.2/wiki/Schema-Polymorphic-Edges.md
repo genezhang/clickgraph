@@ -293,7 +293,7 @@ graph_schema:
     - label: User
       database: brahmand
       table: users
-      id_column: user_id
+      node_id: user_id
       property_mappings:
         name: username
         email: email
@@ -301,7 +301,7 @@ graph_schema:
     - label: Post
       database: brahmand
       table: posts
-      id_column: post_id
+      node_id: post_id
       property_mappings:
         title: title
         content: body

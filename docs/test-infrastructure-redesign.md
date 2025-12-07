@@ -57,7 +57,7 @@ fn create_test_view() -> GraphViewDefinition {
     let mut nodes = HashMap::new();
     nodes.insert("User".to_string(), NodeViewMapping {
         source_table: "users".to_string(),
-        id_column: "user_id".to_string(),
+        node_id: "user_id".to_string(),
         property_mappings: HashMap::new(),
         label: "User".to_string(),
         filter_condition: None,

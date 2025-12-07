@@ -7,7 +7,7 @@ graph_schema:
     - label: User
       database: test_param_func
       table: users
-      id_column: id
+      node_id: id
       property_mappings:
         id: id
         name: name
@@ -19,7 +19,7 @@ graph_schema:
     - label: Product
       database: test_param_func
       table: products
-      id_column: id
+      node_id: id
       property_mappings:
         id: id
         name: name
@@ -30,7 +30,7 @@ graph_schema:
     - label: Order
       database: test_param_func
       table: orders
-      id_column: id
+      node_id: id
       property_mappings:
         id: id
         user_id: user_id

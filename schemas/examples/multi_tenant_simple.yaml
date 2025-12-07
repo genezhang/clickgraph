@@ -66,7 +66,7 @@ graph_schema:
     - label: User
       table: users_by_tenant
       view_parameters: [tenant_id]  # Required: must provide tenant_id in queries
-      id_column: user_id
+      node_id: user_id
       properties:
         user_id: user_id
         name: name
@@ -76,7 +76,7 @@ graph_schema:
     - label: Order
       table: orders_by_tenant
       view_parameters: [tenant_id]  # Same tenant_id requirement
-      id_column: order_id
+      node_id: order_id
       properties:
         order_id: order_id
         product: product
@@ -87,8 +87,8 @@ graph_schema:
     - type: PLACED
       table: orders_by_tenant  # Reuse orders table for relationship
       view_parameters: [tenant_id]  # Relationships are also tenant-isolated
-      from_id_column: user_id
-      to_id_column: order_id
+      from_node_id: user_id
+      to_node_id: order_id
       properties:
         order_date: order_date
         amount: amount

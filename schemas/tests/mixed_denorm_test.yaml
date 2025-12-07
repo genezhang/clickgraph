@@ -10,7 +10,7 @@ graph_schema:
     - label: Airport
       database: test_integration
       table: flights
-      id_column: code
+      node_id: code
       property_mappings: {}
       
       from_node_properties:
@@ -27,7 +27,7 @@ graph_schema:
     - label: City
       database: test_integration
       table: cities
-      id_column: city_id
+      node_id: city_id
       property_mappings:
         city_id: city_id
         name: city_name

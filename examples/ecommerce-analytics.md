@@ -198,7 +198,7 @@ views:
     nodes:
       Customer:
         source_table: customers
-        id_column: customer_id
+        node_id: customer_id
         property_mappings:
           email: email
           name: "concat(first_name, ' ', last_name)"
@@ -216,7 +216,7 @@ views:
           
       Product:
         source_table: products  
-        id_column: product_id
+        node_id: product_id
         property_mappings:
           name: name
           category: category
@@ -231,7 +231,7 @@ views:
           
       Order:
         source_table: orders
-        id_column: order_id
+        node_id: order_id
         property_mappings:
           quantity: quantity
           unit_price: unit_price
@@ -244,7 +244,7 @@ views:
           
       Review:
         source_table: reviews
-        id_column: review_id
+        node_id: review_id
         property_mappings:
           rating: rating
           review_text: review_text
@@ -253,7 +253,7 @@ views:
           
       Category:
         source_table: category_hierarchy
-        id_column: child_category
+        node_id: child_category
         property_mappings:
           name: child_category
           parent: parent_category

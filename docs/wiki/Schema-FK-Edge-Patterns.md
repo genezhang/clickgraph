@@ -51,7 +51,7 @@ graph_schema:
   nodes:
     - label: Object
       table: fs_objects
-      id_column: object_id
+      node_id: object_id
       properties:
         - name: name
           column: name
@@ -82,7 +82,7 @@ graph_schema:
   nodes:
     - label: Object
       table: fs_objects_single
-      id_column: object_id
+      node_id: object_id
       properties:
         - name: name
           column: name
@@ -242,7 +242,7 @@ graph_schema:
   nodes:
     - label: Employee
       table: employees
-      id_column: employee_id
+      node_id: employee_id
       properties:
         - name: name
           column: full_name
@@ -278,7 +278,7 @@ graph_schema:
   nodes:
     - label: Category
       table: product_categories
-      id_column: category_id
+      node_id: category_id
       properties:
         - name: name
           column: category_name
@@ -312,7 +312,7 @@ graph_schema:
   nodes:
     - label: Comment
       table: comments
-      id_column: comment_id
+      node_id: comment_id
       properties:
         - name: text
           column: content

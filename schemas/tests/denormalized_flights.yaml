@@ -10,7 +10,7 @@ graph_schema:
     - label: Airport
       database: test_integration
       table: flights
-      id_column: code  # Logical property name for the ID
+      node_id: code  # Logical property name for the ID
       property_mappings: {}  # Empty - all properties are denormalized
       
       # Denormalized origin (from_node) properties

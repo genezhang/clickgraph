@@ -52,7 +52,7 @@ graph_schema:
     - label: User
       database: brahmand
       table: users_bench
-      id_column: user_id
+      node_id: user_id
       property_mappings:
         user_id: user_id
         name: full_name
@@ -65,7 +65,7 @@ graph_schema:
     - label: Post
       database: brahmand
       table: posts_bench
-      id_column: post_id
+      node_id: post_id
       property_mappings:
         post_id: post_id
         title: post_title
@@ -107,7 +107,7 @@ nodes:
   - label: User
     database: brahmand
     table: users
-    id_column: user_id
+    node_id: user_id
     property_mappings:
       user_id: user_id
       name: full_name
@@ -173,7 +173,7 @@ nodes:
   - label: ActiveUser
     database: brahmand
     table: users
-    id_column: user_id
+    node_id: user_id
     filter: "is_active = 1 AND deleted_at IS NULL"  # Only active, non-deleted users
     property_mappings:
       user_id: user_id
@@ -182,7 +182,7 @@ nodes:
   - label: RecentPost
     database: brahmand
     table: posts
-    id_column: post_id
+    node_id: post_id
     filter: "post_date >= today() - INTERVAL 30 DAY"  # Only posts from last 30 days
     property_mappings:
       post_id: post_id
@@ -265,13 +265,13 @@ graph_schema:
     - label: User
       database: brahmand
       table: users
-      id_column: user_id
+      node_id: user_id
       property_mappings:
         name: full_name
     - label: Post
       database: brahmand
       table: posts
-      id_column: post_id
+      node_id: post_id
 
 ---
 # Schema 2: E-commerce (schemas/commerce.yaml)
@@ -281,15 +281,15 @@ graph_schema:
     - label: Customer
       database: brahmand
       table: customers
-      id_column: customer_id
+      node_id: customer_id
     - label: Product
       database: brahmand
       table: products
-      id_column: product_id
+      node_id: product_id
     - label: Order
       database: brahmand
       table: orders
-      id_column: order_id
+      node_id: order_id
 ```
 
 ### 2. Schema Selection via USE Clause
@@ -405,7 +405,7 @@ graph_schema:
     - label: User
       table: users_by_tenant          # Reference the parameterized view
       view_parameters: [tenant_id]     # Declare required parameters
-      id_column: user_id
+      node_id: user_id
       property_mappings:
         user_id: user_id
         name: name
@@ -462,7 +462,7 @@ graph_schema:
   nodes:
     - label: Post
       table: posts_recent
-      id_column: post_id
+      node_id: post_id
       view_parameters: [days_back]
       property_mappings:
         post_id: post_id
@@ -488,7 +488,7 @@ graph_schema:
   nodes:
     - label: USUser
       table: users
-      id_column: user_id
+      node_id: user_id
       filter: "country IN ('US', 'CA', 'MX')"  # North America only
       property_mappings:
         user_id: user_id
@@ -497,7 +497,7 @@ graph_schema:
         
     - label: EUUser
       table: users
-      id_column: user_id
+      node_id: user_id
       filter: "country IN ('DE', 'FR', 'UK', 'ES', 'IT')"  # Europe only
       property_mappings:
         user_id: user_id
@@ -537,7 +537,7 @@ nodes:
   - label: User
     database: brahmand
     table: users_bench  # Table must exist in ClickHouse
-    id_column: user_id
+    node_id: user_id
 ```
 
 **Undefined Node Reference**:
@@ -563,7 +563,7 @@ nodes:
 nodes:
   - label: User
     table: users
-    id_column: user_id
+    node_id: user_id
     property_mappings:
       user_id: user_id
       name: nonexistent_column  # ⚠️ Warning: Column doesn't exist
@@ -625,7 +625,7 @@ python test_schema.py schemas/my_schema.yaml
 nodes:
   - label: User
     table: users
-    id_column: user_id  # Indexed column
+    node_id: user_id  # Indexed column
     property_mappings:
       user_id: user_id
 
@@ -633,7 +633,7 @@ nodes:
 nodes:
   - label: User
     table: users
-    id_column: email  # Not indexed!
+    node_id: email  # Not indexed!
 ```
 
 **Impact**:
@@ -697,7 +697,7 @@ RETURN follower.name
 nodes:
   - label: User
     table: users
-    id_column: user_id
+    node_id: user_id
     property_mappings:
       user_id: user_id
       name: full_name
@@ -711,7 +711,7 @@ nodes:
 nodes:
   - label: User
     table: users
-    id_column: user_id
+    node_id: user_id
     property_mappings:
       user_id: user_id
       name: full_name
@@ -728,7 +728,7 @@ graph_schema:
   nodes:
     - label: ActiveUser
       table: users
-      id_column: user_id
+      node_id: user_id
       filter: "is_active = 1 AND deleted_at IS NULL"
       property_mappings:
         user_id: user_id
@@ -837,19 +837,19 @@ graph_schema:
   nodes:
     - label: Person
       table: persons
-      id_column: person_id
+      node_id: person_id
       
     - label: Company
       table: companies
-      id_column: company_id
+      node_id: company_id
       
     - label: Location
       table: locations
-      id_column: location_id
+      node_id: location_id
       
     - label: Skill
       table: skills
-      id_column: skill_id
+      node_id: skill_id
   
   edges:
     - type: WORKS_AT
@@ -911,7 +911,7 @@ graph_schema:
   nodes:
     - label: User
       table: users
-      id_column: user_id
+      node_id: user_id
       property_mappings:
         user_id: user_id
         name: full_name
@@ -931,7 +931,7 @@ graph_schema:
 nodes:
   - label: User
     table: users
-    id_column: email  # ❌ Breaking: Was "user_id"
+    node_id: email  # ❌ Breaking: Was "user_id"
 ```
 
 ### 3. Blue-Green Schema Deployment

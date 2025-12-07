@@ -4,7 +4,7 @@ graph_schema:
     - label: User
       database: test_integration
       table: users
-      id_column: user_id
+      node_id: user_id
       property_mappings:
         user_id: user_id
         name: name

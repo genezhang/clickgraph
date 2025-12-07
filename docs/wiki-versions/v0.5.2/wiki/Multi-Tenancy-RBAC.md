@@ -78,7 +78,7 @@ graph_schema:
     - label: User
       database: acme_db
       table: users
-      id_column: user_id
+      node_id: user_id
       property_mappings:
         user_id: user_id
         name: full_name
@@ -144,7 +144,7 @@ graph_schema:
     - label: User
       database: shared_db
       table: users
-      id_column: user_id
+      node_id: user_id
       view_parameters: [tenant_id]  # Automatic tenant isolation
       property_mappings:
         user_id: user_id
@@ -155,7 +155,7 @@ graph_schema:
     - label: Post
       database: shared_db
       table: posts
-      id_column: post_id
+      node_id: post_id
       view_parameters: [tenant_id]
       property_mappings:
         post_id: post_id

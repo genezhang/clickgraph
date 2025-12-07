@@ -116,7 +116,7 @@ graph_schema:
     - label: MyNode
       database: test_my_feature
       table: my_nodes
-      id_column: id
+      node_id: id
       property_mappings:
         id: id
         name: name

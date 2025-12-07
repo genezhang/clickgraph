@@ -77,7 +77,7 @@ CREATE TABLE transfers (
 nodes:
   - name: User
     table: users
-    id_column: user_id  # Single column
+    node_id: user_id  # Single column
 
 relationships:
   - name: FOLLOWS
@@ -166,7 +166,7 @@ edge_id: [from_account, to_account, txn_id]   # Composite (transactions)
 # OLD (still supported with deprecation warning)
 nodes:
   - name: User
-    id_column: user_id
+    node_id: user_id
 
 # NEW (preferred)
 nodes:
@@ -242,8 +242,8 @@ struct EdgeInfo {
     label: String,
     is_undirected: bool,
     id_columns: Vec<String>,  // e.g., ["r1.from_id", "r1.to_id", "r1.timestamp"]
-    from_id_column: String,
-    to_id_column: String,
+    from_node_id: String,
+    to_node_id: String,
 }
 
 /// Generate uniqueness filter for two edges

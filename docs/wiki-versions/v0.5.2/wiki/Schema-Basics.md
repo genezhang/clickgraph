@@ -53,7 +53,7 @@ graph_schema:
     - label: User                    # Label used in Cypher queries
       database: brahmand             # ClickHouse database name
       table: users                   # ClickHouse table name
-      id_column: user_id             # Column that uniquely identifies each node
+      node_id: user_id             # Column that uniquely identifies each node
       property_mappings:
         user_id: user_id             # Cypher property → ClickHouse column
         name: full_name              # Map 'name' in Cypher to 'full_name' in ClickHouse
@@ -107,7 +107,7 @@ graph_schema:
     - label: User
       database: brahmand
       table: users
-      id_column: user_id
+      node_id: user_id
       property_mappings:
         user_id: user_id
         name: full_name
@@ -115,7 +115,7 @@ graph_schema:
     - label: Post
       database: brahmand
       table: posts
-      id_column: post_id
+      node_id: post_id
       property_mappings:
         post_id: post_id
         title: post_title
@@ -265,7 +265,7 @@ graph_schema:
     - label: User
       database: brahmand
       table: users
-      id_column: user_id
+      node_id: user_id
       property_mappings:
         user_id: user_id
         name: full_name
@@ -277,7 +277,7 @@ graph_schema:
     - label: Post
       database: brahmand
       table: posts
-      id_column: post_id
+      node_id: post_id
       property_mappings:
         post_id: post_id
         title: post_title
@@ -386,7 +386,7 @@ graph_schema:
   nodes:
     - label: Customer
       table: customers
-      id_column: customer_id
+      node_id: customer_id
       property_mappings:
         customer_id: customer_id
         name: full_name
@@ -394,7 +394,7 @@ graph_schema:
     
     - label: Product
       table: products
-      id_column: product_id
+      node_id: product_id
       property_mappings:
         product_id: product_id
         name: product_name
@@ -420,14 +420,14 @@ graph_schema:
   nodes:
     - label: Person
       table: people
-      id_column: person_id
+      node_id: person_id
       property_mappings:
         person_id: person_id
         name: full_name
     
     - label: Organization
       table: organizations
-      id_column: org_id
+      node_id: org_id
       property_mappings:
         org_id: org_id
         name: org_name
@@ -492,7 +492,7 @@ Now that you understand schema basics, explore advanced features:
 - label: <CypherLabel>
   database: <clickhouse_database>
   table: <clickhouse_table>
-  id_column: <unique_id_column>
+  node_id: <unique_id_column>
   property_mappings:
     <cypher_prop>: <clickhouse_column>
 ```

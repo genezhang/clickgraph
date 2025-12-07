@@ -53,7 +53,7 @@ graph_schema:
     - label: User
       database: social_db
       table: users
-      id_column: user_id
+      node_id: user_id
       property_mappings:
         user_id: user_id
         name: full_name
@@ -72,7 +72,7 @@ graph_schema:
     - label: Post
       database: social_db
       table: posts
-      id_column: post_id
+      node_id: post_id
       property_mappings:
         post_id: post_id
         content: post_text
@@ -86,7 +86,7 @@ graph_schema:
     - label: Hashtag
       database: social_db
       table: hashtags
-      id_column: hashtag_id
+      node_id: hashtag_id
       property_mappings:
         hashtag_id: hashtag_id
         tag: tag_name

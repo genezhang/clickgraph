@@ -95,7 +95,7 @@ pub fn classify_edge_table_pattern(
 nodes:
   - label: Airport
     table: flights  # ✅ Same as edge
-    id_column: code
+    node_id: code
     property_mappings: {}  # ✅ Empty
 
 edges:
@@ -118,7 +118,7 @@ edges:
 nodes:
   - label: Airport
     table: airports  # ✅ Different table
-    id_column: code
+    node_id: code
     property_mappings:
       code: airport_code
       city: city_name
@@ -139,12 +139,12 @@ edges:
 nodes:
   - label: Airport
     table: flights  # ✅ Denormalized (same as edge)
-    id_column: code
+    node_id: code
     property_mappings: {}
     
   - label: User
     table: users  # ✅ Traditional (separate table)
-    id_column: user_id
+    node_id: user_id
     property_mappings:
       user_id: id
       name: full_name

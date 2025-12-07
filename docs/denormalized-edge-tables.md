@@ -40,7 +40,7 @@ graph_schema:
     - label: IP
       database: zeek
       table: conn_log        # Same table as the edge!
-      id_column: ip
+      node_id: ip
       property_mappings: {}  # Empty - properties are denormalized
       
       # Properties when IP is the source
@@ -129,7 +129,7 @@ nodes:
   - label: NodeLabel
     database: your_db
     table: edge_table_name      # Must match relationship table!
-    id_column: logical_id_name
+    node_id: logical_id_name
     property_mappings: {}        # Usually empty
     
     from_node_properties:        # Required for denormalized

@@ -18,7 +18,7 @@ Add two optional fields to node/relationship definitions:
 nodes:
   - label: User
     table: users
-    id_column: user_id
+    node_id: user_id
     
     # Enable auto-discovery
     auto_discover_columns: true
@@ -197,7 +197,7 @@ Auto-discovery only works when ClickHouse client is available. Without client:
 nodes:
   - label: WideTable
     table: analytics_events
-    id_column: event_id
+    node_id: event_id
     auto_discover_columns: true
 ```
 
@@ -209,7 +209,7 @@ Result: All 50 columns become properties (snake_case).
 nodes:
   - label: User
     table: users
-    id_column: user_id
+    node_id: user_id
     auto_discover_columns: true
     naming_convention: camelCase
 ```
@@ -226,7 +226,7 @@ Result: All 50 columns become properties (identity mapping).
 nodes:
   - label: User
     table: users
-    id_column: user_id
+    node_id: user_id
     auto_discover_columns: true
     exclude_columns:
       - _version
@@ -242,7 +242,7 @@ Result: All columns except 3 excluded ones.
 nodes:
   - label: User
     table: users
-    id_column: user_id
+    node_id: user_id
     auto_discover_columns: true
     property_mappings:
       full_name: name           # Rename 1
@@ -318,7 +318,7 @@ curl -X POST http://localhost:8080/query \
 nodes:
   - label: Event
     table: analytics_events
-    id_column: event_id
+    node_id: event_id
     property_mappings:
       event_id: event_id
       event_type: event_type
@@ -333,7 +333,7 @@ nodes:
 nodes:
   - label: Event
     table: analytics_events
-    id_column: event_id
+    node_id: event_id
     auto_discover_columns: true
     exclude_columns: [_internal_version]
 ```
@@ -342,7 +342,7 @@ nodes:
 
 ## Future Work
 
-1. **Composite Keys**: Support `id_column: [tenant_id, user_id]`
+1. **Composite Keys**: Support `node_id: [tenant_id, user_id]`
 2. **Type Mapping**: Expose ClickHouse types to Cypher
 3. **Smart Naming**: Auto-convert snake_case → camelCase
 4. **Relationship Inference**: Detect edges from foreign key patterns

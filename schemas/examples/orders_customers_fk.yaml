@@ -29,7 +29,7 @@ graph_schema:
     - label: Order
       database: test_integration
       table: orders_fk
-      id_column: order_id
+      node_id: order_id
       property_mappings:
         order_id: order_id
         order_date: order_date
@@ -38,7 +38,7 @@ graph_schema:
     - label: Customer
       database: test_integration
       table: customers_fk
-      id_column: customer_id
+      node_id: customer_id
       property_mappings:
         customer_id: customer_id
         name: name

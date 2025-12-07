@@ -131,7 +131,7 @@ views:
     nodes:
       user:
         source_table: users        # ← ViewScan uses this
-        id_column: user_id
+        node_id: user_id
         label: User               # ← Cypher uses this
         property_mappings:
           name: name

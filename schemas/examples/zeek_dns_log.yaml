@@ -33,7 +33,7 @@ graph_schema:
     - label: IP
       database: zeek
       table: dns_log
-      id_column: ip_address
+      node_id: ip_address
       property_mappings: {}
       
       from_node_properties:
@@ -46,7 +46,7 @@ graph_schema:
     - label: Domain
       database: zeek
       table: dns_log  # Same table - domain is embedded
-      id_column: domain_name
+      node_id: domain_name
       property_mappings: {}
       
       from_node_properties:
@@ -60,7 +60,7 @@ graph_schema:
     - label: ResolvedIP
       database: zeek
       table: dns_log
-      id_column: answers
+      node_id: answers
       property_mappings: {}
       
       to_node_properties:

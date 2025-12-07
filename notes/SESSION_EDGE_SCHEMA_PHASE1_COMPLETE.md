@@ -121,7 +121,7 @@ nodes:
   - label: Airport
     database: brahmand
     table: ontime  # Same as edge table!
-    id_column: code
+    node_id: code
 
 edges:
   - type: FLIGHT

@@ -30,7 +30,7 @@ graph_schema:
     - label: IP
       database: zeek
       table: conn_log
-      id_column: ip  # Logical property name for the IP address
+      node_id: ip  # Logical property name for the IP address
       property_mappings: {}  # Empty - node is purely denormalized
       
       # Properties when IP appears as source (from_node)

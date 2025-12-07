@@ -402,7 +402,7 @@ curl -X POST http://localhost:8080/schemas/load \
   -H "Content-Type: application/json" \
   -d '{
     "schema_name": "ecommerce",
-    "config_content": "name: ecommerce\ngraph_schema:\n  nodes:\n    - label: Product\n      table: products\n      id_column: product_id\n      property_mappings:\n        name: product_name\n",
+    "config_content": "name: ecommerce\ngraph_schema:\n  nodes:\n    - label: Product\n      table: products\n      node_id: product_id\n      property_mappings:\n        name: product_name\n",
     "validate_schema": true
   }'
 ```

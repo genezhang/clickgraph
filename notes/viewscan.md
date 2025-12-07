@@ -203,7 +203,7 @@ SELECT u.name FROM users AS u LIMIT 3
 nodes:
   User:
     table: users
-    id_column: user_id
+    node_id: user_id
     properties:
       - name
       - age

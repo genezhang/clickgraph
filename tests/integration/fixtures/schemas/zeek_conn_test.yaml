@@ -9,7 +9,7 @@ graph_schema:
     - label: IP
       database: test_zeek
       table: conn_log
-      id_column: ip
+      node_id: ip
       property_mappings: {}
       
       from_node_properties:

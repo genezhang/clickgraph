@@ -62,7 +62,7 @@ database: "my_db"
 nodes:
   - label: User
     table: entities
-    id_column: id
+    node_id: id
     type_column: node_type      # NEW: Column containing label
     type_value: "User"          # NEW: Value to filter by
     properties:
@@ -72,7 +72,7 @@ nodes:
 
   - label: Post
     table: entities
-    id_column: id
+    node_id: id
     type_column: node_type
     type_value: "Post"
     properties:
@@ -162,7 +162,7 @@ WHERE u.node_type = 'User'            -- From u:User
 pub struct NodeSchema {
     pub label: String,
     pub table: String,
-    pub id_column: String,
+    pub node_id: String,
     pub type_column: Option<String>,    // NEW
     pub type_value: Option<String>,     // NEW
     pub properties: HashMap<String, String>,

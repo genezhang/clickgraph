@@ -33,7 +33,7 @@ graph_schema:
       database: brahmand
       table: users_by_tenant          # Parameterized view name
       view_parameters: [tenant_id]     # Parameters this view accepts
-      id_column: user_id
+      node_id: user_id
       property_mappings:
         user_id: user_id
         name: name

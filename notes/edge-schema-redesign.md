@@ -130,7 +130,7 @@ pub struct NodeDefinition {
     // If table matches edge table → virtual node (derive from edge)
     // Otherwise → explicit node (has its own table)
     
-    pub id_column: String,
+    pub node_id: String,
     pub properties: HashMap<String, String>,
     
     // ... existing fields ...
@@ -146,7 +146,7 @@ nodes:
   - label: User
     database: brahmand
     table: users
-    id_column: user_id
+    node_id: user_id
 
 edges:
   - type: AUTHORED
@@ -167,7 +167,7 @@ nodes:
   - label: Airport
     database: brahmand
     table: ontime  # ← Same as edge table!
-    id_column: code
+    node_id: code
 
 edges:
   - type: FLIGHT
@@ -193,11 +193,11 @@ nodes:
   - label: User
     database: brahmand
     table: users
-    id_column: user_id
+    node_id: user_id
   - label: Post
     database: brahmand
     table: posts
-    id_column: post_id
+    node_id: post_id
 
 edges:
   - polymorphic: true

@@ -33,7 +33,7 @@ graph_schema:
     - label: Object
       database: test_integration
       table: fs_objects
-      id_column: object_id
+      node_id: object_id
       property_mappings:
         object_id: object_id
         name: name

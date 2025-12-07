@@ -73,7 +73,7 @@ edges:
 nodes:
   - label: Post
     table: posts
-    id_column: post_id
+    node_id: post_id
 
 edges:
   - type: AUTHORED
@@ -166,10 +166,10 @@ When multiple edges in the same pattern use the same denormalized table AND conn
 nodes:
   - label: IP
     table: dns_logs
-    id_column: client_ip
+    node_id: client_ip
   - label: Domain  
     table: dns_logs
-    id_column: query_domain
+    node_id: query_domain
 
 edges:
   - type: QUERIED         # Edge 1

@@ -57,7 +57,7 @@ graph_schema:
     - label: User
       table: users_by_tenant          # Reference the parameterized view
       view_parameters: [tenant_id]     # Declare required parameters
-      id_column: user_id
+      node_id: user_id
       properties:
         user_id: user_id
         name: name
@@ -137,8 +137,8 @@ relationships:
   - type: PLACED
     table: user_orders_by_tenant
     view_parameters: [tenant_id]
-    from_id_column: user_id
-    to_id_column: order_id
+    from_node_id: user_id
+    to_node_id: order_id
 ```
 
 **Query**:
@@ -475,7 +475,7 @@ nodes:
   - label: User
     table: users_by_tenant           # Changed from 'users'
     view_parameters: [tenant_id]      # Added
-    id_column: user_id
+    node_id: user_id
     # ... rest unchanged
 ```
 

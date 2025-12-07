@@ -3,7 +3,7 @@ graph_schema:
     - label: User
       database: brahmand
       table: users_bench
-      id_column: user_id
+      node_id: user_id
       # Filter: only active users
       filter: "is_active = 1"
       property_mappings:
@@ -16,7 +16,7 @@ graph_schema:
     - label: Post
       database: brahmand
       table: posts_bench
-      id_column: post_id
+      node_id: post_id
       property_mappings:
         post_id: post_id
         title: post_title

@@ -132,8 +132,8 @@ In `plan_builder.rs`, when building relationship joins, track:
 struct RelationshipInfo {
     alias: String,
     is_undirected: bool,
-    from_id_column: String,  // e.g., "r1.follower_id"
-    to_id_column: String,    // e.g., "r1.followed_id"
+    from_node_id: String,  // e.g., "r1.follower_id"
+    to_node_id: String,    // e.g., "r1.followed_id"
 }
 ```
 

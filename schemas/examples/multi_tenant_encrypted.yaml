@@ -113,7 +113,7 @@ graph_schema:
     - label: Patient
       table: patients_secure
       view_parameters: [tenant_id]  # Automatically decrypts with tenant's key
-      id_column: patient_id
+      node_id: patient_id
       properties:
         patient_id: patient_id
         name: name
@@ -125,7 +125,7 @@ graph_schema:
     - label: Transaction
       table: transactions_secure
       view_parameters: [tenant_id]
-      id_column: transaction_id
+      node_id: transaction_id
       properties:
         transaction_id: transaction_id
         amount: amount
@@ -136,8 +136,8 @@ graph_schema:
     - type: HAD_TRANSACTION
       table: transactions_secure
       view_parameters: [tenant_id]
-      from_id_column: patient_id
-      to_id_column: transaction_id
+      from_node_id: patient_id
+      to_node_id: transaction_id
       properties:
         amount: amount
         transaction_date: transaction_date

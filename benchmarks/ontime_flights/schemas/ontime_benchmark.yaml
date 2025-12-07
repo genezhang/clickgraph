@@ -11,7 +11,7 @@ graph_schema:
     - label: Airport
       database: default
       table: flights  # Same table as the edge!
-      id_column: id   # Logical property name for the airport code
+      node_id: id   # Logical property name for the airport code
       property_mappings: {}  # Empty - all properties are denormalized
       
       # Properties when Airport appears as origin (from_node)
