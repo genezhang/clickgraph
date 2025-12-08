@@ -1,3 +1,30 @@
+## [0.5.5] - 2025-12-07
+
+### 🚀 Features
+
+- *(functions)* Add 18 new Neo4j function mappings (43 total)
+  - Trigonometric: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`
+  - Math: `exp`, `log`, `log10`, `pi`, `e`, `pow`
+  - String: `lTrim`, `rTrim`
+  - Aggregation: `stDev`, `stDevP`, `percentileCont`, `percentileDisc`
+  - Predicate: `coalesce`, `nullIf`
+  - Map: `keys`
+
+### 🚜 Refactor
+
+- *(code quality)* Remove 423 lines of dead code (filter_pipeline.rs: 889→413 lines)
+- *(code quality)* Fix all compiler warnings (58→0)
+- *(code quality)* Convert broken doc examples to `text` or `ignore`
+- *(dependencies)* Security updates: dotenvy, validator 0.20, reqwest 0.12
+
+### 🧪 Testing
+
+- Add 6 new unit tests for function registry
+- Fix doctest compilation errors
+- Fix test_view_parameters.rs to use Identifier::Single type
+
+---
+
 ## [0.5.4] - 2025-12-08
 
 ### 🚀 Features

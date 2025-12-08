@@ -1,7 +1,7 @@
 # Copilot Instructions for ClickGraph
 
 ## Project Overview
-ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, written in Rust. It translates Cypher queries into ClickHouse SQL queries, enabling graph analysis capabilities on ClickHouse databases. This is based on a fork of the original Brahmand project with significant enhancements. Features related to DDLs for special node and edge tables and updates have been removed.
+ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, written in Rust. It translates Cypher queries into ClickHouse SQL queries, enabling graph analysis capabilities on ClickHouse databases. Codebase has evolved and diverged from the original Brahmand project. Features related to DDLs for special node and edge tables and updates have been removed.
 
 **Project Scope**: Read-only analytical queries only. Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are explicitly out of scope.
 
@@ -143,11 +143,11 @@ The root directory should contain ONLY essential project files. Before creating 
 - Test data/fixtures → `tests/fixtures/data/`
 - **❌ NEVER** create `test_*.py` or `test_*.rs` in root!
 
-**📊 Benchmark Files** → `benchmarks/`
-- Data generation → `benchmarks/data/`
-- Query suites → `benchmarks/queries/`
-- Benchmark schemas → `benchmarks/schemas/`
-- Results → `benchmarks/results/` (gitignored)
+**📊 Benchmark Files organized by benchmark** → `benchmarks/social_network/` and `benchmarks/ontime_flights/`
+- Data generation → `benchmarks/*/data/`
+- Query suites → `benchmarks/*/queries/`
+- Benchmark schemas → `benchmarks/*/schemas/`
+- Results → `benchmarks/*/results/` (gitignored)
 
 **🛠️ Utility Scripts** → `scripts/`
 - Setup scripts → `scripts/setup/`

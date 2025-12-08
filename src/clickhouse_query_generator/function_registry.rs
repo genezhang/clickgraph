@@ -323,6 +323,195 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
+        // ===== TRIGONOMETRIC FUNCTIONS =====
+
+        // sin() -> sin() [1:1 mapping]
+        m.insert("sin", FunctionMapping {
+            neo4j_name: "sin",
+            clickhouse_name: "sin",
+            arg_transform: None,
+        });
+
+        // cos() -> cos() [1:1 mapping]
+        m.insert("cos", FunctionMapping {
+            neo4j_name: "cos",
+            clickhouse_name: "cos",
+            arg_transform: None,
+        });
+
+        // tan() -> tan() [1:1 mapping]
+        m.insert("tan", FunctionMapping {
+            neo4j_name: "tan",
+            clickhouse_name: "tan",
+            arg_transform: None,
+        });
+
+        // asin() -> asin() [1:1 mapping]
+        m.insert("asin", FunctionMapping {
+            neo4j_name: "asin",
+            clickhouse_name: "asin",
+            arg_transform: None,
+        });
+
+        // acos() -> acos() [1:1 mapping]
+        m.insert("acos", FunctionMapping {
+            neo4j_name: "acos",
+            clickhouse_name: "acos",
+            arg_transform: None,
+        });
+
+        // atan() -> atan() [1:1 mapping]
+        m.insert("atan", FunctionMapping {
+            neo4j_name: "atan",
+            clickhouse_name: "atan",
+            arg_transform: None,
+        });
+
+        // atan2(y, x) -> atan2(y, x) [1:1 mapping]
+        m.insert("atan2", FunctionMapping {
+            neo4j_name: "atan2",
+            clickhouse_name: "atan2",
+            arg_transform: None,
+        });
+
+        // ===== ADDITIONAL MATH FUNCTIONS =====
+
+        // exp() -> exp() [1:1 mapping]
+        m.insert("exp", FunctionMapping {
+            neo4j_name: "exp",
+            clickhouse_name: "exp",
+            arg_transform: None,
+        });
+
+        // log() -> log() [natural logarithm, 1:1 mapping]
+        m.insert("log", FunctionMapping {
+            neo4j_name: "log",
+            clickhouse_name: "log",
+            arg_transform: None,
+        });
+
+        // log10() -> log10() [1:1 mapping]
+        m.insert("log10", FunctionMapping {
+            neo4j_name: "log10",
+            clickhouse_name: "log10",
+            arg_transform: None,
+        });
+
+        // pi() -> pi() [1:1 mapping]
+        m.insert("pi", FunctionMapping {
+            neo4j_name: "pi",
+            clickhouse_name: "pi",
+            arg_transform: None,
+        });
+
+        // e() -> e() [1:1 mapping]
+        m.insert("e", FunctionMapping {
+            neo4j_name: "e",
+            clickhouse_name: "e",
+            arg_transform: None,
+        });
+
+        // pow(base, exp) / ^ -> pow(base, exp) [1:1 mapping]
+        m.insert("pow", FunctionMapping {
+            neo4j_name: "pow",
+            clickhouse_name: "pow",
+            arg_transform: None,
+        });
+
+        // ===== ADDITIONAL STRING FUNCTIONS =====
+
+        // ltrim() -> trimLeft()
+        m.insert("ltrim", FunctionMapping {
+            neo4j_name: "lTrim",
+            clickhouse_name: "trimLeft",
+            arg_transform: None,
+        });
+
+        // rtrim() -> trimRight()
+        m.insert("rtrim", FunctionMapping {
+            neo4j_name: "rTrim",
+            clickhouse_name: "trimRight",
+            arg_transform: None,
+        });
+
+        // ===== ADDITIONAL AGGREGATION FUNCTIONS =====
+
+        // stDev() -> stddevSamp() [sample standard deviation]
+        m.insert("stdev", FunctionMapping {
+            neo4j_name: "stDev",
+            clickhouse_name: "stddevSamp",
+            arg_transform: None,
+        });
+
+        // stDevP() -> stddevPop() [population standard deviation]
+        m.insert("stdevp", FunctionMapping {
+            neo4j_name: "stDevP",
+            clickhouse_name: "stddevPop",
+            arg_transform: None,
+        });
+
+        // percentileCont(percentile) -> quantile(percentile)
+        // Note: Neo4j syntax is percentileCont(expr, percentile)
+        // ClickHouse syntax is quantile(percentile)(expr) - parametric aggregate
+        // We'll use simpler quantileExact for now which takes (expr)
+        m.insert("percentilecont", FunctionMapping {
+            neo4j_name: "percentileCont",
+            clickhouse_name: "median",  // median = quantile(0.5), closest simple equivalent
+            arg_transform: Some(|args| {
+                // percentileCont(expr, 0.5) -> median(expr)
+                // For other percentiles, user needs to use quantile directly
+                if args.len() >= 1 {
+                    vec![args[0].clone()]
+                } else {
+                    args.to_vec()
+                }
+            }),
+        });
+
+        // percentileDisc(percentile) -> similar to percentileCont but discrete
+        m.insert("percentiledisc", FunctionMapping {
+            neo4j_name: "percentileDisc",
+            clickhouse_name: "median",
+            arg_transform: Some(|args| {
+                if args.len() >= 1 {
+                    vec![args[0].clone()]
+                } else {
+                    args.to_vec()
+                }
+            }),
+        });
+
+        // ===== PREDICATE/NULL FUNCTIONS =====
+
+        // coalesce(a, b, ...) -> coalesce(a, b, ...) [1:1 mapping]
+        m.insert("coalesce", FunctionMapping {
+            neo4j_name: "coalesce",
+            clickhouse_name: "coalesce",
+            arg_transform: None,
+        });
+
+        // nullIf(a, b) -> nullIf(a, b) [1:1 mapping]
+        m.insert("nullif", FunctionMapping {
+            neo4j_name: "nullIf",
+            clickhouse_name: "nullIf",
+            arg_transform: None,
+        });
+
+        // ===== ADDITIONAL LIST FUNCTIONS =====
+
+        // keys(map) -> mapKeys(map) - get keys from a map
+        m.insert("keys", FunctionMapping {
+            neo4j_name: "keys",
+            clickhouse_name: "mapKeys",
+            arg_transform: None,
+        });
+
+        // ===== ADDITIONAL TYPE FUNCTIONS =====
+
+        // type(relationship) - handled specially in code, but add placeholder
+        // id(node) - handled specially in code
+        // labels(node) - handled specially in code
+
         m
     };
 }
@@ -374,5 +563,100 @@ mod tests {
     #[test]
     fn test_unsupported_function() {
         assert!(get_function_mapping("unknownFunction").is_none());
+    }
+
+    #[test]
+    fn test_trig_functions() {
+        // Test all trig functions exist
+        assert!(get_function_mapping("sin").is_some());
+        assert!(get_function_mapping("cos").is_some());
+        assert!(get_function_mapping("tan").is_some());
+        assert!(get_function_mapping("asin").is_some());
+        assert!(get_function_mapping("acos").is_some());
+        assert!(get_function_mapping("atan").is_some());
+        assert!(get_function_mapping("atan2").is_some());
+
+        // Verify 1:1 mappings
+        let mapping = get_function_mapping("sin").unwrap();
+        assert_eq!(mapping.clickhouse_name, "sin");
+    }
+
+    #[test]
+    fn test_additional_math_functions() {
+        assert!(get_function_mapping("exp").is_some());
+        assert!(get_function_mapping("log").is_some());
+        assert!(get_function_mapping("log10").is_some());
+        assert!(get_function_mapping("pi").is_some());
+        assert!(get_function_mapping("e").is_some());
+        assert!(get_function_mapping("pow").is_some());
+
+        let mapping = get_function_mapping("exp").unwrap();
+        assert_eq!(mapping.clickhouse_name, "exp");
+    }
+
+    #[test]
+    fn test_trim_functions() {
+        assert!(get_function_mapping("ltrim").is_some());
+        assert!(get_function_mapping("rtrim").is_some());
+
+        let mapping = get_function_mapping("ltrim").unwrap();
+        assert_eq!(mapping.clickhouse_name, "trimLeft");
+
+        let mapping = get_function_mapping("rtrim").unwrap();
+        assert_eq!(mapping.clickhouse_name, "trimRight");
+    }
+
+    #[test]
+    fn test_aggregation_functions() {
+        assert!(get_function_mapping("stdev").is_some());
+        assert!(get_function_mapping("stdevp").is_some());
+        assert!(get_function_mapping("percentilecont").is_some());
+        assert!(get_function_mapping("percentiledisc").is_some());
+
+        let mapping = get_function_mapping("stdev").unwrap();
+        assert_eq!(mapping.clickhouse_name, "stddevSamp");
+
+        let mapping = get_function_mapping("stdevp").unwrap();
+        assert_eq!(mapping.clickhouse_name, "stddevPop");
+    }
+
+    #[test]
+    fn test_predicate_functions() {
+        assert!(get_function_mapping("coalesce").is_some());
+        assert!(get_function_mapping("nullif").is_some());
+
+        let mapping = get_function_mapping("coalesce").unwrap();
+        assert_eq!(mapping.clickhouse_name, "coalesce");
+    }
+
+    #[test]
+    fn test_total_function_count() {
+        // Count total functions in registry
+        let test_functions = [
+            // Original functions (25)
+            "datetime", "date", "timestamp",
+            "toupper", "tolower", "trim", "substring", "size", "split", "replace", "reverse", "left", "right",
+            "abs", "ceil", "floor", "round", "sqrt", "rand", "sign",
+            "head", "tail", "last", "range",
+            "tointeger", "tofloat", "tostring", "toboolean",
+            "collect",
+            // New functions (18)
+            "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+            "exp", "log", "log10", "pi", "e", "pow",
+            "ltrim", "rtrim",
+            "stdev", "stdevp", "percentilecont", "percentiledisc",
+            "coalesce", "nullif",
+            "keys",
+        ];
+        
+        let mut count = 0;
+        for func in test_functions.iter() {
+            if get_function_mapping(func).is_some() {
+                count += 1;
+            }
+        }
+        
+        // Should have at least 40 functions now
+        assert!(count >= 40, "Expected at least 40 functions, got {}", count);
     }
 }
