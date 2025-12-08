@@ -156,6 +156,34 @@ MATCH (a)-[e]->(b) RETURN a, b
 MATCH (a)-->(b) RETURN a, b
 ```
 
+### Smart Type Inference (v0.5.4+)
+
+Anonymous patterns can automatically infer types in many scenarios:
+
+**Node Inference:**
+```cypher
+-- Single-schema inference: MATCH (n) infers type when only one node type exists
+MATCH (n) RETURN n.name
+
+-- Label inference from edges: unlabeled nodes get labels from relationship schema
+MATCH ()-[r:FLIGHT]->()  -- Infers (Airport)-[r:FLIGHT]->(Airport)
+RETURN r
+```
+
+**Edge Inference:**
+```cypher
+-- Single-relationship inference: infers type when only one edge type defined
+MATCH (a:User)-[r]->(b:User) RETURN type(r)  -- Infers r:FOLLOWS if only FOLLOWS exists
+
+-- Node-type inference: finds matching relationships for typed nodes
+MATCH (a:Airport)-[r]->() RETURN type(r)  -- Infers r:FLIGHT based on Airport node
+```
+
+**Safety Limits:**
+- Maximum 4 types can be inferred automatically
+- More types require explicit specification
+- Ambiguous patterns generate helpful error messages
+
 **Multiple Edge Types:**
 ```cypher
 -- Match either FOLLOWS or FRIENDS_WITH
@@ -498,6 +526,28 @@ WITH u ORDER BY u.follower_count DESC LIMIT 10
 MATCH (u)-[:POSTED]->(p:Post)
 RETURN u.name, count(p) AS post_count
 ```
+
+### Cross-Table Correlation (v0.5.4+)
+
+Use WITH to correlate data across different tables:
+
+```cypher
+-- Correlate DNS requests with network connections (Zeek log analysis)
+MATCH (ip1:IP)-[:DNS_REQUESTED]->(d:Domain)
+WITH ip1, d
+MATCH (ip2:IP)-[:CONNECTED_TO]->(dest:IP)
+WHERE ip1.ip = ip2.ip
+RETURN ip1.ip, d.name AS domain, dest.ip AS destination
+
+-- Cross-table correlation with shared node variables
+MATCH (src:IP)-[:DNS_REQUESTED]->(d:Domain), (src)-[:CONNECTED_TO]->(dest:IP)
+RETURN src.ip, d.name, dest.ip
+```
+
+**Key Points**:
+- The WHERE clause creates the JOIN condition between tables
+- Works with denormalized edge schemas
+- Generates efficient INNER JOINs in the SQL
 
 ---
 

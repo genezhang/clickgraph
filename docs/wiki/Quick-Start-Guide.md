@@ -206,7 +206,7 @@ curl http://localhost:8080/health
 {
   "status": "ok",
   "clickhouse": "connected",
-  "version": "0.4.0"
+  "version": "0.5.4"
 }
 ```
 

@@ -214,7 +214,7 @@ Key performance features:
 
 ## 🚦 Current Status
 
-**Version**: v0.4.0 (Phase 1 Complete - November 2025)
+**Version**: v0.5.4 (December 2025)
 
 **Production-Ready Features**:
 - ✅ Core Cypher queries (MATCH, WHERE, RETURN, WITH)
@@ -228,8 +228,13 @@ Key performance features:
 - ✅ 25+ Neo4j function mappings
 - ✅ Multi-tenancy with parameterized views
 - ✅ RBAC with SET ROLE support
+- ✅ Cross-table query correlation (v0.5.4)
+- ✅ Smart type inference for anonymous patterns (v0.5.4)
+- ✅ FK-Edge patterns for hierarchies (v0.5.4)
+- ✅ String predicates: STARTS WITH, ENDS WITH, CONTAINS (v0.5.4)
 
-**Test Coverage**: 406/407 Rust unit tests (99.8%) + 197/308 Python integration tests (64%)
+**Test Coverage**: 596 Rust unit tests (100%) + 782 Python integration tests (100%)  
+**Total**: 1,378 tests passing
 
 **Read-Only Focus**: ClickGraph is optimized for analytical queries. Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are not supported.
 

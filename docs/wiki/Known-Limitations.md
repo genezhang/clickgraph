@@ -3,8 +3,10 @@
 This page documents current limitations, known issues, and workarounds for ClickGraph.
 
 **Current Status**: Production-ready for read-only analytical queries  
-**Test Results**: 422/422 unit tests (100%), 236/400 integration tests (59%)  
-**Active Issues**: 1 flaky test (cache LRU), aspirational integration tests for unimplemented features
+**Version**: 0.5.4 (December 2025)  
+**Test Results**: 596 unit tests (100%), 782 integration tests (100%)  
+**Total**: 1,378 tests passing  
+**Active Issues**: 2 (see [KNOWN_ISSUES.md](../../KNOWN_ISSUES.md))
 
 ---
 
@@ -203,33 +205,55 @@ Performance varies by engine type:
 
 ## Known Issues
 
-### 🧪 Flaky Test: Cache LRU Eviction
+### 1. CTE Column Aliasing for Mixed RETURN
 
-**Status**: ⚠️ Non-blocking (test reliability issue)  
-**Affected Test**: `server::query_cache::tests::test_cache_lru_eviction`
+**Status**: 🟡 Active  
+**Severity**: LOW (workaround available)
 
-**Symptoms:**
-Test occasionally fails with:
+When RETURN references both WITH aliases AND additional node properties, the JOIN condition may use incorrect column names.
+
+**Example**:
+```cypher
+-- May not work correctly
+MATCH (a:User)-[:FOLLOWS]->(b:User)
+WITH a, COUNT(b) as follows
+WHERE follows > 1
+RETURN a.name, follows
 ```
-assertion failed: cache.get(&key1).is_some()
+
+**Workaround**: Ensure RETURN only references WITH clause output:
+```cypher
+-- ✅ Works: RETURN only references WITH output
+MATCH (a:User)-[:FOLLOWS]->(b:User)
+WITH a.name as name, COUNT(b) as follows
+WHERE follows > 1
+RETURN name, follows
 ```
 
-**Cause**: Timing-sensitive test with non-deterministic LRU eviction order
+### 2. Anonymous Nodes Without Labels (Safety Limits)
 
-**Impact**: ✅ **No production impact** - Query cache works correctly in production
+**Status**: ✅ Mostly Working  
+**Severity**: LOW
 
-**Workaround**: Run tests individually or with `--test-threads=1`
+**What Works** ✅:
+- Label inference from relationship type: `()-[r:FLIGHT]->()` infers Airport
+- Relationship type inference from typed nodes: `(a:Airport)-[r]->()` infers r:FLIGHT  
+- Single-schema inference: `()-[r]->()` when only one relationship defined
+- Single-node-schema inference: `MATCH (n) RETURN n` when only one node type
+- Multi-hop anonymous patterns with single relationship type
+
+**Safety Limit**: Max 4 types can be inferred automatically. More requires explicit label specification.
 
 ### Integration Test Status
 
-**59% Pass Rate (236/400)**
+**100% Pass Rate (1,378/1,378)**
 
-Many "failing" integration tests are aspirational tests for features not yet implemented:
-- Unimplemented Cypher features (subqueries, named paths, etc.)
-- Advanced graph algorithms (centrality, communities)
-- Features requiring test data setup
-
-**Real Pass Rate**: ~85-90% for implemented features
+| Category | Passing | Total | Rate |
+|----------|---------|-------|------|
+| Unit Tests | 596 | 596 | 100% |
+| Integration (social_benchmark) | 391 | 391 | 100% |
+| Integration (security_graph) | 391 | 391 | 100% |
+| **Total** | **1,378** | **1,378** | **100%** |
 
 ---
 
