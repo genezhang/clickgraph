@@ -94,18 +94,22 @@ ClickGraph is designed for **analytical queries** over existing ClickHouse data,
 - ✅ Simple CASE: `CASE WHEN ... THEN ... END`
 - ⚠️ May have edge cases in complex GROUP BY scenarios
 
+### ✅ Recently Implemented (v0.5.3-v0.5.4)
+
+- ✅ Path variables: `p = (a)-[:TYPE*]->(b)` with `nodes(p)`, `relationships(p)`, `length(p)`
+- ✅ `UNION`, `UNION ALL` between queries
+- ✅ `EXISTS { MATCH ... }` pattern predicates
+- ✅ Cross-table query correlation with WITH...MATCH
+- ✅ Smart type inference for anonymous patterns
+- ✅ FK-Edge patterns for hierarchical data
+
 ### ❌ Not Yet Implemented
 
 **Advanced Patterns:**
-- ❌ Named paths: `p = (a)-[:TYPE*]->(b)` (basic path variables work, named paths in progress)
 - ❌ Relationship property constraints in patterns: `()-[r {since: 2020}]->()`
-
-**Set Operations:**
-- ❌ `UNION`, `UNION ALL` between queries (UNION ALL used internally for multi-type relationships)
 
 **Subqueries:**
 - ❌ `CALL { ... }` subqueries
-- ❌ `EXISTS { ... }` patterns
 
 **Additional Functions:**
 - ❌ Date/time functions (use ClickHouse functions directly)
