@@ -11,7 +11,7 @@ use handlers::{
 };
 use sql_generation_handler::sql_generation_handler;
 
-use dotenv::dotenv;
+use dotenvy::dotenv;
 use tokio::net::TcpListener;
 #[cfg(windows)]
 use tokio::signal;
