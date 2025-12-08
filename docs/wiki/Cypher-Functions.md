@@ -1091,9 +1091,9 @@ RETURN u.name,
        ch.arraySum(collect(p.price)) AS total_spent
 ```
 
-### Supported Function Categories
+### Supported Scalar Function Categories
 
-The `ch.` prefix works with all ClickHouse function categories:
+The `ch.` prefix works with all ClickHouse scalar (row-level) function categories:
 
 | Category | Examples |
 |----------|----------|
@@ -1107,6 +1107,8 @@ The `ch.` prefix works with all ClickHouse function categories:
 | **Array** | `arrayStringConcat`, `arraySum`, `arrayDistinct` |
 | **Math** | `intDiv`, `intDivOrZero`, `modulo`, `gcd`, `lcm` |
 | **Type** | `reinterpret*`, `accurateCast`, `toTypeName` |
+
+> **Note**: Aggregate functions (like `ch.uniq`, `ch.quantile`, etc.) are documented separately below and automatically trigger GROUP BY generation.
 
 ### ClickHouse Aggregate Functions (ch.*)
 
