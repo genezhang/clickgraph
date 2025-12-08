@@ -185,6 +185,50 @@ Suggested split:
 
 ---
 
+## 🧠 Vector Search / GraphRAG Architecture (Future)
+
+**Research Finding (Dec 7, 2025)**: ClickHouse has NO built-in embedding generation.
+
+### What ClickHouse Provides
+- ✅ Vector storage: `Array(Float32)` columns
+- ✅ Distance functions: `cosineDistance()`, `L2Distance()`, `dotProduct()`
+- ✅ Approximate search: HNSW indexes (`vector_similarity` index type)
+- ❌ NO embedding generation (no `encode()` or similar)
+
+### Architecture Decision: Deferred Plugin Approach
+
+**Embedding generation must be external:**
+```
+Client App                    ClickGraph              ClickHouse
+    │                             │                       │
+    │ Text: "find similar..."     │                       │
+    │ ───────────────────────────>│                       │
+    │                             │                       │
+    │ [Plugin: OpenAI/Cohere/etc] │                       │
+    │ ←── embedding vector ───────│                       │
+    │                             │                       │
+    │ MATCH (n) WHERE             │ SELECT ... ORDER BY   │
+    │ cosine(n.embedding, $vec)   │ cosineDistance(...)   │
+    │ ───────────────────────────>│ ─────────────────────>│
+```
+
+**What ClickGraph Can Do Now (v0.5.5/v0.6.0)**:
+- Map `gds.similarity.cosine()` → `1 - cosineDistance(a, b)`
+- Map `gds.similarity.euclidean()` → `L2Distance(a, b)`
+- Support `ORDER BY ... LIMIT k` for top-k similarity
+
+**What Requires Plugin (v0.8.0+)**:
+- Text-to-embedding conversion (OpenAI, Cohere, local models)
+- Automatic embedding on INSERT (write support needed)
+- Hybrid search (vector + graph traversal)
+
+**Decision**: Defer embedding plugin to v0.8.0. Focus on:
+1. Distance function mappings (easy, v0.5.5)
+2. GraphRAG query patterns (v0.7.0)
+3. Embedding service integration (v0.8.0)
+
+---
+
 ## 📝 Decision Needed
 
 **Question**: For v0.6.0, which approach?

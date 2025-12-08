@@ -1101,13 +1101,13 @@ fn traverse_connected_pattern<'a>(
     connected_patterns: &Vec<ast::ConnectedPattern<'a>>,
     plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
-    path_pattern_idx: usize,
+    pathpattern_idx: usize,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
     traverse_connected_pattern_with_mode(
         connected_patterns,
         plan,
         plan_ctx,
-        path_pattern_idx,
+        pathpattern_idx,
         None,
         None,
         false,
@@ -1118,7 +1118,7 @@ fn traverse_connected_pattern_with_mode<'a>(
     connected_patterns: &Vec<ast::ConnectedPattern<'a>>,
     mut plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
-    path_pattern_idx: usize,
+    pathpattern_idx: usize,
     shortest_path_mode: Option<ShortestPathMode>,
     path_variable: Option<&str>,
     is_optional: bool,
@@ -1168,8 +1168,8 @@ fn traverse_connected_pattern_with_mode<'a>(
     
     crate::debug_print!("║ Pre-assigned {} node aliases for shared node detection", node_alias_map.len());
 
-    for (_pattern_idx, connected_pattern) in connected_patterns.iter().enumerate() {
-        crate::debug_print!("┌─ Processing connected_pattern #{}", _pattern_idx);
+    for (pattern_idx, connected_pattern) in connected_patterns.iter().enumerate() {
+        crate::debug_print!("┌─ Processing connected_pattern #{}", pattern_idx);
 
         let start_node_ref = connected_pattern.start_node.borrow();
         let start_node_label = start_node_ref.label.map(|val| val.to_string());
@@ -1586,7 +1586,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         // not connected with existing nodes
         else {
             // if two comma separated patterns found and they are not connected to each other i.e. there is no common node alias between them then throw error.
-            if path_pattern_idx > 0 {
+            if pathpattern_idx > 0 {
                 // throw error
                 return Err(LogicalPlanError::DisconnectedPatternFound);
             }
@@ -2349,7 +2349,7 @@ mod tests {
 
         let connected_patterns = vec![connected_pattern];
 
-        // Pass path_pattern_idx > 0 to simulate second pattern that's disconnected
+        // Pass pathpattern_idx > 0 to simulate second pattern that's disconnected
         let result =
             traverse_connected_pattern(&connected_patterns, initial_plan, &mut plan_ctx, 1);
 

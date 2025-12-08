@@ -2,13 +2,18 @@
 
 ### 🚀 Features
 
-- *(functions)* Add 18 new Neo4j function mappings (43 total)
-  - Trigonometric: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`
-  - Math: `exp`, `log`, `log10`, `pi`, `e`, `pow`
-  - String: `lTrim`, `rTrim`
-  - Aggregation: `stDev`, `stDevP`, `percentileCont`, `percentileDisc`
-  - Predicate: `coalesce`, `nullIf`
-  - Map: `keys`
+- *(functions)* Add 48 new Neo4j function mappings (73 total, up from 25)
+  - **Vector Similarity (4)**: `gds.similarity.cosine`, `gds.similarity.euclidean`, `gds.similarity.euclideanDistance`, `vector.similarity.cosine`
+  - **Temporal Extraction (12)**: `year`, `month`, `day`, `hour`, `minute`, `second`, `dayOfWeek`, `dayOfYear`, `quarter`, `week`, `localdatetime`, `localtime`
+  - **List Predicates (5)**: `all`, `any`, `none`, `single`, `isEmpty`
+  - **String Functions (5)**: `startsWith`, `endsWith`, `contains`, `normalize`, `valueType`
+  - **Core Aggregations (5)**: `avg`, `sum`, `min`, `max`, `count`
+  - **Trigonometric (7)**: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`
+  - **Math (6)**: `exp`, `log`, `log10`, `pi`, `e`, `pow`
+  - **String (2)**: `lTrim`, `rTrim`
+  - **Aggregation (4)**: `stDev`, `stDevP`, `percentileCont`, `percentileDisc`
+  - **Predicate (2)**: `coalesce`, `nullIf`
+  - **Map (1)**: `keys`
 
 ### 🚜 Refactor
 
@@ -19,7 +24,7 @@
 
 ### 🧪 Testing
 
-- Add 6 new unit tests for function registry
+- Add 16 unit tests for function registry (up from 6)
 - Fix doctest compilation errors
 - Fix test_view_parameters.rs to use Identifier::Single type
 

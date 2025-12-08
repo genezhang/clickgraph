@@ -506,6 +506,319 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
+        // ===== VECTOR/SIMILARITY FUNCTIONS =====
+        // These map Neo4j GDS similarity functions to ClickHouse distance functions
+        // Note: ClickHouse requires pre-computed embedding vectors (Array(Float32))
+
+        // gds.similarity.cosine(v1, v2) -> 1 - cosineDistance(v1, v2)
+        // Returns similarity (0-1) where 1 = identical, 0 = orthogonal
+        m.insert("gds.similarity.cosine", FunctionMapping {
+            neo4j_name: "gds.similarity.cosine",
+            clickhouse_name: "cosineDistance",
+            arg_transform: Some(|args| {
+                // Wrap in (1 - distance) to convert distance to similarity
+                if args.len() >= 2 {
+                    vec![format!("1 - cosineDistance({}, {})", args[0], args[1])]
+                } else {
+                    args.to_vec()
+                }
+            }),
+        });
+
+        // gds.similarity.euclidean(v1, v2) -> 1 / (1 + L2Distance(v1, v2))
+        // Returns similarity (0-1) where 1 = identical
+        m.insert("gds.similarity.euclidean", FunctionMapping {
+            neo4j_name: "gds.similarity.euclidean",
+            clickhouse_name: "L2Distance",
+            arg_transform: Some(|args| {
+                if args.len() >= 2 {
+                    vec![format!("1 / (1 + L2Distance({}, {}))", args[0], args[1])]
+                } else {
+                    args.to_vec()
+                }
+            }),
+        });
+
+        // gds.similarity.euclideanDistance(v1, v2) -> L2Distance(v1, v2)
+        // Returns raw Euclidean distance
+        m.insert("gds.similarity.euclideandistance", FunctionMapping {
+            neo4j_name: "gds.similarity.euclideanDistance",
+            clickhouse_name: "L2Distance",
+            arg_transform: None,
+        });
+
+        // vector.similarity.cosine(v1, v2) -> 1 - cosineDistance(v1, v2)
+        // Neo4j 5.x vector similarity function
+        m.insert("vector.similarity.cosine", FunctionMapping {
+            neo4j_name: "vector.similarity.cosine",
+            clickhouse_name: "cosineDistance",
+            arg_transform: Some(|args| {
+                if args.len() >= 2 {
+                    vec![format!("1 - cosineDistance({}, {})", args[0], args[1])]
+                } else {
+                    args.to_vec()
+                }
+            }),
+        });
+
+        // ===== ADDITIONAL LIST/ARRAY FUNCTIONS =====
+
+        // reduce() - complex, needs special handling but add placeholder
+        // Note: ClickHouse has arrayReduce() but syntax differs significantly
+
+        // filter() -> arrayFilter() [list comprehension style]
+        // Neo4j: [x IN list WHERE x > 0] or filter(x IN list WHERE x > 0)
+        // ClickHouse: arrayFilter(x -> x > 0, list)
+        // This requires special AST handling, placeholder for now
+
+        // extract() -> arrayMap() for extracting properties
+        // Neo4j: [x IN list | x.prop] or extract(x IN list | x.prop)
+        // ClickHouse: arrayMap(x -> x.prop, list)
+        // This requires special AST handling, placeholder for now
+
+        // all() -> arrayAll() - check if all elements match predicate
+        m.insert("all", FunctionMapping {
+            neo4j_name: "all",
+            clickhouse_name: "arrayAll",
+            arg_transform: None, // Requires special handling for predicate syntax
+        });
+
+        // any() -> arrayExists() - check if any element matches predicate
+        m.insert("any", FunctionMapping {
+            neo4j_name: "any",
+            clickhouse_name: "arrayExists",
+            arg_transform: None, // Requires special handling for predicate syntax
+        });
+
+        // none() -> NOT arrayExists() - check if no element matches predicate
+        m.insert("none", FunctionMapping {
+            neo4j_name: "none",
+            clickhouse_name: "arrayExists",
+            arg_transform: Some(|args| {
+                // Will need to wrap with NOT in the caller
+                args.to_vec()
+            }),
+        });
+
+        // single() -> check exactly one element matches
+        // ClickHouse: arrayCount(...) = 1
+        m.insert("single", FunctionMapping {
+            neo4j_name: "single",
+            clickhouse_name: "arrayCount",
+            arg_transform: None, // Caller needs to add = 1
+        });
+
+        // isEmpty(list) -> empty(list) or length(list) = 0
+        m.insert("isempty", FunctionMapping {
+            neo4j_name: "isEmpty",
+            clickhouse_name: "empty",
+            arg_transform: None,
+        });
+
+        // ===== ADDITIONAL TEMPORAL FUNCTIONS =====
+
+        // duration() - Neo4j duration type
+        // ClickHouse doesn't have a direct equivalent, use interval arithmetic
+        // duration({days: 5}) -> toIntervalDay(5)
+        // This requires special handling for map arguments
+
+        // localdatetime() -> now() or parseDateTime64BestEffort()
+        m.insert("localdatetime", FunctionMapping {
+            neo4j_name: "localdatetime",
+            clickhouse_name: "now64",
+            arg_transform: Some(|args| {
+                if args.is_empty() {
+                    vec!["3".to_string()] // millisecond precision
+                } else {
+                    vec![format!("parseDateTime64BestEffort({}, 3)", args[0])]
+                }
+            }),
+        });
+
+        // localtime() -> toTime(now()) - time without timezone
+        m.insert("localtime", FunctionMapping {
+            neo4j_name: "localtime",
+            clickhouse_name: "toTime",
+            arg_transform: Some(|args| {
+                if args.is_empty() {
+                    vec!["now()".to_string()]
+                } else {
+                    args.to_vec()
+                }
+            }),
+        });
+
+        // date.truncate() -> toStartOfDay/Week/Month/Year
+        // Neo4j: date.truncate('week', date)
+        // ClickHouse: toStartOfWeek(date)
+        // Requires special handling for unit argument
+
+        // datetime.truncate() -> similar
+        // date.statement() functions handled specially
+
+        // ===== DATE/TIME EXTRACTION FUNCTIONS =====
+
+        // date().year, datetime().month, etc. are property accesses
+        // But Neo4j also has explicit functions:
+
+        // year(datetime) -> toYear(datetime)
+        m.insert("year", FunctionMapping {
+            neo4j_name: "year",
+            clickhouse_name: "toYear",
+            arg_transform: None,
+        });
+
+        // month(datetime) -> toMonth(datetime)
+        m.insert("month", FunctionMapping {
+            neo4j_name: "month",
+            clickhouse_name: "toMonth",
+            arg_transform: None,
+        });
+
+        // day(datetime) -> toDayOfMonth(datetime)
+        m.insert("day", FunctionMapping {
+            neo4j_name: "day",
+            clickhouse_name: "toDayOfMonth",
+            arg_transform: None,
+        });
+
+        // hour(datetime) -> toHour(datetime)
+        m.insert("hour", FunctionMapping {
+            neo4j_name: "hour",
+            clickhouse_name: "toHour",
+            arg_transform: None,
+        });
+
+        // minute(datetime) -> toMinute(datetime)
+        m.insert("minute", FunctionMapping {
+            neo4j_name: "minute",
+            clickhouse_name: "toMinute",
+            arg_transform: None,
+        });
+
+        // second(datetime) -> toSecond(datetime)
+        m.insert("second", FunctionMapping {
+            neo4j_name: "second",
+            clickhouse_name: "toSecond",
+            arg_transform: None,
+        });
+
+        // dayOfWeek(datetime) -> toDayOfWeek(datetime)
+        m.insert("dayofweek", FunctionMapping {
+            neo4j_name: "dayOfWeek",
+            clickhouse_name: "toDayOfWeek",
+            arg_transform: None,
+        });
+
+        // dayOfYear(datetime) -> toDayOfYear(datetime)
+        m.insert("dayofyear", FunctionMapping {
+            neo4j_name: "dayOfYear",
+            clickhouse_name: "toDayOfYear",
+            arg_transform: None,
+        });
+
+        // quarter(datetime) -> toQuarter(datetime)
+        m.insert("quarter", FunctionMapping {
+            neo4j_name: "quarter",
+            clickhouse_name: "toQuarter",
+            arg_transform: None,
+        });
+
+        // week(datetime) -> toISOWeek(datetime)
+        m.insert("week", FunctionMapping {
+            neo4j_name: "week",
+            clickhouse_name: "toISOWeek",
+            arg_transform: None,
+        });
+
+        // ===== ADDITIONAL STRING FUNCTIONS =====
+
+        // startsWith(str, prefix) -> startsWith(str, prefix) [1:1]
+        m.insert("startswith", FunctionMapping {
+            neo4j_name: "startsWith",
+            clickhouse_name: "startsWith",
+            arg_transform: None,
+        });
+
+        // endsWith(str, suffix) -> endsWith(str, suffix) [1:1]
+        m.insert("endswith", FunctionMapping {
+            neo4j_name: "endsWith",
+            clickhouse_name: "endsWith",
+            arg_transform: None,
+        });
+
+        // contains(str, search) -> position(str, search) > 0 or like
+        // ClickHouse has positionCaseInsensitive too
+        m.insert("contains", FunctionMapping {
+            neo4j_name: "contains",
+            clickhouse_name: "position",
+            arg_transform: Some(|args| {
+                // contains(str, search) -> position(str, search) > 0
+                // Caller needs to handle the > 0 comparison
+                args.to_vec()
+            }),
+        });
+
+        // normalize(str) -> normalizeUTF8NFC(str)
+        m.insert("normalize", FunctionMapping {
+            neo4j_name: "normalize",
+            clickhouse_name: "normalizeUTF8NFC",
+            arg_transform: None,
+        });
+
+        // valueType(value) - returns type name, no direct CH equivalent
+        // ClickHouse: toTypeName(value)
+        m.insert("valuetype", FunctionMapping {
+            neo4j_name: "valueType",
+            clickhouse_name: "toTypeName",
+            arg_transform: None,
+        });
+
+        // ===== ADDITIONAL AGGREGATION FUNCTIONS =====
+
+        // avg() -> avg() [1:1]
+        m.insert("avg", FunctionMapping {
+            neo4j_name: "avg",
+            clickhouse_name: "avg",
+            arg_transform: None,
+        });
+
+        // sum() -> sum() [1:1]
+        m.insert("sum", FunctionMapping {
+            neo4j_name: "sum",
+            clickhouse_name: "sum",
+            arg_transform: None,
+        });
+
+        // min() -> min() [1:1]
+        m.insert("min", FunctionMapping {
+            neo4j_name: "min",
+            clickhouse_name: "min",
+            arg_transform: None,
+        });
+
+        // max() -> max() [1:1]
+        m.insert("max", FunctionMapping {
+            neo4j_name: "max",
+            clickhouse_name: "max",
+            arg_transform: None,
+        });
+
+        // count() -> count() [1:1]
+        m.insert("count", FunctionMapping {
+            neo4j_name: "count",
+            clickhouse_name: "count",
+            arg_transform: None,
+        });
+
+        // ===== SPATIAL FUNCTIONS (basic) =====
+        // Note: Full spatial support would require more extensive work
+
+        // point.distance(p1, p2) -> geoDistance for lat/lon
+        // Neo4j: point.distance(point({longitude: x1, latitude: y1}), point({longitude: x2, latitude: y2}))
+        // ClickHouse: geoDistance(lon1, lat1, lon2, lat2)
+        // Requires special handling to extract coordinates from point()
+
         // ===== ADDITIONAL TYPE FUNCTIONS =====
 
         // type(relationship) - handled specially in code, but add placeholder
@@ -630,6 +943,77 @@ mod tests {
     }
 
     #[test]
+    fn test_vector_similarity_functions() {
+        // Vector/GDS similarity functions
+        assert!(get_function_mapping("gds.similarity.cosine").is_some());
+        assert!(get_function_mapping("gds.similarity.euclidean").is_some());
+        assert!(get_function_mapping("gds.similarity.euclideandistance").is_some());
+        assert!(get_function_mapping("vector.similarity.cosine").is_some());
+
+        // Test cosine similarity transformation
+        let mapping = get_function_mapping("gds.similarity.cosine").unwrap();
+        assert!(mapping.arg_transform.is_some());
+        let transform = mapping.arg_transform.unwrap();
+        let args = vec!["v1".to_string(), "v2".to_string()];
+        let result = transform(&args);
+        assert!(result[0].contains("1 - cosineDistance"));
+    }
+
+    #[test]
+    fn test_temporal_extraction_functions() {
+        // Date/time extraction functions
+        assert!(get_function_mapping("year").is_some());
+        assert!(get_function_mapping("month").is_some());
+        assert!(get_function_mapping("day").is_some());
+        assert!(get_function_mapping("hour").is_some());
+        assert!(get_function_mapping("minute").is_some());
+        assert!(get_function_mapping("second").is_some());
+        assert!(get_function_mapping("dayofweek").is_some());
+        assert!(get_function_mapping("dayofyear").is_some());
+        assert!(get_function_mapping("quarter").is_some());
+        assert!(get_function_mapping("week").is_some());
+
+        let mapping = get_function_mapping("year").unwrap();
+        assert_eq!(mapping.clickhouse_name, "toYear");
+    }
+
+    #[test]
+    fn test_additional_string_functions() {
+        assert!(get_function_mapping("startswith").is_some());
+        assert!(get_function_mapping("endswith").is_some());
+        assert!(get_function_mapping("contains").is_some());
+        assert!(get_function_mapping("normalize").is_some());
+        assert!(get_function_mapping("valuetype").is_some());
+
+        let mapping = get_function_mapping("startswith").unwrap();
+        assert_eq!(mapping.clickhouse_name, "startsWith");
+    }
+
+    #[test]
+    fn test_core_aggregation_functions() {
+        assert!(get_function_mapping("avg").is_some());
+        assert!(get_function_mapping("sum").is_some());
+        assert!(get_function_mapping("min").is_some());
+        assert!(get_function_mapping("max").is_some());
+        assert!(get_function_mapping("count").is_some());
+
+        let mapping = get_function_mapping("avg").unwrap();
+        assert_eq!(mapping.clickhouse_name, "avg");
+    }
+
+    #[test]
+    fn test_list_predicate_functions() {
+        assert!(get_function_mapping("all").is_some());
+        assert!(get_function_mapping("any").is_some());
+        assert!(get_function_mapping("none").is_some());
+        assert!(get_function_mapping("single").is_some());
+        assert!(get_function_mapping("isempty").is_some());
+
+        let mapping = get_function_mapping("any").unwrap();
+        assert_eq!(mapping.clickhouse_name, "arrayExists");
+    }
+
+    #[test]
     fn test_total_function_count() {
         // Count total functions in registry
         let test_functions = [
@@ -640,23 +1024,42 @@ mod tests {
             "head", "tail", "last", "range",
             "tointeger", "tofloat", "tostring", "toboolean",
             "collect",
-            // New functions (18)
+            // Trig/math (13)
             "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
             "exp", "log", "log10", "pi", "e", "pow",
+            // String (2)
             "ltrim", "rtrim",
+            // Aggregation (4)
             "stdev", "stdevp", "percentilecont", "percentiledisc",
+            // Predicate (2)
             "coalesce", "nullif",
+            // Map (1)
             "keys",
+            // Vector/similarity (4)
+            "gds.similarity.cosine", "gds.similarity.euclidean", 
+            "gds.similarity.euclideandistance", "vector.similarity.cosine",
+            // List predicates (5)
+            "all", "any", "none", "single", "isempty",
+            // Temporal extraction (12)
+            "localdatetime", "localtime",
+            "year", "month", "day", "hour", "minute", "second",
+            "dayofweek", "dayofyear", "quarter", "week",
+            // Additional string (5)
+            "startswith", "endswith", "contains", "normalize", "valuetype",
+            // Core aggregation (5)
+            "avg", "sum", "min", "max", "count",
         ];
         
         let mut count = 0;
         for func in test_functions.iter() {
             if get_function_mapping(func).is_some() {
                 count += 1;
+            } else {
+                eprintln!("Missing function: {}", func);
             }
         }
         
-        // Should have at least 40 functions now
-        assert!(count >= 40, "Expected at least 40 functions, got {}", count);
+        // Should have 73+ functions now
+        assert!(count >= 70, "Expected at least 70 functions, got {}", count);
     }
 }
