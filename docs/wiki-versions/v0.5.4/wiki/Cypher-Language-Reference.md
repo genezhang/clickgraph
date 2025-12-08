@@ -15,6 +15,7 @@ Complete syntax reference for Cypher queries supported by ClickGraph.
 - [WHERE Clause](#where-clause)
 - [RETURN Clause](#return-clause)
 - [WITH Clause](#with-clause)
+- [UNWIND Clause](#unwind-clause)
 - [ORDER BY, LIMIT, SKIP](#order-by-limit-skip)
 - [Aggregation Functions](#aggregation-functions)
 - [Path Expressions](#path-expressions)
@@ -549,6 +550,39 @@ RETURN src.ip, d.name, dest.ip
 - The WHERE clause creates the JOIN condition between tables
 - Works with denormalized edge schemas
 - Generates efficient INNER JOINs in the SQL
+
+---
+
+## UNWIND Clause
+
+Expand a list into individual rows. Particularly useful with array columns in denormalized tables.
+
+### Basic Syntax
+
+```cypher
+UNWIND list AS item
+RETURN item
+```
+
+### With Path Functions
+
+```cypher
+-- Expand nodes from a path
+MATCH p = (a:User)-[:FOLLOWS*1..3]->(b:User)
+UNWIND nodes(p) AS node
+RETURN DISTINCT node.name
+```
+
+### With Array Columns (Denormalized Tables)
+
+```cypher
+-- Flatten array column from denormalized edge table
+MATCH (q:Query)-[rip:RESOLVED_IP]->(d:Domain)
+UNWIND rip.ips AS resolved_ip
+RETURN q.query, d.name, resolved_ip
+```
+
+**Note**: UNWIND on array columns generates ClickHouse `ARRAY JOIN` for optimal performance.
 
 ---
 

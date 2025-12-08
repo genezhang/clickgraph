@@ -233,6 +233,7 @@ Key performance features:
 - ✅ Smart type inference for anonymous patterns (v0.5.4)
 - ✅ FK-Edge patterns for hierarchies (v0.5.4)
 - ✅ String predicates: STARTS WITH, ENDS WITH, CONTAINS (v0.5.4)
+- ✅ UNWIND for array expansion (v0.5.2+)
 
 **Test Coverage**: 596 Rust unit tests (100%) + 782 Python integration tests (100%)  
 **Total**: 1,378 tests passing
