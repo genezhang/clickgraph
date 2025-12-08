@@ -51,7 +51,7 @@ fn transform_bidirectional(
             let undirected_count = count_undirected_edges(plan);
             
             if undirected_count > 0 {
-                eprintln!(
+                crate::debug_print!(
                     "🔄 BidirectionalUnion: Found {} undirected edge(s) in path, generating {} UNION branches",
                     undirected_count,
                     1 << undirected_count  // 2^n
@@ -71,7 +71,7 @@ fn transform_bidirectional(
                     union_type: UnionType::All,
                 };
                 
-                eprintln!(
+                crate::debug_print!(
                     "🔄 BidirectionalUnion: Created UNION ALL with {} branches for multi-hop pattern",
                     union.inputs.len()
                 );
@@ -116,7 +116,7 @@ fn transform_bidirectional(
             let undirected_count = count_undirected_edges(&proj.input);
             
             if undirected_count > 0 {
-                eprintln!(
+                crate::debug_print!(
                     "🔄 BidirectionalUnion: Found {} undirected edge(s) in Projection input, generating {} UNION branches",
                     undirected_count,
                     1 << undirected_count
@@ -135,7 +135,7 @@ fn transform_bidirectional(
                     union_type: UnionType::All,
                 };
                 
-                eprintln!(
+                crate::debug_print!(
                     "🔄 BidirectionalUnion: Created UNION ALL with {} branches (with column swaps)",
                     union.inputs.len()
                 );
@@ -482,7 +482,7 @@ fn wrap_with_uniqueness_filter(plan: Arc<LogicalPlan>, graph_schema: &GraphSchem
     let rels = collect_relationship_info(&plan, graph_schema);
     
     if let Some(filter_expr) = generate_relationship_uniqueness_filter(&rels) {
-        eprintln!(
+        crate::debug_print!(
             "🔒 BidirectionalUnion: Adding relationship uniqueness filter for {} relationships (edge_id_cols: {:?})",
             rels.len(),
             rels.iter().map(|r| &r.edge_id_cols).collect::<Vec<_>>()

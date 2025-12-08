@@ -727,7 +727,7 @@ impl PatternSchemaContext {
         left_node_schema: &NodeSchema,
         right_node_schema: &NodeSchema,
         graph_schema: &GraphSchema,
-        rel_alias: &str,
+        _rel_alias: &str,
         rel_types: &[String],
         prev_edge_info: Option<(&str, &str, bool)>,
     ) -> (JoinStrategy, Option<CoupledEdgeContext>) {
@@ -815,7 +815,7 @@ impl PatternSchemaContext {
                 },
                 None,
             ),
-            EdgeTablePattern::Mixed { from_denormalized, to_denormalized } => {
+            EdgeTablePattern::Mixed { from_denormalized, to_denormalized: _ } => {
                 if *from_denormalized {
                     (
                         JoinStrategy::MixedAccess {

@@ -5,7 +5,7 @@ use nom::{
     character::complete::{alphanumeric1, multispace0},
     combinator::{map, not, opt, peek},
     error::{Error, ErrorKind},
-    multi::{separated_list0, separated_list1},
+    multi::separated_list0,
     sequence::{delimited, preceded, separated_pair, terminated},
 };
 

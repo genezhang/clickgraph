@@ -136,7 +136,7 @@ pub struct GraphSchemaDefinition {
     
     /// Edge definitions (new, preferred)
     /// Supports standard and polymorphic edges with composite IDs
-    #[serde(default, alias = "relationships")]
+    #[serde(default)]
     pub edges: Vec<EdgeDefinition>,
 }
 

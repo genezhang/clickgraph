@@ -106,7 +106,7 @@ pub fn evaluate_read_statement(
 
 pub fn evaluate_call_query(
     query_ast: OpenCypherQueryAst,
-    current_graph_schema: &GraphSchema,
+    _current_graph_schema: &GraphSchema,
 ) -> Result<LogicalPlan, QueryPlannerError> {
     if let Some(call_clause) = query_ast.call_clause {
         match call_clause.procedure_name {

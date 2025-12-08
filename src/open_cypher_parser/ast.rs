@@ -310,7 +310,7 @@ impl VariableLengthSpec {
             // Zero is allowed for shortest path self-loops like *0..
             // but we warn about it since it's unusual
             if min == 0 || max == 0 {
-                eprintln!(
+                crate::debug_print!(
                     "Note: Variable-length path with 0 hops matches the same node. \
                      This is typically used with shortest path functions for self-loops."
                 );
@@ -319,7 +319,7 @@ impl VariableLengthSpec {
             // Warn about very large ranges (potential performance issue)
             if max > 100 {
                 // Note: This is just a warning, not an error - we still allow it
-                eprintln!(
+                crate::debug_print!(
                     "Warning: Variable-length path with maximum {} hops may have performance implications. \
                      Consider using a smaller maximum or adding additional WHERE clause filters.",
                     max
@@ -331,7 +331,7 @@ impl VariableLengthSpec {
         // Zero is allowed for shortest path self-loops like *0..
         if let Some(min) = self.min_hops {
             if min == 0 {
-                eprintln!(
+                crate::debug_print!(
                     "Note: Variable-length path with 0 hops matches the same node. \
                      This is typically used with shortest path functions for self-loops."
                 );

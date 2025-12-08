@@ -454,12 +454,12 @@ fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<Variabl
 
     // Validate the parsed specification
     if let Some(ref spec) = spec_opt {
-        if let Err(validation_error) = spec.validate() {
+        if let Err(_validation_error) = spec.validate() {
             // Convert validation error to nom error
             // Note: We use Failure (not Error) to indicate this is a semantic error, not a parsing error
-            eprintln!(
+            crate::debug_print!(
                 "Variable-length path validation error: {}",
-                validation_error
+                _validation_error
             );
             return Err(nom::Err::Failure(Error::new(input, ErrorKind::Verify)));
         }

@@ -166,8 +166,8 @@ ORDER BY pagerank DESC
     /// Generate iterative PageRank calculations for each iteration
     fn generate_iterations_sql(
         &self,
-        node_table: &str,
-        id_column: &str,
+        _node_table: &str,
+        _id_column: &str,
     ) -> Result<String, ClickhouseQueryGeneratorError> {
         let mut iterations = Vec::new();
 

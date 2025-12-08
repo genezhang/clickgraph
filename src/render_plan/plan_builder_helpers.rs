@@ -919,7 +919,7 @@ pub(super) fn rewrite_path_functions_with_table(
                 operands: rewritten_operands,
             })
         }
-        RenderExpr::PropertyAccessExp(prop) => {
+        RenderExpr::PropertyAccessExp(_prop) => {
             // Don't rewrite property access - it's handled separately
             expr.clone()
         }
@@ -2411,7 +2411,6 @@ pub(super) fn extract_predicates_for_alias_logical(
 // These functions assist with extracting JOIN clauses from the logical plan
 // ============================================================================
 
-use crate::query_planner::logical_plan::ViewScan;
 
 /// Extract schema filter from a LogicalPlan for LEFT JOIN pre_filter.
 /// This ensures schema filters are applied BEFORE the LEFT JOIN (correct semantics).

@@ -49,17 +49,17 @@ impl OptimizerPass for CartesianJoinExtraction {
                     let left_aliases = collect_aliases_from_plan(&cp.left);
                     let right_aliases = collect_aliases_from_plan(&cp.right);
                     
-                    eprintln!("CartesianJoinExtraction: left_aliases = {:?}", left_aliases);
-                    eprintln!("CartesianJoinExtraction: right_aliases = {:?}", right_aliases);
+                    crate::debug_print!("CartesianJoinExtraction: left_aliases = {:?}", left_aliases);
+                    crate::debug_print!("CartesianJoinExtraction: right_aliases = {:?}", right_aliases);
                     
                     // Check if the filter predicate references both sides
                     let filter_aliases = collect_aliases_from_expr(&filter.predicate);
-                    eprintln!("CartesianJoinExtraction: filter_aliases = {:?}", filter_aliases);
+                    crate::debug_print!("CartesianJoinExtraction: filter_aliases = {:?}", filter_aliases);
                     
                     let refs_left = filter_aliases.iter().any(|a| left_aliases.contains(a));
                     let refs_right = filter_aliases.iter().any(|a| right_aliases.contains(a));
                     
-                    eprintln!("CartesianJoinExtraction: refs_left={}, refs_right={}", refs_left, refs_right);
+                    crate::debug_print!("CartesianJoinExtraction: refs_left={}, refs_right={}", refs_left, refs_right);
                     
                     if refs_left && refs_right {
                         // This filter bridges both sides - extract it as a join condition
@@ -67,7 +67,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                         let (join_conditions, remaining_filters) = 
                             partition_filter_conditions(&filter.predicate, &left_aliases, &right_aliases);
                         
-                        eprintln!("CartesianJoinExtraction: Extracted {} join conditions, {} remaining filters",
+                        crate::debug_print!("CartesianJoinExtraction: Extracted {} join conditions, {} remaining filters",
                             join_conditions.as_ref().map(|_| 1).unwrap_or(0),
                             remaining_filters.as_ref().map(|_| 1).unwrap_or(0));
                         

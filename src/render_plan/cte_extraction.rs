@@ -1001,7 +1001,7 @@ pub fn extract_ctes_with_context(
             let mut relationship_ctes = vec![];
 
             if let Some(labels) = &graph_rel.labels {
-                eprintln!(
+                crate::debug_print!(
                     "DEBUG cte_extraction: GraphRel labels: {:?} (len={})",
                     labels,
                     labels.len()
@@ -1019,7 +1019,7 @@ pub fn extract_ctes_with_context(
                 if unique_labels.len() > 1 {
                     // Multiple distinct relationship types: create a UNION CTE
                     let rel_tables = rel_types_to_table_names(&unique_labels);
-                    eprintln!(
+                    crate::debug_print!(
                         "DEBUG cte_extraction: Resolved tables for labels {:?}: {:?}",
                         unique_labels, rel_tables
                     );
@@ -1972,7 +1972,7 @@ pub fn get_node_schema_by_table<'a>(
 /// Vector of JOIN items to be added to the FROM clause
 pub fn expand_fixed_length_joins(
     exact_hops: u32,
-    start_table: &str,
+    _start_table: &str,
     start_id_col: &str,
     rel_table: &str,
     from_col: &str,
@@ -2323,8 +2323,8 @@ pub fn generate_cycle_prevention_filters(
 pub fn generate_cycle_prevention_filters_composite(
     exact_hops: u32,
     start_id_cols: &[&str],
-    to_cols: &[&str],
-    from_cols: &[&str],
+    _to_cols: &[&str],
+    _from_cols: &[&str],
     end_id_cols: &[&str],
     start_alias: &str,
     end_alias: &str,

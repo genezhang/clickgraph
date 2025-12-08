@@ -1190,13 +1190,13 @@ impl RenderPlanBuilder for LogicalPlan {
                 // The ProjectionTagging analyzer may convert this to `u.*`, OR it may leave it as TableAlias
                 let mut expanded_items = Vec::new();
                 crate::debug_println!("DEBUG: Processing {} projection items", projection.items.len());
-                for (idx, item) in projection.items.iter().enumerate() {
-                    crate::debug_println!("DEBUG: Projection item {}: expr={:?}, alias={:?}", idx, item.expression, item.col_alias);
+                for (_idx, item) in projection.items.iter().enumerate() {
+                    crate::debug_println!("DEBUG: Projection item {}: expr={:?}, alias={:?}", _idx, item.expression, item.col_alias);
                     // Check for TableAlias (u) - expand to all properties
                     if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) =
                         &item.expression
                     {
-                        eprintln!(
+                        crate::debug_print!(
                             "DEBUG: Found TableAlias {} - checking if should expand to properties",
                             alias.0
                         );
@@ -1249,7 +1249,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 .and_then(|ca| ca.0.strip_suffix(".*"))
                                 .unwrap_or(&prop.table_alias.0);
                             
-                            eprintln!(
+                            crate::debug_print!(
                                 "DEBUG: Found wildcard property access {}.* - original alias: '{}', looking up properties",
                                 prop.table_alias.0, original_alias
                             );
@@ -1265,7 +1265,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     .map(|s| crate::query_planner::logical_expr::TableAlias(s.clone()))
                                     .unwrap_or_else(|| prop.table_alias.clone());
                                 
-                                eprintln!(
+                                crate::debug_print!(
                                     "DEBUG: Expanding {}.* to {} properties (using table alias: {})",
                                     original_alias,
                                     properties.len(),
@@ -1288,7 +1288,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 }
                                 continue; // Skip adding the wildcard item itself
                             } else {
-                                eprintln!(
+                                crate::debug_print!(
                                     "DEBUG: Could not expand {}.* - falling back to wildcard",
                                     original_alias
                                 );
@@ -1333,9 +1333,9 @@ impl RenderPlanBuilder for LogicalPlan {
                         crate::debug_println!("DEBUG: Checking denormalized alias for {}.{}", prop_access.table_alias.0, prop_access.column.0.raw());
                         // Check if this alias is denormalized and needs to point to a different table
                         match self.get_properties_with_table_alias(&prop_access.table_alias.0) {
-                            Ok((props, actual_table_alias)) => {
+                            Ok((_props, actual_table_alias)) => {
                                 crate::debug_println!("DEBUG: get_properties_with_table_alias for '{}' returned Ok: {} properties, actual_alias={:?}", 
-                                    prop_access.table_alias.0, props.len(), actual_table_alias);
+                                    prop_access.table_alias.0, _props.len(), actual_table_alias);
                                 if let Some(actual_alias) = actual_table_alias {
                                     // This is a denormalized alias - use the actual table alias
                                     println!(
@@ -1352,9 +1352,9 @@ impl RenderPlanBuilder for LogicalPlan {
                                     None // Use original alias
                                 }
                             }
-                            Err(e) => {
+                            Err(_e) => {
                                 crate::debug_println!("DEBUG: get_properties_with_table_alias for '{}' returned Err: {:?}", 
-                                    prop_access.table_alias.0, e);
+                                    prop_access.table_alias.0, _e);
                                 None
                             }
                         }
@@ -2883,13 +2883,13 @@ impl RenderPlanBuilder for LogicalPlan {
                             let render_expr: Result<RenderExpr, _> = join_cond.clone().try_into();
                             match render_expr {
                                 Ok(RenderExpr::OperatorApplicationExp(op)) => vec![op],
-                                Ok(other) => {
+                                Ok(_other) => {
                                     // Wrap non-operator expressions in equality check
-                                    eprintln!("CartesianProduct: join_condition is not OperatorApplication: {:?}", other);
+                                    crate::debug_print!("CartesianProduct: join_condition is not OperatorApplication: {:?}", _other);
                                     vec![]
                                 }
-                                Err(e) => {
-                                    eprintln!("CartesianProduct: Failed to convert join_condition: {:?}", e);
+                                Err(_e) => {
+                                    crate::debug_print!("CartesianProduct: Failed to convert join_condition: {:?}", _e);
                                     vec![]
                                 }
                             }
@@ -2897,7 +2897,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             vec![] // No join condition - pure CROSS JOIN semantics
                         };
                         
-                        eprintln!("CartesianProduct extract_joins: table={}, alias={}, joining_on={:?}",
+                        crate::debug_print!("CartesianProduct extract_joins: table={}, alias={}, joining_on={:?}",
                             right_table.name, right_table.alias.as_deref().unwrap_or(""), joining_on);
                         
                         joins.push(super::Join {
@@ -3316,7 +3316,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     .collect();
                 
                 // If there are no base columns but there are aggregates, use constant 1
-                let branch_select = if base_select_items.is_empty() {
+                let _branch_select = if base_select_items.is_empty() {
                     SelectItems {
                         items: vec![SelectItem {
                             expression: RenderExpr::Literal(Literal::Integer(1)),
@@ -4319,7 +4319,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 for schema_name in ["default", ""] {
                                     if let Some(schema) = schemas.get(schema_name) {
                                         // Get the node label from the graph_rel
-                                        if let Some(node_label) = graph_rel.labels.as_ref().and_then(|l| l.first()) {
+                                        if let Some(_node_label) = graph_rel.labels.as_ref().and_then(|l| l.first()) {
                                             // Actually, we need the node label, not rel label
                                             // Get it from the left/right GraphNodes
                                             fn get_node_label(plan: &LogicalPlan) -> Option<String> {

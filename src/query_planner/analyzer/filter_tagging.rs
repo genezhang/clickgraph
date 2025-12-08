@@ -84,7 +84,6 @@ impl AnalyzerPass for FilterTagging {
                     self.analyze_with_graph_schema(cte.input.clone(), plan_ctx, graph_schema)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
-            LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
@@ -414,7 +413,7 @@ impl FilterTagging {
                 let table_ctx = plan_ctx
                     .get_table_ctx(&property_access.table_alias.0)
                     .map_err(|e| {
-                        eprintln!(
+                        crate::debug_print!(
                             "FilterTagging: ERROR - Failed to get table_ctx for alias '{}': {:?}",
                             property_access.table_alias.0, e
                         );
@@ -432,7 +431,7 @@ impl FilterTagging {
 
                 // Get the label for this table
                 let label = table_ctx.get_label_opt().ok_or_else(|| {
-                    eprintln!(
+                    crate::debug_print!(
                         "FilterTagging: ERROR - No label found for alias '{}', is_relation={}",
                         property_access.table_alias.0,
                         table_ctx.is_relation()

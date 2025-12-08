@@ -7,7 +7,7 @@
 use crate::query_planner::logical_plan::{LogicalPlan, ViewScan};
 
 /// Build a SQL query for a ViewScan operation
-pub fn build_view_scan(scan: &ViewScan, plan: &LogicalPlan) -> String {
+pub fn build_view_scan(scan: &ViewScan, _plan: &LogicalPlan) -> String {
     let mut sql = String::new();
 
     // Build table reference with parameters if this is a parameterized view

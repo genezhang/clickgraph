@@ -188,13 +188,13 @@ pub fn evaluate_return_clause<'a>(
     return_clause: &ReturnClause<'a>,
     plan: Arc<LogicalPlan>,
 ) -> Arc<LogicalPlan> {
-    eprintln!("========================================");
-    eprintln!("⚠️ RETURN CLAUSE DISTINCT = {}", return_clause.distinct);
-    eprintln!("⚠️ RETURN AST items count = {}", return_clause.return_items.len());
-    for (i, item) in return_clause.return_items.iter().enumerate() {
-        eprintln!("⚠️ RETURN AST item {}: expr={:?}, alias={:?}", i, item.expression, item.alias);
+    crate::debug_print!("========================================");
+    crate::debug_print!("⚠️ RETURN CLAUSE DISTINCT = {}", return_clause.distinct);
+    crate::debug_print!("⚠️ RETURN AST items count = {}", return_clause.return_items.len());
+    for (_i, _item) in return_clause.return_items.iter().enumerate() {
+        crate::debug_print!("⚠️ RETURN AST item {}: expr={:?}, alias={:?}", _i, _item.expression, _item.alias);
     }
-    eprintln!("========================================");
+    crate::debug_print!("========================================");
     let projection_items: Vec<ProjectionItem> = return_clause
         .return_items
         .iter()

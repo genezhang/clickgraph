@@ -133,7 +133,7 @@ pub async fn sql_generation_handler(
     let cypher_ast = match open_cypher_parser::parse_query(clean_query) {
         Ok(ast) => ast,
         Err(e) => {
-            let parse_time = parse_start.elapsed().as_secs_f64() * 1000.0;
+            let _parse_time = parse_start.elapsed().as_secs_f64() * 1000.0;
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(SqlGenerationError {
@@ -171,7 +171,7 @@ pub async fn sql_generation_handler(
         let logical_plan = match query_planner::evaluate_call_query(cypher_ast, &graph_schema) {
             Ok(plan) => plan,
             Err(e) => {
-                let planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
+                let _planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(SqlGenerationError {
@@ -267,7 +267,7 @@ pub async fn sql_generation_handler(
         ) {
             Ok(plan) => plan,
             Err(e) => {
-                let planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
+                let _planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(SqlGenerationError {

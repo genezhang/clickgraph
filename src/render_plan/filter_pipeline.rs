@@ -443,7 +443,7 @@ pub fn rewrite_end_filters_for_variable_length_cte(
                 expr.clone()
             }
         }
-        RenderExpr::TableAlias(alias) => expr.clone(),
+        RenderExpr::TableAlias(_alias) => expr.clone(),
         RenderExpr::OperatorApplicationExp(op) => {
             RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: op.operator.clone(),

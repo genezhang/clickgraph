@@ -35,7 +35,7 @@ pub fn evaluate_optional_match_clause<'a>(
     // This will automatically mark all new aliases as optional during planning
     plan_ctx.set_optional_match_mode(true);
 
-    eprintln!("🔔 DEBUG OPTIONAL_MATCH: Enabled optional match mode");
+    crate::debug_print!("🔔 DEBUG OPTIONAL_MATCH: Enabled optional match mode");
 
     // Create a temporary MatchClause from the OptionalMatchClause
     // This allows us to reuse the existing match clause logic
@@ -53,7 +53,7 @@ pub fn evaluate_optional_match_clause<'a>(
     // Restore normal mode
     plan_ctx.set_optional_match_mode(false);
 
-    eprintln!(
+    crate::debug_print!(
         "🔕 DEBUG OPTIONAL_MATCH: Disabled optional match mode, plan type: {:?}",
         std::mem::discriminant(&*plan)
     );

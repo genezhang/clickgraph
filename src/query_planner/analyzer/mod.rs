@@ -154,9 +154,9 @@ pub fn final_analyzing(
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
     // Debug: Print projection items before sanitization
     if let LogicalPlan::Projection(proj) = plan.as_ref() {
-        eprintln!("final_analyzing BEFORE sanitization: {} projection items", proj.items.len());
-        for (i, item) in proj.items.iter().enumerate() {
-            eprintln!("  item {}: expr={:?}", i, item.expression);
+        crate::debug_print!("final_analyzing BEFORE sanitization: {} projection items", proj.items.len());
+        for (_i, _item) in proj.items.iter().enumerate() {
+            crate::debug_print!("  item {}: expr={:?}", _i, _item.expression);
         }
     }
     
@@ -166,9 +166,9 @@ pub fn final_analyzing(
     
     // Debug: Print projection items after sanitization
     if let LogicalPlan::Projection(proj) = plan.as_ref() {
-        eprintln!("final_analyzing AFTER sanitization: {} projection items", proj.items.len());
-        for (i, item) in proj.items.iter().enumerate() {
-            eprintln!("  item {}: expr={:?}", i, item.expression);
+        crate::debug_print!("final_analyzing AFTER sanitization: {} projection items", proj.items.len());
+        for (_i, _item) in proj.items.iter().enumerate() {
+            crate::debug_print!("  item {}: expr={:?}", _i, _item.expression);
         }
     }
 

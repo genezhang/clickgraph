@@ -52,7 +52,7 @@ impl AnalyzerPass for ProjectionTagging {
                 // RETURN u, c, p;
                 //
                 // To achieve this we will convert `RETURN *` into `RETURN u, c, p`
-                eprintln!("ProjectionTagging: input items count={}, items={:?}", projection.items.len(), projection.items);
+                crate::debug_print!("ProjectionTagging: input items count={}, items={:?}", projection.items.len(), projection.items);
                 let mut proj_items_to_mutate: Vec<ProjectionItem> =
                     if self.select_all_present(&projection.items) {
                         // we will create projection items with only table alias as return item. tag_projection will handle the proper tagging and overall projection manupulation.
@@ -363,7 +363,7 @@ impl ProjectionTagging {
                 }
             }
             LogicalExpr::PropertyAccessExp(property_access) => {
-                eprintln!("tag_projection PropertyAccessExp: table_alias='{}', column='{}'", 
+                crate::debug_print!("tag_projection PropertyAccessExp: table_alias='{}', column='{}'", 
                     property_access.table_alias.0, property_access.column.raw());
                 
                 let table_ctx = plan_ctx
@@ -373,7 +373,7 @@ impl ProjectionTagging {
                         source: e,
                     })?;
                 
-                eprintln!("tag_projection: table_ctx label={:?}, is_relation={}", 
+                crate::debug_print!("tag_projection: table_ctx label={:?}, is_relation={}", 
                     table_ctx.get_label_opt(), table_ctx.is_relation());
                 
                 // Get label for property resolution

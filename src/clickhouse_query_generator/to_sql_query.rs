@@ -13,9 +13,6 @@ use crate::{
     },
 };
 
-// Import ToSql trait from to_sql module so LogicalExpr.to_sql() works
-use super::to_sql::ToSql as LogicalToSql;
-
 // Import function translator for Neo4j -> ClickHouse function mappings
 use super::function_registry::get_function_mapping;
 
@@ -409,17 +406,17 @@ impl ToSql for JoinItems {
 impl ToSql for Join {
     fn to_sql(&self) -> String {
         crate::debug_println!("🔍 Join::to_sql");
-        eprintln!("  table_alias: {}", self.table_alias);
-        eprintln!("  table_name: {}", self.table_name);
-        eprintln!("  joining_on.len(): {}", self.joining_on.len());
-        eprintln!("  pre_filter: {:?}", self.pre_filter.is_some());
+        crate::debug_print!("  table_alias: {}", self.table_alias);
+        crate::debug_print!("  table_name: {}", self.table_name);
+        crate::debug_print!("  joining_on.len(): {}", self.joining_on.len());
+        crate::debug_print!("  pre_filter: {:?}", self.pre_filter.is_some());
         if !self.joining_on.is_empty() {
-            eprintln!("  joining_on conditions:");
-            for (idx, cond) in self.joining_on.iter().enumerate() {
-                eprintln!("    [{}]: {:?}", idx, cond);
+            crate::debug_print!("  joining_on conditions:");
+            for (_idx, _cond) in self.joining_on.iter().enumerate() {
+                crate::debug_print!("    [{}]: {:?}", _idx, _cond);
             }
         } else {
-            eprintln!("  ⚠️  WARNING: joining_on is EMPTY!");
+            crate::debug_print!("  ⚠️  WARNING: joining_on is EMPTY!");
         }
 
         let join_type_str = match self.join_type {
@@ -447,7 +444,7 @@ impl ToSql for Join {
                 // Use to_sql_without_table_alias to render column names without table prefix
                 // since inside the subquery, the table is not yet aliased
                 let filter_sql = pre_filter.to_sql_without_table_alias();
-                eprintln!("  Using subquery form for LEFT JOIN with pre_filter: {}", filter_sql);
+                crate::debug_print!("  Using subquery form for LEFT JOIN with pre_filter: {}", filter_sql);
                 format!("(SELECT * FROM {} WHERE {})", self.table_name, filter_sql)
             } else {
                 // For non-LEFT joins, pre_filter will be added to ON clause below
@@ -477,7 +474,7 @@ impl ToSql for Join {
             if let Some(ref pre_filter) = self.pre_filter {
                 if !matches!(self.join_type, JoinType::Left) {
                     let filter_sql = pre_filter.to_sql();
-                    eprintln!("  Adding pre_filter to INNER JOIN ON clause: {}", filter_sql);
+                    crate::debug_print!("  Adding pre_filter to INNER JOIN ON clause: {}", filter_sql);
                     joining_on_str = format!("{} AND {}", joining_on_str, filter_sql);
                 }
             }
@@ -921,7 +918,7 @@ impl RenderExpr {
             RenderExpr::Raw(raw_sql) => {
                 // Simple approach: look for "word.word" patterns and keep only the part after the dot
                 // This handles cases like "alias.column = 'value'" -> "column = 'value'"
-                let mut result = raw_sql.clone();
+                let result = raw_sql.clone();
                 // Find and replace all "identifier.identifier" patterns
                 let parts: Vec<&str> = result.split_whitespace().collect();
                 let mut new_parts = Vec::new();

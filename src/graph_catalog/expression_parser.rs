@@ -54,7 +54,7 @@ impl PropertyValue {
                     Ok((_, ast)) => ast.to_sql(table_alias),
                     Err(_) => {
                         // Fallback: treat as raw SQL
-                        eprintln!("Warning: Failed to parse expression '{}', using as-is", expr);
+                        crate::debug_print!("Warning: Failed to parse expression '{}', using as-is", expr);
                         expr.clone()
                     }
                 }
@@ -79,7 +79,7 @@ impl PropertyValue {
                     Ok((_, ast)) => ast.to_sql_no_alias(),
                     Err(_) => {
                         // Fallback: treat as raw SQL
-                        eprintln!("Warning: Failed to parse expression '{}', using as-is", expr);
+                        crate::debug_print!("Warning: Failed to parse expression '{}', using as-is", expr);
                         expr.clone()
                     }
                 }

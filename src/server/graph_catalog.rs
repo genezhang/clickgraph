@@ -106,15 +106,15 @@ pub async fn initialize_global_schema(
                         {
                             Ok(_) => log::info!("  ✓ Schema validation passed"),
                             Err(e) => {
-                                eprintln!("  ✗ Schema validation failed: {}", e);
+                                log::warn!("  ✗ Schema validation failed: {}", e);
                                 return Err(format!("Schema validation failed: {}", e));
                             }
                         }
                     } else {
-                        eprintln!(
+                        log::warn!(
                             "  ⚠ Schema validation requested but no ClickHouse client available"
                         );
-                        eprintln!("    Skipping validation - some queries may fail at runtime");
+                        log::warn!("    Skipping validation - some queries may fail at runtime");
                     }
                 }
 
@@ -152,8 +152,8 @@ pub async fn initialize_global_schema(
                 return Ok(SchemaSource::Yaml);
             }
             Err(e) => {
-                eprintln!("✗ Failed to load YAML config {}: {}", yaml_config_path, e);
-                eprintln!("  Falling back to database schema loading...");
+                log::warn!("✗ Failed to load YAML config {}: {}", yaml_config_path, e);
+                log::warn!("  Falling back to database schema loading...");
             }
         }
     } else {
@@ -210,7 +210,7 @@ pub async fn initialize_global_schema(
                 Ok(SchemaSource::Database)
             }
             Err(e) => {
-                eprintln!("✗ Failed to load schema from database: {}", e);
+                log::warn!("✗ Failed to load schema from database: {}", e);
 
                 // Try to test ClickHouse connectivity
                 match test_clickhouse_connection(client.clone()).await {
@@ -403,13 +403,13 @@ pub async fn load_schema_by_name(
                     {
                         Ok(_) => println!("  ✓ Schema validation passed"),
                         Err(e) => {
-                            eprintln!("  ✗ Schema validation failed: {}", e);
+                            log::warn!("  ✗ Schema validation failed: {}", e);
                             return Err(format!("Schema validation failed: {}", e));
                         }
                     }
                 } else {
-                    eprintln!("  ⚠ Schema validation requested but no ClickHouse client available");
-                    eprintln!("    Skipping validation - some queries may fail at runtime");
+                    log::warn!("  ⚠ Schema validation requested but no ClickHouse client available");
+                    log::warn!("    Skipping validation - some queries may fail at runtime");
                 }
             }
 
@@ -466,13 +466,13 @@ pub async fn load_schema_from_content(
                     {
                         Ok(_) => println!("  ✓ Schema validation passed"),
                         Err(e) => {
-                            eprintln!("  ✗ Schema validation failed: {}", e);
+                            log::warn!("  ✗ Schema validation failed: {}", e);
                             return Err(format!("Schema validation failed: {}", e));
                         }
                     }
                 } else {
-                    eprintln!("  ⚠ Schema validation requested but no ClickHouse client available");
-                    eprintln!("    Skipping validation - some queries may fail at runtime");
+                    log::warn!("  ⚠ Schema validation requested but no ClickHouse client available");
+                    log::warn!("    Skipping validation - some queries may fail at runtime");
                 }
             }
 
@@ -656,7 +656,7 @@ pub async fn monitor_schema_updates(ch_client: Client) {
         let global_schemas = match GLOBAL_SCHEMAS.get() {
             Some(schemas) => schemas,
             None => {
-                eprintln!("Schema monitor: Schema registry not initialized, skipping check");
+                log::warn!("Schema monitor: Schema registry not initialized, skipping check");
                 continue;
             }
         };
@@ -667,7 +667,7 @@ pub async fn monitor_schema_updates(ch_client: Client) {
             let in_mem_schema = match schemas_guard.get("default") {
                 Some(schema) => schema,
                 None => {
-                    eprintln!("Schema monitor: Default schema not found, skipping check");
+                    log::warn!("Schema monitor: Default schema not found, skipping check");
                     continue;
                 }
             };
@@ -678,7 +678,7 @@ pub async fn monitor_schema_updates(ch_client: Client) {
         let remote_schema = match get_graph_catalog(ch_client.clone()).await {
             Ok(schema) => schema,
             Err(err) => {
-                eprintln!("Schema monitor: Error fetching remote schema: {}", err);
+                log::warn!("Schema monitor: Error fetching remote schema: {}", err);
                 continue;
             }
         };

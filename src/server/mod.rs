@@ -72,7 +72,7 @@ pub async fn run() {
     let config = match ServerConfig::from_env() {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("Configuration error: {}", e);
+            log::error!("Configuration error: {}", e);
             std::process::exit(1);
         }
     };
@@ -100,7 +100,7 @@ pub async fn run_with_config(config: ServerConfig) {
     let connection_pool = match connection_pool::RoleConnectionPool::new() {
         Ok(pool) => Arc::new(pool),
         Err(e) => {
-            eprintln!("Warning: Failed to create connection pool: {}. Using default client.", e);
+            log::error!("Warning: Failed to create connection pool: {}. Using default client.", e);
             // Create a minimal pool for YAML-only mode
             Arc::new(connection_pool::RoleConnectionPool::new().unwrap_or_else(|_| {
                 panic!("Failed to create connection pool even with defaults")
@@ -117,8 +117,8 @@ pub async fn run_with_config(config: ServerConfig) {
     } else {
         // For YAML-only mode, we need a placeholder client
         // This is a limitation we should fix in the future
-        eprintln!("⚠ No ClickHouse configuration found. Running in YAML-only mode.");
-        eprintln!("  Note: Some query functionality may be limited without ClickHouse connection.");
+        log::error!("⚠ No ClickHouse configuration found. Running in YAML-only mode.");
+        log::error!("  Note: Some query functionality may be limited without ClickHouse connection.");
 
         // Create a dummy client for now - this is not ideal but allows server to start
         let dummy_client = clickhouse::Client::default().with_url("http://localhost:8123");
@@ -130,14 +130,14 @@ pub async fn run_with_config(config: ServerConfig) {
     };
 
     // Initialize schema with proper error handling
-    let schema_source =
+    let _schema_source =
         match graph_catalog::initialize_global_schema(client_opt.clone(), config.validate_schema)
             .await
         {
             Ok(source) => source,
             Err(e) => {
-                eprintln!("✗ Failed to initialize ClickGraph: {}", e);
-                eprintln!("  Server cannot start without proper schema initialization.");
+                log::error!("✗ Failed to initialize ClickGraph: {}", e);
+                log::error!("  Server cannot start without proper schema initialization.");
                 std::process::exit(1);
             }
         };
@@ -203,11 +203,11 @@ pub async fn run_with_config(config: ServerConfig) {
                 http_bind_address,
                 e
             );
-            eprintln!(
+            log::error!(
                 "✗ FATAL: Failed to bind HTTP listener to {}: {}",
                 http_bind_address, e
             );
-            eprintln!("  Is another process using port {}?", config.http_port);
+            log::error!("  Is another process using port {}?", config.http_port);
             std::process::exit(1);
         }
     };
@@ -236,7 +236,7 @@ pub async fn run_with_config(config: ServerConfig) {
                 listener
             }
             Err(e) => {
-                eprintln!(
+                log::error!(
                     "Failed to bind Bolt listener to {}: {}",
                     bolt_bind_address, e
                 );
@@ -261,13 +261,13 @@ pub async fn run_with_config(config: ServerConfig) {
                                     log::debug!("Bolt connection closed successfully");
                                 }
                                 Err(e) => {
-                                    eprintln!("Bolt connection error: {:?}", e);
+                                    log::error!("Bolt connection error: {:?}", e);
                                 }
                             }
                         });
                     }
                     Err(e) => {
-                        eprintln!("Failed to accept Bolt connection: {:?}", e);
+                        log::error!("Failed to accept Bolt connection: {:?}", e);
                         break;
                     }
                 }
@@ -297,7 +297,7 @@ pub async fn run_with_config(config: ServerConfig) {
             tokio::select! {
                 result = http_server => {
                     if let Err(e) = result {
-                        eprintln!("HTTP server error: {:?}", e);
+                        log::error!("HTTP server error: {:?}", e);
                     }
                 }
                 _ = sigterm.recv() => println!("Received SIGTERM, shutting down..."),
@@ -310,7 +310,7 @@ pub async fn run_with_config(config: ServerConfig) {
             tokio::select! {
                 result = http_server => {
                     if let Err(e) = result {
-                        eprintln!("HTTP server error: {:?}", e);
+                        log::error!("HTTP server error: {:?}", e);
                     }
                 }
                 _ = tokio::signal::ctrl_c() => {

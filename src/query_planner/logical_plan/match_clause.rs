@@ -479,7 +479,7 @@ fn generate_scan(
 fn is_denormalized_scan(plan: &Arc<LogicalPlan>) -> bool {
     let result = match plan.as_ref() {
         LogicalPlan::ViewScan(view_scan) => {
-            eprintln!(
+            crate::debug_print!(
                 "is_denormalized_scan: ViewScan.is_denormalized = {} for table '{}'",
                 view_scan.is_denormalized,
                 view_scan.source_table
@@ -487,11 +487,11 @@ fn is_denormalized_scan(plan: &Arc<LogicalPlan>) -> bool {
             view_scan.is_denormalized
         }
         _ => {
-            eprintln!("is_denormalized_scan: Not a ViewScan, returning false");
+            crate::debug_print!("is_denormalized_scan: Not a ViewScan, returning false");
             false
         }
     };
-    eprintln!("is_denormalized_scan: returning {}", result);
+    crate::debug_print!("is_denormalized_scan: returning {}", result);
     result
 }
 
@@ -501,14 +501,14 @@ fn is_label_denormalized(label: &Option<String>, plan_ctx: &PlanCtx) -> bool {
     if let Some(label_str) = label {
         let schema = plan_ctx.schema();
         if let Ok(node_schema) = schema.get_node_schema(label_str) {
-            eprintln!(
+            crate::debug_print!(
                 "is_label_denormalized: label '{}' is_denormalized = {}",
                 label_str, node_schema.is_denormalized
             );
             return node_schema.is_denormalized;
         }
     }
-    eprintln!("is_label_denormalized: label {:?} not found or no label, returning false", label);
+    crate::debug_print!("is_label_denormalized: label {:?} not found or no label, returning false", label);
     false
 }
 
@@ -1121,11 +1121,11 @@ fn traverse_connected_pattern_with_mode<'a>(
     path_variable: Option<&str>,
     is_optional: bool,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
-    eprintln!("\n╔════════════════════════════════════════");
-    eprintln!("║ traverse_connected_pattern_with_mode");
-    eprintln!("║ connected_patterns.len() = {}", connected_patterns.len());
-    eprintln!("║ Current plan type: {:?}", std::mem::discriminant(&*plan));
-    eprintln!("╚════════════════════════════════════════\n");
+    crate::debug_print!("\n╔════════════════════════════════════════");
+    crate::debug_print!("║ traverse_connected_pattern_with_mode");
+    crate::debug_print!("║ connected_patterns.len() = {}", connected_patterns.len());
+    crate::debug_print!("║ Current plan type: {:?}", std::mem::discriminant(&*plan));
+    crate::debug_print!("╚════════════════════════════════════════\n");
 
     // === PRE-PROCESS: Assign consistent aliases to shared nodes ===
     // When patterns share nodes via Rc::clone() (e.g., ()-[r1]->()-[r2]->()),
@@ -1164,10 +1164,10 @@ fn traverse_connected_pattern_with_mode<'a>(
         }
     }
     
-    eprintln!("║ Pre-assigned {} node aliases for shared node detection", node_alias_map.len());
+    crate::debug_print!("║ Pre-assigned {} node aliases for shared node detection", node_alias_map.len());
 
     for (pattern_idx, connected_pattern) in connected_patterns.iter().enumerate() {
-        eprintln!("┌─ Processing connected_pattern #{}", pattern_idx);
+        crate::debug_print!("┌─ Processing connected_pattern #{}", pattern_idx);
 
         let start_node_ref = connected_pattern.start_node.borrow();
         let start_node_label = start_node_ref.label.map(|val| val.to_string());
@@ -1177,7 +1177,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             .cloned()
             .unwrap_or_else(generate_id);
 
-        eprintln!(
+        crate::debug_print!(
             "│ Start node: alias='{}', label={:?}",
             start_node_alias, start_node_label
         );
@@ -1261,11 +1261,11 @@ fn traverse_connected_pattern_with_mode<'a>(
             // Could generate UNION here for polymorphic support
         }
 
-        eprintln!(
+        crate::debug_print!(
             "│ Relationship: alias='{}', labels={:?}, direction={:?}",
             rel_alias, rel_labels, rel.direction
         );
-        eprintln!(
+        crate::debug_print!(
             "│ After inference: start_label={:?}, end_label={:?}",
             start_node_label, end_node_label
         );
@@ -1277,7 +1277,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| props.into_iter().map(Property::from).collect())
             .unwrap_or_else(Vec::new);
 
-        eprintln!(
+        crate::debug_print!(
             "│ End node: alias='{}', label={:?}",
             end_node_alias, end_node_label
         );
@@ -1322,7 +1322,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     
                     // Check if end_node is denormalized - if so, don't create a separate scan
                     let (scan, is_denorm) = if is_label_denormalized(&end_node_label, plan_ctx) {
-                        eprintln!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
+                        crate::debug_print!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
                         (Arc::new(LogicalPlan::Empty), true)
                     } else {
                         let scan = generate_scan(
@@ -1349,7 +1349,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     
                     // Check if end_node is denormalized - if so, don't create a separate scan
                     let (scan, is_denorm) = if is_label_denormalized(&end_node_label, plan_ctx) {
-                        eprintln!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
+                        crate::debug_print!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
                         (Arc::new(LogicalPlan::Empty), true)
                     } else {
                         let scan = generate_scan(
@@ -1376,7 +1376,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     
                     // Check if end_node is denormalized - if so, don't create a separate scan
                     let (scan, is_denorm) = if is_label_denormalized(&end_node_label, plan_ctx) {
-                        eprintln!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
+                        crate::debug_print!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
                         (Arc::new(LogicalPlan::Empty), true)
                     } else {
                         let scan = generate_scan(
@@ -1413,7 +1413,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 } else {
                     // Both exist or neither exists - shouldn't happen in normal OPTIONAL MATCH
                     // Fall back to None
-                    eprintln!("WARN: OPTIONAL MATCH could not determine anchor: left_conn={}, right_conn={}", left_conn, right_conn);
+                    crate::debug_print!("WARN: OPTIONAL MATCH could not determine anchor: left_conn={}, right_conn={}", left_conn, right_conn);
                     None
                 }
             } else {
@@ -1470,9 +1470,9 @@ fn traverse_connected_pattern_with_mode<'a>(
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
 
-            eprintln!("│ ✓ Created GraphRel (start node already in context)");
-            eprintln!("│   Plan is now: GraphRel");
-            eprintln!("└─ Pattern #{} complete\n", pattern_idx);
+            crate::debug_print!("│ ✓ Created GraphRel (start node already in context)");
+            crate::debug_print!("│   Plan is now: GraphRel");
+            crate::debug_print!("└─ Pattern #{} complete\n", pattern_idx);
         }
         // if end alias already present in ctx map, it means the current nested connected pattern's end node will be connecting at right side plan and start node will be at the left
         else if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
@@ -1484,7 +1484,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             }
 
             let (start_scan, start_is_denorm) = if is_label_denormalized(&start_node_label, plan_ctx) {
-                eprintln!("=== Start node '{}' is DENORMALIZED, creating Empty scan ===", start_node_alias);
+                crate::debug_print!("=== Start node '{}' is DENORMALIZED, creating Empty scan ===", start_node_alias);
                 (Arc::new(LogicalPlan::Empty), true)
             } else {
                 let scan = generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?;
@@ -1577,9 +1577,9 @@ fn traverse_connected_pattern_with_mode<'a>(
 
             plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
 
-            eprintln!("│ ✓ Created GraphRel (end node already in context)");
-            eprintln!("│   Plan is now: GraphRel");
-            eprintln!("└─ Pattern #{} complete\n", pattern_idx);
+            crate::debug_print!("│ ✓ Created GraphRel (end node already in context)");
+            crate::debug_print!("│   Plan is now: GraphRel");
+            crate::debug_print!("└─ Pattern #{} complete\n", pattern_idx);
         }
         // not connected with existing nodes
         else {
@@ -1589,31 +1589,31 @@ fn traverse_connected_pattern_with_mode<'a>(
                 return Err(LogicalPlanError::DisconnectedPatternFound);
             }
 
-            eprintln!("=== CHECKING EXISTING PLAN ===");
-            eprintln!("=== plan discriminant: {:?} ===", std::mem::discriminant(&*plan));
+            crate::debug_print!("=== CHECKING EXISTING PLAN ===");
+            crate::debug_print!("=== plan discriminant: {:?} ===", std::mem::discriminant(&*plan));
             
             // Check if we have a non-empty input plan (e.g., from WITH clause or previous MATCH)
             // If so, we need to create a CartesianProduct to join the previous plan with this new pattern
             let has_existing_plan = !matches!(plan.as_ref(), LogicalPlan::Empty);
             
-            eprintln!("=== has_existing_plan: {} ===", has_existing_plan);
+            crate::debug_print!("=== has_existing_plan: {} ===", has_existing_plan);
             
             if has_existing_plan {
-                eprintln!("=== DISCONNECTED PATTERN WITH EXISTING PLAN: Creating CartesianProduct ===");
-                eprintln!("=== Existing plan type: {:?} ===", std::mem::discriminant(&*plan));
+                crate::debug_print!("=== DISCONNECTED PATTERN WITH EXISTING PLAN: Creating CartesianProduct ===");
+                crate::debug_print!("=== Existing plan type: {:?} ===", std::mem::discriminant(&*plan));
             }
 
             // we will keep start graph node at the right side and end at the left side
-            eprintln!("=== DISCONNECTED PATTERN: About to create start_graph_node ===");
+            crate::debug_print!("=== DISCONNECTED PATTERN: About to create start_graph_node ===");
             
             let (start_scan, start_is_denorm) = if is_label_denormalized(&start_node_label, plan_ctx) {
-                eprintln!("=== Start node '{}' is DENORMALIZED, creating Empty scan ===", start_node_alias);
+                crate::debug_print!("=== Start node '{}' is DENORMALIZED, creating Empty scan ===", start_node_alias);
                 (Arc::new(LogicalPlan::Empty), true)
             } else {
                 let scan = generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?;
-                eprintln!("=== DISCONNECTED: start_scan created, calling is_denormalized_scan ===");
+                crate::debug_print!("=== DISCONNECTED: start_scan created, calling is_denormalized_scan ===");
                 let is_d = is_denormalized_scan(&scan);
-                eprintln!("=== DISCONNECTED: start_is_denorm = {} ===", is_d);
+                crate::debug_print!("=== DISCONNECTED: start_is_denorm = {} ===", is_d);
                 (scan, is_d)
             };
             
@@ -1623,7 +1623,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 label: start_node_label.clone().map(|s| s.to_string()),
                 is_denormalized: start_is_denorm,
             };
-            eprintln!("=== DISCONNECTED: start_graph_node created with is_denormalized={} ===", start_graph_node.is_denormalized);
+            crate::debug_print!("=== DISCONNECTED: start_graph_node created with is_denormalized={} ===", start_graph_node.is_denormalized);
             plan_ctx.insert_table_ctx(
                 start_node_alias.clone(),
                 TableCtx::build(
@@ -1636,7 +1636,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             );
 
             let (end_scan, end_is_denorm) = if is_label_denormalized(&end_node_label, plan_ctx) {
-                eprintln!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
+                crate::debug_print!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
                 (Arc::new(LogicalPlan::Empty), true)
             } else {
                 let scan = generate_scan(end_node_alias.clone(), end_node_label.clone(), plan_ctx)?;
@@ -1756,21 +1756,21 @@ fn traverse_connected_pattern_with_mode<'a>(
                     is_optional,        // Pass through the is_optional flag
                     join_condition: None, // Will be populated by optimizer if WHERE bridges both sides
                 }));
-                eprintln!("│ ✓ Created CartesianProduct (combining existing plan with new pattern)");
-                eprintln!("│   Plan is now: CartesianProduct(optional: {})", is_optional);
+                crate::debug_print!("│ ✓ Created CartesianProduct (combining existing plan with new pattern)");
+                crate::debug_print!("│   Plan is now: CartesianProduct(optional: {})", is_optional);
             } else {
                 plan = new_pattern;
-                eprintln!("│ ✓ Created GraphRel (first pattern - disconnected)");
-                eprintln!("│   Plan is now: GraphRel");
+                crate::debug_print!("│ ✓ Created GraphRel (first pattern - disconnected)");
+                crate::debug_print!("│   Plan is now: GraphRel");
             }
-            eprintln!("└─ Pattern #{} complete\n", pattern_idx);
+            crate::debug_print!("└─ Pattern #{} complete\n", pattern_idx);
         }
     }
 
-    eprintln!("╔════════════════════════════════════════");
-    eprintln!("║ traverse_connected_pattern_with_mode COMPLETE");
-    eprintln!("║ Final plan type: {:?}", std::mem::discriminant(&*plan));
-    eprintln!("╚════════════════════════════════════════\n");
+    crate::debug_print!("╔════════════════════════════════════════");
+    crate::debug_print!("║ traverse_connected_pattern_with_mode COMPLETE");
+    crate::debug_print!("║ Final plan type: {:?}", std::mem::discriminant(&*plan));
+    crate::debug_print!("╚════════════════════════════════════════\n");
 
     Ok(plan)
 }

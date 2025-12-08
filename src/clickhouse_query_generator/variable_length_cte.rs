@@ -436,7 +436,7 @@ impl VariableLengthCteGenerator {
             None
         } else {
             let filter = filter_parts.join(" AND ");
-            eprintln!("    🔹 VLP polymorphic edge filter: {}", filter);
+            crate::debug_print!("    🔹 VLP polymorphic edge filter: {}", filter);
             Some(filter)
         }
     }
@@ -522,7 +522,7 @@ impl VariableLengthCteGenerator {
             None
         } else {
             let filter = filter_parts.join(" AND ");
-            eprintln!("    🔹 VLP polymorphic edge filter (intermediate): {}", filter);
+            crate::debug_print!("    🔹 VLP polymorphic edge filter (intermediate): {}", filter);
             Some(filter)
         }
     }
@@ -855,12 +855,12 @@ impl VariableLengthCteGenerator {
         let min_hops = self.spec.effective_min_hops();
         let max_hops = self.spec.max_hops.unwrap_or(10);
         
-        eprintln!("    🔸 Generating heterogeneous polymorphic SQL (two-phase):");
-        eprintln!("      - start_table: {}, intermediate_table: {}, end_table: {}",
+        crate::debug_print!("    🔸 Generating heterogeneous polymorphic SQL (two-phase):");
+        crate::debug_print!("      - start_table: {}, intermediate_table: {}, end_table: {}",
             self.start_node_table, intermediate_table, self.end_node_table);
-        eprintln!("      - intermediate_label: {}, to_node_label: {:?}",
+        crate::debug_print!("      - intermediate_label: {}, to_node_label: {:?}",
             intermediate_label, self.to_node_label);
-        eprintln!("      - min_hops: {}, max_hops: {}", min_hops, max_hops);
+        crate::debug_print!("      - min_hops: {}, max_hops: {}", min_hops, max_hops);
         
         let reachable_cte_name = format!("{}_reachable", self.cte_name);
         
@@ -1345,8 +1345,8 @@ impl VariableLengthCteGenerator {
         let intermediate_id_col = self.intermediate_node_id_column.as_ref()
             .expect("intermediate_node_id_column must be set for heterogeneous polymorphic paths");
         
-        eprintln!("    🔸 Generating heterogeneous polymorphic recursive case:");
-        eprintln!("      - start_table: {}, end_table: {}, intermediate_table: {}",
+        crate::debug_print!("    🔸 Generating heterogeneous polymorphic recursive case:");
+        crate::debug_print!("      - start_table: {}, end_table: {}, intermediate_table: {}",
             self.start_node_table, self.end_node_table, intermediate_table);
         
         // Build edge tuple for recursive case (using rel alias)
@@ -1605,7 +1605,7 @@ impl VariableLengthCteGenerator {
             self.end_node_id_column
         );
 
-        let mut where_conditions = vec![
+        let where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
             format!("NOT has(vp.path_edges, {})", edge_tuple_check),
         ];
@@ -1682,7 +1682,7 @@ impl VariableLengthCteGenerator {
             self.end_node_id_column
         );
 
-        let mut where_conditions = vec![
+        let where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
             format!("NOT has(vp.path_edges, {})", edge_tuple_check),
         ];

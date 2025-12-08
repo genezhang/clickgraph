@@ -165,7 +165,7 @@ pub struct PlanCtx {
 
 impl PlanCtx {
     pub fn insert_table_ctx(&mut self, alias: String, table_ctx: TableCtx) {
-        eprintln!(
+        crate::debug_print!(
             "DEBUG PlanCtx::insert_table_ctx: alias='{}', in_optional_match_mode={}",
             alias, self.in_optional_match_mode
         );

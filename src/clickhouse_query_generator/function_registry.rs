@@ -21,7 +21,7 @@ pub fn get_function_mapping(neo4j_fn: &str) -> Option<FunctionMapping> {
     FUNCTION_MAPPINGS.get(fn_lower.as_str()).cloned()
 }
 
-/// Static function mapping table
+// Static function mapping table
 lazy_static::lazy_static! {
     static ref FUNCTION_MAPPINGS: HashMap<&'static str, FunctionMapping> = {
         let mut m = HashMap::new();

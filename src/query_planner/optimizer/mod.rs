@@ -60,24 +60,24 @@ pub fn initial_optimization(
     plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
 ) -> OptimizerResult<Arc<LogicalPlan>> {
-    eprintln!("🔥 INITIAL_OPTIMIZATION CALLED 🔥");
+    crate::debug_print!("🔥 INITIAL_OPTIMIZATION CALLED 🔥");
     log::trace!("Initial optimization: Plan structure before FilterIntoGraphRel:");
     log_plan_structure(&plan, 1);
 
     // Debug: Check if there's a Filter above CartesianProduct
     fn check_filter_cartesian(p: &LogicalPlan, depth: usize) {
-        let indent = "  ".repeat(depth);
+        let _indent = "  ".repeat(depth);
         match p {
             LogicalPlan::Filter(f) => {
                 if let LogicalPlan::CartesianProduct(_) = f.input.as_ref() {
-                    eprintln!("{}🎯 initial_optimization: Found Filter above CartesianProduct!", indent);
-                    eprintln!("{}   predicate: {:?}", indent, f.predicate);
+                    crate::debug_print!("{}🎯 initial_optimization: Found Filter above CartesianProduct!", _indent);
+                    crate::debug_print!("{}   predicate: {:?}", _indent, f.predicate);
                 }
                 check_filter_cartesian(&f.input, depth + 1);
             }
             LogicalPlan::Projection(proj) => check_filter_cartesian(&proj.input, depth + 1),
             LogicalPlan::CartesianProduct(cp) => {
-                eprintln!("{}📦 CartesianProduct: join_condition={:?}", indent, cp.join_condition);
+                crate::debug_print!("{}📦 CartesianProduct: join_condition={:?}", _indent, cp.join_condition);
                 check_filter_cartesian(&cp.left, depth + 1);
                 check_filter_cartesian(&cp.right, depth + 1);
             }
