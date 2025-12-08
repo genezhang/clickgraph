@@ -7,8 +7,9 @@ use super::to_sql::ToSql;
 use crate::query_planner::logical_expr::ScalarFnCall;
 
 /// Prefix for ClickHouse pass-through functions
-/// Usage: ch::functionName(args) -> functionName(args) passed directly to ClickHouse
-const CH_PASSTHROUGH_PREFIX: &str = "ch::";
+/// Usage: ch.functionName(args) -> functionName(args) passed directly to ClickHouse
+/// Uses dot notation for Neo4j ecosystem compatibility (like apoc.*, gds.*)
+const CH_PASSTHROUGH_PREFIX: &str = "ch.";
 
 /// Translate a Neo4j scalar function call to ClickHouse SQL
 pub fn translate_scalar_function(
@@ -16,7 +17,7 @@ pub fn translate_scalar_function(
 ) -> Result<String, ClickhouseQueryGeneratorError> {
     let fn_name = &fn_call.name;
     
-    // Check for ClickHouse pass-through prefix (ch::)
+    // Check for ClickHouse pass-through prefix (ch.)
     if fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
         return translate_ch_passthrough(fn_call);
     }
@@ -75,26 +76,27 @@ pub fn translate_scalar_function(
     }
 }
 
-/// Translate a ClickHouse pass-through function (ch:: prefix)
+/// Translate a ClickHouse pass-through function (ch. prefix)
 /// 
-/// The ch:: prefix allows direct access to any ClickHouse function without
-/// requiring a Neo4j mapping. Arguments still undergo property mapping and
-/// parameter substitution.
+/// The ch. prefix allows direct access to any ClickHouse function without
+/// requiring a Neo4j mapping. Uses dot notation for Neo4j ecosystem compatibility
+/// (consistent with apoc.*, gds.* patterns). Arguments still undergo property
+/// mapping and parameter substitution.
 /// 
 /// # Examples
 /// ```cypher
 /// // Scalar functions
-/// RETURN ch::cityHash64(u.email) AS hash
-/// RETURN ch::JSONExtractString(u.metadata, 'field') AS field
+/// RETURN ch.cityHash64(u.email) AS hash
+/// RETURN ch.JSONExtractString(u.metadata, 'field') AS field
 /// 
 /// // URL functions
-/// RETURN ch::domain(u.url) AS domain
+/// RETURN ch.domain(u.url) AS domain
 /// 
 /// // IP functions  
-/// RETURN ch::IPv4NumToString(u.ip) AS ip_str
+/// RETURN ch.IPv4NumToString(u.ip) AS ip_str
 /// 
 /// // Geo functions
-/// RETURN ch::greatCircleDistance(lat1, lon1, lat2, lon2) AS distance
+/// RETURN ch.greatCircleDistance(lat1, lon1, lat2, lon2) AS distance
 /// ```
 fn translate_ch_passthrough(
     fn_call: &ScalarFnCall,
@@ -104,7 +106,7 @@ fn translate_ch_passthrough(
     
     if ch_fn_name.is_empty() {
         return Err(ClickhouseQueryGeneratorError::SchemaError(
-            "ch:: prefix requires a function name (e.g., ch::cityHash64)".to_string()
+            "ch. prefix requires a function name (e.g., ch.cityHash64)".to_string()
         ));
     }
     
@@ -120,7 +122,7 @@ fn translate_ch_passthrough(
     })?;
     
     log::debug!(
-        "ClickHouse pass-through: ch::{}({}) -> {}({})",
+        "ClickHouse pass-through: ch.{}({}) -> {}({})",
         ch_fn_name,
         fn_call.args.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>().join(", "),
         ch_fn_name,
@@ -131,7 +133,7 @@ fn translate_ch_passthrough(
     Ok(format!("{}({})", ch_fn_name, args_sql.join(", ")))
 }
 
-/// Check if a function uses ClickHouse pass-through (ch:: prefix)
+/// Check if a function uses ClickHouse pass-through (ch. prefix)
 pub fn is_ch_passthrough(fn_name: &str) -> bool {
     fn_name.starts_with(CH_PASSTHROUGH_PREFIX)
 }
@@ -261,9 +263,9 @@ mod tests {
 
     #[test]
     fn test_ch_passthrough_simple() {
-        // ch::cityHash64('test') -> cityHash64('test')
+        // ch.cityHash64('test') -> cityHash64('test')
         let fn_call = ScalarFnCall {
-            name: "ch::cityHash64".to_string(),
+            name: "ch.cityHash64".to_string(),
             args: vec![LogicalExpr::Literal(Literal::String("test".to_string()))],
         };
 
@@ -273,9 +275,9 @@ mod tests {
 
     #[test]
     fn test_ch_passthrough_multiple_args() {
-        // ch::substring('hello', 2, 3) -> substring('hello', 2, 3)
+        // ch.substring('hello', 2, 3) -> substring('hello', 2, 3)
         let fn_call = ScalarFnCall {
-            name: "ch::substring".to_string(),
+            name: "ch.substring".to_string(),
             args: vec![
                 LogicalExpr::Literal(Literal::String("hello".to_string())),
                 LogicalExpr::Literal(Literal::Integer(2)),
@@ -289,9 +291,9 @@ mod tests {
 
     #[test]
     fn test_ch_passthrough_json_function() {
-        // ch::JSONExtractString(data, 'field') -> JSONExtractString(data, 'field')
+        // ch.JSONExtractString(data, 'field') -> JSONExtractString(data, 'field')
         let fn_call = ScalarFnCall {
-            name: "ch::JSONExtractString".to_string(),
+            name: "ch.JSONExtractString".to_string(),
             args: vec![
                 LogicalExpr::Literal(Literal::String(r#"{"name":"Alice"}"#.to_string())),
                 LogicalExpr::Literal(Literal::String("name".to_string())),
@@ -304,9 +306,9 @@ mod tests {
 
     #[test]
     fn test_ch_passthrough_no_args() {
-        // ch::now() -> now()
+        // ch.now() -> now()
         let fn_call = ScalarFnCall {
-            name: "ch::now".to_string(),
+            name: "ch.now".to_string(),
             args: vec![],
         };
 
@@ -316,9 +318,9 @@ mod tests {
 
     #[test]
     fn test_ch_passthrough_empty_name_error() {
-        // ch:: (empty) -> error
+        // ch. (empty) -> error
         let fn_call = ScalarFnCall {
-            name: "ch::".to_string(),
+            name: "ch.".to_string(),
             args: vec![],
         };
 
@@ -329,10 +331,10 @@ mod tests {
 
     #[test]
     fn test_is_ch_passthrough() {
-        assert!(is_ch_passthrough("ch::cityHash64"));
-        assert!(is_ch_passthrough("ch::JSONExtract"));
+        assert!(is_ch_passthrough("ch.cityHash64"));
+        assert!(is_ch_passthrough("ch.JSONExtract"));
         assert!(!is_ch_passthrough("cityHash64"));
         assert!(!is_ch_passthrough("toUpper"));
-        assert!(!is_ch_passthrough("CH::test")); // Case sensitive
+        assert!(!is_ch_passthrough("CH.test")); // Case sensitive
     }
 }

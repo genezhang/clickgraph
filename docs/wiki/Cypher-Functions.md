@@ -973,15 +973,15 @@ LIMIT 5
 
 ## ClickHouse Function Pass-Through
 
-ClickGraph provides direct access to **any** ClickHouse function using the `ch::` prefix. This enables access to ClickHouse-specific functions that aren't part of standard Cypher.
+ClickGraph provides direct access to **any** ClickHouse function using the `ch.` prefix. This uses dot notation for compatibility with the Neo4j ecosystem (like `apoc.*`, `gds.*` patterns).
 
 ### Syntax
 
 ```cypher
-ch::functionName(arg1, arg2, ...)
+ch.functionName(arg1, arg2, ...)
 ```
 
-The `ch::` prefix is stripped and the function is passed directly to ClickHouse. Property mapping and parameter substitution still work normally.
+The `ch.` prefix is stripped and the function is passed directly to ClickHouse. Property mapping and parameter substitution still work normally.
 
 ### Examples
 
@@ -989,49 +989,49 @@ The `ch::` prefix is stripped and the function is passed directly to ClickHouse.
 ```cypher
 -- Generate hash of email for anonymization
 MATCH (u:User)
-RETURN u.name, ch::cityHash64(u.email) AS email_hash
+RETURN u.name, ch.cityHash64(u.email) AS email_hash
 
 -- MD5/SHA256 hashing
 MATCH (u:User)
-RETURN ch::MD5(u.password) AS md5_hash,
-       ch::SHA256(u.password) AS sha256_hash
+RETURN ch.MD5(u.password) AS md5_hash,
+       ch.SHA256(u.password) AS sha256_hash
 ```
 
 **JSON Functions:**
 ```cypher
 -- Extract fields from JSON columns
 MATCH (e:Event)
-WHERE ch::JSONExtractString(e.metadata, 'type') = 'click'
+WHERE ch.JSONExtractString(e.metadata, 'type') = 'click'
 RETURN e.id, 
-       ch::JSONExtractInt(e.metadata, 'x') AS x,
-       ch::JSONExtractInt(e.metadata, 'y') AS y
+       ch.JSONExtractInt(e.metadata, 'x') AS x,
+       ch.JSONExtractInt(e.metadata, 'y') AS y
 
 -- Check JSON structure
 MATCH (d:Document)
-WHERE ch::JSONHas(d.data, 'author')
-RETURN d.title, ch::JSONExtractString(d.data, 'author') AS author
+WHERE ch.JSONHas(d.data, 'author')
+RETURN d.title, ch.JSONExtractString(d.data, 'author') AS author
 ```
 
 **URL Functions:**
 ```cypher
 -- Parse URL components
 MATCH (p:Page)
-RETURN ch::domain(p.url) AS domain,
-       ch::protocol(p.url) AS protocol,
-       ch::path(p.url) AS path,
-       ch::extractURLParameter(p.url, 'utm_source') AS utm_source
+RETURN ch.domain(p.url) AS domain,
+       ch.protocol(p.url) AS protocol,
+       ch.path(p.url) AS path,
+       ch.extractURLParameter(p.url, 'utm_source') AS utm_source
 ```
 
 **IP Address Functions:**
 ```cypher
 -- Convert IP formats
 MATCH (c:Connection)
-RETURN ch::IPv4NumToString(c.src_ip) AS source_ip,
-       ch::IPv4NumToString(c.dst_ip) AS dest_ip
+RETURN ch.IPv4NumToString(c.src_ip) AS source_ip,
+       ch.IPv4NumToString(c.dst_ip) AS dest_ip
 
 -- Check IP ranges
 MATCH (c:Connection)
-WHERE ch::isIPAddressInRange(ch::IPv4NumToString(c.src_ip), '192.168.0.0/16')
+WHERE ch.isIPAddressInRange(ch.IPv4NumToString(c.src_ip), '192.168.0.0/16')
 RETURN c
 ```
 
@@ -1040,13 +1040,13 @@ RETURN c
 -- Calculate distance between coordinates
 MATCH (u:User), (s:Store)
 RETURN u.name, s.name,
-       ch::greatCircleDistance(u.lat, u.lon, s.lat, s.lon) / 1000 AS distance_km
+       ch.greatCircleDistance(u.lat, u.lon, s.lat, s.lon) / 1000 AS distance_km
 ORDER BY distance_km
 LIMIT 5
 
 -- H3 geospatial indexing
 MATCH (l:Location)
-RETURN l.name, ch::geoToH3(l.lon, l.lat, 7) AS h3_index
+RETURN l.name, ch.geoToH3(l.lon, l.lat, 7) AS h3_index
 ```
 
 **Date/Time Functions (ClickHouse-specific):**
@@ -1054,18 +1054,18 @@ RETURN l.name, ch::geoToH3(l.lon, l.lat, 7) AS h3_index
 -- Format dates with ClickHouse formatDateTime
 MATCH (u:User)
 RETURN u.name,
-       ch::formatDateTime(u.registration_date, '%Y-%m-%d %H:%M:%S') AS formatted_date
+       ch.formatDateTime(u.registration_date, '%Y-%m-%d %H:%M:%S') AS formatted_date
 
 -- Date truncation
 MATCH (e:Event)
-RETURN ch::toStartOfHour(e.timestamp) AS hour,
+RETURN ch.toStartOfHour(e.timestamp) AS hour,
        count(*) AS event_count
 ORDER BY hour
 
 -- Working days calculation
 MATCH (o:Order)
 RETURN o.id,
-       ch::dateDiff('day', o.created_at, o.shipped_at) AS days_to_ship
+       ch.dateDiff('day', o.created_at, o.shipped_at) AS days_to_ship
 ```
 
 **String Functions (ClickHouse-specific):**
@@ -1073,12 +1073,12 @@ RETURN o.id,
 -- Regular expression extraction
 MATCH (u:User)
 RETURN u.email,
-       ch::extractAll(u.email, '([^@]+)@([^.]+)') AS email_parts
+       ch.extractAll(u.email, '([^@]+)@([^.]+)') AS email_parts
 
 -- String similarity
 MATCH (p:Product)
-WHERE ch::ngramDistance(p.name, 'laptop') < 0.3
-RETURN p.name, ch::ngramDistance(p.name, 'laptop') AS distance
+WHERE ch.ngramDistance(p.name, 'laptop') < 0.3
+RETURN p.name, ch.ngramDistance(p.name, 'laptop') AS distance
 ORDER BY distance
 ```
 
@@ -1087,13 +1087,13 @@ ORDER BY distance
 -- Array aggregation with special functions
 MATCH (u:User)-[:PURCHASED]->(p:Product)
 RETURN u.name,
-       ch::arrayStringConcat(collect(p.name), ', ') AS products_purchased,
-       ch::arraySum(collect(p.price)) AS total_spent
+       ch.arrayStringConcat(collect(p.name), ', ') AS products_purchased,
+       ch.arraySum(collect(p.price)) AS total_spent
 ```
 
 ### Supported Function Categories
 
-The `ch::` prefix works with all ClickHouse function categories:
+The `ch.` prefix works with all ClickHouse function categories:
 
 | Category | Examples |
 |----------|----------|
@@ -1110,15 +1110,17 @@ The `ch::` prefix works with all ClickHouse function categories:
 
 ### Important Notes
 
-1. **No validation**: ClickGraph doesn't validate `ch::` function names. Invalid functions will fail at ClickHouse execution time.
+1. **No validation**: ClickGraph doesn't validate `ch.` function names. Invalid functions will fail at ClickHouse execution time.
 
-2. **Property mapping works**: Arguments still go through property mapping, so `ch::length(u.name)` correctly maps `name` to the underlying column.
+2. **Property mapping works**: Arguments still go through property mapping, so `ch.length(u.name)` correctly maps `name` to the underlying column.
 
-3. **Parameters work**: You can use query parameters: `ch::substring(u.text, $start, $len)`.
+3. **Parameters work**: You can use query parameters: `ch.substring(u.text, $start, $len)`.
 
-4. **Case sensitive**: `ch::JSONExtract` is different from `ch::jsonextract` - use exact ClickHouse function names.
+4. **Case sensitive**: `ch.JSONExtract` is different from `ch.jsonextract` - use exact ClickHouse function names.
 
 5. **Use for ClickHouse-specific features**: For standard functions (abs, round, etc.), prefer Neo4j function names as they're more portable.
+
+6. **Neo4j ecosystem compatible**: Uses dot notation like `apoc.*` and `gds.*` for compatibility with Neo4j tools.
 
 ### Reference
 

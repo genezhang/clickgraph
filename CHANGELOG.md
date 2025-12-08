@@ -15,8 +15,9 @@
   - **Predicate (2)**: `coalesce`, `nullIf`
   - **Map (1)**: `keys`
 
-- *(functions)* **ClickHouse function pass-through** via `ch::` prefix
-  - Direct access to ANY ClickHouse function: `ch::functionName(args)`
+- *(functions)* **ClickHouse function pass-through** via `ch.` prefix
+  - Direct access to ANY ClickHouse function: `ch.functionName(args)`
+  - Uses dot notation for Neo4j ecosystem compatibility (like `apoc.*`, `gds.*`)
   - Property mapping and parameter substitution work normally
   - Enables: Hash (cityHash64, MD5), JSON (JSONExtract*), URL (domain, path), IP (IPv4NumToString), Geo (greatCircleDistance, geoToH3), Date (formatDateTime, toStartOf*), and all other ClickHouse functions
 
