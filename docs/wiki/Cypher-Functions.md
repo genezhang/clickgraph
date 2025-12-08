@@ -891,15 +891,82 @@ For similarity search on pre-computed embedding vectors (requires `Array(Float32
 | `gds.similarity.euclideanDistance(v1, v2)` | Raw Euclidean distance | `gds.similarity.euclideanDistance(a.vec, b.vec)` |
 | `vector.similarity.cosine(v1, v2)` | Cosine similarity (Neo4j 5.x) | `vector.similarity.cosine(a.vec, b.vec)` |
 
-**Note**: ClickHouse does not generate embeddings. Vectors must be pre-computed externally (e.g., OpenAI, Cohere).
+#### Passing Vector Literals
+
+For RAG (Retrieval-Augmented Generation) queries, pass pre-computed query embeddings as array literals:
 
 ```cypher
--- Find similar items by embedding
-MATCH (a:Product {id: 1}), (b:Product)
-WHERE a <> b
-RETURN b.name, gds.similarity.cosine(a.embedding, b.embedding) AS similarity
+-- Vector literal syntax (array of floats)
+MATCH (doc:Document)
+RETURN doc.title, 
+       gds.similarity.cosine(doc.embedding, [0.1, -0.2, 0.3, 0.15, -0.05]) AS similarity
 ORDER BY similarity DESC
 LIMIT 10
+
+-- Using query parameters (recommended for production)
+MATCH (doc:Document)
+RETURN doc.title,
+       gds.similarity.cosine(doc.embedding, $queryVector) AS similarity
+ORDER BY similarity DESC
+LIMIT 10
+```
+
+**HTTP API with vector parameter:**
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (doc:Document) RETURN doc.title, gds.similarity.cosine(doc.embedding, $vec) AS score ORDER BY score DESC LIMIT 5",
+    "parameters": {
+      "vec": [0.123, -0.456, 0.789, 0.012, -0.345]
+    }
+  }'
+```
+
+#### ClickHouse Index Requirements
+
+For efficient vector search at scale, ClickHouse requires special indexes:
+
+**HNSW Index (Approximate Nearest Neighbor):**
+```sql
+-- Create table with vector column
+CREATE TABLE documents (
+    id UInt64,
+    title String,
+    embedding Array(Float32),
+    INDEX embedding_idx embedding TYPE vector_similarity('hnsw', 'cosineDistance')
+) ENGINE = MergeTree() ORDER BY id;
+
+-- Alternative: L2 distance
+INDEX embedding_idx embedding TYPE vector_similarity('hnsw', 'L2Distance')
+```
+
+**Index Parameters:**
+- `hnsw` - Hierarchical Navigable Small World algorithm
+- `cosineDistance` or `L2Distance` - Distance metric
+- Optional: `GRANULARITY` for index granularity
+
+**Performance Notes:**
+- Without index: Full table scan, O(n) - suitable for < 100K vectors
+- With HNSW index: Approximate search, O(log n) - scales to millions of vectors
+- HNSW returns approximate results (may miss some matches for speed)
+
+**Important**: ClickHouse does NOT generate embeddings. Your application must:
+1. Generate embeddings externally (OpenAI, Cohere, local models)
+2. Store vectors in `Array(Float32)` columns
+3. Pass query embeddings as parameters to ClickGraph
+
+```cypher
+-- RAG workflow example
+-- Step 1: Your app calls OpenAI to embed "What is machine learning?"
+-- Step 2: OpenAI returns [0.123, -0.456, ...] (1536 dimensions for ada-002)
+-- Step 3: Pass to ClickGraph
+MATCH (doc:Document)
+WHERE doc.category = 'tech'
+RETURN doc.title, doc.content,
+       gds.similarity.cosine(doc.embedding, $queryEmbedding) AS relevance
+ORDER BY relevance DESC
+LIMIT 5
 ```
 
 ---
