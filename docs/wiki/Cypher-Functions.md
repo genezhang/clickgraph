@@ -1108,6 +1108,172 @@ The `ch.` prefix works with all ClickHouse function categories:
 | **Math** | `intDiv`, `intDivOrZero`, `modulo`, `gcd`, `lcm` |
 | **Type** | `reinterpret*`, `accurateCast`, `toTypeName` |
 
+### ClickHouse Aggregate Functions (ch.*)
+
+The `ch.` prefix also enables ClickHouse's powerful aggregate functions. These are automatically detected and generate proper GROUP BY clauses.
+
+**Unique Counting (HyperLogLog):**
+```cypher
+-- Approximate unique count (fast, memory efficient)
+MATCH (u:User)
+RETURN u.country, ch.uniq(u.user_id) AS unique_users
+
+-- Exact unique count
+MATCH (e:Event)
+RETURN e.event_type, ch.uniqExact(e.user_id) AS exact_unique_users
+
+-- HyperLogLog variants
+MATCH (p:PageView)
+RETURN ch.uniqCombined(p.session_id) AS sessions,
+       ch.uniqHLL12(p.user_id) AS users_approx
+```
+
+**Quantiles and Percentiles:**
+```cypher
+-- Median (50th percentile)
+MATCH (o:Order)
+RETURN ch.quantile(0.5)(o.amount) AS median_order_value
+
+-- Multiple quantiles at once
+MATCH (o:Order)
+RETURN ch.quantiles(0.25, 0.5, 0.75, 0.95)(o.amount) AS quartiles
+
+-- High-precision quantile
+MATCH (l:Latency)
+RETURN ch.quantileExact(0.99)(l.response_time) AS p99_latency
+
+-- T-Digest for streaming data
+MATCH (m:Metric)
+RETURN ch.quantileTDigest(0.95)(m.value) AS p95_approx
+```
+
+**TopK - Most Frequent Values:**
+```cypher
+-- Top 10 most common error codes
+MATCH (e:Error)
+RETURN ch.topK(10)(e.error_code) AS top_errors
+
+-- Weighted TopK (by occurrence count)
+MATCH (s:Search)
+RETURN ch.topKWeighted(5)(s.query, s.count) AS popular_searches
+```
+
+**ArgMin/ArgMax - Value at Min/Max:**
+```cypher
+-- Find user with highest score
+MATCH (u:User)
+RETURN ch.argMax(u.name, u.score) AS top_scorer,
+       ch.max(u.score) AS top_score
+
+-- Find earliest event per category
+MATCH (e:Event)
+RETURN e.category,
+       ch.argMin(e.id, e.timestamp) AS first_event_id,
+       ch.min(e.timestamp) AS first_timestamp
+```
+
+**Array Collection:**
+```cypher
+-- Collect all values into array
+MATCH (u:User)-[:PURCHASED]->(p:Product)
+RETURN u.user_id, ch.groupArray(p.name) AS purchased_products
+
+-- Sample N values
+MATCH (u:User)
+RETURN u.country, ch.groupArraySample(5)(u.name) AS sample_users
+
+-- Collect unique values only
+MATCH (t:Transaction)
+RETURN t.user_id, ch.groupUniqArray(t.merchant) AS unique_merchants
+```
+
+**Funnel Analysis:**
+```cypher
+-- Window funnel: conversion within time window
+MATCH (e:Event)
+WHERE e.user_id = 123
+RETURN ch.windowFunnel(86400)(  -- 1 day window in seconds
+    e.timestamp,
+    e.event_type = 'view',
+    e.event_type = 'cart',
+    e.event_type = 'purchase'
+) AS funnel_step
+
+-- Retention analysis
+MATCH (e:Event)
+RETURN e.user_id,
+       ch.retention(
+           e.event_type = 'signup',
+           e.event_type = 'day1_active',
+           e.event_type = 'day7_active'
+       ) AS retention_flags
+
+-- Sequence matching
+MATCH (e:Event)
+RETURN ch.sequenceMatch('(?1).*(?2).*(?3)')(
+    e.timestamp,
+    e.action = 'search',
+    e.action = 'view',
+    e.action = 'buy'
+) AS completed_funnel
+```
+
+**Statistics:**
+```cypher
+-- Variance and standard deviation
+MATCH (m:Measurement)
+RETURN ch.varPop(m.value) AS population_variance,
+       ch.stddevSamp(m.value) AS sample_stddev
+
+-- Correlation between metrics
+MATCH (d:Data)
+RETURN ch.corr(d.x, d.y) AS correlation_coefficient,
+       ch.covarPop(d.x, d.y) AS covariance
+```
+
+**Map Aggregates:**
+```cypher
+-- Sum values by key in nested maps
+MATCH (s:Sale)
+RETURN s.region,
+       ch.sumMap(s.product_counts) AS total_by_product
+
+-- Average map values
+MATCH (m:Metrics)
+RETURN ch.avgMap(m.hourly_values) AS avg_by_hour
+```
+
+#### Aggregate Function Reference
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| **Unique Counting** | | |
+| `ch.uniq(x)` | Approximate unique count (HLL) | `ch.uniq(u.user_id)` |
+| `ch.uniqExact(x)` | Exact unique count | `ch.uniqExact(u.email)` |
+| `ch.uniqCombined(x)` | Combined HLL (more accurate) | `ch.uniqCombined(u.id)` |
+| **Quantiles** | | |
+| `ch.quantile(p)(x)` | Single quantile | `ch.quantile(0.95)(latency)` |
+| `ch.quantiles(p1,p2,...)(x)` | Multiple quantiles | `ch.quantiles(0.5,0.9,0.99)(latency)` |
+| `ch.median(x)` | Median (50th percentile) | `ch.median(o.amount)` |
+| **TopK** | | |
+| `ch.topK(n)(x)` | Top N frequent values | `ch.topK(10)(error_code)` |
+| `ch.topKWeighted(n)(x,w)` | Weighted TopK | `ch.topKWeighted(5)(query, count)` |
+| **ArgMin/Max** | | |
+| `ch.argMin(val, key)` | Value at min key | `ch.argMin(name, timestamp)` |
+| `ch.argMax(val, key)` | Value at max key | `ch.argMax(name, score)` |
+| **Array Collection** | | |
+| `ch.groupArray(x)` | Collect into array | `ch.groupArray(p.name)` |
+| `ch.groupArraySample(n)(x)` | Sample N values | `ch.groupArraySample(5)(u.id)` |
+| `ch.groupUniqArray(x)` | Unique values array | `ch.groupUniqArray(tag)` |
+| **Funnel/Retention** | | |
+| `ch.windowFunnel(w)(ts,c1,c2,...)` | Funnel in time window | See example above |
+| `ch.retention(c1,c2,...)` | Retention flags | See example above |
+| `ch.sequenceMatch(p)(ts,c1,c2,...)` | Sequence pattern | See example above |
+| **Statistics** | | |
+| `ch.varPop(x)` | Population variance | `ch.varPop(m.value)` |
+| `ch.stddevSamp(x)` | Sample std deviation | `ch.stddevSamp(m.value)` |
+| `ch.corr(x,y)` | Correlation | `ch.corr(views, purchases)` |
+
 ### Important Notes
 
 1. **No validation**: ClickGraph doesn't validate `ch.` function names. Invalid functions will fail at ClickHouse execution time.

@@ -19,7 +19,16 @@
   - Direct access to ANY ClickHouse function: `ch.functionName(args)`
   - Uses dot notation for Neo4j ecosystem compatibility (like `apoc.*`, `gds.*`)
   - Property mapping and parameter substitution work normally
-  - Enables: Hash (cityHash64, MD5), JSON (JSONExtract*), URL (domain, path), IP (IPv4NumToString), Geo (greatCircleDistance, geoToH3), Date (formatDateTime, toStartOf*), and all other ClickHouse functions
+  - **Scalar functions**: Hash (cityHash64, MD5), JSON (JSONExtract*), URL (domain, path), IP (IPv4NumToString), Geo (greatCircleDistance, geoToH3), Date (formatDateTime, toStartOf*)
+  - **Aggregate functions** (100+ registered): Automatic GROUP BY generation
+    - Unique counting: `ch.uniq`, `ch.uniqExact`, `ch.uniqCombined`, `ch.uniqHLL12`
+    - Quantiles: `ch.quantile(p)`, `ch.quantiles`, `ch.quantileExact`, `ch.median`
+    - TopK: `ch.topK(n)`, `ch.topKWeighted`
+    - ArgMin/Max: `ch.argMin`, `ch.argMax`
+    - Arrays: `ch.groupArray`, `ch.groupUniqArray`, `ch.groupArraySample`
+    - Funnel: `ch.windowFunnel`, `ch.retention`, `ch.sequenceMatch`
+    - Statistics: `ch.varPop`, `ch.stddevSamp`, `ch.corr`, `ch.covarPop`
+    - Maps: `ch.sumMap`, `ch.avgMap`, `ch.minMap`, `ch.maxMap`
 
 ### 🚜 Refactor
 
@@ -30,7 +39,8 @@
 
 ### 🧪 Testing
 
-- Add 22 unit tests for functions (12 translator + 16 registry, some overlap)
+- Add 27 unit tests for functions (17 translator + 16 registry, some overlap)
+- 6 new tests for `ch.` aggregate function detection and classification
 - Fix doctest compilation errors
 - Fix test_view_parameters.rs to use Identifier::Single type
 

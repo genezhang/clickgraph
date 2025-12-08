@@ -1,4 +1,5 @@
 use crate::{
+    clickhouse_query_generator::{is_ch_passthrough_aggregate, CH_PASSTHROUGH_PREFIX},
     open_cypher_parser::{self},
     query_planner::logical_plan::LogicalPlan,
 };
@@ -344,9 +345,18 @@ impl<'a> From<open_cypher_parser::ast::OperatorApplication<'a>> for OperatorAppl
 
 impl<'a> From<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
     fn from(value: open_cypher_parser::ast::FunctionCall<'a>) -> Self {
+        // Standard Neo4j aggregate functions
         let agg_fns = ["count", "min", "max", "avg", "sum", "collect"];
         let name_lower = value.name.to_lowercase();
-        if agg_fns.contains(&name_lower.as_str()) {
+        
+        // Check if it's a standard aggregate function
+        let is_standard_agg = agg_fns.contains(&name_lower.as_str());
+        
+        // Check if it's a ch. prefixed ClickHouse aggregate function
+        let is_ch_agg = value.name.starts_with(CH_PASSTHROUGH_PREFIX) 
+            && is_ch_passthrough_aggregate(&value.name);
+        
+        if is_standard_agg || is_ch_agg {
             LogicalExpr::AggregateFnCall(AggregateFnCall {
                 name: value.name,
                 args: value.args.into_iter().map(LogicalExpr::from).collect(),
@@ -992,6 +1002,45 @@ mod tests {
                 assert_eq!(scalar_fn.args.len(), 3);
             }
             _ => panic!("Expected scalar function"),
+        }
+    }
+
+    #[test]
+    fn test_ch_aggregate_function_classification() {
+        // Test ch. prefixed ClickHouse aggregate functions are classified as aggregates
+        let ch_agg_functions = ["ch.uniq", "ch.quantile", "ch.topK", "ch.groupArray", "ch.argMax"];
+
+        for func_name in &ch_agg_functions {
+            let ast_function_call = ast::FunctionCall {
+                name: func_name.to_string(),
+                args: vec![ast::Expression::Variable("user_id")],
+            };
+            let logical_expr = LogicalExpr::from(ast_function_call);
+
+            match logical_expr {
+                LogicalExpr::AggregateFnCall(agg_fn) => {
+                    assert_eq!(agg_fn.name, *func_name);
+                }
+                _ => panic!("Expected aggregate function for {}", func_name),
+            }
+        }
+
+        // Test ch. prefixed scalar functions remain scalars
+        let ch_scalar_functions = ["ch.cityHash64", "ch.JSONExtract", "ch.upper"];
+
+        for func_name in &ch_scalar_functions {
+            let ast_function_call = ast::FunctionCall {
+                name: func_name.to_string(),
+                args: vec![ast::Expression::Variable("email")],
+            };
+            let logical_expr = LogicalExpr::from(ast_function_call);
+
+            match logical_expr {
+                LogicalExpr::ScalarFnCall(scalar_fn) => {
+                    assert_eq!(scalar_fn.name, *func_name);
+                }
+                _ => panic!("Expected scalar function for {}", func_name),
+            }
         }
     }
 }

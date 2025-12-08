@@ -5,11 +5,179 @@ use super::to_sql::ToSql;
 ///
 /// Translates Neo4j function calls to ClickHouse SQL equivalents
 use crate::query_planner::logical_expr::ScalarFnCall;
+use std::collections::HashSet;
+use std::sync::LazyLock;
 
 /// Prefix for ClickHouse pass-through functions
 /// Usage: ch.functionName(args) -> functionName(args) passed directly to ClickHouse
 /// Uses dot notation for Neo4j ecosystem compatibility (like apoc.*, gds.*)
-const CH_PASSTHROUGH_PREFIX: &str = "ch.";
+pub const CH_PASSTHROUGH_PREFIX: &str = "ch.";
+
+/// Registry of known ClickHouse aggregate functions
+/// These functions require GROUP BY when used with non-aggregated columns
+/// 
+/// Categories:
+/// - Basic: count, sum, avg, min, max, any, anyLast
+/// - Unique counting: uniq, uniqExact, uniqCombined, uniqCombined64, uniqHLL12, uniqTheta
+/// - Quantiles: quantile, quantiles, quantileExact, quantileTDigest, quantileBFloat16
+/// - Array: groupArray, groupArraySample, groupUniqArray, groupArrayMovingSum, groupArrayMovingAvg
+/// - Statistics: varPop, varSamp, stddevPop, stddevSamp, covarPop, covarSamp, corr
+/// - TopK: topK, topKWeighted
+/// - ArgMin/Max: argMin, argMax
+/// - Funnel: windowFunnel, retention, sequenceMatch, sequenceCount
+/// - Bitmap: groupBitmap, groupBitmapAnd, groupBitmapOr, groupBitmapXor
+/// - Map: sumMap, minMap, maxMap, avgMap
+/// - Other: simpleLinearRegression, stochasticLinearRegression, entropy
+static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    let mut s = HashSet::new();
+    
+    // Basic aggregates
+    s.insert("count");
+    s.insert("sum");
+    s.insert("avg");
+    s.insert("min");
+    s.insert("max");
+    s.insert("any");
+    s.insert("anylast");
+    s.insert("anyheavy");
+    s.insert("first_value");
+    s.insert("last_value");
+    
+    // Unique counting (HyperLogLog variants)
+    s.insert("uniq");
+    s.insert("uniqexact");
+    s.insert("uniqcombined");
+    s.insert("uniqcombined64");
+    s.insert("uniqhll12");
+    s.insert("uniqtheta");
+    
+    // Quantiles and percentiles
+    s.insert("quantile");
+    s.insert("quantiles");
+    s.insert("quantileexact");
+    s.insert("quantileexactlow");
+    s.insert("quantileexacthigh");
+    s.insert("quantileexactweighted");
+    s.insert("quantiletdigest");
+    s.insert("quantiletdigestweighted");
+    s.insert("quantilebfloat16");
+    s.insert("quantilebfloat16weighted");
+    s.insert("quantiletiming");
+    s.insert("quantiletimingweighted");
+    s.insert("quantiledeterministic");
+    s.insert("median");
+    s.insert("medianexact");
+    s.insert("mediantiming");
+    
+    // Array collection
+    s.insert("grouparray");
+    s.insert("grouparraysample");
+    s.insert("groupuniqarray");
+    s.insert("grouparrayinsertat");
+    s.insert("grouparraymovingsum");
+    s.insert("grouparraymovingavg");
+    s.insert("grouparrayarray");
+    
+    // Statistics
+    s.insert("varpop");
+    s.insert("varsamp");
+    s.insert("stddevpop");
+    s.insert("stddevsamp");
+    s.insert("covarpop");
+    s.insert("covarsamp");
+    s.insert("corr");
+    s.insert("skewpop");
+    s.insert("skewsamp");
+    s.insert("kurtpop");
+    s.insert("kurtsamp");
+    
+    // TopK
+    s.insert("topk");
+    s.insert("topkweighted");
+    
+    // ArgMin/Max
+    s.insert("argmin");
+    s.insert("argmax");
+    
+    // Funnel and retention analysis
+    s.insert("windowfunnel");
+    s.insert("retention");
+    s.insert("sequencematch");
+    s.insert("sequencecount");
+    s.insert("sequencenextnode");
+    
+    // Bitmap aggregates
+    s.insert("groupbitmap");
+    s.insert("groupbitmapand");
+    s.insert("groupbitmapor");
+    s.insert("groupbitmapxor");
+    
+    // Map aggregates
+    s.insert("summap");
+    s.insert("minmap");
+    s.insert("maxmap");
+    s.insert("avgmap");
+    s.insert("sumwithoverflow");
+    
+    // Histogram
+    s.insert("histogram");
+    
+    // Regression
+    s.insert("simplelinearregression");
+    s.insert("stochasticlinearregression");
+    s.insert("stochasticlogisticregression");
+    
+    // Other useful aggregates
+    s.insert("entropy");
+    s.insert("mannwhitneyutest");
+    s.insert("rankCorr");
+    s.insert("exponentialMovingAverage");
+    s.insert("intervalLengthSum");
+    s.insert("boundingRatio");
+    s.insert("contingency");
+    s.insert("cramersv");
+    s.insert("cramersVBiasCorrected");
+    s.insert("theilsu");
+    s.insert("maxIntersections");
+    s.insert("maxIntersectionsPosition");
+    
+    // Delta/rate functions
+    s.insert("deltaSumTimestamp");
+    s.insert("deltaSum");
+    
+    // Merge functions (for combining partial aggregation states)
+    s.insert("sumMerge");
+    s.insert("countMerge");
+    s.insert("avgMerge");
+    s.insert("uniqMerge");
+    
+    s
+});
+
+/// Check if a function name (without ch. prefix) is a known ClickHouse aggregate
+pub fn is_ch_aggregate_function(fn_name: &str) -> bool {
+    CH_AGGREGATE_FUNCTIONS.contains(fn_name.to_lowercase().as_str())
+}
+
+/// Check if a ch. prefixed function is an aggregate
+/// Returns true if the function starts with ch. and the underlying function is an aggregate
+pub fn is_ch_passthrough_aggregate(fn_name: &str) -> bool {
+    if !fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
+        return false;
+    }
+    let ch_fn_name = &fn_name[CH_PASSTHROUGH_PREFIX.len()..];
+    is_ch_aggregate_function(ch_fn_name)
+}
+
+/// Get the raw ClickHouse function name from a ch. prefixed name
+/// Returns None if not a ch. prefixed function
+pub fn get_ch_function_name(fn_name: &str) -> Option<&str> {
+    if fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
+        Some(&fn_name[CH_PASSTHROUGH_PREFIX.len()..])
+    } else {
+        None
+    }
+}
 
 /// Translate a Neo4j scalar function call to ClickHouse SQL
 pub fn translate_scalar_function(
@@ -336,5 +504,87 @@ mod tests {
         assert!(!is_ch_passthrough("cityHash64"));
         assert!(!is_ch_passthrough("toUpper"));
         assert!(!is_ch_passthrough("CH.test")); // Case sensitive
+    }
+
+    // ===== ClickHouse Aggregate Function Tests =====
+
+    #[test]
+    fn test_is_ch_aggregate_function() {
+        // Basic aggregates
+        assert!(is_ch_aggregate_function("uniq"));
+        assert!(is_ch_aggregate_function("uniqExact"));
+        assert!(is_ch_aggregate_function("UNIQ")); // Case insensitive
+        assert!(is_ch_aggregate_function("quantile"));
+        assert!(is_ch_aggregate_function("topK"));
+        assert!(is_ch_aggregate_function("argMax"));
+        assert!(is_ch_aggregate_function("groupArray"));
+        assert!(is_ch_aggregate_function("windowFunnel"));
+        assert!(is_ch_aggregate_function("retention"));
+        assert!(is_ch_aggregate_function("simpleLinearRegression"));
+        
+        // Not aggregates
+        assert!(!is_ch_aggregate_function("cityHash64"));
+        assert!(!is_ch_aggregate_function("JSONExtract"));
+        assert!(!is_ch_aggregate_function("upper"));
+    }
+
+    #[test]
+    fn test_is_ch_passthrough_aggregate() {
+        // ch. prefixed aggregates
+        assert!(is_ch_passthrough_aggregate("ch.uniq"));
+        assert!(is_ch_passthrough_aggregate("ch.quantile"));
+        assert!(is_ch_passthrough_aggregate("ch.topK"));
+        assert!(is_ch_passthrough_aggregate("ch.groupArray"));
+        
+        // ch. prefixed non-aggregates
+        assert!(!is_ch_passthrough_aggregate("ch.cityHash64"));
+        assert!(!is_ch_passthrough_aggregate("ch.JSONExtract"));
+        
+        // Non ch. prefixed
+        assert!(!is_ch_passthrough_aggregate("uniq"));
+        assert!(!is_ch_passthrough_aggregate("count"));
+    }
+
+    #[test]
+    fn test_get_ch_function_name() {
+        assert_eq!(get_ch_function_name("ch.uniq"), Some("uniq"));
+        assert_eq!(get_ch_function_name("ch.cityHash64"), Some("cityHash64"));
+        assert_eq!(get_ch_function_name("ch."), Some(""));
+        assert_eq!(get_ch_function_name("uniq"), None);
+        assert_eq!(get_ch_function_name("count"), None);
+    }
+
+    #[test]
+    fn test_ch_aggregate_categories() {
+        // Unique counting
+        assert!(is_ch_aggregate_function("uniq"));
+        assert!(is_ch_aggregate_function("uniqExact"));
+        assert!(is_ch_aggregate_function("uniqCombined"));
+        assert!(is_ch_aggregate_function("uniqHLL12"));
+        
+        // Quantiles
+        assert!(is_ch_aggregate_function("quantile"));
+        assert!(is_ch_aggregate_function("quantileExact"));
+        assert!(is_ch_aggregate_function("quantileTDigest"));
+        assert!(is_ch_aggregate_function("median"));
+        
+        // Array collection
+        assert!(is_ch_aggregate_function("groupArray"));
+        assert!(is_ch_aggregate_function("groupUniqArray"));
+        assert!(is_ch_aggregate_function("groupArraySample"));
+        
+        // Statistics
+        assert!(is_ch_aggregate_function("varPop"));
+        assert!(is_ch_aggregate_function("stddevSamp"));
+        assert!(is_ch_aggregate_function("corr"));
+        
+        // Funnel analysis
+        assert!(is_ch_aggregate_function("windowFunnel"));
+        assert!(is_ch_aggregate_function("retention"));
+        assert!(is_ch_aggregate_function("sequenceMatch"));
+        
+        // Map aggregates
+        assert!(is_ch_aggregate_function("sumMap"));
+        assert!(is_ch_aggregate_function("avgMap"));
     }
 }

@@ -15,6 +15,7 @@ use crate::{
 
 // Import function translator for Neo4j -> ClickHouse function mappings
 use super::function_registry::get_function_mapping;
+use super::function_translator::{get_ch_function_name, CH_PASSTHROUGH_PREFIX};
 
 /// Check if an expression contains a string literal (recursively for nested + operations)
 fn contains_string_literal(expr: &RenderExpr) -> bool {
@@ -615,6 +616,26 @@ impl RenderExpr {
                 }
             }
             RenderExpr::AggregateFnCall(agg) => {
+                // Check for ClickHouse pass-through prefix (ch.)
+                if agg.name.starts_with(CH_PASSTHROUGH_PREFIX) {
+                    if let Some(ch_fn_name) = get_ch_function_name(&agg.name) {
+                        if ch_fn_name.is_empty() {
+                            panic!("ch. prefix requires a function name (e.g., ch.uniq)");
+                        }
+                        let args = agg
+                            .args
+                            .iter()
+                            .map(|e| e.to_sql())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        log::debug!(
+                            "ClickHouse aggregate pass-through: ch.{}({}) -> {}({})",
+                            ch_fn_name, args, ch_fn_name, args
+                        );
+                        return format!("{}({})", ch_fn_name, args);
+                    }
+                }
+                
                 // Check if we have a Neo4j -> ClickHouse mapping for aggregate functions
                 let fn_name_lower = agg.name.to_lowercase();
                 match get_function_mapping(&fn_name_lower) {
