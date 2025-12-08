@@ -80,7 +80,7 @@ This is where ClickGraph differentiates - direct access to ClickHouse's analytic
 
 | Feature | ClickGraph | PuppyGraph | TigerGraph | NebulaGraph |
 |---------|------------|------------|------------|-------------|
-| **License** | MIT (open source) | Proprietary | Proprietary | Apache 2.0 |
+| **License** | Apache 2.0 | Proprietary | Proprietary | Apache 2.0 |
 | **Cost** | Free | Enterprise pricing | Enterprise pricing | Free (community) |
 | **Support** | Community | Commercial | Commercial | Community/Commercial |
 | **Vendor lock-in** | Low | Medium | High (GSQL) | Low |
