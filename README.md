@@ -14,38 +14,53 @@
 ## Motivation and Rationale
 - There are huge volumes of data in ClickHouse databases, viewing them as  graph data with graph analytics capability brings another level of abstraction and boosts productivity with graph tools, in ways beyond relational analytics alone.
 - Research shows relational analytics with columnar stores and vectorized execution engines like ClickHouse provide superior analytical performance and scalability to graph-native technologies, which usually leverage explicit adjacency representations and are more suitable for local-area graph traversals.
-- View-based graph analytics offer zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
+- View-based graph analytics offer the benefits of zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
 ---
-## 🚀 What's New in v0.5.3 (December 2, 2025)
+## 🚀 What's New in v0.5.4 (December 7, 2025)
 
-### Cypher Functions & Syntax Improvements
+### Major Release: Cross-Table Queries, Smart Inference & Real-World Benchmarks
 
-**v0.5.3 adds new Cypher functions, improved syntax validation, and pattern matching capabilities.**
+**v0.5.4 delivers major improvements for complex graph analytics on ClickHouse.**
 
-### New Features ✨
+### Highlights ✨
 
-- **`label()` function**: Get scalar label for nodes: `RETURN label(n)` → `'User'`
-- **EXISTS subqueries**: Filter based on pattern existence: `WHERE EXISTS { (n)-[:FOLLOWS]->() }`
-- **WITH + MATCH chaining**: Multi-stage query pipelines: `MATCH ... WITH ... MATCH ...`
-- **Regex matching (`=~`)**: Pattern matching via ClickHouse `match()`: `WHERE n.name =~ '.*Smith'`
-- **`collect()` function**: Aggregate to arrays via `groupArray()`: `RETURN collect(n.name)`
+- **Cross-table query support** - Zeek log correlation and multi-table JOINs now work correctly
+- **Smart type inference** - Automatic node and relationship type inference from schema context
+- **FK-Edge patterns** - File systems, org charts with variable-length paths  
+- **String predicates** - `STARTS WITH`, `ENDS WITH`, `CONTAINS` operators
+- **OnTime Flights benchmark** - Validated against 20M row real-world dataset
+- **1,378 tests passing** - Comprehensive test coverage across multiple schemas
+
+### New Features
+
+- **Cross-table WITH correlation** - Multi-table JOINs with WHERE clause correlation
+- **Smart relationship inference** - `(a:Airport)-[r]->()` automatically infers r:FLIGHT
+- **Smart node inference** - `MATCH (n)` works on single-node-type schemas
+- **Label inference** - Unlabeled nodes infer types from relationship schema
+- **Relationship uniqueness** - Multi-hop undirected patterns enforce Neo4j-style uniqueness
 
 ### Bug Fixes 🐛
 
-- **Graph function aliases**: `type()`, `id()`, `labels()` now return proper column names
-- **Syntax validation**: Parser rejects invalid input like `WHERE AND x = 1` with clear error messages
-
-### Test Coverage 🧪
-
-- **534 library tests passing** (100%)
-- All graph introspection functions verified working
+- Fixed 17+ issues including polymorphic edges, OPTIONAL MATCH, multi-hop patterns, and more
+- See [CHANGELOG.md](CHANGELOG.md) for complete details
 
 ---
 
 ## 📦 Previous Releases
 
 <details>
-<summary><b>v0.5.2 (November 30, 2025)</b> - Schema Variations Release 🎉</summary>
+<summary><b>v0.5.3 (December 2, 2025)</b> - Cypher Functions Release</summary>
+
+- **`label()` function**: Get scalar label for nodes
+- **EXISTS subqueries**: Filter based on pattern existence
+- **WITH + MATCH chaining**: Multi-stage query pipelines
+- **Regex matching (`=~`)**: Pattern matching via ClickHouse `match()`
+- **`collect()` function**: Aggregate to arrays via `groupArray()`
+
+</details>
+
+<details>
+<summary><b>v0.5.2 (November 30, 2025)</b> - Schema Variations Release</summary>
 
 **Comprehensive support for advanced schema patterns including polymorphic edges, coupled edges, and denormalized tables.**
 

@@ -94,7 +94,7 @@ pub fn initial_optimization(
     let plan = transformed_plan.get_plan();
 
     // Debug: Check result after CartesianJoinExtraction
-    eprintln!("🔍 After CartesianJoinExtraction:");
+    crate::debug_println!("🔍 After CartesianJoinExtraction:");
     check_filter_cartesian(&plan, 0);
 
     // Push filters from plan_ctx into GraphRel nodes

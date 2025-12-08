@@ -103,7 +103,7 @@ pub fn categorize_filters(
         let refs_end = references_alias(&predicate, end_cypher_alias, "end_node");
         let has_path_fn = contains_path_function(&predicate);
 
-        println!("DEBUG: Categorizing predicate: {:?}", predicate);
+        crate::debug_println!("DEBUG: Categorizing predicate: {:?}", predicate);
         println!(
             "DEBUG: refs_start (alias '{}'): {}",
             start_cypher_alias, refs_start
@@ -112,26 +112,26 @@ pub fn categorize_filters(
             "DEBUG: refs_end (alias '{}'): {}",
             end_cypher_alias, refs_end
         );
-        println!("DEBUG: has_path_fn: {}", has_path_fn);
+        crate::debug_println!("DEBUG: has_path_fn: {}", has_path_fn);
 
         if has_path_fn {
             // Path function filters (e.g., WHERE length(p) <= 3) go in path function filters
-            println!("DEBUG: Going to path_fn_filters");
+            crate::debug_println!("DEBUG: Going to path_fn_filters");
             path_fn_filters.push(predicate);
         } else if refs_start && refs_end {
             // Filter references both nodes - can't categorize simply
             // For now, treat as start filter (will be in base case)
-            println!("DEBUG: Going to start_filters (refs both)");
+            crate::debug_println!("DEBUG: Going to start_filters (refs both)");
             start_filters.push(predicate);
         } else if refs_start {
-            println!("DEBUG: Going to start_filters");
+            crate::debug_println!("DEBUG: Going to start_filters");
             start_filters.push(predicate);
         } else if refs_end {
-            println!("DEBUG: Going to end_filters");
+            crate::debug_println!("DEBUG: Going to end_filters");
             end_filters.push(predicate);
         } else {
             // Doesn't reference nodes - might be relationship filter or constant
-            println!("DEBUG: Going to rel_filters");
+            crate::debug_println!("DEBUG: Going to rel_filters");
             rel_filters.push(predicate);
         }
     }
@@ -300,7 +300,7 @@ pub fn render_end_filter_to_column_alias(
                 )
                 .unwrap_or_else(|_| column.raw().to_string());
                 let result = format!("end_node.{}", mapped_column);
-                println!("DEBUG: Mapped to end column reference: {}", result);
+                crate::debug_println!("DEBUG: Mapped to end column reference: {}", result);
                 result
             } else if table_alias == start_cypher_alias {
                 let mapped_column = super::cte_generation::map_property_to_column_with_schema(
@@ -309,12 +309,12 @@ pub fn render_end_filter_to_column_alias(
                 )
                 .unwrap_or_else(|_| column.raw().to_string());
                 let result = format!("start_node.{}", mapped_column);
-                println!("DEBUG: Mapped to start column reference: {}", result);
+                crate::debug_println!("DEBUG: Mapped to start column reference: {}", result);
                 result
             } else {
                 // Fallback: use as-is
                 let result = format!("{}.{}", table_alias, column.raw());
-                println!("DEBUG: Fallback: {}", result);
+                crate::debug_println!("DEBUG: Fallback: {}", result);
                 result
             }
         }
@@ -407,7 +407,7 @@ pub fn render_end_filter_to_column_alias(
             format!("{}({})", fn_call.name, args_sql)
         }
         _ => {
-            println!("DEBUG: Unhandled RenderExpr type: {:?}", expr);
+            crate::debug_println!("DEBUG: Unhandled RenderExpr type: {:?}", expr);
             "true".to_string() // Fallback
         }
     }

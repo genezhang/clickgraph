@@ -522,7 +522,7 @@ impl Projection {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        println!("DEBUG Projection::rebuild_or_clone: self.distinct = {}", self.distinct);
+        crate::debug_println!("DEBUG Projection::rebuild_or_clone: self.distinct = {}", self.distinct);
         match input_tf {
             Transformed::Yes(new_input) => {
                 let new_node = LogicalPlan::Projection(Projection {
@@ -531,11 +531,11 @@ impl Projection {
                     kind: self.kind.clone(),
                     distinct: self.distinct,
                 });
-                println!("DEBUG Projection::rebuild_or_clone: Created new Projection with distinct = {}", self.distinct);
+                crate::debug_println!("DEBUG Projection::rebuild_or_clone: Created new Projection with distinct = {}", self.distinct);
                 Transformed::Yes(Arc::new(new_node))
             }
             Transformed::No(_) => {
-                println!("DEBUG Projection::rebuild_or_clone: No transformation, returning old plan");
+                crate::debug_println!("DEBUG Projection::rebuild_or_clone: No transformation, returning old plan");
                 Transformed::No(old_plan.clone())
             }
         }

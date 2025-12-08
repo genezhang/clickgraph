@@ -135,7 +135,6 @@ impl QueryPerformanceMetrics {
 
 /// Simple health check endpoint
 pub async fn health_check() -> impl IntoResponse {
-    println!("DEBUG: health_check handler called!");
     Json(serde_json::json!({
         "service": "clickgraph",
         "status": "healthy",
@@ -489,7 +488,7 @@ pub async fn query_handler(
                 app_state.config.max_cte_depth,
             );
             metrics.sql_generation_time = sql_generation_start.elapsed().as_secs_f64();
-            println!("\n ch_query \n {} \n", ch_query);
+            crate::debug_println!("\n ch_query \n {} \n", ch_query);
 
             // Store in cache (even in sql_only mode for future use)
             if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
@@ -873,7 +872,7 @@ pub async fn ddl_handler(
         })?;
 
     for ch_query in ch_sql_queries {
-        println!("\n ch_query -> {:?}", ch_query);
+        crate::debug_println!("\n ch_query -> {:?}", ch_query);
         let ch_client = clickhouse_client
             .clone()
             .with_option("wait_end_of_query", "1");
@@ -937,13 +936,8 @@ pub struct SchemaInfo {
 pub async fn list_schemas_handler(
     State(_app_state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    println!("DEBUG: list_schemas_handler called");
     let schema_names = graph_catalog::list_available_schemas().await;
-    println!(
-        "DEBUG: Found {} schemas: {:?}",
-        schema_names.len(),
-        schema_names
-    );
+    log::debug!("Found {} schemas: {:?}", schema_names.len(), schema_names);
     let mut schemas_info = Vec::new();
 
     for name in schema_names {

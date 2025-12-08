@@ -166,7 +166,7 @@ impl AnalyzerPass for FilterTagging {
                 }
             }
             LogicalPlan::Projection(projection) => {
-                println!("🔍 FilterTagging: BEFORE processing Projection - distinct={}", projection.distinct);
+                crate::debug_println!("🔍 FilterTagging: BEFORE processing Projection - distinct={}", projection.distinct);
                 println!("FilterTagging: Processing Projection, analyzing child input");
                 println!(
                     "FilterTagging: Projection input type: {:?}",
@@ -225,7 +225,7 @@ impl AnalyzerPass for FilterTagging {
                         distinct: projection.distinct,  // PRESERVE distinct flag from original projection
                     },
                 )));
-                println!("🔍 FilterTagging: AFTER creating new Projection - distinct={}", projection.distinct);
+                crate::debug_println!("🔍 FilterTagging: AFTER creating new Projection - distinct={}", projection.distinct);
                 result
             }
             LogicalPlan::GroupBy(group_by) => {

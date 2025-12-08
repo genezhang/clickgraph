@@ -81,7 +81,6 @@ pub async fn run() {
 }
 
 pub async fn run_with_config(config: ServerConfig) {
-    println!("DEBUG: run_with_config called!");
     dotenv().ok();
 
     // Test that logging is working
@@ -143,10 +142,7 @@ pub async fn run_with_config(config: ServerConfig) {
             }
         };
 
-    println!(
-        "GLOBAL_SCHEMAS initialized: {:?}",
-        GLOBAL_SCHEMAS.get().is_some()
-    );
+    log::debug!("GLOBAL_SCHEMAS initialized: {:?}", GLOBAL_SCHEMAS.get().is_some());
 
     // Initialize query cache
     let cache_config = query_cache::QueryCacheConfig::from_env();
@@ -160,7 +156,7 @@ pub async fn run_with_config(config: ServerConfig) {
 
     // Schema monitoring disabled - our YAML-based schema format differs from upstream Brahmand
     // Re-enable when we implement proper schema versioning in ClickHouse tables
-    println!("Schema monitoring disabled: Using in-memory schema management");
+    log::debug!("Schema monitoring disabled: Using in-memory schema management");
 
     // // Start background schema monitoring (only for database-loaded schemas)
     // if let Some(schema_client) = client_opt {
@@ -181,7 +177,7 @@ pub async fn run_with_config(config: ServerConfig) {
 
     // Start HTTP server
     let http_bind_address = format!("{}:{}", config.http_host, config.http_port);
-    println!("Starting HTTP server on {}", http_bind_address);
+    log::info!("Starting HTTP server on {}", http_bind_address);
 
     let app = Router::new()
         .route("/health", get(health_check))
@@ -191,13 +187,6 @@ pub async fn run_with_config(config: ServerConfig) {
         .route("/schemas/load", post(load_schema_handler))
         .route("/schemas/{name}", get(get_schema_handler))
         .with_state(Arc::new(app_state.clone()));
-
-    println!("DEBUG: Routes registered:");
-    println!("  - /health");
-    println!("  - /query");
-    println!("  - /schemas");
-    println!("  - /schemas/load");
-    println!("DEBUG: Router created with routes registered");
 
     let http_listener = match TcpListener::bind(&http_bind_address).await {
         Ok(listener) => {

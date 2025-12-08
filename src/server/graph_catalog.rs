@@ -80,31 +80,31 @@ pub async fn initialize_global_schema(
     clickhouse_client: Option<Client>,
     validate_schema: bool,
 ) -> Result<SchemaSource, String> {
-    println!("Initializing ClickGraph schema...");
+    log::info!("Initializing ClickGraph schema...");
 
     // Try to load from YAML configuration first (preferred approach)
     if let Ok(yaml_config_path) = std::env::var("GRAPH_CONFIG_PATH") {
-        println!("Found GRAPH_CONFIG_PATH: {}", yaml_config_path);
+        log::info!("Loading schema from GRAPH_CONFIG_PATH: {}", yaml_config_path);
 
         match load_schema_and_config_from_yaml(&yaml_config_path, clickhouse_client.as_ref()).await
         {
             Ok((schema, config)) => {
-                println!(
-                    "✓ Successfully loaded schema from YAML config: {}",
+                log::info!(
+                    "✓ Loaded schema from YAML: {}",
                     yaml_config_path
                 );
 
                 // Validate schema against ClickHouse if requested
                 if validate_schema {
                     if let Some(client) = clickhouse_client.as_ref() {
-                        println!("  Validating schema against ClickHouse...");
+                        log::info!("  Validating schema against ClickHouse...");
                         match config
                             .validate_schema(&mut crate::graph_catalog::SchemaValidator::new(
                                 client.clone(),
                             ))
                             .await
                         {
-                            Ok(_) => println!("  ✓ Schema validation passed"),
+                            Ok(_) => log::info!("  ✓ Schema validation passed"),
                             Err(e) => {
                                 eprintln!("  ✗ Schema validation failed: {}", e);
                                 return Err(format!("Schema validation failed: {}", e));

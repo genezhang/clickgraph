@@ -62,10 +62,7 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    println!(
-        "\nClickGraph v{} (fork of Brahmand)\n",
-        env!("CARGO_PKG_VERSION")
-    );
+    println!("\nClickGraph v{}\n", env!("CARGO_PKG_VERSION"));
 
     // Create configuration from CLI args
     let cli_config: config::CliConfig = cli.into();

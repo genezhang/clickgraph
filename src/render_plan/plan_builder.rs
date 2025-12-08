@@ -346,7 +346,7 @@ impl RenderPlanBuilder for LogicalPlan {
         &self,
         alias: &str,
     ) -> RenderPlanBuilderResult<(Vec<(String, String)>, Option<String>)> {
-        eprintln!("DEBUG get_properties_with_table_alias: alias='{}', plan type={:?}", alias, std::mem::discriminant(self));
+        crate::debug_println!("DEBUG get_properties_with_table_alias: alias='{}', plan type={:?}", alias, std::mem::discriminant(self));
         match self {
             LogicalPlan::GraphNode(node) if node.alias == alias => {
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
@@ -404,9 +404,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
                     let is_incoming = rel.direction == Direction::Incoming;
                     
-                    eprintln!("DEBUG GraphRel: alias='{}' checking left='{}', right='{}', rel_alias='{}', direction={:?}",
+                    crate::debug_println!("DEBUG GraphRel: alias='{}' checking left='{}', right='{}', rel_alias='{}', direction={:?}",
                         alias, rel.left_connection, rel.right_connection, rel.alias, rel.direction);
-                    eprintln!("DEBUG GraphRel: from_node_properties={:?}, to_node_properties={:?}",
+                    crate::debug_println!("DEBUG GraphRel: from_node_properties={:?}, to_node_properties={:?}",
                         scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
                         scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()));
                     
@@ -826,7 +826,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     if use_inline_joins {
                         // Fixed-length patterns (*2, *3, etc) - NO CTE needed!
                         // extract_joins() will handle inline JOIN generation
-                        println!("DEBUG extract_ctes: Fixed-length pattern - skipping CTE, will use inline JOINs");
+                        crate::debug_println!("DEBUG extract_ctes: Fixed-length pattern - skipping CTE, will use inline JOINs");
                         
                         // Continue extracting CTEs from child nodes
                         let mut child_ctes = graph_rel.left.extract_ctes(last_node_alias)?;
@@ -994,7 +994,7 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn extract_select_items(&self) -> RenderPlanBuilderResult<Vec<SelectItem>> {
-        println!("DEBUG: extract_select_items called on: {:?}", self);
+        crate::debug_println!("DEBUG: extract_select_items called on: {:?}", self);
         let select_items = match &self {
             LogicalPlan::Empty => vec![],
             LogicalPlan::Scan(_) => vec![],
@@ -1180,7 +1180,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 
                 let with_aliases = find_with_aliases(projection.input.as_ref());
                 if !with_aliases.is_empty() {
-                    eprintln!("DEBUG: Found {} WITH aliases: {:?}", with_aliases.len(), with_aliases.keys().collect::<Vec<_>>());
+                    crate::debug_println!("DEBUG: Found {} WITH aliases: {:?}", with_aliases.len(), with_aliases.keys().collect::<Vec<_>>());
                 }
 
                 let path_var = get_path_variable(&projection.input);
@@ -1189,9 +1189,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 // This happens when users write `RETURN u` (returning whole node)
                 // The ProjectionTagging analyzer may convert this to `u.*`, OR it may leave it as TableAlias
                 let mut expanded_items = Vec::new();
-                eprintln!("DEBUG: Processing {} projection items", projection.items.len());
+                crate::debug_println!("DEBUG: Processing {} projection items", projection.items.len());
                 for (idx, item) in projection.items.iter().enumerate() {
-                    eprintln!("DEBUG: Projection item {}: expr={:?}, alias={:?}", idx, item.expression, item.col_alias);
+                    crate::debug_println!("DEBUG: Projection item {}: expr={:?}, alias={:?}", idx, item.expression, item.col_alias);
                     // Check for TableAlias (u) - expand to all properties
                     if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) =
                         &item.expression
@@ -1307,13 +1307,13 @@ impl RenderPlanBuilder for LogicalPlan {
                             ref table_alias,
                         ) = item.expression
                         {
-                            println!("DEBUG: Checking TableAlias: {}", table_alias.0);
+                            crate::debug_println!("DEBUG: Checking TableAlias: {}", table_alias.0);
                             if let Some(with_expr) = with_aliases.get(&table_alias.0) {
                                 // Replace with the actual expression from WITH
-                                println!("DEBUG: Resolved {} to {:?}", table_alias.0, with_expr);
+                                crate::debug_println!("DEBUG: Resolved {} to {:?}", table_alias.0, with_expr);
                                 with_expr.clone()
                             } else {
-                                println!("DEBUG: No WITH alias found for {}", table_alias.0);
+                                crate::debug_println!("DEBUG: No WITH alias found for {}", table_alias.0);
                                 item.expression.clone()
                             }
                         } else {
@@ -1330,11 +1330,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Note: By this point, property names have already been converted to column names
                     // by the analyzer, so we just need to fix the table alias.
                     let translated_expr = if let RenderExpr::PropertyAccessExp(ref prop_access) = expr {
-                        println!("DEBUG: Checking denormalized alias for {}.{}", prop_access.table_alias.0, prop_access.column.0.raw());
+                        crate::debug_println!("DEBUG: Checking denormalized alias for {}.{}", prop_access.table_alias.0, prop_access.column.0.raw());
                         // Check if this alias is denormalized and needs to point to a different table
                         match self.get_properties_with_table_alias(&prop_access.table_alias.0) {
                             Ok((props, actual_table_alias)) => {
-                                println!("DEBUG: get_properties_with_table_alias for '{}' returned Ok: {} properties, actual_alias={:?}", 
+                                crate::debug_println!("DEBUG: get_properties_with_table_alias for '{}' returned Ok: {} properties, actual_alias={:?}", 
                                     prop_access.table_alias.0, props.len(), actual_table_alias);
                                 if let Some(actual_alias) = actual_table_alias {
                                     // This is a denormalized alias - use the actual table alias
@@ -1348,12 +1348,12 @@ impl RenderPlanBuilder for LogicalPlan {
                                         column: prop_access.column.clone(),
                                     }))
                                 } else {
-                                    println!("DEBUG: No actual_table_alias for '{}'", prop_access.table_alias.0);
+                                    crate::debug_println!("DEBUG: No actual_table_alias for '{}'", prop_access.table_alias.0);
                                     None // Use original alias
                                 }
                             }
                             Err(e) => {
-                                println!("DEBUG: get_properties_with_table_alias for '{}' returned Err: {:?}", 
+                                crate::debug_println!("DEBUG: get_properties_with_table_alias for '{}' returned Err: {:?}", 
                                     prop_access.table_alias.0, e);
                                 None
                             }
@@ -1440,39 +1440,39 @@ impl RenderPlanBuilder for LogicalPlan {
         // Extract distinct flag from Projection nodes
         let result = match &self {
             LogicalPlan::Projection(projection) => {
-                println!("DEBUG extract_distinct: Found Projection, distinct={}", projection.distinct);
+                crate::debug_println!("DEBUG extract_distinct: Found Projection, distinct={}", projection.distinct);
                 projection.distinct
             }
             LogicalPlan::OrderBy(order_by) => {
-                println!("DEBUG extract_distinct: OrderBy, recursing");
+                crate::debug_println!("DEBUG extract_distinct: OrderBy, recursing");
                 order_by.input.extract_distinct()
             }
             LogicalPlan::Skip(skip) => {
-                println!("DEBUG extract_distinct: Skip, recursing");
+                crate::debug_println!("DEBUG extract_distinct: Skip, recursing");
                 skip.input.extract_distinct()
             }
             LogicalPlan::Limit(limit) => {
-                println!("DEBUG extract_distinct: Limit, recursing");
+                crate::debug_println!("DEBUG extract_distinct: Limit, recursing");
                 limit.input.extract_distinct()
             }
             LogicalPlan::GroupBy(group_by) => {
-                println!("DEBUG extract_distinct: GroupBy, recursing");
+                crate::debug_println!("DEBUG extract_distinct: GroupBy, recursing");
                 group_by.input.extract_distinct()
             }
             LogicalPlan::GraphJoins(graph_joins) => {
-                println!("DEBUG extract_distinct: GraphJoins, recursing");
+                crate::debug_println!("DEBUG extract_distinct: GraphJoins, recursing");
                 graph_joins.input.extract_distinct()
             }
             LogicalPlan::Filter(filter) => {
-                println!("DEBUG extract_distinct: Filter, recursing");
+                crate::debug_println!("DEBUG extract_distinct: Filter, recursing");
                 filter.input.extract_distinct()
             }
             _ => {
-                println!("DEBUG extract_distinct: Other variant, returning false");
+                crate::debug_println!("DEBUG extract_distinct: Other variant, returning false");
                 false
             }
         };
-        println!("DEBUG extract_distinct: Returning {}", result);
+        crate::debug_println!("DEBUG extract_distinct: Returning {}", result);
         result
     }
 
@@ -1601,7 +1601,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 let right_is_denormalized = is_node_denormalized(&graph_rel.right);
                 
                 if left_is_denormalized && right_is_denormalized {
-                    println!("DEBUG: extract_from - DENORMALIZED pattern, using relationship table as FROM");
+                    crate::debug_println!("DEBUG: extract_from - DENORMALIZED pattern, using relationship table as FROM");
                     
                     // For multi-hop denormalized, find the first (leftmost) relationship
                     // We need to traverse recursively to find the leftmost GraphRel
@@ -1677,16 +1677,16 @@ impl RenderPlanBuilder for LogicalPlan {
                     graph_rel.right.extract_from(),
                 );
 
-                println!("DEBUG: primary_from = {:?}", primary_from);
-                println!("DEBUG: fallback_from = {:?}", fallback_from);
+                crate::debug_println!("DEBUG: primary_from = {:?}", primary_from);
+                crate::debug_println!("DEBUG: fallback_from = {:?}", fallback_from);
 
                 if let Ok(Some(from_table)) = primary_from {
                     from_table_to_view_ref(Some(from_table))
                 } else {
                     // If primary node doesn't have FROM, try fallback
                     let right_from = fallback_from;
-                    println!("DEBUG: Using fallback FROM");
-                    println!("DEBUG: right_from = {:?}", right_from);
+                    crate::debug_println!("DEBUG: Using fallback FROM");
+                    crate::debug_println!("DEBUG: right_from = {:?}", right_from);
 
                     if let Ok(Some(from_table)) = right_from {
                         from_table_to_view_ref(Some(from_table))
@@ -1695,8 +1695,8 @@ impl RenderPlanBuilder for LogicalPlan {
                         if let LogicalPlan::GraphRel(nested_graph_rel) = graph_rel.right.as_ref() {
                             // Extract FROM from the nested GraphRel's left node
                             let nested_left_from = nested_graph_rel.left.extract_from();
-                            println!("DEBUG: nested_graph_rel.left = {:?}", nested_graph_rel.left);
-                            println!("DEBUG: nested_left_from = {:?}", nested_left_from);
+                            crate::debug_println!("DEBUG: nested_graph_rel.left = {:?}", nested_graph_rel.left);
+                            crate::debug_println!("DEBUG: nested_left_from = {:?}", nested_left_from);
 
                             if let Ok(Some(nested_from_table)) = nested_left_from {
                                 from_table_to_view_ref(Some(nested_from_table))
@@ -2159,7 +2159,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 if let Some(spec) = &graph_rel.variable_length {
                     if let Some(exact_hops) = spec.exact_hop_count() {
                         if graph_rel.shortest_path_mode.is_none() {
-                            println!("DEBUG: extract_filters - Adding cycle prevention for fixed-length *{}", exact_hops);
+                            crate::debug_println!("DEBUG: extract_filters - Adding cycle prevention for fixed-length *{}", exact_hops);
                             
                             // Check if this is a denormalized pattern
                             let is_denormalized = is_node_denormalized(&graph_rel.left) 
@@ -2202,7 +2202,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 &graph_rel.left_connection,
                                 &graph_rel.right_connection,
                             ) {
-                                println!("DEBUG: extract_filters - Generated cycle prevention filter");
+                                crate::debug_println!("DEBUG: extract_filters - Generated cycle prevention filter");
                                 all_predicates.push(cycle_filter);
                             }
                         }
@@ -2241,19 +2241,19 @@ impl RenderPlanBuilder for LogicalPlan {
                 
                 // Also check for schema filters from the input (e.g., GraphNode → ViewScan)
                 if let Some(input_filter) = filter.input.extract_filters()? {
-                    println!("DEBUG: extract_filters - Combining Filter predicate with input schema filter");
+                    crate::debug_println!("DEBUG: extract_filters - Combining Filter predicate with input schema filter");
                     // Combine the Filter predicate with input's schema filter using AND
                     Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
                         operator: Operator::And,
                         operands: vec![input_filter, expr],
                     }))
                 } else {
-                    println!("DEBUG: extract_filters - Returning Filter predicate only (no input filter)");
+                    crate::debug_println!("DEBUG: extract_filters - Returning Filter predicate only (no input filter)");
                     Some(expr)
                 }
             }
             LogicalPlan::Projection(projection) => {
-                println!("DEBUG: extract_filters - Projection, recursing to input type: {:?}", std::mem::discriminant(&*projection.input));
+                crate::debug_println!("DEBUG: extract_filters - Projection, recursing to input type: {:?}", std::mem::discriminant(&*projection.input));
                 projection.input.extract_filters()?
             }
             LogicalPlan::GroupBy(group_by) => group_by.input.extract_filters()?,
@@ -2408,7 +2408,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Special case: *0 pattern (zero hops = same node)
                     // Return empty joins - both a and b reference the same node
                     if vlp_ctx.is_fixed_length && exact_hops == 0 {
-                        println!("DEBUG: extract_joins - Zero-hop pattern (*0) - returning empty joins");
+                        crate::debug_println!("DEBUG: extract_joins - Zero-hop pattern (*0) - returning empty joins");
                         return Ok(Vec::new());
                     }
                     
@@ -2445,7 +2445,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 
                 // For denormalized patterns, handle specially
                 if left_is_denormalized && right_is_denormalized {
-                    println!("DEBUG: DENORMALIZED multi-hop pattern detected");
+                    crate::debug_println!("DEBUG: DENORMALIZED multi-hop pattern detected");
                     
                     // Get the relationship table 
                     let rel_table = extract_table_name(&graph_rel.center)
@@ -3168,20 +3168,20 @@ impl RenderPlanBuilder for LogicalPlan {
     /// Try to build a JOIN-based render plan for simple queries
     /// Returns Ok(plan) if successful, Err(_) if this query needs CTE-based processing
     fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
-        println!("DEBUG: try_build_join_based_plan called");
-        println!("DEBUG: self plan type = {:?}", std::mem::discriminant(self));
+        crate::debug_println!("DEBUG: try_build_join_based_plan called");
+        crate::debug_println!("DEBUG: self plan type = {:?}", std::mem::discriminant(self));
 
         // Extract DISTINCT flag BEFORE unwrapping OrderBy/Limit/Skip
         let distinct = self.extract_distinct();
-        println!("DEBUG: try_build_join_based_plan - extracted distinct: {}", distinct);
+        crate::debug_println!("DEBUG: try_build_join_based_plan - extracted distinct: {}", distinct);
 
         // First, extract ORDER BY/LIMIT/SKIP if present
         let (core_plan, order_by_items, limit_val, skip_val) = match self {
             LogicalPlan::Limit(limit_node) => {
-                println!("DEBUG: Found Limit node, checking input...");
+                crate::debug_println!("DEBUG: Found Limit node, checking input...");
                 match limit_node.input.as_ref() {
                     LogicalPlan::OrderBy(order_node) => {
-                        println!("DEBUG: Limit input is OrderBy with {} items", order_node.items.len());
+                        crate::debug_println!("DEBUG: Limit input is OrderBy with {} items", order_node.items.len());
                         (
                             order_node.input.as_ref(),
                             Some(&order_node.items),
@@ -3190,7 +3190,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         )
                     }
                     other => {
-                        println!("DEBUG: Limit input is NOT OrderBy: {:?}", std::mem::discriminant(other));
+                        crate::debug_println!("DEBUG: Limit input is NOT OrderBy: {:?}", std::mem::discriminant(other));
                         (other, None, Some(limit_node.count), None)
                     }
                 }
@@ -3205,18 +3205,18 @@ impl RenderPlanBuilder for LogicalPlan {
                 (skip_node.input.as_ref(), None, None, Some(skip_node.count))
             }
             other => {
-                println!("DEBUG: self is NOT Limit/OrderBy/Skip: {:?}", std::mem::discriminant(other));
+                crate::debug_println!("DEBUG: self is NOT Limit/OrderBy/Skip: {:?}", std::mem::discriminant(other));
                 (other, None, None, None)
             }
         };
         
-        println!("DEBUG: order_by_items present = {}", order_by_items.is_some());
+        crate::debug_println!("DEBUG: order_by_items present = {}", order_by_items.is_some());
 
         // Check if the core plan contains a Union (denormalized node-only queries)
         // For Union, we need to build each branch separately and combine them
         // If branches have aggregation, we'll handle it specially (subquery + outer GROUP BY)
         if let Some(union) = find_nested_union(core_plan) {
-            println!("DEBUG: Found nested Union with {} inputs, building UNION ALL plan", union.inputs.len());
+            crate::debug_println!("DEBUG: Found nested Union with {} inputs, building UNION ALL plan", union.inputs.len());
             
             use crate::graph_catalog::graph_schema::GraphSchema;
             use std::collections::HashMap;
@@ -3240,10 +3240,10 @@ impl RenderPlanBuilder for LogicalPlan {
             // We need to extract this info from core_plan (which wraps the Union)
             let outer_aggregation_info = extract_outer_aggregation_info(core_plan);
             
-            println!("DEBUG: outer_aggregation_info = {:?}", outer_aggregation_info.is_some());
+            crate::debug_println!("DEBUG: outer_aggregation_info = {:?}", outer_aggregation_info.is_some());
             
             if let Some((outer_select, outer_group_by)) = outer_aggregation_info {
-                println!("DEBUG: Creating aggregation-aware UNION plan with {} outer SELECT items, {} GROUP BY", 
+                crate::debug_println!("DEBUG: Creating aggregation-aware UNION plan with {} outer SELECT items, {} GROUP BY", 
                     outer_select.len(), outer_group_by.len());
                 
                 // The union branches already have the correct base columns (no aggregation)
@@ -3301,7 +3301,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 plan.select.items.iter().any(|item| matches!(&item.expression, RenderExpr::AggregateFnCall(_)))
             });
             
-            println!("DEBUG: branches_have_aggregation = {}", branches_have_aggregation);
+            crate::debug_println!("DEBUG: branches_have_aggregation = {}", branches_have_aggregation);
             
             if branches_have_aggregation {
                 // Extract GROUP BY and aggregation from first branch (all branches should be similar)
@@ -3419,7 +3419,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     vec![]
                 };
                 
-                println!("DEBUG: Creating aggregation-aware UNION plan with {} outer SELECT items, {} GROUP BY", 
+                crate::debug_println!("DEBUG: Creating aggregation-aware UNION plan with {} outer SELECT items, {} GROUP BY", 
                     outer_select_items.len(), outer_group_by.len());
                 
                 return Ok(RenderPlan {
@@ -3510,7 +3510,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
         // Check for GraphJoins wrapping Projection(Return) -> GroupBy pattern
         if let LogicalPlan::GraphJoins(graph_joins) = core_plan {
-            println!("DEBUG: core_plan is GraphJoins");
+            crate::debug_println!("DEBUG: core_plan is GraphJoins");
             // Check if there's a variable-length or shortest path pattern in the tree
             // These require recursive CTEs and cannot use inline JOINs
             if has_variable_length_or_shortest_path(&graph_joins.input) {
@@ -3594,16 +3594,16 @@ impl RenderPlanBuilder for LogicalPlan {
         // First, check if there's any variable-length path anywhere in the plan
         // that isn't fixed-length (which can use inline JOINs)
         let has_vlp = self.contains_variable_length_path();
-        println!("DEBUG: contains_variable_length_path() = {}", has_vlp);
+        crate::debug_println!("DEBUG: contains_variable_length_path() = {}", has_vlp);
         if has_vlp {
             // Check if it's truly variable (needs CTE) vs fixed-length (can use JOINs)
             let spec_opt = get_variable_length_spec(self);
-            println!("DEBUG: get_variable_length_spec() = {:?}", spec_opt);
+            crate::debug_println!("DEBUG: get_variable_length_spec() = {:?}", spec_opt);
             if let Some(spec) = spec_opt {
                 let is_fixed_length = spec.exact_hop_count().is_some();
-                println!("DEBUG: is_fixed_length = {}", is_fixed_length);
+                crate::debug_println!("DEBUG: is_fixed_length = {}", is_fixed_length);
                 if !is_fixed_length {
-                    println!("DEBUG: Plan contains variable-length path (range pattern) - need CTE");
+                    crate::debug_println!("DEBUG: Plan contains variable-length path (range pattern) - need CTE");
                     return Err(RenderBuildError::InvalidRenderPlan(
                         "Variable-length paths require CTE-based processing".to_string(),
                     ));
@@ -3627,7 +3627,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         // Continue to extract_joins() path
                     } else {
                         // Truly variable-length (*1.., *0..5) or shortest path - needs CTE
-                        println!("DEBUG: Variable-length pattern detected, returning Err to use CTE path");
+                        crate::debug_println!("DEBUG: Variable-length pattern detected, returning Err to use CTE path");
                         return Err(RenderBuildError::InvalidRenderPlan(
                             "Variable-length paths require CTE-based processing".to_string(),
                         ));
@@ -3660,7 +3660,7 @@ impl RenderPlanBuilder for LogicalPlan {
         // - Complex nested queries
         // - Queries that don't have extractable JOINs
 
-        println!("DEBUG: Calling build_simple_relationship_render_plan with distinct: {}", distinct);
+        crate::debug_println!("DEBUG: Calling build_simple_relationship_render_plan with distinct: {}", distinct);
         self.build_simple_relationship_render_plan(Some(distinct))
     }
 
@@ -3687,11 +3687,11 @@ impl RenderPlanBuilder for LogicalPlan {
         // Unwrap OrderBy, Limit, Skip to find the core Projection
         let (core_plan, order_by, limit_val, skip_val) = match self {
             LogicalPlan::Limit(limit_node) => {
-                println!("DEBUG: Unwrapping Limit node, count={}", limit_node.count);
+                crate::debug_println!("DEBUG: Unwrapping Limit node, count={}", limit_node.count);
                 let limit_val = limit_node.count;
                 match limit_node.input.as_ref() {
                     LogicalPlan::OrderBy(order_node) => {
-                        println!("DEBUG: Found OrderBy inside Limit");
+                        crate::debug_println!("DEBUG: Found OrderBy inside Limit");
                         (
                             order_node.input.as_ref(),
                             Some(&order_node.items),
@@ -3700,7 +3700,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         )
                     }
                     LogicalPlan::Skip(skip_node) => {
-                        println!("DEBUG: Found Skip inside Limit");
+                        crate::debug_println!("DEBUG: Found Skip inside Limit");
                         (
                             skip_node.input.as_ref(),
                             None,
@@ -3718,7 +3718,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::OrderBy(order_node) => {
-                println!("DEBUG: Unwrapping OrderBy node");
+                crate::debug_println!("DEBUG: Unwrapping OrderBy node");
                 (
                     order_node.input.as_ref(),
                     Some(&order_node.items),
@@ -3727,7 +3727,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 )
             }
             LogicalPlan::Skip(skip_node) => {
-                println!("DEBUG: Unwrapping Skip node");
+                crate::debug_println!("DEBUG: Unwrapping Skip node");
                 (skip_node.input.as_ref(), None, None, Some(skip_node.count))
             }
             other => {
@@ -3757,14 +3757,14 @@ impl RenderPlanBuilder for LogicalPlan {
                 outer_proj.kind,
                 crate::query_planner::logical_plan::ProjectionKind::Return
             ) {
-                println!("DEBUG: Projection is Return type");
+                crate::debug_println!("DEBUG: Projection is Return type");
                 if let LogicalPlan::GroupBy(group_by) = outer_proj.input.as_ref() {
-                    println!("DEBUG: Found GroupBy under Projection(Return)!");
+                    crate::debug_println!("DEBUG: Found GroupBy under Projection(Return)!");
                     
                     // Check for variable-length paths in GroupBy's input
                     // VLP with aggregation requires CTE-based processing
                     if group_by.input.contains_variable_length_path() {
-                        println!("DEBUG: GroupBy contains variable-length path - need CTE");
+                        crate::debug_println!("DEBUG: GroupBy contains variable-length path - need CTE");
                         return Err(RenderBuildError::InvalidRenderPlan(
                             "Variable-length paths with aggregation require CTE-based processing".to_string(),
                         ));
@@ -3798,7 +3798,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         extract_with_aliases(group_by.input.as_ref())
                     };
                     
-                    println!("DEBUG: WITH aliases found: {:?}", with_aliases);
+                    crate::debug_println!("DEBUG: WITH aliases found: {:?}", with_aliases);
 
                     // CTE is always needed when there are WITH aliases (aggregates)
                     // because the outer query needs to reference them from the CTE
@@ -4202,7 +4202,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     );
                 }
             } else {
-                println!("DEBUG: Projection is not Return type");
+                crate::debug_println!("DEBUG: Projection is not Return type");
             }
         } else {
             println!(
@@ -4497,7 +4497,7 @@ impl RenderPlanBuilder for LogicalPlan {
         
         // Apply alias rewriting for denormalized VLP if we have a mapping
         if let Some((ref simple_map, ref column_map, ref rel_alias)) = vlp_alias_map {
-            println!("DEBUG: Rewriting select items with VLP alias map: simple={:?}, column={:?}, rel={}", 
+            crate::debug_println!("DEBUG: Rewriting select items with VLP alias map: simple={:?}, column={:?}, rel={}", 
                      simple_map, column_map, rel_alias);
             final_select_items = final_select_items.into_iter()
                 .map(|item| SelectItem {
@@ -4516,7 +4516,7 @@ impl RenderPlanBuilder for LogicalPlan {
         // Apply alias rewriting to filters for denormalized VLP
         if let Some((ref simple_map, ref column_map, ref rel_alias)) = vlp_alias_map {
             if let Some(filter) = final_filters {
-                println!("DEBUG: Rewriting filters with VLP alias map: simple={:?}, column={:?}, rel={}", 
+                crate::debug_println!("DEBUG: Rewriting filters with VLP alias map: simple={:?}, column={:?}, rel={}", 
                          simple_map, column_map, rel_alias);
                 final_filters = Some(rewrite_aliases_in_expr_vlp(filter, simple_map, column_map, rel_alias));
             }
@@ -4558,11 +4558,11 @@ impl RenderPlanBuilder for LogicalPlan {
             extracted_joins.into_iter()
                 .filter(|join| {
                     if &join.table_alias == anchor_alias {
-                        println!("DEBUG: Filtering out JOIN for '{}' because it's already in FROM clause", anchor_alias);
+                        crate::debug_println!("DEBUG: Filtering out JOIN for '{}' because it's already in FROM clause", anchor_alias);
                         // Preserve the pre_filter from the anchor JOIN
                         if join.pre_filter.is_some() {
                             anchor_pre_filter = join.pre_filter.clone();
-                            println!("DEBUG: Preserving pre_filter from anchor JOIN: {:?}", anchor_pre_filter);
+                            crate::debug_println!("DEBUG: Preserving pre_filter from anchor JOIN: {:?}", anchor_pre_filter);
                         }
                         false
                     } else {
@@ -4576,7 +4576,7 @@ impl RenderPlanBuilder for LogicalPlan {
         
         // Add anchor pre_filter to final_filters if present
         let final_filters = if let Some(filter) = anchor_pre_filter {
-            println!("DEBUG: Adding anchor pre_filter to final_filters");
+            crate::debug_println!("DEBUG: Adding anchor pre_filter to final_filters");
             match final_filters {
                 Some(existing) => {
                     // Combine existing filter with anchor pre_filter using AND
@@ -4661,14 +4661,14 @@ impl RenderPlanBuilder for LogicalPlan {
         // NEW ARCHITECTURE: Prioritize JOINs over CTEs
         // Only use CTEs for variable-length paths and complex cases
         // Try to build a simple JOIN-based plan first
-        println!("DEBUG: Trying try_build_join_based_plan");
+        crate::debug_println!("DEBUG: Trying try_build_join_based_plan");
         match transformed_plan.try_build_join_based_plan() {
             Ok(plan) => {
-                println!("DEBUG: try_build_join_based_plan succeeded");
+                crate::debug_println!("DEBUG: try_build_join_based_plan succeeded");
                 return Ok(plan);
             }
             Err(_) => {
-                println!("DEBUG: try_build_join_based_plan failed, falling back to CTE logic");
+                crate::debug_println!("DEBUG: try_build_join_based_plan failed, falling back to CTE logic");
             }
         }
 

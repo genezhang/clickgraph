@@ -6,6 +6,9 @@
 
 .DS_Store
 
+# Internal developer documentation (not for public release)
+STATUS.md
+
 # Process management
 server.pid
 

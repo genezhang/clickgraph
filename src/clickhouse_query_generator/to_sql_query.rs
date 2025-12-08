@@ -408,7 +408,7 @@ impl ToSql for JoinItems {
 
 impl ToSql for Join {
     fn to_sql(&self) -> String {
-        eprintln!("🔍 Join::to_sql");
+        crate::debug_println!("🔍 Join::to_sql");
         eprintln!("  table_alias: {}", self.table_alias);
         eprintln!("  table_name: {}", self.table_name);
         eprintln!("  joining_on.len(): {}", self.joining_on.len());

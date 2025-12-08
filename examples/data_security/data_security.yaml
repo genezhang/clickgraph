@@ -1,0 +1,131 @@
+# Data Security Graph Schema (Denormalized)
+# 
+# More efficient schema using parent_id in the file system table
+# instead of a separate edge table for CONTAINS relationship.
+#
+# Key differences from security_graph.yaml:
+# - ds_fs_objects has parent_id column (0 for root folders)
+# - No separate edge table needed for CONTAINS
+# - CONTAINS relationship uses self-referential join
+# - Finding root folders: WHERE parent_id = 0
+#
+# =============================================================================
+# USE CASES
+# =============================================================================
+# - Who can access sensitive files? (recursive group membership + permissions)
+# - What sensitive data can external users reach?
+# - Find all paths from external users to sensitive files
+# - List all root folders (WHERE parent_id = 0)
+# - Audit: Which groups grant access to sensitive folders?
+#
+# =============================================================================
+
+name: data_security
+
+graph_schema:
+  nodes:
+    # === Identity Nodes ===
+    - label: User
+      database: data_security
+      table: ds_users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: name
+        email: email
+        department: department
+        exposure: exposure  # 'internal' or 'external'
+
+    - label: Group
+      database: data_security
+      table: ds_groups
+      node_id: group_id
+      property_mappings:
+        group_id: group_id
+        name: name
+        description: description
+
+    # === File System Nodes (denormalized with parent_id) ===
+    # Single table with:
+    # - fs_type: 'Folder' or 'File'
+    # - parent_id: NULL for root folders, else points to parent folder
+    - label: Folder
+      database: data_security
+      table: ds_fs_objects
+      node_id: fs_id
+      label_column: fs_type
+      label_value: Folder
+      property_mappings:
+        fs_id: fs_id
+        name: name
+        path: path
+        parent_id: parent_id  # 0 = root folder (use WHERE parent_id = 0 to find roots)
+
+    - label: File
+      database: data_security
+      table: ds_fs_objects
+      node_id: fs_id
+      label_column: fs_type
+      label_value: File
+      property_mappings:
+        fs_id: fs_id
+        name: name
+        path: path
+        parent_id: parent_id
+        sensitive_data: sensitive_data  # UInt8: 1 if contains sensitive data
+
+  edges:
+    # === Identity Relationships ===
+    # MEMBER_OF: (User|Group)-[:MEMBER_OF]->(Group)
+    - polymorphic: true
+      database: data_security
+      table: ds_memberships
+      from_id: member_id
+      to_id: group_id
+      from_label_column: member_type
+      from_label_values: [User, Group]
+      to_node: Group
+      type_values:
+        - MEMBER_OF
+      edge_id:
+        - member_id
+        - group_id
+      property_mappings: {}
+
+    # === File System Relationships (self-referential) ===
+    # CONTAINS: (Folder)-[:CONTAINS]->(Folder|File)
+    # Uses the same ds_fs_objects table with parent_id column
+    # This is a denormalized edge - no separate edge table needed
+    - polymorphic: true
+      database: data_security
+      table: ds_fs_objects
+      from_id: parent_id      # Parent folder's fs_id
+      to_id: fs_id            # Child's fs_id
+      from_node: Folder       # Parent is always Folder
+      to_label_column: fs_type
+      to_label_values: [Folder, File]
+      type_values:
+        - CONTAINS
+      edge_id:
+        - parent_id
+        - fs_id
+      property_mappings: {}
+
+    # === Access Control Relationships ===
+    # HAS_ACCESS: (User|Group)-[:HAS_ACCESS]->(Folder|File)
+    - polymorphic: true
+      database: data_security
+      table: ds_permissions
+      from_id: subject_id
+      to_id: object_id
+      from_label_column: subject_type
+      from_label_values: [User, Group]
+      to_label_column: object_type
+      to_label_values: [Folder, File]
+      type_values:
+        - HAS_ACCESS
+      edge_id:
+        - subject_id
+        - object_id
+      property_mappings:
+        privilege: privilege  # 'read', 'write', 'execute', 'admin'

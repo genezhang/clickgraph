@@ -1096,7 +1096,7 @@ pub fn extract_ctes_with_context(
                     // Format as proper CTE: cte_name AS (union_sql)
                     let formatted_union_sql = format!("{} AS (\n{}\n)", cte_name, union_sql);
 
-                    eprintln!("DEBUG cte_extraction: Generated UNION CTE: {}", cte_name);
+                    crate::debug_println!("DEBUG cte_extraction: Generated UNION CTE: {}", cte_name);
 
                     relationship_ctes.push(Cte {
                         cte_name: cte_name.clone(),
@@ -1104,10 +1104,10 @@ pub fn extract_ctes_with_context(
                         is_recursive: false,
                     });
                 } else {
-                    eprintln!("DEBUG cte_extraction: Single relationship type, no UNION needed");
+                    crate::debug_println!("DEBUG cte_extraction: Single relationship type, no UNION needed");
                 }
             } else {
-                eprintln!("DEBUG cte_extraction: No labels on GraphRel!");
+                crate::debug_println!("DEBUG cte_extraction: No labels on GraphRel!");
             }
 
             // IMPORTANT: Recurse into left and right branches to collect CTEs from nested GraphRels

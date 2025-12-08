@@ -203,16 +203,16 @@ pub fn evaluate_return_clause<'a>(
     
     // If input is a Union, handle specially
     if let LogicalPlan::Union(union) = plan.as_ref() {
-        println!("DEBUG: Input is Union with {} branches", union.inputs.len());
+        crate::debug_println!("DEBUG: Input is Union with {} branches", union.inputs.len());
         
         // Check if we have aggregations
         if has_aggregation(&projection_items) {
-            println!("DEBUG: Union + aggregation detected - using subquery pattern");
+            crate::debug_println!("DEBUG: Union + aggregation detected - using subquery pattern");
             return build_union_with_aggregation(union, &projection_items, return_clause.distinct);
         }
         
         // No aggregation - push Projection into each branch as before
-        println!("DEBUG: No aggregation, pushing Projection into {} branches", union.inputs.len());
+        crate::debug_println!("DEBUG: No aggregation, pushing Projection into {} branches", union.inputs.len());
         let projected_branches: Vec<Arc<LogicalPlan>> = union.inputs.iter().map(|branch| {
             Arc::new(LogicalPlan::Projection(Projection {
                 input: branch.clone(),
@@ -242,7 +242,7 @@ pub fn evaluate_return_clause<'a>(
         kind: ProjectionKind::Return,
         distinct: return_clause.distinct,
     }));
-    println!("DEBUG evaluate_return_clause: Created Projection with distinct={}", 
+    crate::debug_println!("DEBUG evaluate_return_clause: Created Projection with distinct={}", 
         if let LogicalPlan::Projection(p) = result.as_ref() { p.distinct } else { false });
     result
 }
@@ -294,7 +294,7 @@ fn build_union_with_aggregation(
         if let Some(id_prop) = lookup_node_id_property(alias, union) {
             let key = format!("{}.{}", alias, id_prop);
             if !seen_keys.contains(&key) {
-                println!("DEBUG: Adding ID property '{}.{}' for count({})", alias, id_prop, alias);
+                crate::debug_println!("DEBUG: Adding ID property '{}.{}' for count({})", alias, id_prop, alias);
                 seen_keys.insert(key);
                 all_properties.push(PropertyAccess {
                     table_alias: TableAlias(alias.clone()),
@@ -304,7 +304,7 @@ fn build_union_with_aggregation(
         }
     }
     
-    println!("DEBUG: Collected {} unique properties for inner SELECT", all_properties.len());
+    crate::debug_println!("DEBUG: Collected {} unique properties for inner SELECT", all_properties.len());
     for prop in &all_properties {
         println!("  - {}.{}", prop.table_alias.0, prop.column.raw());
     }
@@ -312,7 +312,7 @@ fn build_union_with_aggregation(
     // Step 2: Build inner projection items for each Union branch
     // If no properties needed (e.g., COUNT(*) only), use constant 1
     let inner_items: Vec<ProjectionItem> = if all_properties.is_empty() {
-        println!("DEBUG: No properties needed, using constant 1");
+        crate::debug_println!("DEBUG: No properties needed, using constant 1");
         vec![ProjectionItem {
             expression: LogicalExpr::Literal(crate::query_planner::logical_expr::Literal::Integer(1)),
             col_alias: Some(ColumnAlias("__const".to_string())),
@@ -354,7 +354,7 @@ fn build_union_with_aggregation(
         })
         .collect();
     
-    println!("DEBUG: {} grouping expressions for outer GROUP BY", grouping_exprs.len());
+    crate::debug_println!("DEBUG: {} grouping expressions for outer GROUP BY", grouping_exprs.len());
     
     // Step 6: Create outer projection items (rewritten to reference inner aliases)
     let outer_items: Vec<ProjectionItem> = projection_items

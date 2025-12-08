@@ -173,7 +173,7 @@ impl PlanCtx {
 
         // Auto-mark as optional if we're in OPTIONAL MATCH mode
         if self.in_optional_match_mode {
-            eprintln!("DEBUG PlanCtx: Auto-marking '{}' as optional", alias);
+            crate::debug_println!("DEBUG PlanCtx: Auto-marking '{}' as optional", alias);
             self.optional_aliases.insert(alias);
         }
     }

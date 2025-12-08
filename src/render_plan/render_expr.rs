@@ -227,7 +227,7 @@ impl TryFrom<LogicalExpr> for RenderExpr {
         );
         let expression = match expr {
             LogicalExpr::Literal(lit) => {
-                println!("DEBUG TryFrom: Converting Literal variant");
+                crate::debug_println!("DEBUG TryFrom: Converting Literal variant");
                 RenderExpr::Literal(lit.try_into()?)
             }
             LogicalExpr::Raw(raw) => RenderExpr::Raw(raw),

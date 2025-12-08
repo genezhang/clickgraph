@@ -12,7 +12,7 @@ pub fn try_get_client() -> Option<Client> {
     let password = read_env_var("CLICKHOUSE_PASSWORD")?;
     let database = read_env_var("CLICKHOUSE_DATABASE")?;
 
-    println!("\n CLICKHOUSE_URL {}\n", url);
+    log::info!("Connecting to ClickHouse at {}", url);
     Some(
         Client::default()
             .with_url(url)
