@@ -757,6 +757,10 @@ RETURN u.user_id AS business_id, u.name
 | `min(expr)` | Minimum value | `min(u.age)` |
 | `max(expr)` | Maximum value | `max(u.age)` |
 | `collect(expr)` | Aggregate into list | `collect(u.name)` |
+| `stDev(expr)` | Sample standard deviation | `stDev(u.age)` |
+| `stDevP(expr)` | Population standard deviation | `stDevP(u.age)` |
+| `percentileCont(expr, p)` | Continuous percentile | `percentileCont(u.age, 0.5)` |
+| `percentileDisc(expr, p)` | Discrete percentile | `percentileDisc(u.age, 0.9)` |
 
 ### String Functions
 
@@ -774,6 +778,11 @@ RETURN u.user_id AS business_id, u.name
 | `replace(str, old, new)` | Replace substring | `replace('abc', 'b', 'x')` → `'axc'` |
 | `reverse(str)` | Reverse string | `reverse('abc')` → `'cba'` |
 | `size(str)` | String length | `size('hello')` → `5` |
+| `startsWith(str, prefix)` | Check prefix | `startsWith('hello', 'he')` → `true` |
+| `endsWith(str, suffix)` | Check suffix | `endsWith('hello', 'lo')` → `true` |
+| `contains(str, sub)` | Check substring | `contains('hello', 'ell')` → `true` |
+| `normalize(str)` | Unicode normalization | `normalize('café')` |
+| `valueType(expr)` | Get value type name | `valueType(42)` → `'Int64'` |
 
 ### Date/Time Functions
 
@@ -801,7 +810,28 @@ RETURN u.user_id AS business_id, u.name
 | `log(n)` | Natural logarithm | `log(10)` |
 | `log10(n)` | Base-10 logarithm | `log10(100)` → `2` |
 | `rand()` | Random float [0, 1) | `rand()` |
+| `pi()` | Pi constant | `pi()` → `3.14159...` |
+| `e()` | Euler's number | `e()` → `2.71828...` |
 | `sin(n)`, `cos(n)`, `tan(n)` | Trigonometric | `sin(3.14159)` |
+| `asin(n)`, `acos(n)`, `atan(n)` | Inverse trigonometric | `asin(0.5)` |
+| `atan2(y, x)` | Two-argument arctangent | `atan2(1, 1)` → `0.785...` |
+
+### Date/Time Extraction Functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `year(datetime)` | Extract year | `year(u.reg_date)` → `2024` |
+| `month(datetime)` | Extract month (1-12) | `month(u.reg_date)` → `11` |
+| `day(datetime)` | Extract day of month | `day(u.reg_date)` → `17` |
+| `hour(datetime)` | Extract hour (0-23) | `hour(u.last_login)` → `14` |
+| `minute(datetime)` | Extract minute | `minute(u.last_login)` → `30` |
+| `second(datetime)` | Extract second | `second(u.last_login)` → `45` |
+| `dayOfWeek(datetime)` | Day of week (1=Mon) | `dayOfWeek(u.reg_date)` → `3` |
+| `dayOfYear(datetime)` | Day of year (1-366) | `dayOfYear(u.reg_date)` → `321` |
+| `quarter(datetime)` | Quarter (1-4) | `quarter(u.reg_date)` → `4` |
+| `week(datetime)` | ISO week number | `week(u.reg_date)` → `47` |
+| `localdatetime()` | Current local datetime | `localdatetime()` |
+| `localtime()` | Current local time | `localtime()` |
 
 ### Type Conversion Functions
 
@@ -821,6 +851,17 @@ RETURN u.user_id AS business_id, u.name
 | `last(list)` | Last element | `last([1,2,3])` → `3` |
 | `tail(list)` | All but first | `tail([1,2,3])` → `[2,3]` |
 | `range(start, end)` | Generate range | `range(1, 5)` → `[1,2,3,4,5]` |
+| `keys(map)` | Get map keys | `keys({a:1, b:2})` → `['a','b']` |
+| `isEmpty(list)` | Check if empty | `isEmpty([])` → `true` |
+
+### List Predicate Functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `all(x IN list WHERE pred)` | All match predicate | `all(x IN [1,2,3] WHERE x > 0)` → `true` |
+| `any(x IN list WHERE pred)` | Any match predicate | `any(x IN [1,2,3] WHERE x > 2)` → `true` |
+| `none(x IN list WHERE pred)` | None match predicate | `none(x IN [1,2,3] WHERE x < 0)` → `true` |
+| `single(x IN list WHERE pred)` | Exactly one matches | `single(x IN [1,2,3] WHERE x = 2)` → `true` |
 
 ### Path Functions
 
@@ -835,8 +876,33 @@ RETURN u.user_id AS business_id, u.name
 | Function | Description | Example |
 |----------|-------------|---------|  
 | `COALESCE(expr1, ...)` | First non-null | `COALESCE(u.email, 'none')` |
+| `nullIf(expr1, expr2)` | Return null if equal | `nullIf(u.status, 'unknown')` |
 | `type(edge)` | Edge type | `type(e)` → `'FOLLOWS'` |
-| `id(node)` | Node/edge ID | `id(u)` |---
+| `id(node)` | Node/edge ID | `id(u)` |
+
+### Vector Similarity Functions
+
+For similarity search on pre-computed embedding vectors (requires `Array(Float32)` columns):
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `gds.similarity.cosine(v1, v2)` | Cosine similarity (0-1) | `gds.similarity.cosine(a.embedding, b.embedding)` |
+| `gds.similarity.euclidean(v1, v2)` | Euclidean similarity (0-1) | `gds.similarity.euclidean(a.vec, b.vec)` |
+| `gds.similarity.euclideanDistance(v1, v2)` | Raw Euclidean distance | `gds.similarity.euclideanDistance(a.vec, b.vec)` |
+| `vector.similarity.cosine(v1, v2)` | Cosine similarity (Neo4j 5.x) | `vector.similarity.cosine(a.vec, b.vec)` |
+
+**Note**: ClickHouse does not generate embeddings. Vectors must be pre-computed externally (e.g., OpenAI, Cohere).
+
+```cypher
+-- Find similar items by embedding
+MATCH (a:Product {id: 1}), (b:Product)
+WHERE a <> b
+RETURN b.name, gds.similarity.cosine(a.embedding, b.embedding) AS similarity
+ORDER BY similarity DESC
+LIMIT 10
+```
+
+---
 
 ## Practice Exercises
 
