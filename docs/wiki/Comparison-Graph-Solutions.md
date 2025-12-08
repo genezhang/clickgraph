@@ -19,11 +19,12 @@ This document provides an objective comparison between ClickGraph and other grap
 
 | Feature | ClickGraph | PuppyGraph | TigerGraph | NebulaGraph |
 |---------|------------|------------|------------|-------------|
-| **Architecture** | Query translator | Query federation | Native graph DB | Native graph DB |
+| **Architecture** | Query translator | Query engine + cache | Native graph DB | Native graph DB |
 | **Data storage** | ClickHouse tables | Connectors to sources | Native storage | Native storage |
+| **Query execution** | Pushdown to CH | Own runtime engine | Native engine | Native engine |
+| **Data movement** | None (SQL pushdown) | At query time / cached | ETL required | ETL required |
 | **ClickHouse support** | ✅ Native | ✅ Connector | ❌ ETL required | ❌ ETL required |
 | **Iceberg/Parquet** | Via ClickHouse | ✅ Native connectors | ❌ ETL required | ❌ ETL required |
-| **Data movement** | None (views) | None (connectors) | ETL required | ETL required |
 | **Schema definition** | YAML mapping | UI/Config | Schema DDL | Schema DDL |
 
 ### Query Languages
@@ -150,9 +151,9 @@ RETURN m.category,
        ch.quantiles(0.5, 0.9, 0.99)(r.amount) AS amount_distribution
 ```
 
-### 2. Zero Data Movement
+### 2. Zero Data Movement, Full Pushdown
 
-If your data is in ClickHouse, ClickGraph queries it directly via views - no ETL, no sync, no staleness.
+ClickGraph translates Cypher to ClickHouse SQL and pushes all computation to ClickHouse - no intermediate query engine, no caching layer, no data movement. Your ClickHouse cluster does all the work.
 
 ### 3. Open Source & Simple
 
