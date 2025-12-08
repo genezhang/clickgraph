@@ -2,6 +2,10 @@
 /test_data
 /clickhouse_data
 
+# LDBC SNB benchmark data (large CSV files)
+/benchmarks/ldbc_snb/data/sf*
+/benchmarks/ldbc_snb/data/*.tar.zst
+
 .env
 
 .DS_Store

@@ -1,0 +1,482 @@
+# LDBC SNB Interactive v1 Schema for ClickGraph
+# Maps LDBC CSV data loaded into ClickHouse to a graph model
+
+name: ldbc_snb
+
+graph_schema:
+  # ===========================================================================
+  # NODES
+  # ===========================================================================
+  nodes:
+    # -------------------------------------------------------------------------
+    # Person - central node type in the social network
+    # -------------------------------------------------------------------------
+    - label: Person
+      database: ldbc
+      table: Person
+      node_id: id
+      property_mappings:
+        id: id
+        firstName: firstName
+        lastName: lastName
+        gender: gender
+        birthday: birthday
+        creationDate: creationDate
+        locationIP: locationIP
+        browserUsed: browserUsed
+        # speaks and email are arrays - available but may need special handling
+
+    # -------------------------------------------------------------------------
+    # Post - content created by a Person in a Forum
+    # -------------------------------------------------------------------------
+    - label: Post
+      database: ldbc
+      table: Post
+      node_id: id
+      property_mappings:
+        id: id
+        imageFile: imageFile
+        creationDate: creationDate
+        locationIP: locationIP
+        browserUsed: browserUsed
+        language: language
+        content: content
+        length: length
+
+    # -------------------------------------------------------------------------
+    # Comment - reply to a Post or another Comment
+    # -------------------------------------------------------------------------
+    - label: Comment
+      database: ldbc
+      table: Comment
+      node_id: id
+      property_mappings:
+        id: id
+        creationDate: creationDate
+        locationIP: locationIP
+        browserUsed: browserUsed
+        content: content
+        length: length
+
+    # -------------------------------------------------------------------------
+    # Message - unified view of Post and Comment (virtual label)
+    # Note: Uses the Message view that unions Post and Comment
+    # -------------------------------------------------------------------------
+    - label: Message
+      database: ldbc
+      table: Message
+      node_id: id
+      property_mappings:
+        id: id
+        creationDate: creationDate
+        locationIP: locationIP
+        browserUsed: browserUsed
+        content: content
+        length: length
+        imageFile: imageFile
+        language: language
+        type: type
+
+    # -------------------------------------------------------------------------
+    # Forum - container for Posts
+    # -------------------------------------------------------------------------
+    - label: Forum
+      database: ldbc
+      table: Forum
+      node_id: id
+      property_mappings:
+        id: id
+        title: title
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Tag - categorization for content
+    # -------------------------------------------------------------------------
+    - label: Tag
+      database: ldbc
+      table: Tag
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    # -------------------------------------------------------------------------
+    # TagClass - hierarchical classification of Tags
+    # -------------------------------------------------------------------------
+    - label: TagClass
+      database: ldbc
+      table: TagClass
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    # -------------------------------------------------------------------------
+    # Place - geographic location (City, Country, Continent)
+    # -------------------------------------------------------------------------
+    - label: Place
+      database: ldbc
+      table: Place
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        url: url
+        type: type
+
+    # -------------------------------------------------------------------------
+    # Specific place types (using same table with type filter)
+    # Note: For queries that specifically need City/Country/Continent
+    # -------------------------------------------------------------------------
+    - label: City
+      database: ldbc
+      table: Place
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    - label: Country
+      database: ldbc
+      table: Place
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    - label: Continent
+      database: ldbc
+      table: Place
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    # -------------------------------------------------------------------------
+    # Organisation - University or Company
+    # -------------------------------------------------------------------------
+    - label: Organisation
+      database: ldbc
+      table: Organisation
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        url: url
+        type: type
+
+    - label: University
+      database: ldbc
+      table: Organisation
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    - label: Company
+      database: ldbc
+      table: Organisation
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+  # ===========================================================================
+  # RELATIONSHIPS
+  # ===========================================================================
+  relationships:
+    # -------------------------------------------------------------------------
+    # Person KNOWS Person (friendship, bidirectional)
+    # -------------------------------------------------------------------------
+    - type: KNOWS
+      database: ldbc
+      table: Person_knows_Person
+      from_id: Person_id
+      to_id: Person_id_2
+      from_node: Person
+      to_node: Person
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Person IS_LOCATED_IN Place (city where person lives)
+    # -------------------------------------------------------------------------
+    - type: IS_LOCATED_IN
+      database: ldbc
+      table: Person_isLocatedIn_Place
+      from_id: Person_id
+      to_id: Place_id
+      from_node: Person
+      to_node: City
+
+    # -------------------------------------------------------------------------
+    # Person HAS_INTEREST Tag
+    # -------------------------------------------------------------------------
+    - type: HAS_INTEREST
+      database: ldbc
+      table: Person_hasInterest_Tag
+      from_id: Person_id
+      to_id: Tag_id
+      from_node: Person
+      to_node: Tag
+
+    # -------------------------------------------------------------------------
+    # Person STUDY_AT Organisation (university)
+    # -------------------------------------------------------------------------
+    - type: STUDY_AT
+      database: ldbc
+      table: Person_studyAt_Organisation
+      from_id: Person_id
+      to_id: Organisation_id
+      from_node: Person
+      to_node: University
+      property_mappings:
+        classYear: classYear
+
+    # -------------------------------------------------------------------------
+    # Person WORK_AT Organisation (company)
+    # -------------------------------------------------------------------------
+    - type: WORK_AT
+      database: ldbc
+      table: Person_workAt_Organisation
+      from_id: Person_id
+      to_id: Organisation_id
+      from_node: Person
+      to_node: Company
+      property_mappings:
+        workFrom: workFrom
+
+    # -------------------------------------------------------------------------
+    # Person LIKES Post
+    # -------------------------------------------------------------------------
+    - type: LIKES_POST
+      database: ldbc
+      table: Person_likes_Post
+      from_id: Person_id
+      to_id: Post_id
+      from_node: Person
+      to_node: Post
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Person LIKES Comment
+    # -------------------------------------------------------------------------
+    - type: LIKES_COMMENT
+      database: ldbc
+      table: Person_likes_Comment
+      from_id: Person_id
+      to_id: Comment_id
+      from_node: Person
+      to_node: Comment
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Person LIKES Message (unified view)
+    # -------------------------------------------------------------------------
+    - type: LIKES
+      database: ldbc
+      table: Person_likes_Message
+      from_id: Person_id
+      to_id: Message_id
+      from_node: Person
+      to_node: Message
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Post HAS_CREATOR Person
+    # -------------------------------------------------------------------------
+    - type: HAS_CREATOR
+      database: ldbc
+      table: Post_hasCreator_Person
+      from_id: Post_id
+      to_id: Person_id
+      from_node: Post
+      to_node: Person
+
+    # -------------------------------------------------------------------------
+    # Comment HAS_CREATOR Person
+    # -------------------------------------------------------------------------
+    - type: COMMENT_HAS_CREATOR
+      database: ldbc
+      table: Comment_hasCreator_Person
+      from_id: Comment_id
+      to_id: Person_id
+      from_node: Comment
+      to_node: Person
+
+    # -------------------------------------------------------------------------
+    # Message HAS_CREATOR Person (unified view)
+    # -------------------------------------------------------------------------
+    - type: MESSAGE_HAS_CREATOR
+      database: ldbc
+      table: Message_hasCreator_Person
+      from_id: Message_id
+      to_id: Person_id
+      from_node: Message
+      to_node: Person
+
+    # -------------------------------------------------------------------------
+    # Comment REPLY_OF Post
+    # -------------------------------------------------------------------------
+    - type: REPLY_OF_POST
+      database: ldbc
+      table: Comment_replyOf_Post
+      from_id: Comment_id
+      to_id: Post_id
+      from_node: Comment
+      to_node: Post
+
+    # -------------------------------------------------------------------------
+    # Comment REPLY_OF Comment
+    # -------------------------------------------------------------------------
+    - type: REPLY_OF_COMMENT
+      database: ldbc
+      table: Comment_replyOf_Comment
+      from_id: Comment_id
+      to_id: Comment_id_2
+      from_node: Comment
+      to_node: Comment
+
+    # -------------------------------------------------------------------------
+    # Forum CONTAINER_OF Post
+    # -------------------------------------------------------------------------
+    - type: CONTAINER_OF
+      database: ldbc
+      table: Forum_containerOf_Post
+      from_id: Forum_id
+      to_id: Post_id
+      from_node: Forum
+      to_node: Post
+
+    # -------------------------------------------------------------------------
+    # Forum HAS_MODERATOR Person
+    # -------------------------------------------------------------------------
+    - type: HAS_MODERATOR
+      database: ldbc
+      table: Forum_hasModerator_Person
+      from_id: Forum_id
+      to_id: Person_id
+      from_node: Forum
+      to_node: Person
+
+    # -------------------------------------------------------------------------
+    # Forum HAS_MEMBER Person
+    # -------------------------------------------------------------------------
+    - type: HAS_MEMBER
+      database: ldbc
+      table: Forum_hasMember_Person
+      from_id: Forum_id
+      to_id: Person_id
+      from_node: Forum
+      to_node: Person
+      property_mappings:
+        joinDate: joinDate
+
+    # -------------------------------------------------------------------------
+    # Forum HAS_TAG Tag
+    # -------------------------------------------------------------------------
+    - type: FORUM_HAS_TAG
+      database: ldbc
+      table: Forum_hasTag_Tag
+      from_id: Forum_id
+      to_id: Tag_id
+      from_node: Forum
+      to_node: Tag
+
+    # -------------------------------------------------------------------------
+    # Post HAS_TAG Tag
+    # -------------------------------------------------------------------------
+    - type: POST_HAS_TAG
+      database: ldbc
+      table: Post_hasTag_Tag
+      from_id: Post_id
+      to_id: Tag_id
+      from_node: Post
+      to_node: Tag
+
+    # -------------------------------------------------------------------------
+    # Comment HAS_TAG Tag
+    # -------------------------------------------------------------------------
+    - type: COMMENT_HAS_TAG
+      database: ldbc
+      table: Comment_hasTag_Tag
+      from_id: Comment_id
+      to_id: Tag_id
+      from_node: Comment
+      to_node: Tag
+
+    # -------------------------------------------------------------------------
+    # Tag HAS_TYPE TagClass
+    # -------------------------------------------------------------------------
+    - type: HAS_TYPE
+      database: ldbc
+      table: Tag_hasType_TagClass
+      from_id: Tag_id
+      to_id: TagClass_id
+      from_node: Tag
+      to_node: TagClass
+
+    # -------------------------------------------------------------------------
+    # TagClass IS_SUBCLASS_OF TagClass
+    # -------------------------------------------------------------------------
+    - type: IS_SUBCLASS_OF
+      database: ldbc
+      table: TagClass_isSubclassOf_TagClass
+      from_id: TagClass_id
+      to_id: TagClass_id_2
+      from_node: TagClass
+      to_node: TagClass
+
+    # -------------------------------------------------------------------------
+    # Place IS_PART_OF Place (City -> Country -> Continent)
+    # -------------------------------------------------------------------------
+    - type: IS_PART_OF
+      database: ldbc
+      table: Place_isPartOf_Place
+      from_id: Place_id
+      to_id: Place_id_2
+      from_node: Place
+      to_node: Place
+
+    # -------------------------------------------------------------------------
+    # Organisation IS_LOCATED_IN Place
+    # -------------------------------------------------------------------------
+    - type: ORG_IS_LOCATED_IN
+      database: ldbc
+      table: Organisation_isLocatedIn_Place
+      from_id: Organisation_id
+      to_id: Place_id
+      from_node: Organisation
+      to_node: Place
+
+    # -------------------------------------------------------------------------
+    # Post IS_LOCATED_IN Place
+    # -------------------------------------------------------------------------
+    - type: POST_IS_LOCATED_IN
+      database: ldbc
+      table: Post_isLocatedIn_Place
+      from_id: Post_id
+      to_id: Place_id
+      from_node: Post
+      to_node: Country
+
+    # -------------------------------------------------------------------------
+    # Comment IS_LOCATED_IN Place
+    # -------------------------------------------------------------------------
+    - type: COMMENT_IS_LOCATED_IN
+      database: ldbc
+      table: Comment_isLocatedIn_Place
+      from_id: Comment_id
+      to_id: Place_id
+      from_node: Comment
+      to_node: Country
