@@ -72,6 +72,9 @@ ClickGraph is designed for **analytical queries** over existing ClickHouse data,
 - ✅ Multiple sort keys
 - ✅ `ASC`/`DESC` ordering
 
+**List Operations:**
+- ✅ `UNWIND` - Expand lists into rows (generates ARRAY JOIN for arrays)
+
 **Functions:**
 - ✅ String functions: `toLower()`, `toUpper()`, `trim()`, `substring()`
 - ✅ Math functions: `abs()`, `ceil()`, `floor()`, `round()`
