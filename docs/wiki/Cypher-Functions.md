@@ -11,6 +11,7 @@ Complete reference for aggregation functions, string operations, date/time funct
 - [List Functions](#list-functions)
 - [Scalar Functions](#scalar-functions)
 - [Complete Function Reference](#complete-function-reference)
+- [ClickHouse Function Pass-Through](#clickhouse-function-pass-through) ⭐ **NEW**
 
 ---
 
@@ -973,381 +974,44 @@ LIMIT 5
 
 ## ClickHouse Function Pass-Through
 
-ClickGraph provides direct access to ClickHouse functions using the `ch.` prefix. This uses dot notation for compatibility with the Neo4j ecosystem (like `apoc.*`, `gds.*` patterns).
+ClickGraph provides direct access to **any ClickHouse function** using the `ch.` and `chagg.` prefixes.
 
-### Syntax
-
-```cypher
-ch.functionName(arg1, arg2, ...)
-```
-
-The `ch.` prefix is stripped and the function is passed directly to ClickHouse. Property mapping and parameter substitution still work normally.
-
-### Examples
-
-**Hash Functions:**
-```cypher
--- Generate hash of email for anonymization
-MATCH (u:User)
-RETURN u.name, ch.cityHash64(u.email) AS email_hash
-
--- MD5/SHA256 hashing
-MATCH (u:User)
-RETURN ch.MD5(u.password) AS md5_hash,
-       ch.SHA256(u.password) AS sha256_hash
-```
-
-**JSON Functions:**
-```cypher
--- Extract fields from JSON columns
-MATCH (e:Event)
-WHERE ch.JSONExtractString(e.metadata, 'type') = 'click'
-RETURN e.id, 
-       ch.JSONExtractInt(e.metadata, 'x') AS x,
-       ch.JSONExtractInt(e.metadata, 'y') AS y
-
--- Check JSON structure
-MATCH (d:Document)
-WHERE ch.JSONHas(d.data, 'author')
-RETURN d.title, ch.JSONExtractString(d.data, 'author') AS author
-```
-
-**URL Functions:**
-```cypher
--- Parse URL components
-MATCH (p:Page)
-RETURN ch.domain(p.url) AS domain,
-       ch.protocol(p.url) AS protocol,
-       ch.path(p.url) AS path,
-       ch.extractURLParameter(p.url, 'utm_source') AS utm_source
-```
-
-**IP Address Functions:**
-```cypher
--- Convert IP formats
-MATCH (c:Connection)
-RETURN ch.IPv4NumToString(c.src_ip) AS source_ip,
-       ch.IPv4NumToString(c.dst_ip) AS dest_ip
-
--- Check IP ranges
-MATCH (c:Connection)
-WHERE ch.isIPAddressInRange(ch.IPv4NumToString(c.src_ip), '192.168.0.0/16')
-RETURN c
-```
-
-**Geo Functions:**
-```cypher
--- Calculate distance between coordinates
-MATCH (u:User), (s:Store)
-RETURN u.name, s.name,
-       ch.greatCircleDistance(u.lat, u.lon, s.lat, s.lon) / 1000 AS distance_km
-ORDER BY distance_km
-LIMIT 5
-
--- H3 geospatial indexing
-MATCH (l:Location)
-RETURN l.name, ch.geoToH3(l.lon, l.lat, 7) AS h3_index
-```
-
-**Date/Time Functions (ClickHouse-specific):**
-```cypher
--- Format dates with ClickHouse formatDateTime
-MATCH (u:User)
-RETURN u.name,
-       ch.formatDateTime(u.registration_date, '%Y-%m-%d %H:%M:%S') AS formatted_date
-
--- Date truncation
-MATCH (e:Event)
-RETURN ch.toStartOfHour(e.timestamp) AS hour,
-       count(*) AS event_count
-ORDER BY hour
-
--- Working days calculation
-MATCH (o:Order)
-RETURN o.id,
-       ch.dateDiff('day', o.created_at, o.shipped_at) AS days_to_ship
-```
-
-**String Functions (ClickHouse-specific):**
-```cypher
--- Regular expression extraction
-MATCH (u:User)
-RETURN u.email,
-       ch.extractAll(u.email, '([^@]+)@([^.]+)') AS email_parts
-
--- String similarity
-MATCH (p:Product)
-WHERE ch.ngramDistance(p.name, 'laptop') < 0.3
-RETURN p.name, ch.ngramDistance(p.name, 'laptop') AS distance
-ORDER BY distance
-```
-
-**Array Functions (ClickHouse-specific):**
-```cypher
--- Array aggregation with special functions
-MATCH (u:User)-[:PURCHASED]->(p:Product)
-RETURN u.name,
-       ch.arrayStringConcat(collect(p.name), ', ') AS products_purchased,
-       ch.arraySum(collect(p.price)) AS total_spent
-```
-
-### Supported Scalar Function Categories
-
-The `ch.` prefix works with all ClickHouse scalar (row-level) function categories:
-
-| Category | Examples |
-|----------|----------|
-| **Hash** | `cityHash64`, `sipHash64`, `MD5`, `SHA256`, `xxHash64` |
-| **JSON** | `JSONExtract*`, `JSONHas`, `JSONLength`, `JSONType` |
-| **URL** | `domain`, `protocol`, `path`, `extractURLParameter` |
-| **IP** | `IPv4NumToString`, `IPv4StringToNum`, `isIPAddressInRange` |
-| **Geo** | `greatCircleDistance`, `geoToH3`, `h3ToGeo`, `pointInPolygon` |
-| **String** | `extractAll`, `ngramDistance`, `positionCaseInsensitive` |
-| **Date** | `toStartOf*`, `dateDiff`, `formatDateTime`, `toYYYYMM` |
-| **Array** | `arrayStringConcat`, `arraySum`, `arrayDistinct` |
-| **Math** | `intDiv`, `intDivOrZero`, `modulo`, `gcd`, `lcm` |
-| **Type** | `reinterpret*`, `accurateCast`, `toTypeName` |
-
-> **Note**: Aggregate functions (like `ch.uniq`, `ch.quantile`, etc.) are documented separately below and automatically trigger GROUP BY generation.
-
-### ClickHouse Aggregate Functions (ch.*)
-
-The `ch.` prefix also enables ClickHouse's powerful aggregate functions. These are automatically detected and generate proper GROUP BY clauses.
-
-**Unique Counting (HyperLogLog):**
-```cypher
--- Approximate unique count (fast, memory efficient)
-MATCH (u:User)
-RETURN u.country, ch.uniq(u.user_id) AS unique_users
-
--- Exact unique count
-MATCH (e:Event)
-RETURN e.event_type, ch.uniqExact(e.user_id) AS exact_unique_users
-
--- HyperLogLog variants
-MATCH (p:PageView)
-RETURN ch.uniqCombined(p.session_id) AS sessions,
-       ch.uniqHLL12(p.user_id) AS users_approx
-```
-
-**Quantiles and Percentiles:**
-```cypher
--- Median (50th percentile)
-MATCH (o:Order)
-RETURN ch.quantile(0.5)(o.amount) AS median_order_value
-
--- Multiple quantiles at once
-MATCH (o:Order)
-RETURN ch.quantiles(0.25, 0.5, 0.75, 0.95)(o.amount) AS quartiles
-
--- High-precision quantile
-MATCH (l:Latency)
-RETURN ch.quantileExact(0.99)(l.response_time) AS p99_latency
-
--- T-Digest for streaming data
-MATCH (m:Metric)
-RETURN ch.quantileTDigest(0.95)(m.value) AS p95_approx
-```
-
-**TopK - Most Frequent Values:**
-```cypher
--- Top 10 most common error codes
-MATCH (e:Error)
-RETURN ch.topK(10)(e.error_code) AS top_errors
-
--- Weighted TopK (by occurrence count)
-MATCH (s:Search)
-RETURN ch.topKWeighted(5)(s.query, s.count) AS popular_searches
-```
-
-**ArgMin/ArgMax - Value at Min/Max:**
-```cypher
--- Find user with highest score
-MATCH (u:User)
-RETURN ch.argMax(u.name, u.score) AS top_scorer,
-       ch.max(u.score) AS top_score
-
--- Find earliest event per category
-MATCH (e:Event)
-RETURN e.category,
-       ch.argMin(e.id, e.timestamp) AS first_event_id,
-       ch.min(e.timestamp) AS first_timestamp
-```
-
-**Array Collection:**
-```cypher
--- Collect all values into array
-MATCH (u:User)-[:PURCHASED]->(p:Product)
-RETURN u.user_id, ch.groupArray(p.name) AS purchased_products
-
--- Sample N values
-MATCH (u:User)
-RETURN u.country, ch.groupArraySample(5)(u.name) AS sample_users
-
--- Collect unique values only
-MATCH (t:Transaction)
-RETURN t.user_id, ch.groupUniqArray(t.merchant) AS unique_merchants
-```
-
-**Funnel Analysis:**
-```cypher
--- Window funnel: conversion within time window
-MATCH (e:Event)
-WHERE e.user_id = 123
-RETURN ch.windowFunnel(86400)(  -- 1 day window in seconds
-    e.timestamp,
-    e.event_type = 'view',
-    e.event_type = 'cart',
-    e.event_type = 'purchase'
-) AS funnel_step
-
--- Retention analysis
-MATCH (e:Event)
-RETURN e.user_id,
-       ch.retention(
-           e.event_type = 'signup',
-           e.event_type = 'day1_active',
-           e.event_type = 'day7_active'
-       ) AS retention_flags
-
--- Sequence matching
-MATCH (e:Event)
-RETURN ch.sequenceMatch('(?1).*(?2).*(?3)')(
-    e.timestamp,
-    e.action = 'search',
-    e.action = 'view',
-    e.action = 'buy'
-) AS completed_funnel
-```
-
-**Statistics:**
-```cypher
--- Variance and standard deviation
-MATCH (m:Measurement)
-RETURN ch.varPop(m.value) AS population_variance,
-       ch.stddevSamp(m.value) AS sample_stddev
-
--- Correlation between metrics
-MATCH (d:Data)
-RETURN ch.corr(d.x, d.y) AS correlation_coefficient,
-       ch.covarPop(d.x, d.y) AS covariance
-```
-
-**Map Aggregates:**
-```cypher
--- Sum values by key in nested maps
-MATCH (s:Sale)
-RETURN s.region,
-       ch.sumMap(s.product_counts) AS total_by_product
-
--- Average map values
-MATCH (m:Metrics)
-RETURN ch.avgMap(m.hourly_values) AS avg_by_hour
-```
-
-#### Aggregate Function Reference
-
-| Function | Description | Example |
-|----------|-------------|---------|
-| **Unique Counting** | | |
-| `ch.uniq(x)` | Approximate unique count (HLL) | `ch.uniq(u.user_id)` |
-| `ch.uniqExact(x)` | Exact unique count | `ch.uniqExact(u.email)` |
-| `ch.uniqCombined(x)` | Combined HLL (more accurate) | `ch.uniqCombined(u.id)` |
-| **Quantiles** | | |
-| `ch.quantile(p)(x)` | Single quantile | `ch.quantile(0.95)(latency)` |
-| `ch.quantiles(p1,p2,...)(x)` | Multiple quantiles | `ch.quantiles(0.5,0.9,0.99)(latency)` |
-| `ch.median(x)` | Median (50th percentile) | `ch.median(o.amount)` |
-| **TopK** | | |
-| `ch.topK(n)(x)` | Top N frequent values | `ch.topK(10)(error_code)` |
-| `ch.topKWeighted(n)(x,w)` | Weighted TopK | `ch.topKWeighted(5)(query, count)` |
-| **ArgMin/Max** | | |
-| `ch.argMin(val, key)` | Value at min key | `ch.argMin(name, timestamp)` |
-| `ch.argMax(val, key)` | Value at max key | `ch.argMax(name, score)` |
-| **Array Collection** | | |
-| `ch.groupArray(x)` | Collect into array | `ch.groupArray(p.name)` |
-| `ch.groupArraySample(n)(x)` | Sample N values | `ch.groupArraySample(5)(u.id)` |
-| `ch.groupUniqArray(x)` | Unique values array | `ch.groupUniqArray(tag)` |
-| **Funnel/Retention** | | |
-| `ch.windowFunnel(w)(ts,c1,c2,...)` | Funnel in time window | See example above |
-| `ch.retention(c1,c2,...)` | Retention flags | See example above |
-| `ch.sequenceMatch(p)(ts,c1,c2,...)` | Sequence pattern | See example above |
-| **Statistics** | | |
-| `ch.varPop(x)` | Population variance | `ch.varPop(m.value)` |
-| `ch.stddevSamp(x)` | Sample std deviation | `ch.stddevSamp(m.value)` |
-| `ch.corr(x,y)` | Correlation | `ch.corr(views, purchases)` |
-
-### Important Notes
-
-1. **No validation**: ClickGraph doesn't validate `ch.` function names. Invalid functions will fail at ClickHouse execution time.
-
-2. **Property mapping works**: Arguments still go through property mapping, so `ch.length(u.name)` correctly maps `name` to the underlying column.
-
-3. **Parameters work**: You can use query parameters: `ch.substring(u.text, $start, $len)`.
-
-4. **Case sensitive**: `ch.JSONExtract` is different from `ch.jsonextract` - use exact ClickHouse function names.
-
-5. **Use for ClickHouse-specific features**: For standard functions (abs, round, etc.), prefer Neo4j function names as they're more portable.
-
-6. **Neo4j ecosystem compatible**: Uses dot notation like `apoc.*` and `gds.*` for compatibility with Neo4j tools.
-
-### Explicit Aggregate Prefix: `chagg.`
-
-For aggregate functions **not in the registry**, use the `chagg.` prefix to explicitly tell ClickGraph it's an aggregate function. This ensures proper GROUP BY generation.
-
-```cypher
--- chagg. prefix: ALWAYS treated as aggregate (auto GROUP BY)
-MATCH (u:User)
-RETURN u.country, chagg.myCustomAggregate(u.score) AS custom_metric
-
--- Works for any function, including new/custom ClickHouse aggregates
-MATCH (e:Event)
-RETURN e.type, chagg.newExperimentalAgg(e.value) AS result
-
--- Also works for known aggregates (redundant but explicit)
-MATCH (u:User)
-RETURN u.country, chagg.uniq(u.email) AS unique_emails
-```
-
-**When to use `chagg.` vs `ch.`:**
+### Quick Reference
 
 | Prefix | Use Case | GROUP BY |
 |--------|----------|----------|
-| `ch.` | Scalar functions OR known aggregates from registry | Auto for known aggregates |
-| `chagg.` | **Any** aggregate function (explicit declaration) | Always auto-generates |
-
-**Registry coverage**: The `ch.` prefix auto-detects ~150 common ClickHouse aggregates. Use `chagg.` for:
-- Custom user-defined aggregates
-- New ClickHouse aggregates not yet in registry
-- Experimental aggregate functions
-- Third-party aggregate functions
-
-### Limitations
-
-**Lambda expressions are NOT supported**. ClickHouse array functions that require lambda notation cannot be used via `ch.` pass-through:
+| `ch.` | Scalar functions + known aggregates (~150) | Auto for aggregates |
+| `chagg.` | **Any** aggregate (explicit declaration) | Always generates |
 
 ```cypher
--- ❌ NOT SUPPORTED: Lambda syntax not parsed
-ch.arrayMap(x -> x * 2, arr)           -- Fails: parser doesn't understand ->
-ch.arrayFilter(x -> x > 0, arr)        -- Fails: lambda syntax
-ch.arrayReduce('sum', x -> x * x, arr) -- Fails: lambda syntax
+-- Scalar function (hash, JSON, URL, IP, geo, date...)
+MATCH (u:User) RETURN ch.cityHash64(u.email) AS hash
 
--- ✅ SUPPORTED: Functions without lambdas work fine
-ch.arraySum(arr)                       -- Works: no lambda needed
-ch.arrayDistinct(arr)                  -- Works: single array argument
-ch.arrayConcat(arr1, arr2)             -- Works: multiple arguments
-ch.arrayStringConcat(arr, ', ')        -- Works: array + literal
+-- Known aggregate (auto GROUP BY)
+MATCH (u:User) RETURN u.country, ch.uniq(u.user_id) AS unique_users
+
+-- Custom/new aggregate (explicit)
+MATCH (u:User) RETURN u.country, chagg.myCustomAgg(u.score) AS result
 ```
 
-**Workaround**: For lambda-based transformations, use standard Cypher list comprehensions where supported, or perform the transformation in your application layer before/after the query.
+### Supported Categories
 
-**Parametric aggregates** (like `quantile(0.95)`) use ClickHouse's special syntax which may require testing to ensure correct parsing.
+| Category | Examples |
+|----------|----------|
+| **Hash** | `ch.cityHash64`, `ch.MD5`, `ch.SHA256` |
+| **JSON** | `ch.JSONExtract*`, `ch.JSONHas` |
+| **URL/IP** | `ch.domain`, `ch.IPv4NumToString` |
+| **Geo** | `ch.greatCircleDistance`, `ch.geoToH3` |
+| **Date** | `ch.toStartOfHour`, `ch.formatDateTime` |
+| **Aggregates** | `ch.uniq`, `ch.quantile`, `ch.topK`, `ch.windowFunnel` |
 
-### Reference
+📖 **[Full Documentation: ClickHouse Functions →](ClickHouse-Functions.md)**
 
-- [ClickHouse Functions Reference](https://clickhouse.com/docs/en/sql-reference/functions)
-- [Array Functions](https://clickhouse.com/docs/en/sql-reference/functions/array-functions)
-- [Date/Time Functions](https://clickhouse.com/docs/en/sql-reference/functions/date-time-functions)
-- [JSON Functions](https://clickhouse.com/docs/en/sql-reference/functions/json-functions)
+The dedicated guide includes:
+- Complete scalar function examples (hash, JSON, URL, IP, geo, date, string, array)
+- All aggregate functions (unique counting, quantiles, TopK, funnel analysis, statistics)
+- Function reference tables
+- Limitations and workarounds
 
 ---
 
