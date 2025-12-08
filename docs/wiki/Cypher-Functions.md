@@ -973,7 +973,7 @@ LIMIT 5
 
 ## ClickHouse Function Pass-Through
 
-ClickGraph provides direct access to **any** ClickHouse function using the `ch.` prefix. This uses dot notation for compatibility with the Neo4j ecosystem (like `apoc.*`, `gds.*` patterns).
+ClickGraph provides direct access to ClickHouse functions using the `ch.` prefix. This uses dot notation for compatibility with the Neo4j ecosystem (like `apoc.*`, `gds.*` patterns).
 
 ### Syntax
 
@@ -1289,6 +1289,27 @@ RETURN ch.avgMap(m.hourly_values) AS avg_by_hour
 5. **Use for ClickHouse-specific features**: For standard functions (abs, round, etc.), prefer Neo4j function names as they're more portable.
 
 6. **Neo4j ecosystem compatible**: Uses dot notation like `apoc.*` and `gds.*` for compatibility with Neo4j tools.
+
+### Limitations
+
+**Lambda expressions are NOT supported**. ClickHouse array functions that require lambda notation cannot be used via `ch.` pass-through:
+
+```cypher
+-- ❌ NOT SUPPORTED: Lambda syntax not parsed
+ch.arrayMap(x -> x * 2, arr)           -- Fails: parser doesn't understand ->
+ch.arrayFilter(x -> x > 0, arr)        -- Fails: lambda syntax
+ch.arrayReduce('sum', x -> x * x, arr) -- Fails: lambda syntax
+
+-- ✅ SUPPORTED: Functions without lambdas work fine
+ch.arraySum(arr)                       -- Works: no lambda needed
+ch.arrayDistinct(arr)                  -- Works: single array argument
+ch.arrayConcat(arr1, arr2)             -- Works: multiple arguments
+ch.arrayStringConcat(arr, ', ')        -- Works: array + literal
+```
+
+**Workaround**: For lambda-based transformations, use standard Cypher list comprehensions where supported, or perform the transformation in your application layer before/after the query.
+
+**Parametric aggregates** (like `quantile(0.95)`) use ClickHouse's special syntax which may require testing to ensure correct parsing.
 
 ### Reference
 
