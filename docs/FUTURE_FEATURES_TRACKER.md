@@ -46,36 +46,21 @@ These examples:
 
 ---
 
-### 2. Inline Property Filters
+### 2. ~~Inline Property Filters~~ ✅ IMPLEMENTED
 
-**Status**: 🔴 Not Supported  
-**Location**: `Cypher-Basic-Patterns.md` - "Match Nodes by Property" section  
+**Status**: ✅ Supported (as of v0.5.2)  
 **Syntax**: `MATCH (u:User {name: 'Alice'}) RETURN u`  
 
-**Why**: Parser doesn't handle `{property: value}` syntax in MATCH clause.
-
-**What's Needed**:
-- Parser enhancement to recognize inline properties
-- AST changes to represent inline property filters
-- Logical planner to convert to WHERE predicates
-
-**Workaround**: Use WHERE clause: `MATCH (u:User) WHERE u.name = 'Alice' RETURN u`
+Both node and relationship inline property filters are now fully supported!
 
 ---
 
-### 3. Inline Relationship Property Filters
+### 3. ~~Inline Relationship Property Filters~~ ✅ IMPLEMENTED
 
-**Status**: 🔴 Not Supported  
-**Location**: `Cypher-Basic-Patterns.md` - "Relationship Property Filtering" section  
+**Status**: ✅ Supported (as of v0.5.2)  
 **Syntax**: `MATCH (a)-[:FOLLOWS {since: '2024-01-01'}]->(b) RETURN a, b`  
 
-**Why**: Parser doesn't handle property maps on relationships in MATCH clause.
-
-**What's Needed**:
-- Same parser enhancement as #2 but for relationship patterns
-- Support in relationship pattern AST nodes
-
-**Workaround**: Use WHERE clause: `MATCH (a)-[r:FOLLOWS]->(b) WHERE r.since > '2024-01-01' RETURN a, b`
+Both single and multiple inline properties work on relationships.
 
 ---
 

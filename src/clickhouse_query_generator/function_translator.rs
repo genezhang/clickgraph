@@ -8,26 +8,35 @@ use crate::query_planner::logical_expr::ScalarFnCall;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-/// Prefix for ClickHouse pass-through functions
+/// Prefix for ClickHouse pass-through functions (scalar or auto-detected aggregates)
 /// Usage: ch.functionName(args) -> functionName(args) passed directly to ClickHouse
 /// Uses dot notation for Neo4j ecosystem compatibility (like apoc.*, gds.*)
 pub const CH_PASSTHROUGH_PREFIX: &str = "ch.";
 
+/// Prefix for explicit ClickHouse aggregate functions
+/// Usage: chagg.functionName(args) -> functionName(args) with automatic GROUP BY
+/// Use this for ANY aggregate function, including custom or new ones not in the registry
+pub const CH_AGG_PREFIX: &str = "chagg.";
+
 /// Registry of known ClickHouse aggregate functions
 /// These functions require GROUP BY when used with non-aggregated columns
 /// 
+/// NOTE: For functions not in this registry, use ch.agg.functionName() to explicitly
+/// mark them as aggregates.
+/// 
 /// Categories:
-/// - Basic: count, sum, avg, min, max, any, anyLast
+/// - Basic: count, sum, avg, min, max, any, anyLast, first_value, last_value
 /// - Unique counting: uniq, uniqExact, uniqCombined, uniqCombined64, uniqHLL12, uniqTheta
-/// - Quantiles: quantile, quantiles, quantileExact, quantileTDigest, quantileBFloat16
+/// - Quantiles: quantile, quantiles, quantileExact, quantileTDigest, quantileBFloat16, quantileGK, quantileDD, etc.
 /// - Array: groupArray, groupArraySample, groupUniqArray, groupArrayMovingSum, groupArrayMovingAvg
-/// - Statistics: varPop, varSamp, stddevPop, stddevSamp, covarPop, covarSamp, corr
-/// - TopK: topK, topKWeighted
-/// - ArgMin/Max: argMin, argMax
-/// - Funnel: windowFunnel, retention, sequenceMatch, sequenceCount
-/// - Bitmap: groupBitmap, groupBitmapAnd, groupBitmapOr, groupBitmapXor
+/// - Statistics: varPop, varSamp, stddevPop, stddevSamp, covarPop, covarSamp, corr, skewPop, kurtPop
+/// - TopK: topK, topKWeighted, approx_top_k, approx_top_sum
+/// - ArgMin/Max: argMin, argMax, argAndMin, argAndMax
+/// - Funnel: windowFunnel, retention, sequenceMatch, sequenceCount, sequenceNextNode
+/// - Bitmap: groupBitmap, groupBitmapAnd, groupBitmapOr, groupBitmapXor, groupBitAnd, groupBitOr, groupBitXor
 /// - Map: sumMap, minMap, maxMap, avgMap
-/// - Other: simpleLinearRegression, stochasticLinearRegression, entropy
+/// - Statistical tests: mannWhitneyUTest, studentTTest, welchTTest, kolmogorovSmirnovTest
+/// - Other: simpleLinearRegression, stochasticLinearRegression, entropy, sparkbar, groupConcat
 static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     let mut s = HashSet::new();
     
@@ -51,13 +60,16 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("uniqhll12");
     s.insert("uniqtheta");
     
-    // Quantiles and percentiles
+    // Quantiles and percentiles (comprehensive - all ClickHouse quantile variants)
     s.insert("quantile");
     s.insert("quantiles");
     s.insert("quantileexact");
     s.insert("quantileexactlow");
     s.insert("quantileexacthigh");
     s.insert("quantileexactweighted");
+    s.insert("quantileexactexclusive");
+    s.insert("quantileexactinclusive");
+    s.insert("quantileexactweightedinterpolated");
     s.insert("quantiletdigest");
     s.insert("quantiletdigestweighted");
     s.insert("quantilebfloat16");
@@ -65,9 +77,22 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("quantiletiming");
     s.insert("quantiletimingweighted");
     s.insert("quantiledeterministic");
+    s.insert("quantilegk");  // Greenwald-Khanna algorithm
+    s.insert("quantiledd");  // DDSketch algorithm
+    s.insert("quantileinterpolatedweighted");
+    s.insert("quantileprometheushistogram");
+    s.insert("quantilesexactexclusive");
+    s.insert("quantilesexactinclusive");
+    s.insert("quantilesgk");
     s.insert("median");
     s.insert("medianexact");
+    s.insert("medianexactlow");
+    s.insert("medianexacthigh");
+    s.insert("medianexactweighted");
     s.insert("mediantiming");
+    s.insert("mediantdigest");
+    s.insert("medianbfloat16");
+    s.insert("mediandeterministic");
     
     // Array collection
     s.insert("grouparray");
@@ -111,12 +136,16 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("groupbitmapand");
     s.insert("groupbitmapor");
     s.insert("groupbitmapxor");
+    s.insert("groupbitand");
+    s.insert("groupbitor");
+    s.insert("groupbitxor");
     
     // Map aggregates
     s.insert("summap");
     s.insert("minmap");
     s.insert("maxmap");
     s.insert("avgmap");
+    s.insert("summapwithoverflow");
     s.insert("sumwithoverflow");
     
     // Histogram
@@ -127,29 +156,90 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("stochasticlinearregression");
     s.insert("stochasticlogisticregression");
     
+    // Statistical tests
+    s.insert("studentttest");
+    s.insert("studentttestonesample");
+    s.insert("welchttest");
+    s.insert("kolmogorovsmirnovtest");
+    s.insert("meanztest");
+    s.insert("analysisofvariance");
+    
     // Other useful aggregates
     s.insert("entropy");
     s.insert("mannwhitneyutest");
-    s.insert("rankCorr");
-    s.insert("exponentialMovingAverage");
-    s.insert("intervalLengthSum");
-    s.insert("boundingRatio");
+    s.insert("rankcorr");
+    s.insert("exponentialmovingaverage");
+    s.insert("exponentialtimedecayedavg");
+    s.insert("exponentialtimedecayedcount");
+    s.insert("exponentialtimedecayedmax");
+    s.insert("exponentialtimedecayedsum");
+    s.insert("intervallengthsum");
+    s.insert("boundingratio");
     s.insert("contingency");
     s.insert("cramersv");
-    s.insert("cramersVBiasCorrected");
+    s.insert("cramersvbiascorrected");
     s.insert("theilsu");
-    s.insert("maxIntersections");
-    s.insert("maxIntersectionsPosition");
+    s.insert("maxintersections");
+    s.insert("maxintersectionsposition");
+    s.insert("sparkbar");
+    s.insert("groupconcat");
+    s.insert("singlevalueornull");
+    s.insert("categoricalinformationvalue");
+    s.insert("sumkahan");
+    s.insert("sumcount");
+    s.insert("avgweighted");
+    s.insert("largesttrianglethreebuckets");
+    s.insert("flamegraph");
+    
+    // Approx TopK
+    s.insert("approx_top_k");
+    s.insert("approx_top_sum");
+    
+    // ArgAnd variants
+    s.insert("argandmin");
+    s.insert("argandmax");
+    
+    // Array variants
+    s.insert("grouparraylast");
+    s.insert("grouparraysorted");
+    s.insert("grouparrayintersect");
+    s.insert("timeseriesgrouparray");
+    
+    // Matrix functions
+    s.insert("corrmatrix");
+    s.insert("covarpopmatrix");
+    s.insert("covarsampmatrix");
+    
+    // Stable variants (numerically stable algorithms)
+    s.insert("corrstable");
+    s.insert("varpopstable");
+    s.insert("varsampstable");
+    s.insert("stddevpopstable");
+    s.insert("stddevsampstable");
+    s.insert("covarpopstable");
+    s.insert("covarsampstable");
     
     // Delta/rate functions
-    s.insert("deltaSumTimestamp");
-    s.insert("deltaSum");
+    s.insert("deltasumtimestamp");
+    s.insert("deltasum");
     
     // Merge functions (for combining partial aggregation states)
-    s.insert("sumMerge");
-    s.insert("countMerge");
-    s.insert("avgMerge");
-    s.insert("uniqMerge");
+    s.insert("summerge");
+    s.insert("countmerge");
+    s.insert("avgmerge");
+    s.insert("uniqmerge");
+    
+    // Time series functions
+    s.insert("timeseriesdeltaagrid");
+    s.insert("timeseriesinstantdeltatogrid");
+    s.insert("timeseriesinstantratetogrid");
+    s.insert("timeserieslasttwosamples");
+    s.insert("timeseriesratetogrid");
+    s.insert("timeseriesresampletoGridwithstaleness");
+    s.insert("timeseriesderivtogrid");
+    s.insert("timeseriespredictlineartogrid");
+    s.insert("timeserieschangestogrid");
+    s.insert("timeseriesresetstogrid");
     
     s
 });
@@ -159,20 +249,35 @@ pub fn is_ch_aggregate_function(fn_name: &str) -> bool {
     CH_AGGREGATE_FUNCTIONS.contains(fn_name.to_lowercase().as_str())
 }
 
-/// Check if a ch. prefixed function is an aggregate
-/// Returns true if the function starts with ch. and the underlying function is an aggregate
-pub fn is_ch_passthrough_aggregate(fn_name: &str) -> bool {
-    if !fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
-        return false;
-    }
-    let ch_fn_name = &fn_name[CH_PASSTHROUGH_PREFIX.len()..];
-    is_ch_aggregate_function(ch_fn_name)
+/// Check if a function uses the explicit chagg. prefix
+/// chagg.functionName() is ALWAYS treated as an aggregate, no registry lookup needed
+pub fn is_explicit_ch_aggregate(fn_name: &str) -> bool {
+    fn_name.starts_with(CH_AGG_PREFIX)
 }
 
-/// Get the raw ClickHouse function name from a ch. prefixed name
-/// Returns None if not a ch. prefixed function
-pub fn get_ch_function_name(fn_name: &str) -> Option<&str> {
+/// Check if a ch. prefixed function is an aggregate
+/// Returns true if:
+/// 1. Function starts with chagg. (explicit aggregate), OR
+/// 2. Function starts with ch. and the underlying function is in the aggregate registry
+pub fn is_ch_passthrough_aggregate(fn_name: &str) -> bool {
+    // Explicit chagg. prefix - always an aggregate
+    if fn_name.starts_with(CH_AGG_PREFIX) {
+        return true;
+    }
+    // ch. prefix - check registry
     if fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
+        let ch_fn_name = &fn_name[CH_PASSTHROUGH_PREFIX.len()..];
+        return is_ch_aggregate_function(ch_fn_name);
+    }
+    false
+}
+
+/// Get the raw ClickHouse function name from a ch. or chagg. prefixed name
+/// Returns None if not a ch./chagg. prefixed function
+pub fn get_ch_function_name(fn_name: &str) -> Option<&str> {
+    if fn_name.starts_with(CH_AGG_PREFIX) {
+        Some(&fn_name[CH_AGG_PREFIX.len()..])
+    } else if fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
         Some(&fn_name[CH_PASSTHROUGH_PREFIX.len()..])
     } else {
         None
@@ -185,8 +290,8 @@ pub fn translate_scalar_function(
 ) -> Result<String, ClickhouseQueryGeneratorError> {
     let fn_name = &fn_call.name;
     
-    // Check for ClickHouse pass-through prefix (ch.)
-    if fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
+    // Check for ClickHouse pass-through prefixes (chagg. or ch.)
+    if fn_name.starts_with(CH_AGG_PREFIX) || fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
         return translate_ch_passthrough(fn_call);
     }
     
@@ -269,12 +374,15 @@ pub fn translate_scalar_function(
 fn translate_ch_passthrough(
     fn_call: &ScalarFnCall,
 ) -> Result<String, ClickhouseQueryGeneratorError> {
-    // Strip the ch:: prefix to get the raw ClickHouse function name
-    let ch_fn_name = &fn_call.name[CH_PASSTHROUGH_PREFIX.len()..];
+    // Strip the ch. or chagg. prefix to get the raw ClickHouse function name
+    let ch_fn_name = get_ch_function_name(&fn_call.name)
+        .ok_or_else(|| ClickhouseQueryGeneratorError::SchemaError(
+            format!("Expected ch. or chagg. prefix in function name: {}", fn_call.name)
+        ))?;
     
     if ch_fn_name.is_empty() {
         return Err(ClickhouseQueryGeneratorError::SchemaError(
-            "ch. prefix requires a function name (e.g., ch.cityHash64)".to_string()
+            "ch./chagg. prefix requires a function name (e.g., ch.cityHash64, chagg.myAgg)".to_string()
         ));
     }
     
@@ -284,14 +392,14 @@ fn translate_ch_passthrough(
     
     let args_sql = args_sql.map_err(|e| {
         ClickhouseQueryGeneratorError::SchemaError(format!(
-            "Failed to convert ch::{} arguments to SQL: {}",
-            ch_fn_name, e
+            "Failed to convert {} arguments to SQL: {}",
+            fn_call.name, e
         ))
     })?;
     
     log::debug!(
-        "ClickHouse pass-through: ch.{}({}) -> {}({})",
-        ch_fn_name,
+        "ClickHouse pass-through: {}({}) -> {}({})",
+        fn_call.name,
         fn_call.args.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>().join(", "),
         ch_fn_name,
         args_sql.join(", ")
@@ -543,6 +651,47 @@ mod tests {
         // Non ch. prefixed
         assert!(!is_ch_passthrough_aggregate("uniq"));
         assert!(!is_ch_passthrough_aggregate("count"));
+    }
+
+    #[test]
+    fn test_chagg_explicit_aggregate_prefix() {
+        // chagg. prefix is ALWAYS an aggregate, regardless of function name
+        assert!(is_ch_passthrough_aggregate("chagg.customAggregate"));
+        assert!(is_ch_passthrough_aggregate("chagg.mySpecialFunc"));
+        assert!(is_ch_passthrough_aggregate("chagg.uniq")); // Also works for known ones
+        assert!(is_ch_passthrough_aggregate("chagg.anyNewFunction"));
+        
+        // chagg. prefix starts_with check
+        assert!(is_explicit_ch_aggregate("chagg.test"));
+        assert!(!is_explicit_ch_aggregate("ch.test"));
+        assert!(!is_explicit_ch_aggregate("test"));
+    }
+
+    #[test]
+    fn test_get_ch_function_name_both_prefixes() {
+        // ch. prefix
+        assert_eq!(get_ch_function_name("ch.uniq"), Some("uniq"));
+        assert_eq!(get_ch_function_name("ch.cityHash64"), Some("cityHash64"));
+        
+        // chagg. prefix
+        assert_eq!(get_ch_function_name("chagg.customAgg"), Some("customAgg"));
+        assert_eq!(get_ch_function_name("chagg.uniq"), Some("uniq"));
+        
+        // No prefix
+        assert_eq!(get_ch_function_name("uniq"), None);
+        assert_eq!(get_ch_function_name("count"), None);
+    }
+
+    #[test]
+    fn test_chagg_translate_function() {
+        // chagg.customAggregate(x) -> customAggregate(x)
+        let fn_call = ScalarFnCall {
+            name: "chagg.myCustomAgg".to_string(),
+            args: vec![LogicalExpr::Literal(Literal::String("test".to_string()))],
+        };
+
+        let result = translate_scalar_function(&fn_call).unwrap();
+        assert_eq!(result, "myCustomAgg('test')");
     }
 
     #[test]

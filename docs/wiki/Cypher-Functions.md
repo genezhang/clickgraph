@@ -1290,6 +1290,37 @@ RETURN ch.avgMap(m.hourly_values) AS avg_by_hour
 
 6. **Neo4j ecosystem compatible**: Uses dot notation like `apoc.*` and `gds.*` for compatibility with Neo4j tools.
 
+### Explicit Aggregate Prefix: `chagg.`
+
+For aggregate functions **not in the registry**, use the `chagg.` prefix to explicitly tell ClickGraph it's an aggregate function. This ensures proper GROUP BY generation.
+
+```cypher
+-- chagg. prefix: ALWAYS treated as aggregate (auto GROUP BY)
+MATCH (u:User)
+RETURN u.country, chagg.myCustomAggregate(u.score) AS custom_metric
+
+-- Works for any function, including new/custom ClickHouse aggregates
+MATCH (e:Event)
+RETURN e.type, chagg.newExperimentalAgg(e.value) AS result
+
+-- Also works for known aggregates (redundant but explicit)
+MATCH (u:User)
+RETURN u.country, chagg.uniq(u.email) AS unique_emails
+```
+
+**When to use `chagg.` vs `ch.`:**
+
+| Prefix | Use Case | GROUP BY |
+|--------|----------|----------|
+| `ch.` | Scalar functions OR known aggregates from registry | Auto for known aggregates |
+| `chagg.` | **Any** aggregate function (explicit declaration) | Always auto-generates |
+
+**Registry coverage**: The `ch.` prefix auto-detects ~150 common ClickHouse aggregates. Use `chagg.` for:
+- Custom user-defined aggregates
+- New ClickHouse aggregates not yet in registry
+- Experimental aggregate functions
+- Third-party aggregate functions
+
 ### Limitations
 
 **Lambda expressions are NOT supported**. ClickHouse array functions that require lambda notation cannot be used via `ch.` pass-through:

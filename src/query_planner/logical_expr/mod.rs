@@ -1,5 +1,5 @@
 use crate::{
-    clickhouse_query_generator::{is_ch_passthrough_aggregate, CH_PASSTHROUGH_PREFIX},
+    clickhouse_query_generator::{is_ch_passthrough_aggregate, CH_PASSTHROUGH_PREFIX, CH_AGG_PREFIX},
     open_cypher_parser::{self},
     query_planner::logical_plan::LogicalPlan,
 };
@@ -352,9 +352,11 @@ impl<'a> From<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
         // Check if it's a standard aggregate function
         let is_standard_agg = agg_fns.contains(&name_lower.as_str());
         
-        // Check if it's a ch. prefixed ClickHouse aggregate function
-        let is_ch_agg = value.name.starts_with(CH_PASSTHROUGH_PREFIX) 
-            && is_ch_passthrough_aggregate(&value.name);
+        // Check if it's a ch./chagg. prefixed ClickHouse aggregate function
+        // chagg. prefix is ALWAYS an aggregate (explicit declaration)
+        // ch. prefix checks against the aggregate registry
+        let is_ch_agg = value.name.starts_with(CH_AGG_PREFIX) 
+            || (value.name.starts_with(CH_PASSTHROUGH_PREFIX) && is_ch_passthrough_aggregate(&value.name));
         
         if is_standard_agg || is_ch_agg {
             LogicalExpr::AggregateFnCall(AggregateFnCall {

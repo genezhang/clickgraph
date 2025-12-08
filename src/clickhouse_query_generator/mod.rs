@@ -18,8 +18,8 @@ mod edge_uniqueness_tests;
 pub use errors::ClickhouseQueryGeneratorError;
 pub use function_translator::{
     get_ch_function_name, get_supported_functions, is_ch_aggregate_function,
-    is_ch_passthrough, is_ch_passthrough_aggregate, is_function_supported,
-    translate_scalar_function, CH_PASSTHROUGH_PREFIX,
+    is_ch_passthrough, is_ch_passthrough_aggregate, is_explicit_ch_aggregate,
+    is_function_supported, translate_scalar_function, CH_AGG_PREFIX, CH_PASSTHROUGH_PREFIX,
 };
 pub use variable_length_cte::{NodeProperty, VariableLengthCteGenerator};
 
