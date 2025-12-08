@@ -1,69 +1,78 @@
-## [Unreleased]
-
----
-
-## [0.5.4] - 2025-12-07
+## [0.5.4] - 2025-12-08
 
 ### 🚀 Features
 
-- **Cross-table WITH correlation with proper JOIN generation** - Queries like `MATCH (...) WITH alias1, alias2 MATCH (...) WHERE x.prop = alias1 RETURN ...` now generate correct INNER JOINs between tables. The correlation in WHERE clause is properly extracted and converted to a JOIN condition instead of being left as a filter on non-existent tables.
-- **Cross-table query support with disconnected patterns (Issue #12)** - Cross-table queries using WITH...MATCH and WHERE clause correlation now work correctly for fully denormalized edges. Example: `MATCH (ip1:IP)-[:DNS_REQUESTED]->(d:Domain) WITH ip1, d MATCH (ip2:IP)-[:CONNECTED_TO]->(dest:IP) WHERE ip1.ip = ip2.ip RETURN ip1.ip, d.name, dest.ip` correctly generates INNER JOIN between dns_log and conn_log tables.
-- **Cross-table query support with shared variables (Issue #12)** - Zeek log correlation and similar cross-table analytics now work using shared node variable patterns. Example: `MATCH (src:IP)-[:DNS_REQUESTED]->(d:Domain), (src)-[:CONNECTED_TO]->(dest:IP)` correctly generates edge-to-edge JOINs between dns_log and conn_log tables.
-- **Smart relationship type inference** - Anonymous edge patterns `()-[r]->()` can now infer the relationship type automatically:
-  - **Single-schema inference**: If the schema has only one relationship type, it's used automatically
-  - **Node-type inference**: If nodes are typed (e.g., `(a:Airport)-[r]->()`), finds relationships that match those node types
-  - **Safety limit**: Max 4 types can be inferred; more requires explicit type specification
-- **Smart node type inference** - Standalone node patterns `MATCH (n)` can now infer the node type automatically when the schema has only one node type
-- **Label inference from relationship schema** - Unlabeled nodes connected to typed relationships now have their labels inferred from the relationship schema
-- **String predicate operators** - Full support for `STARTS WITH`, `ENDS WITH`, and `CONTAINS` string predicates in WHERE clauses with correct ClickHouse SQL generation
-- **FK-Edge pattern support** - Self-referencing foreign key patterns (file systems, org charts) now work correctly with variable-length paths and exact hop counts
-- **Relationship uniqueness enforcement for undirected patterns** - Multi-hop undirected patterns now enforce Neo4j-style relationship uniqueness using `edge_id` columns from schema
-- **Unified Schema Abstraction (PatternSchemaContext)** - New abstraction layer for clean, exhaustive schema pattern handling with A/B testing toggle (`USE_PATTERN_SCHEMA_V2=1`)
-- **Data Security Example** - Complete example demonstrating access control graph analysis with users, groups, and file system objects
-- **OnTime Flights Benchmark** - 20M row denormalized edge benchmark using ClickHouse's OnTime flight dataset (2021-2023), testing multi-hop graph traversals on real-world data
+- Add native support for self-referencing FK pattern
+- Add relationship uniqueness enforcement for undirected patterns
+- *(schema)* Add fixed-endpoint polymorphic edge support
+- *(union)* Add UNION and UNION ALL query support
+- Multi-table label support and denormalized schema improvements
+- *(pattern_schema)* Add unified PatternSchemaContext abstraction - Phase 1
+- *(graph_join_inference)* Integrate PatternSchemaContext - Phase 2
+- *(graph_join_inference)* Add handle_graph_pattern_v2 - Phase 3
+- *(pattern_schema)* Add FkEdgeJoin strategy for FK-edge patterns
+- *(graph_join)* Wire up handle_graph_pattern_v2 with USE_PATTERN_SCHEMA_V2 env toggle
 
 ### 🐛 Bug Fixes
 
-- **Fix polymorphic edge queries failing with "Traditional strategy requires OwnTable nodes"** - Polymorphic edge schemas now correctly generate SQL when queries specify concrete node types
-- **Fix disconnected pattern JOIN generation for fully denormalized edges** - Cross-table JOINs now correctly generated when both sides of a CartesianProduct are fully denormalized
-- **Fix cross-table JOIN generation for denormalized schemas** - System now correctly detects denormalized nodes using `edge_has_node_properties()` instead of checking node primary table
-- **Fix multi-hop patterns with anonymous nodes (Issue #6)** - Patterns like `()-[r1:FLIGHT]->()-[r2:FLIGHT]->()` now generate correct SQL with proper alias sharing
-- **Fix OPTIONAL MATCH with polymorphic edges (Issue #3)** - Polymorphic OPTIONAL MATCH now generates correct LEFT JOINs
-- **Fix polymorphic CONTAINS with unlabeled target (Issue #5)** - Unlabeled node labels are inferred from relationship schema
-- **Fix WITH clause + node reference + aggregate** - Outer query FROM clause now correctly uses table for grouping key alias
-- **Fix string predicates not being parsed** - `STARTS WITH`, `ENDS WITH`, and `CONTAINS` operators now parsed correctly
-- **Fix cross-table WITH correlation missing JOIN** - Cross-table correlations with WHERE aliases now generate proper JOINs
-- **Fix anonymous VLP wrong table selection** - Variable-length paths without explicit relationship types now use correct table
-- **Fix FK-edge JOIN column swap** - Denormalized relationships now generate correct JOIN conditions
-- **Fix multi-type same type deduplication** - `[:FOLLOWS|FOLLOWS]` now correctly deduplicates to single type
-- **Fix WHERE AND/OR/XOR syntax error** - Binary operators at expression start now correctly rejected as syntax errors
-- **Fix FK-Edge variable-length paths** - CTE generation now uses correct 2-way joins for FK-edge schemas
-- **Fix FK-Edge exact hop counts** - ChainedJoinGenerator now supports FK-edge patterns
-- **Fix undirected multi-hop patterns** - Patterns like `(a)-[r1]-(b)-[r2]-(c)` now correctly generate UNION branches
-- **Fix UNION column order mismatch for denormalized nodes** - Properties sorted alphabetically for consistent column order
-- **Fix count(p) for path variables** - Path variables now correctly resolve to `count(*)`
+- GROUP BY expansion and count(DISTINCT r) for denormalized schemas
+- Undirected multi-hop patterns generate correct SQL
+- Support fixed-endpoint polymorphic edges without type_column
+- Correct polymorphic filter condition in graph_join_inference
+- Normalize GraphRel left/right semantics for consistent JOIN generation
+- Recurse into nested GraphRels for VLP detection
+- *(render_plan)* Add WHERE filters for VLP chained pattern endpoints (Issue #5)
+- *(parser)* Reject binary operators (AND/OR/XOR) as variable names
+- Multi-hop anonymous patterns, OPTIONAL MATCH polymorphic, string operators
+- Aggregation and UNWIND bugs
+- Denormalized schema query pattern fixes (TODO-1, TODO-2, TODO-4)
+- Cross-table WITH correlation now generates proper JOINs (TODO-3)
+- WITH clause alias propagation through GraphJoins wrapper (TODO-8)
+- Multi-hop denormalized edge JOIN generation
+- Update schema files to match test data columns
+- *(pattern_schema)* Pass prev_edge_info for multi-hop detection in v2 path
+- *(filter_tagging)* Correct owning edge detection for multi-hop intermediate nodes
+- FK-edge JOIN direction bug - use join_side instead of fk_on_right
+- Add polymorphic label filter generation for edges
+
+### 🚜 Refactor
+
+- Unify FK-edge pattern for self-ref and non-self-ref cases
+- Minor code cleanup in bidirectional_union and plan_builder_helpers
+- Make PatternSchemaContext (v2) the default join inference path
+- Reorganize benchmarks into individual directories
+- Replace NodeIdSchema.column with Identifier-based id field
+- Change YAML field id_column to node_id for consistency
+- Extract predicate analysis helpers to plan_builder_helpers.rs
+- Extract JOIN and filter helpers to plan_builder_helpers.rs
 
 ### 📚 Documentation
 
-- **Add FK-Edge Patterns wiki page** - User-facing documentation for self-referencing FK patterns
-- **Add Data Security example** - Complete guide with schema, queries, and README
-- **Add OnTime Flights benchmark** - Comprehensive benchmark suite for denormalized edge tables with 20M flights
-- **Update KNOWN_ISSUES.md** - Issues #3, #5, and #6 marked as fixed
+- Update README for v0.5.3 release
+- Add fixed-endpoint polymorphic edge documentation
+- Add VLP+chained patterns docs and private security tests
+- Document Issue #5 (WHERE filter on VLP chained endpoints)
+- *(readme)* Minor wording improvements
+- Update PLANNING_v0.5.3 and CHANGELOG with bug fix status
+- Add unified schema abstraction proposal and test scripts
+- Add unified schema abstraction Phase 4 completion to STATUS
+- Update unified schema abstraction progress - Phase 4 fully complete
+- *(benchmarks)* Add ClickHouse env vars and fix paths in README
+- *(benchmarks)* Streamline README to be a concise index
+- Archive PLANNING_v0.5.3.md - all bugs resolved
 
 ### 🧪 Testing
 
-- **596 unit tests passing** (up from 558)
-- **391 social_benchmark integration tests passing**
-- **391 security_graph integration tests passing**
-- **Total: 1,378 tests verified**
+- Add multi-hop pattern integration tests
+- Fix Zeek integration tests - response format and skip cross-table tests
+- Add v1 vs v2 comparison test script
+- Add unit tests for predicate analysis helpers
 
-### ⚙️ Miscellaneous
+### ⚙️ Miscellaneous Tasks
 
-- Remove "fork of Brahmand" from server startup message
-- Clean up debug prints from server components (handlers.rs, clickhouse_client.rs, graph_catalog.rs)
-
----
-
+- Update CHANGELOG.md [skip ci]
+- Make test files use CLICKGRAPH_URL env var for port flexibility
+- *(benchmarks)* Move social_network-specific files to subdirectory
 ## [0.5.3] - 2025-12-02
 
 ### 🚀 Features
