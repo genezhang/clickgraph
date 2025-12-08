@@ -15,6 +15,11 @@
   - **Predicate (2)**: `coalesce`, `nullIf`
   - **Map (1)**: `keys`
 
+- *(functions)* **ClickHouse function pass-through** via `ch::` prefix
+  - Direct access to ANY ClickHouse function: `ch::functionName(args)`
+  - Property mapping and parameter substitution work normally
+  - Enables: Hash (cityHash64, MD5), JSON (JSONExtract*), URL (domain, path), IP (IPv4NumToString), Geo (greatCircleDistance, geoToH3), Date (formatDateTime, toStartOf*), and all other ClickHouse functions
+
 ### 🚜 Refactor
 
 - *(code quality)* Remove 423 lines of dead code (filter_pipeline.rs: 889→413 lines)
@@ -24,9 +29,15 @@
 
 ### 🧪 Testing
 
-- Add 16 unit tests for function registry (up from 6)
+- Add 22 unit tests for functions (12 translator + 16 registry, some overlap)
 - Fix doctest compilation errors
 - Fix test_view_parameters.rs to use Identifier::Single type
+
+### 📚 Documentation
+
+- Add comprehensive ClickHouse pass-through guide to Cypher-Functions.md
+- Expand vector similarity section with RAG usage, HNSW index requirements
+- Document all 73 Neo4j function mappings
 
 ---
 
