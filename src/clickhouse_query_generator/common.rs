@@ -1,5 +1,8 @@
+//! Common utilities for ClickHouse query generation
 use crate::open_cypher_parser::ast::Literal;
 
+/// Reserved for future use when literal rendering is needed
+#[allow(dead_code)]
 pub fn get_literal_to_string(literal: &Literal) -> String {
     match literal {
         Literal::Integer(i) => i.to_string(),

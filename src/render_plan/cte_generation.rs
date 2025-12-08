@@ -1,3 +1,8 @@
+//! CTE generation utilities for variable-length path queries
+//!
+//! Some structures and methods in this module are reserved for future use.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use crate::clickhouse_query_generator::NodeProperty;

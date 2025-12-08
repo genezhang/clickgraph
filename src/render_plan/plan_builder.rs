@@ -50,6 +50,8 @@ pub(crate) trait RenderPlanBuilder {
 
     fn extract_final_filters(&self) -> RenderPlanBuilderResult<Option<RenderExpr>>;
 
+    /// Reserved for backward compatibility 
+    #[allow(dead_code)]
     fn extract_ctes(&self, last_node_alias: &str) -> RenderPlanBuilderResult<Vec<Cte>>;
 
     fn extract_ctes_with_context(
@@ -63,6 +65,8 @@ pub(crate) trait RenderPlanBuilder {
 
     /// Get all properties for a table alias by traversing the logical plan
     /// Returns a vector of (property_name, column_name) tuples
+    /// Reserved for future property introspection feature
+    #[allow(dead_code)]
     fn get_all_properties_for_alias(
         &self,
         alias: &str,
@@ -78,6 +82,8 @@ pub(crate) trait RenderPlanBuilder {
 
     /// Find denormalized properties for a given alias
     /// Returns a HashMap of logical property name -> physical column name
+    /// Reserved for future denormalized property optimization
+    #[allow(dead_code)]
     fn find_denormalized_properties(
         &self,
         alias: &str,

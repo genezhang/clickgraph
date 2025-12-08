@@ -133,7 +133,7 @@ impl PropertyResolver {
     /// * `mapping` - AliasMapping with SQL alias, position, edge context
     /// 
     /// # Example (Denormalized Multi-Hop)
-    /// ```
+    /// ```text
     /// // MATCH (a)-[f]->(b)-[g]->(c)
     /// resolver.register_alias("a", AliasMapping { 
     ///     sql_alias: "f", position: From, edge_alias: Some("f"), ... 
@@ -172,7 +172,7 @@ impl PropertyResolver {
     /// - type_filters: Additional WHERE conditions (for polymorphic)
     /// 
     /// # Example (Standard Pattern)
-    /// ```
+    /// ```text
     /// // MATCH (u:User) WHERE u.name = 'Alice'
     /// resolve_property("u", "name", None)
     /// → PropertyResolution {
@@ -183,7 +183,7 @@ impl PropertyResolver {
     /// ```
     /// 
     /// # Example (Denormalized Single-Hop)
-    /// ```
+    /// ```text
     /// // MATCH (a:Airport)-[f:FLIGHT]->(b:Airport) WHERE a.city = 'LAX'
     /// resolve_property("a", "city", Some("f"))
     /// → PropertyResolution {
@@ -194,7 +194,7 @@ impl PropertyResolver {
     /// ```
     /// 
     /// # Example (Denormalized Multi-Hop - Role Matters!)
-    /// ```
+    /// ```text
     /// // MATCH (a)-[f]->(b)-[g]->(c) WHERE b.city = 'NYC'
     /// 
     /// resolve_property("b", "city", Some("f"))  // b as TO in edge f
@@ -213,7 +213,7 @@ impl PropertyResolver {
     /// ```
     /// 
     /// # Example (Polymorphic)
-    /// ```
+    /// ```text
     /// // MATCH (u:User)-[i:FOLLOWS]->(v:User)
     /// resolve_property("i", "follow_date", None)
     /// → PropertyResolution {

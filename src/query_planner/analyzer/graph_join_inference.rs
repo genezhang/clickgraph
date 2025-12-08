@@ -1318,20 +1318,7 @@ impl GraphJoinInference {
                 )?;
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
-            LogicalPlan::Union(union) => {
-                let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
-                for input_plan in union.inputs.iter() {
-                    let child_tf = Self::build_graph_joins(
-                        input_plan.clone(),
-                        collected_graph_joins,
-                        optional_aliases.clone(),
-                        plan_ctx,
-                        graph_schema,
-                    )?;
-                    inputs_tf.push(child_tf);
-                }
-                union.rebuild_or_clone(inputs_tf, logical_plan.clone())
-            }
+            // Note: LogicalPlan::Union is handled earlier in this function for independent branch processing
             LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::Unwind(u) => {
@@ -2243,10 +2230,10 @@ impl GraphJoinInference {
             // ================================================================
             // FkEdgeJoin: Edge table IS one of the node tables (FK pattern)
             // ================================================================
-            JoinStrategy::FkEdgeJoin { from_id, to_id, join_side, is_self_referencing } => {
+            JoinStrategy::FkEdgeJoin { from_id, to_id, join_side, is_self_referencing: _is_self_referencing } => {
                 use crate::graph_catalog::pattern_schema::NodePosition;
                 
-                crate::debug_print!("    🔑 FkEdgeJoin: join_side={:?}, self_ref={}", join_side, is_self_referencing);
+                crate::debug_print!("    🔑 FkEdgeJoin: join_side={:?}, self_ref={}", join_side, _is_self_referencing);
                 
                 // FK-edge pattern: edge table IS one of the node tables
                 // We only need ONE join (to the node that ISN'T the edge table)

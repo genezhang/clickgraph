@@ -7,6 +7,9 @@
 //! - Required columns exist with correct data types
 //! - ID columns have compatible types for graph operations
 //!
+//! Note: Some methods and fields are reserved for future online schema validation.
+#![allow(dead_code)]
+
 //! # Example
 //!
 //! ```ignore

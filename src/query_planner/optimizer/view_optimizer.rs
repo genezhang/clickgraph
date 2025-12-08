@@ -17,6 +17,8 @@ pub struct ViewOptimizer {
     /// Enable property access optimization
     pub enable_property_optimization: bool,
     /// Enable join order optimization for view scans
+    /// Reserved for future optimization feature
+    #[allow(dead_code)]
     pub enable_join_optimization: bool,
 }
 

@@ -1207,6 +1207,8 @@ impl VariableLengthCteGenerator {
         )
     }
     /// Generate recursive case that extends existing paths
+    /// Reserved for backward compatibility when default CTE name is used
+    #[allow(dead_code)]
     fn generate_recursive_case(&self, max_hops: u32) -> String {
         // Delegate to the version that accepts CTE name
         // This maintains backward compatibility

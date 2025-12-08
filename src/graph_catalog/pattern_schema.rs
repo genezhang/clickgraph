@@ -8,6 +8,9 @@
 //!
 //! Previously, schema detection was scattered across 4800+ lines in `graph_join_inference.rs`:
 //! - `is_node_denormalized_on_edge()` - called multiple times
+//!
+//! Note: Some methods and fields are reserved for future pattern optimization features.
+#![allow(dead_code)]
 //! - `edge_has_node_properties()` - called at various points
 //! - `classify_edge_table_pattern()` - computed repeatedly
 //! - `are_edges_coupled()` - checked in nested conditions

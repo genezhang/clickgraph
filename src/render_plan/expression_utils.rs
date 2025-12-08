@@ -4,7 +4,9 @@
 
 use super::render_expr::RenderExpr;
 
-/// Check if a RenderExpr references a specific table alias (USED by tests)
+/// Check if a RenderExpr references a specific table alias
+/// Used by tests for validation
+#[allow(dead_code)]
 pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
     match expr {
         RenderExpr::PropertyAccessExp(prop) => prop.table_alias.0 == alias,

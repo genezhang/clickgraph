@@ -7,7 +7,7 @@
 mod view_parameters_tests {
     use std::collections::HashMap;
 
-    use clickgraph::graph_catalog::config::{NodeDefinition, RelationshipDefinition};
+    use clickgraph::graph_catalog::config::{Identifier, NodeDefinition, RelationshipDefinition};
 
     /// Test that NodeDefinition accepts view_parameters field
     #[test]
@@ -153,7 +153,7 @@ property_mappings:
             label: "User".to_string(),
             database: "brahmand".to_string(),
             table: "users_by_tenant".to_string(),
-            id_column: "user_id".to_string(),
+            node_id: Identifier::Single("user_id".to_string()),
             label_column: None,
             label_value: None,
             properties: props,

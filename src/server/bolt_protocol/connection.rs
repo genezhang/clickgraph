@@ -22,6 +22,8 @@ use super::{BoltConfig, BoltContext, ConnectionState, SUPPORTED_VERSIONS};
 const BOLT_MAGIC_PREAMBLE: [u8; 4] = [0x60, 0x60, 0xB0, 0x17];
 
 /// Maximum message size (64KB by default)
+/// Reserved for future use when message size validation is implemented
+#[allow(dead_code)]
 const DEFAULT_MAX_MESSAGE_SIZE: usize = 65536;
 
 /// Bolt connection handler
@@ -515,7 +517,7 @@ mod tests {
         // Create a test ClickHouse client (won't be used in unit tests)
         let clickhouse_client = Client::default().with_url("http://localhost:8123");
 
-        let connection = BoltConnection::new(stream, context, config, clickhouse_client);
+        let _connection = BoltConnection::new(stream, context, config, clickhouse_client);
         // Just test that we can create the connection
         assert!(true);
     }

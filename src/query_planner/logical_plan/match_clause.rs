@@ -1095,6 +1095,8 @@ fn convert_properties_to_operator_application(plan_ctx: &mut PlanCtx) -> Logical
 }
 
 // Wrapper for backwards compatibility
+// Reserved for future use when non-optional traversal needs explicit mode
+#[allow(dead_code)]
 fn traverse_connected_pattern<'a>(
     connected_patterns: &Vec<ast::ConnectedPattern<'a>>,
     plan: Arc<LogicalPlan>,
@@ -1166,8 +1168,8 @@ fn traverse_connected_pattern_with_mode<'a>(
     
     crate::debug_print!("║ Pre-assigned {} node aliases for shared node detection", node_alias_map.len());
 
-    for (pattern_idx, connected_pattern) in connected_patterns.iter().enumerate() {
-        crate::debug_print!("┌─ Processing connected_pattern #{}", pattern_idx);
+    for (_pattern_idx, connected_pattern) in connected_patterns.iter().enumerate() {
+        crate::debug_print!("┌─ Processing connected_pattern #{}", _pattern_idx);
 
         let start_node_ref = connected_pattern.start_node.borrow();
         let start_node_label = start_node_ref.label.map(|val| val.to_string());

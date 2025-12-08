@@ -26,6 +26,9 @@ pub fn try_get_client() -> Option<Client> {
     )
 }
 
+/// Get ClickHouse client with default configuration
+/// Reserved for direct client access use cases
+#[allow(dead_code)]
 pub fn get_client() -> Client {
     try_get_client().expect("ClickHouse environment variables should be set")
 }

@@ -300,7 +300,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
     let mut relationships = HashMap::new();
 
     // Airport nodes - uses FLIGHTS table (not separate airports table)
-    let mut airport_props = HashMap::new();
+    let airport_props = HashMap::new();
     // For denormalized edge tables, node properties come from the edge table
     // So we leave property_mappings empty - they're derived from from_node_properties/to_node_properties
     

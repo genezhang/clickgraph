@@ -423,6 +423,8 @@ pub fn parse_parameter(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     Ok((input, Expression::Parameter(param)))
 }
 
+/// Reserved for future use when order-specific expression parsing is needed
+#[allow(dead_code)]
 pub fn parse_parameter_property_access_literal_variable_expression(
     input: &'_ str,
 ) -> IResult<&'_ str, Expression<'_>> {

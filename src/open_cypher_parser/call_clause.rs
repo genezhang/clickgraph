@@ -74,6 +74,7 @@ fn expression_parser(input: &str) -> IResult<&str, Expression<'_>, OpenCypherPar
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
     use crate::open_cypher_parser::ast::{Expression, Literal};
 
     #[test]

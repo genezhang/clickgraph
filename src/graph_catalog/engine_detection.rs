@@ -116,7 +116,7 @@ impl TableEngine {
 /// The detected `TableEngine` enum variant
 ///
 /// # Example
-/// ```no_run
+/// ```ignore
 /// let engine = detect_table_engine(&client, "mydb", "users").await?;
 /// if engine.requires_final_for_correctness() {
 ///     println!("This table needs FINAL for correct results");

@@ -1,3 +1,8 @@
+//! Graph context structures for query analysis
+//!
+//! Some fields are reserved for future schema-aware optimization features.
+#![allow(dead_code)]
+
 use crate::{
     graph_catalog::graph_schema::{edge_has_node_properties, GraphSchema, NodeSchema, RelationshipSchema},
     query_planner::{

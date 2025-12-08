@@ -318,6 +318,7 @@ fn parse_node_pattern(input: &'_ str) -> IResult<&'_ str, NodePattern<'_>> {
     alt((empty_node_parser, node_parser)).parse(input)
 }
 
+#[allow(dead_code)]
 fn parse_relationship_internals(
     input: &'_ str,
 ) -> IResult<&'_ str, (NameOrLabelWithProperties<'_>, NameOrLabelWithProperties<'_>)> {
@@ -360,6 +361,8 @@ fn parse_relationship_internals_with_multiple_labels(
 
 // Parse relationship internals including variable-length spec
 // Returns: ((name, properties), (labels, properties), variable_length_spec)
+// Reserved for future use when more complex relationship parsing is needed
+#[allow(dead_code)]
 fn parse_relationship_internals_with_var_len(
     input: &'_ str,
 ) -> IResult<

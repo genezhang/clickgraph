@@ -1,3 +1,8 @@
+//! Graph schema definitions and operations
+//!
+//! Some methods are reserved for future online validation and runtime checks.
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -787,7 +792,7 @@ mod tests {
     
     #[test]
     fn test_processed_node_metadata_creation() {
-        let mut nodes = HashMap::new();
+        let nodes = HashMap::new();
         let mut relationships = HashMap::new();
         
         // Create a denormalized relationship (OnTime flights example)

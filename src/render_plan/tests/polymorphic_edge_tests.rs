@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema};
 use crate::render_plan::plan_builder_helpers::generate_polymorphic_edge_filters;
+#[allow(unused_imports)]
 use crate::render_plan::render_expr::{Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr};
 use crate::server::GLOBAL_SCHEMAS;
 use serial_test::serial;

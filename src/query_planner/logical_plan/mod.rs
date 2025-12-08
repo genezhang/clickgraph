@@ -70,6 +70,7 @@ pub fn evaluate_cypher_statement(
     
     // Build logical plans for all queries
     let mut all_plans: Vec<Arc<LogicalPlan>> = Vec::new();
+    #[allow(unused_assignments)]
     let mut combined_ctx: Option<PlanCtx> = None;
     
     // First query
@@ -998,6 +999,7 @@ impl LogicalPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
     use crate::query_planner::logical_expr::{
         Column, Literal, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
     };

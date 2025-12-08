@@ -7,6 +7,7 @@ use std::collections::HashMap;
 #[derive(Clone)]
 pub struct FunctionMapping {
     /// Neo4j function name (lowercase for lookup)
+    #[allow(dead_code)]
     pub neo4j_name: &'static str,
     /// ClickHouse function name
     pub clickhouse_name: &'static str,

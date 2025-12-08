@@ -1,3 +1,8 @@
+//! CTE extraction utilities for variable-length path handling
+//!
+//! Some functions in this module are reserved for future use or used only in specific code paths.
+#![allow(dead_code)]
+
 use crate::clickhouse_query_generator::variable_length_cte::{
     VariableLengthCteGenerator,
 };
@@ -1011,7 +1016,7 @@ pub fn extract_ctes_with_context(
                 let unique_labels: Vec<String> = {
                     let mut seen = std::collections::HashSet::new();
                     labels.iter()
-                        .filter(|l| seen.insert(l.clone()))
+                        .filter(|l| seen.insert((*l).clone()))
                         .cloned()
                         .collect()
                 };

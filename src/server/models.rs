@@ -150,6 +150,8 @@ pub struct SqlGenerationRequest {
     pub role: Option<String>,
     
     /// Pretty-print SQL with indentation (default: false)
+    /// Reserved for future SQL formatting feature
+    #[allow(dead_code)]
     pub format_sql: Option<bool>,
     
     /// Include logical plan in response (default: false)

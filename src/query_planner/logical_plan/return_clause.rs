@@ -250,7 +250,7 @@ pub fn evaluate_return_clause<'a>(
 /// Build a Union with aggregation using subquery pattern.
 /// 
 /// For `MATCH (a:Airport) RETURN a.code, count(*) as cnt`, generates:
-/// ```
+/// ```text
 /// Projection(outer) [a.code, count(*)]
 ///   └── GroupBy [a.code]
 ///         └── Union

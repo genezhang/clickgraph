@@ -1,3 +1,8 @@
+//! Filter tagging pass for optimizing filter placement
+//!
+//! Some methods in this module are reserved for future filter optimization passes.
+#![allow(dead_code)]
+
 use std::{collections::HashSet, sync::Arc};
 
 use crate::{

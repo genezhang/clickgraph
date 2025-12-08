@@ -7,6 +7,8 @@
 use crate::query_planner::logical_plan::{LogicalPlan, ViewScan};
 
 /// Build a SQL query for a ViewScan operation
+/// Reserved for future use when standalone ViewScan SQL generation is needed
+#[allow(dead_code)]
 pub fn build_view_scan(scan: &ViewScan, _plan: &LogicalPlan) -> String {
     let mut sql = String::new();
 

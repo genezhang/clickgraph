@@ -443,6 +443,7 @@ impl GroupByBuilding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
     use crate::query_planner::logical_expr::{AggregateFnCall, Column, PropertyAccess, TableAlias};
     use crate::query_planner::logical_plan::{LogicalPlan, Projection, Scan};
 

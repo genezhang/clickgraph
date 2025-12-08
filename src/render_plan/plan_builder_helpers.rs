@@ -8,6 +8,11 @@
 //! - Path function rewriting
 //! - Schema lookups
 //! - Polymorphic edge filter generation
+//!
+//! Note: Some functions in this module are reserved for future features or used only
+//! in specific code paths. The allow(dead_code) directive suppresses warnings for these.
+
+#![allow(dead_code)]
 
 use super::render_expr::{
     AggregateFnCall, Column, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
