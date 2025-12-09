@@ -71,7 +71,7 @@ def find_csv_file(data_dir: Path) -> Path | None:
     return None
 
 
-def load_table(table_name: str, csv_path: Path, host: str, port: int, database: str):
+def load_table(table_name: str, csv_path: Path, host: str, port: int, database: str, user: str, password: str):
     """Load a pipe-delimited CSV file into a ClickHouse table."""
     if not csv_path.exists():
         print(f"  WARNING: File not found: {csv_path}")
@@ -84,6 +84,8 @@ def load_table(table_name: str, csv_path: Path, host: str, port: int, database: 
         "clickhouse-client",
         f"--host={host}",
         f"--port={port}",
+        f"--user={user}",
+        f"--password={password}",
         f"--database={database}",
         f"--query={query}",
     ]
@@ -107,12 +109,14 @@ def load_table(table_name: str, csv_path: Path, host: str, port: int, database: 
         return False
 
 
-def get_row_count(table_name: str, host: str, port: int, database: str) -> int:
+def get_row_count(table_name: str, host: str, port: int, database: str, user: str, password: str) -> int:
     """Get row count for a table."""
     cmd = [
         "clickhouse-client",
         f"--host={host}",
         f"--port={port}",
+        f"--user={user}",
+        f"--password={password}",
         f"--database={database}",
         f"--query=SELECT count() FROM {table_name}",
     ]
@@ -142,6 +146,10 @@ def main():
                        help="Skip loading static tables")
     parser.add_argument("--skip-dynamic", action="store_true",
                        help="Skip loading dynamic tables")
+    parser.add_argument("--user", "-u", default="default",
+                       help="ClickHouse user (default: default)")
+    parser.add_argument("--password", "-p", default="default",
+                       help="ClickHouse password (default: default)")
     
     args = parser.parse_args()
     
@@ -164,6 +172,7 @@ def main():
     print(f"Data Directory: {data_dir}")
     print(f"ClickHouse: {args.host}:{args.port}")
     print(f"Database: {args.database}")
+    print(f"User: {args.user}")
     print("=" * 60)
     
     tables_to_load = []
@@ -186,8 +195,8 @@ def main():
             
         print(f"Loading {table_name}...", end=" ", flush=True)
         
-        if load_table(table_name, csv_path, args.host, args.port, args.database):
-            count = get_row_count(table_name, args.host, args.port, args.database)
+        if load_table(table_name, csv_path, args.host, args.port, args.database, args.user, args.password):
+            count = get_row_count(table_name, args.host, args.port, args.database, args.user, args.password)
             print(f"✓ ({count:,} rows)")
             success_count += 1
         else:
