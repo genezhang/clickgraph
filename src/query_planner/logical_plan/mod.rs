@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt, sync::Arc};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 // Import serde_arc modules for serialization
 #[path = "../../utils/serde_arc.rs"]
@@ -20,8 +21,6 @@ use crate::{
         transformed::Transformed,
     },
 };
-
-use uuid::Uuid;
 
 use crate::{
     open_cypher_parser::ast::{CypherStatement, OpenCypherQueryAst, UnionType as AstUnionType},
@@ -117,13 +116,20 @@ pub fn evaluate_cypher_statement(
     Ok((union_plan, combined_ctx.unwrap()))
 }
 
+/// Global counter for generating simple, human-readable aliases like t1, t2, t3...
+static ALIAS_COUNTER: AtomicU32 = AtomicU32::new(1);
+
+/// Generate a simple, human-readable alias for anonymous nodes/edges.
+/// Returns "t1", "t2", "t3", etc. Much easier to read than UUID hex strings!
 pub fn generate_id() -> String {
-    format!(
-        "a{}",
-        Uuid::new_v4().to_string()[..10]
-            .to_string()
-            .replace("-", "")
-    )
+    let n = ALIAS_COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("t{}", n)
+}
+
+/// Reset the alias counter (useful for testing to get predictable aliases)
+#[allow(dead_code)]
+pub fn reset_alias_counter() {
+    ALIAS_COUNTER.store(1, Ordering::SeqCst);
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

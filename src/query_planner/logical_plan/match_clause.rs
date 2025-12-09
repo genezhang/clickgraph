@@ -2058,13 +2058,13 @@ mod tests {
         // IDs should be unique
         assert_ne!(id1, id2);
 
-        // IDs should start with 'a'
-        assert!(id1.starts_with('a'));
-        assert!(id2.starts_with('a'));
+        // IDs should start with 't' (simple format: t1, t2, t3...)
+        assert!(id1.starts_with('t'));
+        assert!(id2.starts_with('t'));
 
-        // IDs should be reasonable length (not too short or too long)
-        assert!(id1.len() > 1 && id1.len() < 20);
-        assert!(id2.len() > 1 && id2.len() < 20);
+        // IDs should be reasonable length (t1 to t999999+)
+        assert!(id1.len() >= 2 && id1.len() < 10);
+        assert!(id2.len() >= 2 && id2.len() < 10);
     }
 
     #[test]

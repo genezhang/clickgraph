@@ -1,7 +1,7 @@
 use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::query_planner::logical_plan::{GraphRel, LogicalPlan, ProjectionItem};
+use crate::query_planner::logical_plan::{GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem};
 use crate::query_planner::logical_expr::Direction;
 use std::sync::Arc;
 
@@ -44,6 +44,141 @@ use super::CteGenerationContext;
 use super::plan_builder_helpers::*;
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
+
+/// Get the anchor alias from a logical plan (for OPTIONAL MATCH join ordering).
+/// The anchor is the node that's in the FROM clause of the outer query.
+fn get_anchor_alias_from_plan(plan: &Arc<LogicalPlan>) -> Option<String> {
+    match plan.as_ref() {
+        LogicalPlan::GraphNode(node) => Some(node.alias.clone()),
+        LogicalPlan::GraphRel(rel) => Some(rel.left_connection.clone()),
+        LogicalPlan::Projection(proj) => get_anchor_alias_from_plan(&proj.input),
+        LogicalPlan::Filter(filter) => get_anchor_alias_from_plan(&filter.input),
+        LogicalPlan::GroupBy(gb) => get_anchor_alias_from_plan(&gb.input),
+        LogicalPlan::CartesianProduct(cp) => get_anchor_alias_from_plan(&cp.left),
+        _ => None,
+    }
+}
+
+/// Generate joins for OPTIONAL MATCH where the anchor is on the right side.
+/// 
+/// For patterns like `MATCH (post:Post) OPTIONAL MATCH (liker:Person)-[:LIKES]->(post)`:
+/// - Anchor is `post` (right_connection)
+/// - New node is `liker` (left_connection)
+/// - Relationship connects from `liker` to `post`
+/// 
+/// We need to generate:
+/// 1. Relationship JOIN connecting to anchor: `r.to_id = post.id`
+/// 2. New node JOIN connecting to relationship: `liker.id = r.from_id`
+fn generate_swapped_joins_for_optional_match(
+    graph_rel: &GraphRel,
+) -> RenderPlanBuilderResult<Vec<Join>> {
+    let mut joins = Vec::new();
+    
+    // Extract table names and columns
+    let start_label = extract_node_label_from_viewscan(&graph_rel.left)
+        .unwrap_or_else(|| "User".to_string());
+    let end_label = extract_node_label_from_viewscan(&graph_rel.right)
+        .unwrap_or_else(|| "User".to_string());
+    let start_table = label_to_table_name(&start_label);
+    let end_table = label_to_table_name(&end_label);
+    
+    let start_id_col = table_to_id_column(&start_table);
+    let end_id_col = table_to_id_column(&end_table);
+    
+    // Get relationship table
+    let rel_table = if let Some(labels) = &graph_rel.labels {
+        if !labels.is_empty() {
+            rel_type_to_table_name(&labels[0])
+        } else {
+            extract_table_name(&graph_rel.center)
+                .unwrap_or_else(|| graph_rel.alias.clone())
+        }
+    } else {
+        extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
+    };
+    
+    // Get relationship columns
+    let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
+        RelationshipColumns {
+            from_id: "from_node_id".to_string(),
+            to_id: "to_node_id".to_string(),
+        },
+    );
+    
+    // For OPTIONAL MATCH with swapped anchor:
+    // - anchor is right_connection (post)
+    // - new node is left_connection (liker)
+    // - For outgoing direction (liker)-[:LIKES]->(post):
+    //   - rel.to_id connects to anchor (post)
+    //   - rel.from_id connects to new node (liker)
+    
+    // Determine join column based on direction
+    let (rel_col_to_anchor, rel_col_to_new) = match graph_rel.direction {
+        Direction::Incoming => {
+            // (liker)<-[:LIKES]-(post) means rel points from post to liker
+            // rel.from_id = anchor (post), rel.to_id = new (liker)
+            (&rel_cols.from_id, &rel_cols.to_id)
+        }
+        _ => {
+            // Direction::Outgoing or Direction::Either
+            // (liker)-[:LIKES]->(post) means rel points from liker to post
+            // rel.to_id = anchor (post), rel.from_id = new (liker)
+            (&rel_cols.to_id, &rel_cols.from_id)
+        }
+    };
+    
+    crate::debug_print!("  Generating swapped joins:");
+    crate::debug_print!("    rel.{} = {}.{} (anchor)", rel_col_to_anchor, graph_rel.right_connection, end_id_col);
+    crate::debug_print!("    {}.{} = rel.{} (new node)", graph_rel.left_connection, start_id_col, rel_col_to_new);
+    
+    // JOIN 1: Relationship table connecting to anchor (right_connection)
+    let rel_join_condition = OperatorApplication {
+        operator: Operator::Equal,
+        operands: vec![
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(graph_rel.alias.clone()),
+                column: Column(PropertyValue::Column(rel_col_to_anchor.clone())),
+            }),
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(graph_rel.right_connection.clone()),
+                column: Column(PropertyValue::Column(end_id_col.clone())),
+            }),
+        ],
+    };
+    
+    joins.push(Join {
+        table_name: rel_table,
+        table_alias: graph_rel.alias.clone(),
+        joining_on: vec![rel_join_condition],
+        join_type: JoinType::Left,
+        pre_filter: None,
+    });
+    
+    // JOIN 2: New node (left_connection) connecting to relationship
+    let new_node_join_condition = OperatorApplication {
+        operator: Operator::Equal,
+        operands: vec![
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(graph_rel.left_connection.clone()),
+                column: Column(PropertyValue::Column(start_id_col)),
+            }),
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(graph_rel.alias.clone()),
+                column: Column(PropertyValue::Column(rel_col_to_new.clone())),
+            }),
+        ],
+    };
+    
+    joins.push(Join {
+        table_name: start_table,
+        table_alias: graph_rel.left_connection.clone(),
+        joining_on: vec![new_node_join_condition],
+        join_type: JoinType::Left,
+        pre_filter: None,
+    });
+    
+    Ok(joins)
+}
 
 pub(crate) trait RenderPlanBuilder {
     fn extract_last_node_cte(&self) -> RenderPlanBuilderResult<Option<Cte>>;
@@ -2874,50 +3009,84 @@ impl RenderPlanBuilder for LogicalPlan {
                 // or CROSS JOIN semantics if no join_condition
                 let mut joins = cp.left.extract_joins()?;
                 
-                // Get the right side's FROM table to create a JOIN
-                if let Some(right_from) = cp.right.extract_from()? {
-                    let join_type = if cp.is_optional {
-                        JoinType::Left
-                    } else {
-                        JoinType::Inner
-                    };
+                // Check if right side is a GraphRel - OPTIONAL MATCH case needs special handling
+                if let LogicalPlan::GraphRel(graph_rel) = cp.right.as_ref() {
+                    // OPTIONAL MATCH with GraphRel pattern
+                    // Need to determine which connection is the anchor (already defined in cp.left)
+                    // and generate joins in the correct order
                     
-                    if let Some(right_table) = right_from.table {
-                        // Convert join_condition to OperatorApplication for the ON clause
-                        let joining_on = if let Some(ref join_cond) = cp.join_condition {
-                            // Convert LogicalExpr to RenderExpr, then extract OperatorApplication
-                            let render_expr: Result<RenderExpr, _> = join_cond.clone().try_into();
-                            match render_expr {
-                                Ok(RenderExpr::OperatorApplicationExp(op)) => vec![op],
-                                Ok(_other) => {
-                                    // Wrap non-operator expressions in equality check
-                                    crate::debug_print!("CartesianProduct: join_condition is not OperatorApplication: {:?}", _other);
-                                    vec![]
-                                }
-                                Err(_e) => {
-                                    crate::debug_print!("CartesianProduct: Failed to convert join_condition: {:?}", _e);
-                                    vec![]
-                                }
-                            }
+                    // Get the anchor alias from cp.left (the base pattern)
+                    let anchor_alias = get_anchor_alias_from_plan(&cp.left);
+                    crate::debug_print!("CartesianProduct with GraphRel: anchor_alias={:?}", anchor_alias);
+                    crate::debug_print!("  left_connection={}, right_connection={}", 
+                        graph_rel.left_connection, graph_rel.right_connection);
+                    
+                    // Determine if anchor is on left or right
+                    let anchor_is_right = anchor_alias
+                        .as_ref()
+                        .map(|a| a == &graph_rel.right_connection)
+                        .unwrap_or(false);
+                    
+                    if cp.is_optional && anchor_is_right {
+                        // OPTIONAL MATCH where anchor is on right side
+                        // e.g., MATCH (post:Post) OPTIONAL MATCH (liker:Person)-[:LIKES]->(post)
+                        // Anchor is 'post' (right_connection), new node is 'liker' (left_connection)
+                        crate::debug_print!("  -> Anchor is on RIGHT, generating swapped joins");
+                        
+                        let swapped_joins = generate_swapped_joins_for_optional_match(graph_rel)?;
+                        joins.extend(swapped_joins);
+                    } else {
+                        // Normal case: anchor is on left, or non-optional
+                        // Use standard extract_joins
+                        joins.extend(cp.right.extract_joins()?);
+                    }
+                } else {
+                    // Non-GraphRel right side (e.g., simple node patterns)
+                    // Get the right side's FROM table to create a JOIN
+                    if let Some(right_from) = cp.right.extract_from()? {
+                        let join_type = if cp.is_optional {
+                            JoinType::Left
                         } else {
-                            vec![] // No join condition - pure CROSS JOIN semantics
+                            JoinType::Inner
                         };
                         
-                        crate::debug_print!("CartesianProduct extract_joins: table={}, alias={}, joining_on={:?}",
-                            right_table.name, right_table.alias.as_deref().unwrap_or(""), joining_on);
-                        
-                        joins.push(super::Join {
-                            table_name: right_table.name.clone(),
-                            table_alias: right_table.alias.clone().unwrap_or_default(),
-                            joining_on,
-                            join_type,
-                            pre_filter: None,
-                        });
+                        if let Some(right_table) = right_from.table {
+                            // Convert join_condition to OperatorApplication for the ON clause
+                            let joining_on = if let Some(ref join_cond) = cp.join_condition {
+                                // Convert LogicalExpr to RenderExpr, then extract OperatorApplication
+                                let render_expr: Result<RenderExpr, _> = join_cond.clone().try_into();
+                                match render_expr {
+                                    Ok(RenderExpr::OperatorApplicationExp(op)) => vec![op],
+                                    Ok(_other) => {
+                                        // Wrap non-operator expressions in equality check
+                                        crate::debug_print!("CartesianProduct: join_condition is not OperatorApplication: {:?}", _other);
+                                        vec![]
+                                    }
+                                    Err(_e) => {
+                                        crate::debug_print!("CartesianProduct: Failed to convert join_condition: {:?}", _e);
+                                        vec![]
+                                    }
+                                }
+                            } else {
+                                vec![] // No join condition - pure CROSS JOIN semantics
+                            };
+                            
+                            crate::debug_print!("CartesianProduct extract_joins: table={}, alias={}, joining_on={:?}",
+                                right_table.name, right_table.alias.as_deref().unwrap_or(""), joining_on);
+                            
+                            joins.push(super::Join {
+                                table_name: right_table.name.clone(),
+                                table_alias: right_table.alias.clone().unwrap_or_default(),
+                                joining_on,
+                                join_type,
+                                pre_filter: None,
+                            });
+                        }
                     }
+                    
+                    // Include any joins from the right side
+                    joins.extend(cp.right.extract_joins()?);
                 }
-                
-                // Also include any joins from the right side
-                joins.extend(cp.right.extract_joins()?);
                 
                 joins
             }
@@ -3752,6 +3921,207 @@ impl RenderPlanBuilder for LogicalPlan {
             limit_val.is_some(),
             skip_val.is_some()
         );
+
+        // Check for nested GroupBy pattern: GroupBy(GraphJoins(Projection(GroupBy(...))))
+        // This happens with two-level aggregation: WITH has aggregation, RETURN has aggregation
+        // Both need their own GROUP BY, requiring a subquery structure
+        if let LogicalPlan::GroupBy(outer_group_by) = core_plan {
+            // Check if there's an inner GroupBy (indicating two-level aggregation)
+            fn find_inner_group_by(plan: &LogicalPlan) -> Option<&GroupBy> {
+                match plan {
+                    LogicalPlan::GroupBy(gb) => Some(gb),
+                    LogicalPlan::GraphJoins(gj) => find_inner_group_by(&gj.input),
+                    LogicalPlan::Projection(p) => find_inner_group_by(&p.input),
+                    LogicalPlan::Filter(f) => find_inner_group_by(&f.input),
+                    _ => None,
+                }
+            }
+            
+            // Also find the Projection that contains the RETURN items (between outer GroupBy and inner GroupBy)
+            fn find_return_projection(plan: &LogicalPlan) -> Option<&Projection> {
+                match plan {
+                    LogicalPlan::Projection(p) => Some(p),
+                    LogicalPlan::GraphJoins(gj) => find_return_projection(&gj.input),
+                    LogicalPlan::Filter(f) => find_return_projection(&f.input),
+                    _ => None,
+                }
+            }
+            
+            if let Some(inner_group_by) = find_inner_group_by(&outer_group_by.input) {
+                println!("DEBUG: Detected nested GroupBy pattern (two-level aggregation)");
+                
+                // Find the RETURN projection items
+                let return_projection = find_return_projection(&outer_group_by.input);
+                
+                // Extract WITH aliases from the inner GroupBy's input Projection
+                // Also collect table aliases that refer to nodes passed through WITH
+                fn extract_inner_with_aliases(plan: &LogicalPlan) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+                    match plan {
+                        LogicalPlan::Projection(proj) => {
+                            let mut aliases = std::collections::HashSet::new();
+                            let mut table_aliases = std::collections::HashSet::new();
+                            for item in &proj.items {
+                                if let Some(a) = item.col_alias.as_ref() {
+                                    aliases.insert(a.0.clone());
+                                }
+                                // Also track table aliases used in WITH (like "person" in "WITH person, count(...)")
+                                match &item.expression {
+                                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(ta) => {
+                                        table_aliases.insert(ta.0.clone());
+                                    }
+                                    crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) => {
+                                        table_aliases.insert(pa.table_alias.0.clone());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            (aliases, table_aliases)
+                        }
+                        LogicalPlan::GraphJoins(gj) => extract_inner_with_aliases(&gj.input),
+                        LogicalPlan::Filter(f) => extract_inner_with_aliases(&f.input),
+                        _ => (std::collections::HashSet::new(), std::collections::HashSet::new()),
+                    }
+                }
+                let (with_aliases, with_table_aliases) = extract_inner_with_aliases(&inner_group_by.input);
+                println!("DEBUG: Found WITH aliases: {:?}", with_aliases);
+                println!("DEBUG: Found WITH table aliases: {:?}", with_table_aliases);
+                
+                // Build the inner query (WITH clause result) as a CTE
+                // Structure: SELECT <with_items> FROM <tables> GROUP BY <non-aggregates>
+                use crate::graph_catalog::graph_schema::GraphSchema;
+                use std::collections::HashMap;
+                let empty_schema = GraphSchema::build(
+                    1,
+                    "default".to_string(),
+                    HashMap::new(),
+                    HashMap::new(),
+                );
+                
+                // Build render plan for the inner GroupBy's input (the WITH clause query)
+                let inner_render_plan = inner_group_by.input.to_render_plan(&empty_schema)?;
+                
+                // Extract GROUP BY expressions from SELECT items (non-aggregates)
+                // This properly handles wildcard expansion since SELECT items are already expanded
+                let inner_group_by_exprs: Vec<RenderExpr> = inner_render_plan.select.items.iter()
+                    .filter(|item| !matches!(&item.expression, RenderExpr::AggregateFnCall(_)))
+                    .map(|item| item.expression.clone())
+                    .collect();
+                
+                // Create CTE for the inner (WITH) query
+                let cte_name = "with_result".to_string();
+                let inner_cte = Cte {
+                    cte_name: cte_name.clone(),
+                    content: super::CteContent::Structured(RenderPlan {
+                        ctes: CteItems(vec![]),
+                        select: inner_render_plan.select.clone(),
+                        from: inner_render_plan.from.clone(),
+                        joins: inner_render_plan.joins.clone(),
+                        array_join: ArrayJoinItem(None),
+                        filters: inner_render_plan.filters.clone(),
+                        group_by: GroupByExpressions(inner_group_by_exprs),
+                        having_clause: inner_group_by.having_clause.as_ref()
+                            .map(|h| h.clone().try_into())
+                            .transpose()?,
+                        order_by: OrderByItems(vec![]),
+                        skip: SkipItem(None),
+                        limit: LimitItem(None),
+                        union: UnionItems(None),
+                    }),
+                    is_recursive: false,
+                };
+                
+                // Build outer SELECT items from RETURN projection, rewriting WITH alias references
+                let outer_select_items: Vec<SelectItem> = if let Some(proj) = return_projection {
+                    proj.items.iter().map(|item| {
+                        let mut render_expr: RenderExpr = item.expression.clone().try_into()?;
+                        
+                        // Rewrite WITH alias references (like postCount) to CTE references
+                        let (rewritten, _) = super::plan_builder_helpers::rewrite_with_aliases_to_cte(
+                            render_expr.clone(),
+                            &with_aliases,
+                            &cte_name,
+                        );
+                        render_expr = rewritten;
+                        
+                        // Also rewrite table alias references (like person.id) to CTE references
+                        render_expr = super::plan_builder_helpers::rewrite_table_aliases_to_cte(
+                            render_expr,
+                            &with_table_aliases,
+                            &cte_name,
+                        );
+                        
+                        Ok(SelectItem {
+                            expression: render_expr,
+                            col_alias: item.col_alias.as_ref()
+                                .map(|a| super::render_expr::ColumnAlias(a.0.clone())),
+                        })
+                    }).collect::<Result<Vec<_>, RenderBuildError>>()?
+                } else {
+                    vec![]
+                };
+                
+                // Build outer GROUP BY from outer_group_by.expressions, rewriting aliases
+                let mut outer_group_by_exprs: Vec<RenderExpr> = Vec::new();
+                for expr in &outer_group_by.expressions {
+                    let render_expr: RenderExpr = expr.clone().try_into()?;
+                    let (rewritten, _) = super::plan_builder_helpers::rewrite_with_aliases_to_cte(
+                        render_expr,
+                        &with_aliases,
+                        &cte_name,
+                    );
+                    outer_group_by_exprs.push(rewritten);
+                }
+                
+                // Build ORDER BY items, rewriting WITH alias references
+                let order_by_items = if let Some(order_items) = order_by {
+                    order_items.iter()
+                        .map(|item| {
+                            let expr: RenderExpr = item.expression.clone().try_into()?;
+                            let (rewritten, _) = super::plan_builder_helpers::rewrite_with_aliases_to_cte(
+                                expr,
+                                &with_aliases,
+                                &cte_name,
+                            );
+                            Ok(super::OrderByItem {
+                                expression: rewritten,
+                                order: match item.order {
+                                    crate::query_planner::logical_plan::OrderByOrder::Asc => super::OrderByOrder::Asc,
+                                    crate::query_planner::logical_plan::OrderByOrder::Desc => super::OrderByOrder::Desc,
+                                },
+                            })
+                        })
+                        .collect::<Result<Vec<_>, RenderBuildError>>()?
+                } else {
+                    vec![]
+                };
+                
+                // Return the nested query structure
+                return Ok(RenderPlan {
+                    ctes: CteItems(vec![inner_cte]),
+                    select: SelectItems {
+                        items: outer_select_items,
+                        distinct: false,
+                    },
+                    from: FromTableItem(Some(ViewTableRef {
+                        source: Arc::new(LogicalPlan::Empty),
+                        name: cte_name.clone(),
+                        alias: Some(cte_name.clone()),
+                        use_final: false,
+                    })),
+                    joins: JoinItems(vec![]),
+                    array_join: ArrayJoinItem(None),
+                    filters: FilterItems(None),
+                    group_by: GroupByExpressions(outer_group_by_exprs),
+                    having_clause: outer_group_by.having_clause.as_ref()
+                        .map(|h| h.clone().try_into())
+                        .transpose()?,
+                    order_by: OrderByItems(order_by_items),
+                    skip: SkipItem(skip_val),
+                    limit: LimitItem(limit_val),
+                    union: UnionItems(None),
+                });
+            }
+        }
 
         // Now check if core_plan is Projection(Return) over GroupBy
         if let LogicalPlan::Projection(outer_proj) = core_plan {

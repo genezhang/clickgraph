@@ -187,19 +187,58 @@ impl AnalyzerPass for GroupByBuilding {
                     if non_agg_projections.len() < projection.items.len()
                         && !non_agg_projections.is_empty()
                     {
-                        // aggregate fns found. Build the groupby plan here
-                        println!(
-                            "GroupByBuilding: Creating GroupBy node with {} grouping expressions",
-                            non_agg_projections.len()
-                        );
-                        Transformed::Yes(Arc::new(LogicalPlan::GroupBy(GroupBy {
-                            input: logical_plan.clone(),
-                            expressions: non_agg_projections
-                                .into_iter()
-                                .map(|item| item.expression)
-                                .collect(),
-                            having_clause: None, // HAVING clause added later if Filter references projection aliases
-                        })))
+                        // RETURN has aggregations - this is potentially a two-level aggregation pattern
+                        // First, analyze the child to create inner GroupBy (for WITH)
+                        let child_tf = self.analyze(projection.input.clone(), _plan_ctx)?;
+                        let analyzed_child = child_tf.get_plan();
+                        
+                        // Check if this is a two-level aggregation pattern:
+                        // RETURN has aggregations AND its child is a GroupBy (from WITH)
+                        // In this case, we need to wrap the GroupBy in a CTE structure
+                        if let LogicalPlan::GroupBy(inner_group_by) = analyzed_child.as_ref() {
+                            println!(
+                                "GroupByBuilding: Two-level aggregation detected - RETURN aggregates over WITH GroupBy"
+                            );
+                            
+                            // Create a nested GroupBy structure:
+                            // Outer GroupBy (RETURN's aggregation) wraps the Projection which references the inner GroupBy
+                            let new_projection = Arc::new(LogicalPlan::Projection(Projection {
+                                input: analyzed_child.clone(),
+                                items: projection.items.clone(),
+                                kind: projection.kind.clone(),
+                                distinct: projection.distinct,
+                            }));
+                            
+                            Transformed::Yes(Arc::new(LogicalPlan::GroupBy(GroupBy {
+                                input: new_projection,
+                                expressions: non_agg_projections
+                                    .into_iter()
+                                    .map(|item| item.expression)
+                                    .collect(),
+                                having_clause: None,
+                            })))
+                        } else {
+                            // Single-level aggregation - just wrap the analyzed child
+                            let new_projection = Arc::new(LogicalPlan::Projection(Projection {
+                                input: analyzed_child,
+                                items: projection.items.clone(),
+                                kind: projection.kind.clone(),
+                                distinct: projection.distinct,
+                            }));
+                            
+                            println!(
+                                "GroupByBuilding: Creating GroupBy node with {} grouping expressions",
+                                non_agg_projections.len()
+                            );
+                            Transformed::Yes(Arc::new(LogicalPlan::GroupBy(GroupBy {
+                                input: new_projection,
+                                expressions: non_agg_projections
+                                    .into_iter()
+                                    .map(|item| item.expression)
+                                    .collect(),
+                                having_clause: None,
+                            })))
+                        }
                     } else {
                         // No aggregations in RETURN - recurse into child first, then check for optimization
                         println!(

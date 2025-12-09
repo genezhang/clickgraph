@@ -1,0 +1,191 @@
+{
+  "total": 26,
+  "passed": 26,
+  "failed": 0,
+  "success_rate": 100.0,
+  "total_time_ms": 1380.4585933685303,
+  "results": [
+    {
+      "name": "bi-1a",
+      "success": true,
+      "duration_ms": 6.545543670654297,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-1b",
+      "success": true,
+      "duration_ms": 3.808736801147461,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-2a",
+      "success": true,
+      "duration_ms": 11.00468635559082,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-2b",
+      "success": true,
+      "duration_ms": 10.424613952636719,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-3",
+      "success": true,
+      "duration_ms": 14.07766342163086,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-4a",
+      "success": true,
+      "duration_ms": 9.328603744506836,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-4b",
+      "success": true,
+      "duration_ms": 9.111166000366211,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-5",
+      "success": true,
+      "duration_ms": 114.3026351928711,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-6",
+      "success": true,
+      "duration_ms": 121.1249828338623,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-7",
+      "success": true,
+      "duration_ms": 14.729738235473633,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-8",
+      "success": true,
+      "duration_ms": 11.566638946533203,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-9",
+      "success": true,
+      "duration_ms": 7.053613662719727,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-10",
+      "success": true,
+      "duration_ms": 935.9660148620605,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-11",
+      "success": true,
+      "duration_ms": 12.909650802612305,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-12",
+      "success": true,
+      "duration_ms": 7.975339889526367,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-14",
+      "success": true,
+      "duration_ms": 13.378381729125977,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "bi-18",
+      "success": true,
+      "duration_ms": 11.446714401245117,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "agg-stats",
+      "success": true,
+      "duration_ms": 5.74946403503418,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "agg-posts",
+      "success": true,
+      "duration_ms": 3.8378238677978516,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "agg-comments",
+      "success": true,
+      "duration_ms": 3.480195999145508,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "agg-forums",
+      "success": true,
+      "duration_ms": 3.351449966430664,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "agg-tags",
+      "success": true,
+      "duration_ms": 3.132343292236328,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "agg-knows",
+      "success": true,
+      "duration_ms": 6.742238998413086,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "geo-dist",
+      "success": true,
+      "duration_ms": 9.186506271362305,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "forum-activity",
+      "success": true,
+      "duration_ms": 8.569478988647461,
+      "row_count": 0,
+      "error": null
+    },
+    {
+      "name": "tag-class",
+      "success": true,
+      "duration_ms": 21.654367446899414,
+      "row_count": 0,
+      "error": null
+    }
+  ]
+}

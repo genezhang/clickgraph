@@ -595,23 +595,38 @@ fn apply_direction_combination_inner(
                 graph_rel.direction.clone()
             };
             
-            // For Incoming direction (from bidirectional transformation), swap left/right connections
-            // This maintains the invariant that left_connection is at FROM and right_connection is at TO.
+            // For Incoming direction (from bidirectional transformation), swap left/right both:
+            // 1. The plan structures (left ↔ right) - so FROM/TO tables are swapped
+            // 2. The connection strings (left_connection ↔ right_connection)
+            // 
+            // This maintains the invariant that left is FROM and right is TO in the generated SQL.
             // The parser already does this swap for explicitly-written incoming patterns like (a)<-[r]-(b),
             // so we need to do the same when we create an Incoming branch from an Either pattern.
-            let (new_left_connection, new_right_connection) = if new_direction == Direction::Incoming 
-                && graph_rel.direction == Direction::Either {
-                // Swap connections for the Incoming branch of a bidirectional pattern
-                (graph_rel.right_connection.clone(), graph_rel.left_connection.clone())
-            } else {
-                (graph_rel.left_connection.clone(), graph_rel.right_connection.clone())
-            };
+            let (final_left, final_right, new_left_connection, new_right_connection) = 
+                if new_direction == Direction::Incoming && graph_rel.direction == Direction::Either {
+                    // Swap both plan structures and connections for the Incoming branch
+                    // new_left was from recursively processing graph_rel.left
+                    // graph_rel.right is the right side (usually a GraphNode)
+                    (
+                        graph_rel.right.clone(),  // Right becomes left (FROM table)
+                        new_left,                  // Left becomes right (TO table)
+                        graph_rel.right_connection.clone(),  // Swap connections too
+                        graph_rel.left_connection.clone(),
+                    )
+                } else {
+                    (
+                        new_left,
+                        graph_rel.right.clone(),
+                        graph_rel.left_connection.clone(),
+                        graph_rel.right_connection.clone(),
+                    )
+                };
             
             // Create new GraphRel with the determined direction
             Arc::new(LogicalPlan::GraphRel(GraphRel {
-                left: new_left,
+                left: final_left,
                 center: graph_rel.center.clone(),
-                right: graph_rel.right.clone(),
+                right: final_right,
                 alias: graph_rel.alias.clone(),
                 direction: new_direction,
                 left_connection: new_left_connection,

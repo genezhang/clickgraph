@@ -1,3 +1,25 @@
+## [0.5.6] - 2025-12-09
+
+### 🐛 Bug Fixes
+
+- **OPTIONAL MATCH join ordering** - Fixed anchor node detection for patterns where anchor is on right side
+  - Affected: LDBC BI-6, BI-9
+  - Fix: `graph_join_inference.rs` now correctly identifies anchor node for reverse traversal patterns
+  - Generated SQL now uses correct FROM table and JOIN order for `OPTIONAL MATCH (a)-[:REL]->(anchor)` patterns
+
+- **Undirected relationship UNION generation** - Fixed join ordering in second UNION branch
+  - Affected: LDBC BI-14
+  - Fix: `bidirectional_union.rs` now swaps both `left`/`right` GraphNode plans AND connection strings for Incoming direction
+  - Previously only connection strings were swapped, leaving FROM table incorrect in second branch
+
+### 🧪 Testing
+
+- **LDBC SNB BI Benchmark**: 24/26 queries passing (92.3%), up from 21/26 (80.8%)
+- All 621 unit tests passing (100%)
+- All 7 integration tests passing (100%)
+
+---
+
 ## [0.5.5] - 2025-12-07
 
 ### 🚀 Features

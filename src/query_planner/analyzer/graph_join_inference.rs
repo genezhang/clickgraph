@@ -1491,7 +1491,11 @@ impl GraphJoinInference {
                 )
             }
             LogicalPlan::GraphNode(graph_node) => {
-                crate::debug_print!("� ? GraphNode({}), recursing into input", graph_node.alias);
+                crate::debug_print!("🟢 GraphNode({}), recursing into input", graph_node.alias);
+                // NOTE: We do NOT add the node alias to joined_entities here.
+                // The relationship inference (infer_graph_join) will determine anchors
+                // based on direction and is_optional flags. This prevents breaking
+                // single-pattern MATCH queries where anchor is determined semantically.
                 self.collect_graph_joins(
                     graph_node.input.clone(),
                     root_plan.clone(),
@@ -1506,63 +1510,119 @@ impl GraphJoinInference {
                 Ok(())
             }
             LogicalPlan::GraphRel(graph_rel) => {
-                crate::debug_print!("� --- GraphRel({}) ---", graph_rel.alias);
-                crate::debug_print!("�   left_connection: {}", graph_rel.left_connection);
-                crate::debug_print!("�   right_connection: {}", graph_rel.right_connection);
+                crate::debug_print!("📊 --- GraphRel({}) ---", graph_rel.alias);
+                crate::debug_print!("📊   left_connection: {}", graph_rel.left_connection);
+                crate::debug_print!("📊   right_connection: {}", graph_rel.right_connection);
+                crate::debug_print!("📊   direction: {:?}", graph_rel.direction);
                 crate::debug_print!(
-                    "�   left type: {:?}",
+                    "📊   left type: {:?}",
                     std::mem::discriminant(&*graph_rel.left)
                 );
                 crate::debug_print!(
-                    "�   right type: {:?}",
+                    "📊   right type: {:?}",
                     std::mem::discriminant(&*graph_rel.right)
                 );
 
-                // Process LEFT branch (may contain nested GraphRels)
-                crate::debug_print!("�   ? Processing LEFT branch...");
-                self.collect_graph_joins(
-                    graph_rel.left.clone(),
-                    root_plan.clone(),
-                    plan_ctx,
-                    graph_schema,
-                    collected_graph_joins,
-                    joined_entities,
-                )?;
-                crate::debug_print!(
-                    "�   ? LEFT done. Joins now: {}",
-                    collected_graph_joins.len()
-                );
+                // CRITICAL FIX: Process branches in pattern-order, not AST-order
+                // For Incoming direction `(a)->(b)<-(c)`, AST is: left=c, right=(a->b)
+                // But pattern order is: a, then b, then c
+                // So for Incoming: process RIGHT first (contains earlier part of pattern)
+                // For Outgoing: process LEFT first (standard order)
+                
+                if graph_rel.direction == Direction::Incoming {
+                    // Incoming: pattern flows right-to-left in AST
+                    // Process RIGHT subtree first (earlier in pattern)
+                    crate::debug_print!("📊   ⬅️ INCOMING: Processing RIGHT branch first (pattern order)...");
+                    self.collect_graph_joins(
+                        graph_rel.right.clone(),
+                        root_plan.clone(),
+                        plan_ctx,
+                        graph_schema,
+                        collected_graph_joins,
+                        joined_entities,
+                    )?;
+                    crate::debug_print!(
+                        "📊   ✓ RIGHT done. Joins now: {}",
+                        collected_graph_joins.len()
+                    );
 
-                // Process CURRENT relationship
-                crate::debug_print!("�   ? Processing CURRENT relationship...");
-                self.infer_graph_join(
-                    graph_rel,
-                    root_plan.clone(),
-                    plan_ctx,
-                    graph_schema,
-                    collected_graph_joins,
-                    joined_entities,
-                )?;
-                crate::debug_print!(
-                    "�   ? CURRENT done. Joins now: {}",
-                    collected_graph_joins.len()
-                );
+                    // Process CURRENT relationship (connects right to left)
+                    crate::debug_print!("📊   ⬅️ Processing CURRENT relationship...");
+                    self.infer_graph_join(
+                        graph_rel,
+                        root_plan.clone(),
+                        plan_ctx,
+                        graph_schema,
+                        collected_graph_joins,
+                        joined_entities,
+                    )?;
+                    crate::debug_print!(
+                        "📊   ✓ CURRENT done. Joins now: {}",
+                        collected_graph_joins.len()
+                    );
 
-                // Process RIGHT branch
-                crate::debug_print!("�   ? Processing RIGHT branch...");
-                let result = self.collect_graph_joins(
-                    graph_rel.right.clone(),
-                    root_plan.clone(),
-                    plan_ctx,
-                    graph_schema,
-                    collected_graph_joins,
-                    joined_entities,
-                );
-                crate::debug_print!(
-                    "�   ? RIGHT done. Joins now: {}",
-                    collected_graph_joins.len()
-                );
-                result
+                    // Process LEFT branch last (end of pattern)
+                    crate::debug_print!("📊   ⬅️ Processing LEFT branch last...");
+                    let result = self.collect_graph_joins(
+                        graph_rel.left.clone(),
+                        root_plan.clone(),
+                        plan_ctx,
+                        graph_schema,
+                        collected_graph_joins,
+                        joined_entities,
+                    );
+                    crate::debug_print!(
+                        "📊   ✓ LEFT done. Joins now: {}",
+                        collected_graph_joins.len()
+                    );
+                    result
+                } else {
+                    // Outgoing or Either: standard left-to-right order
+                    crate::debug_print!("📊   ➡️ OUTGOING: Processing LEFT branch first...");
+                    self.collect_graph_joins(
+                        graph_rel.left.clone(),
+                        root_plan.clone(),
+                        plan_ctx,
+                        graph_schema,
+                        collected_graph_joins,
+                        joined_entities,
+                    )?;
+                    crate::debug_print!(
+                        "📊   ✓ LEFT done. Joins now: {}",
+                        collected_graph_joins.len()
+                    );
+
+                    // Process CURRENT relationship
+                    crate::debug_print!("📊   ➡️ Processing CURRENT relationship...");
+                    self.infer_graph_join(
+                        graph_rel,
+                        root_plan.clone(),
+                        plan_ctx,
+                        graph_schema,
+                        collected_graph_joins,
+                        joined_entities,
+                    )?;
+                    crate::debug_print!(
+                        "📊   ✓ CURRENT done. Joins now: {}",
+                        collected_graph_joins.len()
+                    );
+
+                    // Process RIGHT branch
+                    crate::debug_print!("📊   ➡️ Processing RIGHT branch...");
+                    let result = self.collect_graph_joins(
+                        graph_rel.right.clone(),
+                        root_plan.clone(),
+                        plan_ctx,
+                        graph_schema,
+                        collected_graph_joins,
+                        joined_entities,
+                    );
+                    crate::debug_print!(
+                        "📊   ✓ RIGHT done. Joins now: {}",
+                        collected_graph_joins.len()
+                    );
+                    result
+                }
             }
             LogicalPlan::Cte(cte) => {
                 crate::debug_print!("� ? Cte, recursing into input");
@@ -1912,10 +1972,6 @@ impl GraphJoinInference {
             JoinStrategy::Traditional { left_join_col, right_join_col } => {
                 crate::debug_print!("    🔗 Traditional: Creating node-edge-node JOINs");
                 
-                // Determine which node is anchor (goes in FROM, not JOIN)
-                let is_first_relationship = joined_entities.is_empty();
-                let left_is_anchor = is_first_relationship && !left_is_optional;
-                
                 // Get node ID columns from NodeAccessStrategy
                 let left_id_col = match &ctx.left_node {
                     NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
@@ -1928,83 +1984,171 @@ impl GraphJoinInference {
                         "Traditional strategy requires OwnTable nodes".to_string() }),
                 };
                 
-                // If left is anchor, mark it joined but don't create JOIN
-                if left_is_anchor {
-                    crate::debug_print!("       LEFT '{}' is anchor - will be FROM table", left_alias);
-                    joined_entities.insert(left_alias.to_string());
-                }
+                // Determine which node is already available (anchor) to connect the edge to
+                let left_available = joined_entities.contains(left_alias);
+                let right_available = joined_entities.contains(right_alias);
+                let is_first_relationship = joined_entities.is_empty();
                 
-                // JOIN 1: Relationship to left node (if left not yet joined)
-                if !joined_entities.contains(left_alias) {
-                    let left_join = Join {
-                        table_name: left_cte_name.to_string(),
-                        table_alias: left_alias.to_string(),
+                crate::debug_print!("       left_available={}, right_available={}, is_first={}, left_opt={}, right_opt={}", 
+                    left_available, right_available, is_first_relationship, left_is_optional, right_is_optional);
+                
+                // Determine connect order based on what's available and optionality:
+                // Priority order:
+                // 1. If one node is already joined, connect to it first
+                // 2. For OPTIONAL MATCH: non-optional node is anchor (from prior MATCH)
+                // 3. Default: left node is anchor (semantic source)
+                let connect_left_first = if left_available {
+                    // Left is already joined, use it as anchor
+                    true
+                } else if right_available {
+                    // Right is already joined, use it as anchor
+                    false
+                } else if left_is_optional && !right_is_optional {
+                    // Left is optional, right is non-optional (from prior MATCH)
+                    // Use right as anchor
+                    false
+                } else if !left_is_optional && right_is_optional {
+                    // Left is non-optional, right is optional
+                    // Use left as anchor
+                    true
+                } else {
+                    // Both same optionality - use default (left as anchor for first rel)
+                    is_first_relationship && !left_is_optional
+                };
+                
+                if connect_left_first {
+                    // Standard order: LEFT → EDGE → RIGHT
+                    crate::debug_print!("       Connect order: LEFT → EDGE → RIGHT");
+                    
+                    // If first relationship and left is anchor, mark it joined
+                    if is_first_relationship && !left_is_optional {
+                        crate::debug_print!("       LEFT '{}' is anchor - will be FROM table", left_alias);
+                        joined_entities.insert(left_alias.to_string());
+                    }
+                    
+                    // JOIN: Left node (if not yet joined)
+                    if !joined_entities.contains(left_alias) {
+                        let left_join = Join {
+                            table_name: left_cte_name.to_string(),
+                            table_alias: left_alias.to_string(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(left_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_id_col.clone()),
+                                    }),
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(rel_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_join_col.clone()),
+                                    }),
+                                ],
+                            }],
+                            join_type: Self::determine_join_type(left_is_optional),
+                            pre_filter: None,
+                        };
+                        collected_graph_joins.push(left_join);
+                        joined_entities.insert(left_alias.to_string());
+                    }
+                    
+                    // JOIN: Edge table (connects to left via from_id)
+                    let rel_join = Join {
+                        table_name: rel_cte_name.to_string(),
+                        table_alias: rel_alias.to_string(),
                         joining_on: vec![OperatorApplication {
                             operator: Operator::Equal,
                             operands: vec![
-                                LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(left_alias.to_string()),
-                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_id_col.clone()),
-                                }),
                                 LogicalExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(rel_alias.to_string()),
                                     column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_join_col.clone()),
                                 }),
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(left_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_id_col),
+                                }),
                             ],
                         }],
-                        join_type: Self::determine_join_type(left_is_optional),
-                        pre_filter: None,
+                        join_type: Self::determine_join_type(rel_is_optional),
+                        pre_filter: pre_filter.clone(),
                     };
-                    collected_graph_joins.push(left_join);
-                    joined_entities.insert(left_alias.to_string());
-                }
-                
-                // JOIN 2: Relationship table
-                let rel_join = Join {
-                    table_name: rel_cte_name.to_string(),
-                    table_alias: rel_alias.to_string(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(rel_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_join_col.clone()),
-                            }),
-                            LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(left_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_id_col),
-                            }),
-                        ],
-                    }],
-                    join_type: Self::determine_join_type(rel_is_optional),
-                    pre_filter: pre_filter.clone(),
-                };
-                collected_graph_joins.push(rel_join);
-                joined_entities.insert(rel_alias.to_string());
-                
-                // JOIN 3: Right node to relationship
-                if !joined_entities.contains(right_alias) {
-                    let right_join = Join {
-                        table_name: right_cte_name.to_string(),
-                        table_alias: right_alias.to_string(),
+                    collected_graph_joins.push(rel_join);
+                    joined_entities.insert(rel_alias.to_string());
+                    
+                    // JOIN: Right node (connects to edge via to_id)
+                    if !joined_entities.contains(right_alias) {
+                        let right_join = Join {
+                            table_name: right_cte_name.to_string(),
+                            table_alias: right_alias.to_string(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(right_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_id_col),
+                                    }),
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(rel_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_join_col.clone()),
+                                    }),
+                                ],
+                            }],
+                            join_type: Self::determine_join_type(right_is_optional),
+                            pre_filter: None,
+                        };
+                        collected_graph_joins.push(right_join);
+                        joined_entities.insert(right_alias.to_string());
+                    }
+                } else {
+                    // Reverse order: RIGHT → EDGE → LEFT (right is available, connect to it first)
+                    crate::debug_print!("       Connect order: RIGHT → EDGE → LEFT (right already available)");
+                    
+                    // JOIN: Edge table (connects to RIGHT via to_id)
+                    let rel_join = Join {
+                        table_name: rel_cte_name.to_string(),
+                        table_alias: rel_alias.to_string(),
                         joining_on: vec![OperatorApplication {
                             operator: Operator::Equal,
                             operands: vec![
                                 LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(right_alias.to_string()),
-                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_id_col),
-                                }),
-                                LogicalExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(rel_alias.to_string()),
                                     column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_join_col.clone()),
                                 }),
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(right_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_id_col),
+                                }),
                             ],
                         }],
-                        join_type: Self::determine_join_type(right_is_optional),
-                        pre_filter: None,
+                        join_type: Self::determine_join_type(rel_is_optional),
+                        pre_filter: pre_filter.clone(),
                     };
-                    collected_graph_joins.push(right_join);
-                    joined_entities.insert(right_alias.to_string());
+                    collected_graph_joins.push(rel_join);
+                    joined_entities.insert(rel_alias.to_string());
+                    
+                    // JOIN: Left node (connects to edge via from_id)
+                    if !joined_entities.contains(left_alias) {
+                        let left_join = Join {
+                            table_name: left_cte_name.to_string(),
+                            table_alias: left_alias.to_string(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(left_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_id_col),
+                                    }),
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(rel_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_join_col.clone()),
+                                    }),
+                                ],
+                            }],
+                            join_type: Self::determine_join_type(left_is_optional),
+                            pre_filter: None,
+                        };
+                        collected_graph_joins.push(left_join);
+                        joined_entities.insert(left_alias.to_string());
+                    }
                 }
                 
                 Ok(())

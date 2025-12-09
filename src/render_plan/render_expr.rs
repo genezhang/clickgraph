@@ -11,6 +11,7 @@ use crate::query_planner::logical_expr::{
     ColumnAlias as LogicalColumnAlias, ExistsSubquery as LogicalExistsSubquery,
     InSubquery as LogicalInSubquery, Literal as LogicalLiteral,
     LogicalCase, Operator as LogicalOperator, OperatorApplication as LogicalOperatorApplication,
+    PathPattern, Direction,
     PropertyAccess as LogicalPropertyAccess, ScalarFnCall as LogicalScalarFnCall,
     TableAlias as LogicalTableAlias,
 };
@@ -83,6 +84,169 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
         _ => {
             // For other plan types, generate a simple placeholder
             Ok("SELECT 1".to_string())
+        }
+    }
+}
+
+/// Generate NOT EXISTS SQL for a PathPattern (negative pattern matching / anti-join)
+/// 
+/// For `NOT (a)-[:REL]-(b)` pattern, generates:
+/// ```sql
+/// NOT EXISTS (
+///     SELECT 1 FROM rel_table 
+///     WHERE (rel_table.from_id = a.id AND rel_table.to_id = b.id)
+///        OR (rel_table.from_id = b.id AND rel_table.to_id = a.id)  -- for undirected
+/// )
+/// ```
+fn generate_not_exists_from_path_pattern(pattern: &PathPattern) -> Result<String, RenderBuildError> {
+    use crate::server::GLOBAL_SCHEMAS;
+    
+    match pattern {
+        PathPattern::ConnectedPattern(connected_patterns) => {
+            if connected_patterns.is_empty() {
+                return Err(RenderBuildError::InvalidRenderPlan(
+                    "Empty connected pattern in NOT expression".to_string()
+                ));
+            }
+            
+            // Handle single-hop pattern (most common case for anti-join)
+            let conn = &connected_patterns[0];
+            
+            // Get the start and end node aliases (end node can be anonymous)
+            let start_alias = conn.start_node.name.as_ref()
+                .ok_or_else(|| RenderBuildError::InvalidRenderPlan(
+                    "NOT pattern requires named start node".to_string()
+                ))?;
+            // End alias is optional - if None, we only check the from_id
+            let end_alias = conn.end_node.name.as_ref();
+            
+            // Get the relationship type
+            let rel_type = conn.relationship.labels.as_ref()
+                .and_then(|l| l.first())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "UNKNOWN".to_string());
+            
+            // Get direction
+            let is_undirected = conn.relationship.direction == Direction::Either;
+            
+            // Try to get schema for relationship lookup
+            let schemas_lock = GLOBAL_SCHEMAS.get();
+            let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
+            let schema = schemas_guard.as_ref()
+                .and_then(|guard| guard.get("default"));
+            
+            // Look up the relationship table and columns
+            if let Some(schema) = schema {
+                if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
+                    let db_name = &rel_schema.database;
+                    let table_name = &rel_schema.table_name;
+                    let full_table = format!("{}.{}", db_name, table_name);
+                    let from_col = &rel_schema.from_id;
+                    let to_col = &rel_schema.to_id;
+                    
+                    // Get the node ID columns from their labels
+                    let start_id_col = conn.start_node.label.as_ref()
+                        .and_then(|label| schema.get_node_schema_opt(label))
+                        .map(|n| n.node_id.column().to_string())
+                        .unwrap_or_else(|| "id".to_string());
+                    
+                    let end_id_col = conn.end_node.label.as_ref()
+                        .and_then(|label| schema.get_node_schema_opt(label))
+                        .map(|n| n.node_id.column().to_string())
+                        .unwrap_or_else(|| "id".to_string());
+                    
+                    // Generate the NOT EXISTS SQL
+                    let exists_sql = match (end_alias, is_undirected) {
+                        // Anonymous end node: just check if any relationship exists from start node
+                        (None, false) => {
+                            // Directed with anonymous end: check FROM or TO based on direction
+                            match conn.relationship.direction {
+                                Direction::Outgoing => format!(
+                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}.{})",
+                                    full_table, table_name, from_col, start_alias, start_id_col
+                                ),
+                                Direction::Incoming => format!(
+                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}.{})",
+                                    full_table, table_name, to_col, start_alias, start_id_col
+                                ),
+                                _ => format!(
+                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}.{} OR {}.{} = {}.{})",
+                                    full_table, 
+                                    table_name, from_col, start_alias, start_id_col,
+                                    table_name, to_col, start_alias, start_id_col
+                                ),
+                            }
+                        },
+                        (None, true) => {
+                            // Undirected with anonymous end: check either direction
+                            format!(
+                                "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}.{} OR {}.{} = {}.{})",
+                                full_table, 
+                                table_name, from_col, start_alias, start_id_col,
+                                table_name, to_col, start_alias, start_id_col
+                            )
+                        },
+                        (Some(end), true) => {
+                            // Named end node, undirected: check both directions
+                            format!(
+                                "NOT EXISTS (SELECT 1 FROM {} WHERE ({}.{} = {}.{} AND {}.{} = {}.{}) OR ({}.{} = {}.{} AND {}.{} = {}.{}))",
+                                full_table,
+                                // Direction 1: start -> end
+                                table_name, from_col, start_alias, start_id_col,
+                                table_name, to_col, end, end_id_col,
+                                // Direction 2: end -> start
+                                table_name, from_col, end, end_id_col,
+                                table_name, to_col, start_alias, start_id_col
+                            )
+                        },
+                        (Some(end), false) => {
+                            // Named end node, directed: check single direction
+                            let (fk_from, fk_to, from_id, to_id) = match conn.relationship.direction {
+                                Direction::Outgoing => (start_alias.as_str(), end.as_str(), &start_id_col, &end_id_col),
+                                Direction::Incoming => (end.as_str(), start_alias.as_str(), &end_id_col, &start_id_col),
+                                _ => (start_alias.as_str(), end.as_str(), &start_id_col, &end_id_col),
+                            };
+                            format!(
+                                "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}.{} AND {}.{} = {}.{})",
+                                full_table,
+                                table_name, from_col, fk_from, from_id,
+                                table_name, to_col, fk_to, to_id
+                            )
+                        },
+                    };
+                    
+                    return Ok(exists_sql);
+                }
+            }
+            
+            // Fallback: generate a reasonable default
+            let table_name = rel_type.to_lowercase();
+            match (end_alias, is_undirected) {
+                (None, _) => Ok(format!(
+                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.from_id = {}.id OR {}.to_id = {}.id)",
+                    table_name, table_name, start_alias, table_name, start_alias
+                )),
+                (Some(end), true) => Ok(format!(
+                    "NOT EXISTS (SELECT 1 FROM {} WHERE ({}.Person1Id = {}.id AND {}.Person2Id = {}.id) OR ({}.Person1Id = {}.id AND {}.Person2Id = {}.id))",
+                    table_name,
+                    table_name, start_alias, table_name, end,
+                    table_name, end, table_name, start_alias
+                )),
+                (Some(end), false) => Ok(format!(
+                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.from_id = {}.id AND {}.to_id = {}.id)",
+                    table_name, table_name, start_alias, table_name, end
+                )),
+            }
+        }
+        PathPattern::Node(_) => {
+            Err(RenderBuildError::InvalidRenderPlan(
+                "NOT pattern with single node is not supported".to_string()
+            ))
+        }
+        PathPattern::ShortestPath(_) | PathPattern::AllShortestPaths(_) => {
+            Err(RenderBuildError::InvalidRenderPlan(
+                "NOT pattern with shortest path is not supported".to_string()
+            ))
         }
     }
 }
@@ -246,6 +410,13 @@ impl TryFrom<LogicalExpr> for RenderExpr {
             LogicalExpr::ScalarFnCall(fn_call) => RenderExpr::ScalarFnCall(fn_call.try_into()?),
             LogicalExpr::PropertyAccessExp(pa) => RenderExpr::PropertyAccessExp(pa.try_into()?),
             LogicalExpr::OperatorApplicationExp(op) => {
+                // Special case: NOT (PathPattern) -> NOT EXISTS subquery
+                if op.operator == LogicalOperator::Not && op.operands.len() == 1 {
+                    if let LogicalExpr::PathPattern(ref pattern) = op.operands[0] {
+                        let not_exists_sql = generate_not_exists_from_path_pattern(pattern)?;
+                        return Ok(RenderExpr::Raw(not_exists_sql));
+                    }
+                }
                 RenderExpr::OperatorApplicationExp(op.try_into()?)
             }
             LogicalExpr::InSubquery(subq) => RenderExpr::InSubquery(subq.try_into()?),

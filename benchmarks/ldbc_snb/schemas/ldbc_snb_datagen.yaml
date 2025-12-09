@@ -419,48 +419,48 @@ graph_schema:
 
     # -------------------------------------------------------------------------
     # Tag HAS_TYPE TagClass
-    # Datagen columns: TagId|TagClassId
+    # Actual columns: Tag_id|TagClass_id
     # -------------------------------------------------------------------------
     - type: HAS_TYPE
       database: ldbc
       table: Tag_hasType_TagClass
-      from_id: TagId
-      to_id: TagClassId
+      from_id: Tag_id
+      to_id: TagClass_id
       from_node: Tag
       to_node: TagClass
 
     # -------------------------------------------------------------------------
     # TagClass IS_SUBCLASS_OF TagClass
-    # Datagen columns: TagClass1Id|TagClass2Id
+    # Actual columns: TagClass_id|TagClass_id_2
     # -------------------------------------------------------------------------
     - type: IS_SUBCLASS_OF
       database: ldbc
       table: TagClass_isSubclassOf_TagClass
-      from_id: TagClass1Id
-      to_id: TagClass2Id
+      from_id: TagClass_id
+      to_id: TagClass_id_2
       from_node: TagClass
       to_node: TagClass
 
     # -------------------------------------------------------------------------
     # Place IS_PART_OF Place
-    # Datagen columns: Place1Id|Place2Id
+    # Actual columns: Place_id|Place_id_2
     # -------------------------------------------------------------------------
     - type: IS_PART_OF
       database: ldbc
       table: Place_isPartOf_Place
-      from_id: Place1Id
-      to_id: Place2Id
+      from_id: Place_id
+      to_id: Place_id_2
       from_node: Place
       to_node: Place
 
     # -------------------------------------------------------------------------
     # Organisation IS_LOCATED_IN Place
-    # Datagen columns: OrganisationId|PlaceId
+    # Actual columns: Organisation_id|Place_id
     # -------------------------------------------------------------------------
     - type: ORG_LOCATED_IN
       database: ldbc
       table: Organisation_isLocatedIn_Place
-      from_id: OrganisationId
-      to_id: PlaceId
+      from_id: Organisation_id
+      to_id: Place_id
       from_node: Organisation
       to_node: Place

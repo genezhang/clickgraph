@@ -109,6 +109,44 @@ These are the main read-heavy queries that test complex graph patterns:
 | IC13 | Shortest path | Path finding |
 | IC14 | Trusted connection | Weighted paths |
 
+### Business Intelligence (BI) Queries
+
+LDBC BI queries are designed for complex analytics - perfect for ClickHouse's columnar storage.
+These queries test aggregations, joins, and analytical patterns.
+
+| Query | Description | Focus Area |
+|-------|-------------|------------|
+| BI-1 | Posting Summary | Message count analysis |
+| BI-2 | Tag Evolution | Tag popularity tracking |
+| BI-3 | Popular Topics | Forum content analysis |
+| BI-4 | Top Message Creators | Forum activity ranking |
+| BI-5 | Most Active Posters | Tag-based engagement |
+| BI-6 | Authoritative Users | Like-based authority |
+| BI-7 | Related Topics | Tag correlation |
+| BI-8 | Central Person | Interest network |
+| BI-9 | Top Thread Initiators | Discussion starters |
+| BI-10 | Experts in Social Circle | FoF expertise |
+| BI-11 | Friend Triangles | Triangle counting |
+| BI-12 | Message Distribution | Content distribution |
+| BI-14 | International Dialog | Cross-location connections |
+| BI-18 | Friend Recommendation | Mutual friend analysis |
+
+**Benchmark Status**: 26/26 queries passing (100%)
+
+```bash
+# Run BI queries
+python scripts/run_bi_queries.py
+
+# Run specific BI query
+python scripts/run_bi_queries.py --query bi-3
+
+# List all available queries
+python scripts/run_bi_queries.py --list
+
+# Run with verbose output
+python scripts/run_bi_queries.py --query bi-5 -v
+```
+
 ### Interactive Short Queries (IS1-IS7)
 
 Simple lookup queries for testing point access:
@@ -134,6 +172,9 @@ python scripts/run_benchmark.py --query ic1
 
 # Run with timing
 python scripts/run_benchmark.py --queries all --timing
+
+# Run BI benchmark with JSON output
+python scripts/run_bi_queries.py --output results.json
 ```
 
 ## ClickGraph-Specific Notes
@@ -146,15 +187,18 @@ ClickGraph supports all read queries with these patterns:
 - Aggregations with GROUP BY
 - Complex WHERE filtering
 - ORDER BY with LIMIT
+- COUNT(DISTINCT ...) for deduplication
+- Multi-hop traversals
 
 ### Limitations
 
 Since ClickGraph is a read-only engine:
 - Update queries (IU1-IU8) are not supported
-- The benchmark focuses on the Interactive Complex and Short queries
+- The benchmark focuses on the Interactive Complex, Short, and BI queries
 
 ## References
 
 - [LDBC SNB Specification](https://arxiv.org/abs/2001.02299)
 - [LDBC SNB Interactive v1 Implementations](https://github.com/ldbc/ldbc_snb_interactive_v1_impls)
+- [LDBC SNB BI Workload](https://github.com/ldbc/ldbc_snb_bi)
 - [LDBC Data Sets](https://ldbcouncil.org/data-sets-surf-repository/)

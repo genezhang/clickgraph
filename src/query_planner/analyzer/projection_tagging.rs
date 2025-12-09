@@ -664,7 +664,34 @@ impl ProjectionTagging {
 
                     if let Some(t_alias) = table_alias_opt {
                         if aggregate_fn_call.name.to_lowercase() == "count" {
-                            let table_ctx = plan_ctx.get_mut_table_ctx(t_alias).map_err(|e| {
+                            // First check if this is a projection alias (from WITH clause)
+                            // If so, resolve it to the underlying table alias
+                            let resolved_alias: String = if plan_ctx.is_projection_alias(t_alias) {
+                                // Try to resolve the projection alias to its underlying expression
+                                if let Some(underlying_expr) = plan_ctx.get_projection_alias_expr(t_alias) {
+                                    // If the underlying expr is a TableAlias, use that
+                                    match underlying_expr {
+                                        LogicalExpr::TableAlias(TableAlias(underlying_alias)) => {
+                                            underlying_alias.clone()
+                                        }
+                                        _ => {
+                                            // If it's not a simple alias (e.g., it's an aggregate),
+                                            // just use count(*) since we can't resolve to a table
+                                            item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                                name: aggregate_fn_call.name.clone(),
+                                                args: vec![LogicalExpr::Star],
+                                            });
+                                            return Ok(());
+                                        }
+                                    }
+                                } else {
+                                    t_alias.to_string()
+                                }
+                            } else {
+                                t_alias.to_string()
+                            };
+                            
+                            let table_ctx = plan_ctx.get_mut_table_ctx(&resolved_alias).map_err(|e| {
                                 AnalyzerError::PlanCtx {
                                     pass: Pass::ProjectionTagging,
                                     source: e,

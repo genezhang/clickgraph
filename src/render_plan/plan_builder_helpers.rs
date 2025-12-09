@@ -151,7 +151,8 @@ pub(super) fn rewrite_with_aliases_to_cte(
             }), all_from_with)
         }
         RenderExpr::PropertyAccessExp(prop) => {
-            // Property access doesn't come from WITH
+            // Property access doesn't come from WITH directly,
+            // but we pass through (handled by rewrite_table_aliases_to_cte if needed)
             (RenderExpr::PropertyAccessExp(prop), false)
         }
         RenderExpr::List(items) => {
@@ -167,6 +168,81 @@ pub(super) fn rewrite_with_aliases_to_cte(
         }
         // Literals, Star, Column, Parameter, Raw don't need rewriting and don't come from WITH
         other => (other, false)
+    }
+}
+
+/// Rewrite expressions that reference table aliases from WITH clause to CTE references.
+/// For example: `count(person.id)` where `person` was passed through WITH
+/// becomes `count(with_result."person.id")` since the CTE includes `person.id AS "person.id"`
+pub(super) fn rewrite_table_aliases_to_cte(
+    expr: RenderExpr,
+    with_table_aliases: &HashSet<String>,
+    cte_name: &str,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            if with_table_aliases.contains(&prop.table_alias.0) {
+                // Rewrite person.id -> with_result."person.id"
+                let col_name = format!("{}.{}", prop.table_alias.0, prop.column.0.raw());
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(cte_name.to_string()),
+                    column: Column(PropertyValue::Column(col_name)),
+                })
+            } else {
+                RenderExpr::PropertyAccessExp(prop)
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            let new_args: Vec<RenderExpr> = agg.args.into_iter()
+                .map(|arg| rewrite_table_aliases_to_cte(arg, with_table_aliases, cte_name))
+                .collect();
+            RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: agg.name,
+                args: new_args,
+            })
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            let new_args: Vec<RenderExpr> = func.args.into_iter()
+                .map(|arg| rewrite_table_aliases_to_cte(arg, with_table_aliases, cte_name))
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: func.name,
+                args: new_args,
+            })
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            let new_operands: Vec<RenderExpr> = op.operands.into_iter()
+                .map(|operand| rewrite_table_aliases_to_cte(operand, with_table_aliases, cte_name))
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: new_operands,
+            })
+        }
+        RenderExpr::Case(case) => {
+            use super::render_expr::RenderCase;
+            let new_expr = case.expr.map(|e| Box::new(rewrite_table_aliases_to_cte(*e, with_table_aliases, cte_name)));
+            let new_when_then: Vec<(RenderExpr, RenderExpr)> = case.when_then.into_iter()
+                .map(|(cond, result)| {
+                    (rewrite_table_aliases_to_cte(cond, with_table_aliases, cte_name),
+                     rewrite_table_aliases_to_cte(result, with_table_aliases, cte_name))
+                })
+                .collect();
+            let new_else = case.else_expr.map(|e| Box::new(rewrite_table_aliases_to_cte(*e, with_table_aliases, cte_name)));
+            RenderExpr::Case(RenderCase {
+                expr: new_expr,
+                when_then: new_when_then,
+                else_expr: new_else,
+            })
+        }
+        RenderExpr::List(items) => {
+            let new_items: Vec<RenderExpr> = items.into_iter()
+                .map(|item| rewrite_table_aliases_to_cte(item, with_table_aliases, cte_name))
+                .collect();
+            RenderExpr::List(new_items)
+        }
+        // Other expressions pass through unchanged
+        other => other
     }
 }
 
