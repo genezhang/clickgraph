@@ -195,7 +195,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
       database: ldbc
-      table: Person_isLocatedIn_Place
+      table: Person_isLocatedIn_City
       from_id: PersonId
       to_id: CityId
       from_node: Person
@@ -219,7 +219,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: STUDY_AT
       database: ldbc
-      table: Person_studyAt_Organisation
+      table: Person_studyAt_University
       from_id: PersonId
       to_id: UniversityId
       from_node: Person
@@ -234,7 +234,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: WORK_AT
       database: ldbc
-      table: Person_workAt_Organisation
+      table: Person_workAt_Company
       from_id: PersonId
       to_id: CompanyId
       from_node: Person
@@ -339,7 +339,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: POST_LOCATED_IN
       database: ldbc
-      table: Post_isLocatedIn_Place
+      table: Post_isLocatedIn_Country
       from_id: PostId
       to_id: CountryId
       from_node: Post
@@ -375,7 +375,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: COMMENT_LOCATED_IN
       database: ldbc
-      table: Comment_isLocatedIn_Place
+      table: Comment_isLocatedIn_Country
       from_id: CommentId
       to_id: CountryId
       from_node: Comment
