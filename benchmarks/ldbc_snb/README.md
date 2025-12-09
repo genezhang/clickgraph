@@ -18,6 +18,7 @@ The LDBC SNB models a social network with:
 
 | Scale Factor | Persons | Messages | Approx Size |
 |-------------|---------|----------|-------------|
+| SF0.003     | ~50     | ~500     | ~1 MB       |
 | SF0.1       | ~1K     | ~30K     | ~50 MB      |
 | SF1         | ~10K    | ~300K    | ~500 MB     |
 | SF10        | ~100K   | ~3M      | ~5 GB       |
@@ -48,28 +49,42 @@ Docker must be installed and running.
 ### 1. Start ClickHouse
 
 ```bash
-docker-compose -f benchmarks/ldbc_snb/docker-compose.ldbc.yaml up -d
+docker-compose -f docker-compose.yaml up -d
 ```
 
 ### 2. Create Tables
 
+Use the schema that matches datagen output format:
+
 ```bash
-clickhouse-client --multiquery < benchmarks/ldbc_snb/schemas/clickhouse_ddl.sql
+clickhouse-client --multiquery < benchmarks/ldbc_snb/schemas/clickhouse_ddl_datagen.sql
 ```
 
 ### 3. Load Data
 
 ```bash
 cd benchmarks/ldbc_snb
-python scripts/load_data.py --scale-factor sf0.1
+python scripts/load_data.py --scale-factor sf0.003
 ```
 
 ### 4. Start ClickGraph
 
 ```bash
-export GRAPH_CONFIG_PATH="./benchmarks/ldbc_snb/schemas/ldbc_snb.yaml"
+export GRAPH_CONFIG_PATH="./benchmarks/ldbc_snb/schemas/ldbc_snb_datagen.yaml"
 cargo run --release
 ```
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `schemas/clickhouse_ddl_datagen.sql` | ClickHouse DDL matching datagen output |
+| `schemas/ldbc_snb_datagen.yaml` | ClickGraph graph schema matching datagen |
+| `schemas/clickhouse_ddl.sql` | Original LDBC spec DDL (reference only) |
+| `schemas/ldbc_snb.yaml` | Original ClickGraph schema (reference only) |
+| `scripts/download_data.sh` | Data generation script (Docker-based) |
+| `scripts/load_data.py` | Data loader for ClickHouse |
+| `scripts/run_benchmark.py` | Benchmark runner |
 
 ## Queries
 
