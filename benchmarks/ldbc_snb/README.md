@@ -23,18 +23,25 @@ The LDBC SNB models a social network with:
 | SF10        | ~100K   | ~3M      | ~5 GB       |
 | SF100       | ~1M     | ~30M     | ~50 GB      |
 
-### Download Data
+### Generate Data
 
-Pre-generated datasets are available from the LDBC SURF repository:
+Use Docker to generate LDBC SNB data locally (recommended):
 
 ```bash
-# Download SF0.1 (for development/testing)
-cd benchmarks/ldbc_snb/data
-./download_data.sh sf0.1
+cd benchmarks/ldbc_snb
 
-# Download SF1 (for benchmarking)
-./download_data.sh sf1
+# Generate tiny dataset for quick testing (~1 min)
+./scripts/download_data.sh sf0.003 --generate
+
+# Generate small dataset for development (~5 min)
+./scripts/download_data.sh sf0.1 --generate
+
+# Generate medium dataset for benchmarking (~30 min)
+./scripts/download_data.sh sf1 --generate
 ```
+
+**Note**: The script uses the official LDBC Datagen Docker image (`ldbc/datagen-standalone`).
+Docker must be installed and running.
 
 ## Setup
 

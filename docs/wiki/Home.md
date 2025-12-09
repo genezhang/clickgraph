@@ -2,7 +2,7 @@
 
 **Caution:** This entire document is AI-generated. It may contain mistakes. Double check and kindly raise issues and corrections if you find any.
 
-**ClickGraph** is a high-performance, stateless graph query engine that brings the power of graph analytics to ClickHouse®. Execute Cypher queries on your existing ClickHouse data without migration or duplication.
+**ClickGraph** is a high-performance, stateless graph query engine that brings the power of graph analytics to ClickHouse® as well as ClickHouse's analytical functions to graph queries. Execute Cypher queries on your existing ClickHouse data without migration or duplication.
 
 ## 🚀 Why ClickGraph?
 

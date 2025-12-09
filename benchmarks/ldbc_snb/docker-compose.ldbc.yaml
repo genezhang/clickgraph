@@ -5,7 +5,7 @@ version: '3.8'
 
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:24.3
+    image: clickhouse/clickhouse-server:25.8.11
     container_name: clickgraph-ldbc-clickhouse
     ports:
       - "8123:8123"   # HTTP interface
@@ -16,7 +16,7 @@ services:
     environment:
       - CLICKHOUSE_DB=ldbc
       - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=
+      - CLICKHOUSE_PASSWORD=default
     ulimits:
       nofile:
         soft: 262144
