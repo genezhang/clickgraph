@@ -260,6 +260,187 @@ pub(crate) trait RenderPlanBuilder {
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan>;
 }
 
+/// Build a render plan for WITH+MATCH patterns.
+/// These patterns have nested Union/GraphJoins inside GraphRel.right that represent
+/// the WITH clause output. We generate a CTE for the WITH clause and join the
+/// outer query to it.
+fn build_with_match_cte_plan(
+    plan: &LogicalPlan,
+    schema: &GraphSchema,
+) -> RenderPlanBuilderResult<RenderPlan> {
+    use super::CteContent;
+    
+    log::info!("🔧 build_with_match_cte_plan: Starting");
+    
+    // Extract components: LIMIT, ORDER BY, outer Projection, GraphRel
+    let (core_plan, order_by_items, limit_val, skip_val) = match plan {
+        LogicalPlan::Limit(limit) => {
+            match limit.input.as_ref() {
+                LogicalPlan::OrderBy(order) => (order.input.as_ref(), Some(&order.items), Some(limit.count), None),
+                other => (other, None, Some(limit.count), None),
+            }
+        }
+        LogicalPlan::OrderBy(order) => (order.input.as_ref(), Some(&order.items), None, None),
+        LogicalPlan::Skip(skip) => (skip.input.as_ref(), None, None, Some(skip.count)),
+        other => (other, None, None, None),
+    };
+    
+    // The core_plan should be GraphJoins(Projection(GraphRel(...)))
+    let (projection, graph_rel) = match core_plan {
+        LogicalPlan::GraphJoins(gj) => {
+            match gj.input.as_ref() {
+                LogicalPlan::Projection(proj) => {
+                    match proj.input.as_ref() {
+                        LogicalPlan::GraphRel(gr) => (proj, gr),
+                        _ => return Err(RenderBuildError::InvalidRenderPlan(
+                            "WITH+MATCH: Expected GraphRel inside Projection".to_string(),
+                        )),
+                    }
+                }
+                _ => return Err(RenderBuildError::InvalidRenderPlan(
+                    "WITH+MATCH: Expected Projection inside GraphJoins".to_string(),
+                )),
+            }
+        }
+        _ => return Err(RenderBuildError::InvalidRenderPlan(
+            "WITH+MATCH: Expected GraphJoins as core plan".to_string(),
+        )),
+    };
+    
+    // Find the WITH clause output (Union or GraphJoins in graph_rel.right)
+    let with_clause_plan: &LogicalPlan = match graph_rel.right.as_ref() {
+        LogicalPlan::Union(_) | LogicalPlan::GraphJoins(_) => graph_rel.right.as_ref(),
+        _ => return Err(RenderBuildError::InvalidRenderPlan(
+            "WITH+MATCH: Expected Union or GraphJoins in GraphRel.right".to_string(),
+        )),
+    };
+    
+    log::info!("🔧 build_with_match_cte_plan: Found WITH clause in GraphRel.right");
+    
+    // Generate the CTE for the WITH clause by rendering the nested plan
+    let with_cte_render = with_clause_plan.to_render_plan(schema)?;
+    
+    // Create CTE with proper alias
+    let cte_name = "with_friends".to_string();
+    let with_cte = Cte {
+        cte_name: cte_name.clone(),
+        content: CteContent::Structured(with_cte_render),
+        is_recursive: false,
+    };
+    
+    // Extract information about the outer query (second MATCH)
+    // FROM: left node of graph_rel (e.g., Post)
+    // JOIN: relationship table + CTE
+    
+    let outer_from = graph_rel.left.extract_from()?;
+    let outer_from_alias = match &outer_from {
+        Some(ft) => ft.table.as_ref().and_then(|t| t.alias.clone()),
+        None => None,
+    };
+    
+    // Build SELECT items from the projection
+    let select_items: Vec<SelectItem> = projection.items.iter().map(|item| {
+        let expr: RenderExpr = item.expression.clone().try_into().unwrap_or(RenderExpr::Raw("*".to_string()));
+        SelectItem {
+            expression: expr,
+            col_alias: item.col_alias.as_ref().map(|a| ColumnAlias(a.0.clone())),
+        }
+    }).collect();
+    
+    // Build JOINs: relationship table + CTE
+    let rel_table = extract_table_name(&graph_rel.center)
+        .unwrap_or_else(|| graph_rel.alias.clone());
+    let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
+        RelationshipColumns {
+            from_id: "from_node_id".to_string(),
+            to_id: "to_node_id".to_string(),
+        },
+    );
+    
+    // Get the left node's ID column
+    let left_id_col = extract_id_column(&graph_rel.left)
+        .unwrap_or_else(|| "id".to_string());
+    
+    // JOIN 1: Relationship table
+    let rel_join = Join {
+        table_name: rel_table,
+        table_alias: graph_rel.alias.clone(),
+        joining_on: vec![OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(graph_rel.alias.clone()),
+                    column: Column(PropertyValue::Column(rel_cols.from_id.clone())),
+                }),
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(outer_from_alias.clone().unwrap_or_default()),
+                    column: Column(PropertyValue::Column(left_id_col.clone())),
+                }),
+            ],
+        }],
+        join_type: JoinType::Inner,
+        pre_filter: None,
+    };
+    
+    // JOIN 2: CTE (the WITH clause output)
+    // The CTE output has the connection alias (e.g., "friend")
+    let cte_join = Join {
+        table_name: cte_name.clone(),
+        table_alias: graph_rel.right_connection.clone(),
+        joining_on: vec![OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(graph_rel.right_connection.clone()),
+                    column: Column(PropertyValue::Column("id".to_string())),
+                }),
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(graph_rel.alias.clone()),
+                    column: Column(PropertyValue::Column(rel_cols.to_id.clone())),
+                }),
+            ],
+        }],
+        join_type: JoinType::Inner,
+        pre_filter: None,
+    };
+    
+    // Build ORDER BY
+    let order_by: Vec<OrderByItem> = if let Some(items) = order_by_items {
+        items.iter().filter_map(|item| {
+            let expr: RenderExpr = item.expression.clone().try_into().ok()?;
+            Some(OrderByItem {
+                expression: expr,
+                order: match item.order {
+                    crate::query_planner::logical_plan::OrderByOrder::Asc => OrderByOrder::Asc,
+                    crate::query_planner::logical_plan::OrderByOrder::Desc => OrderByOrder::Desc,
+                },
+            })
+        }).collect()
+    } else {
+        vec![]
+    };
+    
+    log::info!("🔧 build_with_match_cte_plan: Generated CTE '{}'", cte_name);
+    
+    Ok(RenderPlan {
+        ctes: CteItems(vec![with_cte]),
+        select: SelectItems {
+            items: select_items,
+            distinct: projection.distinct,
+        },
+        from: FromTableItem(outer_from.and_then(|f| f.table)),
+        joins: JoinItems(vec![rel_join, cte_join]),
+        array_join: ArrayJoinItem(None),
+        filters: FilterItems(None),
+        group_by: GroupByExpressions(vec![]),
+        having_clause: None,
+        order_by: OrderByItems(order_by),
+        skip: SkipItem(skip_val),
+        limit: LimitItem(limit_val),
+        union: UnionItems(None),
+    })
+}
+
 impl RenderPlanBuilder for LogicalPlan {
     fn find_id_column_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<String> {
         // Traverse the plan tree to find a GraphNode or ViewScan with matching alias
@@ -3410,6 +3591,15 @@ impl RenderPlanBuilder for LogicalPlan {
             // might have different property sets - missing properties get NULL values
             let union_plans = normalize_union_branches(union_plans);
             
+            // 🔧 FIX: Collect all CTEs from all branches and hoist to outer plan
+            // This is critical for VLP with aggregation - each branch has its own recursive CTE
+            // that needs to be available at the outer query level
+            let all_branch_ctes: Vec<Cte> = union_plans.iter()
+                .flat_map(|plan| plan.ctes.0.clone())
+                .collect();
+            
+            crate::debug_println!("DEBUG: Collected {} CTEs from union branches", all_branch_ctes.len());
+            
             // Check if the OUTER plan has GROUP BY or aggregation
             // This happens when return_clause.rs keeps aggregation at the outer level
             // We need to extract this info from core_plan (which wraps the Union)
@@ -3449,7 +3639,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 };
                 
                 return Ok(RenderPlan {
-                    ctes: CteItems(vec![]),
+                    ctes: CteItems(all_branch_ctes.clone()),
                     select: SelectItems {
                         items: outer_select,
                         distinct: distinct,
@@ -3598,7 +3788,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     outer_select_items.len(), outer_group_by.len());
                 
                 return Ok(RenderPlan {
-                    ctes: CteItems(vec![]),
+                    ctes: CteItems(all_branch_ctes.clone()),
                     select: SelectItems {
                         items: outer_select_items,
                         distinct: first_plan.select.distinct,
@@ -3784,6 +3974,16 @@ impl RenderPlanBuilder for LogicalPlan {
                     ));
                 }
             }
+        }
+
+        // Check for WITH clause in GraphRel patterns
+        // "MATCH (...) WITH x MATCH (x)-[...]->(y)" requires CTE-based processing
+        // because the WITH clause creates a derived table that subsequent MATCH must join against
+        if has_with_clause_in_graph_rel(self) {
+            println!("DEBUG: Plan contains WITH clause in GraphRel pattern - need CTE-based processing");
+            return Err(RenderBuildError::InvalidRenderPlan(
+                "WITH clause followed by MATCH requires CTE-based processing".to_string(),
+            ));
         }
         
         if let LogicalPlan::Projection(proj) = self {
@@ -5085,9 +5285,17 @@ impl RenderPlanBuilder for LogicalPlan {
                 crate::debug_println!("DEBUG: try_build_join_based_plan succeeded");
                 return Ok(plan);
             }
-            Err(_) => {
-                crate::debug_println!("DEBUG: try_build_join_based_plan failed, falling back to CTE logic");
+            Err(e) => {
+                crate::debug_println!("DEBUG: try_build_join_based_plan failed: {:?}, falling back to CTE logic", e);
             }
+        }
+
+        // === NEW: Handle WITH+MATCH patterns ===
+        // These patterns have nested Union/GraphJoins inside GraphRel.right that represent 
+        // the WITH clause output. We need to render this as a CTE and join to it.
+        if has_with_clause_in_graph_rel(&transformed_plan) {
+            log::info!("🔧 Handling WITH+MATCH pattern with CTE generation");
+            return build_with_match_cte_plan(&transformed_plan, schema);
         }
 
         // Variable-length paths are now supported via recursive CTE generation

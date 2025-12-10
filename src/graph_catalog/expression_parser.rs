@@ -42,7 +42,10 @@ impl PropertyValue {
     pub fn to_sql(&self, table_alias: &str) -> String {
         match self {
             PropertyValue::Column(col) => {
-                if needs_quoting(col) {
+                // Special case: * is the SQL wildcard and shouldn't be quoted
+                if col == "*" {
+                    format!("{}.*", table_alias)
+                } else if needs_quoting(col) {
                     format!("{}.\"{}\"", table_alias, col)
                 } else {
                     format!("{}.{}", table_alias, col)

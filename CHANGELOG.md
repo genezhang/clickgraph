@@ -1,3 +1,48 @@
+## [0.5.7] - 2025-12-10
+
+### 🐛 Bug Fixes
+
+- **WITH+MATCH CTE generation** - Fixed critical correctness bug where second MATCH after WITH clause ignored first MATCH context
+  - Affected: All WITH+MATCH patterns (e.g., IC-9)
+  - Root Cause: GraphRel with Projection(kind=With) in right branch was being flattened instead of creating proper CTE boundary
+  - Fix: Added `has_with_clause_in_graph_rel()` detection and `build_with_match_cte_plan()` function
+  - CTE for WITH clause output is now properly generated and joined to outer query
+  - Files: `plan_builder.rs`, `plan_builder_helpers.rs`, `to_sql_query.rs`, `expression_parser.rs`
+
+- **CTE Union rendering** - Fixed malformed SQL when CTE contains Union plan
+  - Previously generated `SELECT *\nSELECT ...` (missing UNION ALL keyword)
+  - Now correctly renders nested Union as proper SQL
+
+- **Star column quoting** - Fixed `friend."*"` → `friend.*` in SQL generation
+  - Property access with `*` wildcard no longer incorrectly quoted
+
+- **Undirected VLP with WITH clause** - Fixed CTE hoisting for UNION branches with aggregation
+  - Affected: LDBC IC-1, IC-9
+  - Fix: `plan_builder.rs` now collects and preserves CTEs from all UNION branches when wrapping with GROUP BY
+  - Previously CTEs were being lost when bidirectional VLP patterns were combined with WITH clause aggregation
+
+- **LDBC schema column mappings** - Corrected 15+ relationship column names to match actual ClickHouse tables
+  - Fixed: IS_LOCATED_IN (Person_id, Place_id), HAS_INTEREST (PersonId, TagId), LIKES_POST (PersonId, PostId), etc.
+  - Schema now matches actual LDBC SNB data column naming conventions
+
+- **Added POST_LOCATED_IN relationship** - New relationship type for IC-3 benchmark query
+  - Maps to `Post_isLocatedIn_Country` table with correct column names (PostId, CountryId)
+
+### 🟡 Known Limitations
+
+- **WITH+MATCH with 2+ hops after WITH** - IC-3 pattern with nested relationships after WITH clause not yet supported
+  - Workaround: Break into multiple simpler queries
+
+### 🧪 Testing
+
+- **LDBC SNB Interactive Benchmark**: 7/8 queries passing (87.5%)
+  - IS-1, IS-2, IS-3, IS-5: Short queries passing
+  - IC-1, IC-2, IC-9: Complex queries passing  
+  - IC-3: Known limitation (nested relationships after WITH)
+- All 621 unit tests passing (100%)
+
+---
+
 ## [0.5.6] - 2025-12-09
 
 ### 🐛 Bug Fixes

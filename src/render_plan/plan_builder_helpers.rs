@@ -2099,6 +2099,90 @@ pub(super) fn find_nested_union(plan: &LogicalPlan) -> Option<&crate::query_plan
     }
 }
 
+/// Check if a GraphRel has a Projection(kind=With) as its right side.
+/// This indicates a "WITH ... MATCH" pattern that requires CTE-based processing.
+/// The WITH clause creates a derived table that the subsequent MATCH must join against.
+/// 
+/// Note: The Projection(With) may have been transformed to Projection(Return) by analyzer passes,
+/// but the structure is still identifiable by having GraphJoins/Union inside GraphRel.right
+/// that contains a separate pattern (the first MATCH).
+pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
+    use crate::query_planner::logical_plan::ProjectionKind;
+    
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Check if right side contains a Union or GraphJoins with nested patterns
+            // This indicates a WITH+MATCH structure where the WITH clause output
+            // was wrapped in Union (for undirected patterns) or GraphJoins
+            let right_has_nested_pattern = match graph_rel.right.as_ref() {
+                // Direct Projection(kind=With) - original structure before analyzer transforms
+                LogicalPlan::Projection(proj) if matches!(proj.kind, ProjectionKind::With) => {
+                    log::info!("🔍 has_with_clause_in_graph_rel: Found Projection(With) in GraphRel.right");
+                    true
+                }
+                // Union containing GraphJoins - structure after analyzer transforms WITH+undirected MATCH
+                LogicalPlan::Union(union) => {
+                    // Check if Union contains GraphJoins with nested patterns (from WITH clause)
+                    let has_graph_joins = union.inputs.iter().any(|input| {
+                        matches!(input.as_ref(), LogicalPlan::GraphJoins(_))
+                    });
+                    if has_graph_joins {
+                        log::info!("🔍 has_with_clause_in_graph_rel: Found Union(GraphJoins) in GraphRel.right - WITH+MATCH pattern");
+                    }
+                    has_graph_joins
+                }
+                // GraphJoins directly - structure after analyzer transforms WITH+directed MATCH
+                LogicalPlan::GraphJoins(_) => {
+                    log::info!("🔍 has_with_clause_in_graph_rel: Found GraphJoins in GraphRel.right - WITH+MATCH pattern");
+                    true
+                }
+                _ => false,
+            };
+            
+            if right_has_nested_pattern {
+                return true;
+            }
+            
+            // Also check left side (for incoming patterns)
+            let left_has_nested_pattern = match graph_rel.left.as_ref() {
+                LogicalPlan::Projection(proj) if matches!(proj.kind, ProjectionKind::With) => {
+                    log::info!("🔍 has_with_clause_in_graph_rel: Found Projection(With) in GraphRel.left");
+                    true
+                }
+                LogicalPlan::Union(union) => {
+                    let has_graph_joins = union.inputs.iter().any(|input| {
+                        matches!(input.as_ref(), LogicalPlan::GraphJoins(_))
+                    });
+                    if has_graph_joins {
+                        log::info!("🔍 has_with_clause_in_graph_rel: Found Union(GraphJoins) in GraphRel.left - WITH+MATCH pattern");
+                    }
+                    has_graph_joins
+                }
+                LogicalPlan::GraphJoins(_) => {
+                    log::info!("🔍 has_with_clause_in_graph_rel: Found GraphJoins in GraphRel.left - WITH+MATCH pattern");
+                    true
+                }
+                _ => false,
+            };
+            
+            if left_has_nested_pattern {
+                return true;
+            }
+            
+            // Recursively check nested GraphRels
+            has_with_clause_in_graph_rel(&graph_rel.left) || has_with_clause_in_graph_rel(&graph_rel.right)
+        }
+        LogicalPlan::Projection(proj) => has_with_clause_in_graph_rel(&proj.input),
+        LogicalPlan::Filter(filter) => has_with_clause_in_graph_rel(&filter.input),
+        LogicalPlan::GroupBy(group_by) => has_with_clause_in_graph_rel(&group_by.input),
+        LogicalPlan::GraphJoins(graph_joins) => has_with_clause_in_graph_rel(&graph_joins.input),
+        LogicalPlan::Limit(limit) => has_with_clause_in_graph_rel(&limit.input),
+        LogicalPlan::OrderBy(order_by) => has_with_clause_in_graph_rel(&order_by.input),
+        LogicalPlan::Skip(skip) => has_with_clause_in_graph_rel(&skip.input),
+        _ => false,
+    }
+}
+
 /// Extract outer aggregation info from a plan that wraps a Union
 /// Handles two possible structures:
 /// 1. Projection(GroupBy(Union(...))) - older structure

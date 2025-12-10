@@ -1,7 +1,7 @@
 # Known Issues
 
 **Active Issues**: 4  
-**Last Updated**: December 9, 2025
+**Last Updated**: December 10, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -10,7 +10,37 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Active Issues
 
-### 1. Anti-Join Pattern (NOT relationship) - NOT IMPLEMENTED
+### 1. WITH+MATCH with Nested Relationships (3+ hops after WITH)
+
+**Status**: 🟡 Partial Implementation  
+**Severity**: MEDIUM  
+**Affects**: LDBC IC3, complex analytical queries
+
+**Symptom**: WITH+MATCH patterns where the second MATCH has multiple relationship hops fail with "Expected GraphJoins as core plan" error.
+
+**Example (fails)**:
+```cypher
+MATCH (p:Person)-[:KNOWS*1..2]-(friend:Person)
+WITH friend
+MATCH (friend)<-[:HAS_CREATOR]-(post:Post)-[:POST_LOCATED_IN]->(country:Country)  // <-- 2 hops after WITH
+RETURN friend.id, count(post)
+```
+
+**Example (works)**:
+```cypher
+MATCH (p:Person)-[:KNOWS*1..2]-(friend:Person)  
+WITH friend
+MATCH (friend)<-[:HAS_CREATOR]-(post:Post)  // <-- 1 hop after WITH
+RETURN friend.id, count(post)
+```
+
+**Root Cause**: The CTE-based WITH+MATCH implementation currently handles single relationship hops after the WITH clause. Nested GraphRels (2+ hops after WITH) need more complex handling.
+
+**Workaround**: Break complex patterns into simpler queries using WITH clauses.
+
+---
+
+### 3. Anti-Join Pattern (NOT relationship) - NOT IMPLEMENTED
 
 **Status**: 🔴 Not Implemented  
 **Severity**: HIGH  
@@ -37,37 +67,9 @@ RETURN person1.id, person2.id, count(DISTINCT mutual) AS mutualFriendCount
 
 ---
 
-### 2. Undirected VLP with WITH Clause - BUG
-
-**Status**: 🔴 Active Bug  
-**Severity**: HIGH  
-**Affects**: LDBC IC-1 (original query)
-
-**Symptom**: Undirected variable-length path patterns combined with WITH clause generate malformed SQL. The UNION ALL for undirected patterns either:
-- Missing CTE definitions (references undefined `variable_path_...` tables)
-- Has syntax errors (`SETTINGS...UNION ALL` without separator)
-
-**Example (fails)**:
-```cypher
-MATCH (p:Person {id: 933})-[:KNOWS*1..3]-(friend:Person)
-WHERE friend.firstName = 'John' AND friend.id <> 933
-WITH friend, count(*) AS cnt
-RETURN friend.id AS friendId
-```
-
-**Root Cause**: When generating UNION ALL for undirected VLP, the CTE definitions are not properly included in both branches, or the SETTINGS clause runs into UNION ALL.
-
-**Workaround**: Use directed patterns:
-```cypher
--- ✅ Works: Directed VLP
-MATCH (p:Person {id: 933})-[:KNOWS*1..3]->(friend:Person)
-WHERE friend.firstName = 'John' AND friend.id <> 933
-RETURN friend.id AS friendId
-```
-
 ---
 
-### 3. CTE Column Aliasing for Mixed RETURN (WITH alias + node property)
+### 4. CTE Column Aliasing for Mixed RETURN (WITH alias + node property)
 
 **Status**: 🟡 Partial  
 **Severity**: MEDIUM
@@ -114,7 +116,28 @@ RETURN name, follows
 
 ---
 
-## Fixed Issues (December 9, 2025)
+## Fixed Issues (December 2025)
+
+### Undirected VLP with WITH Clause - FIXED
+
+**Status**: ✅ Fixed in commit (Dec 10, 2025)  
+**Previously Affected**: LDBC IC-1
+
+The issue with undirected variable-length path patterns combined with WITH clause and aggregation has been fixed. The SQL generator now correctly hoists CTE definitions from UNION branches to the outer query.
+
+**Example that now works**:
+```cypher
+MATCH (p:Person {id: 933})-[:KNOWS*1..3]-(friend:Person)
+WHERE friend.firstName = 'John' AND friend.id <> 933
+WITH friend, count(*) AS cnt
+RETURN friend.id AS friendId
+```
+
+**Technical Details**: Fixed in `plan_builder.rs`:
+1. When wrapping UNION branches with outer aggregation (GROUP BY), CTEs were being lost
+2. Added code to collect CTEs from all UNION branches using `flat_map()`
+3. CTEs are now included in the outer RenderPlan that wraps the UNION
+4. Both return paths (with and without aggregation) now preserve CTEs
 
 ### Two-Level Aggregation (WITH + RETURN) - FIXED
 
@@ -297,9 +320,9 @@ MATCH (a:User)-[r]->(b:User) RETURN r  -- ✅ Works
 
 | Query | Status | Issue |
 |-------|--------|-------|
-| ic1 | ❌ | Undirected VLP + WITH generates malformed SQL |
+| ic1 | ✅ | Fixed: Undirected VLP + WITH now generates correct CTE SQL |
 | ic2 | ✅ | |
-| ic3 | ✅ | |
+| ic3 | ❌ | WITH+MATCH with nested relationships (3+ hops after WITH) |
 | ic9 | ✅ | |
 
 ---

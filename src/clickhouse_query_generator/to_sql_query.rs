@@ -135,7 +135,7 @@ pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     let has_recursive_cte = plan.ctes.0.iter().any(|cte| cte.is_recursive);
     if has_recursive_cte {
         sql.push_str(&format!(
-            "\nSETTINGS max_recursive_cte_evaluation_depth = {}",
+            "\nSETTINGS max_recursive_cte_evaluation_depth = {}\n",
             max_cte_depth
         ));
     }
@@ -340,27 +340,33 @@ impl ToSql for Cte {
                 // CTEs should already be hoisted to the top level
                 let mut cte_body = String::new();
 
-                // If there are no explicit SELECT items, default to SELECT *
-                if plan.select.items.is_empty() {
-                    cte_body.push_str("SELECT *\n");
+                // Handle UNION plans - the union branches contain their own SELECTs
+                if plan.union.0.is_some() {
+                    // For Union plans, just emit the union branches directly
+                    cte_body.push_str(&plan.union.to_sql());
                 } else {
-                    cte_body.push_str(&plan.select.to_sql());
+                    // Standard single-query plan
+                    // If there are no explicit SELECT items, default to SELECT *
+                    if plan.select.items.is_empty() {
+                        cte_body.push_str("SELECT *\n");
+                    } else {
+                        cte_body.push_str(&plan.select.to_sql());
+                    }
+
+                    cte_body.push_str(&plan.from.to_sql());
+                    cte_body.push_str(&plan.joins.to_sql());
+                    cte_body.push_str(&plan.filters.to_sql());
+                    cte_body.push_str(&plan.group_by.to_sql());
+
+                    // Add HAVING clause if present (after GROUP BY)
+                    if let Some(having_expr) = &plan.having_clause {
+                        cte_body.push_str("HAVING ");
+                        cte_body.push_str(&having_expr.to_sql());
+                        cte_body.push('\n');
+                    }
+
+                    cte_body.push_str(&plan.order_by.to_sql());
                 }
-
-                cte_body.push_str(&plan.from.to_sql());
-                cte_body.push_str(&plan.joins.to_sql());
-                cte_body.push_str(&plan.filters.to_sql());
-                cte_body.push_str(&plan.group_by.to_sql());
-
-                // Add HAVING clause if present (after GROUP BY)
-                if let Some(having_expr) = &plan.having_clause {
-                    cte_body.push_str("HAVING ");
-                    cte_body.push_str(&having_expr.to_sql());
-                    cte_body.push('\n');
-                }
-
-                cte_body.push_str(&plan.order_by.to_sql());
-                cte_body.push_str(&plan.union.to_sql());
 
                 format!("{} AS ({})", self.cte_name, cte_body)
             }

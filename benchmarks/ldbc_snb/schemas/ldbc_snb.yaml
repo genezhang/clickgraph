@@ -198,8 +198,8 @@ graph_schema:
     - type: KNOWS
       database: ldbc
       table: Person_knows_Person
-      from_id: Person_id
-      to_id: Person_id_2
+      from_id: Person1Id
+      to_id: Person2Id
       from_node: Person
       to_node: Person
       property_mappings:
@@ -222,8 +222,8 @@ graph_schema:
     - type: HAS_INTEREST
       database: ldbc
       table: Person_hasInterest_Tag
-      from_id: Person_id
-      to_id: Tag_id
+      from_id: PersonId
+      to_id: TagId
       from_node: Person
       to_node: Tag
 
@@ -259,8 +259,8 @@ graph_schema:
     - type: LIKES_POST
       database: ldbc
       table: Person_likes_Post
-      from_id: Person_id
-      to_id: Post_id
+      from_id: PersonId
+      to_id: PostId
       from_node: Person
       to_node: Post
       property_mappings:
@@ -272,8 +272,8 @@ graph_schema:
     - type: LIKES_COMMENT
       database: ldbc
       table: Person_likes_Comment
-      from_id: Person_id
-      to_id: Comment_id
+      from_id: PersonId
+      to_id: CommentId
       from_node: Person
       to_node: Comment
       property_mappings:
@@ -298,8 +298,8 @@ graph_schema:
     - type: HAS_CREATOR
       database: ldbc
       table: Post_hasCreator_Person
-      from_id: Post_id
-      to_id: Person_id
+      from_id: PostId
+      to_id: PersonId
       from_node: Post
       to_node: Person
 
@@ -309,8 +309,8 @@ graph_schema:
     - type: COMMENT_HAS_CREATOR
       database: ldbc
       table: Comment_hasCreator_Person
-      from_id: Comment_id
-      to_id: Person_id
+      from_id: CommentId
+      to_id: PersonId
       from_node: Comment
       to_node: Person
 
@@ -331,8 +331,8 @@ graph_schema:
     - type: REPLY_OF_POST
       database: ldbc
       table: Comment_replyOf_Post
-      from_id: Comment_id
-      to_id: Post_id
+      from_id: CommentId
+      to_id: PostId
       from_node: Comment
       to_node: Post
 
@@ -342,8 +342,8 @@ graph_schema:
     - type: REPLY_OF_COMMENT
       database: ldbc
       table: Comment_replyOf_Comment
-      from_id: Comment_id
-      to_id: Comment_id_2
+      from_id: Comment1Id
+      to_id: Comment2Id
       from_node: Comment
       to_node: Comment
 
@@ -353,8 +353,8 @@ graph_schema:
     - type: CONTAINER_OF
       database: ldbc
       table: Forum_containerOf_Post
-      from_id: Forum_id
-      to_id: Post_id
+      from_id: ForumId
+      to_id: PostId
       from_node: Forum
       to_node: Post
 
@@ -364,8 +364,8 @@ graph_schema:
     - type: HAS_MODERATOR
       database: ldbc
       table: Forum_hasModerator_Person
-      from_id: Forum_id
-      to_id: Person_id
+      from_id: ForumId
+      to_id: PersonId
       from_node: Forum
       to_node: Person
 
@@ -375,8 +375,8 @@ graph_schema:
     - type: HAS_MEMBER
       database: ldbc
       table: Forum_hasMember_Person
-      from_id: Forum_id
-      to_id: Person_id
+      from_id: ForumId
+      to_id: PersonId
       from_node: Forum
       to_node: Person
       property_mappings:
@@ -388,8 +388,8 @@ graph_schema:
     - type: FORUM_HAS_TAG
       database: ldbc
       table: Forum_hasTag_Tag
-      from_id: Forum_id
-      to_id: Tag_id
+      from_id: ForumId
+      to_id: TagId
       from_node: Forum
       to_node: Tag
 
@@ -399,8 +399,8 @@ graph_schema:
     - type: POST_HAS_TAG
       database: ldbc
       table: Post_hasTag_Tag
-      from_id: Post_id
-      to_id: Tag_id
+      from_id: PostId
+      to_id: TagId
       from_node: Post
       to_node: Tag
 
@@ -410,8 +410,8 @@ graph_schema:
     - type: COMMENT_HAS_TAG
       database: ldbc
       table: Comment_hasTag_Tag
-      from_id: Comment_id
-      to_id: Tag_id
+      from_id: CommentId
+      to_id: TagId
       from_node: Comment
       to_node: Tag
 
@@ -467,6 +467,17 @@ graph_schema:
       table: Post_isLocatedIn_Place
       from_id: Post_id
       to_id: Place_id
+      from_node: Post
+      to_node: Country
+
+    # -------------------------------------------------------------------------
+    # Post POST_LOCATED_IN Country (for IC3 query)
+    # -------------------------------------------------------------------------
+    - type: POST_LOCATED_IN
+      database: ldbc
+      table: Post_isLocatedIn_Country
+      from_id: PostId
+      to_id: CountryId
       from_node: Post
       to_node: Country
 
