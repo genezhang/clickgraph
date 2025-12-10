@@ -1,0 +1,93 @@
+{
+  "scale_factor": "sf10",
+  "dataset": {
+    "persons": 67110,
+    "posts": 4162934,
+    "comments": 5009411,
+    "knows": 1754972
+  },
+  "total_queries": 13,
+  "passed": 13,
+  "pass_rate": "100%",
+  "total_time_sec": 4.26,
+  "results": [
+    {
+      "name": "bi-1a",
+      "status": "PASS",
+      "rows": 1,
+      "time_sec": 0.006
+    },
+    {
+      "name": "bi-1b",
+      "status": "PASS",
+      "rows": 1,
+      "time_sec": 0.004
+    },
+    {
+      "name": "bi-2a",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.347
+    },
+    {
+      "name": "bi-2b",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.261
+    },
+    {
+      "name": "bi-3",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.504
+    },
+    {
+      "name": "bi-4a",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.119
+    },
+    {
+      "name": "bi-4b",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.129
+    },
+    {
+      "name": "bi-6",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.419
+    },
+    {
+      "name": "bi-8",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.174
+    },
+    {
+      "name": "bi-9",
+      "status": "PASS",
+      "rows": 100,
+      "time_sec": 0.975
+    },
+    {
+      "name": "bi-11",
+      "status": "PASS",
+      "rows": 1,
+      "time_sec": 0.926
+    },
+    {
+      "name": "bi-12",
+      "status": "PASS",
+      "rows": 740,
+      "time_sec": 0.35
+    },
+    {
+      "name": "bi-18",
+      "status": "PASS",
+      "rows": 100,
+      "time_sec": 0.049
+    }
+  ]
+}

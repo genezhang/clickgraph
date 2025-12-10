@@ -4152,29 +4152,46 @@ impl RenderPlanBuilder for LogicalPlan {
                     // 2. Wildcards (like `a.*`)
                     // 3. References to WITH projection aliases that aren't in the inner projection
 
-                    // Collect all WITH projection aliases from the inner Projection
+                    // Collect all WITH projection aliases AND table aliases from the inner Projection
                     // Handle GraphJoins wrapper by looking inside it
-                    let with_aliases: std::collections::HashSet<String> = {
-                        // Helper to extract WITH aliases from Projection(With)
-                        fn extract_with_aliases(plan: &LogicalPlan) -> std::collections::HashSet<String> {
+                    let (with_aliases, with_table_aliases): (std::collections::HashSet<String>, std::collections::HashSet<String>) = {
+                        // Helper to extract WITH aliases and table aliases from Projection(With)
+                        fn extract_with_aliases_and_tables(plan: &LogicalPlan) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
                             match plan {
                                 LogicalPlan::Projection(proj) => {
-                                    proj.items
-                                        .iter()
-                                        .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
-                                        .collect()
+                                    let mut aliases = std::collections::HashSet::new();
+                                    let mut table_aliases = std::collections::HashSet::new();
+                                    
+                                    for item in &proj.items {
+                                        // Collect explicit aliases (like `count(post) AS messageCount`)
+                                        if let Some(alias) = &item.col_alias {
+                                            aliases.insert(alias.0.clone());
+                                        }
+                                        // Collect table aliases from pass-through expressions (like `WITH person, ...`)
+                                        match &item.expression {
+                                            crate::query_planner::logical_expr::LogicalExpr::TableAlias(ta) => {
+                                                table_aliases.insert(ta.0.clone());
+                                            }
+                                            crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) => {
+                                                table_aliases.insert(pa.table_alias.0.clone());
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    (aliases, table_aliases)
                                 }
                                 LogicalPlan::GraphJoins(graph_joins) => {
                                     // Look inside GraphJoins for the Projection
-                                    extract_with_aliases(&graph_joins.input)
+                                    extract_with_aliases_and_tables(&graph_joins.input)
                                 }
-                                _ => std::collections::HashSet::new(),
+                                _ => (std::collections::HashSet::new(), std::collections::HashSet::new()),
                             }
                         }
-                        extract_with_aliases(group_by.input.as_ref())
+                        extract_with_aliases_and_tables(group_by.input.as_ref())
                     };
                     
                     crate::debug_println!("DEBUG: WITH aliases found: {:?}", with_aliases);
+                    crate::debug_println!("DEBUG: WITH table aliases found: {:?}", with_table_aliases);
 
                     // CTE is always needed when there are WITH aliases (aggregates)
                     // because the outer query needs to reference them from the CTE
@@ -4388,8 +4405,8 @@ impl RenderPlanBuilder for LogicalPlan {
                         };
 
                         // Build outer SELECT items from outer_proj
-                        // Need to rewrite references to WITH aliases to pull from the CTE
-                        // Also track if ALL RETURN items reference WITH aliases
+                        // Need to rewrite references to WITH aliases AND table aliases to pull from the CTE
+                        // Also track if ALL RETURN items reference WITH aliases or table aliases
                         let mut all_items_from_with = true;
                         let outer_select_items = outer_proj
                             .items
@@ -4397,21 +4414,34 @@ impl RenderPlanBuilder for LogicalPlan {
                             .map(|item| {
                                 let expr: RenderExpr = item.expression.clone().try_into()?;
 
-                                // Recursively rewrite TableAlias/ColumnAlias references that are WITH aliases
+                                // Step 1: Rewrite TableAlias/ColumnAlias references that are WITH aliases
                                 // This handles cases like AVG(follows) -> AVG(grouped_data.follows)
-                                let (rewritten_expr, from_with) = 
+                                let (rewritten_expr, from_with_alias) = 
                                     super::plan_builder_helpers::rewrite_with_aliases_to_cte(
                                         expr, 
                                         &with_aliases, 
                                         &cte_name
                                     );
                                 
-                                if !from_with {
+                                // Step 2: Also rewrite table alias references (like person.id) to CTE references
+                                // This handles cases like `WITH person, ...` -> person.id becomes grouped_data."person.id"
+                                let final_expr = super::plan_builder_helpers::rewrite_table_aliases_to_cte(
+                                    rewritten_expr,
+                                    &with_table_aliases,
+                                    &cte_name,
+                                );
+                                
+                                // Check if the original expression referenced a table alias from WITH
+                                let from_table_alias = matches!(&item.expression,
+                                    crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) 
+                                        if with_table_aliases.contains(&pa.table_alias.0));
+                                
+                                if !from_with_alias && !from_table_alias {
                                     all_items_from_with = false;
                                 }
 
                                 Ok(super::SelectItem {
-                                    expression: rewritten_expr,
+                                    expression: final_expr,
                                     col_alias: item.col_alias.as_ref().map(|alias| {
                                         super::render_expr::ColumnAlias(alias.0.clone())
                                     }),
@@ -4443,8 +4473,14 @@ impl RenderPlanBuilder for LogicalPlan {
                                                 &with_aliases, 
                                                 &cte_name
                                             );
+                                        // Also rewrite table alias references
+                                        let final_expr = super::plan_builder_helpers::rewrite_table_aliases_to_cte(
+                                            rewritten_expr,
+                                            &with_table_aliases,
+                                            &cte_name,
+                                        );
                                         Ok(super::OrderByItem {
-                                            expression: rewritten_expr,
+                                            expression: final_expr,
                                             order: match item.order {
                                                 crate::query_planner::logical_plan::OrderByOrder::Asc => super::OrderByOrder::Asc,
                                                 crate::query_planner::logical_plan::OrderByOrder::Desc => super::OrderByOrder::Desc,
@@ -4538,9 +4574,15 @@ impl RenderPlanBuilder for LogicalPlan {
                                             &with_aliases, 
                                             &cte_name
                                         );
+                                    // Also rewrite table alias references
+                                    let final_expr = super::plan_builder_helpers::rewrite_table_aliases_to_cte(
+                                        rewritten_expr,
+                                        &with_table_aliases,
+                                        &cte_name,
+                                    );
 
                                     Ok(super::OrderByItem {
-                                        expression: rewritten_expr,
+                                        expression: final_expr,
                                         order: match item.order {
                                             crate::query_planner::logical_plan::OrderByOrder::Asc => super::OrderByOrder::Asc,
                                             crate::query_planner::logical_plan::OrderByOrder::Desc => super::OrderByOrder::Desc,

@@ -1,0 +1,95 @@
+{
+  "benchmark": "LDBC SNB Interactive",
+  "scale_factor": "sf10",
+  "test_person_id": 26053,
+  "total_queries": 15,
+  "passed": 9,
+  "total_time_ms": 1377.9,
+  "avg_time_ms": 91.9,
+  "results": [
+    {
+      "name": "IS1-profile",
+      "status": "FAIL",
+      "error": "Brahmand Error: AnalyzerError: Invalid relation qu"
+    },
+    {
+      "name": "IS2-messages",
+      "status": "PASS",
+      "rows": 10,
+      "time_ms": 64.1
+    },
+    {
+      "name": "IS3-friends",
+      "status": "PASS",
+      "rows": 20,
+      "time_ms": 16.0
+    },
+    {
+      "name": "IS5-forums",
+      "status": "PASS",
+      "rows": 1,
+      "time_ms": 22.2
+    },
+    {
+      "name": "IC2-friend-posts",
+      "status": "PASS",
+      "rows": 20,
+      "time_ms": 385.8
+    },
+    {
+      "name": "IC3-fof-locations",
+      "status": "FAIL",
+      "error": "Brahmand Error: AnalyzerError: Invalid relation qu"
+    },
+    {
+      "name": "IC5-friend-forums",
+      "status": "PASS",
+      "rows": 10,
+      "time_ms": 379.2
+    },
+    {
+      "name": "IC6-friend-tags",
+      "status": "PASS",
+      "rows": 10,
+      "time_ms": 48.6
+    },
+    {
+      "name": "IC7-post-likes",
+      "status": "PASS",
+      "rows": 3,
+      "time_ms": 166.7
+    },
+    {
+      "name": "IC8-post-comments",
+      "status": "PASS",
+      "rows": 5,
+      "time_ms": 264.9
+    },
+    {
+      "name": "IC10-fof-birthday",
+      "status": "FAIL",
+      "error": "Clickhouse Error: bad response: {\"exception\": \"Cod"
+    },
+    {
+      "name": "IC11-friend-work",
+      "status": "FAIL",
+      "error": "Brahmand Error: AnalyzerError: Invalid relation qu"
+    },
+    {
+      "name": "IC12-friend-study",
+      "status": "FAIL",
+      "error": "Brahmand Error: AnalyzerError: Invalid relation qu"
+    },
+    {
+      "name": "agg-friend-count",
+      "status": "PASS",
+      "rows": 1,
+      "time_ms": 11.2
+    },
+    {
+      "name": "agg-fof-count",
+      "status": "FAIL",
+      "error": "Clickhouse Error: bad response: {\"exception\": \"Cod"
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "benchmark": "LDBC SNB BI",
+  "scale_factor": "sf10",
+  "clickgraph_version": "0.5.5",
+  "dataset": {
+    "persons": 67110,
+    "posts": 4162934,
+    "comments": 5009411,
+    "forums": 645389,
+    "knows_edges": 1754972
+  },
+  "total_queries": 15,
+  "passed": 15,
+  "pass_rate": "100%",
+  "total_time_sec": 55.6,
+  "results": [
+    {
+      "name": "bi-1a",
+      "status": "PASS",
+      "rows": 1,
+      "time_sec": 0.006
+    },
+    {
+      "name": "bi-1b",
+      "status": "PASS",
+      "rows": 1,
+      "time_sec": 0.004
+    },
+    {
+      "name": "bi-2a",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.283
+    },
+    {
+      "name": "bi-2b",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.289
+    },
+    {
+      "name": "bi-3",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.701
+    },
+    {
+      "name": "bi-4a",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.101
+    },
+    {
+      "name": "bi-4b",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.152
+    },
+    {
+      "name": "bi-5",
+      "status": "PASS",
+      "rows": 4162934,
+      "time_sec": 49.747
+    },
+    {
+      "name": "bi-6",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.623
+    },
+    {
+      "name": "bi-7",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 1.424
+    },
+    {
+      "name": "bi-8",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.155
+    },
+    {
+      "name": "bi-9",
+      "status": "PASS",
+      "rows": 100,
+      "time_sec": 0.82
+    },
+    {
+      "name": "bi-11",
+      "status": "PASS",
+      "rows": 1,
+      "time_sec": 0.914
+    },
+    {
+      "name": "bi-12",
+      "status": "PASS",
+      "rows": 740,
+      "time_sec": 0.295
+    },
+    {
+      "name": "bi-18",
+      "status": "PASS",
+      "rows": 100,
+      "time_sec": 0.043
+    }
+  ]
+}

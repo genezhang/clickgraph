@@ -1,0 +1,127 @@
+{
+  "benchmark": "LDBC SNB BI Complete",
+  "scale_factor": "sf10",
+  "total_queries": 20,
+  "passed": 16,
+  "skipped": 3,
+  "failed": 1,
+  "results": [
+    {
+      "name": "bi-1",
+      "status": "PASS",
+      "rows": 1,
+      "time_sec": 0.01
+    },
+    {
+      "name": "bi-2",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.41
+    },
+    {
+      "name": "bi-3-simplified",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.69
+    },
+    {
+      "name": "bi-4",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.17
+    },
+    {
+      "name": "bi-5",
+      "status": "PASS",
+      "rows": 4162934,
+      "time_sec": 43.4
+    },
+    {
+      "name": "bi-6",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 2.56
+    },
+    {
+      "name": "bi-7",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 1.56
+    },
+    {
+      "name": "bi-8",
+      "status": "PASS",
+      "rows": 100,
+      "time_sec": 0.37
+    },
+    {
+      "name": "bi-9",
+      "status": "PASS",
+      "rows": 100,
+      "time_sec": 0.83
+    },
+    {
+      "name": "bi-10",
+      "status": "PASS",
+      "rows": 100,
+      "time_sec": 0.25
+    },
+    {
+      "name": "bi-11",
+      "status": "PASS",
+      "rows": 1,
+      "time_sec": 0.95
+    },
+    {
+      "name": "bi-12",
+      "status": "PASS",
+      "rows": 740,
+      "time_sec": 0.33
+    },
+    {
+      "name": "bi-13-simplified",
+      "status": "FAIL",
+      "error": "Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB:",
+      "time_sec": 0.01
+    },
+    {
+      "name": "bi-14-skip",
+      "status": "SKIPPED",
+      "reason": "SKIP - requires IS_LOCATED_IN (schema mismatch)"
+    },
+    {
+      "name": "bi-15-simplified",
+      "status": "PASS",
+      "rows": 0,
+      "time_sec": 0.02
+    },
+    {
+      "name": "bi-16",
+      "status": "PASS",
+      "rows": 0,
+      "time_sec": 0.33
+    },
+    {
+      "name": "bi-17",
+      "status": "PASS",
+      "rows": 20,
+      "time_sec": 0.45
+    },
+    {
+      "name": "bi-18",
+      "status": "PASS",
+      "rows": 100,
+      "time_sec": 0.06
+    },
+    {
+      "name": "bi-19-skip",
+      "status": "SKIPPED",
+      "reason": "SKIP - requires IS_LOCATED_IN (schema mismatch)"
+    },
+    {
+      "name": "bi-20-skip",
+      "status": "SKIPPED",
+      "reason": "SKIP - requires WORK_AT (schema mismatch)"
+    }
+  ]
+}

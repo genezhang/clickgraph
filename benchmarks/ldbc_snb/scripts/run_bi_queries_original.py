@@ -141,9 +141,10 @@ BI_QUERIES_ORIGINAL = {
         LIMIT 20
     """,
     
-    # BI-10: Experts in Social Circle
+    # BI-10: Experts in Social Circle (parameterized - starts from specific person)
+    # NOTE: Original query without WHERE is too expensive on sf10 (scans all 1.7M KNOWS)
     "bi-10": """
-        MATCH (person:Person)-[:KNOWS*1..2]->(expert:Person)
+        MATCH (person:Person {id: 14})-[:KNOWS*1..2]->(expert:Person)
         MATCH (expert)<-[:HAS_CREATOR]-(post:Post)
         RETURN DISTINCT expert.id AS expertId, expert.firstName AS firstName,
                count(post) AS postCount

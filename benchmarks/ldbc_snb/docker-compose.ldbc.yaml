@@ -13,6 +13,7 @@ services:
     volumes:
       - ldbc_clickhouse_data:/var/lib/clickhouse
       - ./schemas/clickhouse_ddl.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./data:/data:ro
     environment:
       - CLICKHOUSE_DB=ldbc
       - CLICKHOUSE_USER=default
