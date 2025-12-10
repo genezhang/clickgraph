@@ -1,10 +1,116 @@
 # Known Issues
 
-**Active Issues**: 1  
+**Active Issues**: 4  
 **Last Updated**: December 9, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
+
+---
+
+## Active Issues
+
+### 1. Anti-Join Pattern (NOT relationship) - NOT IMPLEMENTED
+
+**Status**: 🔴 Not Implemented  
+**Severity**: HIGH  
+**Affects**: LDBC BI-18 (original query)
+
+**Symptom**: Queries using `NOT (a)-[:REL]-(b)` to exclude relationships fail with parsing or generation errors.
+
+**Example (fails)**:
+```cypher
+MATCH (person1:Person)-[:KNOWS]-(mutual:Person)-[:KNOWS]-(person2:Person)
+WHERE person1.id <> person2.id AND NOT (person1)-[:KNOWS]-(person2)
+RETURN person1.id, person2.id, count(DISTINCT mutual) AS mutualFriendCount
+```
+
+**Root Cause**: Anti-join patterns require generating `NOT EXISTS` or `LEFT JOIN ... WHERE ... IS NULL` SQL, which is not yet implemented.
+
+**Workaround**: Use directed patterns without the NOT clause:
+```cypher
+-- ✅ Works: Directed pattern, no anti-join
+MATCH (person1:Person)-[:KNOWS]->(mutual:Person)-[:KNOWS]->(person2:Person)
+WHERE person1.id <> person2.id
+RETURN person1.id, person2.id, count(DISTINCT mutual) AS mutualFriendCount
+```
+
+---
+
+### 2. Undirected VLP with WITH Clause - BUG
+
+**Status**: 🔴 Active Bug  
+**Severity**: HIGH  
+**Affects**: LDBC IC-1 (original query)
+
+**Symptom**: Undirected variable-length path patterns combined with WITH clause generate malformed SQL. The UNION ALL for undirected patterns either:
+- Missing CTE definitions (references undefined `variable_path_...` tables)
+- Has syntax errors (`SETTINGS...UNION ALL` without separator)
+
+**Example (fails)**:
+```cypher
+MATCH (p:Person {id: 933})-[:KNOWS*1..3]-(friend:Person)
+WHERE friend.firstName = 'John' AND friend.id <> 933
+WITH friend, count(*) AS cnt
+RETURN friend.id AS friendId
+```
+
+**Root Cause**: When generating UNION ALL for undirected VLP, the CTE definitions are not properly included in both branches, or the SETTINGS clause runs into UNION ALL.
+
+**Workaround**: Use directed patterns:
+```cypher
+-- ✅ Works: Directed VLP
+MATCH (p:Person {id: 933})-[:KNOWS*1..3]->(friend:Person)
+WHERE friend.firstName = 'John' AND friend.id <> 933
+RETURN friend.id AS friendId
+```
+
+---
+
+### 3. CTE Column Aliasing for Mixed RETURN (WITH alias + node property)
+
+**Status**: 🟡 Partial  
+**Severity**: MEDIUM
+
+**Symptom**: When RETURN references both WITH aliases AND node properties, the JOIN condition may use incorrect column names.
+
+**Example**:
+```cypher
+MATCH (a:User)-[:FOLLOWS]->(b:User)
+WITH a, COUNT(b) as follows
+WHERE follows > 1
+RETURN a.name, follows
+ORDER BY a.name
+```
+
+**Root Cause**: CTE column aliases include the table prefix (e.g., `"a.age"`) but the outer query JOIN tries to reference `grouped_data.age` (without prefix).
+
+**Workaround**: Ensure RETURN only references WITH clause output:
+```cypher
+-- ✅ Works: RETURN only references WITH output
+MATCH (a:User)-[:FOLLOWS]->(b:User)
+WITH a.name as name, COUNT(b) as follows
+WHERE follows > 1
+RETURN name, follows
+```
+
+---
+
+### 4. Anonymous Nodes Without Labels (Partial Support)
+
+**Status**: 🟡 Partial Support  
+**Severity**: LOW
+
+**What Works** ✅:
+- Label inference from relationship type: `()-[r:FLIGHT]->()` infers Airport
+- Relationship type inference from typed nodes: `(a:Airport)-[r]->()` infers r:FLIGHT  
+- Single-schema inference: `()-[r]->()` when only one relationship defined
+
+**Limitations**:
+- `MATCH (n)` with multiple node types requires explicit label
+- Safety limit: max 4 types inferred before requiring explicit specification
+
+**Workaround**: Specify at least one label when multiple types exist.
 
 ---
 
@@ -143,33 +249,58 @@ MATCH (a:User)-[r]->(b:User) RETURN r  -- ✅ Works
 
 ---
 
-## LDBC SNB BI Benchmark Status
+## LDBC SNB Benchmark Status
 
-**Passing**: 26/26 queries (100%)
+### BI Queries (Business Intelligence)
+
+**Original Queries**: 25/26 (96.2%)  
+**Workaround Queries**: 26/26 (100%)
+
+| Query | Original | Workaround | Issue |
+|-------|----------|------------|-------|
+| bi-1a | ✅ | ✅ | |
+| bi-1b | ✅ | ✅ | |
+| bi-2a | ✅ | ✅ | |
+| bi-2b | ✅ | ✅ | |
+| bi-3 | ✅ | ✅ | |
+| bi-4a | ✅ | ✅ | |
+| bi-4b | ✅ | ✅ | |
+| bi-5 | ✅ | ✅ | |
+| bi-6 | ✅ | ✅ | |
+| bi-7 | ✅ | ✅ | |
+| bi-8 | ✅ | ✅ | |
+| bi-9 | ✅ | ✅ | |
+| bi-10 | ✅ | ✅ | |
+| bi-11 | ✅ | ✅ | |
+| bi-12 | ✅ | ✅ | |
+| bi-14 | ✅ | ✅ | |
+| bi-18 | ❌ | ✅ | Anti-join pattern `NOT (a)-[:KNOWS]-(b)` not supported |
+| agg-* | ✅ | ✅ | All 6 aggregation queries |
+| geo-dist | ✅ | ✅ | |
+| forum-activity | ✅ | ✅ | |
+| tag-class | ✅ | ✅ | |
+
+### Interactive Short (IS) Queries
+
+**Status**: 4/4 (100%)
 
 | Query | Status | Notes |
 |-------|--------|-------|
-| bi-1a | ✅ | |
-| bi-1b | ✅ | |
-| bi-2a | ✅ | |
-| bi-2b | ✅ | |
-| bi-3 | ✅ | |
-| bi-4a | ✅ | |
-| bi-4b | ✅ | |
-| bi-5 | ✅ | |
-| bi-6 | ✅ | Fixed: OPTIONAL MATCH anchor detection |
-| bi-7 | ✅ | |
-| bi-8 | ✅ | |
-| bi-9 | ✅ | Fixed: OPTIONAL MATCH anchor detection |
-| bi-10 | ✅ | |
-| bi-11 | ✅ | |
-| bi-12 | ✅ | Fixed: Two-level aggregation (WITH + RETURN) |
-| bi-14 | ✅ | Fixed: Undirected pattern join ordering |
-| bi-18 | ✅ | Fixed: Multi-hop pattern join ordering |
-| agg-* | ✅ | All 6 aggregation queries pass |
-| geo-dist | ✅ | |
-| forum-activity | ✅ | |
-| tag-class | ✅ | |
+| is1 | ✅ | Person lookup |
+| is2 | ✅ | Recent messages |
+| is3 | ✅ | Friends |
+| is5 | ✅ | Creator of message |
+
+### Interactive Complex (IC) Queries
+
+**Original Queries**: 3/4 (75%)
+
+| Query | Status | Issue |
+|-------|--------|-------|
+| ic1 | ❌ | Undirected VLP + WITH generates malformed SQL |
+| ic2 | ✅ | |
+| ic3 | ✅ | |
+| ic9 | ✅ | |
 
 ---
 
@@ -180,5 +311,7 @@ MATCH (a:User)-[r]->(b:User) RETURN r  -- ✅ Works
 | Unit Tests | 621 | 621 | 100% |
 | Integration (social_benchmark) | 391 | 391 | 100% |
 | Integration (security_graph) | 391 | 391 | 100% |
-| LDBC BI Queries | 26 | 26 | 100% |
-| **Total** | **1,429** | **1,429** | **100%** |
+| LDBC BI (workaround) | 26 | 26 | 100% |
+| LDBC BI (original) | 25 | 26 | 96.2% |
+| LDBC IS | 4 | 4 | 100% |
+| LDBC IC (original) | 3 | 4 | 75% |
