@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 4  
-**Last Updated**: December 10, 2025
+**Active Issues**: 5  
+**Last Updated**: December 11, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -10,7 +10,58 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Active Issues
 
-### 1. WITH+MATCH with Aggregation on Second MATCH Variables (LDBC IC-3)
+### 1. WITH Aggregation (count, collect, etc.) - INCOMPLETE
+
+**Status**: 🟡 Partial Implementation  
+**Severity**: MEDIUM  
+**Affects**: Queries using aggregation in WITH clause items
+
+**Symptom**: `WITH count(x) AS cnt` generates CTE with raw columns instead of performing aggregation.
+
+**Example (fails)**:
+```cypher
+MATCH (p:Person)-[:KNOWS]-(friend:Person)
+WITH count(friend) as cnt
+RETURN cnt
+```
+
+**Current Behavior**: CTE selects all columns, then tries to use `cnt` as table alias.
+
+**Expected Behavior**: CTE should perform `SELECT count(*) as cnt FROM ...`.
+
+**Workaround**: Use aggregation in RETURN clause instead:
+```cypher
+MATCH (p:Person)-[:KNOWS]-(friend:Person)
+RETURN count(friend) as cnt
+```
+
+---
+
+### 2. WITH Expression Aliases - INCOMPLETE
+
+**Status**: 🟡 Partial Implementation  
+**Severity**: MEDIUM  
+**Affects**: Queries aliasing expressions in WITH clause
+
+**Symptom**: `WITH x.prop AS alias` generates CTE with raw columns instead of projected alias.
+
+**Example (fails)**:
+```cypher
+MATCH (p:Person)-[:KNOWS]-(friend:Person)
+WITH friend.firstName AS name
+RETURN name
+```
+
+**Workaround**: Keep the full reference through:
+```cypher
+MATCH (p:Person)-[:KNOWS]-(friend:Person)
+WITH friend
+RETURN friend.firstName AS name
+```
+
+---
+
+### 5. WITH+MATCH with Aggregation on Second MATCH Variables (LDBC IC-3)
 
 **Status**: 🟡 Partial Implementation  
 **Severity**: MEDIUM  
@@ -40,7 +91,7 @@ RETURN friend.id, post.id, post.content  // <-- no aggregation, just projections
 
 ---
 
-### 2. Anti-Join Pattern (NOT relationship) - NOT IMPLEMENTED
+### 6. Anti-Join Pattern (NOT relationship) - NOT IMPLEMENTED
 
 **Status**: 🔴 Not Implemented  
 **Severity**: HIGH  
@@ -69,7 +120,7 @@ RETURN person1.id, person2.id, count(DISTINCT mutual) AS mutualFriendCount
 
 ---
 
-### 4. CTE Column Aliasing for Mixed RETURN (WITH alias + node property)
+### 6. CTE Column Aliasing for Mixed RETURN (WITH alias + node property)
 
 **Status**: 🟡 Partial  
 **Severity**: MEDIUM
@@ -98,7 +149,7 @@ RETURN name, follows
 
 ---
 
-### 4. Anonymous Nodes Without Labels (Partial Support)
+### 6. Anonymous Nodes Without Labels (Partial Support)
 
 **Status**: 🟡 Partial Support  
 **Severity**: LOW
