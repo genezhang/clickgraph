@@ -57,6 +57,7 @@ impl AnalyzerPass for FilterTagging {
             LogicalPlan::PageRank(_) => "PageRank",
             LogicalPlan::Unwind(_) => "Unwind",
             LogicalPlan::CartesianProduct(_) => "CartesianProduct",
+            LogicalPlan::WithClause(_) => "WithClause",
         };
         println!("FilterTagging: About to match on variant: {}", variant_name);
         Ok(match logical_plan.as_ref() {
@@ -132,6 +133,8 @@ impl AnalyzerPass for FilterTagging {
                                     input: group_by.input.clone(),
                                     expressions: group_by.expressions.clone(),
                                     having_clause: Some(mapped_predicate.clone()),
+                                    is_materialization_boundary: group_by.is_materialization_boundary,
+                                    exposed_alias: group_by.exposed_alias.clone(),
                                 });
                                 return Ok(Transformed::Yes(Arc::new(new_group_by)));
                             } else if Self::has_cartesian_product_descendant(plan.as_ref()) {
@@ -315,6 +318,25 @@ impl AnalyzerPass for FilterTagging {
                             join_condition: cp.join_condition.clone(),
                         },
                     ))),
+                }
+            }
+            LogicalPlan::WithClause(with_clause) => {
+                let child_tf = self.analyze_with_graph_schema(with_clause.input.clone(), plan_ctx, graph_schema)?;
+                match child_tf {
+                    Transformed::Yes(new_input) => {
+                        let new_with = crate::query_planner::logical_plan::WithClause {
+                            input: new_input,
+                            items: with_clause.items.clone(),
+                            distinct: with_clause.distinct,
+                            order_by: with_clause.order_by.clone(),
+                            skip: with_clause.skip,
+                            limit: with_clause.limit,
+                            where_clause: with_clause.where_clause.clone(),
+                            exported_aliases: with_clause.exported_aliases.clone(),
+                        };
+                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
         })

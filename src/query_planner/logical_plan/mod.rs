@@ -173,6 +173,11 @@ pub enum LogicalPlan {
     /// Cartesian product (CROSS JOIN) of two disconnected patterns
     /// Used when WITH...MATCH or OPTIONAL MATCH patterns don't share aliases
     CartesianProduct(CartesianProduct),
+
+    /// WITH clause - creates a scope/materialization boundary between query segments.
+    /// This is NOT just a projection - it has bridging semantics and contains
+    /// ORDER BY, SKIP, LIMIT, WHERE as part of its syntax (per OpenCypher grammar).
+    WithClause(WithClause),
 }
 
 /// Cartesian product of two disconnected graph patterns.
@@ -198,6 +203,141 @@ pub struct CartesianProduct {
     pub join_condition: Option<LogicalExpr>,
 }
 
+/// WITH clause as defined in OpenCypher grammar.
+/// Creates a materialization/scope boundary between query segments.
+///
+/// OpenCypher syntax:
+/// ```text
+/// WITH [DISTINCT] <return items> [ORDER BY ...] [SKIP n] [LIMIT m] [WHERE ...]
+/// ```
+///
+/// Key semantics:
+/// - **Boundary**: Analyzers (like BidirectionalUnion) should NOT cross this boundary
+/// - **Scope**: Only `exported_aliases` are visible to downstream clauses
+/// - **Materialization**: Maps to SQL CTE in rendering
+///
+/// This is fundamentally different from Projection (RETURN):
+/// - WITH has ORDER BY, SKIP, LIMIT, WHERE as part of its syntax
+/// - WITH bridges to continuation (next MATCH/RETURN)
+/// - WITH creates scope isolation
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct WithClause {
+    /// The query segment BEFORE this WITH (input to be projected/filtered)
+    #[serde(with = "serde_arc")]
+    pub input: Arc<LogicalPlan>,
+
+    /// The projection items (what WITH exports)
+    pub items: Vec<ProjectionItem>,
+
+    /// DISTINCT modifier (WITH DISTINCT ...)
+    pub distinct: bool,
+
+    /// ORDER BY clause - part of WITH syntax, not a separate node
+    /// Applied to intermediate result before passing to continuation
+    pub order_by: Option<Vec<OrderByItem>>,
+
+    /// SKIP clause - part of WITH syntax
+    pub skip: Option<u64>,
+
+    /// LIMIT clause - part of WITH syntax
+    pub limit: Option<u64>,
+
+    /// WHERE clause after WITH - filters the intermediate result
+    /// This is different from WHERE after MATCH (which filters the pattern)
+    pub where_clause: Option<LogicalExpr>,
+
+    /// Exported aliases - what's visible to downstream clauses.
+    /// Derived from items but stored explicitly for easy boundary checking.
+    /// E.g., `WITH a, b.name AS name` exports ["a", "name"]
+    pub exported_aliases: Vec<String>,
+}
+
+impl WithClause {
+    /// Create a new WithClause with just the essential fields
+    pub fn new(input: Arc<LogicalPlan>, items: Vec<ProjectionItem>) -> Self {
+        let exported_aliases = Self::extract_exported_aliases(&items);
+        Self {
+            input,
+            items,
+            distinct: false,
+            order_by: None,
+            skip: None,
+            limit: None,
+            where_clause: None,
+            exported_aliases,
+        }
+    }
+
+    /// Create a WithClause with DISTINCT
+    pub fn with_distinct(mut self, distinct: bool) -> Self {
+        self.distinct = distinct;
+        self
+    }
+
+    /// Add ORDER BY to the WithClause
+    pub fn with_order_by(mut self, order_by: Vec<OrderByItem>) -> Self {
+        self.order_by = Some(order_by);
+        self
+    }
+
+    /// Add SKIP to the WithClause
+    pub fn with_skip(mut self, skip: u64) -> Self {
+        self.skip = Some(skip);
+        self
+    }
+
+    /// Add LIMIT to the WithClause
+    pub fn with_limit(mut self, limit: u64) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Add WHERE clause to the WithClause
+    pub fn with_where(mut self, predicate: LogicalExpr) -> Self {
+        self.where_clause = Some(predicate);
+        self
+    }
+
+    /// Extract exported alias names from projection items
+    fn extract_exported_aliases(items: &[ProjectionItem]) -> Vec<String> {
+        items
+            .iter()
+            .filter_map(|item| {
+                // First check for explicit alias (e.g., `b.name AS name`)
+                if let Some(ref alias) = item.col_alias {
+                    return Some(alias.0.clone()); // ColumnAlias is a tuple struct
+                }
+                // Otherwise try to extract from expression
+                Self::extract_alias_from_expr(&item.expression)
+            })
+            .collect()
+    }
+
+    /// Extract alias from a LogicalExpr, handling nested expressions like DISTINCT
+    fn extract_alias_from_expr(expr: &LogicalExpr) -> Option<String> {
+        match expr {
+            LogicalExpr::TableAlias(ta) => Some(ta.0.clone()),
+            LogicalExpr::PropertyAccessExp(pa) => Some(pa.table_alias.0.clone()),
+            LogicalExpr::Column(col) => Some(col.0.clone()),
+            // Handle DISTINCT wrapping: DISTINCT friend -> friend
+            LogicalExpr::OperatorApplicationExp(op_app) => {
+                if op_app.operator == crate::query_planner::logical_expr::Operator::Distinct {
+                    // DISTINCT wraps a single operand - extract from it
+                    op_app.operands.first().and_then(|inner| Self::extract_alias_from_expr(inner))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Check if a given alias is exported by this WITH clause
+    pub fn exports_alias(&self, alias: &str) -> bool {
+        self.exported_aliases.iter().any(|a| a == alias)
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Scan {
     pub table_alias: Option<String>,
@@ -218,17 +358,40 @@ pub struct GraphNode {
     pub is_denormalized: bool,
 }
 
+/// Represents a relationship pattern in a graph query.
+/// 
+/// # IMPORTANT: Left/Right Convention
+/// 
+/// The `left` and `right` fields follow a **normalized source/target convention**:
+/// - `left` is ALWAYS the **source** node (connects to relationship's `from_id`)
+/// - `right` is ALWAYS the **target** node (connects to relationship's `to_id`)
+/// 
+/// This normalization happens during parsing based on the arrow direction:
+/// - For `(a)-[:R]->(b)` (Outgoing): left=a (source), right=b (target)
+/// - For `(a)<-[:R]-(b)` (Incoming): left=b (source), right=a (target) ← nodes are SWAPPED!
+/// 
+/// The `direction` field records the original syntactic direction, but for JOIN
+/// generation, always use:
+/// - `left_connection` connects to `from_id`
+/// - `right_connection` connects to `to_id`
+/// 
+/// Do NOT use direction-based branching for from_id/to_id selection in JOIN logic!
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct GraphRel {
+    /// Source node (connects to relationship's from_id)
     #[serde(with = "serde_arc")]
     pub left: Arc<LogicalPlan>,
     #[serde(with = "serde_arc")]
     pub center: Arc<LogicalPlan>,
+    /// Target node (connects to relationship's to_id)
     #[serde(with = "serde_arc")]
     pub right: Arc<LogicalPlan>,
     pub alias: String,
+    /// Original syntactic direction (for display/debug only, not for JOIN logic)
     pub direction: Direction,
+    /// Alias of source node (connects to from_id)
     pub left_connection: String,
+    /// Alias of target node (connects to to_id)
     pub right_connection: String,
     pub is_rel_anchor: bool,
     pub variable_length: Option<VariableLengthSpec>,
@@ -448,6 +611,16 @@ pub struct GroupBy {
     /// HAVING clause for post-aggregation filtering
     /// Filters that reference projection aliases (aggregation results) go here
     pub having_clause: Option<LogicalExpr>,
+    /// Whether this GroupBy forms a materialization boundary (must become CTE/subquery).
+    /// Set to true when:
+    /// - This is a WITH clause with aggregation followed by another MATCH
+    /// - GraphJoinInference should NOT merge joins across this boundary
+    #[serde(default)]
+    pub is_materialization_boundary: bool,
+    /// The alias exposed by this boundary (e.g., "f" in `WITH f, count(*) AS cnt`)
+    /// Used for scoping: outer query references this alias from CTE
+    #[serde(default)]
+    pub exposed_alias: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -561,6 +734,8 @@ impl GroupBy {
                     input: new_input.clone(),
                     expressions: self.expressions.clone(),
                     having_clause: self.having_clause.clone(),
+                    is_materialization_boundary: self.is_materialization_boundary,
+                    exposed_alias: self.exposed_alias.clone(),
                 });
                 Transformed::Yes(Arc::new(new_node))
             }
@@ -916,6 +1091,9 @@ impl LogicalPlan {
                 children.push(&cp.left);
                 children.push(&cp.right);
             }
+            LogicalPlan::WithClause(with_clause) => {
+                children.push(&with_clause.input);
+            }
             LogicalPlan::ViewScan(_) => {
                 // ViewScan is a leaf node - no children to traverse
             }
@@ -959,6 +1137,7 @@ impl LogicalPlan {
             LogicalPlan::Unwind(unwind) => format!("Unwind(alias: {})", unwind.alias),
             LogicalPlan::ViewScan(scan) => format!("ViewScan({:?})", scan.source_table),
             LogicalPlan::CartesianProduct(cp) => format!("CartesianProduct(optional: {})", cp.is_optional),
+            LogicalPlan::WithClause(wc) => format!("WithClause(items: {}, distinct: {})", wc.items.len(), wc.distinct),
         }
     }
 
@@ -992,6 +1171,9 @@ impl LogicalPlan {
             LogicalPlan::CartesianProduct(cp) => {
                 cp.left.contains_variable_length_path()
                     || cp.right.contains_variable_length_path()
+            }
+            LogicalPlan::WithClause(with_clause) => {
+                with_clause.input.contains_variable_length_path()
             }
             // Leaf nodes
             LogicalPlan::Scan(_)

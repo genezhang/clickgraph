@@ -521,6 +521,13 @@ impl RenderExpr {
                 // For column references, we need to add the table alias prefix
                 // to match our FROM clause alias generation
                 let raw_value = a.raw();
+                
+                // Special case: If the column is "*", return it directly without table prefix
+                // This happens when a WITH clause expands a table alias to all columns
+                if raw_value == "*" {
+                    return "*".to_string();
+                }
+                
                 if raw_value.contains('.') {
                     raw_value.to_string() // Already has table prefix
                 } else {

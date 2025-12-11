@@ -1172,6 +1172,7 @@ pub fn extract_ctes_with_context(
                     LogicalPlan::PageRank(_) => "PageRank",
                     LogicalPlan::Unwind(_) => "Unwind",
                     LogicalPlan::CartesianProduct(_) => "CartesianProduct",
+                    LogicalPlan::WithClause(_) => "WithClause",
                 }
             );
             extract_ctes_with_context(&projection.input, last_node_alias, context)
@@ -1223,6 +1224,9 @@ pub fn extract_ctes_with_context(
             let mut ctes = extract_ctes_with_context(&cp.left, last_node_alias, context)?;
             ctes.append(&mut extract_ctes_with_context(&cp.right, last_node_alias, context)?);
             Ok(ctes)
+        }
+        LogicalPlan::WithClause(wc) => {
+            extract_ctes_with_context(&wc.input, last_node_alias, context)
         }
     }
 }

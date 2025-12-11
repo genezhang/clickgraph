@@ -22,7 +22,7 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult};
 use crate::query_planner::logical_expr::{Direction, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias};
 use crate::query_planner::logical_plan::{
-    Filter, GraphNode, GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, Union, UnionType,
+    Filter, GraphNode, GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, ProjectionKind, Union, UnionType,
 };
 use crate::query_planner::plan_ctx::PlanCtx;
 use crate::query_planner::transformed::Transformed;
@@ -270,6 +270,8 @@ fn transform_bidirectional(
                         input: new_input,
                         expressions: group_by.expressions.clone(),
                         having_clause: group_by.having_clause.clone(),
+                        is_materialization_boundary: group_by.is_materialization_boundary,
+                        exposed_alias: group_by.exposed_alias.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GroupBy(new_group_by))))
                 }
@@ -322,18 +324,78 @@ fn transform_bidirectional(
         | LogicalPlan::GraphJoins(_)
         | LogicalPlan::Scan(_)
         | LogicalPlan::Cte(_) => Ok(Transformed::No(plan.clone())),
+
+        // WithClause is a BOUNDARY - transform its input independently, don't propagate Union beyond
+        LogicalPlan::WithClause(with_clause) => {
+            crate::debug_print!(
+                "🔄 BidirectionalUnion: Processing WithClause boundary (exports: {:?})",
+                with_clause.exported_aliases
+            );
+            
+            // Transform only the input (the query segment BEFORE this WITH)
+            // Any bidirectional patterns in the input will be expanded to Union WITHIN this scope
+            let transformed_input = transform_bidirectional(&with_clause.input, plan_ctx, graph_schema)?;
+            
+            match transformed_input {
+                Transformed::Yes(new_input) => {
+                    // The input was transformed (may now be a Union)
+                    // Wrap it in WithClause - the Union stays INSIDE the WITH boundary
+                    let new_with = crate::query_planner::logical_plan::WithClause {
+                        input: new_input,
+                        items: with_clause.items.clone(),
+                        distinct: with_clause.distinct,
+                        order_by: with_clause.order_by.clone(),
+                        skip: with_clause.skip,
+                        limit: with_clause.limit,
+                        where_clause: with_clause.where_clause.clone(),
+                        exported_aliases: with_clause.exported_aliases.clone(),
+                    };
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with))))
+                }
+                Transformed::No(_) => {
+                    // No transformation needed
+                    Ok(Transformed::No(plan.clone()))
+                }
+            }
+        }
     }
 }
 
-/// Count the number of undirected (Direction::Either) edges in a GraphRel path
+/// Count the number of undirected (Direction::Either) edges in a GraphRel path.
+/// IMPORTANT: Stops at WITH clause boundaries because WITH creates a scope boundary -
+/// undirected edges before a WITH have already been resolved into their Union branches
+/// within the WITH's scope.
 fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
     match plan.as_ref() {
         LogicalPlan::GraphRel(graph_rel) => {
             let self_count = if graph_rel.direction == Direction::Either { 1 } else { 0 };
             let left_count = count_undirected_edges(&graph_rel.left);
-            self_count + left_count
+            // CRITICAL FIX: Also recurse into right branch to find nested undirected edges
+            // Without this, patterns like (a)-[:R1]-(b)<-[:R2]-(c) miss the R1 edge
+            let right_count = count_undirected_edges(&graph_rel.right);
+            self_count + left_count + right_count
         }
-        LogicalPlan::Projection(proj) => count_undirected_edges(&proj.input),
+        LogicalPlan::Projection(proj) => {
+            // CRITICAL: WITH clause (ProjectionKind::With) creates a scope boundary.
+            // Undirected edges BEFORE a WITH have already been resolved into Union branches
+            // within the WITH's scope. Do NOT count them again for projections AFTER the WITH.
+            if proj.kind == ProjectionKind::With {
+                // Stop here - this is a WITH boundary
+                crate::debug_print!(
+                    "🔄 BidirectionalUnion: Stopping undirected edge count at Projection(With) boundary"
+                );
+                0
+            } else {
+                count_undirected_edges(&proj.input)
+            }
+        }
+        // WithClause is an explicit boundary - do NOT count edges beyond it
+        LogicalPlan::WithClause(_) => {
+            crate::debug_print!(
+                "🔄 BidirectionalUnion: Stopping undirected edge count at WithClause boundary"
+            );
+            0
+        }
         LogicalPlan::Filter(filter) => count_undirected_edges(&filter.input),
         _ => 0,
     }
@@ -539,8 +601,11 @@ fn apply_direction_combination_inner(
 ) -> Arc<LogicalPlan> {
     match plan.as_ref() {
         LogicalPlan::GraphRel(graph_rel) => {
-            // First recurse into the left subtree (inner edges are processed first)
+            // Recurse into BOTH left and right subtrees to handle nested undirected edges
+            // This is critical for patterns like (a)-[:R1]-(b)<-[:R2]-(c) where the
+            // undirected R1 edge is in the right branch of the outer R2 GraphRel.
             let new_left = apply_direction_combination_inner(&graph_rel.left, combination, bit_position, column_swaps);
+            let new_right = apply_direction_combination_inner(&graph_rel.right, combination, bit_position, column_swaps);
             
             // Determine this edge's direction
             let new_direction = if graph_rel.direction == Direction::Either {
@@ -605,18 +670,17 @@ fn apply_direction_combination_inner(
             let (final_left, final_right, new_left_connection, new_right_connection) = 
                 if new_direction == Direction::Incoming && graph_rel.direction == Direction::Either {
                     // Swap both plan structures and connections for the Incoming branch
-                    // new_left was from recursively processing graph_rel.left
-                    // graph_rel.right is the right side (usually a GraphNode)
+                    // new_left/new_right were from recursively processing graph_rel.left/right
                     (
-                        graph_rel.right.clone(),  // Right becomes left (FROM table)
-                        new_left,                  // Left becomes right (TO table)
+                        new_right,  // Right becomes left (FROM table)
+                        new_left,   // Left becomes right (TO table)
                         graph_rel.right_connection.clone(),  // Swap connections too
                         graph_rel.left_connection.clone(),
                     )
                 } else {
                     (
                         new_left,
-                        graph_rel.right.clone(),
+                        new_right,  // Use recursively processed right
                         graph_rel.left_connection.clone(),
                         graph_rel.right_connection.clone(),
                     )

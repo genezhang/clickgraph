@@ -469,6 +469,7 @@ mod tests {
             subsequent_unwind: None,
             subsequent_match: None,
             subsequent_optional_matches: vec![],
+            subsequent_with: None,
         };
         assert_eq!(with_clause, expected_with_clause);
 

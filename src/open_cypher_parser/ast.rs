@@ -121,6 +121,9 @@ pub struct WithClause<'a> {
     pub subsequent_match: Option<Box<MatchClause<'a>>>,
     /// Optional subsequent OPTIONAL MATCH clauses after WITH
     pub subsequent_optional_matches: Vec<OptionalMatchClause<'a>>,
+    /// Optional subsequent WITH clause for chained WITH...MATCH...WITH patterns
+    /// This enables: MATCH ... WITH a MATCH ... WITH a, b MATCH ... RETURN ...
+    pub subsequent_with: Option<Box<WithClause<'a>>>,
 }
 
 #[derive(Debug, PartialEq, Clone)]

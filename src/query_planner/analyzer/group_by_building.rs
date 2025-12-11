@@ -115,6 +115,9 @@ impl AnalyzerPass for GroupByBuilding {
 
                     if has_aggregations {
                         // WITH contains aggregations - convert to GroupBy
+                        // This creates a MATERIALIZATION BOUNDARY - subsequent MATCH patterns
+                        // must reference this as a CTE, not flatten into the same query.
+                        
                         // Non-aggregated items become GROUP BY expressions
                         // IMPORTANT: Exclude any computed expressions that contain aggregates (e.g., COUNT(b) * 10)
                         let non_agg_items: Vec<ProjectionItem> = projection
@@ -124,14 +127,26 @@ impl AnalyzerPass for GroupByBuilding {
                             .cloned()
                             .collect();
 
+                        // Extract the exposed alias (the table/node alias being grouped)
+                        // For `WITH f, count(*) AS cnt`, the exposed alias is "f"
+                        let exposed_alias = non_agg_items.iter().find_map(|item| {
+                            match &item.expression {
+                                LogicalExpr::TableAlias(alias) => Some(alias.0.clone()),
+                                LogicalExpr::PropertyAccessExp(prop) if prop.column.raw() == "*" => {
+                                    Some(prop.table_alias.0.clone())
+                                }
+                                _ => None,
+                            }
+                        });
+
                         let grouping_exprs: Vec<LogicalExpr> = non_agg_items
                             .into_iter()
                             .map(|item| item.expression)
                             .collect();
 
                         println!(
-                            "GroupByBuilding: Converting WITH Projection to GroupBy with {} grouping expressions",
-                            grouping_exprs.len()
+                            "GroupByBuilding: Converting WITH Projection to GroupBy with {} grouping expressions, exposed_alias={:?}, is_materialization_boundary=true",
+                            grouping_exprs.len(), exposed_alias
                         );
 
                         // Create inner Projection with all WITH items (including aggregations)
@@ -142,21 +157,24 @@ impl AnalyzerPass for GroupByBuilding {
                             distinct: false,
                         }));
 
-                        // Wrap in GroupBy
+                        // Wrap in GroupBy - marked as materialization boundary
                         Transformed::Yes(Arc::new(LogicalPlan::GroupBy(GroupBy {
                             input: inner_projection,
                             expressions: grouping_exprs,
                             having_clause: None, // Will be set later if Filter follows
+                            is_materialization_boundary: true, // KEY: This forms a query block boundary
+                            exposed_alias,
                         })))
                     } else {
-                        // No aggregations - keep as Projection but change kind to Return
+                        // No aggregations - keep as Projection and PRESERVE kind as With
+                        // This is important for render_plan to identify WITH clause boundaries
                         println!(
-                            "GroupByBuilding: Converting WITH Projection to regular Projection (no aggregations)"
+                            "GroupByBuilding: Converting WITH Projection to regular Projection (no aggregations, keeping kind=With)"
                         );
                         Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
                             input: child_tf.get_plan(),
                             items: projection.items.clone(),
-                            kind: ProjectionKind::Return,
+                            kind: ProjectionKind::With, // PRESERVE With kind for scope boundary detection
                             distinct: false,
                         })))
                     }
@@ -195,7 +213,7 @@ impl AnalyzerPass for GroupByBuilding {
                         // Check if this is a two-level aggregation pattern:
                         // RETURN has aggregations AND its child is a GroupBy (from WITH)
                         // In this case, we need to wrap the GroupBy in a CTE structure
-                        if let LogicalPlan::GroupBy(inner_group_by) = analyzed_child.as_ref() {
+                        if let LogicalPlan::GroupBy(_inner_group_by) = analyzed_child.as_ref() {
                             println!(
                                 "GroupByBuilding: Two-level aggregation detected - RETURN aggregates over WITH GroupBy"
                             );
@@ -216,6 +234,8 @@ impl AnalyzerPass for GroupByBuilding {
                                     .map(|item| item.expression)
                                     .collect(),
                                 having_clause: None,
+                                is_materialization_boundary: false,
+                                exposed_alias: None,
                             })))
                         } else {
                             // Single-level aggregation - just wrap the analyzed child
@@ -237,6 +257,8 @@ impl AnalyzerPass for GroupByBuilding {
                                     .map(|item| item.expression)
                                     .collect(),
                                 having_clause: None,
+                                is_materialization_boundary: false,
+                                exposed_alias: None,
                             })))
                         }
                     } else {
@@ -353,6 +375,8 @@ impl AnalyzerPass for GroupByBuilding {
                                             input: group_by.input.clone(),
                                             expressions: group_by.expressions.clone(),
                                             having_clause: Some(filter.predicate.clone()),
+                                            is_materialization_boundary: group_by.is_materialization_boundary,
+                                            exposed_alias: group_by.exposed_alias.clone(),
                                         },
                                     ))));
                                 }
@@ -395,6 +419,8 @@ impl AnalyzerPass for GroupByBuilding {
                                         input: group_by.input.clone(),
                                         expressions: group_by.expressions.clone(),
                                         having_clause: Some(filter.predicate.clone()),
+                                        is_materialization_boundary: group_by.is_materialization_boundary,
+                                        exposed_alias: group_by.exposed_alias.clone(),
                                     },
                                 ))));
                             } else {
@@ -466,6 +492,25 @@ impl AnalyzerPass for GroupByBuilding {
                         join_condition: cp.join_condition.clone(),
                     };
                     Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(new_cp)))
+                }
+            }
+            LogicalPlan::WithClause(with_clause) => {
+                let child_tf = self.analyze(with_clause.input.clone(), _plan_ctx)?;
+                match child_tf {
+                    Transformed::Yes(new_input) => {
+                        let new_with = crate::query_planner::logical_plan::WithClause {
+                            input: new_input,
+                            items: with_clause.items.clone(),
+                            distinct: with_clause.distinct,
+                            order_by: with_clause.order_by.clone(),
+                            skip: with_clause.skip,
+                            limit: with_clause.limit,
+                            where_clause: with_clause.where_clause.clone(),
+                            exported_aliases: with_clause.exported_aliases.clone(),
+                        };
+                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
         };

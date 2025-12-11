@@ -53,11 +53,17 @@ pub fn parse_with_clause(
     // This handles: WITH u OPTIONAL MATCH (u)-[:FOLLOWS]->(f) ...
     let (input, subsequent_optional_matches) = many0(parse_optional_match_clause).parse(input)?;
 
+    // Parse optional subsequent WITH clause for chained WITH...MATCH...WITH patterns
+    // This handles: WITH a MATCH ... WITH a, b MATCH ... RETURN ...
+    // Using Box to handle recursion
+    let (input, subsequent_with) = opt(parse_with_clause).parse(input)?;
+
     let with_clause = WithClause { 
         with_items,
         subsequent_unwind,
         subsequent_match: subsequent_match.map(Box::new),
         subsequent_optional_matches,
+        subsequent_with: subsequent_with.map(Box::new),
     };
 
     Ok((input, with_clause))

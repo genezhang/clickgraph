@@ -64,38 +64,9 @@ pub fn build_logical_plan(
 
     // Process WITH clause before WHERE to create intermediate projections
     // WITH creates a projection that can be referenced by subsequent clauses (including WHERE)
+    // This now handles chained WITH...MATCH...WITH patterns via recursion
     if let Some(with_clause_ast) = &query_ast.with_clause {
-        log::debug!(
-            "build_logical_plan: Processing WITH clause with {} items",
-            with_clause_ast.with_items.len()
-        );
-        logical_plan = with_clause::evaluate_with_clause(with_clause_ast, logical_plan);
-        
-        // Process subsequent UNWIND clause if present (e.g., WITH d, rip UNWIND rip.ips AS ip)
-        if let Some(subsequent_unwind) = &with_clause_ast.subsequent_unwind {
-            log::debug!("build_logical_plan: Processing subsequent UNWIND clause after WITH");
-            logical_plan = unwind_clause::evaluate_unwind_clause(subsequent_unwind, logical_plan, &mut plan_ctx);
-        }
-        
-        // Process subsequent MATCH clause if present (e.g., WITH u MATCH (u)-[:FOLLOWS]->(f))
-        if let Some(subsequent_match) = &with_clause_ast.subsequent_match {
-            log::debug!("build_logical_plan: Processing subsequent MATCH clause after WITH");
-            logical_plan =
-                match_clause::evaluate_match_clause(subsequent_match, logical_plan, &mut plan_ctx)?;
-        }
-        
-        // Process subsequent OPTIONAL MATCH clauses if present
-        for (idx, optional_match) in with_clause_ast.subsequent_optional_matches.iter().enumerate() {
-            log::debug!(
-                "build_logical_plan: Processing subsequent OPTIONAL MATCH clause {} after WITH",
-                idx
-            );
-            logical_plan = optional_match_clause::evaluate_optional_match_clause(
-                optional_match,
-                logical_plan,
-                &mut plan_ctx,
-            )?;
-        }
+        logical_plan = process_with_clause_chain(with_clause_ast, logical_plan, &mut plan_ctx)?;
     }
 
     // Process WHERE clause after WITH so it can reference WITH projection aliases
@@ -121,4 +92,54 @@ pub fn build_logical_plan(
     }
 
     Ok((logical_plan, plan_ctx))
+}
+
+/// Process a chain of WITH clauses recursively
+/// Handles patterns like: WITH a MATCH ... WITH a, b MATCH ... WITH a, b, c ...
+fn process_with_clause_chain<'a>(
+    with_clause_ast: &crate::open_cypher_parser::ast::WithClause<'a>,
+    mut logical_plan: Arc<LogicalPlan>,
+    plan_ctx: &mut PlanCtx,
+) -> LogicalPlanResult<Arc<LogicalPlan>> {
+    log::debug!(
+        "process_with_clause_chain: Processing WITH clause with {} items",
+        with_clause_ast.with_items.len()
+    );
+    
+    // Process the WITH projection itself
+    logical_plan = with_clause::evaluate_with_clause(with_clause_ast, logical_plan);
+    
+    // Process subsequent UNWIND clause if present (e.g., WITH d, rip UNWIND rip.ips AS ip)
+    if let Some(subsequent_unwind) = &with_clause_ast.subsequent_unwind {
+        log::debug!("process_with_clause_chain: Processing subsequent UNWIND clause after WITH");
+        logical_plan = unwind_clause::evaluate_unwind_clause(subsequent_unwind, logical_plan, plan_ctx);
+    }
+    
+    // Process subsequent MATCH clause if present (e.g., WITH u MATCH (u)-[:FOLLOWS]->(f))
+    if let Some(subsequent_match) = &with_clause_ast.subsequent_match {
+        log::debug!("process_with_clause_chain: Processing subsequent MATCH clause after WITH");
+        logical_plan =
+            match_clause::evaluate_match_clause(subsequent_match, logical_plan, plan_ctx)?;
+    }
+    
+    // Process subsequent OPTIONAL MATCH clauses if present
+    for (idx, optional_match) in with_clause_ast.subsequent_optional_matches.iter().enumerate() {
+        log::debug!(
+            "process_with_clause_chain: Processing subsequent OPTIONAL MATCH clause {} after WITH",
+            idx
+        );
+        logical_plan = optional_match_clause::evaluate_optional_match_clause(
+            optional_match,
+            logical_plan,
+            plan_ctx,
+        )?;
+    }
+    
+    // Recursively process subsequent WITH clause if present (chained WITH...MATCH...WITH patterns)
+    if let Some(subsequent_with) = &with_clause_ast.subsequent_with {
+        log::debug!("process_with_clause_chain: Processing subsequent WITH clause (chained pattern)");
+        logical_plan = process_with_clause_chain(subsequent_with, logical_plan, plan_ctx)?;
+    }
+    
+    Ok(logical_plan)
 }

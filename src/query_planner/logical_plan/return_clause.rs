@@ -377,6 +377,8 @@ fn build_union_with_aggregation(
             input: inner_union,
             expressions: grouping_exprs,
             having_clause: None,
+            is_materialization_boundary: false,
+            exposed_alias: None,
         }));
         
         Arc::new(LogicalPlan::Projection(Projection {

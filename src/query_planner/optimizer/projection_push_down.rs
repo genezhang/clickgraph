@@ -155,6 +155,25 @@ impl OptimizerPass for ProjectionPushDown {
                     Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(new_cp)))
                 }
             }
+            LogicalPlan::WithClause(with_clause) => {
+                let child_tf = self.optimize(with_clause.input.clone(), plan_ctx)?;
+                match child_tf {
+                    Transformed::Yes(new_input) => {
+                        let new_with = crate::query_planner::logical_plan::WithClause {
+                            input: new_input,
+                            items: with_clause.items.clone(),
+                            distinct: with_clause.distinct,
+                            order_by: with_clause.order_by.clone(),
+                            skip: with_clause.skip,
+                            limit: with_clause.limit,
+                            where_clause: with_clause.where_clause.clone(),
+                            exported_aliases: with_clause.exported_aliases.clone(),
+                        };
+                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
         };
         Ok(transformed_plan)
     }

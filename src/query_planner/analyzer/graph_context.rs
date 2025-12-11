@@ -102,18 +102,30 @@ pub fn get_graph_context<'a>(
         .replace(format!("_{}", Direction::Outgoing).as_str(), "")
         .replace(format!("_{}", Direction::Either).as_str(), "");
 
+    // Get relationship schema for label inference (if needed)
+    let rel_schema_for_inference = graph_schema
+        .get_rel_schema(&original_rel_label)
+        .map_err(|e| AnalyzerError::GraphSchema {
+            pass: pass.clone(),
+            source: e,
+        })?;
+
     // Try to get left label, or infer from relationship if anonymous
+    // IMPORTANT: Must consider direction when inferring labels!
+    // For (a)<-[:REL]-(b) with Incoming direction:
+    //   - left (a) connects to to_id, so left label is rel.to_node
+    //   - right (b) connects to from_id, so right label is rel.from_node
+    // For (a)-[:REL]->(b) with Outgoing direction:
+    //   - left (a) connects to from_id, so left label is rel.from_node  
+    //   - right (b) connects to to_id, so right label is rel.to_node
     let left_label = match left_ctx.get_label_str() {
         Ok(label) => label,
         Err(_) => {
-            // Anonymous node - infer from relationship schema
-            let rel_schema = graph_schema
-                .get_rel_schema(&original_rel_label)
-                .map_err(|e| AnalyzerError::GraphSchema {
-                    pass: pass.clone(),
-                    source: e,
-                })?;
-            rel_schema.from_node.clone()
+            // Anonymous node - infer from relationship schema considering direction
+            match graph_rel.direction {
+                Direction::Incoming => rel_schema_for_inference.to_node.clone(),
+                _ => rel_schema_for_inference.from_node.clone(),
+            }
         }
     };
 
@@ -121,14 +133,11 @@ pub fn get_graph_context<'a>(
     let right_label = match right_ctx.get_label_str() {
         Ok(label) => label,
         Err(_) => {
-            // Anonymous node - infer from relationship schema
-            let rel_schema = graph_schema
-                .get_rel_schema(&original_rel_label)
-                .map_err(|e| AnalyzerError::GraphSchema {
-                    pass: pass.clone(),
-                    source: e,
-                })?;
-            rel_schema.to_node.clone()
+            // Anonymous node - infer from relationship schema considering direction
+            match graph_rel.direction {
+                Direction::Incoming => rel_schema_for_inference.from_node.clone(),
+                _ => rel_schema_for_inference.to_node.clone(),
+            }
         }
     };
     

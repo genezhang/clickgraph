@@ -1107,19 +1107,22 @@ impl GraphJoinInference {
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
-            // If input is a Union, process each branch INDEPENDENTLY
-            // Each branch needs its own collect_graph_joins + build_graph_joins pass
+            // If input is a Union, process each branch
+            // NOTE: When Union is nested inside a GraphRel (for undirected relationships),
+            // we need to INHERIT the collected_graph_joins from outer context so that
+            // outer relationship joins are applied to both branches.
             LogicalPlan::Union(union) => {
-                log::info!("🔄 Union detected in build_graph_joins, processing {} branches independently", union.inputs.len());
+                log::info!("🔄 Union detected in build_graph_joins, processing {} branches", union.inputs.len());
+                log::info!("🔄 Inherited {} joins from outer context", collected_graph_joins.len());
                 let mut any_transformed = false;
                 let graph_join_inference = GraphJoinInference::new();
                 
                 let transformed_branches: Result<Vec<Arc<LogicalPlan>>, _> = union.inputs.iter().map(|branch| {
-                    // CRITICAL: Each branch needs fresh state - collect and build separately
-                    let mut branch_joins: Vec<Join> = vec![];
+                    // Start with inherited joins from outer context (important for nested Unions in GraphRel)
+                    let mut branch_joins: Vec<Join> = collected_graph_joins.clone();
                     let mut branch_joined_entities: HashSet<String> = HashSet::new();
                     
-                    // Collect joins for this specific branch only
+                    // Collect additional joins for this specific branch
                     graph_join_inference.collect_graph_joins(
                         branch.clone(),
                         branch.clone(),
@@ -1129,9 +1132,9 @@ impl GraphJoinInference {
                         &mut branch_joined_entities,
                     )?;
                     
-                    crate::debug_print!("🔹 Union branch collected {} joins", branch_joins.len());
+                    crate::debug_print!("🔹 Union branch collected {} total joins (including inherited)", branch_joins.len());
                     
-                    // Build GraphJoins for this branch with its own collected joins
+                    // Build GraphJoins for this branch with combined joins
                     let result = Self::build_graph_joins(
                         branch.clone(),
                         &mut branch_joins,
@@ -1279,14 +1282,49 @@ impl GraphJoinInference {
                 filter.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GroupBy(group_by) => {
-                let child_tf = Self::build_graph_joins(
-                    group_by.input.clone(),
-                    collected_graph_joins,
-                    optional_aliases,
-                    plan_ctx,
-                    graph_schema,
-                )?;
-                group_by.rebuild_or_clone(child_tf, logical_plan.clone())
+                // CRITICAL: If this is a materialization boundary, process inner joins SEPARATELY
+                // The inner query block must have its own GraphJoins, not merged with outer joins
+                if group_by.is_materialization_boundary {
+                    crate::debug_print!("🛑 build_graph_joins: GroupBy is_materialization_boundary=true, processing inner joins separately");
+                    
+                    // Create fresh vectors for the inner query block
+                    let mut inner_joins = Vec::new();
+                    let mut inner_joined_entities = HashSet::new();
+                    let inner_optional_aliases = std::collections::HashSet::new();
+                    
+                    // IMPORTANT: We need to collect joins for the inner scope FIRST
+                    // because collect_graph_joins stopped at the boundary during the main traversal
+                    let graph_join_inference = GraphJoinInference;
+                    graph_join_inference.collect_graph_joins(
+                        group_by.input.clone(),
+                        group_by.input.clone(),  // root plan for inner scope
+                        &mut plan_ctx.clone(),   // Clone PlanCtx for inner scope
+                        graph_schema,
+                        &mut inner_joins,
+                        &mut inner_joined_entities,
+                    )?;
+                    
+                    crate::debug_print!("🛑 build_graph_joins: Collected {} inner joins for boundary GroupBy", inner_joins.len());
+                    
+                    // Now build the graph joins for the inner scope
+                    let child_tf = Self::build_graph_joins(
+                        group_by.input.clone(),
+                        &mut inner_joins,  // Use the inner joins we just collected
+                        inner_optional_aliases,
+                        plan_ctx,
+                        graph_schema,
+                    )?;
+                    group_by.rebuild_or_clone(child_tf, logical_plan.clone())
+                } else {
+                    let child_tf = Self::build_graph_joins(
+                        group_by.input.clone(),
+                        collected_graph_joins,
+                        optional_aliases,
+                        plan_ctx,
+                        graph_schema,
+                    )?;
+                    group_by.rebuild_or_clone(child_tf, logical_plan.clone())
+                }
             }
             LogicalPlan::OrderBy(order_by) => {
                 let child_tf = Self::build_graph_joins(
@@ -1452,6 +1490,31 @@ impl GraphJoinInference {
                             join_condition: cp.join_condition.clone(),
                         },
                     ))),
+                }
+            }
+            LogicalPlan::WithClause(with_clause) => {
+                let child_tf = Self::build_graph_joins(
+                    with_clause.input.clone(),
+                    collected_graph_joins,
+                    optional_aliases,
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                match child_tf {
+                    Transformed::Yes(new_input) => {
+                        let new_with = crate::query_planner::logical_plan::WithClause {
+                            input: new_input,
+                            items: with_clause.items.clone(),
+                            distinct: with_clause.distinct,
+                            order_by: with_clause.order_by.clone(),
+                            skip: with_clause.skip,
+                            limit: with_clause.limit,
+                            where_clause: with_clause.where_clause.clone(),
+                            exported_aliases: with_clause.exported_aliases.clone(),
+                        };
+                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
         };
@@ -1666,15 +1729,24 @@ impl GraphJoinInference {
                 )
             }
             LogicalPlan::GroupBy(group_by) => {
-                crate::debug_print!("� ? GroupBy, recursing into input");
-                self.collect_graph_joins(
-                    group_by.input.clone(),
-                    root_plan.clone(),
-                    plan_ctx,
-                    graph_schema,
-                    collected_graph_joins,
-                    joined_entities,
-                )
+                // CRITICAL: Check if this GroupBy is a MATERIALIZATION BOUNDARY
+                // If so, DO NOT recurse into its input - the inner joins belong
+                // to a separate query block that must be executed first (as a CTE).
+                if group_by.is_materialization_boundary {
+                    crate::debug_print!("🛑 GroupBy is_materialization_boundary=true, STOPPING join collection here (exposed_alias={:?})", group_by.exposed_alias);
+                    // Don't recurse - the inner query block has its own joins
+                    Ok(())
+                } else {
+                    crate::debug_print!("📍 GroupBy, recursing into input");
+                    self.collect_graph_joins(
+                        group_by.input.clone(),
+                        root_plan.clone(),
+                        plan_ctx,
+                        graph_schema,
+                        collected_graph_joins,
+                        joined_entities,
+                    )
+                }
             }
             LogicalPlan::OrderBy(order_by) => {
                 crate::debug_print!("� ? OrderBy, recursing into input");
@@ -1754,6 +1826,17 @@ impl GraphJoinInference {
                 // the RIGHT side from trying to create conflicting joins
                 self.collect_graph_joins(
                     cp.right.clone(),
+                    root_plan.clone(),
+                    plan_ctx,
+                    graph_schema,
+                    collected_graph_joins,
+                    joined_entities,
+                )
+            }
+            LogicalPlan::WithClause(with_clause) => {
+                crate::debug_print!("📎 WithClause, recursing into input");
+                self.collect_graph_joins(
+                    with_clause.input.clone(),
                     root_plan.clone(),
                     plan_ctx,
                     graph_schema,

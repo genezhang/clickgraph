@@ -313,6 +313,26 @@ impl OptimizerPass for CartesianJoinExtraction {
             | LogicalPlan::Scan(_)
             | LogicalPlan::ViewScan(_)
             | LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
+            
+            LogicalPlan::WithClause(with_clause) => {
+                let child_tf = self.optimize(with_clause.input.clone(), plan_ctx)?;
+                match child_tf {
+                    Transformed::Yes(new_child) => {
+                        let new_with = crate::query_planner::logical_plan::WithClause {
+                            input: new_child,
+                            items: with_clause.items.clone(),
+                            distinct: with_clause.distinct,
+                            order_by: with_clause.order_by.clone(),
+                            skip: with_clause.skip,
+                            limit: with_clause.limit,
+                            where_clause: with_clause.where_clause.clone(),
+                            exported_aliases: with_clause.exported_aliases.clone(),
+                        };
+                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
         };
         
         Ok(transformed_plan)
@@ -458,6 +478,18 @@ fn collect_aliases_from_plan_inner(plan: &LogicalPlan, aliases: &mut HashSet<Str
         }
         // Leaf nodes without aliases
         LogicalPlan::Empty | LogicalPlan::Scan(_) | LogicalPlan::PageRank(_) => {}
+        LogicalPlan::WithClause(wc) => {
+            // Collect aliases from WithClause items
+            for item in &wc.items {
+                if let LogicalExpr::TableAlias(ta) = &item.expression {
+                    aliases.insert(ta.0.clone());
+                }
+                if let Some(col_alias) = &item.col_alias {
+                    aliases.insert(col_alias.0.clone());
+                }
+            }
+            collect_aliases_from_plan_inner(&wc.input, aliases);
+        }
     }
 }
 

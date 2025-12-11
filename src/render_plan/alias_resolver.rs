@@ -230,6 +230,19 @@ impl AliasResolverContext {
                     join_condition: cp.join_condition.clone().map(|jc| self.transform_expr(jc)),
                 })
             }
+            LogicalPlan::WithClause(wc) => {
+                let transformed_input = Arc::new(self.transform_plan((*wc.input).clone()));
+                LogicalPlan::WithClause(crate::query_planner::logical_plan::WithClause {
+                    input: transformed_input,
+                    items: wc.items.clone(),
+                    distinct: wc.distinct,
+                    order_by: wc.order_by.clone(),
+                    skip: wc.skip,
+                    limit: wc.limit,
+                    where_clause: wc.where_clause.clone(),
+                    exported_aliases: wc.exported_aliases.clone(),
+                })
+            }
         }
     }
     
@@ -562,6 +575,9 @@ impl AliasResolverContext {
             LogicalPlan::CartesianProduct(cp) => {
                 self.analyze_plan(&cp.left);
                 self.analyze_plan(&cp.right);
+            }
+            LogicalPlan::WithClause(wc) => {
+                self.analyze_plan(&wc.input);
             }
         }
     }

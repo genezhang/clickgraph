@@ -382,6 +382,11 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
             find_table_name_for_alias(&cp.left, target_alias)
                 .or_else(|| find_table_name_for_alias(&cp.right, target_alias))
         }
+        
+        // === WithClause - search input ===
+        LogicalPlan::WithClause(wc) => {
+            find_table_name_for_alias(&wc.input, target_alias)
+        }
     }
 }
 
@@ -1803,6 +1808,7 @@ pub(super) fn plan_type_name(plan: &LogicalPlan) -> &'static str {
         LogicalPlan::PageRank(_) => "PageRank",
         LogicalPlan::Unwind(_) => "Unwind",
         LogicalPlan::CartesianProduct(_) => "CartesianProduct",
+        LogicalPlan::WithClause(_) => "WithClause",
     }
 }
 
@@ -2109,32 +2115,76 @@ pub(super) fn find_nested_union(plan: &LogicalPlan) -> Option<&crate::query_plan
 pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
     use crate::query_planner::logical_plan::ProjectionKind;
     
+    // Helper to check if a plan contains actual WITH clause (Projection(kind=With) or WithClause)
+    fn contains_actual_with_clause(plan: &LogicalPlan) -> bool {
+        match plan {
+            // New WithClause type takes precedence
+            LogicalPlan::WithClause(wc) => {
+                log::info!("🔍 contains_actual_with_clause: Found WithClause node");
+                true
+            }
+            // Legacy Projection(kind=With) for backward compatibility
+            LogicalPlan::Projection(proj) => {
+                if matches!(proj.kind, ProjectionKind::With) {
+                    return true;
+                }
+                contains_actual_with_clause(&proj.input)
+            }
+            LogicalPlan::GraphJoins(gj) => contains_actual_with_clause(&gj.input),
+            LogicalPlan::GraphRel(gr) => {
+                contains_actual_with_clause(&gr.left) || contains_actual_with_clause(&gr.right)
+            }
+            LogicalPlan::Filter(f) => contains_actual_with_clause(&f.input),
+            LogicalPlan::GroupBy(gb) => contains_actual_with_clause(&gb.input),
+            LogicalPlan::Union(u) => u.inputs.iter().any(|i| contains_actual_with_clause(i)),
+            LogicalPlan::GraphNode(gn) => contains_actual_with_clause(&gn.input),
+            LogicalPlan::Limit(l) => contains_actual_with_clause(&l.input),
+            LogicalPlan::OrderBy(o) => contains_actual_with_clause(&o.input),
+            LogicalPlan::Skip(s) => contains_actual_with_clause(&s.input),
+            LogicalPlan::ViewScan(_) => false, // ViewScan is a leaf - no WITH here
+            _ => false,
+        }
+    }
+    
     match plan {
+        // NEW: Direct WithClause at any level in the plan
+        LogicalPlan::WithClause(wc) => {
+            log::info!("🔍 has_with_clause_in_graph_rel: Found WithClause at plan root");
+            true
+        }
         LogicalPlan::GraphRel(graph_rel) => {
             // Check if right side contains a Union or GraphJoins with nested patterns
             // This indicates a WITH+MATCH structure where the WITH clause output
             // was wrapped in Union (for undirected patterns) or GraphJoins
             let right_has_nested_pattern = match graph_rel.right.as_ref() {
+                // NEW: Direct WithClause in GraphRel.right
+                LogicalPlan::WithClause(wc) => {
+                    log::info!("🔍 has_with_clause_in_graph_rel: Found WithClause in GraphRel.right");
+                    true
+                }
                 // Direct Projection(kind=With) - original structure before analyzer transforms
                 LogicalPlan::Projection(proj) if matches!(proj.kind, ProjectionKind::With) => {
                     log::info!("🔍 has_with_clause_in_graph_rel: Found Projection(With) in GraphRel.right");
                     true
                 }
-                // Union containing GraphJoins - structure after analyzer transforms WITH+undirected MATCH
+                // Union containing GraphJoins - check if it actually contains WITH clause
                 LogicalPlan::Union(union) => {
-                    // Check if Union contains GraphJoins with nested patterns (from WITH clause)
-                    let has_graph_joins = union.inputs.iter().any(|input| {
-                        matches!(input.as_ref(), LogicalPlan::GraphJoins(_))
+                    // Only flag as WITH pattern if there's an actual WITH clause inside
+                    let has_with_inside = union.inputs.iter().any(|input| {
+                        contains_actual_with_clause(input)
                     });
-                    if has_graph_joins {
-                        log::info!("🔍 has_with_clause_in_graph_rel: Found Union(GraphJoins) in GraphRel.right - WITH+MATCH pattern");
+                    if has_with_inside {
+                        log::info!("🔍 has_with_clause_in_graph_rel: Found Union with WITH clause inside in GraphRel.right - WITH+MATCH pattern");
                     }
-                    has_graph_joins
+                    has_with_inside
                 }
-                // GraphJoins directly - structure after analyzer transforms WITH+directed MATCH
-                LogicalPlan::GraphJoins(_) => {
-                    log::info!("🔍 has_with_clause_in_graph_rel: Found GraphJoins in GraphRel.right - WITH+MATCH pattern");
-                    true
+                // GraphJoins directly - check if it actually contains WITH clause
+                LogicalPlan::GraphJoins(gj) => {
+                    let has_with_inside = contains_actual_with_clause(&gj.input);
+                    if has_with_inside {
+                        log::info!("🔍 has_with_clause_in_graph_rel: Found GraphJoins with WITH clause inside in GraphRel.right - WITH+MATCH pattern");
+                    }
+                    has_with_inside
                 }
                 _ => false,
             };
@@ -2145,22 +2195,30 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
             
             // Also check left side (for incoming patterns)
             let left_has_nested_pattern = match graph_rel.left.as_ref() {
+                // NEW: Direct WithClause in GraphRel.left
+                LogicalPlan::WithClause(wc) => {
+                    log::info!("🔍 has_with_clause_in_graph_rel: Found WithClause in GraphRel.left");
+                    true
+                }
                 LogicalPlan::Projection(proj) if matches!(proj.kind, ProjectionKind::With) => {
                     log::info!("🔍 has_with_clause_in_graph_rel: Found Projection(With) in GraphRel.left");
                     true
                 }
                 LogicalPlan::Union(union) => {
-                    let has_graph_joins = union.inputs.iter().any(|input| {
-                        matches!(input.as_ref(), LogicalPlan::GraphJoins(_))
+                    let has_with_inside = union.inputs.iter().any(|input| {
+                        contains_actual_with_clause(input)
                     });
-                    if has_graph_joins {
-                        log::info!("🔍 has_with_clause_in_graph_rel: Found Union(GraphJoins) in GraphRel.left - WITH+MATCH pattern");
+                    if has_with_inside {
+                        log::info!("🔍 has_with_clause_in_graph_rel: Found Union with WITH clause inside in GraphRel.left - WITH+MATCH pattern");
                     }
-                    has_graph_joins
+                    has_with_inside
                 }
-                LogicalPlan::GraphJoins(_) => {
-                    log::info!("🔍 has_with_clause_in_graph_rel: Found GraphJoins in GraphRel.left - WITH+MATCH pattern");
-                    true
+                LogicalPlan::GraphJoins(gj) => {
+                    let has_with_inside = contains_actual_with_clause(&gj.input);
+                    if has_with_inside {
+                        log::info!("🔍 has_with_clause_in_graph_rel: Found GraphJoins with WITH clause inside in GraphRel.left - WITH+MATCH pattern");
+                    }
+                    has_with_inside
                 }
                 _ => false,
             };
@@ -2179,8 +2237,91 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
         LogicalPlan::Limit(limit) => has_with_clause_in_graph_rel(&limit.input),
         LogicalPlan::OrderBy(order_by) => has_with_clause_in_graph_rel(&order_by.input),
         LogicalPlan::Skip(skip) => has_with_clause_in_graph_rel(&skip.input),
+        // Check Union at top level - WITH clauses might be inside Union branches
+        LogicalPlan::Union(union) => {
+            union.inputs.iter().any(|input| has_with_clause_in_graph_rel(input))
+        }
         _ => false,
     }
+}
+
+/// Check if a plan contains WITH+aggregation followed by MATCH pattern.
+/// This happens when:
+/// 1. WITH clause contains aggregations (count, sum, etc.)
+/// 2. Followed by another MATCH clause
+/// 
+/// The analyzer transforms this to: GraphJoins(joins=[...], input=GroupBy(...))
+/// Where the GroupBy came from the WITH aggregation.
+/// 
+/// This pattern requires CTE-based processing because:
+/// - The aggregation must be computed first (materialized as a subquery)
+/// - The subsequent MATCH joins against the aggregated results
+pub(super) fn has_with_aggregation_pattern(plan: &LogicalPlan) -> bool {
+    // The pattern we're looking for is:
+    // - Outer GraphJoins with real joins (from the second MATCH)
+    // - Inside that, a GroupBy with is_materialization_boundary=true
+    //
+    // After GraphJoinInference respects boundaries, the structure is:
+    // GraphJoins(outer joins) -> Projection -> GraphRel(left: GroupBy(boundary=true), ...)
+    
+    // Step 1: Find the outer GraphJoins at the top level (unwrapping Limit/OrderBy/etc)
+    fn find_top_level_graph_joins(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphJoins> {
+        match plan {
+            LogicalPlan::GraphJoins(gj) => Some(gj),
+            LogicalPlan::Limit(l) => find_top_level_graph_joins(&l.input),
+            LogicalPlan::OrderBy(o) => find_top_level_graph_joins(&o.input),
+            LogicalPlan::Skip(s) => find_top_level_graph_joins(&s.input),
+            LogicalPlan::Projection(p) => find_top_level_graph_joins(&p.input),
+            LogicalPlan::Filter(f) => find_top_level_graph_joins(&f.input),
+            _ => None,
+        }
+    }
+    
+    // Step 2: Check if plan contains a GroupBy with is_materialization_boundary=true
+    fn has_materialization_boundary_group_by(plan: &LogicalPlan) -> bool {
+        match plan {
+            LogicalPlan::GroupBy(gb) => {
+                if gb.is_materialization_boundary {
+                    return true;
+                }
+                // Also recurse into GroupBy's input
+                has_materialization_boundary_group_by(&gb.input)
+            },
+            LogicalPlan::GraphRel(gr) => {
+                // Check both left and right branches
+                has_materialization_boundary_group_by(&gr.left) || has_materialization_boundary_group_by(&gr.right)
+            },
+            LogicalPlan::Projection(p) => has_materialization_boundary_group_by(&p.input),
+            LogicalPlan::Filter(f) => has_materialization_boundary_group_by(&f.input),
+            LogicalPlan::GraphNode(gn) => has_materialization_boundary_group_by(&gn.input),
+            LogicalPlan::GraphJoins(gj) => has_materialization_boundary_group_by(&gj.input),
+            _ => false,
+        }
+    }
+    
+    // Check for the pattern: outer GraphJoins with joins + GroupBy(boundary) inside
+    if let Some(graph_joins) = find_top_level_graph_joins(plan) {
+        // Must have actual joins (from the outer MATCH pattern)
+        if graph_joins.joins.is_empty() {
+            println!("DEBUG has_with_aggregation_pattern: GraphJoins has no joins, returning false");
+            return false;
+        }
+        
+        // Check if there's a GroupBy with materialization boundary inside
+        let has_boundary_groupby = has_materialization_boundary_group_by(&graph_joins.input);
+        
+        println!("DEBUG has_with_aggregation_pattern: has_joins={}, has_boundary_groupby={}", 
+            !graph_joins.joins.is_empty(), has_boundary_groupby);
+        
+        if has_boundary_groupby {
+            log::info!("🔍 has_with_aggregation_pattern: Detected GraphJoins + GroupBy(boundary=true) - WITH aggregation followed by MATCH");
+            return true;
+        }
+    } else {
+        println!("DEBUG has_with_aggregation_pattern: No top-level GraphJoins found, returning false");
+    }
+    
+    false
 }
 
 /// Extract outer aggregation info from a plan that wraps a Union

@@ -156,6 +156,8 @@ impl CleanupViewScanFilters {
                                 input: new_input,
                                 expressions: group_by.expressions.clone(),
                                 having_clause: group_by.having_clause.clone(),
+                                is_materialization_boundary: group_by.is_materialization_boundary,
+                                exposed_alias: group_by.exposed_alias.clone(),
                             },
                         )))
                     }
@@ -255,6 +257,26 @@ impl CleanupViewScanFilters {
             | LogicalPlan::Union(_)
             | LogicalPlan::Cte(_)
             | LogicalPlan::Unwind(_) => Transformed::No(logical_plan),
+            
+            LogicalPlan::WithClause(with_clause) => {
+                let child_tf = self.optimize_with_context(with_clause.input.clone(), plan_ctx, inside_graph_rel)?;
+                match child_tf {
+                    Transformed::Yes(new_input) => {
+                        let new_with = crate::query_planner::logical_plan::WithClause {
+                            input: new_input,
+                            items: with_clause.items.clone(),
+                            distinct: with_clause.distinct,
+                            order_by: with_clause.order_by.clone(),
+                            skip: with_clause.skip,
+                            limit: with_clause.limit,
+                            where_clause: with_clause.where_clause.clone(),
+                            exported_aliases: with_clause.exported_aliases.clone(),
+                        };
+                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan),
+                }
+            }
         };
 
         Ok(transformed_plan)

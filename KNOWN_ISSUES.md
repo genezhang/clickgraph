@@ -10,37 +10,37 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Active Issues
 
-### 1. WITH+MATCH with Nested Relationships (3+ hops after WITH)
+### 1. WITH+MATCH with Aggregation on Second MATCH Variables (LDBC IC-3)
 
 **Status**: 🟡 Partial Implementation  
 **Severity**: MEDIUM  
-**Affects**: LDBC IC3, complex analytical queries
+**Affects**: LDBC IC-3, queries with aggregation after WITH+MATCH
 
-**Symptom**: WITH+MATCH patterns where the second MATCH has multiple relationship hops fail with "Expected GraphJoins as core plan" error.
+**Symptom**: WITH+MATCH patterns where the aggregation references variables from the second MATCH can fail with "Unknown identifier" errors. The CTE incorrectly includes joins from the second MATCH.
 
-**Example (fails)**:
+**Example (fails - IC-3 pattern)**:
 ```cypher
 MATCH (p:Person)-[:KNOWS*1..2]-(friend:Person)
 WITH friend
-MATCH (friend)<-[:HAS_CREATOR]-(post:Post)-[:POST_LOCATED_IN]->(country:Country)  // <-- 2 hops after WITH
-RETURN friend.id, count(post)
+MATCH (friend)<-[:HAS_CREATOR]-(post:Post)-[:LOCATED_IN]->(country:Country)
+RETURN friend.id, count(post) AS msgCount  // <-- aggregation on post
 ```
 
-**Example (works)**:
+**Example (works - IC-9 pattern)**:
 ```cypher
 MATCH (p:Person)-[:KNOWS*1..2]-(friend:Person)  
-WITH friend
-MATCH (friend)<-[:HAS_CREATOR]-(post:Post)  // <-- 1 hop after WITH
-RETURN friend.id, count(post)
+WITH DISTINCT friend
+MATCH (friend)<-[:HAS_CREATOR]-(post:Post)
+RETURN friend.id, post.id, post.content  // <-- no aggregation, just projections
 ```
 
-**Root Cause**: The CTE-based WITH+MATCH implementation currently handles single relationship hops after the WITH clause. Nested GraphRels (2+ hops after WITH) need more complex handling.
+**Root Cause**: When bidirectional patterns (UNION) combine with WITH+MATCH CTEs, the second MATCH's joins incorrectly leak into the CTE definition. The CTE references `post.id` before `post` is defined.
 
-**Workaround**: Break complex patterns into simpler queries using WITH clauses.
+**Workaround**: Avoid aggregations on second MATCH variables, or restructure query to avoid WITH clause with bidirectional patterns.
 
 ---
 
-### 3. Anti-Join Pattern (NOT relationship) - NOT IMPLEMENTED
+### 2. Anti-Join Pattern (NOT relationship) - NOT IMPLEMENTED
 
 **Status**: 🔴 Not Implemented  
 **Severity**: HIGH  

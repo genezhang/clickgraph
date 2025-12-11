@@ -10,6 +10,7 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 - Check if there are existing functions or modules that can be reused before implementing new code
 - Follow Boy Scout Rule: refactor code to be clear and maintainable whenever appropriate, before, during, or after implementing features
 - Remove unused code, imports, variables, and comments promptly to avoid clutter
+- When fixing a bug, step back and consider general patterns, not just the specific instance
 
 ## Development Environment
 
@@ -263,7 +264,7 @@ ecommerce_simple.yaml            → schemas/examples/
 - Thread-safe schema flow through entire query execution
 - All multi-schema tests passing (100%)
 
-**Neo4j Bolt Protocol v4.4**
+**Neo4j Bolt Protocol v5.8**
 - Complete wire protocol implementation in `server/bolt_protocol/`
 - Authentication system with multiple schemes (`auth.rs`)
 - Message handling for all Bolt operations (`messages.rs`)
@@ -316,7 +317,7 @@ ecommerce_simple.yaml            → schemas/examples/
   - Add SQL generation in `clickhouse_query_generator/`
   - Include optimization passes in `query_planner/optimizer/`
 - **Phase 3 - Test**: Manual smoke test → Unit tests → Integration tests
-- **Phase 4 - Debug**: Add debug output, use `sql_only`, check server logs
+- **Phase 4 - Debug**: Add debug output, use `sql_only`, check server logs. Run the sql to make sure it works as expected.
 - **Phase 5 - Document**: Update STATUS.md, create feature note, update CHANGELOG.md
 
 **Bolt Protocol Enhancements**
