@@ -513,12 +513,13 @@ fn build_chained_with_match_cte_plan(
                 log::info!("🔧 build_chained_with_match_cte_plan: Rendering WITH plan for '{}' - plan type: {:?}", 
                            with_alias, std::mem::discriminant(with_plan));
                 
-                // Extract the plan to render: for WithClause, render its input (the graph pattern)
-                // For Projection(With), render the whole projection (it contains the scope boundary)
-                let plan_to_render = match with_plan {
+                // Extract the plan to render and the WITH clause modifiers (ORDER BY, SKIP, LIMIT)
+                let (plan_to_render, with_order_by, with_skip, with_limit) = match with_plan {
                     LogicalPlan::WithClause(wc) => {
                         log::info!("🔧 build_chained_with_match_cte_plan: Unwrapping WithClause, rendering input");
                         log::info!("🔧 build_chained_with_match_cte_plan: wc.input type: {:?}", std::mem::discriminant(wc.input.as_ref()));
+                        log::info!("🔧 build_chained_with_match_cte_plan: wc has order_by={:?}, skip={:?}, limit={:?}", 
+                                   wc.order_by.is_some(), wc.skip, wc.limit);
                         // Debug: if it's GraphJoins, log the joins
                         if let LogicalPlan::GraphJoins(gj) = wc.input.as_ref() {
                             log::info!("🔧 build_chained_with_match_cte_plan: wc.input is GraphJoins with {} joins", gj.joins.len());
@@ -527,7 +528,7 @@ fn build_chained_with_match_cte_plan(
                                     i, join.table_name.as_str(), join.table_alias.as_str(), join.joining_on);
                             }
                         }
-                        wc.input.as_ref()
+                        (wc.input.as_ref(), wc.order_by.clone(), wc.skip, wc.limit)
                     }
                     LogicalPlan::Projection(proj) => {
                         log::info!("🔧 build_chained_with_match_cte_plan: WITH projection input type: {:?}", 
@@ -537,18 +538,46 @@ fn build_chained_with_match_cte_plan(
                             log::info!("🔧 build_chained_with_match_cte_plan: Filter input type: {:?}", 
                                        std::mem::discriminant(filter.input.as_ref()));
                         }
-                        with_plan
+                        (with_plan as &LogicalPlan, None, None, None)
                     }
-                    _ => with_plan,
+                    _ => (with_plan as &LogicalPlan, None, None, None),
                 };
                 
                 match render_without_with_detection(plan_to_render, schema) {
-                    Ok(rendered) => {
+                    Ok(mut rendered) => {
                         log::info!("🔧 build_chained_with_match_cte_plan: Rendered SQL FROM: {:?}", rendered.from);
                         log::info!("🔧 build_chained_with_match_cte_plan: Rendered SQL JOINs: {} join(s)", rendered.joins.0.len());
                         for (i, join) in rendered.joins.0.iter().enumerate() {
                             log::info!("🔧 build_chained_with_match_cte_plan: JOIN {}: {:?}", i, join);
                         }
+                        
+                        // Apply WithClause's ORDER BY, SKIP, LIMIT to the rendered plan
+                        if let Some(order_by_items) = with_order_by {
+                            log::info!("🔧 build_chained_with_match_cte_plan: Applying ORDER BY from WithClause");
+                            let render_order_by: Vec<OrderByItem> = order_by_items
+                                .iter()
+                                .filter_map(|item| {
+                                    let expr_result: Result<RenderExpr, _> = item.expression.clone().try_into();
+                                    expr_result.ok().map(|expr| OrderByItem {
+                                        expression: expr,
+                                        order: match item.order {
+                                            crate::query_planner::logical_plan::OrderByOrder::Asc => OrderByOrder::Asc,
+                                            crate::query_planner::logical_plan::OrderByOrder::Desc => OrderByOrder::Desc,
+                                        },
+                                    })
+                                })
+                                .collect();
+                            rendered.order_by = OrderByItems(render_order_by);
+                        }
+                        if let Some(skip_count) = with_skip {
+                            log::info!("🔧 build_chained_with_match_cte_plan: Applying SKIP {} from WithClause", skip_count);
+                            rendered.skip = SkipItem(Some(skip_count as i64));
+                        }
+                        if let Some(limit_count) = with_limit {
+                            log::info!("🔧 build_chained_with_match_cte_plan: Applying LIMIT {} from WithClause", limit_count);
+                            rendered.limit = LimitItem(Some(limit_count as i64));
+                        }
+                        
                         rendered_plans.push(rendered);
                     }
                     Err(e) => {
@@ -568,14 +597,31 @@ fn build_chained_with_match_cte_plan(
             let cte_name = format!("with_{}_{}", with_alias.replace(".*", ""), &unique_suffix[..8]);
             
             // Create CTE content - if multiple renders, combine with UNION ALL
+            // Extract ORDER BY, SKIP, LIMIT from first rendered plan (they should all have the same modifiers)
+            // These come from the WithClause and were applied to each rendered plan earlier
+            let first_order_by = if !rendered_plans.is_empty() && !rendered_plans[0].order_by.0.is_empty() {
+                Some(rendered_plans[0].order_by.clone())
+            } else {
+                None
+            };
+            let first_skip = rendered_plans.first().and_then(|p| p.skip.0);
+            let first_limit = rendered_plans.first().and_then(|p| p.limit.0);
+            
             let with_cte_render = if rendered_plans.len() == 1 {
                 rendered_plans.pop().unwrap()
             } else {
                 // Multiple WITH clauses with same alias - create UNION ALL CTE
                 log::info!("🔧 build_chained_with_match_cte_plan: Combining {} WITH renders with UNION ALL for alias '{}'", 
                            rendered_plans.len(), with_alias);
+                
+                // Clear ORDER BY/SKIP/LIMIT from individual plans - they'll be applied to the UNION wrapper
+                for plan in &mut rendered_plans {
+                    plan.order_by = OrderByItems(vec![]);
+                    plan.skip = SkipItem(None);
+                    plan.limit = LimitItem(None);
+                }
                            
-                // Create a wrapper RenderPlan with UnionItems
+                // Create a wrapper RenderPlan with UnionItems, preserving ORDER BY/SKIP/LIMIT
                 RenderPlan {
                     ctes: CteItems(vec![]),
                     select: SelectItems { items: vec![], distinct: false },
@@ -585,9 +631,9 @@ fn build_chained_with_match_cte_plan(
                     filters: FilterItems(None),
                     group_by: GroupByExpressions(vec![]),
                     having_clause: None,
-                    order_by: OrderByItems(vec![]),
-                    skip: SkipItem(None),
-                    limit: LimitItem(None),
+                    order_by: first_order_by.unwrap_or_else(|| OrderByItems(vec![])),
+                    skip: SkipItem(first_skip),
+                    limit: LimitItem(first_limit),
                     union: UnionItems(Some(Union {
                         input: rendered_plans,
                         union_type: crate::render_plan::UnionType::All,

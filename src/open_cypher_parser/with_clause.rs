@@ -16,6 +16,10 @@ use super::{
     match_clause::parse_match_clause,
     optional_match_clause::parse_optional_match_clause,
     unwind_clause::parse_unwind_clause,
+    order_by_clause::parse_order_by_clause,
+    skip_clause::parse_skip_clause,
+    limit_clause::parse_limit_clause,
+    where_clause::parse_where_clause,
 };
 
 fn parse_with_item(input: &'_ str) -> IResult<&'_ str, WithItem<'_>> {
@@ -31,6 +35,10 @@ pub fn parse_with_clause(
 ) -> IResult<&'_ str, WithClause<'_>, OpenCypherParsingError<'_>> {
     // Parse the WITH keyword
     let (input, _) = ws(tag_no_case("WITH")).parse(input)?;
+    
+    // Parse optional DISTINCT modifier
+    let (input, distinct) = opt(ws(tag_no_case("DISTINCT"))).parse(input)?;
+    let distinct = distinct.is_some();
 
     let (input, with_items) = context(
         "Error in with clause",
@@ -40,6 +48,18 @@ pub fn parse_with_clause(
         ),
     )
     .parse(input)?;
+    
+    // Parse optional ORDER BY clause (part of WITH syntax per OpenCypher spec)
+    let (input, order_by) = opt(parse_order_by_clause).parse(input)?;
+    
+    // Parse optional SKIP clause (part of WITH syntax per OpenCypher spec)
+    let (input, skip) = opt(parse_skip_clause).parse(input)?;
+    
+    // Parse optional LIMIT clause (part of WITH syntax per OpenCypher spec)
+    let (input, limit) = opt(parse_limit_clause).parse(input)?;
+    
+    // Parse optional WHERE clause (part of WITH syntax per OpenCypher spec)
+    let (input, where_clause) = opt(parse_where_clause).parse(input)?;
 
     // Parse optional subsequent UNWIND clause after WITH
     // This handles: WITH d, rip UNWIND rip.ips AS ip ...
@@ -60,6 +80,11 @@ pub fn parse_with_clause(
 
     let with_clause = WithClause { 
         with_items,
+        distinct,
+        order_by,
+        skip,
+        limit,
+        where_clause,
         subsequent_unwind,
         subsequent_match: subsequent_match.map(Box::new),
         subsequent_optional_matches,

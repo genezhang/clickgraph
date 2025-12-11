@@ -342,8 +342,34 @@ impl ToSql for Cte {
 
                 // Handle UNION plans - the union branches contain their own SELECTs
                 if plan.union.0.is_some() {
-                    // For Union plans, just emit the union branches directly
-                    cte_body.push_str(&plan.union.to_sql());
+                    // Check if ORDER BY, SKIP, or LIMIT are present on the UNION wrapper
+                    let needs_subquery = !plan.order_by.0.is_empty() 
+                        || plan.limit.0.is_some() 
+                        || plan.skip.0.is_some();
+                    
+                    if needs_subquery {
+                        // Wrap UNION in a subquery to apply ORDER BY/LIMIT/SKIP
+                        cte_body.push_str("SELECT * FROM (\n");
+                        cte_body.push_str(&plan.union.to_sql());
+                        cte_body.push_str(") AS __union\n");
+                        cte_body.push_str(&plan.order_by.to_sql());
+                        
+                        // Handle SKIP/LIMIT - either or both may be present
+                        if plan.limit.0.is_some() || plan.skip.0.is_some() {
+                            let skip_str = if let Some(n) = plan.skip.0 {
+                                format!("{n}, ")
+                            } else {
+                                "".to_string()
+                            };
+                            // ClickHouse requires LIMIT if OFFSET is present
+                            // Use a very large number if only SKIP is specified
+                            let limit_val = plan.limit.0.unwrap_or(9223372036854775807i64); // i64::MAX
+                            cte_body.push_str(&format!("LIMIT {skip_str}{limit_val}\n"));
+                        }
+                    } else {
+                        // For Union plans without modifiers, just emit the union branches directly
+                        cte_body.push_str(&plan.union.to_sql());
+                    }
                 } else {
                     // Standard single-query plan
                     // If there are no explicit SELECT items, default to SELECT *
@@ -366,6 +392,18 @@ impl ToSql for Cte {
                     }
 
                     cte_body.push_str(&plan.order_by.to_sql());
+                    
+                    // Add LIMIT/SKIP for non-union CTEs as well
+                    if plan.limit.0.is_some() || plan.skip.0.is_some() {
+                        let skip_str = if let Some(n) = plan.skip.0 {
+                            format!("{n}, ")
+                        } else {
+                            "".to_string()
+                        };
+                        // ClickHouse requires LIMIT if OFFSET is present
+                        let limit_val = plan.limit.0.unwrap_or(9223372036854775807i64);
+                        cte_body.push_str(&format!("LIMIT {skip_str}{limit_val}\n"));
+                    }
                 }
 
                 format!("{} AS ({})", self.cte_name, cte_body)

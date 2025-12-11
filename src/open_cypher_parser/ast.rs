@@ -115,6 +115,16 @@ pub struct ReturnItem<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct WithClause<'a> {
     pub with_items: Vec<WithItem<'a>>,
+    /// Optional DISTINCT modifier
+    pub distinct: bool,
+    /// Optional ORDER BY clause - part of WITH syntax per OpenCypher spec
+    pub order_by: Option<OrderByClause<'a>>,
+    /// Optional SKIP clause - part of WITH syntax per OpenCypher spec
+    pub skip: Option<SkipClause>,
+    /// Optional LIMIT clause - part of WITH syntax per OpenCypher spec  
+    pub limit: Option<LimitClause>,
+    /// Optional WHERE clause after WITH - filters the intermediate result
+    pub where_clause: Option<WhereClause<'a>>,
     /// Optional subsequent UNWIND clause after WITH (for WITH ... UNWIND chaining)
     pub subsequent_unwind: Option<UnwindClause<'a>>,
     /// Optional subsequent MATCH clause after WITH (for WITH ... MATCH chaining)

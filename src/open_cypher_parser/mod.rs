@@ -226,7 +226,8 @@ mod tests {
                 // Ensure each clause is present.
                 assert!(ast.match_clause.is_some(), "Expected MATCH clause");
                 assert!(ast.with_clause.is_some(), "Expected WITH clause");
-                assert!(ast.where_clause.is_some(), "Expected WHERE clause");
+                // WHERE after WITH is now part of WITH clause, not query-level
+                assert!(ast.where_clause.is_none(), "WHERE should be part of WITH clause, not query level");
                 assert!(ast.create_clause.is_some(), "Expected CREATE clause");
                 assert!(ast.set_clause.is_some(), "Expected SET clause");
                 assert!(ast.remove_clause.is_some(), "Expected REMOVE clause");
@@ -249,8 +250,10 @@ mod tests {
                 let with_item = &with_clause.with_items[0];
                 assert_eq!(with_item.expression, Expression::Variable("a"));
                 assert_eq!(with_item.alias, None);
-
-                let where_clause = ast.where_clause.unwrap();
+                
+                // Check WHERE is now part of WITH clause
+                assert!(with_clause.where_clause.is_some(), "Expected WHERE clause inside WITH");
+                let where_clause = with_clause.where_clause.unwrap();
 
                 if let Expression::OperatorApplicationExp(operator_application) =
                     where_clause.conditions
@@ -470,42 +473,46 @@ mod tests {
             subsequent_match: None,
             subsequent_optional_matches: vec![],
             subsequent_with: None,
+            distinct: false,
+            order_by: None,
+            skip: None,
+            limit: None,
+            // WHERE after WITH items is now part of WITH clause per OpenCypher spec
+            where_clause: Some(WhereClause {
+                conditions: Expression::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::And,
+                    operands: vec![
+                        Expression::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::GreaterThan,
+                            operands: vec![
+                                Expression::Variable("foaf"),
+                                Expression::Literal(Literal::Integer(1)),
+                            ],
+                        }),
+                        Expression::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::Or,
+                            operands: vec![
+                                Expression::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::IsNotNull,
+                                    operands: vec![Expression::Variable("fof")],
+                                }),
+                                Expression::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::Addition,
+                                    operands: vec![
+                                        Expression::Variable("a"),
+                                        Expression::Variable("b"),
+                                    ],
+                                }),
+                            ],
+                        }),
+                    ],
+                }),
+            }),
         };
         assert_eq!(with_clause, expected_with_clause);
 
-        assert!(query_ast.where_clause.is_some(), "Expected WHERE clause");
-        let where_clause = query_ast.where_clause.unwrap();
-        let expected_where_clause = WhereClause {
-            conditions: Expression::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::And,
-                operands: vec![
-                    Expression::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::GreaterThan,
-                        operands: vec![
-                            Expression::Variable("foaf"),
-                            Expression::Literal(Literal::Integer(1)),
-                        ],
-                    }),
-                    Expression::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::Or,
-                        operands: vec![
-                            Expression::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::IsNotNull,
-                                operands: vec![Expression::Variable("fof")],
-                            }),
-                            Expression::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::Addition,
-                                operands: vec![
-                                    Expression::Variable("a"),
-                                    Expression::Variable("b"),
-                                ],
-                            }),
-                        ],
-                    }),
-                ],
-            }),
-        };
-        assert_eq!(where_clause, expected_where_clause);
+        // WHERE is now parsed as part of WITH clause, so query-level where_clause should be None
+        assert!(query_ast.where_clause.is_none(), "WHERE should be part of WITH clause, not query level");
 
         assert!(query_ast.return_clause.is_some(), "Expected RETURN clause");
         let return_clause = query_ast.return_clause.unwrap();

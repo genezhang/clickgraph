@@ -1,6 +1,7 @@
 use crate::{
     open_cypher_parser::ast::WithClause as AstWithClause,
-    query_planner::logical_plan::{LogicalPlan, ProjectionItem, WithClause},
+    query_planner::logical_plan::{LogicalPlan, ProjectionItem, WithClause, OrderByItem},
+    query_planner::logical_expr::LogicalExpr,
 };
 use std::sync::Arc;
 
@@ -13,8 +14,6 @@ use std::sync::Arc;
 /// - When WITH contains aggregations → later transformed to GroupBy by GroupByBuilding pass
 ///
 /// OpenCypher syntax: WITH [DISTINCT] items [ORDER BY ...] [SKIP n] [LIMIT m] [WHERE ...]
-/// NOTE: ORDER BY, SKIP, LIMIT, WHERE are part of WITH syntax but currently parsed
-/// at the query level. TODO: Move these into WithClause during Phase 2 parser updates.
 ///
 /// Example: `WITH a, COUNT(b) as follows` creates:
 /// - WithClause with items: [a, COUNT(b) as follows], exported_aliases: [a, follows]
@@ -34,12 +33,43 @@ pub fn evaluate_with_clause<'a>(
         .collect();
 
     println!(
-        "WITH clause: Creating WithClause with {} items",
-        projection_items.len()
+        "WITH clause: Creating WithClause with {} items, distinct={}, order_by={:?}, skip={:?}, limit={:?}",
+        projection_items.len(),
+        with_clause.distinct,
+        with_clause.order_by.is_some(),
+        with_clause.skip.is_some(),
+        with_clause.limit.is_some()
     );
 
-    // Create the new WithClause type
-    let with_node = WithClause::new(plan, projection_items);
+    // Create the new WithClause type with all modifiers
+    let mut with_node = WithClause::new(plan, projection_items)
+        .with_distinct(with_clause.distinct);
+    
+    // Add ORDER BY if present
+    if let Some(ref order_by_ast) = with_clause.order_by {
+        let order_by_items: Vec<OrderByItem> = order_by_ast
+            .order_by_items
+            .iter()
+            .map(|item| item.clone().into())
+            .collect();
+        with_node = with_node.with_order_by(order_by_items);
+    }
+    
+    // Add SKIP if present
+    if let Some(ref skip_ast) = with_clause.skip {
+        with_node = with_node.with_skip(skip_ast.skip_item as u64);
+    }
+    
+    // Add LIMIT if present
+    if let Some(ref limit_ast) = with_clause.limit {
+        with_node = with_node.with_limit(limit_ast.limit_item as u64);
+    }
+    
+    // Add WHERE if present
+    if let Some(ref where_ast) = with_clause.where_clause {
+        let predicate: LogicalExpr = where_ast.conditions.clone().into();
+        with_node = with_node.with_where(predicate);
+    }
 
     Arc::new(LogicalPlan::WithClause(with_node))
 }
