@@ -528,7 +528,8 @@ fn build_with_match_cte_plan(
     
     // Step 4.6: Extract nested CTEs from the WITH clause render plan
     // The WITH clause might have VLP recursive CTEs that need to be hoisted to the top level
-    let nested_ctes = std::mem::take(&mut with_cte_render.ctes.0);
+    let mut nested_ctes = Vec::new();
+    hoist_nested_ctes(&mut with_cte_render, &mut nested_ctes);
     if !nested_ctes.is_empty() {
         log::info!("🔧 build_with_match_cte_plan: Hoisting {} nested CTEs from WITH clause", nested_ctes.len());
     }
@@ -933,11 +934,7 @@ fn build_chained_with_match_cte_plan(
             
             // Extract nested CTEs from the rendered plan (e.g., VLP recursive CTEs)
             // These need to be hoisted to the top level before the WITH CTE
-            let nested_ctes = std::mem::take(&mut with_cte_render.ctes.0);
-            if !nested_ctes.is_empty() {
-                log::info!("🔧 build_chained_with_match_cte_plan: Hoisting {} nested CTEs (e.g., VLP) from WITH clause", nested_ctes.len());
-                all_ctes.extend(nested_ctes);
-            }
+            hoist_nested_ctes(&mut with_cte_render, &mut all_ctes);
             
             // Create the CTE (without nested CTEs, they've been hoisted)
             let with_cte = Cte {
@@ -2265,6 +2262,30 @@ fn find_with_clause_subplan(plan: &LogicalPlan) -> Option<(&LogicalPlan, String)
         LogicalPlan::OrderBy(order_by) => find_with_clause_subplan(&order_by.input),
         LogicalPlan::Skip(skip) => find_with_clause_subplan(&skip.input),
         _ => None,
+    }
+}
+/// Helper function to hoist nested CTEs from a rendered plan to a parent CTE list.
+/// 
+/// This is used when rendering WITH clauses that may contain VLP (Variable-Length Path)
+/// or other patterns that generate their own CTEs. These nested CTEs need to be hoisted
+/// to the top level so they appear before the WITH CTE that references them.
+/// 
+/// # Arguments
+/// * `from` - The RenderPlan to extract CTEs from (will be emptied)
+/// * `to` - The destination vector to append the CTEs to
+/// 
+/// # Example
+/// ```rust
+/// let mut with_cte_render = render_without_with_detection(plan, schema)?;
+/// let mut all_ctes = Vec::new();
+/// hoist_nested_ctes(&mut with_cte_render, &mut all_ctes);
+/// // all_ctes now contains any VLP CTEs that were nested in with_cte_render
+/// ```
+fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
+    let nested_ctes = std::mem::take(&mut from.ctes.0);
+    if !nested_ctes.is_empty() {
+        log::debug!("🔧 Hoisting {} nested CTEs to parent level", nested_ctes.len());
+        to.extend(nested_ctes);
     }
 }
 
