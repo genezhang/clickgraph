@@ -6,6 +6,14 @@
 
 **LDBC SNB Benchmark: 100% (8/8 Interactive queries passing)**
 
+### Recent Improvements (Dec 11, 2025)
+- **WITH Handler Refactoring** - Eliminated ~120 lines of duplicate code ✅
+  - Created 3 helper functions for TableAlias/wildcard expansion
+  - Refactored 2 of 3 WITH handlers to use shared helpers
+  - All 8/8 LDBC queries still passing after refactoring
+  - Improved maintainability: Single source of truth for expansion logic
+  - See: `notes/with-clause-refactoring-dec2025.md` for details
+
 ### Recent Fixes (Dec 11, 2025)
 - **WITH TableAlias Aggregation** - Fixed IC-1: `WITH friend, count(*) AS cnt` now works ✅
   - Problem: TableAlias in WITH+aggregation only expanded to ID column
