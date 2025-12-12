@@ -626,6 +626,11 @@ fn build_chained_with_match_cte_plan(
     let mut all_ctes: Vec<Cte> = Vec::new();
     let mut iteration = 0;
 
+    // Track CTE schemas: map CTE name to (SELECT items, property names)
+    // This allows creating proper property_mapping when referencing CTEs
+    let mut cte_schemas: std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>)> =
+        std::collections::HashMap::new();
+
     // Track aliases that have been converted to CTEs across ALL iterations
     // This prevents re-processing the same alias in subsequent iterations
     // (important for chained WITH like `WITH DISTINCT fof WITH fof`)
@@ -1051,10 +1056,41 @@ fn build_chained_with_match_cte_plan(
             // Create the CTE (without nested CTEs, they've been hoisted)
             let with_cte = Cte {
                 cte_name: cte_name.clone(),
-                content: CteContent::Structured(with_cte_render),
+                content: CteContent::Structured(with_cte_render.clone()),
                 is_recursive: false,
             };
             all_ctes.push(with_cte);
+
+            // Store CTE schema for later reference creation
+            // Extract SELECT items from the rendered plan
+            let (select_items_for_schema, property_names_for_schema) = match &with_cte_render.union {
+                UnionItems(Some(union)) if !union.input.is_empty() => {
+                    // For UNION, take schema from first branch (all branches must have same schema)
+                    let items = union.input[0].select.items.clone();
+                    let names: Vec<String> = items
+                        .iter()
+                        .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                        .collect();
+                    (items, names)
+                }
+                _ => {
+                    let items = with_cte_render.select.items.clone();
+                    let names: Vec<String> = items
+                        .iter()
+                        .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                        .collect();
+                    (items, names)
+                }
+            };
+            cte_schemas.insert(
+                cte_name.clone(),
+                (select_items_for_schema, property_names_for_schema.clone()),
+            );
+            log::info!(
+                "🔧 build_chained_with_match_cte_plan: Stored schema for CTE '{}': {:?}",
+                cte_name,
+                property_names_for_schema
+            );
 
             // Replace ALL WITH clauses with this alias with CTE reference
             // Also pass pre_with_aliases so joins from the pre-WITH scope can be filtered out
@@ -1063,6 +1099,7 @@ fn build_chained_with_match_cte_plan(
                 &with_alias,
                 &cte_name,
                 &pre_with_aliases,
+                &cte_schemas,
             )?;
 
             // Track that this alias is now a CTE (so subsequent iterations don't filter it)
@@ -2581,16 +2618,47 @@ fn replace_with_clause_with_cte_reference(
         false
     }
 
-    // Helper to create a CTE reference node
-    fn create_cte_reference(cte_name: &str, _with_alias: &str) -> LogicalPlan {
+    // Helper to create a CTE reference node with proper property_mapping
+    fn create_cte_reference(
+        cte_name: &str,
+        _with_alias: &str,
+        cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>)>,
+    ) -> LogicalPlan {
+        use crate::graph_catalog::expression_parser::PropertyValue;
+
         // Use a table alias that won't conflict with column aliases
         // Use "_t" suffix to avoid conflicts with output column names like "name"
         let table_alias = format!("{}_t", cte_name);
+
+        // Build property_mapping from CTE schema
+        let property_mapping = if let Some((_select_items, property_names)) =
+            cte_schemas.get(cte_name)
+        {
+            let mut mapping = HashMap::new();
+            for prop_name in property_names {
+                // Map each property name to a Column reference with that name
+                mapping.insert(prop_name.clone(), PropertyValue::Column(prop_name.clone()));
+            }
+            log::info!(
+                "🔧 create_cte_reference: Built property_mapping for '{}' with {} properties: {:?}",
+                cte_name,
+                mapping.len(),
+                property_names
+            );
+            mapping
+        } else {
+            log::warn!(
+                "🔧 create_cte_reference: No schema found for CTE '{}', using empty property_mapping",
+                cte_name
+            );
+            HashMap::new()
+        };
+
         LogicalPlan::GraphNode(GraphNode {
             input: Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan {
                 source_table: cte_name.to_string(),
                 view_filter: None,
-                property_mapping: HashMap::new(),
+                property_mapping,
                 id_column: "id".to_string(),
                 output_schema: vec!["id".to_string()],
                 projections: vec![],
@@ -2630,7 +2698,8 @@ fn replace_with_clause_with_cte_reference(
             let new_left: Arc<LogicalPlan> = if is_innermost_with_clause(&graph_rel.left) {
                 // Left IS the innermost WITH - replace it
                 log::info!("🔧 replace_with_clause_with_cte_reference: Replacing GraphRel.left (innermost WITH) with CTE reference");
-                Arc::new(create_cte_reference(cte_name, with_alias))
+                // Note: v1 function doesn't track CTE schemas, uses empty HashMap
+                Arc::new(create_cte_reference(cte_name, with_alias, &std::collections::HashMap::new()))
             } else if plan_contains_with_clause(&graph_rel.left) {
                 // Left contains a WITH (possibly innermost) - recurse
                 Arc::new(replace_with_clause_with_cte_reference(
@@ -2646,7 +2715,8 @@ fn replace_with_clause_with_cte_reference(
             let new_right: Arc<LogicalPlan> = if is_innermost_with_clause(&graph_rel.right) {
                 // Right IS the innermost WITH - replace it
                 log::info!("🔧 replace_with_clause_with_cte_reference: Replacing GraphRel.right (innermost WITH) with CTE reference");
-                Arc::new(create_cte_reference(cte_name, with_alias))
+                // Note: v1 function doesn't track CTE schemas, uses empty HashMap
+                Arc::new(create_cte_reference(cte_name, with_alias, &std::collections::HashMap::new()))
             } else if plan_contains_with_clause(&graph_rel.right) {
                 // Right contains a WITH (possibly innermost) - recurse
                 Arc::new(replace_with_clause_with_cte_reference(
@@ -2792,6 +2862,7 @@ fn replace_with_clause_with_cte_reference_v2(
     with_alias: &str,
     cte_name: &str,
     pre_with_aliases: &std::collections::HashSet<String>,
+    cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>)>,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
     use crate::query_planner::logical_plan::*;
     use std::collections::HashMap;
@@ -2862,16 +2933,47 @@ fn replace_with_clause_with_cte_reference_v2(
         "with_var".to_string()
     }
 
-    // Helper to create a CTE reference node
-    fn create_cte_reference(cte_name: &str, _with_alias: &str) -> LogicalPlan {
+    // Helper to create a CTE reference node with proper property_mapping
+    fn create_cte_reference(
+        cte_name: &str,
+        _with_alias: &str,
+        cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>)>,
+    ) -> LogicalPlan {
+        use crate::graph_catalog::expression_parser::PropertyValue;
+
         // Use a table alias that won't conflict with column aliases
         // Use "_t" suffix to avoid conflicts with output column names like "name"
         let table_alias = format!("{}_t", cte_name);
+
+        // Build property_mapping from CTE schema
+        let property_mapping = if let Some((_select_items, property_names)) =
+            cte_schemas.get(cte_name)
+        {
+            let mut mapping = HashMap::new();
+            for prop_name in property_names {
+                // Map each property name to a Column reference with that name
+                mapping.insert(prop_name.clone(), PropertyValue::Column(prop_name.clone()));
+            }
+            log::info!(
+                "🔧 create_cte_reference (v2): Built property_mapping for '{}' with {} properties: {:?}",
+                cte_name,
+                mapping.len(),
+                property_names
+            );
+            mapping
+        } else {
+            log::warn!(
+                "🔧 create_cte_reference (v2): No schema found for CTE '{}', using empty property_mapping",
+                cte_name
+            );
+            HashMap::new()
+        };
+
         LogicalPlan::GraphNode(GraphNode {
             input: Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan {
                 source_table: cte_name.to_string(),
                 view_filter: None,
-                property_mapping: HashMap::new(),
+                property_mapping,
                 id_column: "id".to_string(),
                 output_schema: vec!["id".to_string()],
                 projections: vec![],
@@ -2916,7 +3018,7 @@ fn replace_with_clause_with_cte_reference_v2(
                     "🔧 replace_v2: Replacing target innermost WithClause with CTE reference '{}'",
                     cte_name
                 );
-                Ok(create_cte_reference(cte_name, with_alias))
+                Ok(create_cte_reference(cte_name, with_alias, cte_schemas))
             } else if is_target_with {
                 // This is THE WithClause, but it has nested WITH clauses - error case
                 // (We should be processing inner ones first)
@@ -2926,6 +3028,7 @@ fn replace_with_clause_with_cte_reference_v2(
                     with_alias,
                     cte_name,
                     pre_with_aliases,
+                    cte_schemas,
                 )?;
 
                 // Check if after recursion, the new_input is a CTE reference
@@ -2958,7 +3061,7 @@ fn replace_with_clause_with_cte_reference_v2(
                     with_alias,
                     cte_name,
                     pre_with_aliases,
-                )?;
+                    cte_schemas,)?;
 
                 // Check if after recursion, the new_input is a CTE reference
                 // and this WITH is a simple passthrough - if so, collapse it
@@ -3005,7 +3108,7 @@ fn replace_with_clause_with_cte_reference_v2(
             // NEW: Check for innermost WithClause
             let new_left: Arc<LogicalPlan> = if is_innermost_with_clause(&graph_rel.left)
             {
-                Arc::new(create_cte_reference(cte_name, with_alias))
+                Arc::new(create_cte_reference(cte_name, with_alias, cte_schemas))
             } else if plan_contains_with_clause(&graph_rel.left)
                 || needs_processing(&graph_rel.left, with_alias)
             {
@@ -3014,14 +3117,14 @@ fn replace_with_clause_with_cte_reference_v2(
                     with_alias,
                     cte_name,
                     pre_with_aliases,
-                )?)
+                    cte_schemas,)?)
             } else {
                 graph_rel.left.clone()
             };
 
             let new_right: Arc<LogicalPlan> = if is_innermost_with_clause(&graph_rel.right)
             {
-                Arc::new(create_cte_reference(cte_name, with_alias))
+                Arc::new(create_cte_reference(cte_name, with_alias, cte_schemas))
             } else if plan_contains_with_clause(&graph_rel.right)
                 || needs_processing(&graph_rel.right, with_alias)
             {
@@ -3030,7 +3133,7 @@ fn replace_with_clause_with_cte_reference_v2(
                     with_alias,
                     cte_name,
                     pre_with_aliases,
-                )?)
+                    cte_schemas,)?)
             } else {
                 graph_rel.right.clone()
             };
@@ -3060,7 +3163,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 with_alias,
                 cte_name,
                 pre_with_aliases,
-            )?;
+                    cte_schemas,)?;
             Ok(LogicalPlan::Projection(Projection {
                 input: Arc::new(new_input),
                 items: proj.items.clone(),
@@ -3075,7 +3178,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 with_alias,
                 cte_name,
                 pre_with_aliases,
-            )?;
+                    cte_schemas,)?;
             Ok(LogicalPlan::Filter(Filter {
                 input: Arc::new(new_input),
                 predicate: filter.predicate.clone(),
@@ -3088,7 +3191,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 with_alias,
                 cte_name,
                 pre_with_aliases,
-            )?;
+                    cte_schemas,)?;
             Ok(LogicalPlan::GroupBy(GroupBy {
                 input: Arc::new(new_input),
                 expressions: group_by.expressions.clone(),
@@ -3104,7 +3207,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 with_alias,
                 cte_name,
                 pre_with_aliases,
-            )?;
+                    cte_schemas,)?;
 
             // Helper to check if a join condition references any stale alias
             fn condition_has_stale_refs(
@@ -3200,7 +3303,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 with_alias,
                 cte_name,
                 pre_with_aliases,
-            )?;
+                    cte_schemas,)?;
             Ok(LogicalPlan::Limit(Limit {
                 input: Arc::new(new_input),
                 count: limit.count,
@@ -3213,7 +3316,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 with_alias,
                 cte_name,
                 pre_with_aliases,
-            )?;
+                    cte_schemas,)?;
             Ok(LogicalPlan::OrderBy(OrderBy {
                 input: Arc::new(new_input),
                 items: order_by.items.clone(),
@@ -3226,7 +3329,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 with_alias,
                 cte_name,
                 pre_with_aliases,
-            )?;
+                    cte_schemas,)?;
             Ok(LogicalPlan::Skip(Skip {
                 input: Arc::new(new_input),
                 count: skip.count,
@@ -3243,7 +3346,7 @@ fn replace_with_clause_with_cte_reference_v2(
                         with_alias,
                         cte_name,
                         pre_with_aliases,
-                    )
+                    cte_schemas,)
                     .map(Arc::new)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
