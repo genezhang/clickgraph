@@ -634,15 +634,65 @@ fn build_chained_with_match_cte_plan(
                                            needs_projection, has_aggregation);
                                 
                                 // Convert LogicalExpr items to RenderExpr SelectItems
+                                // CRITICAL: Expand TableAlias to ALL columns (not just ID)
+                                // When WITH friend appears, it means "all properties of friend"
                                 let select_items: Vec<SelectItem> = items.iter()
-                                    .filter_map(|item| {
-                                        let expr_result: Result<RenderExpr, _> = item.expression.clone().try_into();
-                                        expr_result.ok().map(|expr| {
-                                            SelectItem {
-                                                expression: expr,
-                                                col_alias: item.col_alias.as_ref().map(|a| crate::render_plan::render_expr::ColumnAlias(a.0.clone())),
+                                    .flat_map(|item| {
+                                        // Check if this is a TableAlias that needs expansion to ALL columns
+                                        match &item.expression {
+                                            crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
+                                                // Expand to ALL columns (WITH friend means all properties)
+                                                match plan_to_render.get_properties_with_table_alias(&alias.0) {
+                                                    Ok((properties, actual_table_alias)) => {
+                                                        if !properties.is_empty() {
+                                                            let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.0.clone());
+                                                            // CRITICAL: WITH friend means "all properties of friend"
+                                                            // Expand to ALL columns, not just ID
+                                                            let mut items_for_alias = Vec::new();
+                                                            for (prop_name, col_name) in properties.iter() {
+                                                                items_for_alias.push(SelectItem {
+                                                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                                        table_alias: TableAlias(table_alias_to_use.clone()),
+                                                                        column: Column(crate::graph_catalog::expression_parser::PropertyValue::Column(col_name.clone())),
+                                                                    }),
+                                                                    col_alias: Some(crate::render_plan::render_expr::ColumnAlias(format!("{}.{}", alias.0, prop_name))),
+                                                                });
+                                                            }
+                                                            items_for_alias
+                                                        } else {
+                                                            // Fallback: convert as-is
+                                                            let expr_result: Result<RenderExpr, _> = item.expression.clone().try_into();
+                                                            expr_result.ok().map(|expr| {
+                                                                SelectItem {
+                                                                    expression: expr,
+                                                                    col_alias: item.col_alias.as_ref().map(|a| crate::render_plan::render_expr::ColumnAlias(a.0.clone())),
+                                                                }
+                                                            }).into_iter().collect()
+                                                        }
+                                                    }
+                                                    Err(_) => {
+                                                        // Fallback: convert as-is
+                                                        let expr_result: Result<RenderExpr, _> = item.expression.clone().try_into();
+                                                        expr_result.ok().map(|expr| {
+                                                            SelectItem {
+                                                                expression: expr,
+                                                                col_alias: item.col_alias.as_ref().map(|a| crate::render_plan::render_expr::ColumnAlias(a.0.clone())),
+                                                            }
+                                                        }).into_iter().collect()
+                                                    }
+                                                }
                                             }
-                                        })
+                                            _ => {
+                                                // Not a TableAlias, convert normally
+                                                let expr_result: Result<RenderExpr, _> = item.expression.clone().try_into();
+                                                expr_result.ok().map(|expr| {
+                                                    SelectItem {
+                                                        expression: expr,
+                                                        col_alias: item.col_alias.as_ref().map(|a| crate::render_plan::render_expr::ColumnAlias(a.0.clone())),
+                                                    }
+                                                }).into_iter().collect()
+                                            }
+                                        }
                                     })
                                     .collect();
                                 
@@ -662,9 +712,41 @@ fn build_chained_with_match_cte_plan(
                                     if has_aggregation {
                                         let group_by_exprs: Vec<RenderExpr> = items.iter()
                                             .filter(|item| !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)))
-                                            .filter_map(|item| {
-                                                let expr_result: Result<RenderExpr, _> = item.expression.clone().try_into();
-                                                expr_result.ok()
+                                            .flat_map(|item| {
+                                                // CRITICAL: Expand TableAlias to ALL actual columns
+                                                // Must match what we put in SELECT!
+                                                match &item.expression {
+                                                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
+                                                        // Get properties for this alias and add ALL columns to GROUP BY
+                                                        match plan_to_render.get_properties_with_table_alias(&alias.0) {
+                                                            Ok((properties, actual_table_alias)) => {
+                                                                if !properties.is_empty() {
+                                                                    let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.0.clone());
+                                                                    // Add ALL columns to GROUP BY (must match SELECT!)
+                                                                    let mut exprs = Vec::new();
+                                                                    for (_, col_name) in properties.iter() {
+                                                                        exprs.push(RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                                            table_alias: TableAlias(table_alias_to_use.clone()),
+                                                                            column: Column(crate::graph_catalog::expression_parser::PropertyValue::Column(col_name.clone())),
+                                                                        }));
+                                                                    }
+                                                                    exprs
+                                                                } else {
+                                                                    // Fallback: convert as-is
+                                                                    item.expression.clone().try_into().ok().into_iter().collect()
+                                                                }
+                                                            }
+                                                            Err(_) => {
+                                                                // Fallback: convert as-is
+                                                                item.expression.clone().try_into().ok().into_iter().collect()
+                                                            }
+                                                        }
+                                                    }
+                                                    _ => {
+                                                        // Not a TableAlias, convert normally
+                                                        item.expression.clone().try_into().ok().into_iter().collect()
+                                                    }
+                                                }
                                             })
                                             .collect();
                                         rendered.group_by = GroupByExpressions(group_by_exprs);
@@ -1010,8 +1092,6 @@ fn build_with_aggregation_match_cte_plan(
     // but `f.*` in SQL expands to ALL columns, which may not all be in GROUP BY.
     // Instead, we should replace `f.*` with the explicit GROUP BY columns.
     {
-        log::info!("🔧 build_with_aggregation_match_cte_plan: Processing {} SELECT items", group_by_render.select.items.len());
-        
         // Collect GROUP BY column expressions for the WITH alias
         let group_by_columns: Vec<RenderExpr> = group_by_render.group_by.0.iter()
             .filter(|expr| {
@@ -1024,12 +1104,9 @@ fn build_with_aggregation_match_cte_plan(
             .cloned()
             .collect();
         
-        log::info!("🔧   Found {} GROUP BY columns for alias '{}'", group_by_columns.len(), with_alias);
-        
         let mut new_select_items: Vec<SelectItem> = Vec::new();
         
         for (idx, item) in group_by_render.select.items.iter().enumerate() {
-            log::info!("🔧   SELECT item {}: {:?}", idx, item.expression);
             
             let is_wildcard = match &item.expression {
                 RenderExpr::Column(col) if col.0.raw() == "*" => true,
@@ -1039,7 +1116,6 @@ fn build_with_aggregation_match_cte_plan(
             
             if is_wildcard && !group_by_columns.is_empty() {
                 // Replace wildcard with the actual GROUP BY columns
-                log::info!("🔧   Replacing wildcard with {} GROUP BY columns", group_by_columns.len());
                 for gb_expr in &group_by_columns {
                     // Create SELECT item for this GROUP BY column
                     // Use the column name as alias (e.g., f.id -> "f.id")
@@ -1055,7 +1131,6 @@ fn build_with_aggregation_match_cte_plan(
                 }
             } else if is_wildcard {
                 // No GROUP BY columns found - convert bare `*` to `with_alias.*` as fallback
-                log::info!("🔧   Converting bare * to {}.*", with_alias);
                 new_select_items.push(SelectItem {
                     expression: RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias(with_alias.clone()),
@@ -1064,13 +1139,42 @@ fn build_with_aggregation_match_cte_plan(
                     col_alias: item.col_alias.clone(),
                 });
             } else {
-                // Not a wildcard, keep as-is
-                new_select_items.push(item.clone());
+                // Not a wildcard - but check if it's a TableAlias that needs expansion
+                match &item.expression {
+                    RenderExpr::TableAlias(ta) => {
+                        // CRITICAL: Expand TableAlias to ID column for GROUP BY consistency
+                        // Same pattern as in build_chained_with_match_cte_plan
+                        
+                        // Find corresponding GROUP BY expression for this alias
+                        let group_by_expr = group_by_columns.iter()
+                            .find(|expr| {
+                                if let RenderExpr::PropertyAccessExp(pa) = expr {
+                                    pa.table_alias.0 == ta.0
+                                } else {
+                                    false
+                                }
+                            });
+                        
+                        if let Some(gb_expr) = group_by_expr {
+                            // Use the same expression as GROUP BY
+                            new_select_items.push(SelectItem {
+                                expression: gb_expr.clone(),
+                                col_alias: item.col_alias.clone(),
+                            });
+                        } else {
+                            // Fallback: No matching GROUP BY found, keep as-is
+                            new_select_items.push(item.clone());
+                        }
+                    }
+                    _ => {
+                        // Not a wildcard or TableAlias, keep as-is
+                        new_select_items.push(item.clone());
+                    }
+                }
             }
         }
         
         group_by_render.select.items = new_select_items;
-        log::info!("🔧   Final SELECT has {} items", group_by_render.select.items.len());
     }
     
     // Step 4: Post-process: Remove joins that are NOT in the inner scope
