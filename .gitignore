@@ -81,6 +81,16 @@ docs/
 !docs/docker-deployment.md
 !docs/denormalized-edge-tables.md
 
+# Keep external documentation (wiki, images, features subdirs)
+!docs/wiki/
+!docs/wiki/**
+!docs/wiki-versions/
+!docs/wiki-versions/**
+!docs/images/
+!docs/images/**
+!docs/features/
+!docs/features/**
+
 # Development assistants
 .claude/
 agent-os/
