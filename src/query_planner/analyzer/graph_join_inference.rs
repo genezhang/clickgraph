@@ -3550,26 +3550,28 @@ mod tests {
             .analyze_with_graph_schema(input_logical_plan, &mut plan_ctx, &graph_schema)
             .unwrap();
 
-        // Should create only relationship join with both node connections
+        // V2 creates separate joins for relationship and right node
+        // Expected: 2 joins (f2 relationship + p3 node)
         match result {
             Transformed::Yes(plan) => {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
                         // Assert GraphJoins structure
-                        assert_eq!(graph_joins.joins.len(), 1); // Only relationship join
+                        assert_eq!(graph_joins.joins.len(), 2); // V2: relationship + right node
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
 
+                        // First join: relationship f2
                         let rel_join = &graph_joins.joins[0];
                         assert_eq!(rel_join.table_name, "default.FOLLOWS"); // CTE name includes database prefix
                         assert_eq!(rel_join.table_alias, "f2");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
-                        // Should have 2 join conditions for standalone rel
-                        assert_eq!(rel_join.joining_on.len(), 2);
+                        // V2: Only 1 join condition (to left anchor p1)
+                        assert_eq!(rel_join.joining_on.len(), 1);
 
-                        // Assert the first joining condition (connection to left node)
+                        // Assert the first joining condition (connection to left anchor p1)
                         let first_join_condition = &rel_join.joining_on[0];
                         assert_eq!(first_join_condition.operator, Operator::Equal);
                         assert_eq!(first_join_condition.operands.len(), 2);
@@ -3592,25 +3594,31 @@ mod tests {
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
 
-                        // Assert the second joining condition (connection to right node - standalone relationship)
-                        let second_join_condition = &rel_join.joining_on[1];
-                        assert_eq!(second_join_condition.operator, Operator::Equal);
-                        assert_eq!(second_join_condition.operands.len(), 2);
+                        // Second join: right node p3
+                        let node_join = &graph_joins.joins[1];
+                        assert_eq!(node_join.table_alias, "p3");
+                        assert_eq!(node_join.join_type, JoinType::Inner);
+                        assert_eq!(node_join.joining_on.len(), 1);
+
+                        // Assert the joining condition (p3.id = f2.to_id)
+                        let join_condition = &node_join.joining_on[0];
+                        assert_eq!(join_condition.operator, Operator::Equal);
+                        assert_eq!(join_condition.operands.len(), 2);
 
                         match (
-                            &second_join_condition.operands[0],
-                            &second_join_condition.operands[1],
+                            &join_condition.operands[0],
+                            &join_condition.operands[1],
                         ) {
                             (
+                                LogicalExpr::PropertyAccessExp(node_prop),
                                 LogicalExpr::PropertyAccessExp(rel_prop),
-                                LogicalExpr::PropertyAccessExp(right_prop),
                             ) => {
+                                assert_eq!(node_prop.table_alias.0, "p3");
+                                assert_eq!(node_prop.column.raw(), "id");
                                 assert_eq!(rel_prop.table_alias.0, "f2");
                                 // For outgoing relationship (p1)-[:FOLLOWS]->(p3),
                                 // p3 is the target (right_connection), so it connects to to_id
                                 assert_eq!(rel_prop.column.raw(), "to_id");
-                                assert_eq!(right_prop.table_alias.0, "p3");
-                                assert_eq!(right_prop.column.raw(), "id");
                             }
                             _ => panic!("Expected PropertyAccessExp operands"),
                         }
