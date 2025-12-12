@@ -1,17 +1,21 @@
 # Code Quality Hotspots - December 2025
 
 **Analysis Date**: December 11, 2025  
+**Updated**: December 12, 2025
+
 **Purpose**: Identify remaining "disaster areas" after WITH handler refactoring
 
 ---
 
 ## Executive Summary
 
-✅ **RECENTLY FIXED**: WITH clause handlers - eliminated ~120 lines duplication (Dec 11, 2025)
+✅ **RECENTLY FIXED** (Dec 11-12, 2025):
+- WITH clause handlers - eliminated ~120 lines duplication (Dec 11)
+- **V1 graph pattern handler removal** - eliminated 1,568 lines (Dec 12) ⭐
 
 🚨 **REMAINING HOTSPOTS** (by priority):
 
-1. **graph_join_inference.rs** - 5,778 lines, monolithic impl block
+1. ~~**graph_join_inference.rs** - 5,778 lines~~ → **FIXED: Now 4,210 lines** (27% reduction!) ✅
 2. **plan_builder.rs** - 9,129 lines, god object anti-pattern
 3. **Nested CTE hoisting** - Still manual in 2 locations
 4. **GROUP BY expansion** - 3 different implementations
@@ -19,9 +23,32 @@
 
 ---
 
-## Hotspot #1: graph_join_inference.rs (5,778 lines) 🔥🔥🔥
+## Hotspot #1: graph_join_inference.rs ~~(5,778 lines)~~ → **NOW 4,210 lines** ✅
 
-### The Problem
+### ✨ Update (Dec 12, 2025): V1 Code Removed!
+
+**COMPLETED**: Successfully removed 1,568 lines of deprecated v1 pattern matching code.
+
+**Changes**:
+- Deleted entire v1 `handle_graph_pattern()` function (1,554 lines)
+- Removed v1 fallback path (40 lines) 
+- v2 (`PatternSchemaContext`) is now the only implementation
+- Fixed test infrastructure for v2 compatibility
+- Result: **642/642 tests passing (100%)**
+
+**Impact**:
+- File reduced from 5,778 → 4,210 lines (27% reduction)
+- Single code path for all graph patterns
+- No more split personality between v1/v2
+- Cleaner, more maintainable codebase
+
+**Verdict**: This hotspot is now **SIGNIFICANTLY IMPROVED**. Still large at 4,210 lines, but the complexity is justified (handles 6+ schema pattern types). The v1 removal eliminated the main fragility (dual implementations).
+
+---
+
+### Historical Context (Pre-Removal)
+
+### The Problem (BEFORE Dec 12)
 
 **Second largest file** in codebase with monolithic structure:
 
@@ -39,14 +66,14 @@ impl GraphJoinInference {
 }
 ```
 
-### Metrics
+### Metrics (BEFORE)
 
 - **Lines**: 5,778
 - **Functions**: Likely 50-100 methods in single impl
 - **Cyclomatic Complexity**: Estimated very high
 - **Test Coverage**: Unknown (likely implicit via integration tests)
 
-### Why It's Fragile
+### Why It Was Fragile (BEFORE)
 
 1. **God Object**: One struct responsible for all pattern types
 2. **Long Methods**: Some methods likely 200+ lines
@@ -70,15 +97,16 @@ impl GraphJoinInference {
 
 ### Recommended Refactoring
 
-**Phase 1** (1 week): Make v2 default, remove v1
+~~**Phase 1** (1 week): Make v2 default, remove v1~~ ✅ **COMPLETED Dec 12, 2025**
 ```bash
 # Test all schema variations with v2
-USE_PATTERN_SCHEMA_V2=1 cargo test
+USE_PATTERN_SCHEMA_V2=1 cargo test  # ✅ All passed
 # Remove v1 code path
 # Estimated reduction: 1,500-2,000 lines
+# ACTUAL: 1,568 lines removed (5,778 → 4,210)
 ```
 
-**Phase 2** (2 weeks): Extract strategy pattern
+**Phase 2** (2 weeks): Extract strategy pattern [DEFERRED - v2 may be sufficient]
 ```rust
 trait PatternStrategy {
     fn generate_joins(&self, ctx: &PatternSchemaContext) -> Vec<Join>;
@@ -90,7 +118,9 @@ struct DenormalizedPatternStrategy;
 // etc.
 ```
 
-**Phase 3** (1 week): Split into modules
+**Note**: With v2 as default and v1 removed, the PatternSchemaContext abstraction may be sufficient. The remaining 4,210 lines handle legitimate complexity (6+ schema patterns). Further refactoring should wait for concrete pain points.
+
+~~**Phase 3** (1 week): Split into modules~~ [DEFERRED]
 ```
 query_planner/analyzer/
   graph_join_inference/
@@ -101,10 +131,14 @@ query_planner/analyzer/
     polymorphic.rs      (300 lines)
 ```
 
-**Expected Benefit**: 
-- Reduce from 5,778 lines to ~2,000 lines (core logic)
-- Move 3,000+ lines to strategy modules
-- Enable unit testing of individual strategies
+**Actual Benefit Achieved**: 
+- ✅ Reduced from 5,778 lines to 4,210 lines (27% reduction)
+- ✅ Eliminated dual v1/v2 implementations
+- ✅ Single code path (PatternSchemaContext v2 only)
+- ✅ 642/642 tests passing (100%)
+- ✅ LDBC benchmarks still pass
+
+**Next Steps**: Monitor for fragility. If no issues in next 2-3 weeks, consider this hotspot **RESOLVED**.
 
 ---
 

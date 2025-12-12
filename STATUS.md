@@ -1,10 +1,19 @@
 # ClickGraph Status
 
-*Updated: December 11, 2025*
+*Updated: December 12, 2025*
 
 ## 🎉 **v0.5.5 Released** - December 10, 2025
 
 **LDBC SNB Benchmark: 100% (8/8 Interactive queries passing)**
+
+### Major Code Cleanup (Dec 12, 2025)
+- **Removed V1 Graph Pattern Handler** - Eliminated 1,568 lines of deprecated code ✅
+  - Deleted entire v1 `handle_graph_pattern()` function (1,554 lines)
+  - Removed v1 fallback path - v2 now the only implementation
+  - File size: `graph_join_inference.rs` reduced from 5,778 → 4,210 lines (27% reduction!)
+  - Fixed test infrastructure for v2 compatibility
+  - Result: **642/642 tests passing (100%)**
+  - See: commit 2bf1bee "refactor: Remove deprecated v1 graph pattern handler"
 
 ### Recent Improvements (Dec 11, 2025)
 - **WITH Handler Refactoring** - Eliminated ~120 lines of duplicate code ✅
