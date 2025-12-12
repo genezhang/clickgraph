@@ -1,3 +1,20 @@
+## [Unreleased]
+
+### 🚀 Features
+
+- **Composite Node IDs** - Support multi-column `node_id` for nodes with composite primary keys
+  - YAML syntax: `node_id: [bank_id, account_number]` for composite, `node_id: user_id` for single
+  - Generates ClickHouse tuple equality in JOINs: `(a.c1, a.c2) = (b.c1, b.c2)`
+  - Property access `RETURN n.id` returns tuple expression for composite IDs
+  - Works with all query features: MATCH, size() patterns, EXISTS, NOT EXISTS
+  - PageRank algorithm supports composite node IDs (uses tuple as node identifier)
+  - New API methods: `sql_tuple()`, `sql_equality()`, `columns_with_alias()`
+  - Test schema example: `schemas/test/composite_node_ids.yaml`
+  - Files: 16 files updated across graph_catalog, query_planner, render_plan, clickhouse_query_generator
+  - Testing: 5 new unit tests, all 644 tests passing (100%)
+
+---
+
 ## [0.5.7] - 2025-12-10
 
 ### 🐛 Bug Fixes
