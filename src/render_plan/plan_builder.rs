@@ -260,6 +260,75 @@ pub(crate) trait RenderPlanBuilder {
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan>;
 }
 
+// ============================================================================
+// WITH Clause Helper Functions (Code Deduplication)
+// ============================================================================
+
+/// Helper: Expand a TableAlias to ALL column SelectItems.
+/// 
+/// Used by WITH clause handlers when they need to convert LogicalExpr::TableAlias
+/// to multiple RenderExpr SelectItems (one per property).
+/// 
+/// Example: TableAlias("friend") → [friend.id, friend.firstName, friend.lastName, ...]
+fn expand_table_alias_to_select_items(
+    alias: &str,
+    plan: &LogicalPlan,
+) -> Vec<SelectItem> {
+    match plan.get_properties_with_table_alias(alias) {
+        Ok((properties, actual_table_alias)) => {
+            if !properties.is_empty() {
+                let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.to_string());
+                let mut items = Vec::new();
+                for (prop_name, col_name) in properties.iter() {
+                    items.push(SelectItem {
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(table_alias_to_use.clone()),
+                            column: Column(PropertyValue::Column(col_name.clone())),
+                        }),
+                        col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop_name))),
+                    });
+                }
+                items
+            } else {
+                Vec::new()
+            }
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Helper: Expand a TableAlias to ALL column RenderExprs for GROUP BY.
+/// 
+/// Similar to expand_table_alias_to_select_items but returns RenderExpr instead of SelectItem.
+/// Used when building GROUP BY clauses that must include all non-aggregated columns.
+fn expand_table_alias_to_group_by_exprs(
+    alias: &str,
+    plan: &LogicalPlan,
+) -> Vec<RenderExpr> {
+    match plan.get_properties_with_table_alias(alias) {
+        Ok((properties, actual_table_alias)) => {
+            if !properties.is_empty() {
+                let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.to_string());
+                let mut exprs = Vec::new();
+                for (_, col_name) in properties.iter() {
+                    exprs.push(RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(table_alias_to_use.clone()),
+                        column: Column(PropertyValue::Column(col_name.clone())),
+                    }));
+                }
+                exprs
+            } else {
+                Vec::new()
+            }
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+// ============================================================================
+// WITH Clause CTE Builders
+// ============================================================================
+
 /// Build a render plan for WITH+MATCH patterns.
 /// These patterns have nested Union/GraphJoins inside GraphRel.right that represent
 /// the WITH clause output. We generate a CTE for the WITH clause and join the
@@ -641,46 +710,8 @@ fn build_chained_with_match_cte_plan(
                                         // Check if this is a TableAlias that needs expansion to ALL columns
                                         match &item.expression {
                                             crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
-                                                // Expand to ALL columns (WITH friend means all properties)
-                                                match plan_to_render.get_properties_with_table_alias(&alias.0) {
-                                                    Ok((properties, actual_table_alias)) => {
-                                                        if !properties.is_empty() {
-                                                            let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.0.clone());
-                                                            // CRITICAL: WITH friend means "all properties of friend"
-                                                            // Expand to ALL columns, not just ID
-                                                            let mut items_for_alias = Vec::new();
-                                                            for (prop_name, col_name) in properties.iter() {
-                                                                items_for_alias.push(SelectItem {
-                                                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                                                        table_alias: TableAlias(table_alias_to_use.clone()),
-                                                                        column: Column(crate::graph_catalog::expression_parser::PropertyValue::Column(col_name.clone())),
-                                                                    }),
-                                                                    col_alias: Some(crate::render_plan::render_expr::ColumnAlias(format!("{}.{}", alias.0, prop_name))),
-                                                                });
-                                                            }
-                                                            items_for_alias
-                                                        } else {
-                                                            // Fallback: convert as-is
-                                                            let expr_result: Result<RenderExpr, _> = item.expression.clone().try_into();
-                                                            expr_result.ok().map(|expr| {
-                                                                SelectItem {
-                                                                    expression: expr,
-                                                                    col_alias: item.col_alias.as_ref().map(|a| crate::render_plan::render_expr::ColumnAlias(a.0.clone())),
-                                                                }
-                                                            }).into_iter().collect()
-                                                        }
-                                                    }
-                                                    Err(_) => {
-                                                        // Fallback: convert as-is
-                                                        let expr_result: Result<RenderExpr, _> = item.expression.clone().try_into();
-                                                        expr_result.ok().map(|expr| {
-                                                            SelectItem {
-                                                                expression: expr,
-                                                                col_alias: item.col_alias.as_ref().map(|a| crate::render_plan::render_expr::ColumnAlias(a.0.clone())),
-                                                            }
-                                                        }).into_iter().collect()
-                                                    }
-                                                }
+                                                // Use helper function to expand to ALL columns
+                                                expand_table_alias_to_select_items(&alias.0, plan_to_render)
                                             }
                                             _ => {
                                                 // Not a TableAlias, convert normally
@@ -717,30 +748,8 @@ fn build_chained_with_match_cte_plan(
                                                 // Must match what we put in SELECT!
                                                 match &item.expression {
                                                     crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
-                                                        // Get properties for this alias and add ALL columns to GROUP BY
-                                                        match plan_to_render.get_properties_with_table_alias(&alias.0) {
-                                                            Ok((properties, actual_table_alias)) => {
-                                                                if !properties.is_empty() {
-                                                                    let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.0.clone());
-                                                                    // Add ALL columns to GROUP BY (must match SELECT!)
-                                                                    let mut exprs = Vec::new();
-                                                                    for (_, col_name) in properties.iter() {
-                                                                        exprs.push(RenderExpr::PropertyAccessExp(PropertyAccess {
-                                                                            table_alias: TableAlias(table_alias_to_use.clone()),
-                                                                            column: Column(crate::graph_catalog::expression_parser::PropertyValue::Column(col_name.clone())),
-                                                                        }));
-                                                                    }
-                                                                    exprs
-                                                                } else {
-                                                                    // Fallback: convert as-is
-                                                                    item.expression.clone().try_into().ok().into_iter().collect()
-                                                                }
-                                                            }
-                                                            Err(_) => {
-                                                                // Fallback: convert as-is
-                                                                item.expression.clone().try_into().ok().into_iter().collect()
-                                                            }
-                                                        }
+                                                        // Use helper function to expand to ALL columns
+                                                        expand_table_alias_to_group_by_exprs(&alias.0, plan_to_render)
                                                     }
                                                     _ => {
                                                         // Not a TableAlias, convert normally
