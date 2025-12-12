@@ -68,87 +68,122 @@ pub(super) fn rewrite_with_aliases_to_cte(
         RenderExpr::AggregateFnCall(agg) => {
             // Recursively rewrite arguments
             let mut all_from_with = true;
-            let new_args: Vec<RenderExpr> = agg.args.into_iter().map(|arg| {
-                let (rewritten, from_with) = rewrite_with_aliases_to_cte(arg, with_aliases, cte_name);
-                if !from_with {
-                    all_from_with = false;
-                }
-                rewritten
-            }).collect();
-            
-            (RenderExpr::AggregateFnCall(AggregateFnCall {
-                name: agg.name,
-                args: new_args,
-            }), all_from_with)
+            let new_args: Vec<RenderExpr> = agg
+                .args
+                .into_iter()
+                .map(|arg| {
+                    let (rewritten, from_with) =
+                        rewrite_with_aliases_to_cte(arg, with_aliases, cte_name);
+                    if !from_with {
+                        all_from_with = false;
+                    }
+                    rewritten
+                })
+                .collect();
+
+            (
+                RenderExpr::AggregateFnCall(AggregateFnCall {
+                    name: agg.name,
+                    args: new_args,
+                }),
+                all_from_with,
+            )
         }
         RenderExpr::ScalarFnCall(func) => {
             // Recursively rewrite arguments
             let mut all_from_with = true;
-            let new_args: Vec<RenderExpr> = func.args.into_iter().map(|arg| {
-                let (rewritten, from_with) = rewrite_with_aliases_to_cte(arg, with_aliases, cte_name);
-                if !from_with {
-                    all_from_with = false;
-                }
-                rewritten
-            }).collect();
-            
-            (RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: func.name,
-                args: new_args,
-            }), all_from_with)
+            let new_args: Vec<RenderExpr> = func
+                .args
+                .into_iter()
+                .map(|arg| {
+                    let (rewritten, from_with) =
+                        rewrite_with_aliases_to_cte(arg, with_aliases, cte_name);
+                    if !from_with {
+                        all_from_with = false;
+                    }
+                    rewritten
+                })
+                .collect();
+
+            (
+                RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: func.name,
+                    args: new_args,
+                }),
+                all_from_with,
+            )
         }
         RenderExpr::OperatorApplicationExp(op) => {
             // Recursively rewrite operands
             let mut all_from_with = true;
-            let new_operands: Vec<RenderExpr> = op.operands.into_iter().map(|operand| {
-                let (rewritten, from_with) = rewrite_with_aliases_to_cte(operand, with_aliases, cte_name);
-                if !from_with {
-                    all_from_with = false;
-                }
-                rewritten
-            }).collect();
-            
-            (RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator,
-                operands: new_operands,
-            }), all_from_with)
+            let new_operands: Vec<RenderExpr> = op
+                .operands
+                .into_iter()
+                .map(|operand| {
+                    let (rewritten, from_with) =
+                        rewrite_with_aliases_to_cte(operand, with_aliases, cte_name);
+                    if !from_with {
+                        all_from_with = false;
+                    }
+                    rewritten
+                })
+                .collect();
+
+            (
+                RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: op.operator,
+                    operands: new_operands,
+                }),
+                all_from_with,
+            )
         }
         RenderExpr::Case(case) => {
             // Recursively rewrite CASE expression
             use super::render_expr::RenderCase;
             let mut all_from_with = true;
-            
+
             // Rewrite the optional CASE expression (for simple CASE syntax)
             let new_expr = case.expr.map(|e| {
-                let (rewritten, from_with) = rewrite_with_aliases_to_cte(*e, with_aliases, cte_name);
+                let (rewritten, from_with) =
+                    rewrite_with_aliases_to_cte(*e, with_aliases, cte_name);
                 if !from_with {
                     all_from_with = false;
                 }
                 Box::new(rewritten)
             });
-            
-            let new_when_then: Vec<(RenderExpr, RenderExpr)> = case.when_then.into_iter().map(|(cond, result)| {
-                let (new_cond, cond_from_with) = rewrite_with_aliases_to_cte(cond, with_aliases, cte_name);
-                let (new_result, result_from_with) = rewrite_with_aliases_to_cte(result, with_aliases, cte_name);
-                if !cond_from_with || !result_from_with {
-                    all_from_with = false;
-                }
-                (new_cond, new_result)
-            }).collect();
-            
+
+            let new_when_then: Vec<(RenderExpr, RenderExpr)> = case
+                .when_then
+                .into_iter()
+                .map(|(cond, result)| {
+                    let (new_cond, cond_from_with) =
+                        rewrite_with_aliases_to_cte(cond, with_aliases, cte_name);
+                    let (new_result, result_from_with) =
+                        rewrite_with_aliases_to_cte(result, with_aliases, cte_name);
+                    if !cond_from_with || !result_from_with {
+                        all_from_with = false;
+                    }
+                    (new_cond, new_result)
+                })
+                .collect();
+
             let new_else = case.else_expr.map(|e| {
-                let (new_else, else_from_with) = rewrite_with_aliases_to_cte(*e, with_aliases, cte_name);
+                let (new_else, else_from_with) =
+                    rewrite_with_aliases_to_cte(*e, with_aliases, cte_name);
                 if !else_from_with {
                     all_from_with = false;
                 }
                 Box::new(new_else)
             });
-            
-            (RenderExpr::Case(RenderCase {
-                expr: new_expr,
-                when_then: new_when_then,
-                else_expr: new_else,
-            }), all_from_with)
+
+            (
+                RenderExpr::Case(RenderCase {
+                    expr: new_expr,
+                    when_then: new_when_then,
+                    else_expr: new_else,
+                }),
+                all_from_with,
+            )
         }
         RenderExpr::PropertyAccessExp(prop) => {
             // Property access doesn't come from WITH directly,
@@ -157,17 +192,21 @@ pub(super) fn rewrite_with_aliases_to_cte(
         }
         RenderExpr::List(items) => {
             let mut all_from_with = true;
-            let new_items: Vec<RenderExpr> = items.into_iter().map(|item| {
-                let (rewritten, from_with) = rewrite_with_aliases_to_cte(item, with_aliases, cte_name);
-                if !from_with {
-                    all_from_with = false;
-                }
-                rewritten
-            }).collect();
+            let new_items: Vec<RenderExpr> = items
+                .into_iter()
+                .map(|item| {
+                    let (rewritten, from_with) =
+                        rewrite_with_aliases_to_cte(item, with_aliases, cte_name);
+                    if !from_with {
+                        all_from_with = false;
+                    }
+                    rewritten
+                })
+                .collect();
             (RenderExpr::List(new_items), all_from_with)
         }
         // Literals, Star, Column, Parameter, Raw don't need rewriting and don't come from WITH
-        other => (other, false)
+        other => (other, false),
     }
 }
 
@@ -193,7 +232,9 @@ pub(super) fn rewrite_table_aliases_to_cte(
             }
         }
         RenderExpr::AggregateFnCall(agg) => {
-            let new_args: Vec<RenderExpr> = agg.args.into_iter()
+            let new_args: Vec<RenderExpr> = agg
+                .args
+                .into_iter()
                 .map(|arg| rewrite_table_aliases_to_cte(arg, with_table_aliases, cte_name))
                 .collect();
             RenderExpr::AggregateFnCall(AggregateFnCall {
@@ -202,7 +243,9 @@ pub(super) fn rewrite_table_aliases_to_cte(
             })
         }
         RenderExpr::ScalarFnCall(func) => {
-            let new_args: Vec<RenderExpr> = func.args.into_iter()
+            let new_args: Vec<RenderExpr> = func
+                .args
+                .into_iter()
                 .map(|arg| rewrite_table_aliases_to_cte(arg, with_table_aliases, cte_name))
                 .collect();
             RenderExpr::ScalarFnCall(ScalarFnCall {
@@ -211,7 +254,9 @@ pub(super) fn rewrite_table_aliases_to_cte(
             })
         }
         RenderExpr::OperatorApplicationExp(op) => {
-            let new_operands: Vec<RenderExpr> = op.operands.into_iter()
+            let new_operands: Vec<RenderExpr> = op
+                .operands
+                .into_iter()
                 .map(|operand| rewrite_table_aliases_to_cte(operand, with_table_aliases, cte_name))
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
@@ -221,14 +266,30 @@ pub(super) fn rewrite_table_aliases_to_cte(
         }
         RenderExpr::Case(case) => {
             use super::render_expr::RenderCase;
-            let new_expr = case.expr.map(|e| Box::new(rewrite_table_aliases_to_cte(*e, with_table_aliases, cte_name)));
-            let new_when_then: Vec<(RenderExpr, RenderExpr)> = case.when_then.into_iter()
+            let new_expr = case.expr.map(|e| {
+                Box::new(rewrite_table_aliases_to_cte(
+                    *e,
+                    with_table_aliases,
+                    cte_name,
+                ))
+            });
+            let new_when_then: Vec<(RenderExpr, RenderExpr)> = case
+                .when_then
+                .into_iter()
                 .map(|(cond, result)| {
-                    (rewrite_table_aliases_to_cte(cond, with_table_aliases, cte_name),
-                     rewrite_table_aliases_to_cte(result, with_table_aliases, cte_name))
+                    (
+                        rewrite_table_aliases_to_cte(cond, with_table_aliases, cte_name),
+                        rewrite_table_aliases_to_cte(result, with_table_aliases, cte_name),
+                    )
                 })
                 .collect();
-            let new_else = case.else_expr.map(|e| Box::new(rewrite_table_aliases_to_cte(*e, with_table_aliases, cte_name)));
+            let new_else = case.else_expr.map(|e| {
+                Box::new(rewrite_table_aliases_to_cte(
+                    *e,
+                    with_table_aliases,
+                    cte_name,
+                ))
+            });
             RenderExpr::Case(RenderCase {
                 expr: new_expr,
                 when_then: new_when_then,
@@ -236,13 +297,14 @@ pub(super) fn rewrite_table_aliases_to_cte(
             })
         }
         RenderExpr::List(items) => {
-            let new_items: Vec<RenderExpr> = items.into_iter()
+            let new_items: Vec<RenderExpr> = items
+                .into_iter()
                 .map(|item| rewrite_table_aliases_to_cte(item, with_table_aliases, cte_name))
                 .collect();
             RenderExpr::List(new_items)
         }
         // Other expressions pass through unchanged
-        other => other
+        other => other,
     }
 }
 
@@ -265,9 +327,11 @@ fn has_string_operand(operands: &[RenderExpr]) -> bool {
 /// Flatten nested + operations into a list of operands for concat()
 fn flatten_addition_operands(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> Vec<String> {
     match expr {
-        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
-            op.operands.iter().flat_map(|o| flatten_addition_operands(o, alias_mapping)).collect()
-        }
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
+            .operands
+            .iter()
+            .flat_map(|o| flatten_addition_operands(o, alias_mapping))
+            .collect(),
         _ => vec![render_expr_to_sql_string(expr, alias_mapping)],
     }
 }
@@ -349,7 +413,7 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
             find_table_name_for_alias(&rel.left, target_alias)
                 .or_else(|| find_table_name_for_alias(&rel.right, target_alias))
         }
-        
+
         // === Wrapper nodes - recurse into input ===
         LogicalPlan::Cte(cte) => find_table_name_for_alias(&cte.input, target_alias),
         LogicalPlan::Projection(proj) => find_table_name_for_alias(&proj.input, target_alias),
@@ -360,7 +424,7 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
         LogicalPlan::Skip(skip) => find_table_name_for_alias(&skip.input, target_alias),
         LogicalPlan::Limit(limit) => find_table_name_for_alias(&limit.input, target_alias),
         LogicalPlan::Unwind(unwind) => find_table_name_for_alias(&unwind.input, target_alias),
-        
+
         // === Union - search all branches ===
         LogicalPlan::Union(union) => {
             for input in &union.inputs {
@@ -370,23 +434,19 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
             }
             None
         }
-        
+
         // === Terminal nodes that cannot contain aliases ===
         LogicalPlan::Empty => None,
-        LogicalPlan::Scan(_) => None,  // Raw scan without alias info
-        LogicalPlan::ViewScan(_) => None,  // ViewScan itself doesn't have alias, GraphNode wraps it
-        LogicalPlan::PageRank(_) => None,  // PageRank is a computed result, no direct table alias
-        
+        LogicalPlan::Scan(_) => None,     // Raw scan without alias info
+        LogicalPlan::ViewScan(_) => None, // ViewScan itself doesn't have alias, GraphNode wraps it
+        LogicalPlan::PageRank(_) => None, // PageRank is a computed result, no direct table alias
+
         // === CartesianProduct - search both branches ===
-        LogicalPlan::CartesianProduct(cp) => {
-            find_table_name_for_alias(&cp.left, target_alias)
-                .or_else(|| find_table_name_for_alias(&cp.right, target_alias))
-        }
-        
+        LogicalPlan::CartesianProduct(cp) => find_table_name_for_alias(&cp.left, target_alias)
+            .or_else(|| find_table_name_for_alias(&cp.right, target_alias)),
+
         // === WithClause - search input ===
-        LogicalPlan::WithClause(wc) => {
-            find_table_name_for_alias(&wc.input, target_alias)
-        }
+        LogicalPlan::WithClause(wc) => find_table_name_for_alias(&wc.input, target_alias),
     }
 }
 
@@ -437,7 +497,9 @@ pub(super) fn render_expr_to_sql_string(
                     // Use concat() for string concatenation
                     // Flatten nested + operations for cases like: a + ' - ' + b
                     if has_string_operand(&op.operands) {
-                        let flattened: Vec<String> = op.operands.iter()
+                        let flattened: Vec<String> = op
+                            .operands
+                            .iter()
                             .flat_map(|o| flatten_addition_operands(o, alias_mapping))
                             .collect();
                         format!("concat({})", flattened.join(", "))
@@ -576,7 +638,7 @@ pub(super) fn is_standalone_expression(expr: &RenderExpr) -> bool {
         | RenderExpr::AggregateFnCall(_)
         | RenderExpr::InSubquery(_)
         | RenderExpr::ExistsSubquery(_)
-        | RenderExpr::PatternCount(_) => false,  // Pattern count references outer context
+        | RenderExpr::PatternCount(_) => false, // Pattern count references outer context
         RenderExpr::ReduceExpr(reduce) => {
             // ReduceExpr is standalone if all its sub-expressions are standalone
             is_standalone_expression(&reduce.initial_value)
@@ -714,7 +776,9 @@ pub(super) fn find_anchor_node(
             let is_denormalized = denormalized_aliases.contains(*node);
             log::debug!(
                 "🔍 find_anchor_node: node='{}' optional={} denormalized={}",
-                node, is_optional, is_denormalized
+                node,
+                is_optional,
+                is_denormalized
             );
             !is_optional && !is_denormalized
         })
@@ -759,9 +823,13 @@ pub(super) fn find_anchor_node(
 
     // CRITICAL: If required_nodes is EMPTY (all nodes are denormalized or optional),
     // return None to signal that the relationship table should be used as anchor!
-    log::warn!("🔍 find_anchor_node: All nodes filtered out (denormalized/optional), returning None");
+    log::warn!(
+        "🔍 find_anchor_node: All nodes filtered out (denormalized/optional), returning None"
+    );
     if all_nodes.iter().all(|n| denormalized_aliases.contains(n)) {
-        log::warn!("🔍 find_anchor_node: All nodes are denormalized - use relationship table as FROM!");
+        log::warn!(
+            "🔍 find_anchor_node: All nodes are denormalized - use relationship table as FROM!"
+        );
         return None;
     }
 
@@ -841,27 +909,35 @@ pub(super) fn rewrite_fixed_path_functions_with_info(
                         match fn_call.name.as_str() {
                             "length" => {
                                 // Convert length(p) to literal hop count
-                                return RenderExpr::Literal(super::render_expr::Literal::Integer(path_info.hop_count as i64));
+                                return RenderExpr::Literal(super::render_expr::Literal::Integer(
+                                    path_info.hop_count as i64,
+                                ));
                             }
                             "nodes" => {
                                 // Build array of node ID references: [r1.Origin, r1.Dest, r2.Dest]
-                                let node_args: Vec<RenderExpr> = path_info.node_aliases
+                                let node_args: Vec<RenderExpr> = path_info
+                                    .node_aliases
                                     .iter()
                                     .filter_map(|node_alias| {
                                         // Look up the ID column for this node
-                                        path_info.node_id_columns.get(node_alias).map(|(rel_alias, id_col)| {
-                                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                                table_alias: TableAlias(rel_alias.clone()),
-                                                column: Column(PropertyValue::Column(id_col.clone())),
-                                            })
-                                        })
+                                        path_info.node_id_columns.get(node_alias).map(
+                                            |(rel_alias, id_col)| {
+                                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                    table_alias: TableAlias(rel_alias.clone()),
+                                                    column: Column(PropertyValue::Column(
+                                                        id_col.clone(),
+                                                    )),
+                                                })
+                                            },
+                                        )
                                     })
                                     .collect();
-                                
+
                                 // Use array() function for ClickHouse arrays
                                 if node_args.is_empty() {
                                     // Fallback: if no ID columns found, return tuple of aliases
-                                    let fallback_args: Vec<RenderExpr> = path_info.node_aliases
+                                    let fallback_args: Vec<RenderExpr> = path_info
+                                        .node_aliases
                                         .iter()
                                         .map(|a| RenderExpr::TableAlias(TableAlias(a.clone())))
                                         .collect();
@@ -870,7 +946,7 @@ pub(super) fn rewrite_fixed_path_functions_with_info(
                                         args: fallback_args,
                                     });
                                 }
-                                
+
                                 return RenderExpr::ScalarFnCall(ScalarFnCall {
                                     name: "array".to_string(),
                                     args: node_args,
@@ -879,7 +955,8 @@ pub(super) fn rewrite_fixed_path_functions_with_info(
                             "relationships" => {
                                 // For relationships, return tuple of relationship aliases
                                 // These will resolve to the full row data via * or specific columns
-                                let rel_args: Vec<RenderExpr> = path_info.rel_aliases
+                                let rel_args: Vec<RenderExpr> = path_info
+                                    .rel_aliases
                                     .iter()
                                     .map(|alias| RenderExpr::TableAlias(TableAlias(alias.clone())))
                                     .collect();
@@ -977,7 +1054,9 @@ pub(super) fn rewrite_path_functions_with_table(
 
                         if let Some(col_name) = column_name {
                             return if table_alias.is_empty() {
-                                RenderExpr::Column(Column(PropertyValue::Column(col_name.to_string())))
+                                RenderExpr::Column(Column(PropertyValue::Column(
+                                    col_name.to_string(),
+                                )))
                             } else {
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(table_alias.to_string()),
@@ -1073,7 +1152,12 @@ pub(super) fn get_node_id_columns_for_alias(alias: &str) -> Vec<String> {
             if let Some(schema) = schemas.get("default") {
                 // Look up the node type from the alias - this is a simplified lookup
                 if let Some(user_node) = schema.get_node_schema_opt("User") {
-                    return user_node.node_id.columns().iter().map(|s| s.to_string()).collect();
+                    return user_node
+                        .node_id
+                        .columns()
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect();
                 }
             }
         }
@@ -1092,7 +1176,10 @@ pub(super) fn get_node_id_columns_for_alias(alias: &str) -> Vec<String> {
 /// Backwards compatibility wrapper - returns first column only
 /// TODO: Update VLP code to use get_node_id_columns_for_alias directly
 pub(super) fn get_node_id_column_for_alias(alias: &str) -> String {
-    get_node_id_columns_for_alias(alias).into_iter().next().unwrap_or_else(|| "id".to_string())
+    get_node_id_columns_for_alias(alias)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "id".to_string())
 }
 
 /// Get relationship columns from schema by relationship type
@@ -1143,7 +1230,12 @@ pub(super) fn get_node_info_from_schema(node_label: &str) -> Option<(String, Vec
                 if let Ok(node_schema) = schema.get_node_schema(node_label) {
                     return Some((
                         node_schema.table_name.clone(),
-                        node_schema.node_id.columns().iter().map(|s| s.to_string()).collect(),
+                        node_schema
+                            .node_id
+                            .columns()
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect(),
                     ));
                 }
             }
@@ -1217,7 +1309,7 @@ pub(super) fn has_polymorphic_or_multi_rel(plan: &LogicalPlan) -> bool {
     if has_multiple_relationship_types(plan) {
         return true;
     }
-    
+
     // Check for polymorphic edge patterns - look for $any nodes in GraphRel
     has_polymorphic_edge(plan)
 }
@@ -1228,7 +1320,7 @@ pub(super) fn has_polymorphic_or_multi_rel(plan: &LogicalPlan) -> bool {
 // The following structs and functions are prepared for implementing Issue #2
 // (Undirected Patterns - Relationship Uniqueness) from KNOWN_ISSUES.md.
 //
-// However, they cannot be used yet because Issue #1 (Undirected Multi-Hop 
+// However, they cannot be used yet because Issue #1 (Undirected Multi-Hop
 // Patterns Generate Broken SQL) must be fixed first. The BidirectionalUnion
 // optimizer transforms Direction::Either patterns into Union nodes, which
 // breaks the multi-hop JOIN inference that these filters depend on.
@@ -1261,7 +1353,7 @@ pub(super) fn collect_undirected_relationships(plan: &LogicalPlan) -> Result<Vec
                             .ok_or_else(|| RenderBuildError::ViewScanMissingRelationshipColumn("from_id".to_string()))?;
                         let to_col = scan.to_id.clone()
                             .ok_or_else(|| RenderBuildError::ViewScanMissingRelationshipColumn("to_id".to_string()))?;
-                        
+
                         // Try to get edge_id columns from schema
                         // First, try to look up the relationship schema by type
                         let edge_id_cols = if let Some(labels) = &graph_rel.labels {
@@ -1293,7 +1385,7 @@ pub(super) fn collect_undirected_relationships(plan: &LogicalPlan) -> Result<Vec
                         } else {
                             vec![from_col.clone(), to_col.clone()]
                         };
-                        
+
                         result.push(UndirectedRelInfo {
                             alias: graph_rel.alias.clone(),
                             from_id_col: from_col,
@@ -1302,7 +1394,7 @@ pub(super) fn collect_undirected_relationships(plan: &LogicalPlan) -> Result<Vec
                         });
                     }
                 }
-                
+
                 // Recursively check children (for multi-hop patterns)
                 collect(&graph_rel.left, result)?;
                 collect(&graph_rel.center, result)?;
@@ -1321,17 +1413,17 @@ pub(super) fn collect_undirected_relationships(plan: &LogicalPlan) -> Result<Vec
         }
         Ok(())
     }
-    
+
     let mut result = Vec::new();
     collect(plan, &mut result)?;
     Ok(result)
 }
 
 /// Generate pairwise relationship uniqueness filters for undirected patterns.
-/// 
+///
 /// For undirected multi-hop patterns like `(a)-[r1]-(b)-[r2]-(c)`, we need to prevent
 /// the same physical edge from being traversed twice (once in each direction).
-/// 
+///
 /// For each pair (r1, r2), generates:
 /// ```sql
 /// NOT (
@@ -1344,18 +1436,18 @@ pub(super) fn generate_undirected_uniqueness_filters(
     if undirected_rels.len() < 2 {
         return None; // Need at least 2 relationships for pairwise comparison
     }
-    
+
     let mut filters = Vec::new();
-    
+
     // Generate pairwise filters for all combinations
     for i in 0..undirected_rels.len() {
         for j in (i + 1)..undirected_rels.len() {
             let r1 = &undirected_rels[i];
             let r2 = &undirected_rels[j];
-            
+
             // Generate: NOT (tuple(r1.cols...) = tuple(r2.cols...))
             // This prevents the same physical edge from being used twice
-            
+
             // Build tuple expressions for each relationship's edge_id columns
             let r1_tuple_args: Vec<RenderExpr> = r1.edge_id_cols.iter().map(|col| {
                 RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -1363,14 +1455,14 @@ pub(super) fn generate_undirected_uniqueness_filters(
                     column: Column(PropertyValue::Column(col.clone())),
                 })
             }).collect();
-            
+
             let r2_tuple_args: Vec<RenderExpr> = r2.edge_id_cols.iter().map(|col| {
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(r2.alias.clone()),
                     column: Column(PropertyValue::Column(col.clone())),
                 })
             }).collect();
-            
+
             // Create tuple expressions
             let r1_tuple = if r1_tuple_args.len() == 1 {
                 r1_tuple_args.into_iter().next().unwrap()
@@ -1380,7 +1472,7 @@ pub(super) fn generate_undirected_uniqueness_filters(
                     args: r1_tuple_args,
                 })
             };
-            
+
             let r2_tuple = if r2_tuple_args.len() == 1 {
                 r2_tuple_args.into_iter().next().unwrap()
             } else {
@@ -1389,26 +1481,26 @@ pub(super) fn generate_undirected_uniqueness_filters(
                     args: r2_tuple_args,
                 })
             };
-            
+
             // Generate: NOT (r1_tuple = r2_tuple)
             let equality_check = RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: Operator::Equal,
                 operands: vec![r1_tuple, r2_tuple],
             });
-            
+
             let not_equal = RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: Operator::Not,
                 operands: vec![equality_check],
             });
-            
+
             filters.push(not_equal);
         }
     }
-    
+
     if filters.is_empty() {
         return None;
     }
-    
+
     // Combine all filters with AND
     Some(filters.into_iter().reduce(|acc, filter| {
         RenderExpr::OperatorApplicationExp(OperatorApplication {
@@ -1428,14 +1520,16 @@ pub(super) fn has_polymorphic_edge(plan: &LogicalPlan) -> bool {
             if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
                 if let LogicalPlan::Scan(scan) = right_node.input.as_ref() {
                     if scan.table_name.is_none() {
-                        log::debug!("has_polymorphic_edge: Found $any right node '{}'", right_node.alias);
+                        log::debug!(
+                            "has_polymorphic_edge: Found $any right node '{}'",
+                            right_node.alias
+                        );
                         return true;
                     }
                 }
             }
             // Check child plans
-            has_polymorphic_edge(&graph_rel.left)
-                || has_polymorphic_edge(&graph_rel.right)
+            has_polymorphic_edge(&graph_rel.left) || has_polymorphic_edge(&graph_rel.right)
         }
         LogicalPlan::GraphJoins(joins) => has_polymorphic_edge(&joins.input),
         LogicalPlan::Projection(proj) => has_polymorphic_edge(&proj.input),
@@ -1486,11 +1580,11 @@ pub(super) fn get_polymorphic_relationship_alias(plan: &LogicalPlan) -> Option<S
 /// Information about a polymorphic edge for CTE processing
 #[derive(Debug, Clone)]
 pub(super) struct PolymorphicEdgeInfo {
-    pub rel_alias: String,           // e.g., "r1" or "r2"
-    pub left_connection: String,     // e.g., "u" or "source"
-    pub right_connection: String,    // e.g., "middle" or "u"
-    pub cte_name: String,            // e.g., "rel_u_middle" or "rel_source_u"
-    pub is_incoming: bool,           // true for (a)<-[r]-(b), false for (a)-[r]->(b)
+    pub rel_alias: String,        // e.g., "r1" or "r2"
+    pub left_connection: String,  // e.g., "u" or "source"
+    pub right_connection: String, // e.g., "middle" or "u"
+    pub cte_name: String,         // e.g., "rel_u_middle" or "rel_source_u"
+    pub is_incoming: bool,        // true for (a)<-[r]-(b), false for (a)-[r]->(b)
 }
 
 /// Collect ALL polymorphic edges from the logical plan
@@ -1500,31 +1594,36 @@ pub(super) fn collect_polymorphic_edges(plan: &LogicalPlan) -> Vec<PolymorphicEd
         match plan {
             LogicalPlan::GraphRel(graph_rel) => {
                 // Check if right node is polymorphic ($any) - for outgoing edges
-                let right_is_polymorphic = if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
-                    if let LogicalPlan::Scan(scan) = right_node.input.as_ref() {
-                        scan.table_name.is_none()
+                let right_is_polymorphic =
+                    if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
+                        if let LogicalPlan::Scan(scan) = right_node.input.as_ref() {
+                            scan.table_name.is_none()
+                        } else {
+                            false
+                        }
                     } else {
                         false
-                    }
-                } else {
-                    false
-                };
-                
+                    };
+
                 // Check if left node is polymorphic ($any) - for incoming edges
-                let left_is_polymorphic = if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
-                    if let LogicalPlan::Scan(scan) = left_node.input.as_ref() {
-                        scan.table_name.is_none()
+                let left_is_polymorphic =
+                    if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
+                        if let LogicalPlan::Scan(scan) = left_node.input.as_ref() {
+                            scan.table_name.is_none()
+                        } else {
+                            false
+                        }
                     } else {
                         false
-                    }
-                } else {
-                    false
-                };
-                
+                    };
+
                 let is_polymorphic = right_is_polymorphic || left_is_polymorphic;
-                
+
                 if is_polymorphic && !graph_rel.alias.is_empty() {
-                    let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
+                    let cte_name = format!(
+                        "rel_{}_{}",
+                        graph_rel.left_connection, graph_rel.right_connection
+                    );
                     edges.push(PolymorphicEdgeInfo {
                         rel_alias: graph_rel.alias.clone(),
                         left_connection: graph_rel.left_connection.clone(),
@@ -1550,7 +1649,7 @@ pub(super) fn collect_polymorphic_edges(plan: &LogicalPlan) -> Vec<PolymorphicEd
             _ => {}
         }
     }
-    
+
     let mut edges = Vec::new();
     collect_inner(plan, &mut edges);
     edges
@@ -1588,9 +1687,9 @@ pub(super) fn has_variable_length_or_shortest_path(plan: &LogicalPlan) -> bool {
             // Check for variable-length patterns that need CTEs
             if let Some(spec) = &graph_rel.variable_length {
                 // Fixed-length (exact hops, no shortest path) can use inline JOINs
-                let is_fixed_length = spec.exact_hop_count().is_some() 
-                    && graph_rel.shortest_path_mode.is_none();
-                
+                let is_fixed_length =
+                    spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
+
                 if !is_fixed_length {
                     // Variable-length or shortest path needs CTE
                     return true;
@@ -1736,20 +1835,20 @@ pub(super) fn generate_polymorphic_edge_filters(
     to_label: &str,
 ) -> Option<RenderExpr> {
     use crate::server::GLOBAL_SCHEMAS;
-    
+
     // Get the relationship schema to check if it's polymorphic
     let schema_lock = GLOBAL_SCHEMAS.get()?;
     let schemas = schema_lock.try_read().ok()?;
     let schema = schemas.get("default")?;
     let rel_schema = schema.get_rel_schema(rel_type).ok()?;
-    
+
     // Check if this is a polymorphic edge
     let type_col = rel_schema.type_column.as_ref()?;
     let from_label_col = rel_schema.from_label_column.as_ref();
     let to_label_col = rel_schema.to_label_column.as_ref();
-    
+
     let mut filters = Vec::new();
-    
+
     // Filter 1: type_column = 'FOLLOWS'
     let type_filter = RenderExpr::OperatorApplicationExp(OperatorApplication {
         operator: Operator::Equal,
@@ -1762,7 +1861,7 @@ pub(super) fn generate_polymorphic_edge_filters(
         ],
     });
     filters.push(type_filter);
-    
+
     // Filter 2: from_label_column = 'User' (if present)
     if let Some(from_col) = from_label_col {
         let from_filter = RenderExpr::OperatorApplicationExp(OperatorApplication {
@@ -1777,7 +1876,7 @@ pub(super) fn generate_polymorphic_edge_filters(
         });
         filters.push(from_filter);
     }
-    
+
     // Filter 3: to_label_column = 'Post' (if present)
     if let Some(to_col) = to_label_col {
         let to_filter = RenderExpr::OperatorApplicationExp(OperatorApplication {
@@ -1792,7 +1891,7 @@ pub(super) fn generate_polymorphic_edge_filters(
         });
         filters.push(to_filter);
     }
-    
+
     // Combine filters with AND
     if filters.is_empty() {
         None
@@ -1889,28 +1988,32 @@ pub(super) fn plan_contains_view_scan(plan: &LogicalPlan) -> bool {
         LogicalPlan::Limit(limit) => plan_contains_view_scan(&limit.input),
         LogicalPlan::Cte(cte) => plan_contains_view_scan(&cte.input),
         LogicalPlan::Unwind(u) => plan_contains_view_scan(&u.input),
-        LogicalPlan::Union(union) => union.inputs.iter().any(|i| plan_contains_view_scan(i.as_ref())),
+        LogicalPlan::Union(union) => union
+            .inputs
+            .iter()
+            .any(|i| plan_contains_view_scan(i.as_ref())),
         _ => false,
     }
 }
 
 /// Apply property mapping to an expression
-/// 
+///
 /// Main purpose: Convert TableAlias expressions to PropertyAccess for denormalized schemas.
 /// For GROUP BY with a node alias like `b` in `(a)-[r1]->(b)-[r2]->(c)`, this converts
 /// the TableAlias("b") to PropertyAccess { table_alias: "r2", column: "Origin" }
-/// 
+///
 /// Also remaps PropertyAccess table aliases for nodes denormalized on edges.
 /// For cross-table patterns like zeek logs, where `src` is denormalized on the DNS_REQUESTED
 /// edge, this changes `src."id.orig_h"` to use the edge alias.
-/// 
+///
 /// Note: Regular PropertyAccess property name mapping is handled in the FilterTagging analyzer pass.
 pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
     match expr {
         RenderExpr::TableAlias(alias) => {
             // For denormalized schemas, convert TableAlias to the proper ID column reference
             // Example: TableAlias("b") -> PropertyAccess { table_alias: "r2", column: "Origin" }
-            if let Some((rel_alias, id_column)) = get_denormalized_node_id_reference(&alias.0, plan) {
+            if let Some((rel_alias, id_column)) = get_denormalized_node_id_reference(&alias.0, plan)
+            {
                 use crate::graph_catalog::expression_parser::PropertyValue;
                 *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(rel_alias),
@@ -1922,7 +2025,9 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             // For denormalized nodes, remap the table alias to the edge alias
             // Example: PropertyAccess { table_alias: "src", column: "id.orig_h" }
             //       -> PropertyAccess { table_alias: "ad62047b83", column: "id.orig_h" }
-            if let Some((rel_alias, _id_column)) = get_denormalized_node_id_reference(&prop.table_alias.0, plan) {
+            if let Some((rel_alias, _id_column)) =
+                get_denormalized_node_id_reference(&prop.table_alias.0, plan)
+            {
                 prop.table_alias = TableAlias(rel_alias);
             }
         }
@@ -1950,7 +2055,7 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
 /// Get the relationship alias and ID column for a denormalized node alias
 /// For example, if `b` is the "to" node of `r1` or the "from" node of `r2`,
 /// this returns (rel_alias, id_column_name).
-/// 
+///
 /// IMPORTANT: This function should ONLY return a result for truly denormalized nodes
 /// (where node properties are stored on the edge table, indicated by from_node_properties/to_node_properties).
 /// For standard schemas where nodes have their own tables, this should return None so
@@ -1963,7 +2068,7 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
                 // For multi-hop patterns like (a)-[r1]->(b)-[r2]->(c), we prefer
                 // the "from" position because in GROUP BY b, we want r2.Origin
                 // (where b is the origin/source of r2)
-                
+
                 // Check if node is the "from" node (left_connection) - this takes precedence
                 // ONLY if the edge has from_node_properties (denormalized schema)
                 if alias == rel.left_connection {
@@ -1985,7 +2090,7 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
                     }
                 }
             }
-            
+
             // Recursively check branches (right first for more recent relationships)
             if let Some(result) = get_denormalized_node_id_reference(alias, &rel.right) {
                 return Some(result);
@@ -2009,10 +2114,14 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
         LogicalPlan::Filter(filter) => get_denormalized_node_id_reference(alias, &filter.input),
         LogicalPlan::Projection(proj) => get_denormalized_node_id_reference(alias, &proj.input),
         LogicalPlan::GraphJoins(joins) => get_denormalized_node_id_reference(alias, &joins.input),
-        LogicalPlan::OrderBy(order_by) => get_denormalized_node_id_reference(alias, &order_by.input),
+        LogicalPlan::OrderBy(order_by) => {
+            get_denormalized_node_id_reference(alias, &order_by.input)
+        }
         LogicalPlan::Skip(skip) => get_denormalized_node_id_reference(alias, &skip.input),
         LogicalPlan::Limit(limit) => get_denormalized_node_id_reference(alias, &limit.input),
-        LogicalPlan::GroupBy(group_by) => get_denormalized_node_id_reference(alias, &group_by.input),
+        LogicalPlan::GroupBy(group_by) => {
+            get_denormalized_node_id_reference(alias, &group_by.input)
+        }
         LogicalPlan::Cte(cte) => get_denormalized_node_id_reference(alias, &cte.input),
         _ => None,
     }
@@ -2025,8 +2134,13 @@ pub(super) fn is_invalid_filter_expression(expr: &RenderExpr) -> bool {
             if matches!(op.operator, Operator::Equal) && op.operands.len() == 2 {
                 matches!(
                     (&op.operands[0], &op.operands[1]),
-                    (RenderExpr::Literal(Literal::Integer(1)), RenderExpr::Literal(Literal::Integer(0)))
-                    | (RenderExpr::Literal(Literal::Integer(0)), RenderExpr::Literal(Literal::Integer(1)))
+                    (
+                        RenderExpr::Literal(Literal::Integer(1)),
+                        RenderExpr::Literal(Literal::Integer(0))
+                    ) | (
+                        RenderExpr::Literal(Literal::Integer(0)),
+                        RenderExpr::Literal(Literal::Integer(1))
+                    )
                 )
             } else {
                 false
@@ -2041,82 +2155,99 @@ pub(super) fn is_invalid_filter_expression(expr: &RenderExpr) -> bool {
 /// might have different property sets, we need to:
 /// 1. Collect all unique column aliases across all branches
 /// 2. For each branch, add NULL for any missing columns
-/// 
+///
 /// Returns normalized RenderPlans with consistent SELECT items.
-pub(super) fn normalize_union_branches(union_plans: Vec<super::RenderPlan>) -> Vec<super::RenderPlan> {
-    use super::{SelectItem, RenderPlan, SelectItems};
+pub(super) fn normalize_union_branches(
+    union_plans: Vec<super::RenderPlan>,
+) -> Vec<super::RenderPlan> {
+    use super::{RenderPlan, SelectItem, SelectItems};
     use std::collections::BTreeSet;
-    
+
     if union_plans.is_empty() {
         return union_plans;
     }
-    
+
     // Collect all unique column aliases across all branches (sorted for deterministic order)
-    let all_aliases: BTreeSet<String> = union_plans.iter()
+    let all_aliases: BTreeSet<String> = union_plans
+        .iter()
         .flat_map(|plan| {
-            plan.select.items.iter()
+            plan.select
+                .items
+                .iter()
                 .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
         })
         .collect();
-    
+
     println!(
         "DEBUG: normalize_union_branches - {} branches, {} total unique aliases: {:?}",
         union_plans.len(),
         all_aliases.len(),
         all_aliases
     );
-    
+
     // If all branches have the same aliases, no normalization needed
     let all_same = union_plans.iter().all(|plan| {
-        let branch_aliases: BTreeSet<String> = plan.select.items.iter()
+        let branch_aliases: BTreeSet<String> = plan
+            .select
+            .items
+            .iter()
             .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
             .collect();
         branch_aliases == all_aliases
     });
-    
+
     if all_same {
         crate::debug_println!("DEBUG: normalize_union_branches - all branches have same aliases, no normalization needed");
         return union_plans;
     }
-    
-    crate::debug_println!("DEBUG: normalize_union_branches - branches have different aliases, normalizing...");
-    
+
+    crate::debug_println!(
+        "DEBUG: normalize_union_branches - branches have different aliases, normalizing..."
+    );
+
     // Normalize each branch
-    union_plans.into_iter().map(|plan| {
-        // Build a map of existing column aliases in this branch
-        let existing: std::collections::HashMap<String, SelectItem> = plan.select.items.iter()
-            .filter_map(|item| {
-                item.col_alias.as_ref().map(|a| (a.0.clone(), item.clone()))
-            })
-            .collect();
-        
-        // Build normalized SELECT items in consistent order
-        let normalized_items: Vec<SelectItem> = all_aliases.iter()
-            .map(|alias| {
-                if let Some(item) = existing.get(alias) {
-                    item.clone()
-                } else {
-                    // Missing column - use NULL
-                    SelectItem {
-                        expression: RenderExpr::Literal(Literal::Null),
-                        col_alias: Some(super::ColumnAlias(alias.clone())),
+    union_plans
+        .into_iter()
+        .map(|plan| {
+            // Build a map of existing column aliases in this branch
+            let existing: std::collections::HashMap<String, SelectItem> = plan
+                .select
+                .items
+                .iter()
+                .filter_map(|item| item.col_alias.as_ref().map(|a| (a.0.clone(), item.clone())))
+                .collect();
+
+            // Build normalized SELECT items in consistent order
+            let normalized_items: Vec<SelectItem> = all_aliases
+                .iter()
+                .map(|alias| {
+                    if let Some(item) = existing.get(alias) {
+                        item.clone()
+                    } else {
+                        // Missing column - use NULL
+                        SelectItem {
+                            expression: RenderExpr::Literal(Literal::Null),
+                            col_alias: Some(super::ColumnAlias(alias.clone())),
+                        }
                     }
-                }
-            })
-            .collect();
-        
-        RenderPlan {
-            select: SelectItems {
-                items: normalized_items,
-                distinct: plan.select.distinct,
-            },
-            ..plan
-        }
-    }).collect()
+                })
+                .collect();
+
+            RenderPlan {
+                select: SelectItems {
+                    items: normalized_items,
+                    distinct: plan.select.distinct,
+                },
+                ..plan
+            }
+        })
+        .collect()
 }
 
 /// Find a Union node nested inside a plan
-pub(super) fn find_nested_union(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::Union> {
+pub(super) fn find_nested_union(
+    plan: &LogicalPlan,
+) -> Option<&crate::query_planner::logical_plan::Union> {
     match plan {
         LogicalPlan::Union(union) => Some(union),
         LogicalPlan::GraphJoins(graph_joins) => find_nested_union(&graph_joins.input),
@@ -2130,13 +2261,12 @@ pub(super) fn find_nested_union(plan: &LogicalPlan) -> Option<&crate::query_plan
 /// Check if a GraphRel has a Projection(kind=With) as its right side.
 /// This indicates a "WITH ... MATCH" pattern that requires CTE-based processing.
 /// The WITH clause creates a derived table that the subsequent MATCH must join against.
-/// 
+///
 /// Note: The Projection(With) may have been transformed to Projection(Return) by analyzer passes,
 /// but the structure is still identifiable by having GraphJoins/Union inside GraphRel.right
 /// that contains a separate pattern (the first MATCH).
 pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
-    use crate::query_planner::logical_plan::ProjectionKind;
-    
+
     // Helper to check if a plan contains actual WITH clause (Projection(kind=With) or WithClause)
     fn contains_actual_with_clause(plan: &LogicalPlan) -> bool {
         match plan {
@@ -2145,13 +2275,7 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
                 log::info!("🔍 contains_actual_with_clause: Found WithClause node");
                 true
             }
-            // Legacy Projection(kind=With) for backward compatibility
-            LogicalPlan::Projection(proj) => {
-                if matches!(proj.kind, ProjectionKind::With) {
-                    return true;
-                }
-                contains_actual_with_clause(&proj.input)
-            }
+            LogicalPlan::Projection(proj) => contains_actual_with_clause(&proj.input),
             LogicalPlan::GraphJoins(gj) => contains_actual_with_clause(&gj.input),
             LogicalPlan::GraphRel(gr) => {
                 contains_actual_with_clause(&gr.left) || contains_actual_with_clause(&gr.right)
@@ -2167,7 +2291,7 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
             _ => false,
         }
     }
-    
+
     match plan {
         // NEW: Direct WithClause at any level in the plan
         LogicalPlan::WithClause(wc) => {
@@ -2181,20 +2305,18 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
             let right_has_nested_pattern = match graph_rel.right.as_ref() {
                 // NEW: Direct WithClause in GraphRel.right
                 LogicalPlan::WithClause(wc) => {
-                    log::info!("🔍 has_with_clause_in_graph_rel: Found WithClause in GraphRel.right");
-                    true
-                }
-                // Direct Projection(kind=With) - original structure before analyzer transforms
-                LogicalPlan::Projection(proj) if matches!(proj.kind, ProjectionKind::With) => {
-                    log::info!("🔍 has_with_clause_in_graph_rel: Found Projection(With) in GraphRel.right");
+                    log::info!(
+                        "🔍 has_with_clause_in_graph_rel: Found WithClause in GraphRel.right"
+                    );
                     true
                 }
                 // Union containing GraphJoins - check if it actually contains WITH clause
                 LogicalPlan::Union(union) => {
                     // Only flag as WITH pattern if there's an actual WITH clause inside
-                    let has_with_inside = union.inputs.iter().any(|input| {
-                        contains_actual_with_clause(input)
-                    });
+                    let has_with_inside = union
+                        .inputs
+                        .iter()
+                        .any(|input| contains_actual_with_clause(input));
                     if has_with_inside {
                         log::info!("🔍 has_with_clause_in_graph_rel: Found Union with WITH clause inside in GraphRel.right - WITH+MATCH pattern");
                     }
@@ -2210,26 +2332,25 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
                 }
                 _ => false,
             };
-            
+
             if right_has_nested_pattern {
                 return true;
             }
-            
+
             // Also check left side (for incoming patterns)
             let left_has_nested_pattern = match graph_rel.left.as_ref() {
                 // NEW: Direct WithClause in GraphRel.left
                 LogicalPlan::WithClause(wc) => {
-                    log::info!("🔍 has_with_clause_in_graph_rel: Found WithClause in GraphRel.left");
-                    true
-                }
-                LogicalPlan::Projection(proj) if matches!(proj.kind, ProjectionKind::With) => {
-                    log::info!("🔍 has_with_clause_in_graph_rel: Found Projection(With) in GraphRel.left");
+                    log::info!(
+                        "🔍 has_with_clause_in_graph_rel: Found WithClause in GraphRel.left"
+                    );
                     true
                 }
                 LogicalPlan::Union(union) => {
-                    let has_with_inside = union.inputs.iter().any(|input| {
-                        contains_actual_with_clause(input)
-                    });
+                    let has_with_inside = union
+                        .inputs
+                        .iter()
+                        .any(|input| contains_actual_with_clause(input));
                     if has_with_inside {
                         log::info!("🔍 has_with_clause_in_graph_rel: Found Union with WITH clause inside in GraphRel.left - WITH+MATCH pattern");
                     }
@@ -2244,13 +2365,14 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
                 }
                 _ => false,
             };
-            
+
             if left_has_nested_pattern {
                 return true;
             }
-            
+
             // Recursively check nested GraphRels
-            has_with_clause_in_graph_rel(&graph_rel.left) || has_with_clause_in_graph_rel(&graph_rel.right)
+            has_with_clause_in_graph_rel(&graph_rel.left)
+                || has_with_clause_in_graph_rel(&graph_rel.right)
         }
         LogicalPlan::Projection(proj) => has_with_clause_in_graph_rel(&proj.input),
         LogicalPlan::Filter(filter) => has_with_clause_in_graph_rel(&filter.input),
@@ -2260,9 +2382,10 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
         LogicalPlan::OrderBy(order_by) => has_with_clause_in_graph_rel(&order_by.input),
         LogicalPlan::Skip(skip) => has_with_clause_in_graph_rel(&skip.input),
         // Check Union at top level - WITH clauses might be inside Union branches
-        LogicalPlan::Union(union) => {
-            union.inputs.iter().any(|input| has_with_clause_in_graph_rel(input))
-        }
+        LogicalPlan::Union(union) => union
+            .inputs
+            .iter()
+            .any(|input| has_with_clause_in_graph_rel(input)),
         _ => false,
     }
 }
@@ -2271,10 +2394,10 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
 /// This happens when:
 /// 1. WITH clause contains aggregations (count, sum, etc.)
 /// 2. Followed by another MATCH clause
-/// 
+///
 /// The analyzer transforms this to: GraphJoins(joins=[...], input=GroupBy(...))
 /// Where the GroupBy came from the WITH aggregation.
-/// 
+///
 /// This pattern requires CTE-based processing because:
 /// - The aggregation must be computed first (materialized as a subquery)
 /// - The subsequent MATCH joins against the aggregated results
@@ -2285,9 +2408,11 @@ pub(super) fn has_with_aggregation_pattern(plan: &LogicalPlan) -> bool {
     //
     // After GraphJoinInference respects boundaries, the structure is:
     // GraphJoins(outer joins) -> Projection -> GraphRel(left: GroupBy(boundary=true), ...)
-    
+
     // Step 1: Find the outer GraphJoins at the top level (unwrapping Limit/OrderBy/etc)
-    fn find_top_level_graph_joins(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphJoins> {
+    fn find_top_level_graph_joins(
+        plan: &LogicalPlan,
+    ) -> Option<&crate::query_planner::logical_plan::GraphJoins> {
         match plan {
             LogicalPlan::GraphJoins(gj) => Some(gj),
             LogicalPlan::Limit(l) => find_top_level_graph_joins(&l.input),
@@ -2298,7 +2423,7 @@ pub(super) fn has_with_aggregation_pattern(plan: &LogicalPlan) -> bool {
             _ => None,
         }
     }
-    
+
     // Step 2: Check if plan contains a GroupBy with is_materialization_boundary=true
     fn has_materialization_boundary_group_by(plan: &LogicalPlan) -> bool {
         match plan {
@@ -2308,11 +2433,12 @@ pub(super) fn has_with_aggregation_pattern(plan: &LogicalPlan) -> bool {
                 }
                 // Also recurse into GroupBy's input
                 has_materialization_boundary_group_by(&gb.input)
-            },
+            }
             LogicalPlan::GraphRel(gr) => {
                 // Check both left and right branches
-                has_materialization_boundary_group_by(&gr.left) || has_materialization_boundary_group_by(&gr.right)
-            },
+                has_materialization_boundary_group_by(&gr.left)
+                    || has_materialization_boundary_group_by(&gr.right)
+            }
             LogicalPlan::Projection(p) => has_materialization_boundary_group_by(&p.input),
             LogicalPlan::Filter(f) => has_materialization_boundary_group_by(&f.input),
             LogicalPlan::GraphNode(gn) => has_materialization_boundary_group_by(&gn.input),
@@ -2320,29 +2446,36 @@ pub(super) fn has_with_aggregation_pattern(plan: &LogicalPlan) -> bool {
             _ => false,
         }
     }
-    
+
     // Check for the pattern: outer GraphJoins with joins + GroupBy(boundary) inside
     if let Some(graph_joins) = find_top_level_graph_joins(plan) {
         // Must have actual joins (from the outer MATCH pattern)
         if graph_joins.joins.is_empty() {
-            println!("DEBUG has_with_aggregation_pattern: GraphJoins has no joins, returning false");
+            println!(
+                "DEBUG has_with_aggregation_pattern: GraphJoins has no joins, returning false"
+            );
             return false;
         }
-        
+
         // Check if there's a GroupBy with materialization boundary inside
         let has_boundary_groupby = has_materialization_boundary_group_by(&graph_joins.input);
-        
-        println!("DEBUG has_with_aggregation_pattern: has_joins={}, has_boundary_groupby={}", 
-            !graph_joins.joins.is_empty(), has_boundary_groupby);
-        
+
+        println!(
+            "DEBUG has_with_aggregation_pattern: has_joins={}, has_boundary_groupby={}",
+            !graph_joins.joins.is_empty(),
+            has_boundary_groupby
+        );
+
         if has_boundary_groupby {
             log::info!("🔍 has_with_aggregation_pattern: Detected GraphJoins + GroupBy(boundary=true) - WITH aggregation followed by MATCH");
             return true;
         }
     } else {
-        println!("DEBUG has_with_aggregation_pattern: No top-level GraphJoins found, returning false");
+        println!(
+            "DEBUG has_with_aggregation_pattern: No top-level GraphJoins found, returning false"
+        );
     }
-    
+
     false
 }
 
@@ -2353,10 +2486,13 @@ pub(super) fn has_with_aggregation_pattern(plan: &LogicalPlan) -> bool {
 pub(super) fn extract_outer_aggregation_info(
     plan: &LogicalPlan,
 ) -> Option<(Vec<super::SelectItem>, Vec<RenderExpr>)> {
-    use super::{SelectItem, ColumnAlias};
-    
-    crate::debug_println!("🔍 extract_outer_aggregation_info: plan type = {:?}", std::mem::discriminant(plan));
-    
+    use super::{ColumnAlias, SelectItem};
+
+    crate::debug_println!(
+        "🔍 extract_outer_aggregation_info: plan type = {:?}",
+        std::mem::discriminant(plan)
+    );
+
     let (projection, group_by) = match plan {
         // Pattern 1: GraphJoins(Projection(GroupBy(Union)))
         LogicalPlan::GraphJoins(graph_joins) => {
@@ -2373,7 +2509,9 @@ pub(super) fn extract_outer_aggregation_info(
                 }
             // Pattern 2: GraphJoins(GroupBy(Projection(Union))) - from GroupByBuilding
             } else if let LogicalPlan::GroupBy(gb) = graph_joins.input.as_ref() {
-                crate::debug_println!("🔍 extract_outer_aggregation_info: GraphJoins(GroupBy) case");
+                crate::debug_println!(
+                    "🔍 extract_outer_aggregation_info: GraphJoins(GroupBy) case"
+                );
                 if let LogicalPlan::Projection(proj) = gb.input.as_ref() {
                     crate::debug_println!("🔍 extract_outer_aggregation_info: Found Projection inside GroupBy, proj.input type = {:?}", std::mem::discriminant(proj.input.as_ref()));
                     if find_nested_union(&proj.input).is_some() {
@@ -2405,15 +2543,25 @@ pub(super) fn extract_outer_aggregation_info(
         // Pattern 2: GroupBy(Projection(Union)) - from GroupByBuilding
         // Also handles: GroupBy(GraphJoins(Projection(Union))) - after GraphJoinInference
         LogicalPlan::GroupBy(gb) => {
-            crate::debug_println!("🔍 extract_outer_aggregation_info: GroupBy case, input type = {:?}", std::mem::discriminant(gb.input.as_ref()));
+            crate::debug_println!(
+                "🔍 extract_outer_aggregation_info: GroupBy case, input type = {:?}",
+                std::mem::discriminant(gb.input.as_ref())
+            );
             // Direct case: GroupBy(Projection(Union))
             if let LogicalPlan::Projection(proj) = gb.input.as_ref() {
-                crate::debug_println!("🔍 extract_outer_aggregation_info: Found Projection, proj.input type = {:?}", std::mem::discriminant(proj.input.as_ref()));
+                crate::debug_println!(
+                    "🔍 extract_outer_aggregation_info: Found Projection, proj.input type = {:?}",
+                    std::mem::discriminant(proj.input.as_ref())
+                );
                 if find_nested_union(&proj.input).is_some() {
-                    crate::debug_println!("🔍 extract_outer_aggregation_info: Found Union inside Projection.input!");
+                    crate::debug_println!(
+                        "🔍 extract_outer_aggregation_info: Found Union inside Projection.input!"
+                    );
                     (Some(proj), Some(gb))
                 } else {
-                    crate::debug_println!("🔍 extract_outer_aggregation_info: No Union found in Projection.input");
+                    crate::debug_println!(
+                        "🔍 extract_outer_aggregation_info: No Union found in Projection.input"
+                    );
                     (None, None)
                 }
             // Indirect case: GroupBy(GraphJoins(Projection(Union))) - after GraphJoinInference
@@ -2425,7 +2573,9 @@ pub(super) fn extract_outer_aggregation_info(
                         crate::debug_println!("🔍 extract_outer_aggregation_info: ✓ Found Union inside Projection.input!");
                         (Some(proj), Some(gb))
                     } else {
-                        crate::debug_println!("🔍 extract_outer_aggregation_info: No Union found in Projection.input");
+                        crate::debug_println!(
+                            "🔍 extract_outer_aggregation_info: No Union found in Projection.input"
+                        );
                         (None, None)
                     }
                 } else {
@@ -2438,7 +2588,9 @@ pub(super) fn extract_outer_aggregation_info(
             }
         }
         _ => {
-            crate::debug_println!("🔍 extract_outer_aggregation_info: Unknown plan type, returning None");
+            crate::debug_println!(
+                "🔍 extract_outer_aggregation_info: Unknown plan type, returning None"
+            );
             (None, None)
         }
     };
@@ -2446,49 +2598,71 @@ pub(super) fn extract_outer_aggregation_info(
     let (projection, group_by) = (projection?, group_by?);
 
     let has_aggregation = projection.items.iter().any(|item| {
-        matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_))
+        matches!(
+            &item.expression,
+            crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
+        )
     });
 
     if !has_aggregation {
         return None;
     }
 
-    let outer_select: Vec<SelectItem> = projection.items.iter().map(|item| {
-        let expr: RenderExpr = match &item.expression {
-            crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
-                RenderExpr::Raw(format!("\"{}\"", alias.0))
+    let outer_select: Vec<SelectItem> = projection
+        .items
+        .iter()
+        .map(|item| {
+            let expr: RenderExpr = match &item.expression {
+                crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
+                    RenderExpr::Raw(format!("\"{}\"", alias.0))
+                }
+                crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(agg) => {
+                    let args: Vec<RenderExpr> = agg
+                        .args
+                        .iter()
+                        .map(|arg| match arg {
+                            crate::query_planner::logical_expr::LogicalExpr::Star => {
+                                RenderExpr::Raw("*".to_string())
+                            }
+                            crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
+                                RenderExpr::Raw(format!("\"{}\"", alias.0))
+                            }
+                            other => other
+                                .clone()
+                                .try_into()
+                                .unwrap_or(RenderExpr::Raw("?".to_string())),
+                        })
+                        .collect();
+                    RenderExpr::AggregateFnCall(AggregateFnCall {
+                        name: agg.name.clone(),
+                        args,
+                    })
+                }
+                other => other
+                    .clone()
+                    .try_into()
+                    .unwrap_or(RenderExpr::Raw("?".to_string())),
+            };
+            SelectItem {
+                expression: expr,
+                col_alias: item.col_alias.as_ref().map(|a| ColumnAlias(a.0.clone())),
             }
-            crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(agg) => {
-                let args: Vec<RenderExpr> = agg.args.iter().map(|arg| {
-                    match arg {
-                        crate::query_planner::logical_expr::LogicalExpr::Star => RenderExpr::Raw("*".to_string()),
-                        crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
-                            RenderExpr::Raw(format!("\"{}\"", alias.0))
-                        }
-                        other => other.clone().try_into().unwrap_or(RenderExpr::Raw("?".to_string()))
-                    }
-                }).collect();
-                RenderExpr::AggregateFnCall(AggregateFnCall {
-                    name: agg.name.clone(),
-                    args,
-                })
-            }
-            other => other.clone().try_into().unwrap_or(RenderExpr::Raw("?".to_string()))
-        };
-        SelectItem {
-            expression: expr,
-            col_alias: item.col_alias.as_ref().map(|a| ColumnAlias(a.0.clone())),
-        }
-    }).collect();
+        })
+        .collect();
 
-    let outer_group_by: Vec<RenderExpr> = group_by.expressions.iter().map(|expr| {
-        match expr {
+    let outer_group_by: Vec<RenderExpr> = group_by
+        .expressions
+        .iter()
+        .map(|expr| match expr {
             crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
                 RenderExpr::Raw(format!("\"{}\"", alias.0))
             }
-            other => other.clone().try_into().unwrap_or(RenderExpr::Raw("?".to_string()))
-        }
-    }).collect();
+            other => other
+                .clone()
+                .try_into()
+                .unwrap_or(RenderExpr::Raw("?".to_string())),
+        })
+        .collect();
 
     Some((outer_select, outer_group_by))
 }
@@ -2499,21 +2673,29 @@ pub(super) fn convert_order_by_expr_for_union(
     expr: &crate::query_planner::logical_expr::LogicalExpr,
 ) -> RenderExpr {
     use crate::query_planner::logical_expr::LogicalExpr;
-    
+
     match expr {
         LogicalExpr::PropertyAccessExp(prop_access) => {
-            let alias = format!("\"{}.{}\"", prop_access.table_alias.0, prop_access.column.raw());
+            let alias = format!(
+                "\"{}.{}\"",
+                prop_access.table_alias.0,
+                prop_access.column.raw()
+            );
             RenderExpr::Raw(alias)
         }
-        LogicalExpr::ColumnAlias(col_alias) => {
-            RenderExpr::Raw(format!("\"{}\"", col_alias.0))
-        }
-        _ => expr.clone().try_into().unwrap_or_else(|_| RenderExpr::Raw("1".to_string()))
+        LogicalExpr::ColumnAlias(col_alias) => RenderExpr::Raw(format!("\"{}\"", col_alias.0)),
+        _ => expr
+            .clone()
+            .try_into()
+            .unwrap_or_else(|_| RenderExpr::Raw("1".to_string())),
     }
 }
 
 /// Check if joining_on references a UNION CTE
-pub(super) fn references_union_cte_in_join(joining_on: &[OperatorApplication], cte_name: &str) -> bool {
+pub(super) fn references_union_cte_in_join(
+    joining_on: &[OperatorApplication],
+    cte_name: &str,
+) -> bool {
     for op_app in joining_on {
         if op_app.operands.len() >= 2 {
             if references_union_cte_in_operand(&op_app.operands[0], cte_name)
@@ -2539,7 +2721,10 @@ fn references_union_cte_in_operand(operand: &RenderExpr, cte_name: &str) -> bool
 }
 
 /// Update JOIN expressions to use standardized column names for UNION CTEs
-pub(super) fn update_join_expression_for_union_cte(op_app: &mut OperatorApplication, table_alias: &str) {
+pub(super) fn update_join_expression_for_union_cte(
+    op_app: &mut OperatorApplication,
+    table_alias: &str,
+) {
     for operand in op_app.operands.iter_mut() {
         update_operand_for_union_cte(operand, table_alias);
     }
@@ -2549,9 +2734,11 @@ fn update_operand_for_union_cte(operand: &mut RenderExpr, table_alias: &str) {
     match operand {
         RenderExpr::Column(col) => {
             if col.0.raw() == "from_id" {
-                *operand = RenderExpr::Column(Column(PropertyValue::Column("from_node_id".to_string())));
+                *operand =
+                    RenderExpr::Column(Column(PropertyValue::Column("from_node_id".to_string())));
             } else if col.0.raw() == "to_id" {
-                *operand = RenderExpr::Column(Column(PropertyValue::Column("to_node_id".to_string())));
+                *operand =
+                    RenderExpr::Column(Column(PropertyValue::Column("to_node_id".to_string())));
             }
         }
         RenderExpr::PropertyAccessExp(prop_access) => {
@@ -2572,17 +2759,15 @@ fn update_operand_for_union_cte(operand: &mut RenderExpr, table_alias: &str) {
 #[allow(dead_code)]
 pub(super) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
     use crate::render_plan::cte_extraction::extract_node_label_from_viewscan;
-    
+
     match plan {
         LogicalPlan::GraphNode(node) if node.alias == alias => {
             extract_node_label_from_viewscan(&node.input)
         }
         LogicalPlan::GraphNode(node) => get_node_label_for_alias(alias, &node.input),
-        LogicalPlan::GraphRel(rel) => {
-            get_node_label_for_alias(alias, &rel.left)
-                .or_else(|| get_node_label_for_alias(alias, &rel.center))
-                .or_else(|| get_node_label_for_alias(alias, &rel.right))
-        }
+        LogicalPlan::GraphRel(rel) => get_node_label_for_alias(alias, &rel.left)
+            .or_else(|| get_node_label_for_alias(alias, &rel.center))
+            .or_else(|| get_node_label_for_alias(alias, &rel.right)),
         LogicalPlan::Filter(filter) => get_node_label_for_alias(alias, &filter.input),
         LogicalPlan::Projection(proj) => get_node_label_for_alias(alias, &proj.input),
         LogicalPlan::GraphJoins(joins) => get_node_label_for_alias(alias, &joins.input),
@@ -2610,17 +2795,12 @@ pub(super) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Optio
 // ============================================================================
 
 use crate::query_planner::logical_expr::{
-    LogicalExpr, 
-    Operator as LogicalOperator, 
-    OperatorApplication as LogicalOpApp
+    LogicalExpr, Operator as LogicalOperator, OperatorApplication as LogicalOpApp,
 };
 
 /// Collect all table aliases referenced in a LogicalExpr.
 /// Used to determine which aliases a predicate depends on.
-pub(super) fn collect_aliases_from_logical_expr(
-    expr: &LogicalExpr, 
-    aliases: &mut HashSet<String>
-) {
+pub(super) fn collect_aliases_from_logical_expr(expr: &LogicalExpr, aliases: &mut HashSet<String>) {
     match expr {
         LogicalExpr::PropertyAccessExp(prop) => {
             aliases.insert(prop.table_alias.0.clone());
@@ -2686,7 +2866,9 @@ pub(super) fn split_and_predicates_logical(expr: &LogicalExpr) -> Vec<LogicalExp
 
 /// Combine multiple LogicalExpr predicates with AND.
 /// Returns None if the input is empty.
-pub(super) fn combine_predicates_with_and_logical(predicates: Vec<LogicalExpr>) -> Option<LogicalExpr> {
+pub(super) fn combine_predicates_with_and_logical(
+    predicates: Vec<LogicalExpr>,
+) -> Option<LogicalExpr> {
     if predicates.is_empty() {
         None
     } else if predicates.len() == 1 {
@@ -2710,11 +2892,11 @@ pub(super) fn extract_predicates_for_alias_logical(
         Some(p) => p,
         None => return (None, None),
     };
-    
+
     let all_predicates = split_and_predicates_logical(predicate);
     let mut for_alias = Vec::new();
     let mut remaining = Vec::new();
-    
+
     for pred in all_predicates {
         if references_only_alias_logical(&pred, target_alias) {
             for_alias.push(pred);
@@ -2722,7 +2904,7 @@ pub(super) fn extract_predicates_for_alias_logical(
             remaining.push(pred);
         }
     }
-    
+
     // Convert for_alias predicates to RenderExpr
     let alias_filter = if for_alias.is_empty() {
         None
@@ -2730,7 +2912,7 @@ pub(super) fn extract_predicates_for_alias_logical(
         let combined = combine_predicates_with_and_logical(for_alias).unwrap();
         RenderExpr::try_from(combined).ok()
     };
-    
+
     (alias_filter, combine_predicates_with_and_logical(remaining))
 }
 
@@ -2738,7 +2920,6 @@ pub(super) fn extract_predicates_for_alias_logical(
 // JOIN Extraction Helpers
 // These functions assist with extracting JOIN clauses from the logical plan
 // ============================================================================
-
 
 /// Extract schema filter from a LogicalPlan for LEFT JOIN pre_filter.
 /// This ensures schema filters are applied BEFORE the LEFT JOIN (correct semantics).
@@ -2788,23 +2969,23 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
         }
         _ => None,
     }?;
-    
+
     // Check if this is a polymorphic edge (has type_column, from_label_column, or to_label_column)
-    let has_polymorphic_fields = view_scan.type_column.is_some() 
-        || view_scan.from_label_column.is_some() 
+    let has_polymorphic_fields = view_scan.type_column.is_some()
+        || view_scan.from_label_column.is_some()
         || view_scan.to_label_column.is_some();
-    
+
     if !has_polymorphic_fields {
         return None;
     }
-    
+
     log::debug!(
         "Generating polymorphic edge filter for alias='{}', rel_types={:?}, type_col={:?}, from_label_col={:?}, to_label_col={:?}",
         alias, rel_types, view_scan.type_column, view_scan.from_label_column, view_scan.to_label_column
     );
-    
+
     let mut filters = Vec::new();
-    
+
     // Filter 1: type_column = 'EDGE_TYPE' (single) OR type_column IN ('TYPE1', 'TYPE2') (multiple)
     if let Some(type_col) = &view_scan.type_column {
         if rel_types.len() == 1 {
@@ -2819,7 +3000,8 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
                 ],
             }));
         } else if rel_types.len() > 1 {
-            let type_list: Vec<RenderExpr> = rel_types.iter()
+            let type_list: Vec<RenderExpr> = rel_types
+                .iter()
                 .map(|t| RenderExpr::Literal(Literal::String(t.clone())))
                 .collect();
             filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
@@ -2834,7 +3016,7 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
             }));
         }
     }
-    
+
     // Filter 2: from_label_column = 'FromNodeType' (if present and not $any)
     if let Some(from_label_col) = &view_scan.from_label_column {
         if !from_label.is_empty() && from_label != "$any" {
@@ -2850,7 +3032,7 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
             }));
         }
     }
-    
+
     // Filter 3: to_label_column = 'ToNodeType' (if present and not $any)
     if let Some(to_label_col) = &view_scan.to_label_column {
         if !to_label.is_empty() && to_label != "$any" {
@@ -2866,7 +3048,7 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
             }));
         }
     }
-    
+
     // Combine filters with AND
     combine_render_exprs_with_and(filters)
 }
@@ -2881,7 +3063,7 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
             // Add this GraphRel's predicate, but filter out optional-only predicates
             if let Some(ref pred) = gr.where_predicate {
                 let is_optional = gr.is_optional.unwrap_or(false);
-                
+
                 if is_optional {
                     // For OPTIONAL MATCH patterns, determine anchor vs optional aliases
                     let anchor_alias = gr.anchor_connection.as_ref();
@@ -2892,13 +3074,13 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                     } else {
                         None
                     };
-                    
+
                     if let (Some(_anchor), Some(optional)) = (anchor_alias, optional_alias) {
                         let all_preds = split_and_predicates_logical(pred);
                         for p in all_preds {
                             let refs_only_rel = references_only_alias_logical(&p, &gr.alias);
                             let refs_only_optional = references_only_alias_logical(&p, optional);
-                            
+
                             // Keep if it references anchor or multiple aliases
                             // Filter out if it references ONLY rel or ONLY optional node
                             if !refs_only_rel && !refs_only_optional {
@@ -2938,7 +3120,10 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
 
 /// Collect schema filters from all ViewScans in the plan tree.
 /// These are filters defined in the YAML schema configuration.
-pub(super) fn collect_schema_filters(plan: &LogicalPlan, alias_hint: Option<&str>) -> Vec<RenderExpr> {
+pub(super) fn collect_schema_filters(
+    plan: &LogicalPlan,
+    alias_hint: Option<&str>,
+) -> Vec<RenderExpr> {
     let mut filters = Vec::new();
     match plan {
         LogicalPlan::ViewScan(scan) => {
@@ -2947,7 +3132,9 @@ pub(super) fn collect_schema_filters(plan: &LogicalPlan, alias_hint: Option<&str
                 if let Ok(sql) = schema_filter.to_sql(table_alias) {
                     log::debug!(
                         "Collected schema filter for table '{}' with alias '{}': {}",
-                        scan.source_table, table_alias, sql
+                        scan.source_table,
+                        table_alias,
+                        sql
                     );
                     filters.push(RenderExpr::Raw(sql));
                 }
@@ -2956,7 +3143,10 @@ pub(super) fn collect_schema_filters(plan: &LogicalPlan, alias_hint: Option<&str
         LogicalPlan::GraphRel(gr) => {
             filters.extend(collect_schema_filters(&gr.left, Some(&gr.left_connection)));
             filters.extend(collect_schema_filters(&gr.center, Some(&gr.alias)));
-            filters.extend(collect_schema_filters(&gr.right, Some(&gr.right_connection)));
+            filters.extend(collect_schema_filters(
+                &gr.right,
+                Some(&gr.right_connection),
+            ));
         }
         LogicalPlan::GraphNode(gn) => {
             filters.extend(collect_schema_filters(&gn.input, Some(&gn.alias)));
@@ -2982,7 +3172,9 @@ pub(super) fn combine_render_exprs_with_and(filters: Vec<RenderExpr>) -> Option<
 /// Combine multiple optional RenderExpr filters with AND operator.
 /// Flattens the options first, then combines non-None values.
 /// Returns None if all inputs are None.
-pub(super) fn combine_optional_filters_with_and(filters: Vec<Option<RenderExpr>>) -> Option<RenderExpr> {
+pub(super) fn combine_optional_filters_with_and(
+    filters: Vec<Option<RenderExpr>>,
+) -> Option<RenderExpr> {
     let active: Vec<RenderExpr> = filters.into_iter().flatten().collect();
     combine_render_exprs_with_and(active)
 }
@@ -2990,7 +3182,9 @@ pub(super) fn combine_optional_filters_with_and(filters: Vec<Option<RenderExpr>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render_plan::render_expr::{ColumnAlias, TableAlias, Literal, Operator, OperatorApplication};
+    use crate::render_plan::render_expr::{
+        ColumnAlias, Literal, Operator, OperatorApplication, TableAlias,
+    };
 
     /// Test for TODO-8: rewrite_with_aliases_to_cte should rewrite TableAlias references
     /// that are in the with_aliases set to CTE references.
@@ -2998,13 +3192,17 @@ mod tests {
     fn test_rewrite_with_aliases_to_cte_basic() {
         let mut with_aliases = HashSet::new();
         with_aliases.insert("follows".to_string());
-        
+
         // A simple TableAlias reference should be rewritten
         let expr = RenderExpr::TableAlias(TableAlias("follows".to_string()));
-        let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "grouped_data");
-        
-        assert!(from_with, "Expression should be recognized as coming from WITH");
-        
+        let (rewritten, from_with) =
+            rewrite_with_aliases_to_cte(expr, &with_aliases, "grouped_data");
+
+        assert!(
+            from_with,
+            "Expression should be recognized as coming from WITH"
+        );
+
         // Should be rewritten to grouped_data.follows
         match rewritten {
             RenderExpr::PropertyAccessExp(prop) => {
@@ -3020,13 +3218,14 @@ mod tests {
     fn test_rewrite_with_aliases_to_cte_non_with_alias() {
         let mut with_aliases = HashSet::new();
         with_aliases.insert("follows".to_string());
-        
+
         // A TableAlias NOT in with_aliases should NOT be rewritten
         let expr = RenderExpr::TableAlias(TableAlias("other_alias".to_string()));
-        let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "grouped_data");
-        
+        let (rewritten, from_with) =
+            rewrite_with_aliases_to_cte(expr, &with_aliases, "grouped_data");
+
         assert!(!from_with, "Expression should NOT be from WITH");
-        
+
         // Should remain unchanged
         match rewritten {
             RenderExpr::TableAlias(alias) => {
@@ -3041,17 +3240,18 @@ mod tests {
     fn test_rewrite_with_aliases_to_cte_aggregate() {
         let mut with_aliases = HashSet::new();
         with_aliases.insert("follows".to_string());
-        
+
         // AVG(follows) should become AVG(grouped_data.follows)
         let expr = RenderExpr::AggregateFnCall(AggregateFnCall {
             name: "AVG".to_string(),
             args: vec![RenderExpr::TableAlias(TableAlias("follows".to_string()))],
         });
-        
-        let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "grouped_data");
-        
+
+        let (rewritten, from_with) =
+            rewrite_with_aliases_to_cte(expr, &with_aliases, "grouped_data");
+
         assert!(from_with, "Aggregate argument should be from WITH");
-        
+
         // Should be AVG(grouped_data.follows)
         match rewritten {
             RenderExpr::AggregateFnCall(agg) => {
@@ -3062,7 +3262,10 @@ mod tests {
                         assert_eq!(prop.table_alias.0, "grouped_data");
                         assert_eq!(prop.column.0.raw(), "follows");
                     }
-                    _ => panic!("Expected PropertyAccessExp inside aggregate, got {:?}", agg.args[0]),
+                    _ => panic!(
+                        "Expected PropertyAccessExp inside aggregate, got {:?}",
+                        agg.args[0]
+                    ),
                 }
             }
             _ => panic!("Expected AggregateFnCall, got {:?}", rewritten),
@@ -3075,7 +3278,7 @@ mod tests {
         let mut with_aliases = HashSet::new();
         with_aliases.insert("a".to_string());
         with_aliases.insert("b".to_string());
-        
+
         // a + b should become cte.a + cte.b
         let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
             operator: Operator::Addition,
@@ -3084,11 +3287,11 @@ mod tests {
                 RenderExpr::TableAlias(TableAlias("b".to_string())),
             ],
         });
-        
+
         let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "cte");
-        
+
         assert!(from_with, "Both operands are from WITH");
-        
+
         match rewritten {
             RenderExpr::OperatorApplicationExp(op) => {
                 assert_eq!(op.operands.len(), 2);
@@ -3118,7 +3321,7 @@ mod tests {
     fn test_rewrite_with_aliases_to_cte_mixed() {
         let mut with_aliases = HashSet::new();
         with_aliases.insert("from_with".to_string());
-        
+
         // from_with + not_from_with should partially rewrite
         let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
             operator: Operator::Addition,
@@ -3127,12 +3330,12 @@ mod tests {
                 RenderExpr::TableAlias(TableAlias("not_from_with".to_string())),
             ],
         });
-        
+
         let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "cte");
-        
+
         // from_with should be false because not all operands are from WITH
         assert!(!from_with, "Mixed expression should not be fully from WITH");
-        
+
         match rewritten {
             RenderExpr::OperatorApplicationExp(op) => {
                 // First operand should be rewritten
@@ -3160,12 +3363,16 @@ mod tests {
     fn test_rewrite_with_aliases_to_cte_column_alias() {
         let mut with_aliases = HashSet::new();
         with_aliases.insert("my_alias".to_string());
-        
+
         let expr = RenderExpr::ColumnAlias(ColumnAlias("my_alias".to_string()));
-        let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "grouped_data");
-        
-        assert!(from_with, "ColumnAlias should also be recognized as from WITH");
-        
+        let (rewritten, from_with) =
+            rewrite_with_aliases_to_cte(expr, &with_aliases, "grouped_data");
+
+        assert!(
+            from_with,
+            "ColumnAlias should also be recognized as from WITH"
+        );
+
         match rewritten {
             RenderExpr::PropertyAccessExp(prop) => {
                 assert_eq!(prop.table_alias.0, "grouped_data");
@@ -3179,12 +3386,12 @@ mod tests {
     #[test]
     fn test_rewrite_with_aliases_to_cte_literal() {
         let with_aliases = HashSet::new();
-        
+
         let expr = RenderExpr::Literal(Literal::Integer(42));
         let (rewritten, from_with) = rewrite_with_aliases_to_cte(expr, &with_aliases, "cte");
-        
+
         assert!(!from_with, "Literal should not be from WITH");
-        
+
         match rewritten {
             RenderExpr::Literal(Literal::Integer(n)) => assert_eq!(n, 42),
             _ => panic!("Expected unchanged Literal"),
@@ -3195,15 +3402,12 @@ mod tests {
     // Tests for predicate analysis helpers
     // ==========================================================================
 
-    use crate::query_planner::logical_expr::{
-        LogicalExpr, 
-        Operator as LogicalOperator, 
-        OperatorApplication as LogicalOpApp,
-        PropertyAccess as LogicalPropertyAccess,
-        TableAlias as LogicalTableAlias,
-        Literal as LogicalLiteral,
-    };
     use crate::graph_catalog::expression_parser::PropertyValue as LogicalPropertyValue;
+    use crate::query_planner::logical_expr::{
+        Literal as LogicalLiteral, LogicalExpr, Operator as LogicalOperator,
+        OperatorApplication as LogicalOpApp, PropertyAccess as LogicalPropertyAccess,
+        TableAlias as LogicalTableAlias,
+    };
 
     /// Test collect_aliases_from_logical_expr with simple property access
     #[test]
@@ -3212,10 +3416,10 @@ mod tests {
             table_alias: LogicalTableAlias("user".to_string()),
             column: LogicalPropertyValue::Column("name".to_string()),
         });
-        
+
         let mut aliases = HashSet::new();
         collect_aliases_from_logical_expr(&expr, &mut aliases);
-        
+
         assert_eq!(aliases.len(), 1);
         assert!(aliases.contains("user"));
     }
@@ -3236,10 +3440,10 @@ mod tests {
                 }),
             ],
         });
-        
+
         let mut aliases = HashSet::new();
         collect_aliases_from_logical_expr(&expr, &mut aliases);
-        
+
         assert_eq!(aliases.len(), 2);
         assert!(aliases.contains("a"));
         assert!(aliases.contains("b"));
@@ -3252,7 +3456,7 @@ mod tests {
             table_alias: LogicalTableAlias("user".to_string()),
             column: LogicalPropertyValue::Column("name".to_string()),
         });
-        
+
         assert!(references_only_alias_logical(&expr, "user"));
         assert!(!references_only_alias_logical(&expr, "other"));
     }
@@ -3273,7 +3477,7 @@ mod tests {
                 }),
             ],
         });
-        
+
         assert!(!references_only_alias_logical(&expr, "a"));
         assert!(!references_only_alias_logical(&expr, "b"));
     }
@@ -3307,7 +3511,7 @@ mod tests {
                 }),
             ],
         });
-        
+
         let predicates = split_and_predicates_logical(&expr);
         assert_eq!(predicates.len(), 2);
     }
@@ -3317,17 +3521,17 @@ mod tests {
     fn test_combine_predicates_with_and_logical() {
         // Empty list
         assert!(combine_predicates_with_and_logical(vec![]).is_none());
-        
+
         // Single predicate
         let single = LogicalExpr::Literal(LogicalLiteral::Boolean(true));
         let combined = combine_predicates_with_and_logical(vec![single.clone()]);
         assert_eq!(combined, Some(single));
-        
+
         // Multiple predicates
         let p1 = LogicalExpr::Literal(LogicalLiteral::Boolean(true));
         let p2 = LogicalExpr::Literal(LogicalLiteral::Boolean(false));
         let combined = combine_predicates_with_and_logical(vec![p1.clone(), p2.clone()]);
-        
+
         match combined {
             Some(LogicalExpr::OperatorApplicationExp(op)) => {
                 assert!(matches!(op.operator, LogicalOperator::And));

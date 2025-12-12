@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt, sync::Arc};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 // Import serde_arc modules for serialization
 #[path = "../../utils/serde_arc.rs"]
@@ -66,22 +66,22 @@ pub fn evaluate_cypher_statement(
     if statement.union_clauses.is_empty() {
         return evaluate_query(statement.query, schema, tenant_id, view_parameter_values);
     }
-    
+
     // Build logical plans for all queries
     let mut all_plans: Vec<Arc<LogicalPlan>> = Vec::new();
     #[allow(unused_assignments)]
     let mut combined_ctx: Option<PlanCtx> = None;
-    
+
     // First query
     let (first_plan, first_ctx) = plan_builder::build_logical_plan(
-        &statement.query, 
-        schema, 
-        tenant_id.clone(), 
-        view_parameter_values.clone()
+        &statement.query,
+        schema,
+        tenant_id.clone(),
+        view_parameter_values.clone(),
     )?;
     all_plans.push(first_plan);
     combined_ctx = Some(first_ctx);
-    
+
     // Track the union type (all must be the same for simplicity, or we use the first UNION's type)
     let union_type = if let Some(first_union) = statement.union_clauses.first() {
         match first_union.union_type {
@@ -91,14 +91,14 @@ pub fn evaluate_cypher_statement(
     } else {
         UnionType::All
     };
-    
+
     // Build plans for each union clause
     for union_clause in statement.union_clauses {
         let (plan, ctx) = plan_builder::build_logical_plan(
-            &union_clause.query, 
-            schema, 
-            tenant_id.clone(), 
-            view_parameter_values.clone()
+            &union_clause.query,
+            schema,
+            tenant_id.clone(),
+            view_parameter_values.clone(),
         )?;
         all_plans.push(plan);
         // Merge the context from this union branch into combined context
@@ -106,13 +106,13 @@ pub fn evaluate_cypher_statement(
             combined.merge(ctx);
         }
     }
-    
+
     // Create Union logical plan
     let union_plan = Arc::new(LogicalPlan::Union(Union {
         inputs: all_plans,
         union_type,
     }));
-    
+
     Ok((union_plan, combined_ctx.unwrap()))
 }
 
@@ -199,7 +199,7 @@ pub enum LogicalPlan {
 /// Generated when:
 /// 1. `MATCH (a) WITH a MATCH (b)` - subsequent MATCH doesn't share aliases
 /// 2. `MATCH (a) OPTIONAL MATCH (b)` - optional pattern doesn't connect
-/// 
+///
 /// Translates to CROSS JOIN in SQL (or LEFT JOIN for OPTIONAL).
 /// When a join_condition is present, it becomes the ON clause.
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -338,7 +338,10 @@ impl WithClause {
             LogicalExpr::OperatorApplicationExp(op_app) => {
                 if op_app.operator == crate::query_planner::logical_expr::Operator::Distinct {
                     // DISTINCT wraps a single operand - extract from it
-                    op_app.operands.first().and_then(|inner| Self::extract_alias_from_expr(inner))
+                    op_app
+                        .operands
+                        .first()
+                        .and_then(|inner| Self::extract_alias_from_expr(inner))
                 } else {
                     None
                 }
@@ -374,22 +377,22 @@ pub struct GraphNode {
 }
 
 /// Represents a relationship pattern in a graph query.
-/// 
+///
 /// # IMPORTANT: Left/Right Convention
-/// 
+///
 /// The `left` and `right` fields follow a **normalized source/target convention**:
 /// - `left` is ALWAYS the **source** node (connects to relationship's `from_id`)
 /// - `right` is ALWAYS the **target** node (connects to relationship's `to_id`)
-/// 
+///
 /// This normalization happens during parsing based on the arrow direction:
 /// - For `(a)-[:R]->(b)` (Outgoing): left=a (source), right=b (target)
 /// - For `(a)<-[:R]-(b)` (Incoming): left=b (source), right=a (target) ← nodes are SWAPPED!
-/// 
+///
 /// The `direction` field records the original syntactic direction, but for JOIN
 /// generation, always use:
 /// - `left_connection` connects to `from_id`
 /// - `right_connection` connects to `to_id`
-/// 
+///
 /// Do NOT use direction-based branching for from_id/to_id selection in JOIN logic!
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct GraphRel {
@@ -597,12 +600,10 @@ pub struct Filter {
 }
 
 /// Distinguishes between WITH and RETURN projections.
-/// Both use the same <return statement body> in OpenCypher grammar,
-/// but differ in position: WITH is intermediate, RETURN is terminal.
+/// Indicates the source of a Projection node.
+/// Note: WITH clauses now use the separate WithClause logical plan node.
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum ProjectionKind {
-    /// Created by WITH clause - intermediate projection
-    With,
     /// Created by RETURN clause - final projection
     Return,
 }
@@ -612,7 +613,8 @@ pub struct Projection {
     #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
     pub items: Vec<ProjectionItem>,
-    /// Indicates whether this projection comes from WITH or RETURN clause
+    /// Indicates whether this projection comes from RETURN clause.
+    /// Always Return since WITH clauses use the separate WithClause node.
     pub kind: ProjectionKind,
     /// Whether DISTINCT should be applied to results
     pub distinct: bool,
@@ -667,7 +669,7 @@ pub struct Limit {
 
 /// UNWIND clause: transforms array values into individual rows
 /// Maps to ClickHouse ARRAY JOIN
-/// 
+///
 /// Example: UNWIND r.items AS item
 /// Generates: ARRAY JOIN r.items AS item
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -717,7 +719,10 @@ impl Projection {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        crate::debug_println!("DEBUG Projection::rebuild_or_clone: self.distinct = {}", self.distinct);
+        crate::debug_println!(
+            "DEBUG Projection::rebuild_or_clone: self.distinct = {}",
+            self.distinct
+        );
         match input_tf {
             Transformed::Yes(new_input) => {
                 let new_node = LogicalPlan::Projection(Projection {
@@ -726,11 +731,16 @@ impl Projection {
                     kind: self.kind.clone(),
                     distinct: self.distinct,
                 });
-                crate::debug_println!("DEBUG Projection::rebuild_or_clone: Created new Projection with distinct = {}", self.distinct);
+                crate::debug_println!(
+                    "DEBUG Projection::rebuild_or_clone: Created new Projection with distinct = {}",
+                    self.distinct
+                );
                 Transformed::Yes(Arc::new(new_node))
             }
             Transformed::No(_) => {
-                crate::debug_println!("DEBUG Projection::rebuild_or_clone: No transformation, returning old plan");
+                crate::debug_println!(
+                    "DEBUG Projection::rebuild_or_clone: No transformation, returning old plan"
+                );
                 Transformed::No(old_plan.clone())
             }
         }
@@ -1151,8 +1161,14 @@ impl LogicalPlan {
             ),
             LogicalPlan::Unwind(unwind) => format!("Unwind(alias: {})", unwind.alias),
             LogicalPlan::ViewScan(scan) => format!("ViewScan({:?})", scan.source_table),
-            LogicalPlan::CartesianProduct(cp) => format!("CartesianProduct(optional: {})", cp.is_optional),
-            LogicalPlan::WithClause(wc) => format!("WithClause(items: {}, distinct: {})", wc.items.len(), wc.distinct),
+            LogicalPlan::CartesianProduct(cp) => {
+                format!("CartesianProduct(optional: {})", cp.is_optional)
+            }
+            LogicalPlan::WithClause(wc) => format!(
+                "WithClause(items: {}, distinct: {})",
+                wc.items.len(),
+                wc.distinct
+            ),
         }
     }
 
@@ -1184,8 +1200,7 @@ impl LogicalPlan {
                 .any(|input| input.contains_variable_length_path()),
             LogicalPlan::Unwind(unwind) => unwind.input.contains_variable_length_path(),
             LogicalPlan::CartesianProduct(cp) => {
-                cp.left.contains_variable_length_path()
-                    || cp.right.contains_variable_length_path()
+                cp.left.contains_variable_length_path() || cp.right.contains_variable_length_path()
             }
             LogicalPlan::WithClause(with_clause) => {
                 with_clause.input.contains_variable_length_path()
@@ -1273,7 +1288,9 @@ mod tests {
         let projection_items = vec![ProjectionItem {
             expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                 table_alias: TableAlias("customer".to_string()),
-                column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                    "name".to_string(),
+                ),
             }),
             col_alias: None,
         }];
@@ -1472,7 +1489,9 @@ mod tests {
                 operands: vec![
                     LogicalExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias("user".to_string()),
-                        column: crate::graph_catalog::expression_parser::PropertyValue::Column("age".to_string()),
+                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                            "age".to_string(),
+                        ),
                     }),
                     LogicalExpr::Literal(Literal::Integer(18)),
                 ],
@@ -1485,14 +1504,18 @@ mod tests {
                 ProjectionItem {
                     expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias("user".to_string()),
-                        column: crate::graph_catalog::expression_parser::PropertyValue::Column("email".to_string()),
+                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                            "email".to_string(),
+                        ),
                     }),
                     col_alias: Some(ColumnAlias("email_address".to_string())),
                 },
                 ProjectionItem {
                     expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias("user".to_string()),
-                        column: crate::graph_catalog::expression_parser::PropertyValue::Column("first_name".to_string()),
+                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                            "first_name".to_string(),
+                        ),
                     }),
                     col_alias: None,
                 },
