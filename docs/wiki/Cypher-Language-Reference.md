@@ -19,6 +19,8 @@ Complete syntax reference for Cypher queries supported by ClickGraph.
 - [Aggregation Functions](#aggregation-functions)
 - [Path Expressions](#path-expressions)
 - [Functions](#functions)
+  - [size() - Pattern Counting](#size---get-collection-size)
+  - [List Functions](#other-list-functions)
 - [Operators](#operators)
 - [Data Types](#data-types)
 - [Parameters](#parameters)
@@ -789,10 +791,146 @@ RETURN properties(n)
 
 ### List Functions
 
-```cypher
--- Size
-RETURN size([1, 2, 3])               -- 3
+#### `size()` - Get Collection Size
 
+The `size()` function returns the number of elements in a collection (list or string) or the count of relationships matching a pattern.
+
+**Syntax:**
+```cypher
+size(list)                    -- Count elements in list
+size(string)                  -- Count characters in string
+size(pattern)                 -- Count matching relationships
+```
+
+**List and String Examples:**
+```cypher
+-- List size
+RETURN size([1, 2, 3])               -- 3
+RETURN size(['a', 'b'])              -- 2
+RETURN size([])                      -- 0
+
+-- String length
+RETURN size('hello')                 -- 5
+RETURN size('')                      -- 0
+```
+
+**Pattern Counting Examples:**
+
+Count relationships without returning the matched nodes:
+
+```cypher
+-- Count followers for each user
+MATCH (u:User)
+RETURN u.name, size((u)-[:FOLLOWS]->()) AS followerCount
+ORDER BY followerCount DESC
+LIMIT 10;
+
+-- Count incoming and outgoing relationships
+MATCH (u:User)
+RETURN u.name,
+  size((u)-[:FOLLOWS]->()) AS following,
+  size((u)<-[:FOLLOWS]-()) AS followers;
+
+-- Count multiple relationship types
+MATCH (u:User)
+RETURN u.name,
+  size((u)-[:FOLLOWS]->()) AS follows,
+  size((u)-[:LIKED]->()) AS likes;
+```
+
+**Advanced Pattern Usage:**
+
+```cypher
+-- Filter by relationship count
+MATCH (u:User)
+WHERE size((u)-[:FOLLOWS]->()) > 10
+RETURN u.name, u.email;
+
+-- Use in ORDER BY
+MATCH (p:Post)
+RETURN p.title, p.content
+ORDER BY size((p)<-[:LIKED]-()) DESC
+LIMIT 5;
+
+-- Multiple patterns in same query
+MATCH (u:User)
+WHERE size((u)-[:FOLLOWS]->()) > size((u)<-[:FOLLOWS]-())
+RETURN u.name AS "More Following Than Followers";
+```
+
+**How It Works:**
+
+Pattern counting generates a correlated SQL subquery:
+```sql
+-- Cypher: size((u)-[:FOLLOWS]->())
+-- Generates SQL:
+(SELECT COUNT(*) 
+ FROM user_follows_table 
+ WHERE user_follows_table.follower_id = u.user_id)
+```
+
+**Common Patterns:**
+
+```cypher
+-- Popular users (high follower count)
+MATCH (u:User)
+WHERE size((u)<-[:FOLLOWS]-()) > 100
+RETURN u.name, size((u)<-[:FOLLOWS]-()) AS followers;
+
+-- Active users (high engagement)
+MATCH (u:User)
+WHERE size((u)-[:POSTED]->()) > 5
+  AND size((u)-[:LIKED]->()) > 20
+RETURN u.name;
+
+-- Content popularity
+MATCH (p:Post)
+RETURN p.title,
+  size((p)<-[:LIKED]-()) AS likes,
+  size((p)<-[:COMMENTED]-()) AS comments
+ORDER BY likes DESC;
+```
+
+**Common Errors:**
+
+1. **Missing node schema mapping:**
+   ```cypher
+   -- Error: If User node schema not defined
+   MATCH (u:User) RETURN size((u)-[:FOLLOWS]->())
+   ```
+   **Solution:** Ensure node type `User` is defined in your YAML schema with proper `node_id` mapping.
+
+2. **Missing relationship schema:**
+   ```cypher
+   -- Error: If FOLLOWS relationship not defined
+   MATCH (u:User) RETURN size((u)-[:FOLLOWS]->())
+   ```
+   **Solution:** Define `FOLLOWS` relationship in YAML schema with `from_node`, `to_node`, and ID column mappings.
+
+3. **Wrong relationship direction:**
+   ```cypher
+   -- Counts followers (incoming)
+   size((u)<-[:FOLLOWS]-())
+   
+   -- Counts following (outgoing)
+   size((u)-[:FOLLOWS]->())
+   ```
+   **Note:** Direction matters! Ensure you're counting the correct direction.
+
+**Limitations:**
+
+- Pattern must contain exactly one relationship
+- Anonymous nodes required: `(u)-[:REL]->()` not `(u)-[:REL]->(v)`
+- Cannot use property filters in pattern: `size((u)-[:FOLLOWS {active: true}]->())` not supported
+- For complex filtering, use WHERE with EXISTS or full MATCH
+
+**See Also:**
+- [Path Expressions](#path-expressions) - For variable-length paths
+- [EXISTS Patterns](#exists-patterns) - For conditional pattern matching
+
+#### Other List Functions
+
+```cypher
 -- Head/Last
 RETURN head([1, 2, 3])               -- 1
 RETURN last([1, 2, 3])               -- 3

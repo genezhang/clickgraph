@@ -147,26 +147,28 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                     // Get the start node's ID column
                     // First try the explicit label from the pattern, then fall back to relationship schema
                     let start_id_col = if let Some(label) = &conn.start_node.label {
-                        schema.get_node_schema_opt(label)
-                            .map(|n| n.node_id.column().to_string())
-                            .unwrap_or_else(|| "id".to_string())
+                        let node_schema = schema.get_node_schema_opt(label)
+                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
+                        node_schema.node_id.column().to_string()
                     } else {
                         // No label in pattern - infer from relationship's from_node
-                        schema.get_node_schema_opt(&rel_schema.from_node)
-                            .map(|n| n.node_id.column().to_string())
-                            .unwrap_or_else(|| "id".to_string())
+                        let node_type = &rel_schema.from_node;
+                        let node_schema = schema.get_node_schema_opt(node_type)
+                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
+                        node_schema.node_id.column().to_string()
                     };
                     
                     // Get end node's ID column
                     let end_id_col = if let Some(label) = &conn.end_node.label {
-                        schema.get_node_schema_opt(label)
-                            .map(|n| n.node_id.column().to_string())
-                            .unwrap_or_else(|| "id".to_string())
+                        let node_schema = schema.get_node_schema_opt(label)
+                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
+                        node_schema.node_id.column().to_string()
                     } else {
                         // No label in pattern - infer from relationship's to_node
-                        schema.get_node_schema_opt(&rel_schema.to_node)
-                            .map(|n| n.node_id.column().to_string())
-                            .unwrap_or_else(|| "id".to_string())
+                        let node_type = &rel_schema.to_node;
+                        let node_schema = schema.get_node_schema_opt(node_type)
+                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
+                        node_schema.node_id.column().to_string()
                     };
                     
                     // Generate COUNT SQL based on end node and direction

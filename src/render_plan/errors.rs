@@ -28,4 +28,13 @@ pub enum RenderBuildError {
 
     #[error("Invalid render plan: {0}")]
     InvalidRenderPlan(String),
+
+    #[error("Cannot resolve node type for pattern: node alias '{0}' has no label and cannot be inferred from relationship schema")]
+    CannotResolveNodeType(String),
+
+    #[error("Node schema not found for type '{0}'")]
+    NodeSchemaNotFound(String),
+
+    #[error("Node ID column not configured for node type '{0}'")]
+    NodeIdColumnNotConfigured(String),
 }
