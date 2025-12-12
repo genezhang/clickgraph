@@ -2669,48 +2669,6 @@ fn replace_with_clause_with_cte_reference_v2(
             }))
         }
 
-        // Handle GraphNode - if this node's alias matches the WITH alias, update it to reference the CTE
-        LogicalPlan::GraphNode(node) => {
-            if node.alias == with_alias {
-                log::debug!(
-                    "🔧 replace_v2: Updating GraphNode '{}' to reference CTE '{}'",
-                    node.alias,
-                    cte_name
-                );
-                // Create a new GraphNode that references the CTE instead of the original table
-                Ok(LogicalPlan::GraphNode(GraphNode {
-                    input: Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan {
-                        source_table: cte_name.to_string(),
-                        view_filter: None,
-                        property_mapping: HashMap::new(),
-                        id_column: "id".to_string(),
-                        output_schema: vec!["id".to_string()],
-                        projections: vec![],
-                        from_id: None,
-                        to_id: None,
-                        input: None,
-                        view_parameter_names: None,
-                        view_parameter_values: None,
-                        use_final: false,
-                        is_denormalized: false,
-                        from_node_properties: None,
-                        to_node_properties: None,
-                        type_column: None,
-                        type_values: None,
-                        from_label_column: None,
-                        to_label_column: None,
-                        schema_filter: None,
-                    }))),
-                    alias: node.alias.clone(),
-                    label: node.label.clone(),
-                    is_denormalized: node.is_denormalized,
-                }))
-            } else {
-                // Not the alias we're looking for, keep as-is
-                Ok(plan.clone())
-            }
-        }
-
         other => Ok(other.clone()),
     }
 }
