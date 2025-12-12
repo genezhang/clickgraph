@@ -38,6 +38,22 @@ impl Identifier {
             Identifier::Composite(_) => panic!("Called as_single() on composite identifier"),
         }
     }
+    
+    /// Generate SQL tuple expression with alias prefix
+    /// For single column: "alias.column"
+    /// For composite: "(alias.col1, alias.col2, ...)"
+    pub fn to_sql_tuple(&self, alias: &str) -> String {
+        match self {
+            Identifier::Single(col) => format!("{}.{}", alias, col),
+            Identifier::Composite(cols) => {
+                let fields = cols.iter()
+                    .map(|c| format!("{}.{}", alias, c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({})", fields)
+            }
+        }
+    }
 }
 
 impl From<String> for Identifier {
@@ -597,7 +613,7 @@ fn build_node_schema(
             .values()
             .flat_map(|pv| pv.get_columns())
             .collect(),
-        primary_keys: node_def.node_id.as_single().to_string(),
+        primary_keys: node_def.node_id.columns().join(", "),
         node_id: NodeIdSchema {
             id: node_def.node_id.clone(),
             dtype: "UInt64".to_string(),

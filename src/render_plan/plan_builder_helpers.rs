@@ -1064,15 +1064,16 @@ pub(super) fn get_node_table_for_alias(alias: &str) -> String {
     }
 }
 
-/// Helper function to get node ID column for a given alias
-pub(super) fn get_node_id_column_for_alias(alias: &str) -> String {
+/// Helper function to get node ID columns for a given alias
+/// Returns Vec of column names (single element for simple ID, multiple for composite)
+pub(super) fn get_node_id_columns_for_alias(alias: &str) -> Vec<String> {
     // Try to get from global schema first (for production/benchmark)
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
             if let Some(schema) = schemas.get("default") {
                 // Look up the node type from the alias - this is a simplified lookup
                 if let Some(user_node) = schema.get_node_schema_opt("User") {
-                    return user_node.node_id.column().to_string();
+                    return user_node.node_id.columns().iter().map(|s| s.to_string()).collect();
                 }
             }
         }
@@ -1082,10 +1083,16 @@ pub(super) fn get_node_id_column_for_alias(alias: &str) -> String {
     // For benchmark environment, use user_id
     // For tests, use id
     if alias.contains("bench") || std::env::var("BENCHMARK_MODE").is_ok() {
-        "user_id".to_string()
+        vec!["user_id".to_string()]
     } else {
-        "id".to_string()
+        vec!["id".to_string()]
     }
+}
+
+/// Backwards compatibility wrapper - returns first column only
+/// TODO: Update VLP code to use get_node_id_columns_for_alias directly
+pub(super) fn get_node_id_column_for_alias(alias: &str) -> String {
+    get_node_id_columns_for_alias(alias).into_iter().next().unwrap_or_else(|| "id".to_string())
 }
 
 /// Get relationship columns from schema by relationship type
@@ -1127,16 +1134,16 @@ pub(super) fn get_relationship_columns_by_table(table_name: &str) -> Option<(Str
     None
 }
 
-/// Get node table name and ID column from schema
-/// Returns (table_name, id_column) for a given node label
-pub(super) fn get_node_info_from_schema(node_label: &str) -> Option<(String, String)> {
+/// Get node table name and ID columns from schema
+/// Returns (table_name, id_columns) for a given node label
+pub(super) fn get_node_info_from_schema(node_label: &str) -> Option<(String, Vec<String>)> {
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
             if let Some(schema) = schemas.get("default") {
                 if let Ok(node_schema) = schema.get_node_schema(node_label) {
                     return Some((
                         node_schema.table_name.clone(),
-                        node_schema.node_id.column().to_string(),
+                        node_schema.node_id.columns().iter().map(|s| s.to_string()).collect(),
                     ));
                 }
             }

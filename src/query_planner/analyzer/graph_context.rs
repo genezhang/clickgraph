@@ -172,8 +172,9 @@ pub fn get_graph_context<'a>(
             .map_err(|e| AnalyzerError::GraphSchema { pass: pass.clone(), source: e })?
     };
 
-    let left_node_id_column = left_schema.node_id.column().to_string();
-    let right_node_id_column = right_schema.node_id.column().to_string();
+    // Use SQL tuple expressions for node IDs (handles both single and composite)
+    let left_node_id_sql = left_schema.node_id.sql_tuple(&left_alias);
+    let right_node_id_sql = right_schema.node_id.sql_tuple(&right_alias);
 
     // Use fully qualified table names from schema for CTEs/JOINs
     // For nodes whose properties are available from the edge table (via from_node_properties/to_node_properties),
@@ -207,7 +208,7 @@ pub fn get_graph_context<'a>(
             table_ctx: left_ctx,
             label: left_label,
             schema: left_schema,
-            id_column: left_node_id_column,
+            id_column: left_node_id_sql,
             cte_name: left_cte_name,
         },
         rel: GraphRelContext {
@@ -222,7 +223,7 @@ pub fn get_graph_context<'a>(
             table_ctx: right_ctx,
             label: right_label,
             schema: right_schema,
-            id_column: right_node_id_column,
+            id_column: right_node_id_sql,
             cte_name: right_cte_name,
         },
         schema: graph_schema,

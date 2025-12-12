@@ -791,7 +791,7 @@ fn try_generate_view_scan(
         full_table_name,                    // Use fully qualified table name (database.table)
         None,                               // No filter condition yet
         property_mapping,                   // Property mappings from schema
-        node_schema.node_id.column().to_string(), // ID column from schema
+        node_schema.node_id.columns().first().unwrap_or(&"id").to_string(), // ID column from schema (first for composite)
         vec!["id".to_string()],             // Basic output schema
         vec![],                             // No projections yet
     );

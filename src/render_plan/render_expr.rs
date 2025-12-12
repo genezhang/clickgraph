@@ -51,17 +51,17 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                     let from_col = &rel_schema.from_id; // from_id is the FK column
                     
                     // Get the start node's ID column from its label
-                    let start_id_col = if let LogicalPlan::GraphNode(start_node) = graph_rel.left.as_ref() {
+                    let start_id_sql = if let LogicalPlan::GraphNode(start_node) = graph_rel.left.as_ref() {
                         if let Some(label) = &start_node.label {
                             let node_schema = schema.get_node_schema_opt(label)
                                 .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                            node_schema.node_id.column().to_string()
+                            node_schema.node_id.sql_tuple(start_alias)
                         } else {
                             // No label - infer from relationship schema
                             let node_type = &rel_schema.from_node;
                             let node_schema = schema.get_node_schema_opt(node_type)
                                 .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
-                            node_schema.node_id.column().to_string()
+                            node_schema.node_id.sql_tuple(start_alias)
                         }
                     } else {
                         // Not a GraphNode - error, can't infer
@@ -73,10 +73,10 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                     // Generate the EXISTS SQL
                     // EXISTS (SELECT 1 FROM edge_table WHERE edge_table.from_id = outer.node_id)
                     return Ok(format!(
-                        "SELECT 1 FROM {} WHERE {}.{} = {}.{}",
+                        "SELECT 1 FROM {} WHERE {}.{} = {}",
                         table_name,
                         table_name, from_col,
-                        start_alias, start_id_col
+                        start_id_sql
                     ));
                 }
             }
@@ -154,29 +154,29 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                     
                     // Get the start node's ID column
                     // First try the explicit label from the pattern, then fall back to relationship schema
-                    let start_id_col = if let Some(label) = &conn.start_node.label {
+                    let start_id_sql = if let Some(label) = &conn.start_node.label {
                         let node_schema = schema.get_node_schema_opt(label)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                        node_schema.node_id.column().to_string()
+                        node_schema.node_id.sql_tuple(start_alias)
                     } else {
                         // No label in pattern - infer from relationship's from_node
                         let node_type = &rel_schema.from_node;
                         let node_schema = schema.get_node_schema_opt(node_type)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
-                        node_schema.node_id.column().to_string()
+                        node_schema.node_id.sql_tuple(start_alias)
                     };
                     
                     // Get end node's ID column
-                    let end_id_col = if let Some(label) = &conn.end_node.label {
+                    let end_id_sql = if let Some(label) = &conn.end_node.label {
                         let node_schema = schema.get_node_schema_opt(label)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                        node_schema.node_id.column().to_string()
+                        end_alias.as_ref().map(|alias| node_schema.node_id.sql_tuple(alias)).unwrap_or_default()
                     } else {
                         // No label in pattern - infer from relationship's to_node
                         let node_type = &rel_schema.to_node;
                         let node_schema = schema.get_node_schema_opt(node_type)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
-                        node_schema.node_id.column().to_string()
+                        end_alias.as_ref().map(|alias| node_schema.node_id.sql_tuple(alias)).unwrap_or_default()
                     };
                     
                     // Generate COUNT SQL based on end node and direction
@@ -185,53 +185,53 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                             // Anonymous end node, directed: just count from_id matches
                             match conn.relationship.direction {
                                 Direction::Outgoing => format!(
-                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {}.{})",
-                                    full_table, table_name, from_col, start_alias, start_id_col
+                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {})",
+                                    full_table, table_name, from_col, start_id_sql
                                 ),
                                 Direction::Incoming => format!(
-                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {}.{})",
-                                    full_table, table_name, to_col, start_alias, start_id_col
+                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {})",
+                                    full_table, table_name, to_col, start_id_sql
                                 ),
                                 _ => format!(
-                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {}.{} OR {}.{} = {}.{})",
+                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {} OR {}.{} = {})",
                                     full_table,
-                                    table_name, from_col, start_alias, start_id_col,
-                                    table_name, to_col, start_alias, start_id_col
+                                    table_name, from_col, start_id_sql,
+                                    table_name, to_col, start_id_sql
                                 ),
                             }
                         },
                         (None, true) => {
                             // Anonymous end node, undirected: count both directions
                             format!(
-                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {}.{} OR {}.{} = {}.{})",
+                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {} OR {}.{} = {})",
                                 full_table,
-                                table_name, from_col, start_alias, start_id_col,
-                                table_name, to_col, start_alias, start_id_col
+                                table_name, from_col, start_id_sql,
+                                table_name, to_col, start_id_sql
                             )
                         },
                         (Some(end), true) => {
                             // Named end node, undirected: check both directions
                             format!(
-                                "(SELECT COUNT(*) FROM {} WHERE ({}.{} = {}.{} AND {}.{} = {}.{}) OR ({}.{} = {}.{} AND {}.{} = {}.{}))",
+                                "(SELECT COUNT(*) FROM {} WHERE ({}.{} = {} AND {}.{} = {}) OR ({}.{} = {} AND {}.{} = {}))",
                                 full_table,
-                                table_name, from_col, start_alias, start_id_col,
-                                table_name, to_col, end, end_id_col,
-                                table_name, from_col, end, end_id_col,
-                                table_name, to_col, start_alias, start_id_col
+                                table_name, from_col, start_id_sql,
+                                table_name, to_col, end_id_sql,
+                                table_name, from_col, end_id_sql,
+                                table_name, to_col, start_id_sql
                             )
                         },
                         (Some(end), false) => {
                             // Named end node, directed: check single direction
-                            let (fk_from, fk_to, from_id, to_id) = match conn.relationship.direction {
-                                Direction::Outgoing => (start_alias.as_str(), end.as_str(), &start_id_col, &end_id_col),
-                                Direction::Incoming => (end.as_str(), start_alias.as_str(), &end_id_col, &start_id_col),
-                                _ => (start_alias.as_str(), end.as_str(), &start_id_col, &end_id_col),
+                            let (from_match_sql, to_match_sql) = match conn.relationship.direction {
+                                Direction::Outgoing => (start_id_sql.clone(), end_id_sql.clone()),
+                                Direction::Incoming => (end_id_sql.clone(), start_id_sql.clone()),
+                                _ => (start_id_sql.clone(), end_id_sql.clone()),
                             };
                             format!(
-                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {}.{} AND {}.{} = {}.{})",
+                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {} AND {}.{} = {})",
                                 full_table,
-                                table_name, from_col, fk_from, from_id,
-                                table_name, to_col, fk_to, to_id
+                                table_name, from_col, from_match_sql,
+                                table_name, to_col, to_match_sql
                             )
                         },
                     };
@@ -317,28 +317,28 @@ fn generate_not_exists_from_path_pattern(pattern: &PathPattern) -> Result<String
                     let to_col = &rel_schema.to_id;
                     
                     // Get the node ID columns from their labels or infer from relationship schema
-                    let start_id_col = if let Some(label) = &conn.start_node.label {
+                    let start_id_sql = if let Some(label) = &conn.start_node.label {
                         let node_schema = schema.get_node_schema_opt(label)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                        node_schema.node_id.column().to_string()
+                        node_schema.node_id.sql_tuple(start_alias)
                     } else {
                         // Infer from relationship's from_node
                         let node_type = &rel_schema.from_node;
                         let node_schema = schema.get_node_schema_opt(node_type)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
-                        node_schema.node_id.column().to_string()
+                        node_schema.node_id.sql_tuple(start_alias)
                     };
                     
-                    let end_id_col = if let Some(label) = &conn.end_node.label {
+                    let end_id_sql = if let Some(label) = &conn.end_node.label {
                         let node_schema = schema.get_node_schema_opt(label)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                        node_schema.node_id.column().to_string()
+                        end_alias.map(|alias| node_schema.node_id.sql_tuple(alias)).unwrap_or_default()
                     } else {
                         // Infer from relationship's to_node
                         let node_type = &rel_schema.to_node;
                         let node_schema = schema.get_node_schema_opt(node_type)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
-                        node_schema.node_id.column().to_string()
+                        end_alias.map(|alias| node_schema.node_id.sql_tuple(alias)).unwrap_or_default()
                     };
                     
                     // Generate the NOT EXISTS SQL
@@ -348,55 +348,55 @@ fn generate_not_exists_from_path_pattern(pattern: &PathPattern) -> Result<String
                             // Directed with anonymous end: check FROM or TO based on direction
                             match conn.relationship.direction {
                                 Direction::Outgoing => format!(
-                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}.{})",
-                                    full_table, table_name, from_col, start_alias, start_id_col
+                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {})",
+                                    full_table, table_name, from_col, start_id_sql
                                 ),
                                 Direction::Incoming => format!(
-                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}.{})",
-                                    full_table, table_name, to_col, start_alias, start_id_col
+                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {})",
+                                    full_table, table_name, to_col, start_id_sql
                                 ),
                                 _ => format!(
-                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}.{} OR {}.{} = {}.{})",
+                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {})",
                                     full_table, 
-                                    table_name, from_col, start_alias, start_id_col,
-                                    table_name, to_col, start_alias, start_id_col
+                                    table_name, from_col, start_id_sql,
+                                    table_name, to_col, start_id_sql
                                 ),
                             }
                         },
                         (None, true) => {
                             // Undirected with anonymous end: check either direction
                             format!(
-                                "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}.{} OR {}.{} = {}.{})",
+                                "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {})",
                                 full_table, 
-                                table_name, from_col, start_alias, start_id_col,
-                                table_name, to_col, start_alias, start_id_col
+                                table_name, from_col, start_id_sql,
+                                table_name, to_col, start_id_sql
                             )
                         },
                         (Some(end), true) => {
                             // Named end node, undirected: check both directions
                             format!(
-                                "NOT EXISTS (SELECT 1 FROM {} WHERE ({}.{} = {}.{} AND {}.{} = {}.{}) OR ({}.{} = {}.{} AND {}.{} = {}.{}))",
+                                "NOT EXISTS (SELECT 1 FROM {} WHERE ({}.{} = {} AND {}.{} = {}) OR ({}.{} = {} AND {}.{} = {}))",
                                 full_table,
                                 // Direction 1: start -> end
-                                table_name, from_col, start_alias, start_id_col,
-                                table_name, to_col, end, end_id_col,
+                                table_name, from_col, start_id_sql,
+                                table_name, to_col, end_id_sql,
                                 // Direction 2: end -> start
-                                table_name, from_col, end, end_id_col,
-                                table_name, to_col, start_alias, start_id_col
+                                table_name, from_col, end_id_sql,
+                                table_name, to_col, start_id_sql
                             )
                         },
                         (Some(end), false) => {
                             // Named end node, directed: check single direction
-                            let (fk_from, fk_to, from_id, to_id) = match conn.relationship.direction {
-                                Direction::Outgoing => (start_alias.as_str(), end.as_str(), &start_id_col, &end_id_col),
-                                Direction::Incoming => (end.as_str(), start_alias.as_str(), &end_id_col, &start_id_col),
-                                _ => (start_alias.as_str(), end.as_str(), &start_id_col, &end_id_col),
+                            let (from_match_sql, to_match_sql) = match conn.relationship.direction {
+                                Direction::Outgoing => (start_id_sql.clone(), end_id_sql.clone()),
+                                Direction::Incoming => (end_id_sql.clone(), start_id_sql.clone()),
+                                _ => (start_id_sql.clone(), end_id_sql.clone()),
                             };
                             format!(
-                                "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}.{} AND {}.{} = {}.{})",
+                                "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {})",
                                 full_table,
-                                table_name, from_col, fk_from, from_id,
-                                table_name, to_col, fk_to, to_id
+                                table_name, from_col, from_match_sql,
+                                table_name, to_col, to_match_sql
                             )
                         },
                     };

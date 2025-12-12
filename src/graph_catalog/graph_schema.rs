@@ -322,8 +322,8 @@ impl NodeIdSchema {
     }
     
     /// Get the column name for single-column identifiers.
-    /// Panics if called on composite identifier.
-    /// Use `id.columns()` for safe access to all columns.
+    /// **PANICS** if called on composite identifier.
+    /// For composite-safe access, use `columns()` or `sql_tuple()`.
     pub fn column(&self) -> &str {
         self.id.as_single()
     }
@@ -331,6 +331,34 @@ impl NodeIdSchema {
     /// Check if this is a composite identifier
     pub fn is_composite(&self) -> bool {
         self.id.is_composite()
+    }
+    
+    /// Get all columns in the identifier
+    pub fn columns(&self) -> Vec<&str> {
+        self.id.columns()
+    }
+    
+    /// Get all columns with alias prefix
+    pub fn columns_with_alias(&self, alias: &str) -> Vec<String> {
+        self.id.columns().iter()
+            .map(|col| format!("{}.{}", alias, col))
+            .collect()
+    }
+    
+    /// Generate SQL tuple expression
+    /// For single column: "alias.column"
+    /// For composite: "(alias.col1, alias.col2, ...)"
+    pub fn sql_tuple(&self, alias: &str) -> String {
+        self.id.to_sql_tuple(alias)
+    }
+    
+    /// Generate SQL equality condition for JOIN
+    /// For single: "left_alias.col = right_alias.col"
+    /// For composite: "(left_alias.c1, left_alias.c2) = (right_alias.c1, right_alias.c2)"
+    pub fn sql_equality(&self, left_alias: &str, right_alias: &str) -> String {
+        let left = self.sql_tuple(left_alias);
+        let right = self.sql_tuple(right_alias);
+        format!("{} = {}", left, right)
     }
 }
 

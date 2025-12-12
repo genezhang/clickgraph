@@ -732,7 +732,7 @@ impl FilterTagging {
                                                 // Use find_property_in_viewscan_with_edge to get the actual column
                                                 // Node id_column in schema is the logical property name (e.g., "id")
                                                 let id_property = if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
-                                                    node_schema.node_id.column().to_string()
+                                                    node_schema.node_id.columns().first().unwrap_or(&"id").to_string()
                                                 } else {
                                                     "id".to_string()
                                                 };
@@ -747,7 +747,7 @@ impl FilterTagging {
                                     } else {
                                         // For regular (non-denormalized) nodes, use the node_id column directly
                                         if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
-                                            Some(node_schema.node_id.column().to_string())
+                                            Some(node_schema.node_id.columns().first().unwrap_or(&"id").to_string())
                                         } else {
                                             None
                                         }

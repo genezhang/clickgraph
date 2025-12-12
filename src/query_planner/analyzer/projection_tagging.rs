@@ -584,9 +584,9 @@ impl ProjectionTagging {
                                         });
                                         return Ok(());
                                     } else {
-                                        // Node ID column - always single
+                                        // Node ID column - use first column for composite IDs
                                         let id_column = if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
-                                            node_schema.node_id.column().to_string()
+                                            node_schema.node_id.columns().first().unwrap_or(&"id").to_string()
                                         } else {
                                             "id".to_string()
                                         };
@@ -811,7 +811,7 @@ impl ProjectionTagging {
                                             pass: Pass::ProjectionTagging,
                                             source: e,
                                         })?;
-                                    let id_property_name = node_schema.node_id.column().to_string();
+                                    let id_property_name = node_schema.node_id.columns().first().unwrap_or(&"id").to_string();
                                     
                                     log::debug!(
                                         "ProjectionTagging: Denormalized node '{}' (label={}), using id property '{}'",
@@ -848,7 +848,7 @@ impl ProjectionTagging {
                                             pass: Pass::ProjectionTagging,
                                             source: e,
                                         })?;
-                                    let table_node_id = table_schema.node_id.column().to_string();
+                                    let table_node_id = table_schema.node_id.columns().first().unwrap_or(&"id").to_string();
 
                                     // Preserve DISTINCT if it was in the original expression
                                     let new_arg = if matches!(arg, LogicalExpr::OperatorApplicationExp(OperatorApplication { operator, .. }) if *operator == Operator::Distinct)

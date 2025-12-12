@@ -2775,8 +2775,8 @@ impl GraphJoinInference {
                 graph_context.left.alias.to_string(),
                 graph_context.rel.alias.to_string(),
                 graph_context.right.alias.to_string(),
-                graph_context.left.schema.node_id.column().to_string(),
-                graph_context.right.schema.node_id.column().to_string(),
+                graph_context.left.schema.node_id.columns().first().unwrap_or(&"id").to_string(),
+                graph_context.right.schema.node_id.columns().first().unwrap_or(&"id").to_string(),
                 graph_context.left.label.clone(),
                 graph_context.right.label.clone(),
                 // Get all labels from table_ctx for polymorphic IN clause support

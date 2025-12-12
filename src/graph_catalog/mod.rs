@@ -11,6 +11,9 @@ pub mod schema_validator;
 #[cfg(test)]
 pub mod testing;
 
+#[cfg(test)]
+mod composite_id_tests;
+
 // Re-export commonly used types
 // Note: These are public re-exports for library users
 #[allow(unused_imports)]

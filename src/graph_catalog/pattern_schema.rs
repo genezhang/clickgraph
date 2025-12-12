@@ -626,14 +626,14 @@ impl PatternSchemaContext {
             EdgeTablePattern::Traditional => {
                 let left = NodeAccessStrategy::OwnTable {
                     table: left_node_schema.full_table_name(),
-                    id_column: left_node_schema.node_id.column().to_string(),
+                    id_column: left_node_schema.node_id.columns().first().unwrap_or(&"id").to_string(),
                     properties: left_node_schema.property_mappings.iter()
                         .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                         .collect(),
                 };
                 let right = NodeAccessStrategy::OwnTable {
                     table: right_node_schema.full_table_name(),
-                    id_column: right_node_schema.node_id.column().to_string(),
+                    id_column: right_node_schema.node_id.columns().first().unwrap_or(&"id").to_string(),
                     properties: right_node_schema.property_mappings.iter()
                         .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                         .collect(),
@@ -650,7 +650,7 @@ impl PatternSchemaContext {
                 } else {
                     NodeAccessStrategy::OwnTable {
                         table: left_node_schema.full_table_name(),
-                        id_column: left_node_schema.node_id.column().to_string(),
+                        id_column: left_node_schema.node_id.columns().first().unwrap_or(&"id").to_string(),
                         properties: left_node_schema.property_mappings.iter()
                             .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                             .collect(),
@@ -665,7 +665,7 @@ impl PatternSchemaContext {
                 } else {
                     NodeAccessStrategy::OwnTable {
                         table: right_node_schema.full_table_name(),
-                        id_column: right_node_schema.node_id.column().to_string(),
+                        id_column: right_node_schema.node_id.columns().first().unwrap_or(&"id").to_string(),
                         properties: right_node_schema.property_mappings.iter()
                             .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                             .collect(),
@@ -701,7 +701,7 @@ impl PatternSchemaContext {
         } else {
             NodeAccessStrategy::OwnTable {
                 table: node_schema.full_table_name(),
-                id_column: node_schema.node_id.column().to_string(),
+                id_column: node_schema.node_id.columns().first().unwrap_or(&"id").to_string(),
                 properties: node_schema.property_mappings.iter()
                     .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                     .collect(),
