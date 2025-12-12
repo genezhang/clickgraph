@@ -132,6 +132,21 @@ pub fn reset_alias_counter() {
     ALIAS_COUNTER.store(1, Ordering::SeqCst);
 }
 
+static CTE_COUNTER: AtomicU32 = AtomicU32::new(1);
+
+/// Generate a simple, human-readable CTE name.
+/// Returns "cte1", "cte2", "cte3", etc. Much shorter than UUID strings!
+pub fn generate_cte_id() -> String {
+    let n = CTE_COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("cte{}", n)
+}
+
+/// Reset the CTE counter (useful for testing to get predictable CTE names)
+#[allow(dead_code)]
+pub fn reset_cte_counter() {
+    CTE_COUNTER.store(1, Ordering::SeqCst);
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub enum LogicalPlan {

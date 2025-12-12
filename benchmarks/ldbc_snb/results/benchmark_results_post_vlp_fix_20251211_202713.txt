@@ -1,0 +1,38 @@
+======================================================================
+LDBC SNB Benchmark Runner
+======================================================================
+ClickGraph URL: http://localhost:8080
+Queries to run: is1, is2, is3, is5, ic1, ic2, ic3, ic9
+======================================================================
+
+[is1] ✓ 0 rows (10.3ms)
+
+[is2] ✓ 0 rows (45.5ms)
+
+[is3] ✓ 0 rows (24.6ms)
+
+[is5] ✓ 0 rows (16.6ms)
+
+[ic1] ✗ Error: Clickhouse Error: bad response: {"exception": "Code: 47. DB::Exception: Unknown expression identifier `friend` in scope with_cnt_friend_7ff43bab AS (SELECT friend, count(*) AS cnt FROM (SELECT p.lastName AS `p.lastName`, p.locationIP AS `p.locationIP`, p.firstName AS `p.firstName`, p.birthday AS `p.birthday`, p.language AS `p.language`, p.id AS `p.id`, p.email AS `p.email`, p.browserUsed AS `p.browserUsed`, p.gender AS `p.gender`, p.creationDate AS `p.creationDate`, friend.lastName AS `friend.lastName`, friend.locationIP AS `friend.locationIP`, friend.firstName AS `friend.firstName`, friend.birthday AS `friend.birthday`, friend.language AS `friend.language`, friend.id AS `friend.id`, friend.email AS `friend.email`, friend.browserUsed AS `friend.browserUsed`, friend.gender AS `friend.gender`, friend.creationDate AS `friend.creationDate` FROM variable_path_670f5587b41f4c3ca090778f2a2f2728 AS t INNER JOIN ldbc.Person AS p ON t.start_id = p.id INNER JOIN ldbc.Person AS friend ON t.end_id = friend.id WHERE (friend.firstName = 'John') AND (friend.id != 933) UNION ALL SELECT friend.lastName AS `friend.lastName`, friend.locationIP AS `friend.locationIP`, friend.firstName AS `friend.firstName`, friend.birthday AS `friend.birthday`, friend.language AS `friend.language`, friend.id AS `friend.id`, friend.email AS `friend.email`, friend.browserUsed AS `friend.browserUsed`, friend.gender AS `friend.gender`, friend.creationDate AS `friend.creationDate`, p.lastName AS `p.lastName`, p.locationIP AS `p.locationIP`, p.firstName AS `p.firstName`, p.birthday AS `p.birthday`, p.language AS `p.language`, p.id AS `p.id`, p.email AS `p.email`, p.browserUsed AS `p.browserUsed`, p.gender AS `p.gender`, p.creationDate AS `p.creationDate` FROM variable_path_0f18b5c0fef24a8284e13d3be0282efa AS t INNER JOIN ldbc.Person AS friend ON t.start_id = friend.id INNER JOIN ldbc.Person AS p ON t.end_id = p.id WHERE p.id = 933) AS __union GROUP BY friend). Maybe you meant: ['friendId']. (UNKNOWN_IDENTIFIER) (version 25.8.11.66 (official build))"}
+
+[ic2] ✓ 0 rows (343.8ms)
+
+[ic3] ✓ 0 rows (446.7ms)
+
+[ic9] ✓ 0 rows (196.8ms)
+
+======================================================================
+Summary
+======================================================================
+Queries: 7/8 successful
+Total time: 1094.6ms
+
+Timing breakdown:
+  ✓ is1: 10.3ms
+  ✓ is2: 45.5ms
+  ✓ is3: 24.6ms
+  ✓ is5: 16.6ms
+  ✗ ic1: 10.3ms
+  ✓ ic2: 343.8ms
+  ✓ ic3: 446.7ms
+  ✓ ic9: 196.8ms

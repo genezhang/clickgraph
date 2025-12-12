@@ -202,7 +202,7 @@ impl VariableLengthCteGenerator {
 
         Self {
             spec,
-            cte_name: format!("variable_path_{}", uuid::Uuid::new_v4().simple()),
+            cte_name: format!("vlp_{}", crate::query_planner::logical_plan::generate_cte_id()),
             start_node_table: start_table.to_string(),
             start_node_id_column: start_id_col.to_string(),
             start_node_alias: "start_node".to_string(),
@@ -258,7 +258,7 @@ impl VariableLengthCteGenerator {
 
         Self {
             spec,
-            cte_name: format!("variable_path_{}", uuid::Uuid::new_v4().simple()),
+            cte_name: format!("vlp_{}", crate::query_planner::logical_plan::generate_cte_id()),
             // For denormalized: node tables are NOT used, only relationship table
             start_node_table: relationship_table.to_string(), // Will be ignored
             start_node_id_column: rel_from_col.to_string(),   // Use from_col as start ID
@@ -324,7 +324,7 @@ impl VariableLengthCteGenerator {
 
         Self {
             spec,
-            cte_name: format!("variable_path_{}", uuid::Uuid::new_v4().simple()),
+            cte_name: format!("vlp_{}", crate::query_planner::logical_plan::generate_cte_id()),
             start_node_table: start_table.to_string(),
             start_node_id_column: start_id_col.to_string(),
             start_node_alias: "start_node".to_string(),
@@ -2087,7 +2087,7 @@ mod tests {
 
         // Test that CTE was created
         assert!(!cte.cte_name.is_empty());
-        assert!(cte.cte_name.starts_with("variable_path_"));
+        assert!(cte.cte_name.starts_with("vlp_"));
     }
 
     #[test]
@@ -2255,7 +2255,7 @@ impl ChainedJoinGenerator {
     /// Generate a CTE containing the chained JOIN query
     /// Even though it's not recursive, we wrap it in a CTE for consistency
     pub fn generate_cte(&self) -> Cte {
-        let cte_name = format!("chained_path_{}", uuid::Uuid::new_v4().simple());
+        let cte_name = format!("chain_{}", crate::query_planner::logical_plan::generate_cte_id());
         let cte_sql = self.generate_query();
 
         // Wrap the query body with CTE name, like recursive CTE does

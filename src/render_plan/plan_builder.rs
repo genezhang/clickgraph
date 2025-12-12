@@ -292,6 +292,16 @@ fn build_with_match_cte_plan(
     exposed_aliases.insert(with_alias.clone());
     log::info!("🔧 build_with_match_cte_plan: WITH clause exposes aliases: {:?}", exposed_aliases);
     
+    // Step 1.6: Extract any variable-length path CTEs from the WITH clause plan BEFORE rendering
+    // This is critical because VLP CTEs are generated during extract_ctes(), not during to_render_plan()
+    let with_clause_vlp_ctes = {
+        use crate::render_plan::cte_generation::analyze_property_requirements;
+        let mut context = analyze_property_requirements(&with_clause_plan, schema);
+        with_clause_plan.extract_ctes_with_context(&with_alias, &mut context)?
+    };
+    
+    log::info!("🔧 build_with_match_cte_plan: Extracted {} VLP CTEs from WITH clause", with_clause_vlp_ctes.len());
+    
     // Step 2: Render the WITH clause subplan to a CTE
     let mut with_cte_render = with_clause_plan.to_render_plan(schema)?;
     
@@ -336,8 +346,7 @@ fn build_with_match_cte_plan(
     }
     
     // Use unique CTE name to avoid collisions when Union branches each create their own CTE
-    let unique_suffix = uuid::Uuid::new_v4().to_string().replace("-", "");
-    let cte_name = format!("with_{}_{}", with_alias, &unique_suffix[..8]);
+    let cte_name = format!("with_{}_{}", with_alias, crate::query_planner::logical_plan::generate_cte_id());
     
     log::info!("🔧 build_with_match_cte_plan: Created CTE '{}'", cte_name);
     
@@ -387,15 +396,17 @@ fn build_with_match_cte_plan(
     };
     
     // Step 5: Add CTEs in correct order:
-    // 1. First the nested CTEs (like variable_path_xxx) - these are dependencies
-    // 2. Then the WITH clause CTE (which references the nested CTEs)
-    // 3. Finally any CTEs from the outer query
-    let mut all_ctes = nested_ctes;
+    // 1. First the VLP CTEs extracted from WITH clause (like vlp_1, vlp_2) - these are dependencies
+    // 2. Then the nested CTEs from the render plan
+    // 3. Then the WITH clause CTE (which references the VLP CTEs)
+    // 4. Finally any CTEs from the outer query
+    let mut all_ctes = with_clause_vlp_ctes;
+    all_ctes.extend(nested_ctes);
     all_ctes.push(with_cte);
     all_ctes.extend(render_plan.ctes.0.into_iter());
     render_plan.ctes = CteItems(all_ctes);
     
-    log::info!("🔧 build_with_match_cte_plan: Success - added CTE to final plan");
+    log::info!("🔧 build_with_match_cte_plan: Success - added {} total CTEs to final plan", render_plan.ctes.0.len());
     
     Ok(render_plan)
 }
@@ -704,8 +715,7 @@ fn build_chained_with_match_cte_plan(
             }
             
             // Generate unique CTE name
-            let unique_suffix = uuid::Uuid::new_v4().to_string().replace("-", "");
-            let cte_name = format!("with_{}_{}", with_alias.replace(".*", ""), &unique_suffix[..8]);
+            let cte_name = format!("with_{}_{}", with_alias.replace(".*", ""), crate::query_planner::logical_plan::generate_cte_id());
             
             // Create CTE content - if multiple renders, combine with UNION ALL
             // Extract ORDER BY, SKIP, LIMIT from first rendered plan (they should all have the same modifiers)
@@ -718,7 +728,7 @@ fn build_chained_with_match_cte_plan(
             let first_skip = rendered_plans.first().and_then(|p| p.skip.0);
             let first_limit = rendered_plans.first().and_then(|p| p.limit.0);
             
-            let with_cte_render = if rendered_plans.len() == 1 {
+            let mut with_cte_render = if rendered_plans.len() == 1 {
                 rendered_plans.pop().unwrap()
             } else {
                 // Multiple WITH clauses with same alias - create UNION ALL CTE
@@ -754,7 +764,15 @@ fn build_chained_with_match_cte_plan(
             
             log::info!("🔧 build_chained_with_match_cte_plan: Created CTE '{}'", cte_name);
             
-            // Create the CTE
+            // Extract nested CTEs from the rendered plan (e.g., VLP recursive CTEs)
+            // These need to be hoisted to the top level before the WITH CTE
+            let nested_ctes = std::mem::take(&mut with_cte_render.ctes.0);
+            if !nested_ctes.is_empty() {
+                log::info!("🔧 build_chained_with_match_cte_plan: Hoisting {} nested CTEs (e.g., VLP) from WITH clause", nested_ctes.len());
+                all_ctes.extend(nested_ctes);
+            }
+            
+            // Create the CTE (without nested CTEs, they've been hoisted)
             let with_cte = Cte {
                 cte_name: cte_name.clone(),
                 content: CteContent::Structured(with_cte_render),
@@ -1071,8 +1089,7 @@ fn build_with_aggregation_match_cte_plan(
     }
     
     // Generate unique CTE name
-    let unique_suffix = uuid::Uuid::new_v4().to_string().replace("-", "");
-    let cte_name = format!("with_agg_{}_{}", with_alias, &unique_suffix[..8]);
+    let cte_name = format!("with_agg_{}_{}", with_alias, crate::query_planner::logical_plan::generate_cte_id());
     
     log::info!("🔧 build_with_aggregation_match_cte_plan: Created CTE '{}' with {} select items", 
         cte_name, group_by_render.select.items.len());
@@ -8044,7 +8061,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     use_final: false,
                                 })));
                                 
-                                // Add LEFT JOIN to CTE: LEFT JOIN variable_path_xxx AS t ON t.start_id = a.user_id
+                                // Add LEFT JOIN to CTE: LEFT JOIN vlp_1 AS t ON t.start_id = a.user_id
                                 // This will be added to extracted_joins later when we process VLP joins
                                 // For now, mark that we need to add the CTE join
                                 log::info!(
@@ -8140,7 +8157,7 @@ impl RenderPlanBuilder for LogicalPlan {
             // Both types use RawSql content and need special FROM clause handling
             let has_variable_length_cte = extracted_ctes.iter().any(|cte| {
                 matches!(&cte.content, super::CteContent::RawSql(_))
-                    && (cte.cte_name.starts_with("variable_path_")
+                    && (cte.cte_name.starts_with("vlp_")
                         || cte.cte_name.starts_with("chained_path_"))
             });
 
@@ -8149,7 +8166,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 let var_len_cte = extracted_ctes
                     .iter()
                     .find(|cte| {
-                        cte.cte_name.starts_with("variable_path_")
+                        cte.cte_name.starts_with("vlp_")
                             || cte.cte_name.starts_with("chained_path_")
                     })
                     .expect("Variable-length CTE should exist");
@@ -8555,7 +8572,7 @@ impl RenderPlanBuilder for LogicalPlan {
             if vlp_is_optional {
                 // Find the variable-length CTE name
                 if let Some(vlp_cte) = extracted_ctes.iter().find(|cte| {
-                    cte.cte_name.starts_with("variable_path_") || cte.cte_name.starts_with("chained_path_")
+                    cte.cte_name.starts_with("vlp_") || cte.cte_name.starts_with("chain_")
                 }) {
                     let cte_name = vlp_cte.cte_name.clone();
                     let denorm_info_for_cte = get_variable_length_denorm_info(&transformed_plan);
@@ -8563,7 +8580,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         .and_then(|d| d.start_id_col.clone())
                         .unwrap_or_else(|| get_node_id_column_for_alias(&start_alias));
                     
-                    // LEFT JOIN variable_path_xxx AS t ON t.start_id = a.user_id
+                    // LEFT JOIN vlp_1 AS t ON t.start_id = a.user_id
                     extracted_joins.push(Join {
                         table_name: cte_name,
                         table_alias: "t".to_string(),

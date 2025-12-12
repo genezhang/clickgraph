@@ -1,0 +1,38 @@
+======================================================================
+LDBC SNB Benchmark Runner
+======================================================================
+ClickGraph URL: http://localhost:8080
+Queries to run: is1, is2, is3, is5, ic1, ic2, ic3, ic9
+======================================================================
+
+[is1] ✓ 0 rows (8.8ms)
+
+[is2] ✓ 0 rows (26.0ms)
+
+[is3] ✓ 0 rows (27.5ms)
+
+[is5] ✓ 0 rows (16.6ms)
+
+[ic1] ✗ Error: Clickhouse Error: bad response: {"exception": "Code: 60. DB::Exception: Unknown table expression identifier 'variable_path_8d0bee41090c4e08897dd6959776eb03' in scope SELECT p.birthday AS `p.birthday`, p.email AS `p.email`, p.creationDate AS `p.creationDate`, p.locationIP AS `p.locationIP`, p.firstName AS `p.firstName`, p.lastName AS `p.lastName`, p.id AS `p.id`, p.gender AS `p.gender`, p.browserUsed AS `p.browserUsed`, p.language AS `p.language`, friend.birthday AS `friend.birthday`, friend.email AS `friend.email`, friend.creationDate AS `friend.creationDate`, friend.locationIP AS `friend.locationIP`, friend.firstName AS `friend.firstName`, friend.lastName AS `friend.lastName`, friend.id AS `friend.id`, friend.gender AS `friend.gender`, friend.browserUsed AS `friend.browserUsed`, friend.language AS `friend.language` FROM variable_path_8d0bee41090c4e08897dd6959776eb03 AS t INNER JOIN ldbc.Person AS p ON t.start_id = p.id INNER JOIN ldbc.Person AS friend ON t.end_id = friend.id WHERE (friend.firstName = 'John') AND (friend.id != 933). (UNKNOWN_TABLE) (version 25.8.11.66 (official build))"}
+
+[ic2] ✓ 0 rows (443.8ms)
+
+[ic3] ✗ Error: Clickhouse Error: bad response: {"exception": "Code: 60. DB::Exception: Unknown table expression identifier 'variable_path_1a813af39123452a8a1c1876cfbb88dc' in scope SELECT person.birthday AS `person.birthday`, person.email AS `person.email`, person.creationDate AS `person.creationDate`, person.locationIP AS `person.locationIP`, person.firstName AS `person.firstName`, person.lastName AS `person.lastName`, person.id AS `person.id`, person.gender AS `person.gender`, person.browserUsed AS `person.browserUsed`, person.language AS `person.language`, friend.birthday AS `friend.birthday`, friend.email AS `friend.email`, friend.creationDate AS `friend.creationDate`, friend.locationIP AS `friend.locationIP`, friend.firstName AS `friend.firstName`, friend.lastName AS `friend.lastName`, friend.id AS `friend.id`, friend.gender AS `friend.gender`, friend.browserUsed AS `friend.browserUsed`, friend.language AS `friend.language` FROM variable_path_1a813af39123452a8a1c1876cfbb88dc AS t INNER JOIN ldbc.Person AS person ON t.start_id = person.id INNER JOIN ldbc.Person AS friend ON t.end_id = friend.id. (UNKNOWN_TABLE) (version 25.8.11.66 (official build))"}
+
+[ic9] ✗ Error: Clickhouse Error: bad response: {"exception": "Code: 60. DB::Exception: Unknown table expression identifier 'variable_path_fcad70f1d21045d7932115d7465b12bb' in scope SELECT root.birthday AS `root.birthday`, root.email AS `root.email`, root.creationDate AS `root.creationDate`, root.locationIP AS `root.locationIP`, root.firstName AS `root.firstName`, root.lastName AS `root.lastName`, root.id AS `root.id`, root.gender AS `root.gender`, root.browserUsed AS `root.browserUsed`, root.language AS `root.language`, friend.birthday AS `friend.birthday`, friend.email AS `friend.email`, friend.creationDate AS `friend.creationDate`, friend.locationIP AS `friend.locationIP`, friend.firstName AS `friend.firstName`, friend.lastName AS `friend.lastName`, friend.id AS `friend.id`, friend.gender AS `friend.gender`, friend.browserUsed AS `friend.browserUsed`, friend.language AS `friend.language` FROM variable_path_fcad70f1d21045d7932115d7465b12bb AS t INNER JOIN ldbc.Person AS root ON t.start_id = root.id INNER JOIN ldbc.Person AS friend ON t.end_id = friend.id. (UNKNOWN_TABLE) (version 25.8.11.66 (official build))"}
+
+======================================================================
+Summary
+======================================================================
+Queries: 5/8 successful
+Total time: 558.8ms
+
+Timing breakdown:
+  ✓ is1: 8.8ms
+  ✓ is2: 26.0ms
+  ✓ is3: 27.5ms
+  ✓ is5: 16.6ms
+  ✗ ic1: 4.9ms
+  ✓ ic2: 443.8ms
+  ✗ ic3: 24.8ms
+  ✗ ic9: 6.4ms

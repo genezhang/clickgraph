@@ -40,7 +40,7 @@ SAMPLE_PARAMS = {
 def load_query(query_name: str) -> str:
     """Load a query file."""
     script_dir = Path(__file__).parent
-    queries_dir = script_dir.parent / "queries"
+    queries_dir = script_dir.parent / "queries" / "adapted"
     
     # Map query names to files
     if query_name.startswith("is"):
