@@ -552,6 +552,11 @@ fn build_with_match_cte_plan(
     all_ctes.extend(render_plan.ctes.0.into_iter());
     render_plan.ctes = CteItems(all_ctes);
     
+    // Validate that all CTE references exist
+    let available_cte_names: std::collections::HashSet<_> = 
+        render_plan.ctes.0.iter().map(|c| c.cte_name.as_str()).collect();
+    validate_cte_references(&render_plan, &available_cte_names)?;
+    
     log::info!("🔧 build_with_match_cte_plan: Success - added {} total CTEs to final plan", render_plan.ctes.0.len());
     
     Ok(render_plan)
@@ -982,6 +987,11 @@ fn build_chained_with_match_cte_plan(
     // Add all CTEs (innermost first, which is correct order for SQL)
     all_ctes.extend(render_plan.ctes.0.into_iter());
     render_plan.ctes = CteItems(all_ctes);
+    
+    // Validate that all CTE references exist
+    let available_cte_names: std::collections::HashSet<_> = 
+        render_plan.ctes.0.iter().map(|c| c.cte_name.as_str()).collect();
+    validate_cte_references(&render_plan, &available_cte_names)?;
     
     log::info!("🔧 build_chained_with_match_cte_plan: Success - final plan has {} CTEs", render_plan.ctes.0.len());
     
@@ -2287,6 +2297,80 @@ fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
         log::debug!("🔧 Hoisting {} nested CTEs to parent level", nested_ctes.len());
         to.extend(nested_ctes);
     }
+}
+
+/// Validate that all CTE references in a RenderPlan actually exist in the CTE list.
+/// 
+/// This function checks:
+/// 1. FROM clause table references
+/// 2. JOIN table references  
+/// 3. Nested CTEs within Structured CTE content
+/// 
+/// Returns Ok(()) if all references are valid, or Err with list of missing CTEs.
+/// 
+/// # Arguments
+/// * `plan` - The RenderPlan to validate
+/// * `cte_names` - Set of available CTE names
+/// 
+/// # Example
+/// ```rust
+/// let available_ctes: std::collections::HashSet<_> = 
+///     render_plan.ctes.0.iter().map(|c| c.cte_name.as_str()).collect();
+/// validate_cte_references(&render_plan, &available_ctes)?;
+/// ```
+fn validate_cte_references(
+    plan: &RenderPlan, 
+    cte_names: &std::collections::HashSet<&str>
+) -> RenderPlanBuilderResult<()> {
+    let mut missing_ctes = Vec::new();
+    
+    // Check FROM clause
+    if let Some(from_table_ref) = &plan.from.0 {
+        let table_name = &from_table_ref.name;
+        // CTE references don't have database prefixes, so check if name looks like a CTE
+        if !table_name.contains('.') && !cte_names.contains(table_name.as_str()) {
+            // Could be a regular table, but if it starts with common CTE prefixes, it's likely missing
+            if table_name.starts_with("cte_") 
+                || table_name.starts_with("with_") 
+                || table_name.starts_with("vlp_")
+                || table_name.starts_with("__") {
+                missing_ctes.push(table_name.clone());
+            }
+        }
+    }
+    
+    // Check JOIN references (joins also use table names that might be CTEs)
+    for join in &plan.joins.0 {
+        let join_table = &join.table_name;
+        if !join_table.contains('.') && !cte_names.contains(join_table.as_str()) {
+            if join_table.starts_with("cte_") 
+                || join_table.starts_with("with_") 
+                || join_table.starts_with("vlp_")
+                || join_table.starts_with("__") {
+                missing_ctes.push(join_table.clone());
+            }
+        }
+    }
+    
+    // Check nested CTEs in Structured content (recursive validation)
+    for cte in &plan.ctes.0 {
+        if let super::CteContent::Structured(nested_plan) = &cte.content {
+            validate_cte_references(nested_plan, cte_names)?;
+        }
+    }
+    
+    if !missing_ctes.is_empty() {
+        log::error!("❌ CTE validation failed: Missing CTEs: {:?}", missing_ctes);
+        log::error!("   Available CTEs: {:?}", cte_names);
+        return Err(RenderBuildError::InvalidRenderPlan(format!(
+            "CTE validation failed: Referenced CTEs not found: {}. Available: {:?}",
+            missing_ctes.join(", "),
+            cte_names
+        )));
+    }
+    
+    log::debug!("✅ CTE validation passed: All {} CTE references valid", cte_names.len());
+    Ok(())
 }
 
 /// Helper function to find Projection(With) inside a plan structure.
