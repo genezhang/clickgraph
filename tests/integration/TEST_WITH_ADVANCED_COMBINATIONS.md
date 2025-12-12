@@ -121,11 +121,14 @@ python3 tests/integration/test_with_advanced_combinations.py
 3. ⚠️ Database setup: Tests need `brahmand` database with social network data
    - Action: Add setup instructions
 
-4. ⚠️ Parameters in VLP hop ranges: `*1..$maxHops` not supported
+4. ⚠️ Parameters in pattern properties: `MATCH (n $props)` not supported
+   - This is **shorthand syntax** for entire properties object as parameter
+   - Example: `MATCH (n $userProps)` where `$userProps = {name: "Alice", age: 30}`
+   - **Individual property values work fine**: `MATCH (n {name: $name})` ✅
    - Error: "Parameters are not yet supported in properties"
-   - Workaround: Use literal hop ranges, parameters work in WHERE/WITH clauses
-   - Priority: LOW (rare use case, workaround available)
+   - Priority: LOW (uncommon syntax, individual property parameters work)
    - Location: `src/query_planner/logical_plan/match_clause.rs:1082`
+   - Note: This is NOT about parameters in VLP hop ranges (different limitation)
 
 ## Success Criteria
 
