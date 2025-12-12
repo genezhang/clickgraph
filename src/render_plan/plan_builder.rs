@@ -1001,6 +1001,9 @@ fn build_chained_with_match_cte_plan(
 /// Render a logical plan without triggering WITH clause detection.
 /// This is used internally by build_chained_with_match_cte_plan to avoid recursion.
 /// It directly renders the plan using join-based logic, bypassing the WITH clause check.
+/// 
+/// CRITICAL: If the plan contains nested WITH clauses (e.g., three-level nesting),
+/// we recursively process them first by calling build_chained_with_match_cte_plan.
 fn render_without_with_detection(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -1013,22 +1016,35 @@ fn render_without_with_detection(
         return plan.to_render_plan(schema);
     }
     
-    // If the plan STILL has WITH clauses after our replacement, this is a bug
-    // We should have replaced all WITH clauses by the time we get here
-    log::error!("🔧 render_without_with_detection: Plan still has WITH clauses - this should not happen!");
-    log::error!("🔧 Plan structure: {:?}", plan);
+    // If the plan STILL has WITH clauses, recursively process them first
+    // This handles deep nesting like: WITH a WITH a, x WITH a, x, y
+    // The input plan to the outer WITH may itself contain WITH clauses
+    log::info!("🔧 render_without_with_detection: Plan contains nested WITH clauses - processing recursively");
     
-    // Try join-based plan as fallback
-    match plan.try_build_join_based_plan() {
+    // Recursively process the nested WITH clauses by calling build_chained_with_match_cte_plan
+    // This will return a RenderPlan with all nested WITH clauses converted to CTEs
+    match build_chained_with_match_cte_plan(plan, schema) {
         Ok(render_plan) => {
-            log::info!("🔧 render_without_with_detection: Join-based plan succeeded");
+            log::info!("🔧 render_without_with_detection: Recursive WITH processing succeeded");
             Ok(render_plan)
         },
         Err(e) => {
-            log::error!("🔧 render_without_with_detection: Join-based plan failed: {:?}", e);
-            Err(RenderBuildError::InvalidRenderPlan(
-                "Cannot render plan with remaining WITH clauses".to_string()
-            ))
+            log::error!("🔧 render_without_with_detection: Recursive WITH processing failed: {:?}", e);
+            log::error!("🔧 Plan structure: {:?}", plan);
+            
+            // Try join-based plan as fallback
+            match plan.try_build_join_based_plan() {
+                Ok(render_plan) => {
+                    log::info!("🔧 render_without_with_detection: Join-based plan fallback succeeded");
+                    Ok(render_plan)
+                },
+                Err(fallback_err) => {
+                    log::error!("🔧 render_without_with_detection: Join-based plan fallback also failed: {:?}", fallback_err);
+                    Err(RenderBuildError::InvalidRenderPlan(
+                        format!("Cannot render plan with remaining WITH clauses. Recursive processing failed: {:?}", e)
+                    ))
+                }
+            }
         }
     }
 }
