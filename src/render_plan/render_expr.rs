@@ -53,15 +53,21 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                     // Get the start node's ID column from its label
                     let start_id_col = if let LogicalPlan::GraphNode(start_node) = graph_rel.left.as_ref() {
                         if let Some(label) = &start_node.label {
-                            schema.get_node_schema_opt(label)
-                                .map(|n| n.node_id.column().to_string())
-                                .unwrap_or_else(|| "id".to_string())
+                            let node_schema = schema.get_node_schema_opt(label)
+                                .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
+                            node_schema.node_id.column().to_string()
                         } else {
-                            // No label, try to get from the context
-                            "user_id".to_string() // Default for User nodes
+                            // No label - infer from relationship schema
+                            let node_type = &rel_schema.from_node;
+                            let node_schema = schema.get_node_schema_opt(node_type)
+                                .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
+                            node_schema.node_id.column().to_string()
                         }
                     } else {
-                        "user_id".to_string()
+                        // Not a GraphNode - error, can't infer
+                        return Err(RenderBuildError::InvalidRenderPlan(
+                            "EXISTS pattern left side is not a GraphNode".to_string()
+                        ));
                     };
                     
                     // Generate the EXISTS SQL
@@ -75,15 +81,17 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                 }
             }
             
-            // Fallback: generate a placeholder SQL if schema lookup fails
-            Ok(format!("SELECT 1 FROM {} WHERE {} = {}.id", 
-                rel_type.to_lowercase(), 
-                "from_id",
-                start_alias))
+            // No schema found - this is an error
+            Err(RenderBuildError::InvalidRenderPlan(
+                format!("Cannot generate EXISTS pattern: relationship schema '{}' not found. \
+                         Please define this relationship in your YAML schema configuration.", rel_type)
+            ))
         }
         _ => {
-            // For other plan types, generate a simple placeholder
-            Ok("SELECT 1".to_string())
+            // For other plan types, this is unsupported
+            Err(RenderBuildError::UnsupportedFeature(
+                "EXISTS pattern with non-GraphRel subplan".to_string()
+            ))
         }
     }
 }
@@ -232,24 +240,12 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                 }
             }
             
-            // Fallback: generate a reasonable default using convention
-            let table_name = rel_type.to_lowercase();
-            match (end_alias, is_undirected) {
-                (None, _) => Ok(format!(
-                    "(SELECT COUNT(*) FROM {} WHERE {}.from_id = {}.id OR {}.to_id = {}.id)",
-                    table_name, table_name, start_alias, table_name, start_alias
-                )),
-                (Some(end), true) => Ok(format!(
-                    "(SELECT COUNT(*) FROM {} WHERE ({}.from_id = {}.id AND {}.to_id = {}.id) OR ({}.from_id = {}.id AND {}.to_id = {}.id))",
-                    table_name,
-                    table_name, start_alias, table_name, end,
-                    table_name, end, table_name, start_alias
-                )),
-                (Some(end), false) => Ok(format!(
-                    "(SELECT COUNT(*) FROM {} WHERE {}.from_id = {}.id AND {}.to_id = {}.id)",
-                    table_name, table_name, start_alias, table_name, end
-                )),
-            }
+            // No schema found - this is an error, not a fallback scenario
+            Err(RenderBuildError::InvalidRenderPlan(
+                format!("Cannot generate size() pattern count: relationship schema '{}' not found. \
+                         Please define this relationship in your YAML schema configuration with proper \
+                         from_node, to_node, and ID column mappings.", rel_type)
+            ))
         }
         PathPattern::Node(_) => {
             Err(RenderBuildError::InvalidRenderPlan(
@@ -320,16 +316,30 @@ fn generate_not_exists_from_path_pattern(pattern: &PathPattern) -> Result<String
                     let from_col = &rel_schema.from_id;
                     let to_col = &rel_schema.to_id;
                     
-                    // Get the node ID columns from their labels
-                    let start_id_col = conn.start_node.label.as_ref()
-                        .and_then(|label| schema.get_node_schema_opt(label))
-                        .map(|n| n.node_id.column().to_string())
-                        .unwrap_or_else(|| "id".to_string());
+                    // Get the node ID columns from their labels or infer from relationship schema
+                    let start_id_col = if let Some(label) = &conn.start_node.label {
+                        let node_schema = schema.get_node_schema_opt(label)
+                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
+                        node_schema.node_id.column().to_string()
+                    } else {
+                        // Infer from relationship's from_node
+                        let node_type = &rel_schema.from_node;
+                        let node_schema = schema.get_node_schema_opt(node_type)
+                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
+                        node_schema.node_id.column().to_string()
+                    };
                     
-                    let end_id_col = conn.end_node.label.as_ref()
-                        .and_then(|label| schema.get_node_schema_opt(label))
-                        .map(|n| n.node_id.column().to_string())
-                        .unwrap_or_else(|| "id".to_string());
+                    let end_id_col = if let Some(label) = &conn.end_node.label {
+                        let node_schema = schema.get_node_schema_opt(label)
+                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
+                        node_schema.node_id.column().to_string()
+                    } else {
+                        // Infer from relationship's to_node
+                        let node_type = &rel_schema.to_node;
+                        let node_schema = schema.get_node_schema_opt(node_type)
+                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
+                        node_schema.node_id.column().to_string()
+                    };
                     
                     // Generate the NOT EXISTS SQL
                     let exists_sql = match (end_alias, is_undirected) {
