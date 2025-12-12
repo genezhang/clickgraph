@@ -1535,31 +1535,34 @@ pub struct FixedPathInfo {
 
 /// Extract complete path information from fixed multi-hop patterns
 /// Returns FixedPathInfo with all node and relationship aliases
-pub fn get_fixed_path_info(plan: &LogicalPlan) -> Option<FixedPathInfo> {
+pub fn get_fixed_path_info(plan: &LogicalPlan) -> Result<Option<FixedPathInfo>, super::errors::RenderBuildError> {
     // First find the path variable and hop count
-    let (path_var_name, hop_count) = get_fixed_path_variable(plan)?;
+    let (path_var_name, hop_count) = match get_fixed_path_variable(plan) {
+        Some(info) => info,
+        None => return Ok(None),
+    };
     
     // Then extract all aliases and node ID mappings
-    let (node_aliases, rel_aliases, node_id_columns) = collect_path_aliases_with_ids(plan);
+    let (node_aliases, rel_aliases, node_id_columns) = collect_path_aliases_with_ids(plan)?;
     
-    Some(FixedPathInfo {
+    Ok(Some(FixedPathInfo {
         path_var_name,
         node_aliases,
         rel_aliases,
         hop_count,
         node_id_columns,
-    })
+    }))
 }
 
 /// Collect node and relationship aliases plus ID column mappings
-fn collect_path_aliases_with_ids(plan: &LogicalPlan) -> (Vec<String>, Vec<String>, std::collections::HashMap<String, (String, String)>) {
+fn collect_path_aliases_with_ids(plan: &LogicalPlan) -> Result<(Vec<String>, Vec<String>, std::collections::HashMap<String, (String, String)>), super::errors::RenderBuildError> {
     let mut node_aliases = Vec::new();
     let mut rel_aliases = Vec::new();
     let mut node_id_columns = std::collections::HashMap::new();
     
-    collect_path_aliases_with_ids_recursive(plan, &mut node_aliases, &mut rel_aliases, &mut node_id_columns);
+    collect_path_aliases_with_ids_recursive(plan, &mut node_aliases, &mut rel_aliases, &mut node_id_columns)?;
     
-    (node_aliases, rel_aliases, node_id_columns)
+    Ok((node_aliases, rel_aliases, node_id_columns))
 }
 
 /// Recursive helper to collect aliases and ID column mappings
@@ -1568,16 +1571,20 @@ fn collect_path_aliases_with_ids_recursive(
     node_aliases: &mut Vec<String>,
     rel_aliases: &mut Vec<String>,
     node_id_columns: &mut std::collections::HashMap<String, (String, String)>,
-) {
+) -> Result<(), super::errors::RenderBuildError> {
     match plan {
         LogicalPlan::GraphRel(rel) => {
             // Process left side first (may be another GraphRel or the start node)
-            collect_path_aliases_with_ids_recursive(&rel.left, node_aliases, rel_aliases, node_id_columns);
+            collect_path_aliases_with_ids_recursive(&rel.left, node_aliases, rel_aliases, node_id_columns)?;
             
             // Get the from_id and to_id columns from the ViewScan
             if let LogicalPlan::ViewScan(view_scan) = rel.center.as_ref() {
-                let from_id = view_scan.from_id.clone().unwrap_or_else(|| "id".to_string());
-                let to_id = view_scan.to_id.clone().unwrap_or_else(|| "id".to_string());
+                // ViewScan should ALWAYS have from_id and to_id for relationship scans
+                // If missing, this is a query planner bug, not a user error
+                let from_id = view_scan.from_id.clone()
+                    .ok_or_else(|| super::errors::RenderBuildError::ViewScanMissingRelationshipColumn("from_id".to_string()))?;
+                let to_id = view_scan.to_id.clone()
+                    .ok_or_else(|| super::errors::RenderBuildError::ViewScanMissingRelationshipColumn("to_id".to_string()))?;
                 
                 // Map left node to this relationship's from_id (if not already mapped)
                 if !node_id_columns.contains_key(&rel.left_connection) {
@@ -1610,31 +1617,32 @@ fn collect_path_aliases_with_ids_recursive(
                 node_aliases.push(node.alias.clone());
             }
             // Recurse into input
-            collect_path_aliases_with_ids_recursive(&node.input, node_aliases, rel_aliases, node_id_columns);
+            collect_path_aliases_with_ids_recursive(&node.input, node_aliases, rel_aliases, node_id_columns)?;
         }
         LogicalPlan::Filter(filter) => {
-            collect_path_aliases_with_ids_recursive(&filter.input, node_aliases, rel_aliases, node_id_columns);
+            collect_path_aliases_with_ids_recursive(&filter.input, node_aliases, rel_aliases, node_id_columns)?;
         }
         LogicalPlan::Projection(proj) => {
-            collect_path_aliases_with_ids_recursive(&proj.input, node_aliases, rel_aliases, node_id_columns);
+            collect_path_aliases_with_ids_recursive(&proj.input, node_aliases, rel_aliases, node_id_columns)?;
         }
         LogicalPlan::GraphJoins(joins) => {
-            collect_path_aliases_with_ids_recursive(&joins.input, node_aliases, rel_aliases, node_id_columns);
+            collect_path_aliases_with_ids_recursive(&joins.input, node_aliases, rel_aliases, node_id_columns)?;
         }
         LogicalPlan::GroupBy(gb) => {
-            collect_path_aliases_with_ids_recursive(&gb.input, node_aliases, rel_aliases, node_id_columns);
+            collect_path_aliases_with_ids_recursive(&gb.input, node_aliases, rel_aliases, node_id_columns)?;
         }
         LogicalPlan::OrderBy(ob) => {
-            collect_path_aliases_with_ids_recursive(&ob.input, node_aliases, rel_aliases, node_id_columns);
+            collect_path_aliases_with_ids_recursive(&ob.input, node_aliases, rel_aliases, node_id_columns)?;
         }
         LogicalPlan::Skip(skip) => {
-            collect_path_aliases_with_ids_recursive(&skip.input, node_aliases, rel_aliases, node_id_columns);
+            collect_path_aliases_with_ids_recursive(&skip.input, node_aliases, rel_aliases, node_id_columns)?;
         }
         LogicalPlan::Limit(limit) => {
-            collect_path_aliases_with_ids_recursive(&limit.input, node_aliases, rel_aliases, node_id_columns);
+            collect_path_aliases_with_ids_recursive(&limit.input, node_aliases, rel_aliases, node_id_columns)?;
         }
         _ => {}
     }
+    Ok(())
 }
 
 // ============================================================================

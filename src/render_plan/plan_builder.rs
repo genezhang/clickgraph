@@ -4162,7 +4162,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     // For fixed multi-hop patterns (no variable length), rewrite path functions
                     // This handles queries like: MATCH p = (a)-[r1]->(b)-[r2]->(c) RETURN length(p), nodes(p)
                     if path_var.is_none() {
-                        if let Some(path_info) = get_fixed_path_info(&projection.input) {
+                        if let Some(path_info) = get_fixed_path_info(&projection.input)? {
                             expr = rewrite_fixed_path_functions_with_info(&expr, &path_info);
                         }
                     }

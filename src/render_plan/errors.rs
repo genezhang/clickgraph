@@ -37,4 +37,7 @@ pub enum RenderBuildError {
 
     #[error("Node ID column not configured for node type '{0}'")]
     NodeIdColumnNotConfigured(String),
+
+    #[error("ViewScan is missing required {0} column for relationship scan. This is an internal query planner error.")]
+    ViewScanMissingRelationshipColumn(String),
 }

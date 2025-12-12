@@ -1241,16 +1241,19 @@ pub struct UndirectedRelInfo {
 
 /// Collect all undirected (Direction::Either) relationships from a logical plan.
 /// Returns info needed to generate pairwise uniqueness filters.
-pub(super) fn collect_undirected_relationships(plan: &LogicalPlan) -> Vec<UndirectedRelInfo> {
-    fn collect(plan: &LogicalPlan, result: &mut Vec<UndirectedRelInfo>) {
+pub(super) fn collect_undirected_relationships(plan: &LogicalPlan) -> Result<Vec<UndirectedRelInfo>, RenderBuildError> {
+    fn collect(plan: &LogicalPlan, result: &mut Vec<UndirectedRelInfo>) -> Result<(), RenderBuildError> {
         match plan {
             LogicalPlan::GraphRel(graph_rel) => {
                 // Check if this relationship is undirected
                 if graph_rel.direction == Direction::Either {
                     // Extract relationship columns from the center (ViewScan)
                     if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
-                        let from_col = scan.from_id.clone().unwrap_or_else(|| "from_id".to_string());
-                        let to_col = scan.to_id.clone().unwrap_or_else(|| "to_id".to_string());
+                        // ViewScan should have these populated by query planner
+                        let from_col = scan.from_id.clone()
+                            .ok_or_else(|| RenderBuildError::ViewScanMissingRelationshipColumn("from_id".to_string()))?;
+                        let to_col = scan.to_id.clone()
+                            .ok_or_else(|| RenderBuildError::ViewScanMissingRelationshipColumn("to_id".to_string()))?;
                         
                         // Try to get edge_id columns from schema
                         // First, try to look up the relationship schema by type
@@ -1294,26 +1297,27 @@ pub(super) fn collect_undirected_relationships(plan: &LogicalPlan) -> Vec<Undire
                 }
                 
                 // Recursively check children (for multi-hop patterns)
-                collect(&graph_rel.left, result);
-                collect(&graph_rel.center, result);
-                collect(&graph_rel.right, result);
+                collect(&graph_rel.left, result)?;
+                collect(&graph_rel.center, result)?;
+                collect(&graph_rel.right, result)?;
             }
-            LogicalPlan::GraphNode(node) => collect(&node.input, result),
-            LogicalPlan::GraphJoins(joins) => collect(&joins.input, result),
-            LogicalPlan::Projection(proj) => collect(&proj.input, result),
-            LogicalPlan::Filter(filter) => collect(&filter.input, result),
-            LogicalPlan::GroupBy(gb) => collect(&gb.input, result),
-            LogicalPlan::OrderBy(ob) => collect(&ob.input, result),
-            LogicalPlan::Limit(limit) => collect(&limit.input, result),
-            LogicalPlan::Skip(skip) => collect(&skip.input, result),
-            LogicalPlan::Unwind(u) => collect(&u.input, result),
+            LogicalPlan::GraphNode(node) => collect(&node.input, result)?,
+            LogicalPlan::GraphJoins(joins) => collect(&joins.input, result)?,
+            LogicalPlan::Projection(proj) => collect(&proj.input, result)?,
+            LogicalPlan::Filter(filter) => collect(&filter.input, result)?,
+            LogicalPlan::GroupBy(gb) => collect(&gb.input, result)?,
+            LogicalPlan::OrderBy(ob) => collect(&ob.input, result)?,
+            LogicalPlan::Limit(limit) => collect(&limit.input, result)?,
+            LogicalPlan::Skip(skip) => collect(&skip.input, result)?,
+            LogicalPlan::Unwind(u) => collect(&u.input, result)?,
             _ => {}
         }
+        Ok(())
     }
     
     let mut result = Vec::new();
-    collect(plan, &mut result);
-    result
+    collect(plan, &mut result)?;
+    Ok(result)
 }
 
 /// Generate pairwise relationship uniqueness filters for undirected patterns.
