@@ -325,6 +325,82 @@ fn expand_table_alias_to_group_by_exprs(
     }
 }
 
+/// Helper: Replace wildcard columns with explicit GROUP BY columns in SELECT items.
+/// 
+/// Used in build_with_aggregation_match_cte_plan to fix `f.*` wildcards that would
+/// expand to ALL columns (many not in GROUP BY). Replaces them with explicit GROUP BY columns.
+fn replace_wildcards_with_group_by_columns(
+    select_items: Vec<SelectItem>,
+    group_by_columns: &[RenderExpr],
+    with_alias: &str,
+) -> Vec<SelectItem> {
+    let mut new_items = Vec::new();
+    
+    for item in select_items.iter() {
+        let is_wildcard = match &item.expression {
+            RenderExpr::Column(col) if col.0.raw() == "*" => true,
+            RenderExpr::PropertyAccessExp(pa) if pa.column.0.raw() == "*" => true,
+            _ => false,
+        };
+        
+        if is_wildcard && !group_by_columns.is_empty() {
+            // Replace wildcard with the actual GROUP BY columns
+            for gb_expr in group_by_columns {
+                let col_alias = if let RenderExpr::PropertyAccessExp(pa) = gb_expr {
+                    Some(ColumnAlias(format!("{}.{}", pa.table_alias.0, pa.column.0.raw())))
+                } else {
+                    None
+                };
+                new_items.push(SelectItem {
+                    expression: gb_expr.clone(),
+                    col_alias,
+                });
+            }
+        } else if is_wildcard {
+            // No GROUP BY columns - convert bare `*` to `with_alias.*` as fallback
+            new_items.push(SelectItem {
+                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(with_alias.to_string()),
+                    column: Column(PropertyValue::Column("*".to_string())),
+                }),
+                col_alias: item.col_alias.clone(),
+            });
+        } else {
+            // Check if it's a TableAlias that needs expansion
+            match &item.expression {
+                RenderExpr::TableAlias(ta) => {
+                    // Find corresponding GROUP BY expression for this alias
+                    let group_by_expr = group_by_columns.iter()
+                        .find(|expr| {
+                            if let RenderExpr::PropertyAccessExp(pa) = expr {
+                                pa.table_alias.0 == ta.0
+                            } else {
+                                false
+                            }
+                        });
+                    
+                    if let Some(gb_expr) = group_by_expr {
+                        // Use the same expression as GROUP BY
+                        new_items.push(SelectItem {
+                            expression: gb_expr.clone(),
+                            col_alias: item.col_alias.clone(),
+                        });
+                    } else {
+                        // Fallback: No matching GROUP BY found, keep as-is
+                        new_items.push(item.clone());
+                    }
+                }
+                _ => {
+                    // Not a wildcard or TableAlias, keep as-is
+                    new_items.push(item.clone());
+                }
+            }
+        }
+    }
+    
+    new_items
+}
+
 // ============================================================================
 // WITH Clause CTE Builders
 // ============================================================================
@@ -1113,77 +1189,12 @@ fn build_with_aggregation_match_cte_plan(
             .cloned()
             .collect();
         
-        let mut new_select_items: Vec<SelectItem> = Vec::new();
-        
-        for (idx, item) in group_by_render.select.items.iter().enumerate() {
-            
-            let is_wildcard = match &item.expression {
-                RenderExpr::Column(col) if col.0.raw() == "*" => true,
-                RenderExpr::PropertyAccessExp(pa) if pa.column.0.raw() == "*" => true,
-                _ => false,
-            };
-            
-            if is_wildcard && !group_by_columns.is_empty() {
-                // Replace wildcard with the actual GROUP BY columns
-                for gb_expr in &group_by_columns {
-                    // Create SELECT item for this GROUP BY column
-                    // Use the column name as alias (e.g., f.id -> "f.id")
-                    let col_alias = if let RenderExpr::PropertyAccessExp(pa) = gb_expr {
-                        Some(ColumnAlias(format!("{}.{}", pa.table_alias.0, pa.column.0.raw())))
-                    } else {
-                        None
-                    };
-                    new_select_items.push(SelectItem {
-                        expression: gb_expr.clone(),
-                        col_alias,
-                    });
-                }
-            } else if is_wildcard {
-                // No GROUP BY columns found - convert bare `*` to `with_alias.*` as fallback
-                new_select_items.push(SelectItem {
-                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: TableAlias(with_alias.clone()),
-                        column: Column(PropertyValue::Column("*".to_string())),
-                    }),
-                    col_alias: item.col_alias.clone(),
-                });
-            } else {
-                // Not a wildcard - but check if it's a TableAlias that needs expansion
-                match &item.expression {
-                    RenderExpr::TableAlias(ta) => {
-                        // CRITICAL: Expand TableAlias to ID column for GROUP BY consistency
-                        // Same pattern as in build_chained_with_match_cte_plan
-                        
-                        // Find corresponding GROUP BY expression for this alias
-                        let group_by_expr = group_by_columns.iter()
-                            .find(|expr| {
-                                if let RenderExpr::PropertyAccessExp(pa) = expr {
-                                    pa.table_alias.0 == ta.0
-                                } else {
-                                    false
-                                }
-                            });
-                        
-                        if let Some(gb_expr) = group_by_expr {
-                            // Use the same expression as GROUP BY
-                            new_select_items.push(SelectItem {
-                                expression: gb_expr.clone(),
-                                col_alias: item.col_alias.clone(),
-                            });
-                        } else {
-                            // Fallback: No matching GROUP BY found, keep as-is
-                            new_select_items.push(item.clone());
-                        }
-                    }
-                    _ => {
-                        // Not a wildcard or TableAlias, keep as-is
-                        new_select_items.push(item.clone());
-                    }
-                }
-            }
-        }
-        
-        group_by_render.select.items = new_select_items;
+        // Use helper function to replace wildcards and expand TableAlias
+        group_by_render.select.items = replace_wildcards_with_group_by_columns(
+            group_by_render.select.items,
+            &group_by_columns,
+            &with_alias,
+        );
     }
     
     // Step 4: Post-process: Remove joins that are NOT in the inner scope
