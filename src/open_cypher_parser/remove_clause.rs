@@ -1,11 +1,11 @@
 use nom::{
-    IResult, Parser,
     bytes::complete::tag_no_case,
     character::complete::{char, multispace0},
     combinator::cut,
     error::context,
     multi::separated_list1,
     sequence::delimited,
+    IResult, Parser,
 };
 
 use super::{

@@ -1,6 +1,5 @@
 use super::render_expr::{
-    AggregateFnCall, Column, Operator, OperatorApplication, RenderExpr,
-    ScalarFnCall, TableAlias,
+    AggregateFnCall, Column, Operator, OperatorApplication, RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 
@@ -257,11 +256,10 @@ pub fn rewrite_expr_for_var_len_cte(
                 if prop.column.0.raw() == "*" {
                     new_prop.column = prop.column.clone();
                 } else {
-                    new_prop.column = Column(
-                        PropertyValue::Column(
-                            format!("start_{}", prop.column.0.raw())
-                        )
-                    );
+                    new_prop.column = Column(PropertyValue::Column(format!(
+                        "start_{}",
+                        prop.column.0.raw()
+                    )));
                 }
             } else if prop.table_alias.0 == end_cypher_alias {
                 // End node properties stay as is
@@ -329,7 +327,7 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
         RenderExpr::PropertyAccessExp(prop) => {
             let mut new_prop = prop.clone();
             let raw_col = prop.column.0.raw();
-            
+
             // Check if this is a relationship alias access (e.g., f.Origin, f.Dest)
             if let (Some(rel), Some(from), Some(to)) = (rel_alias, from_col, to_col) {
                 if prop.table_alias.0 == rel {
@@ -344,7 +342,7 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
                     return RenderExpr::PropertyAccessExp(new_prop);
                 }
             }
-            
+
             // Rewrite only for denormalized nodes
             if prop.table_alias.0 == start_cypher_alias && start_is_denormalized {
                 // Start node is denormalized → rewrite to t.start_id

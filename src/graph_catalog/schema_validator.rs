@@ -18,7 +18,7 @@
 //!
 //! async fn validate_mapping(client: Client) {
 //!     let mut validator = SchemaValidator::new(client);
-//!     
+//!
 //!     let mapping = NodeViewMapping {
 //!         source_table: "users".to_string(),
 //!         id_column: "user_id".to_string(),
@@ -28,7 +28,7 @@
 //!         label: "User".to_string(),
 //!         filter_condition: None,
 //!     };
-//!     
+//!
 //!     // Validates table existence and column compatibility
 //!     validator.validate_node_mapping(&mapping).await.unwrap();
 //! }

@@ -481,10 +481,23 @@ mod tests {
         cache.insert(key3.clone(), "SQL3".to_string());
 
         // Verify: key1 and key3 should be present, key2 should be evicted
-        assert!(cache.get(&key1).is_some(), "key1 should still be in cache (recently accessed)");
-        assert!(cache.get(&key2).is_none(), "key2 should be evicted (least recently used)");
-        assert!(cache.get(&key3).is_some(), "key3 should be in cache (just inserted)");
-        assert_eq!(cache.metrics().evictions, 1, "exactly one eviction should have occurred");
+        assert!(
+            cache.get(&key1).is_some(),
+            "key1 should still be in cache (recently accessed)"
+        );
+        assert!(
+            cache.get(&key2).is_none(),
+            "key2 should be evicted (least recently used)"
+        );
+        assert!(
+            cache.get(&key3).is_some(),
+            "key3 should be in cache (just inserted)"
+        );
+        assert_eq!(
+            cache.metrics().evictions,
+            1,
+            "exactly one eviction should have occurred"
+        );
     }
 
     #[test]

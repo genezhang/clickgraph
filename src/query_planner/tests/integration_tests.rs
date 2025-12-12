@@ -15,7 +15,7 @@ use std::collections::HashMap;
 /// Test helper to set up a social network view
 fn create_social_network_view() -> GraphViewDefinition {
     let mut view = GraphViewDefinition::new("social_network");
-    
+
     // User nodes
     let mut user_mapping = NodeViewMapping::new("users", "user_id");
     user_mapping.add_property("name", "full_name");
@@ -23,14 +23,14 @@ fn create_social_network_view() -> GraphViewDefinition {
     user_mapping.add_property("joined_date", "registration_date");
     user_mapping.set_filter("active = 1"); // Only active users
     view.add_node("User", user_mapping);
-    
+
     // Post nodes
     let mut post_mapping = NodeViewMapping::new("posts", "post_id");
     post_mapping.add_property("title", "post_title");
     post_mapping.add_property("content", "post_content");
     post_mapping.add_property("created_at", "creation_timestamp");
     view.add_node("Post", post_mapping);
-    
+
     // FOLLOWS relationships
     let mut follows_mapping = RelationshipViewMapping::new(
         "user_follows",
@@ -39,7 +39,7 @@ fn create_social_network_view() -> GraphViewDefinition {
     );
     follows_mapping.add_property("since", "follow_date");
     view.add_relationship("FOLLOWS", follows_mapping);
-    
+
     // AUTHORED relationships
     let mut authored_mapping = RelationshipViewMapping::new(
         "user_posts",
@@ -48,7 +48,7 @@ fn create_social_network_view() -> GraphViewDefinition {
     );
     authored_mapping.add_property("created_at", "post_timestamp");
     view.add_relationship("AUTHORED", authored_mapping);
-    
+
     view
 }
 
@@ -130,7 +130,7 @@ async fn test_view_based_query() -> anyhow::Result<()> {
 
     // Create view definition
     let view = create_social_network_view();
-    
+
     // Create graph context with view
     let mut context = GraphContext::new();
     context.add_view(view);
@@ -145,14 +145,14 @@ async fn test_view_based_query() -> anyhow::Result<()> {
     let ast = OpenCypherQueryAst::parse(cypher)?;
     let empty_schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     let (logical_plan, plan_ctx) = evaluate_query(ast, &empty_schema, None, None)?;
-    
+
     // Generate SQL
     let render_plan = logical_plan.to_render_plan(&empty_schema)?;
     let sql = generate_sql(render_plan);
 
     // Execute query
     let result = client.query(&sql).await?;
-    
+
     // Verify results
     assert!(result.rows() > 0);
     let row = result.get_row(0)?;
@@ -174,7 +174,7 @@ async fn test_filtered_view_query() -> anyhow::Result<()> {
 
     // Test query that should respect the active=1 filter
     let cypher = "MATCH (u:User) RETURN u.name";
-    
+
     let ast = OpenCypherQueryAst::parse(cypher)?;
     let empty_schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
     let (logical_plan, plan_ctx) = evaluate_query(ast, &empty_schema, None, None)?;
@@ -182,7 +182,7 @@ async fn test_filtered_view_query() -> anyhow::Result<()> {
     let sql = generate_sql(render_plan);
 
     let result = client.query(&sql).await?;
-    
+
     // Should only return active users (2 instead of 3)
     assert_eq!(result.rows(), 2);
 

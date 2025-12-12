@@ -1018,38 +1018,100 @@ mod tests {
         // Count total functions in registry
         let test_functions = [
             // Original functions (25)
-            "datetime", "date", "timestamp",
-            "toupper", "tolower", "trim", "substring", "size", "split", "replace", "reverse", "left", "right",
-            "abs", "ceil", "floor", "round", "sqrt", "rand", "sign",
-            "head", "tail", "last", "range",
-            "tointeger", "tofloat", "tostring", "toboolean",
+            "datetime",
+            "date",
+            "timestamp",
+            "toupper",
+            "tolower",
+            "trim",
+            "substring",
+            "size",
+            "split",
+            "replace",
+            "reverse",
+            "left",
+            "right",
+            "abs",
+            "ceil",
+            "floor",
+            "round",
+            "sqrt",
+            "rand",
+            "sign",
+            "head",
+            "tail",
+            "last",
+            "range",
+            "tointeger",
+            "tofloat",
+            "tostring",
+            "toboolean",
             "collect",
             // Trig/math (13)
-            "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-            "exp", "log", "log10", "pi", "e", "pow",
+            "sin",
+            "cos",
+            "tan",
+            "asin",
+            "acos",
+            "atan",
+            "atan2",
+            "exp",
+            "log",
+            "log10",
+            "pi",
+            "e",
+            "pow",
             // String (2)
-            "ltrim", "rtrim",
+            "ltrim",
+            "rtrim",
             // Aggregation (4)
-            "stdev", "stdevp", "percentilecont", "percentiledisc",
+            "stdev",
+            "stdevp",
+            "percentilecont",
+            "percentiledisc",
             // Predicate (2)
-            "coalesce", "nullif",
+            "coalesce",
+            "nullif",
             // Map (1)
             "keys",
             // Vector/similarity (4)
-            "gds.similarity.cosine", "gds.similarity.euclidean", 
-            "gds.similarity.euclideandistance", "vector.similarity.cosine",
+            "gds.similarity.cosine",
+            "gds.similarity.euclidean",
+            "gds.similarity.euclideandistance",
+            "vector.similarity.cosine",
             // List predicates (5)
-            "all", "any", "none", "single", "isempty",
+            "all",
+            "any",
+            "none",
+            "single",
+            "isempty",
             // Temporal extraction (12)
-            "localdatetime", "localtime",
-            "year", "month", "day", "hour", "minute", "second",
-            "dayofweek", "dayofyear", "quarter", "week",
+            "localdatetime",
+            "localtime",
+            "year",
+            "month",
+            "day",
+            "hour",
+            "minute",
+            "second",
+            "dayofweek",
+            "dayofyear",
+            "quarter",
+            "week",
             // Additional string (5)
-            "startswith", "endswith", "contains", "normalize", "valuetype",
+            "startswith",
+            "endswith",
+            "contains",
+            "normalize",
+            "valuetype",
             // Core aggregation (5)
-            "avg", "sum", "min", "max", "count",
+            "avg",
+            "sum",
+            "min",
+            "max",
+            "count",
         ];
-        
+
         let mut count = 0;
         for func in test_functions.iter() {
             if get_function_mapping(func).is_some() {
@@ -1058,7 +1120,7 @@ mod tests {
                 eprintln!("Missing function: {}", func);
             }
         }
-        
+
         // Should have 73+ functions now
         assert!(count >= 70, "Expected at least 70 functions, got {}", count);
     }

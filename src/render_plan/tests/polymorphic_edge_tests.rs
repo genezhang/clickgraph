@@ -6,10 +6,14 @@
 
 use std::collections::HashMap;
 
-use crate::graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema};
+use crate::graph_catalog::graph_schema::{
+    GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema,
+};
 use crate::render_plan::plan_builder_helpers::generate_polymorphic_edge_filters;
 #[allow(unused_imports)]
-use crate::render_plan::render_expr::{Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr};
+use crate::render_plan::render_expr::{
+    Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
+};
 use crate::server::GLOBAL_SCHEMAS;
 use serial_test::serial;
 
@@ -20,18 +24,27 @@ fn setup_polymorphic_schema() -> GraphSchema {
 
     // User nodes
     let mut user_props = HashMap::new();
-    user_props.insert("name".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("username".to_string()));
-    user_props.insert("email".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("email_address".to_string()));
+    user_props.insert(
+        "name".to_string(),
+        crate::graph_catalog::expression_parser::PropertyValue::Column("username".to_string()),
+    );
+    user_props.insert(
+        "email".to_string(),
+        crate::graph_catalog::expression_parser::PropertyValue::Column("email_address".to_string()),
+    );
 
     nodes.insert(
         "User".to_string(),
         NodeSchema {
             database: "test_db".to_string(),
             table_name: "users".to_string(),
-            column_names: vec!["user_id".to_string(), "username".to_string(), "email_address".to_string()],
+            column_names: vec![
+                "user_id".to_string(),
+                "username".to_string(),
+                "email_address".to_string(),
+            ],
             primary_keys: "user_id".to_string(),
-            node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string(),
-            ),
+            node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string()),
             property_mappings: user_props,
             view_parameters: None,
             engine: None,
@@ -48,18 +61,27 @@ fn setup_polymorphic_schema() -> GraphSchema {
 
     // Post nodes
     let mut post_props = HashMap::new();
-    post_props.insert("title".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("post_title".to_string()));
-    post_props.insert("content".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("post_content".to_string()));
+    post_props.insert(
+        "title".to_string(),
+        crate::graph_catalog::expression_parser::PropertyValue::Column("post_title".to_string()),
+    );
+    post_props.insert(
+        "content".to_string(),
+        crate::graph_catalog::expression_parser::PropertyValue::Column("post_content".to_string()),
+    );
 
     nodes.insert(
         "Post".to_string(),
         NodeSchema {
             database: "test_db".to_string(),
             table_name: "posts".to_string(),
-            column_names: vec!["post_id".to_string(), "post_title".to_string(), "post_content".to_string()],
+            column_names: vec![
+                "post_id".to_string(),
+                "post_title".to_string(),
+                "post_content".to_string(),
+            ],
             primary_keys: "post_id".to_string(),
-            node_id: NodeIdSchema::single("post_id".to_string(), "UInt64".to_string(),
-            ),
+            node_id: NodeIdSchema::single("post_id".to_string(), "UInt64".to_string()),
             property_mappings: post_props,
             view_parameters: None,
             engine: None,
@@ -76,7 +98,10 @@ fn setup_polymorphic_schema() -> GraphSchema {
 
     // Polymorphic relationship: interactions table contains FOLLOWS, LIKES, AUTHORED
     let mut interaction_props = HashMap::new();
-    interaction_props.insert("created_at".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("timestamp".to_string()));
+    interaction_props.insert(
+        "created_at".to_string(),
+        crate::graph_catalog::expression_parser::PropertyValue::Column("timestamp".to_string()),
+    );
 
     // FOLLOWS relationship (User -> User)
     relationships.insert(
@@ -195,14 +220,14 @@ fn setup_polymorphic_schema() -> GraphSchema {
 /// Setup global schema for testing
 fn init_test_schema(schema: GraphSchema) {
     use tokio::sync::RwLock;
-    
+
     const SCHEMA_NAME: &str = "default";
-    
+
     // Always recreate for proper test isolation
-    
+
     let mut schemas = HashMap::new();
     schemas.insert(SCHEMA_NAME.to_string(), schema);
-    
+
     // Initialize GLOBAL_SCHEMAS
     if let Some(schemas_lock) = GLOBAL_SCHEMAS.get() {
         // Update existing
@@ -216,7 +241,7 @@ fn init_test_schema(schema: GraphSchema) {
 }
 
 #[test]
-    #[serial]
+#[serial]
 fn test_polymorphic_filter_follows_user_to_user() {
     let schema = setup_polymorphic_schema();
     init_test_schema(schema);
@@ -224,29 +249,49 @@ fn test_polymorphic_filter_follows_user_to_user() {
     // MATCH (u1:User)-[:FOLLOWS]->(u2:User)
     let filter = generate_polymorphic_edge_filters("r", "FOLLOWS", "User", "User");
 
-    assert!(filter.is_some(), "Should generate filter for polymorphic edge");
-    
+    assert!(
+        filter.is_some(),
+        "Should generate filter for polymorphic edge"
+    );
+
     let filter_expr = filter.unwrap();
-    
+
     // Verify it's an AND operation with 3 operands (type + from_type + to_type)
     if let RenderExpr::OperatorApplicationExp(op) = &filter_expr {
-        assert_eq!(op.operator, Operator::And, "Should combine filters with AND");
-        assert_eq!(op.operands.len(), 3, "Should have 3 operands: type_column, from_label_column, to_label_column");
+        assert_eq!(
+            op.operator,
+            Operator::And,
+            "Should combine filters with AND"
+        );
+        assert_eq!(
+            op.operands.len(),
+            3,
+            "Should have 3 operands: type_column, from_label_column, to_label_column"
+        );
     } else {
         panic!("Filter should be an OperatorApplication");
     }
-    
+
     // Verify SQL contains all three filters
     let sql = filter_expr.to_sql();
-    assert!(sql.contains("interaction_type"), "Should filter on type_column");
-    assert!(sql.contains("'FOLLOWS'"), "Should filter for FOLLOWS relationship");
-    assert!(sql.contains("from_type"), "Should filter on from_label_column");
+    assert!(
+        sql.contains("interaction_type"),
+        "Should filter on type_column"
+    );
+    assert!(
+        sql.contains("'FOLLOWS'"),
+        "Should filter for FOLLOWS relationship"
+    );
+    assert!(
+        sql.contains("from_type"),
+        "Should filter on from_label_column"
+    );
     assert!(sql.contains("to_type"), "Should filter on to_label_column");
     assert!(sql.contains("'User'"), "Should filter for User node type");
 }
 
 #[test]
-    #[serial]
+#[serial]
 fn test_polymorphic_filter_likes_user_to_post() {
     let schema = setup_polymorphic_schema();
     init_test_schema(schema);
@@ -254,16 +299,22 @@ fn test_polymorphic_filter_likes_user_to_post() {
     // MATCH (u:User)-[:LIKES]->(p:Post)
     let filter = generate_polymorphic_edge_filters("r", "LIKES", "User", "Post");
 
-    assert!(filter.is_some(), "Should generate filter for polymorphic edge");
-    
+    assert!(
+        filter.is_some(),
+        "Should generate filter for polymorphic edge"
+    );
+
     let sql = filter.unwrap().to_sql();
-    assert!(sql.contains("'LIKES'"), "Should filter for LIKES relationship");
+    assert!(
+        sql.contains("'LIKES'"),
+        "Should filter for LIKES relationship"
+    );
     assert!(sql.contains("'User'"), "Should filter for User source");
     assert!(sql.contains("'Post'"), "Should filter for Post target");
 }
 
 #[test]
-    #[serial]
+#[serial]
 fn test_polymorphic_filter_authored_user_to_post() {
     let schema = setup_polymorphic_schema();
     init_test_schema(schema);
@@ -271,16 +322,22 @@ fn test_polymorphic_filter_authored_user_to_post() {
     // MATCH (u:User)-[:AUTHORED]->(p:Post)
     let filter = generate_polymorphic_edge_filters("r", "AUTHORED", "User", "Post");
 
-    assert!(filter.is_some(), "Should generate filter for polymorphic edge");
-    
+    assert!(
+        filter.is_some(),
+        "Should generate filter for polymorphic edge"
+    );
+
     let sql = filter.unwrap().to_sql();
-    assert!(sql.contains("'AUTHORED'"), "Should filter for AUTHORED relationship");
+    assert!(
+        sql.contains("'AUTHORED'"),
+        "Should filter for AUTHORED relationship"
+    );
     assert!(sql.contains("'User'"), "Should filter for User source");
     assert!(sql.contains("'Post'"), "Should filter for Post target");
 }
 
 #[test]
-    #[serial]
+#[serial]
 fn test_non_polymorphic_relationship() {
     // For this test, we need a schema with a non-polymorphic relationship
     let mut nodes = HashMap::new();
@@ -294,8 +351,7 @@ fn test_non_polymorphic_relationship() {
             table_name: "users".to_string(),
             column_names: vec!["user_id".to_string()],
             primary_keys: "user_id".to_string(),
-            node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string(),
-            ),
+            node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string()),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -346,11 +402,14 @@ fn test_non_polymorphic_relationship() {
     // Should NOT generate filter for non-polymorphic relationship
     let filter = generate_polymorphic_edge_filters("r", "FOLLOWS", "User", "User");
 
-    assert!(filter.is_none(), "Should NOT generate filter for non-polymorphic edge");
+    assert!(
+        filter.is_none(),
+        "Should NOT generate filter for non-polymorphic edge"
+    );
 }
 
 #[test]
-    #[serial]
+#[serial]
 fn test_polymorphic_filter_with_different_alias() {
     let schema = setup_polymorphic_schema();
     init_test_schema(schema);
@@ -359,21 +418,21 @@ fn test_polymorphic_filter_with_different_alias() {
     let filter = generate_polymorphic_edge_filters("my_edge", "FOLLOWS", "User", "User");
 
     assert!(filter.is_some());
-    
+
     let sql = filter.unwrap().to_sql();
     // Should use the provided alias
     assert!(sql.contains("my_edge"), "Should use custom alias in filter");
 }
 
 #[test]
-    #[serial]
+#[serial]
 fn test_fixed_endpoint_polymorphic_edge() {
     // Test the fixed-endpoint pattern: from_node is fixed, to_label_column is polymorphic
     // This is like Group -[PARENT_OF]-> User|Group
-    
+
     let mut nodes = HashMap::new();
     let mut relationships = HashMap::new();
-    
+
     // Group node
     nodes.insert(
         "Group".to_string(),
@@ -382,8 +441,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             table_name: "groups".to_string(),
             column_names: vec!["group_id".to_string(), "name".to_string()],
             primary_keys: "group_id".to_string(),
-            node_id: NodeIdSchema::single("group_id".to_string(), "UInt64".to_string(),
-            ),
+            node_id: NodeIdSchema::single("group_id".to_string(), "UInt64".to_string()),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -397,7 +455,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             label_value: None,
         },
     );
-    
+
     // User node
     nodes.insert(
         "User".to_string(),
@@ -406,8 +464,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             table_name: "users".to_string(),
             column_names: vec!["user_id".to_string(), "name".to_string()],
             primary_keys: "user_id".to_string(),
-            node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string(),
-            ),
+            node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string()),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -421,7 +478,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             label_value: None,
         },
     );
-    
+
     // Fixed-endpoint polymorphic relationship:
     // - type_column: None (single edge type)
     // - from_label_column: None (fixed to Group)
@@ -431,7 +488,11 @@ fn test_fixed_endpoint_polymorphic_edge() {
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "memberships".to_string(),
-            column_names: vec!["parent_id".to_string(), "member_id".to_string(), "member_type".to_string()],
+            column_names: vec![
+                "parent_id".to_string(),
+                "member_id".to_string(),
+                "member_type".to_string(),
+            ],
             from_node: "Group".to_string(),
             to_node: "$any".to_string(), // Polymorphic target
             from_id: "parent_id".to_string(),
@@ -444,7 +505,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             use_final: None,
             filter: None,
             edge_id: None,
-            type_column: None, // Single edge type, no discriminator needed
+            type_column: None,       // Single edge type, no discriminator needed
             from_label_column: None, // Fixed source (Group)
             to_label_column: Some("member_type".to_string()), // Polymorphic target!
             from_node_properties: None,
@@ -454,26 +515,24 @@ fn test_fixed_endpoint_polymorphic_edge() {
             is_fk_edge: false,
         },
     );
-    
+
     let schema = GraphSchema::build(1, "test_db".to_string(), nodes, relationships);
     init_test_schema(schema);
-    
+
     // For fixed-endpoint with only to_label_column, generate_polymorphic_edge_filters
     // currently requires type_column. We need a separate function or update to handle this.
     // For now, just verify the schema is set up correctly.
-    
+
     // This test demonstrates the limitation: generate_polymorphic_edge_filters needs type_column
     let filter = generate_polymorphic_edge_filters("r", "PARENT_OF", "Group", "User");
-    
+
     // Currently returns None because type_column is required
     // TODO: Update generate_polymorphic_edge_filters to handle fixed-endpoint pattern
     // For now, document this limitation
-    assert!(filter.is_none(), 
+    assert!(
+        filter.is_none(),
         "generate_polymorphic_edge_filters currently requires type_column - \
          fixed-endpoint pattern with only to_label_column is not yet supported by this function. \
-         The plan_builder.get_polymorphic_edge_filter should handle this case.");
+         The plan_builder.get_polymorphic_edge_filter should handle this case."
+    );
 }
-
-
-
-

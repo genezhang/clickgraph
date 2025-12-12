@@ -32,7 +32,10 @@ impl AnalyzerPass for ProjectionTagging {
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Projection(projection) => {
-                crate::debug_println!("🔍 ProjectionTagging: BEFORE processing Projection - distinct={}", projection.distinct);
+                crate::debug_println!(
+                    "🔍 ProjectionTagging: BEFORE processing Projection - distinct={}",
+                    projection.distinct
+                );
                 // First, recursively process the input child to preserve transformations
                 // from previous analyzer passes (like FilterTagging)
                 let child_tf = self.analyze_with_graph_schema(
@@ -52,7 +55,11 @@ impl AnalyzerPass for ProjectionTagging {
                 // RETURN u, c, p;
                 //
                 // To achieve this we will convert `RETURN *` into `RETURN u, c, p`
-                crate::debug_print!("ProjectionTagging: input items count={}, items={:?}", projection.items.len(), projection.items);
+                crate::debug_print!(
+                    "ProjectionTagging: input items count={}, items={:?}",
+                    projection.items.len(),
+                    projection.items
+                );
                 let mut proj_items_to_mutate: Vec<ProjectionItem> =
                     if self.select_all_present(&projection.items) {
                         // we will create projection items with only table alias as return item. tag_projection will handle the proper tagging and overall projection manupulation.
@@ -81,7 +88,10 @@ impl AnalyzerPass for ProjectionTagging {
                     kind: projection.kind.clone(),
                     distinct: projection.distinct,
                 })));
-                crate::debug_println!("🔍 ProjectionTagging: AFTER creating new Projection - distinct={}", projection.distinct);
+                crate::debug_println!(
+                    "🔍 ProjectionTagging: AFTER creating new Projection - distinct={}",
+                    projection.distinct
+                );
                 result
             }
             LogicalPlan::GraphNode(graph_node) => {
@@ -162,40 +172,42 @@ impl AnalyzerPass for ProjectionTagging {
             LogicalPlan::Unwind(u) => {
                 let child_tf =
                     self.analyze_with_graph_schema(u.input.clone(), plan_ctx, graph_schema)?;
-                
+
                 // Transform the UNWIND expression - resolve property mappings for denormalized nodes
-                let transformed_expr = self.transform_unwind_expression(
-                    &u.expression, 
-                    plan_ctx, 
-                    graph_schema
-                )?;
-                
+                let transformed_expr =
+                    self.transform_unwind_expression(&u.expression, plan_ctx, graph_schema)?;
+
                 // Check if anything changed
                 let expr_changed = transformed_expr != u.expression;
-                
+
                 match (&child_tf, expr_changed) {
-                    (Transformed::Yes(new_input), _) => {
-                        Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
+                    (Transformed::Yes(new_input), _) => Transformed::Yes(Arc::new(
+                        LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
                             input: new_input.clone(),
                             expression: transformed_expr,
                             alias: u.alias.clone(),
-                        })))
-                    },
-                    (Transformed::No(_), true) => {
-                        Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
+                        }),
+                    )),
+                    (Transformed::No(_), true) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
                             input: u.input.clone(),
                             expression: transformed_expr,
                             alias: u.alias.clone(),
-                        })))
-                    },
+                        },
+                    ))),
                     (Transformed::No(_), false) => Transformed::No(logical_plan.clone()),
                 }
             }
             LogicalPlan::CartesianProduct(cp) => {
-                let transformed_left = self.analyze_with_graph_schema(cp.left.clone(), plan_ctx, graph_schema)?;
-                let transformed_right = self.analyze_with_graph_schema(cp.right.clone(), plan_ctx, graph_schema)?;
-                
-                if matches!((&transformed_left, &transformed_right), (Transformed::No(_), Transformed::No(_))) {
+                let transformed_left =
+                    self.analyze_with_graph_schema(cp.left.clone(), plan_ctx, graph_schema)?;
+                let transformed_right =
+                    self.analyze_with_graph_schema(cp.right.clone(), plan_ctx, graph_schema)?;
+
+                if matches!(
+                    (&transformed_left, &transformed_right),
+                    (Transformed::No(_), Transformed::No(_))
+                ) {
                     Transformed::No(logical_plan.clone())
                 } else {
                     let new_cp = crate::query_planner::logical_plan::CartesianProduct {
@@ -214,7 +226,11 @@ impl AnalyzerPass for ProjectionTagging {
                 }
             }
             LogicalPlan::WithClause(with_clause) => {
-                let child_tf = self.analyze_with_graph_schema(with_clause.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = self.analyze_with_graph_schema(
+                    with_clause.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 match child_tf {
                     Transformed::Yes(new_input) => {
                         let new_with = crate::query_planner::logical_plan::WithClause {
@@ -277,9 +293,9 @@ impl ProjectionTagging {
                     Ok(ctx) => ctx,
                     Err(_) => return Ok(expr.clone()),
                 };
-                
+
                 let label = table_ctx.get_label_opt().unwrap_or_default();
-                
+
                 // Check if this is a denormalized node
                 if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
                     if node_schema.is_denormalized {
@@ -304,12 +320,14 @@ impl ProjectionTagging {
                                 None
                             }
                         });
-                        
+
                         if let Some(mapped) = mapped_column {
-                            log::debug!("UNWIND property mapping: {}.{} -> {:?}", 
-                                       property_access.table_alias.0, 
-                                       property_access.column.raw(),
-                                       mapped);
+                            log::debug!(
+                                "UNWIND property mapping: {}.{} -> {:?}",
+                                property_access.table_alias.0,
+                                property_access.column.raw(),
+                                mapped
+                            );
                             return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: property_access.table_alias.clone(),
                                 column: mapped,
@@ -317,7 +335,7 @@ impl ProjectionTagging {
                         }
                     }
                 }
-                
+
                 // No mapping needed - return as-is
                 Ok(expr.clone())
             }
@@ -371,54 +389,70 @@ impl ProjectionTagging {
 
                     // update the overall projection
                     // IMPORTANT: Set col_alias to preserve the original alias name (e.g., "src.*")
-                    // This allows later processing (especially in denormalized schemas) to 
+                    // This allows later processing (especially in denormalized schemas) to
                     // recover which node's properties should be expanded
                     item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: table_alias.clone(),
-                        column: crate::graph_catalog::expression_parser::PropertyValue::Column("*".to_string()),
+                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                            "*".to_string(),
+                        ),
                     });
                     item.col_alias = Some(ColumnAlias(format!("{}.*", table_alias.0)));
                     Ok(())
                 }
             }
             LogicalExpr::PropertyAccessExp(property_access) => {
-                crate::debug_print!("tag_projection PropertyAccessExp: table_alias='{}', column='{}'", 
-                    property_access.table_alias.0, property_access.column.raw());
-                
+                crate::debug_print!(
+                    "tag_projection PropertyAccessExp: table_alias='{}', column='{}'",
+                    property_access.table_alias.0,
+                    property_access.column.raw()
+                );
+
                 let table_ctx = plan_ctx
                     .get_mut_table_ctx(&property_access.table_alias.0)
                     .map_err(|e| AnalyzerError::PlanCtx {
                         pass: Pass::ProjectionTagging,
                         source: e,
                     })?;
-                
-                crate::debug_print!("tag_projection: table_ctx label={:?}, is_relation={}", 
-                    table_ctx.get_label_opt(), table_ctx.is_relation());
-                
+
+                crate::debug_print!(
+                    "tag_projection: table_ctx label={:?}, is_relation={}",
+                    table_ctx.get_label_opt(),
+                    table_ctx.is_relation()
+                );
+
                 // Get label for property resolution
                 let label = table_ctx.get_label_opt().unwrap_or_default();
                 let is_relation = table_ctx.is_relation();
-                
+
                 // Resolve property to actual column name using ViewResolver
                 // This handles standard property_mappings
                 // TODO: For denormalized nodes, we need to check from_node_properties/to_node_properties
-                let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
-                
+                let view_resolver =
+                    crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(
+                        graph_schema,
+                    );
+
                 let mapped_column = if is_relation {
-                    view_resolver.resolve_relationship_property(&label, property_access.column.raw())?
+                    view_resolver
+                        .resolve_relationship_property(&label, property_access.column.raw())?
                 } else {
                     // Check if this node is denormalized by looking up the schema
                     if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
                         if node_schema.is_denormalized {
-                            // For denormalized nodes, prefer from_node_properties 
+                            // For denormalized nodes, prefer from_node_properties
                             // (TO position would need UNION ALL which we handle separately)
                             if let Some(ref from_props) = node_schema.from_properties {
                                 if let Some(mapped) = from_props.get(property_access.column.raw()) {
-                                    crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone())
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        mapped.clone(),
+                                    )
                                 } else {
                                     // Property not in from_props, try to_props
                                     if let Some(ref to_props) = node_schema.to_properties {
-                                        if let Some(mapped) = to_props.get(property_access.column.raw()) {
+                                        if let Some(mapped) =
+                                            to_props.get(property_access.column.raw())
+                                        {
                                             crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone())
                                         } else {
                                             // Fallback to identity
@@ -430,37 +464,46 @@ impl ProjectionTagging {
                                 }
                             } else if let Some(ref to_props) = node_schema.to_properties {
                                 if let Some(mapped) = to_props.get(property_access.column.raw()) {
-                                    crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone())
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        mapped.clone(),
+                                    )
                                 } else {
-                                    crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        property_access.column.raw().to_string(),
+                                    )
                                 }
                             } else {
-                                crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    property_access.column.raw().to_string(),
+                                )
                             }
                         } else {
                             // Standard node - use ViewResolver
-                            view_resolver.resolve_node_property(&label, property_access.column.raw())?
+                            view_resolver
+                                .resolve_node_property(&label, property_access.column.raw())?
                         }
                     } else {
                         // Label not found in schema - use property as column name (identity mapping)
-                        crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
+                        crate::graph_catalog::expression_parser::PropertyValue::Column(
+                            property_access.column.raw().to_string(),
+                        )
                     }
                 };
-                
+
                 // Update the property access with the mapped column
                 let updated_property_access = PropertyAccess {
                     table_alias: property_access.table_alias.clone(),
                     column: mapped_column,
                 };
-                
+
                 // Create updated projection item with mapped column
                 let updated_item = ProjectionItem {
                     expression: LogicalExpr::PropertyAccessExp(updated_property_access.clone()),
                     col_alias: item.col_alias.clone(),
                 };
-                
+
                 table_ctx.insert_projection(updated_item.clone());
-                
+
                 // Update the item's expression with the mapped column
                 item.expression = LogicalExpr::PropertyAccessExp(updated_property_access);
 
@@ -477,7 +520,7 @@ impl ProjectionTagging {
                     Self::tag_projection(&mut operand_return_item, plan_ctx, graph_schema)?;
                     transformed_operands.push(operand_return_item.expression);
                 }
-                
+
                 // Update the item's expression with transformed operands
                 item.expression = LogicalExpr::OperatorApplicationExp(OperatorApplication {
                     operator: operator_application.operator.clone(),
@@ -487,33 +530,38 @@ impl ProjectionTagging {
             }
             LogicalExpr::ScalarFnCall(scalar_fn_call) => {
                 let fn_name_lower = scalar_fn_call.name.to_lowercase();
-                
+
                 // Handle graph introspection functions specially
                 // These functions take a node/relationship alias and shouldn't be expanded to .*
                 if matches!(fn_name_lower.as_str(), "type" | "id" | "labels" | "label") {
                     // Get the first argument (the node/relationship alias)
-                    if let Some(LogicalExpr::TableAlias(TableAlias(alias))) = scalar_fn_call.args.first() {
+                    if let Some(LogicalExpr::TableAlias(TableAlias(alias))) =
+                        scalar_fn_call.args.first()
+                    {
                         let table_ctx = plan_ctx.get_mut_table_ctx(alias).map_err(|e| {
                             AnalyzerError::PlanCtx {
                                 pass: Pass::ProjectionTagging,
                                 source: e,
                             }
                         })?;
-                        
+
                         match fn_name_lower.as_str() {
                             "type" => {
-                                // For type(r): 
+                                // For type(r):
                                 // - Polymorphic edge with type_column -> PropertyAccessExp(r.type_column)
                                 // - Non-polymorphic -> Literal string of the relationship type
                                 if table_ctx.is_relation() {
                                     // If no explicit alias, use "type(r)" as the column alias
                                     if item.col_alias.is_none() {
-                                        item.col_alias = Some(ColumnAlias(format!("type({})", alias)));
+                                        item.col_alias =
+                                            Some(ColumnAlias(format!("type({})", alias)));
                                     }
                                     if let Some(labels) = table_ctx.get_labels() {
                                         if let Some(first_label) = labels.first() {
                                             // Check if this relationship has a type_column (polymorphic)
-                                            if let Ok(rel_schema) = graph_schema.get_rel_schema(first_label) {
+                                            if let Ok(rel_schema) =
+                                                graph_schema.get_rel_schema(first_label)
+                                            {
                                                 if let Some(ref type_col) = rel_schema.type_column {
                                                     // Polymorphic: return type column
                                                     item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
@@ -532,7 +580,9 @@ impl ProjectionTagging {
                                     }
                                     // Fallback: return '*' (unknown type)
                                     item.expression = LogicalExpr::Literal(
-                                        crate::query_planner::logical_expr::Literal::String("*".to_string())
+                                        crate::query_planner::logical_expr::Literal::String(
+                                            "*".to_string(),
+                                        ),
                                     );
                                     return Ok(());
                                 }
@@ -547,7 +597,8 @@ impl ProjectionTagging {
                                 if let Ok(label) = table_ctx.get_label_str() {
                                     if table_ctx.is_relation() {
                                         // Relationship ID - may be single or composite
-                                        if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
+                                        if let Ok(rel_schema) = graph_schema.get_rel_schema(&label)
+                                        {
                                             if let Some(ref edge_id) = rel_schema.edge_id {
                                                 let columns = edge_id.columns();
                                                 if columns.len() == 1 {
@@ -566,7 +617,8 @@ impl ProjectionTagging {
                                                             column: crate::graph_catalog::expression_parser::PropertyValue::Column(col.to_string()),
                                                         }))
                                                         .collect();
-                                                    item.expression = LogicalExpr::List(tuple_exprs);
+                                                    item.expression =
+                                                        LogicalExpr::List(tuple_exprs);
                                                 }
                                             } else {
                                                 // No edge_id defined - use from_id as default
@@ -585,8 +637,15 @@ impl ProjectionTagging {
                                         return Ok(());
                                     } else {
                                         // Node ID column - use first column for composite IDs
-                                        let id_column = if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
-                                            node_schema.node_id.columns().first().unwrap_or(&"id").to_string()
+                                        let id_column = if let Ok(node_schema) =
+                                            graph_schema.get_node_schema(&label)
+                                        {
+                                            node_schema
+                                                .node_id
+                                                .columns()
+                                                .first()
+                                                .unwrap_or(&"id")
+                                                .to_string()
                                         } else {
                                             "id".to_string()
                                         };
@@ -602,7 +661,8 @@ impl ProjectionTagging {
                                 // For labels(n): return an array literal with the node's label(s)
                                 // If no explicit alias, use "labels(n)" as the column alias
                                 if item.col_alias.is_none() {
-                                    item.col_alias = Some(ColumnAlias(format!("labels({})", alias)));
+                                    item.col_alias =
+                                        Some(ColumnAlias(format!("labels({})", alias)));
                                 }
                                 if !table_ctx.is_relation() {
                                     if let Some(labels) = table_ctx.get_labels() {
@@ -629,7 +689,9 @@ impl ProjectionTagging {
                                         if let Some(first_label) = labels.first() {
                                             // Return the first label as a scalar string
                                             item.expression = LogicalExpr::Literal(
-                                                crate::query_planner::logical_expr::Literal::String(first_label.clone())
+                                                crate::query_planner::logical_expr::Literal::String(
+                                                    first_label.clone(),
+                                                ),
                                             );
                                             return Ok(());
                                         }
@@ -640,7 +702,7 @@ impl ProjectionTagging {
                         }
                     }
                 }
-                
+
                 // Generic scalar function - recursively process arguments
                 let mut transformed_args = Vec::new();
                 for arg in &scalar_fn_call.args {
@@ -651,7 +713,7 @@ impl ProjectionTagging {
                     Self::tag_projection(&mut arg_return_item, plan_ctx, graph_schema)?;
                     transformed_args.push(arg_return_item.expression);
                 }
-                
+
                 // Update the item's expression with transformed arguments
                 item.expression = LogicalExpr::ScalarFnCall(ScalarFnCall {
                     name: scalar_fn_call.name.clone(),
@@ -666,7 +728,9 @@ impl ProjectionTagging {
                     // Handle COUNT(a) or COUNT(DISTINCT a)
                     // Track whether DISTINCT was used in the original expression
                     let (table_alias_opt, is_distinct) = match arg {
-                        LogicalExpr::TableAlias(TableAlias(t_alias)) => (Some(t_alias.as_str()), false),
+                        LogicalExpr::TableAlias(TableAlias(t_alias)) => {
+                            (Some(t_alias.as_str()), false)
+                        }
                         LogicalExpr::OperatorApplicationExp(OperatorApplication {
                             operator,
                             operands,
@@ -687,7 +751,9 @@ impl ProjectionTagging {
                             // If so, resolve it to the underlying table alias
                             let resolved_alias: String = if plan_ctx.is_projection_alias(t_alias) {
                                 // Try to resolve the projection alias to its underlying expression
-                                if let Some(underlying_expr) = plan_ctx.get_projection_alias_expr(t_alias) {
+                                if let Some(underlying_expr) =
+                                    plan_ctx.get_projection_alias_expr(t_alias)
+                                {
                                     // If the underlying expr is a TableAlias, use that
                                     match underlying_expr {
                                         LogicalExpr::TableAlias(TableAlias(underlying_alias)) => {
@@ -696,10 +762,11 @@ impl ProjectionTagging {
                                         _ => {
                                             // If it's not a simple alias (e.g., it's an aggregate),
                                             // just use count(*) since we can't resolve to a table
-                                            item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                                name: aggregate_fn_call.name.clone(),
-                                                args: vec![LogicalExpr::Star],
-                                            });
+                                            item.expression =
+                                                LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                                    name: aggregate_fn_call.name.clone(),
+                                                    args: vec![LogicalExpr::Star],
+                                                });
                                             return Ok(());
                                         }
                                     }
@@ -709,13 +776,14 @@ impl ProjectionTagging {
                             } else {
                                 t_alias.to_string()
                             };
-                            
-                            let table_ctx = plan_ctx.get_mut_table_ctx(&resolved_alias).map_err(|e| {
-                                AnalyzerError::PlanCtx {
-                                    pass: Pass::ProjectionTagging,
-                                    source: e,
-                                }
-                            })?;
+
+                            let table_ctx =
+                                plan_ctx.get_mut_table_ctx(&resolved_alias).map_err(|e| {
+                                    AnalyzerError::PlanCtx {
+                                        pass: Pass::ProjectionTagging,
+                                        source: e,
+                                    }
+                                })?;
 
                             if table_ctx.is_relation() {
                                 // For relationships:
@@ -725,13 +793,23 @@ impl ProjectionTagging {
                                     // Get the relationship type from the table context
                                     if let Some(rel_type) = table_ctx.get_label_opt() {
                                         // Look up the relationship schema
-                                        if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(&rel_type) {
+                                        if let Some(rel_schema) =
+                                            graph_schema.get_relationships_schema_opt(&rel_type)
+                                        {
                                             // Get edge_id columns or default to (from_id, to_id)
-                                            let edge_columns: Vec<String> = match &rel_schema.edge_id {
-                                                Some(id) => id.columns().iter().map(|s| s.to_string()).collect(),
-                                                None => vec![rel_schema.from_id.clone(), rel_schema.to_id.clone()],
-                                            };
-                                            
+                                            let edge_columns: Vec<String> =
+                                                match &rel_schema.edge_id {
+                                                    Some(id) => id
+                                                        .columns()
+                                                        .iter()
+                                                        .map(|s| s.to_string())
+                                                        .collect(),
+                                                    None => vec![
+                                                        rel_schema.from_id.clone(),
+                                                        rel_schema.to_id.clone(),
+                                                    ],
+                                                };
+
                                             // Create PropertyAccess expressions for each edge column
                                             let column_exprs: Vec<LogicalExpr> = edge_columns.iter().map(|col| {
                                                 LogicalExpr::PropertyAccessExp(PropertyAccess {
@@ -739,49 +817,59 @@ impl ProjectionTagging {
                                                     column: crate::graph_catalog::expression_parser::PropertyValue::Column(col.clone()),
                                                 })
                                             }).collect();
-                                            
+
                                             // Create the DISTINCT tuple expression
                                             let distinct_arg = if column_exprs.len() == 1 {
                                                 // Single column - just use DISTINCT on that column
-                                                LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                                                    operator: Operator::Distinct,
-                                                    operands: column_exprs,
-                                                })
+                                                LogicalExpr::OperatorApplicationExp(
+                                                    OperatorApplication {
+                                                        operator: Operator::Distinct,
+                                                        operands: column_exprs,
+                                                    },
+                                                )
                                             } else {
                                                 // Multiple columns - create tuple using scalar function: DISTINCT tuple(col1, col2, ...)
-                                                LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                                                    operator: Operator::Distinct,
-                                                    operands: vec![LogicalExpr::ScalarFnCall(ScalarFnCall {
-                                                        name: "tuple".to_string(),
-                                                        args: column_exprs,
-                                                    })],
-                                                })
+                                                LogicalExpr::OperatorApplicationExp(
+                                                    OperatorApplication {
+                                                        operator: Operator::Distinct,
+                                                        operands: vec![LogicalExpr::ScalarFnCall(
+                                                            ScalarFnCall {
+                                                                name: "tuple".to_string(),
+                                                                args: column_exprs,
+                                                            },
+                                                        )],
+                                                    },
+                                                )
                                             };
-                                            
-                                            item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                                name: aggregate_fn_call.name.clone(),
-                                                args: vec![distinct_arg],
-                                            });
+
+                                            item.expression =
+                                                LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                                    name: aggregate_fn_call.name.clone(),
+                                                    args: vec![distinct_arg],
+                                                });
                                         } else {
                                             // Fallback to count(*) if schema lookup fails
-                                            item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                                name: aggregate_fn_call.name.clone(),
-                                                args: vec![LogicalExpr::Star],
-                                            });
+                                            item.expression =
+                                                LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                                    name: aggregate_fn_call.name.clone(),
+                                                    args: vec![LogicalExpr::Star],
+                                                });
                                         }
                                     } else {
                                         // No relationship type found, fallback to count(*)
-                                        item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                            name: aggregate_fn_call.name.clone(),
-                                            args: vec![LogicalExpr::Star],
-                                        });
+                                        item.expression =
+                                            LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                                name: aggregate_fn_call.name.clone(),
+                                                args: vec![LogicalExpr::Star],
+                                            });
                                     }
                                 } else {
                                     // count(r) without DISTINCT -> count(*)
-                                    item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                        name: aggregate_fn_call.name.clone(),
-                                        args: vec![LogicalExpr::Star],
-                                    });
+                                    item.expression =
+                                        LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                            name: aggregate_fn_call.name.clone(),
+                                            args: vec![LogicalExpr::Star],
+                                        });
                                 }
                             } else if table_ctx.is_path_variable() {
                                 // For path variables (e.g., count(p) where p is from MATCH p = ...),
@@ -799,7 +887,7 @@ impl ProjectionTagging {
                                         source: e,
                                     }
                                 })?;
-                                
+
                                 // Check if node is denormalized
                                 if graph_schema.is_denormalized_node(&table_label) {
                                     // For denormalized nodes, get the node schema to find the id_column property name
@@ -811,22 +899,27 @@ impl ProjectionTagging {
                                             pass: Pass::ProjectionTagging,
                                             source: e,
                                         })?;
-                                    let id_property_name = node_schema.node_id.columns().first().unwrap_or(&"id").to_string();
-                                    
+                                    let id_property_name = node_schema
+                                        .node_id
+                                        .columns()
+                                        .first()
+                                        .unwrap_or(&"id")
+                                        .to_string();
+
                                     log::debug!(
                                         "ProjectionTagging: Denormalized node '{}' (label={}), using id property '{}'",
                                         t_alias, table_label, id_property_name
                                     );
-                                    
+
                                     // Check if DISTINCT was specified
                                     let is_distinct = matches!(arg, LogicalExpr::OperatorApplicationExp(OperatorApplication { operator, .. }) if *operator == Operator::Distinct);
-                                    
+
                                     // Create PropertyAccess expression for node.id_property
                                     let property_expr = LogicalExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(t_alias.to_string()),
                                         column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_property_name),
                                     });
-                                    
+
                                     let new_arg = if is_distinct {
                                         LogicalExpr::OperatorApplicationExp(OperatorApplication {
                                             operator: Operator::Distinct,
@@ -835,20 +928,26 @@ impl ProjectionTagging {
                                     } else {
                                         property_expr
                                     };
-                                    
-                                    item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                        name: aggregate_fn_call.name.clone(),
-                                        args: vec![new_arg],
-                                    });
+
+                                    item.expression =
+                                        LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                            name: aggregate_fn_call.name.clone(),
+                                            args: vec![new_arg],
+                                        });
                                 } else {
                                     // Standard node - use node schema's ID column
                                     let table_schema = graph_schema
                                         .get_node_schema(&table_label)
                                         .map_err(|e| AnalyzerError::GraphSchema {
-                                            pass: Pass::ProjectionTagging,
-                                            source: e,
-                                        })?;
-                                    let table_node_id = table_schema.node_id.columns().first().unwrap_or(&"id").to_string();
+                                        pass: Pass::ProjectionTagging,
+                                        source: e,
+                                    })?;
+                                    let table_node_id = table_schema
+                                        .node_id
+                                        .columns()
+                                        .first()
+                                        .unwrap_or(&"id")
+                                        .to_string();
 
                                     // Preserve DISTINCT if it was in the original expression
                                     let new_arg = if matches!(arg, LogicalExpr::OperatorApplicationExp(OperatorApplication { operator, .. }) if *operator == Operator::Distinct)
@@ -869,10 +968,11 @@ impl ProjectionTagging {
                                         })
                                     };
 
-                                    item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                        name: aggregate_fn_call.name.clone(),
-                                        args: vec![new_arg],
-                                    });
+                                    item.expression =
+                                        LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                            name: aggregate_fn_call.name.clone(),
+                                            args: vec![new_arg],
+                                        });
                                 }
                             }
                         }
@@ -935,4 +1035,3 @@ impl ProjectionTagging {
         }
     }
 }
-

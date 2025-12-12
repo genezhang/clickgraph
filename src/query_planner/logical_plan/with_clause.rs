@@ -1,7 +1,7 @@
 use crate::{
     open_cypher_parser::ast::WithClause as AstWithClause,
-    query_planner::logical_plan::{LogicalPlan, ProjectionItem, WithClause, OrderByItem},
     query_planner::logical_expr::LogicalExpr,
+    query_planner::logical_plan::{LogicalPlan, OrderByItem, ProjectionItem, WithClause},
 };
 use std::sync::Arc;
 
@@ -42,9 +42,8 @@ pub fn evaluate_with_clause<'a>(
     );
 
     // Create the new WithClause type with all modifiers
-    let mut with_node = WithClause::new(plan, projection_items)
-        .with_distinct(with_clause.distinct);
-    
+    let mut with_node = WithClause::new(plan, projection_items).with_distinct(with_clause.distinct);
+
     // Add ORDER BY if present
     if let Some(ref order_by_ast) = with_clause.order_by {
         let order_by_items: Vec<OrderByItem> = order_by_ast
@@ -54,17 +53,17 @@ pub fn evaluate_with_clause<'a>(
             .collect();
         with_node = with_node.with_order_by(order_by_items);
     }
-    
+
     // Add SKIP if present
     if let Some(ref skip_ast) = with_clause.skip {
         with_node = with_node.with_skip(skip_ast.skip_item as u64);
     }
-    
+
     // Add LIMIT if present
     if let Some(ref limit_ast) = with_clause.limit {
         with_node = with_node.with_limit(limit_ast.limit_item as u64);
     }
-    
+
     // Add WHERE if present
     if let Some(ref where_ast) = with_clause.where_clause {
         let predicate: LogicalExpr = where_ast.conditions.clone().into();

@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
-    Router,
     routing::{get, post},
+    Router,
 };
 use clickhouse::Client;
 use handlers::{
-    health_check, get_schema_handler, list_schemas_handler, load_schema_handler, query_handler,
+    get_schema_handler, health_check, list_schemas_handler, load_schema_handler, query_handler,
 };
 use sql_generation_handler::sql_generation_handler;
 
@@ -95,16 +95,21 @@ pub async fn run_with_config(config: ServerConfig) {
 
     // Try to create ClickHouse client (optional for YAML-only mode)
     let client_opt = clickhouse_client::try_get_client();
-    
+
     // Create connection pool (uses same env vars as client)
     let connection_pool = match connection_pool::RoleConnectionPool::new() {
         Ok(pool) => Arc::new(pool),
         Err(e) => {
-            log::error!("Warning: Failed to create connection pool: {}. Using default client.", e);
+            log::error!(
+                "Warning: Failed to create connection pool: {}. Using default client.",
+                e
+            );
             // Create a minimal pool for YAML-only mode
-            Arc::new(connection_pool::RoleConnectionPool::new().unwrap_or_else(|_| {
-                panic!("Failed to create connection pool even with defaults")
-            }))
+            Arc::new(
+                connection_pool::RoleConnectionPool::new().unwrap_or_else(|_| {
+                    panic!("Failed to create connection pool even with defaults")
+                }),
+            )
         }
     };
 
@@ -118,7 +123,9 @@ pub async fn run_with_config(config: ServerConfig) {
         // For YAML-only mode, we need a placeholder client
         // This is a limitation we should fix in the future
         log::error!("⚠ No ClickHouse configuration found. Running in YAML-only mode.");
-        log::error!("  Note: Some query functionality may be limited without ClickHouse connection.");
+        log::error!(
+            "  Note: Some query functionality may be limited without ClickHouse connection."
+        );
 
         // Create a dummy client for now - this is not ideal but allows server to start
         let dummy_client = clickhouse::Client::default().with_url("http://localhost:8123");
@@ -142,7 +149,10 @@ pub async fn run_with_config(config: ServerConfig) {
             }
         };
 
-    log::debug!("GLOBAL_SCHEMAS initialized: {:?}", GLOBAL_SCHEMAS.get().is_some());
+    log::debug!(
+        "GLOBAL_SCHEMAS initialized: {:?}",
+        GLOBAL_SCHEMAS.get().is_some()
+    );
 
     // Initialize query cache
     let cache_config = query_cache::QueryCacheConfig::from_env();
@@ -205,7 +215,8 @@ pub async fn run_with_config(config: ServerConfig) {
             );
             log::error!(
                 "✗ FATAL: Failed to bind HTTP listener to {}: {}",
-                http_bind_address, e
+                http_bind_address,
+                e
             );
             log::error!("  Is another process using port {}?", config.http_port);
             std::process::exit(1);
@@ -238,7 +249,8 @@ pub async fn run_with_config(config: ServerConfig) {
             Err(e) => {
                 log::error!(
                     "Failed to bind Bolt listener to {}: {}",
-                    bolt_bind_address, e
+                    bolt_bind_address,
+                    e
                 );
                 return;
             }
@@ -290,7 +302,7 @@ pub async fn run_with_config(config: ServerConfig) {
         // Run server and signal handler concurrently
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{SignalKind, signal};
+            use tokio::signal::unix::{signal, SignalKind};
             let mut sigterm = signal(SignalKind::terminate()).unwrap();
             let mut sigint = signal(SignalKind::interrupt()).unwrap();
 

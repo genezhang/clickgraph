@@ -1,11 +1,11 @@
 use nom::{
-    IResult, Parser,
     bytes::complete::tag_no_case,
     character::complete::{char, multispace0},
     combinator::{cut, opt},
     error::context,
     multi::{many0, separated_list1},
     sequence::{delimited, preceded},
+    IResult, Parser,
 };
 
 use super::{
@@ -13,12 +13,12 @@ use super::{
     common::ws,
     errors::OpenCypherParsingError,
     expression::{parse_expression, parse_identifier},
+    limit_clause::parse_limit_clause,
     match_clause::parse_match_clause,
     optional_match_clause::parse_optional_match_clause,
-    unwind_clause::parse_unwind_clause,
     order_by_clause::parse_order_by_clause,
     skip_clause::parse_skip_clause,
-    limit_clause::parse_limit_clause,
+    unwind_clause::parse_unwind_clause,
     where_clause::parse_where_clause,
 };
 
@@ -35,7 +35,7 @@ pub fn parse_with_clause(
 ) -> IResult<&'_ str, WithClause<'_>, OpenCypherParsingError<'_>> {
     // Parse the WITH keyword
     let (input, _) = ws(tag_no_case("WITH")).parse(input)?;
-    
+
     // Parse optional DISTINCT modifier
     let (input, distinct) = opt(ws(tag_no_case("DISTINCT"))).parse(input)?;
     let distinct = distinct.is_some();
@@ -48,27 +48,27 @@ pub fn parse_with_clause(
         ),
     )
     .parse(input)?;
-    
+
     // Parse optional ORDER BY clause (part of WITH syntax per OpenCypher spec)
     let (input, order_by) = opt(parse_order_by_clause).parse(input)?;
-    
+
     // Parse optional SKIP clause (part of WITH syntax per OpenCypher spec)
     let (input, skip) = opt(parse_skip_clause).parse(input)?;
-    
+
     // Parse optional LIMIT clause (part of WITH syntax per OpenCypher spec)
     let (input, limit) = opt(parse_limit_clause).parse(input)?;
-    
+
     // Parse optional WHERE clause (part of WITH syntax per OpenCypher spec)
     let (input, where_clause) = opt(parse_where_clause).parse(input)?;
 
     // Parse optional subsequent UNWIND clause after WITH
     // This handles: WITH d, rip UNWIND rip.ips AS ip ...
     let (input, subsequent_unwind) = opt(parse_unwind_clause).parse(input)?;
-    
+
     // Parse optional subsequent MATCH clause after WITH
     // This handles: WITH u MATCH (u)-[:FOLLOWS]->(f) ...
     let (input, subsequent_match) = opt(parse_match_clause).parse(input)?;
-    
+
     // Parse optional subsequent OPTIONAL MATCH clauses after WITH
     // This handles: WITH u OPTIONAL MATCH (u)-[:FOLLOWS]->(f) ...
     let (input, subsequent_optional_matches) = many0(parse_optional_match_clause).parse(input)?;
@@ -78,7 +78,7 @@ pub fn parse_with_clause(
     // Using Box to handle recursion
     let (input, subsequent_with) = opt(parse_with_clause).parse(input)?;
 
-    let with_clause = WithClause { 
+    let with_clause = WithClause {
         with_items,
         distinct,
         order_by,

@@ -10,7 +10,7 @@ async fn test_social_graph_queries() -> anyhow::Result<()> {
 
     // Create view definition
     let mut view = GraphViewDefinition::new("social_network");
-    
+
     // Add User node mapping
     let mut user_mapping = crate::graph_catalog::NodeViewMapping::new("users", "user_id");
     user_mapping.add_property("name", "full_name");
@@ -20,15 +20,15 @@ async fn test_social_graph_queries() -> anyhow::Result<()> {
 
     // Test query: "Find users over 30"
     let result = client.execute("
-        SELECT full_name, age 
-        FROM users 
+        SELECT full_name, age
+        FROM users
         WHERE age > 30 AND active = 1
     ").await?;
 
     // Verify results
     assert_eq!(result.rows(), 1); // Should only find Bob
     let row = result.get_row(0).unwrap();
-    
+
     // Print the query results
     println!("Test Query 1 - Users over 30:");
     println!("Found {} users", result.rows());
@@ -57,7 +57,7 @@ async fn test_social_graph_queries() -> anyhow::Result<()> {
 fn view_query_demo() {
     println!("\nRunning Social Graph View Demo");
     println!("===============================");
-    
+
     // This will run the async test and print the results
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {

@@ -48,22 +48,22 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
         | RenderExpr::Column(_)
         | RenderExpr::Parameter(_) => false,
         // MapLiteral may contain aliases in its values
-        RenderExpr::MapLiteral(entries) => {
-            entries.iter().any(|(_, v)| references_alias(v, alias))
-        }
+        RenderExpr::MapLiteral(entries) => entries.iter().any(|(_, v)| references_alias(v, alias)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render_plan::render_expr::{PropertyAccess, TableAlias, Column};
+    use crate::render_plan::render_expr::{Column, PropertyAccess, TableAlias};
 
     #[test]
     fn test_references_alias() {
         let expr = RenderExpr::PropertyAccessExp(PropertyAccess {
             table_alias: TableAlias("users".to_string()),
-            column: Column(crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string())),
+            column: Column(
+                crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+            ),
         });
 
         assert!(references_alias(&expr, "users"));

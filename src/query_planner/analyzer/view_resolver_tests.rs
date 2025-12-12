@@ -18,7 +18,9 @@ mod tests {
             table_name: "users".to_string(),
             column_names: vec!["user_id".to_string(), "name".to_string()],
             primary_keys: "user_id".to_string(),
-            node_id: crate::graph_catalog::graph_schema::NodeIdSchema::single("user_id".to_string(), "UInt64".to_string(),
+            node_id: crate::graph_catalog::graph_schema::NodeIdSchema::single(
+                "user_id".to_string(),
+                "UInt64".to_string(),
             ),
             property_mappings: HashMap::new(),
             view_parameters: None,

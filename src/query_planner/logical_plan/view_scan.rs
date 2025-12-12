@@ -44,39 +44,36 @@ pub struct ViewScan {
     /// Whether this node is denormalized (stored on edge table)
     /// Set from schema during ViewScan creation
     pub is_denormalized: bool,
-    
+
     // ===== Denormalized node support =====
-    
     /// Property mappings when this node appears as FROM node in a relationship
     /// Only used for denormalized nodes
     /// Example: {"code": Column("Origin"), "city": Column("OriginCityName")}
     pub from_node_properties: Option<HashMap<String, PropertyValue>>,
-    
+
     /// Property mappings when this node appears as TO node in a relationship
     /// Only used for denormalized nodes
     /// Example: {"code": Column("Dest"), "city": Column("DestCityName")}
     pub to_node_properties: Option<HashMap<String, PropertyValue>>,
-    
+
     // ===== Polymorphic edge support =====
-    
     /// Column containing edge type discriminator (for polymorphic edges)
     /// Example: Some("interaction_type")
     pub type_column: Option<String>,
-    
+
     /// Valid type values for this edge (for polymorphic edges)
     /// Example: Some(vec!["FOLLOWS", "LIKES", "AUTHORED"])
     pub type_values: Option<Vec<String>>,
-    
+
     /// Column containing from-node label (for polymorphic edges)
     /// Example: Some("from_type")
     pub from_label_column: Option<String>,
-    
+
     /// Column containing to-node label (for polymorphic edges)
     /// Example: Some("to_type")
     pub to_label_column: Option<String>,
-    
+
     // ===== Schema-level filtering =====
-    
     /// Schema-level filter defined in YAML configuration
     /// Applied automatically to all scans of this node/relationship type
     /// Example: "ts >= now() - INTERVAL 7 DAY AND proto = 'tcp'"
@@ -105,7 +102,7 @@ impl ViewScan {
             input: None,
             view_parameter_names: None,
             view_parameter_values: None,
-            use_final: false, // Default: no FINAL
+            use_final: false,       // Default: no FINAL
             is_denormalized: false, // Default: not denormalized
             from_node_properties: None,
             to_node_properties: None,
@@ -139,7 +136,7 @@ impl ViewScan {
             input: Some(input),
             view_parameter_names: None,
             view_parameter_values: None,
-            use_final: false, // Default: no FINAL
+            use_final: false,       // Default: no FINAL
             is_denormalized: false, // Default: not denormalized
             from_node_properties: None,
             to_node_properties: None,
@@ -174,7 +171,7 @@ impl ViewScan {
             input: None,
             view_parameter_names: None,
             view_parameter_values: None,
-            use_final: false, // Default: no FINAL
+            use_final: false,       // Default: no FINAL
             is_denormalized: false, // Default: not denormalized (for edges)
             from_node_properties: None,
             to_node_properties: None,
@@ -210,7 +207,7 @@ impl ViewScan {
             input: Some(input),
             view_parameter_names: None,
             view_parameter_values: None,
-            use_final: false, // Default: no FINAL
+            use_final: false,       // Default: no FINAL
             is_denormalized: false, // Default: not denormalized (for edges)
             from_node_properties: None,
             to_node_properties: None,

@@ -1,7 +1,5 @@
 use clap::Parser;
-use clickgraph::{
-    config, server,
-};
+use clickgraph::{config, server};
 
 /// ClickGraph - A graph analysis layer for ClickHouse
 #[derive(Parser)]

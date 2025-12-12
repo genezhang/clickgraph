@@ -119,19 +119,25 @@ impl PlanSanitization {
             LogicalPlan::Unwind(u) => {
                 let child_tf = self.sanitize_plan(u.input.clone(), last_node_traversed)?;
                 match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-                        input: new_input,
-                        expression: u.expression.clone(),
-                        alias: u.alias.clone(),
-                    }))),
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                        },
+                    ))),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
             LogicalPlan::CartesianProduct(cp) => {
                 let transformed_left = self.sanitize_plan(cp.left.clone(), last_node_traversed)?;
-                let transformed_right = self.sanitize_plan(cp.right.clone(), last_node_traversed)?;
-                
-                if matches!((&transformed_left, &transformed_right), (Transformed::No(_), Transformed::No(_))) {
+                let transformed_right =
+                    self.sanitize_plan(cp.right.clone(), last_node_traversed)?;
+
+                if matches!(
+                    (&transformed_left, &transformed_right),
+                    (Transformed::No(_), Transformed::No(_))
+                ) {
                     Transformed::No(logical_plan.clone())
                 } else {
                     let new_cp = crate::query_planner::logical_plan::CartesianProduct {
@@ -150,7 +156,8 @@ impl PlanSanitization {
                 }
             }
             LogicalPlan::WithClause(with_clause) => {
-                let child_tf = self.sanitize_plan(with_clause.input.clone(), last_node_traversed)?;
+                let child_tf =
+                    self.sanitize_plan(with_clause.input.clone(), last_node_traversed)?;
                 match child_tf {
                     Transformed::Yes(new_input) => {
                         let new_with = crate::query_planner::logical_plan::WithClause {

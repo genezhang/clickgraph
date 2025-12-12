@@ -38,11 +38,10 @@
 //! }
 //! ```
 
-use std::collections::HashMap;
 use super::graph_schema::{
-    GraphSchema, NodeSchema, RelationshipSchema,
-    classify_edge_table_pattern, EdgeTablePattern,
+    classify_edge_table_pattern, EdgeTablePattern, GraphSchema, NodeSchema, RelationshipSchema,
 };
+use std::collections::HashMap;
 
 // ============================================================================
 // Core Types
@@ -137,8 +136,8 @@ impl NodeAccessStrategy {
     /// Get property mapping for a given property name
     pub fn get_property_column(&self, prop_name: &str) -> Option<&str> {
         match self {
-            NodeAccessStrategy::OwnTable { properties, .. } |
-            NodeAccessStrategy::EmbeddedInEdge { properties, .. } => {
+            NodeAccessStrategy::OwnTable { properties, .. }
+            | NodeAccessStrategy::EmbeddedInEdge { properties, .. } => {
                 properties.get(prop_name).map(|s| s.as_str())
             }
             NodeAccessStrategy::Virtual { .. } => None,
@@ -209,8 +208,8 @@ impl EdgeAccessStrategy {
     /// Get the table name for this edge
     pub fn table_name(&self) -> &str {
         match self {
-            EdgeAccessStrategy::SeparateTable { table, .. } |
-            EdgeAccessStrategy::Polymorphic { table, .. } => table,
+            EdgeAccessStrategy::SeparateTable { table, .. }
+            | EdgeAccessStrategy::Polymorphic { table, .. } => table,
             EdgeAccessStrategy::FkEdge { node_table, .. } => node_table,
         }
     }
@@ -218,8 +217,8 @@ impl EdgeAccessStrategy {
     /// Get the from_id column
     pub fn from_id_column(&self) -> &str {
         match self {
-            EdgeAccessStrategy::SeparateTable { from_id, .. } |
-            EdgeAccessStrategy::Polymorphic { from_id, .. } => from_id,
+            EdgeAccessStrategy::SeparateTable { from_id, .. }
+            | EdgeAccessStrategy::Polymorphic { from_id, .. } => from_id,
             EdgeAccessStrategy::FkEdge { fk_column, .. } => fk_column,
         }
     }
@@ -227,8 +226,8 @@ impl EdgeAccessStrategy {
     /// Get the to_id column
     pub fn to_id_column(&self) -> &str {
         match self {
-            EdgeAccessStrategy::SeparateTable { to_id, .. } |
-            EdgeAccessStrategy::Polymorphic { to_id, .. } => to_id,
+            EdgeAccessStrategy::SeparateTable { to_id, .. }
+            | EdgeAccessStrategy::Polymorphic { to_id, .. } => to_id,
             EdgeAccessStrategy::FkEdge { .. } => "id", // FK edges point to node's own ID
         }
     }
@@ -241,14 +240,19 @@ impl EdgeAccessStrategy {
     /// Get type filter expression for polymorphic edges
     pub fn get_type_filter(&self, alias: &str) -> Option<String> {
         match self {
-            EdgeAccessStrategy::Polymorphic { type_column, type_values, .. } => {
+            EdgeAccessStrategy::Polymorphic {
+                type_column,
+                type_values,
+                ..
+            } => {
                 // Only generate type filter if type_column exists
                 let type_col = type_column.as_ref()?;
-                
+
                 if type_values.len() == 1 {
                     Some(format!("{}.{} = '{}'", alias, type_col, type_values[0]))
                 } else if !type_values.is_empty() {
-                    let types_str = type_values.iter()
+                    let types_str = type_values
+                        .iter()
                         .map(|t| format!("'{}'", t))
                         .collect::<Vec<_>>()
                         .join(", ");
@@ -262,36 +266,45 @@ impl EdgeAccessStrategy {
     }
 
     /// Get label filter for polymorphic edges that filter by node type.
-    /// 
+    ///
     /// For polymorphic edges with from_label_column/to_label_column, we need
     /// to filter by the actual node type when the query specifies concrete labels.
-    /// 
+    ///
     /// # Arguments
     /// * `alias` - The edge table alias
     /// * `left_label` - The left node label from the query (e.g., "User")
     /// * `right_label` - The right node label from the query (e.g., "Group")
-    /// 
+    ///
     /// # Returns
     /// A SQL filter string like "r.member_type = 'User'" or combined filters
-    pub fn get_label_filter(&self, alias: &str, left_label: &str, right_label: &str) -> Option<String> {
+    pub fn get_label_filter(
+        &self,
+        alias: &str,
+        left_label: &str,
+        right_label: &str,
+    ) -> Option<String> {
         match self {
-            EdgeAccessStrategy::Polymorphic { from_label_column, to_label_column, .. } => {
+            EdgeAccessStrategy::Polymorphic {
+                from_label_column,
+                to_label_column,
+                ..
+            } => {
                 let mut parts = Vec::new();
-                
+
                 // Add from_label filter if column exists and left_label is specified
                 if let Some(ref col) = from_label_column {
                     if !left_label.is_empty() {
                         parts.push(format!("{}.{} = '{}'", alias, col, left_label));
                     }
                 }
-                
+
                 // Add to_label filter if column exists and right_label is specified
                 if let Some(ref col) = to_label_column {
                     if !right_label.is_empty() {
                         parts.push(format!("{}.{} = '{}'", alias, col, right_label));
                     }
                 }
-                
+
                 if parts.is_empty() {
                     None
                 } else {
@@ -370,18 +383,18 @@ pub enum JoinStrategy {
     },
 
     /// FK-edge pattern: edge is a foreign key column in the node table.
-    /// 
+    ///
     /// Self-referencing example (parent_id on same table):
     /// ```sql
     /// SELECT child.*, parent.*
     /// FROM objects child
     /// JOIN objects parent ON parent.object_id = child.parent_id
     /// ```
-    /// 
+    ///
     /// Non-self-referencing example (orders.user_id → users.id):
     /// Edge table IS the to_node table (orders), so we JOIN the from_node (users).
     /// ```sql
-    /// SELECT u.*, o.* 
+    /// SELECT u.*, o.*
     /// FROM users u
     /// JOIN orders o ON o.user_id = u.id
     /// ```
@@ -402,9 +415,9 @@ pub enum JoinStrategy {
 impl JoinStrategy {
     /// Returns true if this strategy requires no JOINs
     pub fn is_joinless(&self) -> bool {
-        matches!(self, 
-            JoinStrategy::SingleTableScan { .. } | 
-            JoinStrategy::CoupledSameRow { .. }
+        matches!(
+            self,
+            JoinStrategy::SingleTableScan { .. } | JoinStrategy::CoupledSameRow { .. }
         )
     }
 
@@ -416,7 +429,10 @@ impl JoinStrategy {
             JoinStrategy::MixedAccess { .. } => "Mixed (partial JOIN)",
             JoinStrategy::EdgeToEdge { .. } => "Edge-to-edge (multi-hop denormalized)",
             JoinStrategy::CoupledSameRow { .. } => "Coupled (same row, no JOIN)",
-            JoinStrategy::FkEdgeJoin { is_self_referencing, .. } => {
+            JoinStrategy::FkEdgeJoin {
+                is_self_referencing,
+                ..
+            } => {
                 if *is_self_referencing {
                     "FK-edge self-join (same table)"
                 } else {
@@ -512,7 +528,8 @@ impl PatternSchemaContext {
         let right_is_polymorphic = rel_schema.to_node == "$any";
 
         // 2. Classify edge table pattern using existing function
-        let edge_pattern = classify_edge_table_pattern(left_node_schema, rel_schema, right_node_schema);
+        let edge_pattern =
+            classify_edge_table_pattern(left_node_schema, rel_schema, right_node_schema);
 
         // 3. Build edge access strategy
         let edge = Self::build_edge_strategy(rel_schema, &rel_types);
@@ -553,11 +570,15 @@ impl PatternSchemaContext {
     }
 
     /// Build edge access strategy from relationship schema
-    fn build_edge_strategy(rel_schema: &RelationshipSchema, rel_types: &[String]) -> EdgeAccessStrategy {
+    fn build_edge_strategy(
+        rel_schema: &RelationshipSchema,
+        rel_types: &[String],
+    ) -> EdgeAccessStrategy {
         // Check if polymorphic: either has type_column, from_label_column, or to_label_column
         let has_type_column = rel_schema.type_column.is_some();
-        let has_label_columns = rel_schema.from_label_column.is_some() || rel_schema.to_label_column.is_some();
-        
+        let has_label_columns =
+            rel_schema.from_label_column.is_some() || rel_schema.to_label_column.is_some();
+
         if has_type_column || has_label_columns {
             EdgeAccessStrategy::Polymorphic {
                 table: rel_schema.full_table_name(),
@@ -567,7 +588,9 @@ impl PatternSchemaContext {
                 type_values: rel_types.to_vec(),
                 from_label_column: rel_schema.from_label_column.clone(),
                 to_label_column: rel_schema.to_label_column.clone(),
-                properties: rel_schema.property_mappings.iter()
+                properties: rel_schema
+                    .property_mappings
+                    .iter()
                     .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                     .collect(),
             }
@@ -577,7 +600,9 @@ impl PatternSchemaContext {
                 table: rel_schema.full_table_name(),
                 from_id: rel_schema.from_id.clone(),
                 to_id: rel_schema.to_id.clone(),
-                properties: rel_schema.property_mappings.iter()
+                properties: rel_schema
+                    .property_mappings
+                    .iter()
                     .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                     .collect(),
             }
@@ -626,21 +651,38 @@ impl PatternSchemaContext {
             EdgeTablePattern::Traditional => {
                 let left = NodeAccessStrategy::OwnTable {
                     table: left_node_schema.full_table_name(),
-                    id_column: left_node_schema.node_id.columns().first().unwrap_or(&"id").to_string(),
-                    properties: left_node_schema.property_mappings.iter()
+                    id_column: left_node_schema
+                        .node_id
+                        .columns()
+                        .first()
+                        .unwrap_or(&"id")
+                        .to_string(),
+                    properties: left_node_schema
+                        .property_mappings
+                        .iter()
                         .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                         .collect(),
                 };
                 let right = NodeAccessStrategy::OwnTable {
                     table: right_node_schema.full_table_name(),
-                    id_column: right_node_schema.node_id.columns().first().unwrap_or(&"id").to_string(),
-                    properties: right_node_schema.property_mappings.iter()
+                    id_column: right_node_schema
+                        .node_id
+                        .columns()
+                        .first()
+                        .unwrap_or(&"id")
+                        .to_string(),
+                    properties: right_node_schema
+                        .property_mappings
+                        .iter()
                         .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                         .collect(),
                 };
                 (left, right)
             }
-            EdgeTablePattern::Mixed { from_denormalized, to_denormalized } => {
+            EdgeTablePattern::Mixed {
+                from_denormalized,
+                to_denormalized,
+            } => {
                 let left = if *from_denormalized {
                     NodeAccessStrategy::EmbeddedInEdge {
                         edge_alias: rel_alias.to_string(),
@@ -650,8 +692,15 @@ impl PatternSchemaContext {
                 } else {
                     NodeAccessStrategy::OwnTable {
                         table: left_node_schema.full_table_name(),
-                        id_column: left_node_schema.node_id.columns().first().unwrap_or(&"id").to_string(),
-                        properties: left_node_schema.property_mappings.iter()
+                        id_column: left_node_schema
+                            .node_id
+                            .columns()
+                            .first()
+                            .unwrap_or(&"id")
+                            .to_string(),
+                        properties: left_node_schema
+                            .property_mappings
+                            .iter()
                             .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                             .collect(),
                     }
@@ -665,8 +714,15 @@ impl PatternSchemaContext {
                 } else {
                     NodeAccessStrategy::OwnTable {
                         table: right_node_schema.full_table_name(),
-                        id_column: right_node_schema.node_id.columns().first().unwrap_or(&"id").to_string(),
-                        properties: right_node_schema.property_mappings.iter()
+                        id_column: right_node_schema
+                            .node_id
+                            .columns()
+                            .first()
+                            .unwrap_or(&"id")
+                            .to_string(),
+                        properties: right_node_schema
+                            .property_mappings
+                            .iter()
                             .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                             .collect(),
                     }
@@ -686,8 +742,15 @@ impl PatternSchemaContext {
     ) -> NodeAccessStrategy {
         let is_denormalized = match edge_pattern {
             EdgeTablePattern::FullyDenormalized => true,
-            EdgeTablePattern::Mixed { from_denormalized, to_denormalized } => {
-                if is_from_node { *from_denormalized } else { *to_denormalized }
+            EdgeTablePattern::Mixed {
+                from_denormalized,
+                to_denormalized,
+            } => {
+                if is_from_node {
+                    *from_denormalized
+                } else {
+                    *to_denormalized
+                }
             }
             EdgeTablePattern::Traditional => false,
         };
@@ -701,8 +764,15 @@ impl PatternSchemaContext {
         } else {
             NodeAccessStrategy::OwnTable {
                 table: node_schema.full_table_name(),
-                id_column: node_schema.node_id.columns().first().unwrap_or(&"id").to_string(),
-                properties: node_schema.property_mappings.iter()
+                id_column: node_schema
+                    .node_id
+                    .columns()
+                    .first()
+                    .unwrap_or(&"id")
+                    .to_string(),
+                properties: node_schema
+                    .property_mappings
+                    .iter()
                     .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                     .collect(),
             }
@@ -711,14 +781,18 @@ impl PatternSchemaContext {
 
     /// Extract denormalized properties from relationship schema
     /// Note: from_node_properties and to_node_properties are already String values (column names)
-    fn extract_denorm_props(rel_schema: &RelationshipSchema, is_from_node: bool) -> PropertyMappings {
+    fn extract_denorm_props(
+        rel_schema: &RelationshipSchema,
+        is_from_node: bool,
+    ) -> PropertyMappings {
         let props = if is_from_node {
             &rel_schema.from_node_properties
         } else {
             &rel_schema.to_node_properties
         };
 
-        props.as_ref()
+        props
+            .as_ref()
             .map(|p| p.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default()
     }
@@ -749,7 +823,9 @@ impl PatternSchemaContext {
                             shared_table: rel_schema.full_table_name(),
                         };
                         return (
-                            JoinStrategy::CoupledSameRow { unified_alias: prev_alias.to_string() },
+                            JoinStrategy::CoupledSameRow {
+                                unified_alias: prev_alias.to_string(),
+                            },
                             Some(coupled_ctx),
                         );
                     } else {
@@ -775,14 +851,14 @@ impl PatternSchemaContext {
         // Check for FK-edge pattern first (edge table IS a node table with FK column)
         if rel_schema.is_fk_edge {
             let is_self_referencing = rel_schema.from_node == rel_schema.to_node;
-            
+
             // Determine which node needs to be JOINed (the one that ISN'T the edge table)
             // - If edge_table == to_node_table: edge IS right node, need to JOIN left (from_node)
             // - If edge_table == from_node_table: edge IS left node, need to JOIN right (to_node)
             let edge_table = rel_schema.full_table_name();
             let left_table = left_node_schema.full_table_name();
             let right_table = right_node_schema.full_table_name();
-            
+
             let join_side = if edge_table == right_table {
                 // Edge IS the to_node table, need to JOIN the from_node (left)
                 NodePosition::Left
@@ -793,7 +869,7 @@ impl PatternSchemaContext {
                 // Shouldn't happen if is_fk_edge is set correctly
                 NodePosition::Right // Default fallback
             };
-            
+
             return (
                 JoinStrategy::FkEdgeJoin {
                     from_id: rel_schema.from_id.clone(),
@@ -808,7 +884,9 @@ impl PatternSchemaContext {
         // No coupling - determine by edge pattern
         match edge_pattern {
             EdgeTablePattern::FullyDenormalized => (
-                JoinStrategy::SingleTableScan { table: rel_schema.full_table_name() },
+                JoinStrategy::SingleTableScan {
+                    table: rel_schema.full_table_name(),
+                },
                 None,
             ),
             EdgeTablePattern::Traditional => (
@@ -818,7 +896,10 @@ impl PatternSchemaContext {
                 },
                 None,
             ),
-            EdgeTablePattern::Mixed { from_denormalized, to_denormalized: _ } => {
+            EdgeTablePattern::Mixed {
+                from_denormalized,
+                to_denormalized: _,
+            } => {
                 if *from_denormalized {
                     (
                         JoinStrategy::MixedAccess {
@@ -899,11 +980,13 @@ mod tests {
             table_name: table.to_string(),
             column_names: vec![id_col.to_string(), "name".to_string()],
             primary_keys: id_col.to_string(),
-            node_id: NodeIdSchema::single(id_col.to_string(), "Int64".to_string(),
-            ),
+            node_id: NodeIdSchema::single(id_col.to_string(), "Int64".to_string()),
             property_mappings: HashMap::from([
                 ("id".to_string(), PropertyValue::Column(id_col.to_string())),
-                ("name".to_string(), PropertyValue::Column("name".to_string())),
+                (
+                    "name".to_string(),
+                    PropertyValue::Column("name".to_string()),
+                ),
             ]),
             view_parameters: None,
             engine: None,
@@ -924,8 +1007,7 @@ mod tests {
             table_name: table.to_string(),
             column_names: vec![id_col.to_string()],
             primary_keys: id_col.to_string(),
-            node_id: NodeIdSchema::single(id_col.to_string(), "String".to_string(),
-            ),
+            node_id: NodeIdSchema::single(id_col.to_string(), "String".to_string()),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -935,12 +1017,8 @@ mod tests {
             denormalized_source_table: Some(format!("test_db.{}", table)),
             label_column: None,
             label_value: None,
-            from_properties: Some(HashMap::from([
-                ("code".to_string(), "Origin".to_string()),
-            ])),
-            to_properties: Some(HashMap::from([
-                ("code".to_string(), "Dest".to_string()),
-            ])),
+            from_properties: Some(HashMap::from([("code".to_string(), "Origin".to_string())])),
+            to_properties: Some(HashMap::from([("code".to_string(), "Dest".to_string())])),
         }
     }
 
@@ -976,7 +1054,12 @@ mod tests {
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: table.to_string(),
-            column_names: vec!["Origin".to_string(), "Dest".to_string(), "OriginCity".to_string(), "DestCity".to_string()],
+            column_names: vec![
+                "Origin".to_string(),
+                "Dest".to_string(),
+                "OriginCity".to_string(),
+                "DestCity".to_string(),
+            ],
             from_node: "Airport".to_string(),
             to_node: "Airport".to_string(),
             from_id: "Origin".to_string(),
@@ -1092,7 +1175,7 @@ mod tests {
             from_only.get_label_filter("r", "Group", "Group"),
             Some("r.member_type = 'Group'".to_string())
         );
-        
+
         // Test to_label_column only (CONTAINS with Folder|File on right)
         let to_only = EdgeAccessStrategy::Polymorphic {
             table: "fs_contents".to_string(),
@@ -1114,7 +1197,7 @@ mod tests {
             to_only.get_label_filter("r", "Folder", "File"),
             Some("r.child_type = 'File'".to_string())
         );
-        
+
         // Test both label columns (HAS_ACCESS: User|Group -> Folder|File)
         let both = EdgeAccessStrategy::Polymorphic {
             table: "permissions".to_string(),
@@ -1136,7 +1219,7 @@ mod tests {
             both.get_label_filter("r", "Group", "File"),
             Some("r.subject_type = 'Group' AND r.object_type = 'File'".to_string())
         );
-        
+
         // Test with type_column + label columns (full polymorphic)
         let full = EdgeAccessStrategy::Polymorphic {
             table: "interactions".to_string(),
@@ -1158,7 +1241,7 @@ mod tests {
             full.get_type_filter("r"),
             Some("r.interaction_type = 'FOLLOWS'".to_string())
         );
-        
+
         // Test no label columns (separate table - no label filtering needed)
         let separate = EdgeAccessStrategy::SeparateTable {
             table: "follows".to_string(),
@@ -1167,7 +1250,7 @@ mod tests {
             properties: HashMap::new(),
         };
         assert_eq!(separate.get_label_filter("r", "User", "User"), None);
-        
+
         // Test Polymorphic with no label columns (only type_column)
         let type_only = EdgeAccessStrategy::Polymorphic {
             table: "interactions".to_string(),
@@ -1202,10 +1285,14 @@ mod tests {
 
     #[test]
     fn test_join_strategy_is_joinless() {
-        let single_table = JoinStrategy::SingleTableScan { table: "flights".to_string() };
+        let single_table = JoinStrategy::SingleTableScan {
+            table: "flights".to_string(),
+        };
         assert!(single_table.is_joinless());
 
-        let coupled = JoinStrategy::CoupledSameRow { unified_alias: "r1".to_string() };
+        let coupled = JoinStrategy::CoupledSameRow {
+            unified_alias: "r1".to_string(),
+        };
         assert!(coupled.is_joinless());
 
         let traditional = JoinStrategy::Traditional {

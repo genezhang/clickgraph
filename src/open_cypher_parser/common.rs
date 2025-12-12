@@ -1,5 +1,4 @@
 use nom::{
-    IResult, Parser,
     branch::alt,
     bytes::complete::{tag, take_until, take_while1},
     character::complete::{alphanumeric1, digit1, multispace0},
@@ -7,6 +6,7 @@ use nom::{
     error::ParseError,
     multi::many0,
     sequence::{delimited, pair},
+    IResult, Parser,
 };
 
 use nom::character::complete::char;
@@ -166,7 +166,7 @@ mod tests {
         );
         // a failure case (input not matching any pattern).
         assert!(parse_alphanumeric_with_underscore_dot_star("!abc").is_err());
-        
+
         // Numeric literals
         assert_eq!(
             parse_alphanumeric_with_underscore_dot_star("123"),

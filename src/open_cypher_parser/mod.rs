@@ -1,8 +1,7 @@
 use ast::{
-    CallClause, CreateClause, CypherStatement, DeleteClause, LimitClause, MatchClause, 
-    OpenCypherQueryAst, OptionalMatchClause, OrderByClause, RemoveClause, ReturnClause, 
-    SetClause, SkipClause, UnionClause, UnionType, UnwindClause, UseClause, WhereClause, 
-    WithClause,
+    CallClause, CreateClause, CypherStatement, DeleteClause, LimitClause, MatchClause,
+    OpenCypherQueryAst, OptionalMatchClause, OrderByClause, RemoveClause, ReturnClause, SetClause,
+    SkipClause, UnionClause, UnionType, UnwindClause, UseClause, WhereClause, WithClause,
 };
 use common::ws;
 use errors::OpenCypherParsingError;
@@ -39,20 +38,23 @@ pub fn parse_cypher_statement(
     input: &'_ str,
 ) -> IResult<&'_ str, CypherStatement<'_>, OpenCypherParsingError<'_>> {
     let (input, _) = multispace0.parse(input)?;
-    
+
     // Parse the first query
     let (input, first_query) = parse_query_with_nom.parse(input)?;
-    
+
     // Parse zero or more UNION clauses
     let (input, union_clauses) = many0(parse_union_clause).parse(input)?;
-    
+
     // Optional trailing semicolon
     let (input, _) = opt(ws(tag(";"))).parse(input)?;
-    
-    Ok((input, CypherStatement {
-        query: first_query,
-        union_clauses,
-    }))
+
+    Ok((
+        input,
+        CypherStatement {
+            query: first_query,
+            union_clauses,
+        },
+    ))
 }
 
 /// Parse a UNION clause: UNION [ALL] followed by a query
@@ -60,11 +62,11 @@ fn parse_union_clause(
     input: &'_ str,
 ) -> IResult<&'_ str, UnionClause<'_>, OpenCypherParsingError<'_>> {
     let (input, _) = multispace0.parse(input)?;
-    
+
     // Parse UNION keyword (case-insensitive)
     let (input, _) = tag_no_case("UNION").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
-    
+
     // Parse optional ALL keyword to determine union type
     let (input, union_type) = alt((
         |i| {
@@ -72,17 +74,15 @@ fn parse_union_clause(
             Ok((i, UnionType::All))
         },
         |i| Ok((i, UnionType::Distinct)),
-    )).parse(input)?;
-    
+    ))
+    .parse(input)?;
+
     let (input, _) = multispace0.parse(input)?;
-    
+
     // Parse the subsequent query
     let (input, query) = parse_query_with_nom.parse(input)?;
-    
-    Ok((input, UnionClause {
-        union_type,
-        query,
-    }))
+
+    Ok((input, UnionClause { union_type, query }))
 }
 
 /// Legacy function for backward compatibility - parses single query
@@ -182,7 +182,10 @@ pub fn parse_query(input: &'_ str) -> Result<OpenCypherQueryAst<'_>, OpenCypherP
             let trimmed = remainder.trim();
             if !trimmed.is_empty() {
                 return Err(OpenCypherParsingError {
-                    errors: vec![(remainder, "Unexpected tokens after query"), (trimmed, "Unparsed input")],
+                    errors: vec![
+                        (remainder, "Unexpected tokens after query"),
+                        (trimmed, "Unparsed input"),
+                    ],
                 });
             }
             Ok(query_ast)
@@ -209,16 +212,16 @@ mod tests {
     #[test]
     fn test_parse_full_query() {
         let query = "
-            MATCH (a) 
-            WITH a 
-            WHERE a = 1 
-            CREATE (b) 
-            SET b.name = 'John', b.age = 30 
-            REMOVE b.temp 
-            DELETE a 
-            RETURN a, b.name AS name 
-            ORDER BY a ASC, b DESC 
-            SKIP 5 
+            MATCH (a)
+            WITH a
+            WHERE a = 1
+            CREATE (b)
+            SET b.name = 'John', b.age = 30
+            REMOVE b.temp
+            DELETE a
+            RETURN a, b.name AS name
+            ORDER BY a ASC, b DESC
+            SKIP 5
             LIMIT 10 ;";
         let parsed = parse_query(query);
         match parsed {
@@ -227,7 +230,10 @@ mod tests {
                 assert!(ast.match_clause.is_some(), "Expected MATCH clause");
                 assert!(ast.with_clause.is_some(), "Expected WITH clause");
                 // WHERE after WITH is now part of WITH clause, not query-level
-                assert!(ast.where_clause.is_none(), "WHERE should be part of WITH clause, not query level");
+                assert!(
+                    ast.where_clause.is_none(),
+                    "WHERE should be part of WITH clause, not query level"
+                );
                 assert!(ast.create_clause.is_some(), "Expected CREATE clause");
                 assert!(ast.set_clause.is_some(), "Expected SET clause");
                 assert!(ast.remove_clause.is_some(), "Expected REMOVE clause");
@@ -250,9 +256,12 @@ mod tests {
                 let with_item = &with_clause.with_items[0];
                 assert_eq!(with_item.expression, Expression::Variable("a"));
                 assert_eq!(with_item.alias, None);
-                
+
                 // Check WHERE is now part of WITH clause
-                assert!(with_clause.where_clause.is_some(), "Expected WHERE clause inside WITH");
+                assert!(
+                    with_clause.where_clause.is_some(),
+                    "Expected WHERE clause inside WITH"
+                );
                 let where_clause = with_clause.where_clause.unwrap();
 
                 if let Expression::OperatorApplicationExp(operator_application) =
@@ -512,7 +521,10 @@ mod tests {
         assert_eq!(with_clause, expected_with_clause);
 
         // WHERE is now parsed as part of WITH clause, so query-level where_clause should be None
-        assert!(query_ast.where_clause.is_none(), "WHERE should be part of WITH clause, not query level");
+        assert!(
+            query_ast.where_clause.is_none(),
+            "WHERE should be part of WITH clause, not query level"
+        );
 
         assert!(query_ast.return_clause.is_some(), "Expected RETURN clause");
         let return_clause = query_ast.return_clause.unwrap();
@@ -1247,8 +1259,8 @@ mod tests {
     fn test_parse_full_query_with_and_or_in_not_in() {
         let input = "
             MATCH (p:Person)
-            WHERE p.name IN ['Alice', 'Bob'] AND 
-                  p.city NOT IN ['Chicago', 'Miami'] AND 
+            WHERE p.name IN ['Alice', 'Bob'] AND
+                  p.city NOT IN ['Chicago', 'Miami'] AND
                   (p.age > 30 OR p.age < 20)
             RETURN p;
         ";
@@ -1390,11 +1402,22 @@ mod tests {
         // A single query without UNION should have empty union_clauses
         let query = "MATCH (n:Person) RETURN n.name";
         let result = parse_cypher_statement(query);
-        assert!(result.is_ok(), "Failed to parse single query: {:?}", result.err());
-        
+        assert!(
+            result.is_ok(),
+            "Failed to parse single query: {:?}",
+            result.err()
+        );
+
         let (remaining, stmt) = result.unwrap();
-        assert!(remaining.trim().is_empty(), "Expected empty remaining, got: '{}'", remaining);
-        assert!(stmt.union_clauses.is_empty(), "Expected no UNION clauses for single query");
+        assert!(
+            remaining.trim().is_empty(),
+            "Expected empty remaining, got: '{}'",
+            remaining
+        );
+        assert!(
+            stmt.union_clauses.is_empty(),
+            "Expected no UNION clauses for single query"
+        );
         assert!(stmt.query.match_clause.is_some(), "Expected MATCH clause");
     }
 
@@ -1403,13 +1426,21 @@ mod tests {
         // UNION (distinct) combines results removing duplicates
         let query = "MATCH (a:Person) RETURN a.name UNION MATCH (b:Company) RETURN b.name";
         let result = parse_cypher_statement(query);
-        assert!(result.is_ok(), "Failed to parse UNION query: {:?}", result.err());
-        
+        assert!(
+            result.is_ok(),
+            "Failed to parse UNION query: {:?}",
+            result.err()
+        );
+
         let (remaining, stmt) = result.unwrap();
-        assert!(remaining.trim().is_empty(), "Expected empty remaining, got: '{}'", remaining);
+        assert!(
+            remaining.trim().is_empty(),
+            "Expected empty remaining, got: '{}'",
+            remaining
+        );
         assert_eq!(stmt.union_clauses.len(), 1, "Expected 1 UNION clause");
         assert_eq!(stmt.union_clauses[0].union_type, UnionType::Distinct);
-        
+
         // Verify first query
         assert!(stmt.query.match_clause.is_some());
         // Verify union query
@@ -1421,10 +1452,18 @@ mod tests {
         // UNION ALL combines results keeping duplicates
         let query = "MATCH (a:Person) RETURN a.name UNION ALL MATCH (b:Company) RETURN b.name";
         let result = parse_cypher_statement(query);
-        assert!(result.is_ok(), "Failed to parse UNION ALL query: {:?}", result.err());
-        
+        assert!(
+            result.is_ok(),
+            "Failed to parse UNION ALL query: {:?}",
+            result.err()
+        );
+
         let (remaining, stmt) = result.unwrap();
-        assert!(remaining.trim().is_empty(), "Expected empty remaining, got: '{}'", remaining);
+        assert!(
+            remaining.trim().is_empty(),
+            "Expected empty remaining, got: '{}'",
+            remaining
+        );
         assert_eq!(stmt.union_clauses.len(), 1, "Expected 1 UNION clause");
         assert_eq!(stmt.union_clauses[0].union_type, UnionType::All);
     }
@@ -1434,10 +1473,18 @@ mod tests {
         // Multiple UNION clauses
         let query = "MATCH (a:Person) RETURN a.name UNION MATCH (b:Company) RETURN b.name UNION ALL MATCH (c:City) RETURN c.name";
         let result = parse_cypher_statement(query);
-        assert!(result.is_ok(), "Failed to parse multiple UNION query: {:?}", result.err());
-        
+        assert!(
+            result.is_ok(),
+            "Failed to parse multiple UNION query: {:?}",
+            result.err()
+        );
+
         let (remaining, stmt) = result.unwrap();
-        assert!(remaining.trim().is_empty(), "Expected empty remaining, got: '{}'", remaining);
+        assert!(
+            remaining.trim().is_empty(),
+            "Expected empty remaining, got: '{}'",
+            remaining
+        );
         assert_eq!(stmt.union_clauses.len(), 2, "Expected 2 UNION clauses");
         assert_eq!(stmt.union_clauses[0].union_type, UnionType::Distinct);
         assert_eq!(stmt.union_clauses[1].union_type, UnionType::All);
@@ -1448,8 +1495,12 @@ mod tests {
         // UNION keywords should be case insensitive
         let query = "MATCH (a) RETURN a union all MATCH (b) RETURN b";
         let result = parse_cypher_statement(query);
-        assert!(result.is_ok(), "Failed to parse lowercase UNION: {:?}", result.err());
-        
+        assert!(
+            result.is_ok(),
+            "Failed to parse lowercase UNION: {:?}",
+            result.err()
+        );
+
         let (_, stmt) = result.unwrap();
         assert_eq!(stmt.union_clauses.len(), 1);
         assert_eq!(stmt.union_clauses[0].union_type, UnionType::All);
@@ -1460,10 +1511,17 @@ mod tests {
         // Trailing semicolon should be handled
         let query = "MATCH (a) RETURN a UNION MATCH (b) RETURN b;";
         let result = parse_cypher_statement(query);
-        assert!(result.is_ok(), "Failed to parse UNION with semicolon: {:?}", result.err());
-        
+        assert!(
+            result.is_ok(),
+            "Failed to parse UNION with semicolon: {:?}",
+            result.err()
+        );
+
         let (remaining, stmt) = result.unwrap();
-        assert!(remaining.trim().is_empty(), "Expected empty remaining after semicolon");
+        assert!(
+            remaining.trim().is_empty(),
+            "Expected empty remaining after semicolon"
+        );
         assert_eq!(stmt.union_clauses.len(), 1);
     }
 }

@@ -1,10 +1,10 @@
 use std::{sync::Arc, time::Instant};
 
 use axum::{
-    Json,
     extract::State,
-    http::{HeaderValue, StatusCode, header},
+    http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
+    Json,
 };
 use clickhouse::Client;
 use serde::{Deserialize, Serialize};
@@ -20,9 +20,9 @@ use crate::{
 };
 
 use super::{
-    AppState, GLOBAL_QUERY_CACHE, graph_catalog,
+    graph_catalog,
     models::{OutputFormat, QueryRequest, SqlOnlyResponse},
-    parameter_substitution, query_cache,
+    parameter_substitution, query_cache, AppState, GLOBAL_QUERY_CACHE,
 };
 
 /// Merge view_parameters and query parameters into a single HashMap
@@ -324,24 +324,25 @@ pub async fn query_handler(
 
         if is_call {
             // Handle CALL queries (like PageRank) - use first query's AST
-            let logical_plan = match query_planner::evaluate_call_query(cypher_statement.query, &graph_schema) {
-                Ok(plan) => plan,
-                Err(e) => {
-                    if sql_only {
-                        let error_response = SqlOnlyResponse {
-                            cypher_query: payload.query.clone(),
-                            generated_sql: format!("CALL_PLANNING_ERROR: {}", e),
-                            execution_mode: "sql_only_with_call_error".to_string(),
-                        };
-                        return Ok(Json(error_response).into_response());
-                    } else {
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("Brahmand Error: {}", e),
-                        ));
+            let logical_plan =
+                match query_planner::evaluate_call_query(cypher_statement.query, &graph_schema) {
+                    Ok(plan) => plan,
+                    Err(e) => {
+                        if sql_only {
+                            let error_response = SqlOnlyResponse {
+                                cypher_query: payload.query.clone(),
+                                generated_sql: format!("CALL_PLANNING_ERROR: {}", e),
+                                execution_mode: "sql_only_with_call_error".to_string(),
+                            };
+                            return Ok(Json(error_response).into_response());
+                        } else {
+                            return Err((
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Brahmand Error: {}", e),
+                            ));
+                        }
                     }
-                }
-            };
+                };
 
             // For CALL queries, we need to generate SQL directly from the logical plan
             // Since PageRank generates complete SQL, we'll use a special approach

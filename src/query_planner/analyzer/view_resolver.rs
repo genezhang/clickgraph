@@ -32,10 +32,10 @@ impl<'a> ViewResolver<'a> {
         // Handle $any wildcard for polymorphic edges
         if label == "$any" {
             return Err(AnalyzerError::NodeLabelNotFound(
-                "$any (polymorphic wildcard - node type resolved at runtime)".to_string()
+                "$any (polymorphic wildcard - node type resolved at runtime)".to_string(),
             ));
         }
-        
+
         self.schema
             .get_node_schema(label)
             .map_err(|_| AnalyzerError::NodeLabelNotFound(label.to_string()))
@@ -59,7 +59,7 @@ impl<'a> ViewResolver<'a> {
     ) -> Result<crate::graph_catalog::expression_parser::PropertyValue, AnalyzerError> {
         self.resolve_node_property_with_role(label, property, None)
     }
-    
+
     /// Resolve a node property with explicit role (From or To)
     /// This is needed for denormalized nodes where the same property maps to different columns
     /// depending on whether the node is the source or target of the relationship.
@@ -70,7 +70,7 @@ impl<'a> ViewResolver<'a> {
         role: Option<crate::render_plan::cte_generation::NodeRole>,
     ) -> Result<crate::graph_catalog::expression_parser::PropertyValue, AnalyzerError> {
         use crate::render_plan::cte_generation::NodeRole;
-        
+
         // Try to get the node schema and look up the property mapping
         let node_schema = self
             .schema
@@ -81,7 +81,7 @@ impl<'a> ViewResolver<'a> {
         if let Some(mapped) = node_schema.property_mappings.get(property) {
             return Ok(mapped.clone());
         }
-        
+
         // For denormalized nodes, use the role to select the correct mapping
         if node_schema.is_denormalized {
             match role {
@@ -89,7 +89,11 @@ impl<'a> ViewResolver<'a> {
                     // Explicitly From role - use from_properties only
                     if let Some(ref from_props) = node_schema.from_properties {
                         if let Some(mapped) = from_props.get(property) {
-                            return Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()));
+                            return Ok(
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    mapped.clone(),
+                                ),
+                            );
                         }
                     }
                 }
@@ -97,7 +101,11 @@ impl<'a> ViewResolver<'a> {
                     // Explicitly To role - use to_properties only
                     if let Some(ref to_props) = node_schema.to_properties {
                         if let Some(mapped) = to_props.get(property) {
-                            return Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()));
+                            return Ok(
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    mapped.clone(),
+                                ),
+                            );
                         }
                     }
                 }
@@ -106,19 +114,27 @@ impl<'a> ViewResolver<'a> {
                     // Note: UNION ALL for both positions is handled at a higher level
                     if let Some(ref from_props) = node_schema.from_properties {
                         if let Some(mapped) = from_props.get(property) {
-                            return Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()));
+                            return Ok(
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    mapped.clone(),
+                                ),
+                            );
                         }
                     }
                     // Fallback to to_properties (destination position)
                     if let Some(ref to_props) = node_schema.to_properties {
                         if let Some(mapped) = to_props.get(property) {
-                            return Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()));
+                            return Ok(
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    mapped.clone(),
+                                ),
+                            );
                         }
                     }
                 }
             }
         }
-        
+
         // Fallback to identity mapping (property name = column name)
         // This supports wide tables without requiring hundreds of explicit mappings
         Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(property.to_string()))
@@ -142,6 +158,8 @@ impl<'a> ViewResolver<'a> {
             .property_mappings
             .get(property)
             .cloned()
-            .unwrap_or_else(|| crate::graph_catalog::expression_parser::PropertyValue::Column(property.to_string())))
+            .unwrap_or_else(|| {
+                crate::graph_catalog::expression_parser::PropertyValue::Column(property.to_string())
+            }))
     }
 }

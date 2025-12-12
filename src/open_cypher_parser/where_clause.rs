@@ -1,4 +1,4 @@
-use nom::{IResult, Parser, bytes::complete::tag_no_case, combinator::cut, error::context};
+use nom::{bytes::complete::tag_no_case, combinator::cut, error::context, IResult, Parser};
 
 use super::{
     ast::WhereClause, common::ws, errors::OpenCypherParsingError, expression::parse_expression,
@@ -133,7 +133,7 @@ mod tests {
             }
         }
     }
-    
+
     #[test]
     fn test_parse_where_and_invalid() {
         // Bug #2: WHERE AND r.prop = value should be rejected
@@ -153,7 +153,7 @@ mod tests {
             }
         }
     }
-    
+
     #[test]
     fn test_parse_where_or_invalid() {
         // OR without a left operand is also invalid
@@ -171,7 +171,7 @@ mod tests {
             }
         }
     }
-    
+
     #[test]
     fn test_parse_where_xor_invalid() {
         // XOR without a left operand is also invalid
@@ -189,7 +189,7 @@ mod tests {
             }
         }
     }
-    
+
     #[test]
     fn test_parse_where_not_valid() {
         // NOT is a unary prefix operator, so "WHERE NOT x" is valid
@@ -215,7 +215,11 @@ mod tests {
             Ok((remaining, clause)) => {
                 assert_eq!(remaining, "", "WHERE u:User should be valid");
                 // Check that the conditions is a LabelExpression
-                if let crate::open_cypher_parser::ast::Expression::LabelExpression { variable, label } = clause.conditions {
+                if let crate::open_cypher_parser::ast::Expression::LabelExpression {
+                    variable,
+                    label,
+                } = clause.conditions
+                {
                     assert_eq!(variable, "u");
                     assert_eq!(label, "User");
                     println!("Correctly parsed WHERE u:User as LabelExpression");

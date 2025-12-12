@@ -7,8 +7,8 @@
 
 use bytes::Bytes;
 use serde::{
-    Deserializer,
     de::{Deserialize, DeserializeOwned, DeserializeSeed},
+    Deserializer,
 };
 
 pub mod de;
@@ -16,7 +16,7 @@ pub mod ser;
 #[cfg(all(test, debug_assertions))]
 pub use debug::Dbg;
 #[cfg(test)]
-pub use value::{BoltBytesBuilder, bolt};
+pub use value::{bolt, BoltBytesBuilder};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Data {

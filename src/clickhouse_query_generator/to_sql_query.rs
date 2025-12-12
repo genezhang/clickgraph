@@ -1,5 +1,4 @@
 use crate::{
-    query_planner::logical_expr::ScalarFnCall as LogicalScalarFnCall,
     query_planner::logical_plan::LogicalPlan,
     render_plan::{
         render_expr::{
@@ -7,16 +6,18 @@ use crate::{
             PropertyAccess, RenderExpr, TableAlias,
         },
         {
-            ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join,
-            JoinItems, JoinType, OrderByItems, OrderByOrder, RenderPlan, SelectItems, ToSql,
-            UnionItems, UnionType,
+            ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
+            GroupByExpressions, Join, JoinItems, JoinType, OrderByItems, OrderByOrder, RenderPlan,
+            SelectItems, ToSql, UnionItems, UnionType,
         },
     },
 };
 
 // Import function translator for Neo4j -> ClickHouse function mappings
 use super::function_registry::get_function_mapping;
-use super::function_translator::{get_ch_function_name, translate_scalar_function, CH_PASSTHROUGH_PREFIX};
+use super::function_translator::{
+    get_ch_function_name, CH_PASSTHROUGH_PREFIX,
+};
 
 /// Check if an expression contains a string literal (recursively for nested + operations)
 fn contains_string_literal(expr: &RenderExpr) -> bool {
@@ -37,9 +38,11 @@ fn has_string_operand(operands: &[RenderExpr]) -> bool {
 /// Flatten nested + operations into a list of operands for concat()
 fn flatten_addition_operands(expr: &RenderExpr) -> Vec<String> {
     match expr {
-        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
-            op.operands.iter().flat_map(|o| flatten_addition_operands(o)).collect()
-        }
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
+            .operands
+            .iter()
+            .flat_map(|o| flatten_addition_operands(o))
+            .collect(),
         _ => vec![expr.to_sql()],
     }
 }
@@ -47,25 +50,27 @@ fn flatten_addition_operands(expr: &RenderExpr) -> Vec<String> {
 /// Generate SQL from RenderPlan with configurable CTE depth limit
 pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     let mut sql = String::new();
-    
+
     // If there's a Union, wrap it in a subquery for correct ClickHouse behavior.
     // ClickHouse has a quirk where LIMIT/ORDER BY on bare UNION ALL only applies to
     // the last branch, not the combined result. Wrapping in a subquery fixes this.
     if plan.union.0.is_some() {
         sql.push_str(&plan.ctes.to_sql());
-        
+
         // Check if SELECT items contain aggregation (e.g., count(*), sum(), etc.)
-        let has_aggregation = plan.select.items.iter().any(|item| {
-            matches!(&item.expression, RenderExpr::AggregateFnCall(_))
-        });
-        
+        let has_aggregation = plan
+            .select
+            .items
+            .iter()
+            .any(|item| matches!(&item.expression, RenderExpr::AggregateFnCall(_)));
+
         // Check if we need the subquery wrapper (when there's ORDER BY, LIMIT, GROUP BY, or aggregation)
-        let needs_subquery = !plan.order_by.0.is_empty() 
-            || plan.limit.0.is_some() 
+        let needs_subquery = !plan.order_by.0.is_empty()
+            || plan.limit.0.is_some()
             || plan.skip.0.is_some()
             || !plan.group_by.0.is_empty()
             || has_aggregation;
-        
+
         if needs_subquery {
             // Wrap UNION in a subquery
             // If there are specific SELECT items (aggregation case), use them
@@ -78,13 +83,13 @@ pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
             }
             sql.push_str(&plan.union.to_sql());
             sql.push_str(") AS __union\n");
-            
+
             // Add GROUP BY if present
             sql.push_str(&plan.group_by.to_sql());
-            
+
             // Add ORDER BY after GROUP BY if present
             sql.push_str(&plan.order_by.to_sql());
-            
+
             // Add LIMIT after ORDER BY if present
             if let Some(m) = plan.limit.0 {
                 let skip_str = if let Some(n) = plan.skip.0 {
@@ -99,10 +104,10 @@ pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
             // No ordering/limiting - bare UNION is fine
             sql.push_str(&plan.union.to_sql());
         }
-        
+
         return sql;
     }
-    
+
     sql.push_str(&plan.ctes.to_sql());
     sql.push_str(&plan.select.to_sql());
     sql.push_str(&plan.from.to_sql());
@@ -254,13 +259,17 @@ impl ToSql for FilterItems {
 }
 
 /// ARRAY JOIN for ClickHouse - maps from Cypher UNWIND
-/// 
+///
 /// Example: UNWIND r.items AS item
 /// Generates: ARRAY JOIN r.items AS item
 impl ToSql for ArrayJoinItem {
     fn to_sql(&self) -> String {
         if let Some(array_join) = &self.0 {
-            format!("ARRAY JOIN {} AS {}\n", array_join.expression.to_sql(), array_join.alias)
+            format!(
+                "ARRAY JOIN {} AS {}\n",
+                array_join.expression.to_sql(),
+                array_join.alias
+            )
         } else {
             "".into()
         }
@@ -345,12 +354,13 @@ impl ToSql for Cte {
                 if plan.union.0.is_some() {
                     // Check if we have custom SELECT items (WITH projection), modifiers, or GROUP BY
                     let has_custom_select = !plan.select.items.is_empty();
-                    let has_order_by_skip_limit = !plan.order_by.0.is_empty() 
-                        || plan.limit.0.is_some() 
+                    let has_order_by_skip_limit = !plan.order_by.0.is_empty()
+                        || plan.limit.0.is_some()
                         || plan.skip.0.is_some();
                     let has_group_by = !plan.group_by.0.is_empty();
-                    let needs_subquery = has_custom_select || has_order_by_skip_limit || has_group_by;
-                    
+                    let needs_subquery =
+                        has_custom_select || has_order_by_skip_limit || has_group_by;
+
                     if needs_subquery {
                         // Wrap UNION in a subquery to apply SELECT projection, ORDER BY/LIMIT/SKIP, or GROUP BY
                         if has_custom_select {
@@ -362,12 +372,12 @@ impl ToSql for Cte {
                         cte_body.push_str("FROM (\n");
                         cte_body.push_str(&plan.union.to_sql());
                         cte_body.push_str(") AS __union\n");
-                        
+
                         // Add GROUP BY if present (for aggregations)
                         cte_body.push_str(&plan.group_by.to_sql());
-                        
+
                         cte_body.push_str(&plan.order_by.to_sql());
-                        
+
                         // Handle SKIP/LIMIT - either or both may be present
                         if plan.limit.0.is_some() || plan.skip.0.is_some() {
                             let skip_str = if let Some(n) = plan.skip.0 {
@@ -406,7 +416,7 @@ impl ToSql for Cte {
                     }
 
                     cte_body.push_str(&plan.order_by.to_sql());
-                    
+
                     // Add LIMIT/SKIP for non-union CTEs as well
                     if plan.limit.0.is_some() || plan.skip.0.is_some() {
                         let skip_str = if let Some(n) = plan.skip.0 {
@@ -441,7 +451,7 @@ impl ToSql for UnionItems {
                 .collect();
 
             let union_type_str = match union.union_type {
-                UnionType::Distinct => "UNION DISTINCT \n",  // ClickHouse requires explicit DISTINCT
+                UnionType::Distinct => "UNION DISTINCT \n", // ClickHouse requires explicit DISTINCT
                 UnionType::All => "UNION ALL \n",
             };
 
@@ -503,7 +513,10 @@ impl ToSql for Join {
                 // Use to_sql_without_table_alias to render column names without table prefix
                 // since inside the subquery, the table is not yet aliased
                 let filter_sql = pre_filter.to_sql_without_table_alias();
-                crate::debug_print!("  Using subquery form for LEFT JOIN with pre_filter: {}", filter_sql);
+                crate::debug_print!(
+                    "  Using subquery form for LEFT JOIN with pre_filter: {}",
+                    filter_sql
+                );
                 format!("(SELECT * FROM {} WHERE {})", self.table_name, filter_sql)
             } else {
                 // For non-LEFT joins, pre_filter will be added to ON clause below
@@ -513,10 +526,7 @@ impl ToSql for Join {
             self.table_name.clone()
         };
 
-        let mut sql = format!(
-            "{} {} AS {}",
-            join_type_str, table_expr, self.table_alias
-        );
+        let mut sql = format!("{} {} AS {}", join_type_str, table_expr, self.table_alias);
 
         // Note: FINAL keyword for joins would need to be added here if Join struct
         // is enhanced to track use_final. For now, joins don't support FINAL.
@@ -527,13 +537,16 @@ impl ToSql for Join {
                 self.joining_on.iter().map(|cond| cond.to_sql()).collect();
 
             let mut joining_on_str = joining_on_str_vec.join(" AND ");
-            
+
             // For INNER JOINs (not LEFT), add pre_filter to ON clause
             // This applies polymorphic edge filters, schema filters, etc.
             if let Some(ref pre_filter) = self.pre_filter {
                 if !matches!(self.join_type, JoinType::Left) {
                     let filter_sql = pre_filter.to_sql();
-                    crate::debug_print!("  Adding pre_filter to INNER JOIN ON clause: {}", filter_sql);
+                    crate::debug_print!(
+                        "  Adding pre_filter to INNER JOIN ON clause: {}",
+                        filter_sql
+                    );
                     joining_on_str = format!("{} AND {}", joining_on_str, filter_sql);
                 }
             }
@@ -573,13 +586,13 @@ impl RenderExpr {
                 // For column references, we need to add the table alias prefix
                 // to match our FROM clause alias generation
                 let raw_value = a.raw();
-                
+
                 // Special case: If the column is "*", return it directly without table prefix
                 // This happens when a WITH clause expands a table alias to all columns
                 if raw_value == "*" {
                     return "*".to_string();
                 }
-                
+
                 if raw_value.contains('.') {
                     raw_value.to_string() // Already has table prefix
                 } else {
@@ -648,7 +661,7 @@ impl RenderExpr {
             RenderExpr::ScalarFnCall(fn_call) => {
                 // Check for special functions that need custom handling
                 let fn_name_lower = fn_call.name.to_lowercase();
-                
+
                 // Special handling for duration() with map argument
                 if fn_name_lower == "duration" && fn_call.args.len() == 1 {
                     if let RenderExpr::MapLiteral(entries) = &fn_call.args[0] {
@@ -659,16 +672,28 @@ impl RenderExpr {
                                 .filter_map(|(key, value)| {
                                     let value_sql = value.to_sql();
                                     let key_lower = key.to_lowercase();
-                                    
+
                                     // Map Neo4j time unit to ClickHouse interval function
                                     let result = match key_lower.as_str() {
-                                        "years" | "year" => format!("toIntervalYear({})", value_sql),
-                                        "months" | "month" => format!("toIntervalMonth({})", value_sql),
-                                        "weeks" | "week" => format!("toIntervalWeek({})", value_sql),
+                                        "years" | "year" => {
+                                            format!("toIntervalYear({})", value_sql)
+                                        }
+                                        "months" | "month" => {
+                                            format!("toIntervalMonth({})", value_sql)
+                                        }
+                                        "weeks" | "week" => {
+                                            format!("toIntervalWeek({})", value_sql)
+                                        }
                                         "days" | "day" => format!("toIntervalDay({})", value_sql),
-                                        "hours" | "hour" => format!("toIntervalHour({})", value_sql),
-                                        "minutes" | "minute" => format!("toIntervalMinute({})", value_sql),
-                                        "seconds" | "second" => format!("toIntervalSecond({})", value_sql),
+                                        "hours" | "hour" => {
+                                            format!("toIntervalHour({})", value_sql)
+                                        }
+                                        "minutes" | "minute" => {
+                                            format!("toIntervalMinute({})", value_sql)
+                                        }
+                                        "seconds" | "second" => {
+                                            format!("toIntervalSecond({})", value_sql)
+                                        }
                                         "milliseconds" | "millisecond" => {
                                             format!("toIntervalSecond({} / 1000.0)", value_sql)
                                         }
@@ -676,17 +701,23 @@ impl RenderExpr {
                                             format!("toIntervalSecond({} / 1000000.0)", value_sql)
                                         }
                                         "nanoseconds" | "nanosecond" => {
-                                            format!("toIntervalSecond({} / 1000000000.0)", value_sql)
+                                            format!(
+                                                "toIntervalSecond({} / 1000000000.0)",
+                                                value_sql
+                                            )
                                         }
                                         _ => {
-                                            log::warn!("Unknown duration unit '{}', using as-is", key);
+                                            log::warn!(
+                                                "Unknown duration unit '{}', using as-is",
+                                                key
+                                            );
                                             return None;
                                         }
                                     };
                                     Some(result)
                                 })
                                 .collect();
-                            
+
                             if interval_parts.len() == 1 {
                                 return interval_parts[0].clone();
                             } else {
@@ -695,7 +726,7 @@ impl RenderExpr {
                         }
                     }
                 }
-                
+
                 // Check if we have a Neo4j -> ClickHouse mapping
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {
@@ -744,12 +775,15 @@ impl RenderExpr {
                             .join(", ");
                         log::debug!(
                             "ClickHouse aggregate pass-through: ch.{}({}) -> {}({})",
-                            ch_fn_name, args, ch_fn_name, args
+                            ch_fn_name,
+                            args,
+                            ch_fn_name,
+                            args
                         );
                         return format!("{}({})", ch_fn_name, args);
                     }
                 }
-                
+
                 // Check if we have a Neo4j -> ClickHouse mapping for aggregate functions
                 let fn_name_lower = agg.name.to_lowercase();
                 match get_function_mapping(&fn_name_lower) {
@@ -760,7 +794,11 @@ impl RenderExpr {
                         } else {
                             args_sql
                         };
-                        format!("{}({})", mapping.clickhouse_name, transformed_args.join(", "))
+                        format!(
+                            "{}({})",
+                            mapping.clickhouse_name,
+                            transformed_args.join(", ")
+                        )
                     }
                     None => {
                         // No mapping - use original name (count, sum, min, max, avg, etc.)
@@ -813,14 +851,14 @@ impl RenderExpr {
                         Operator::GreaterThan => ">",
                         Operator::LessThanEqual => "<=",
                         Operator::GreaterThanEqual => ">=",
-                        Operator::RegexMatch => "REGEX",  // Special handling below
+                        Operator::RegexMatch => "REGEX", // Special handling below
                         Operator::And => "AND",
                         Operator::Or => "OR",
                         Operator::In => "IN",
                         Operator::NotIn => "NOT IN",
-                        Operator::StartsWith => "STARTS WITH",  // Special handling below
-                        Operator::EndsWith => "ENDS WITH",      // Special handling below
-                        Operator::Contains => "CONTAINS",       // Special handling below
+                        Operator::StartsWith => "STARTS WITH", // Special handling below
+                        Operator::EndsWith => "ENDS WITH",     // Special handling below
+                        Operator::Contains => "CONTAINS",      // Special handling below
                         Operator::Not => "NOT",
                         Operator::Distinct => "DISTINCT",
                         Operator::IsNull => "IS NULL",
@@ -863,7 +901,9 @@ impl RenderExpr {
                 // ClickHouse doesn't support + for string concatenation
                 // Flatten nested + operations to handle cases like: a + ' - ' + b
                 if op.operator == Operator::Addition && has_string_operand(&op.operands) {
-                    let flattened: Vec<String> = op.operands.iter()
+                    let flattened: Vec<String> = op
+                        .operands
+                        .iter()
                         .flat_map(|o| flatten_addition_operands(o))
                         .collect();
                     return format!("concat({})", flattened.join(", "));
@@ -961,14 +1001,17 @@ impl RenderExpr {
                 let init_sql = reduce.initial_value.to_sql();
                 let list_sql = reduce.list.to_sql();
                 let expr_sql = reduce.expression.to_sql();
-                
+
                 // Wrap numeric init values in toInt64() to prevent type mismatch
-                let init_cast = if matches!(*reduce.initial_value, RenderExpr::Literal(Literal::Integer(_))) {
+                let init_cast = if matches!(
+                    *reduce.initial_value,
+                    RenderExpr::Literal(Literal::Integer(_))
+                ) {
                     format!("toInt64({})", init_sql)
                 } else {
                     init_sql
                 };
-                
+
                 format!(
                     "arrayFold({}, {} -> {}, {}, {})",
                     reduce.variable, reduce.accumulator, expr_sql, list_sql, init_cast
@@ -1019,14 +1062,14 @@ impl RenderExpr {
                         Operator::GreaterThan => ">",
                         Operator::LessThanEqual => "<=",
                         Operator::GreaterThanEqual => ">=",
-                        Operator::RegexMatch => "REGEX",  // Special handling below
+                        Operator::RegexMatch => "REGEX", // Special handling below
                         Operator::And => "AND",
                         Operator::Or => "OR",
                         Operator::In => "IN",
                         Operator::NotIn => "NOT IN",
-                        Operator::StartsWith => "STARTS WITH",  // Special handling below
-                        Operator::EndsWith => "ENDS WITH",      // Special handling below
-                        Operator::Contains => "CONTAINS",       // Special handling below
+                        Operator::StartsWith => "STARTS WITH", // Special handling below
+                        Operator::EndsWith => "ENDS WITH",     // Special handling below
+                        Operator::Contains => "CONTAINS",      // Special handling below
                         Operator::Not => "NOT",
                         Operator::Distinct => "DISTINCT",
                         Operator::IsNull => "IS NULL",
@@ -1073,32 +1116,26 @@ impl RenderExpr {
 
                 match rendered.len() {
                     0 => "".into(),
-                    1 => {
-                        match op.operator {
-                            Operator::IsNull | Operator::IsNotNull => {
-                                format!("{} {}", &rendered[0], sql_op)
-                            }
-                            _ => {
-                                format!("{} {}", sql_op, &rendered[0])
-                            }
+                    1 => match op.operator {
+                        Operator::IsNull | Operator::IsNotNull => {
+                            format!("{} {}", &rendered[0], sql_op)
                         }
-                    }
-                    2 => {
-                        match op.operator {
-                            Operator::And | Operator::Or => {
-                                format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
-                            }
-                            _ => format!("{} {} {}", &rendered[0], sql_op, &rendered[1]),
+                        _ => {
+                            format!("{} {}", sql_op, &rendered[0])
                         }
-                    }
-                    _ => {
-                        match op.operator {
-                            Operator::And | Operator::Or => {
-                                format!("({})", rendered.join(&format!(" {} ", sql_op)))
-                            }
-                            _ => rendered.join(&format!(" {} ", sql_op)),
+                    },
+                    2 => match op.operator {
+                        Operator::And | Operator::Or => {
+                            format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
                         }
-                    }
+                        _ => format!("{} {} {}", &rendered[0], sql_op, &rendered[1]),
+                    },
+                    _ => match op.operator {
+                        Operator::And | Operator::Or => {
+                            format!("({})", rendered.join(&format!(" {} ", sql_op)))
+                        }
+                        _ => rendered.join(&format!(" {} ", sql_op)),
+                    },
                 }
             }
             // For Raw expressions, strip table alias prefixes (e.g., "alias.column" -> "column")
@@ -1115,7 +1152,10 @@ impl RenderExpr {
                         // Split on dot and take the last part (the column name)
                         // But preserve the structure (e.g., "alias.column" becomes "column")
                         let dot_parts: Vec<&str> = part.split('.').collect();
-                        if dot_parts.len() == 2 && !dot_parts[0].is_empty() && !dot_parts[1].is_empty() {
+                        if dot_parts.len() == 2
+                            && !dot_parts[0].is_empty()
+                            && !dot_parts[1].is_empty()
+                        {
                             // Check if first part looks like an identifier (not a number)
                             let first_char = dot_parts[0].chars().next().unwrap_or('0');
                             if first_char.is_alphabetic() || first_char == '_' {
@@ -1151,14 +1191,14 @@ impl ToSql for OperatorApplication {
                 Operator::GreaterThan => ">",
                 Operator::LessThanEqual => "<=",
                 Operator::GreaterThanEqual => ">=",
-                Operator::RegexMatch => "REGEX",  // Special handling below
+                Operator::RegexMatch => "REGEX", // Special handling below
                 Operator::And => "AND",
                 Operator::Or => "OR",
                 Operator::In => "IN",
                 Operator::NotIn => "NOT IN",
-                Operator::StartsWith => "STARTS WITH",  // Special handling below
-                Operator::EndsWith => "ENDS WITH",      // Special handling below
-                Operator::Contains => "CONTAINS",       // Special handling below
+                Operator::StartsWith => "STARTS WITH", // Special handling below
+                Operator::EndsWith => "ENDS WITH",     // Special handling below
+                Operator::Contains => "CONTAINS",      // Special handling below
                 Operator::Not => "NOT",
                 Operator::Distinct => "DISTINCT",
                 Operator::IsNull => "IS NULL",
@@ -1200,7 +1240,9 @@ impl ToSql for OperatorApplication {
         // ClickHouse doesn't support + for string concatenation
         // Flatten nested + operations to handle cases like: a + ' - ' + b
         if self.operator == Operator::Addition && has_string_operand(&self.operands) {
-            let flattened: Vec<String> = self.operands.iter()
+            let flattened: Vec<String> = self
+                .operands
+                .iter()
                 .flat_map(|o| flatten_addition_operands(o))
                 .collect();
             return format!("concat({})", flattened.join(", "));

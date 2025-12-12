@@ -2,11 +2,11 @@ use nom::character::complete::char;
 use nom::combinator::{cut, opt};
 use nom::error::context;
 use nom::{
-    IResult, Parser,
     bytes::complete::tag_no_case,
     character::complete::{multispace0, multispace1},
     multi::separated_list1,
     sequence::delimited,
+    IResult, Parser,
 };
 
 use super::ast::{OptionalMatchClause, PathPattern};

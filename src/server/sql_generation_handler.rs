@@ -1,10 +1,6 @@
 use std::{sync::Arc, time::Instant};
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Json,
-};
+use axum::{extract::State, http::StatusCode, response::Json};
 
 use crate::{
     clickhouse_query_generator, open_cypher_parser,
@@ -14,7 +10,10 @@ use crate::{
 
 use super::{
     graph_catalog,
-    models::{ErrorDetails, SqlGenerationError, SqlGenerationMetadata, SqlGenerationRequest, SqlGenerationResponse},
+    models::{
+        ErrorDetails, SqlGenerationError, SqlGenerationMetadata, SqlGenerationRequest,
+        SqlGenerationResponse,
+    },
     query_cache::QueryCacheKey,
     AppState, GLOBAL_QUERY_CACHE,
 };
@@ -41,7 +40,10 @@ pub async fn sql_generation_handler(
                     position: None,
                     line: None,
                     column: None,
-                    hint: Some("Supported dialects: clickhouse. Future: postgresql, duckdb, mysql, sqlite".to_string()),
+                    hint: Some(
+                        "Supported dialects: clickhouse. Future: postgresql, duckdb, mysql, sqlite"
+                            .to_string(),
+                    ),
                 }),
             }),
         ));
@@ -68,17 +70,17 @@ pub async fn sql_generation_handler(
     // If we have cached SQL, return it immediately
     if let Some(ch_query) = cached_sql {
         let mut sql_statements = Vec::new();
-        
+
         // Add SET ROLE if specified
         if let Some(role) = &payload.role {
             sql_statements.push(format!("SET ROLE {}", role));
         }
-        
+
         // Add the cached query
         sql_statements.push(ch_query);
 
         let elapsed = start_time.elapsed();
-        
+
         return Ok(Json(SqlGenerationResponse {
             cypher_query: payload.query.clone(),
             target_database: payload.target_database.as_str().to_string(),
@@ -123,7 +125,9 @@ pub async fn sql_generation_handler(
     // Clean query (remove CYPHER prefix if present)
     let clean_query = payload.query.trim();
     let clean_query = if clean_query.to_uppercase().starts_with("CYPHER") {
-        clean_query.split_once(char::is_whitespace).map_or(clean_query, |(_, rest)| rest)
+        clean_query
+            .split_once(char::is_whitespace)
+            .map_or(clean_query, |(_, rest)| rest)
     } else {
         clean_query
     };
@@ -144,7 +148,10 @@ pub async fn sql_generation_handler(
                         position: None,
                         line: None,
                         column: None,
-                        hint: Some("Check Cypher syntax. See docs/wiki/Cypher-Language-Reference.md".to_string()),
+                        hint: Some(
+                            "Check Cypher syntax. See docs/wiki/Cypher-Language-Reference.md"
+                                .to_string(),
+                        ),
                     }),
                 }),
             ));
@@ -188,7 +195,9 @@ pub async fn sql_generation_handler(
         let sql_gen_start = Instant::now();
         let ch_sql = match &logical_plan {
             crate::query_planner::logical_plan::LogicalPlan::PageRank(pagerank) => {
-                use crate::clickhouse_query_generator::pagerank::{PageRankConfig, PageRankGenerator};
+                use crate::clickhouse_query_generator::pagerank::{
+                    PageRankConfig, PageRankGenerator,
+                };
 
                 let config = PageRankConfig {
                     iterations: pagerank.iterations as usize,
@@ -299,10 +308,8 @@ pub async fn sql_generation_handler(
         };
 
         // Phase 4: SQL generation
-        let ch_query = clickhouse_query_generator::generate_sql(
-            render_plan,
-            app_state.config.max_cte_depth,
-        );
+        let ch_query =
+            clickhouse_query_generator::generate_sql(render_plan, app_state.config.max_cte_depth);
         let sql_gen_time = render_start.elapsed().as_secs_f64() * 1000.0;
 
         let plan_str = if payload.include_plan.unwrap_or(false) {
@@ -337,12 +344,12 @@ pub async fn sql_generation_handler(
 
     // Build SQL statements array
     let mut sql_statements = Vec::new();
-    
+
     // Add SET ROLE if specified
     if let Some(role) = &payload.role {
         sql_statements.push(format!("SET ROLE {}", role));
     }
-    
+
     // Add the main query
     sql_statements.push(ch_query);
 

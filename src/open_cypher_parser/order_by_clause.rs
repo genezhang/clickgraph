@@ -1,5 +1,4 @@
 use nom::{
-    IResult, Parser,
     branch::alt,
     bytes::complete::tag_no_case,
     character::complete::{char, multispace0},
@@ -7,6 +6,7 @@ use nom::{
     error::context,
     multi::separated_list1,
     sequence::delimited,
+    IResult, Parser,
 };
 
 use super::{

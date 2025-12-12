@@ -77,7 +77,7 @@ impl SchemaInference {
                         return Ok(Transformed::No(logical_plan.clone()));
                     }
                 }
-                
+
                 let table_ctx = plan_ctx
                     .get_table_ctx_from_alias_opt(&scan.table_alias)
                     .map_err(|e| AnalyzerError::PlanCtx {
@@ -99,7 +99,7 @@ impl SchemaInference {
                         log::debug!("push_inferred_table_names_to_scan: Skipping $any node");
                         return Ok(Transformed::No(logical_plan.clone()));
                     }
-                    
+
                     // Use the graph_schema parameter that was passed to analyze_with_graph_schema
                     // Note: We're in push_inferred_table_names_to_scan which doesn't have graph_schema,
                     // but we can get it from plan_ctx
@@ -163,24 +163,25 @@ impl SchemaInference {
             LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::Unwind(u) => {
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan(u.input.clone(), plan_ctx)?;
+                let child_tf = Self::push_inferred_table_names_to_scan(u.input.clone(), plan_ctx)?;
                 match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-                        input: new_input,
-                        expression: u.expression.clone(),
-                        alias: u.alias.clone(),
-                    }))),
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                        },
+                    ))),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
             LogicalPlan::CartesianProduct(cp) => {
-                let left_tf =
-                    Self::push_inferred_table_names_to_scan(cp.left.clone(), plan_ctx)?;
-                let right_tf =
-                    Self::push_inferred_table_names_to_scan(cp.right.clone(), plan_ctx)?;
+                let left_tf = Self::push_inferred_table_names_to_scan(cp.left.clone(), plan_ctx)?;
+                let right_tf = Self::push_inferred_table_names_to_scan(cp.right.clone(), plan_ctx)?;
                 match (&left_tf, &right_tf) {
-                    (Transformed::No(_), Transformed::No(_)) => Transformed::No(logical_plan.clone()),
+                    (Transformed::No(_), Transformed::No(_)) => {
+                        Transformed::No(logical_plan.clone())
+                    }
                     _ => Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
                         crate::query_planner::logical_plan::CartesianProduct {
                             left: left_tf.get_plan().clone(),
@@ -288,7 +289,7 @@ impl SchemaInference {
                     .get_labels()
                     .map(|labels| labels.len() > 1)
                     .unwrap_or(false);
-                
+
                 // Extract needed info before mutating plan_ctx
                 let left_has_label = left_table_ctx.get_label_opt().is_some();
                 let right_has_label = right_table_ctx.get_label_opt().is_some();
@@ -323,18 +324,20 @@ impl SchemaInference {
                         if let Some(labels) = &rel_labels_cloned {
                             for label in labels {
                                 if let Ok(rel_schema) = graph_schema.get_rel_schema(label) {
-                                    if rel_schema.from_node == "$any" || rel_schema.to_node == "$any" {
+                                    if rel_schema.from_node == "$any"
+                                        || rel_schema.to_node == "$any"
+                                    {
                                         // This is a polymorphic edge - set target as $any
                                         log::debug!(
                                             "SchemaInference: Marking target node '{}' as $any (polymorphic edge)",
                                             right_alias
                                         );
-                                        let target_ctx = plan_ctx.get_mut_table_ctx(right_alias).map_err(|e| {
-                                            AnalyzerError::PlanCtx {
+                                        let target_ctx = plan_ctx
+                                            .get_mut_table_ctx(right_alias)
+                                            .map_err(|e| AnalyzerError::PlanCtx {
                                                 pass: Pass::SchemaInference,
                                                 source: e,
-                                            }
-                                        })?;
+                                            })?;
                                         target_ctx.set_labels(Some(vec!["$any".to_string()]));
                                         break;
                                     }
@@ -347,17 +350,19 @@ impl SchemaInference {
                         if let Some(labels) = &rel_labels_cloned {
                             for label in labels {
                                 if let Ok(rel_schema) = graph_schema.get_rel_schema(label) {
-                                    if rel_schema.from_node == "$any" || rel_schema.to_node == "$any" {
+                                    if rel_schema.from_node == "$any"
+                                        || rel_schema.to_node == "$any"
+                                    {
                                         log::debug!(
                                             "SchemaInference: Marking source node '{}' as $any (polymorphic edge)",
                                             left_alias
                                         );
-                                        let source_ctx = plan_ctx.get_mut_table_ctx(left_alias).map_err(|e| {
-                                            AnalyzerError::PlanCtx {
+                                        let source_ctx = plan_ctx
+                                            .get_mut_table_ctx(left_alias)
+                                            .map_err(|e| AnalyzerError::PlanCtx {
                                                 pass: Pass::SchemaInference,
                                                 source: e,
-                                            }
-                                        })?;
+                                            })?;
                                         source_ctx.set_labels(Some(vec!["$any".to_string()]));
                                         break;
                                     }
@@ -422,9 +427,7 @@ impl SchemaInference {
             }
             LogicalPlan::PageRank(_) => Ok(()),
             LogicalPlan::ViewScan(_) => Ok(()),
-            LogicalPlan::Unwind(u) => {
-                self.infer_schema(u.input.clone(), plan_ctx, graph_schema)
-            }
+            LogicalPlan::Unwind(u) => self.infer_schema(u.input.clone(), plan_ctx, graph_schema),
             LogicalPlan::CartesianProduct(cp) => {
                 self.infer_schema(cp.left.clone(), plan_ctx, graph_schema)?;
                 self.infer_schema(cp.right.clone(), plan_ctx, graph_schema)
@@ -715,7 +718,7 @@ impl SchemaInference {
                             .clone()
                     }
                 } else {
-                    // Right is to_node, so left is from_node  
+                    // Right is to_node, so left is from_node
                     if relation_schema.from_node == "$any" {
                         right_table_name.clone()
                     } else {
@@ -801,7 +804,7 @@ impl SchemaInference {
                     }
                 }
             }
-            
+
             // NEW: Handle polymorphic edges with $any wildcard target
             // For MATCH (u:User)-[r]->(target), we use the first polymorphic relationship found
             if relations_found.len() >= 1 {
@@ -809,13 +812,15 @@ impl SchemaInference {
                     // Check if this relationship uses $any wildcard (polymorphic)
                     let is_from_any = relation_schema.from_node == "$any";
                     let is_to_any = relation_schema.to_node == "$any";
-                    
+
                     if is_from_any || is_to_any {
                         // This is a polymorphic edge - use $any for the unknown node
                         let rel_table_name = &relation_schema.table_name;
-                        
+
                         // Determine direction: is left_table_name the from_node or to_node?
-                        let right_table_name = if relation_schema.from_node == left_table_name || relation_schema.from_node == "$any" {
+                        let right_table_name = if relation_schema.from_node == left_table_name
+                            || relation_schema.from_node == "$any"
+                        {
                             // Left is from_node (or could be), so right is to_node
                             if relation_schema.to_node == "$any" {
                                 "$any".to_string()
@@ -830,7 +835,7 @@ impl SchemaInference {
                                 relation_schema.from_node.clone()
                             }
                         };
-                        
+
                         return Ok((
                             left_table_name.to_string(),
                             rel_table_name.to_string(),
@@ -908,7 +913,7 @@ impl SchemaInference {
                     }
                 }
             }
-            
+
             // NEW: Handle polymorphic edges with $any wildcard source
             // For MATCH (source)-[r]->(p:Post), we use the first polymorphic relationship found
             if relations_found.len() >= 1 {
@@ -916,13 +921,15 @@ impl SchemaInference {
                     // Check if this relationship uses $any wildcard (polymorphic)
                     let is_from_any = relation_schema.from_node == "$any";
                     let is_to_any = relation_schema.to_node == "$any";
-                    
+
                     if is_from_any || is_to_any {
                         // This is a polymorphic edge - use $any for the unknown node
                         let rel_table_name = &relation_schema.table_name;
-                        
+
                         // Determine direction: is right_table_name the from_node or to_node?
-                        let left_table_name = if relation_schema.to_node == right_table_name || relation_schema.to_node == "$any" {
+                        let left_table_name = if relation_schema.to_node == right_table_name
+                            || relation_schema.to_node == "$any"
+                        {
                             // Right is to_node (or could be), so left is from_node
                             if relation_schema.from_node == "$any" {
                                 "$any".to_string()
@@ -937,7 +944,7 @@ impl SchemaInference {
                                 relation_schema.to_node.clone()
                             }
                         };
-                        
+
                         return Ok((
                             left_table_name,
                             rel_table_name.to_string(),

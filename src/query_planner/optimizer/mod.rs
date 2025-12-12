@@ -14,9 +14,9 @@ use crate::query_planner::{
 };
 
 use super::plan_ctx::PlanCtx;
-pub mod errors;
 pub mod cartesian_join_extraction;
 mod cleanup_viewscan_filters;
+pub mod errors;
 mod filter_into_graph_rel;
 mod filter_push_down;
 pub mod optimizer_pass;
@@ -70,14 +70,21 @@ pub fn initial_optimization(
         match p {
             LogicalPlan::Filter(f) => {
                 if let LogicalPlan::CartesianProduct(_) = f.input.as_ref() {
-                    crate::debug_print!("{}🎯 initial_optimization: Found Filter above CartesianProduct!", _indent);
+                    crate::debug_print!(
+                        "{}🎯 initial_optimization: Found Filter above CartesianProduct!",
+                        _indent
+                    );
                     crate::debug_print!("{}   predicate: {:?}", _indent, f.predicate);
                 }
                 check_filter_cartesian(&f.input, depth + 1);
             }
             LogicalPlan::Projection(proj) => check_filter_cartesian(&proj.input, depth + 1),
             LogicalPlan::CartesianProduct(cp) => {
-                crate::debug_print!("{}📦 CartesianProduct: join_condition={:?}", _indent, cp.join_condition);
+                crate::debug_print!(
+                    "{}📦 CartesianProduct: join_condition={:?}",
+                    _indent,
+                    cp.join_condition
+                );
                 check_filter_cartesian(&cp.left, depth + 1);
                 check_filter_cartesian(&cp.right, depth + 1);
             }

@@ -1,8 +1,11 @@
 use std::{collections::HashSet, sync::Arc};
 
 use crate::{
-    graph_catalog::graph_schema::{edge_has_node_properties, GraphSchema, is_node_denormalized_on_edge, NodeSchema, RelationshipSchema},
-    graph_catalog::pattern_schema::{PatternSchemaContext, JoinStrategy, NodeAccessStrategy},
+    graph_catalog::graph_schema::{
+        GraphSchema,
+        RelationshipSchema,
+    },
+    graph_catalog::pattern_schema::{JoinStrategy, NodeAccessStrategy, PatternSchemaContext},
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
@@ -42,7 +45,8 @@ fn generate_polymorphic_edge_filter(
             filter_parts.push(format!("{}.{} = '{}'", rel_alias, type_col, rel_types[0]));
         } else if rel_types.len() > 1 {
             // Multiple types: use IN ('TYPE1', 'TYPE2')
-            let types_list = rel_types.iter()
+            let types_list = rel_types
+                .iter()
                 .map(|t| format!("'{}'", t))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -54,7 +58,10 @@ fn generate_polymorphic_edge_filter(
     // We should filter when from_node is $any (polymorphic) - need to filter by actual node type
     if let Some(ref from_label_col) = rel_schema.from_label_column {
         if rel_schema.from_node == "$any" && !left_label.is_empty() {
-            filter_parts.push(format!("{}.{} = '{}'", rel_alias, from_label_col, left_label));
+            filter_parts.push(format!(
+                "{}.{} = '{}'",
+                rel_alias, from_label_col, left_label
+            ));
         }
     }
 
@@ -62,7 +69,10 @@ fn generate_polymorphic_edge_filter(
     // We should filter when to_node is $any (polymorphic) - need to filter by actual node type
     if let Some(ref to_label_col) = rel_schema.to_label_column {
         if rel_schema.to_node == "$any" && !right_label.is_empty() {
-            filter_parts.push(format!("{}.{} = '{}'", rel_alias, to_label_col, right_label));
+            filter_parts.push(format!(
+                "{}.{} = '{}'",
+                rel_alias, to_label_col, right_label
+            ));
         }
     }
 
@@ -76,7 +86,7 @@ fn generate_polymorphic_edge_filter(
 }
 
 /// Generate a join condition for the relationship to anchor node (undirected).
-/// 
+///
 /// For undirected patterns, the relationship can connect to the anchor in either direction:
 /// r.from_id = anchor.id OR r.to_id = anchor.id
 fn generate_rel_to_anchor_bidirectional(
@@ -87,7 +97,7 @@ fn generate_rel_to_anchor_bidirectional(
     anchor_id_col: &str,
 ) -> OperatorApplication {
     use crate::graph_catalog::expression_parser::PropertyValue;
-    
+
     // r.from_id = anchor.id
     let forward = LogicalExpr::OperatorApplicationExp(OperatorApplication {
         operator: Operator::Equal,
@@ -102,7 +112,7 @@ fn generate_rel_to_anchor_bidirectional(
             }),
         ],
     });
-    
+
     // r.to_id = anchor.id
     let reverse = LogicalExpr::OperatorApplicationExp(OperatorApplication {
         operator: Operator::Equal,
@@ -117,11 +127,19 @@ fn generate_rel_to_anchor_bidirectional(
             }),
         ],
     });
-    
-    crate::debug_print!("    🔹 Bidirectional rel->anchor: {}.{} = {}.{} OR {}.{} = {}.{}",
-        rel_alias, rel_from_col, anchor_alias, anchor_id_col,
-        rel_alias, rel_to_col, anchor_alias, anchor_id_col);
-    
+
+    crate::debug_print!(
+        "    🔹 Bidirectional rel->anchor: {}.{} = {}.{} OR {}.{} = {}.{}",
+        rel_alias,
+        rel_from_col,
+        anchor_alias,
+        anchor_id_col,
+        rel_alias,
+        rel_to_col,
+        anchor_alias,
+        anchor_id_col
+    );
+
     // Combine with OR
     OperatorApplication {
         operator: Operator::Or,
@@ -130,7 +148,7 @@ fn generate_rel_to_anchor_bidirectional(
 }
 
 /// Generate a join condition for target node to relationship (undirected).
-/// 
+///
 /// For undirected patterns, the target connects to the relationship's other end:
 /// (b.id = r.from_id OR b.id = r.to_id) AND b.id <> anchor.id
 fn generate_target_to_rel_bidirectional(
@@ -143,7 +161,7 @@ fn generate_target_to_rel_bidirectional(
     anchor_id_col: &str,
 ) -> OperatorApplication {
     use crate::graph_catalog::expression_parser::PropertyValue;
-    
+
     // b.id = r.from_id
     let to_from = LogicalExpr::OperatorApplicationExp(OperatorApplication {
         operator: Operator::Equal,
@@ -158,7 +176,7 @@ fn generate_target_to_rel_bidirectional(
             }),
         ],
     });
-    
+
     // b.id = r.to_id
     let to_to = LogicalExpr::OperatorApplicationExp(OperatorApplication {
         operator: Operator::Equal,
@@ -173,13 +191,13 @@ fn generate_target_to_rel_bidirectional(
             }),
         ],
     });
-    
+
     // (b.id = r.from_id OR b.id = r.to_id)
     let either_end = LogicalExpr::OperatorApplicationExp(OperatorApplication {
         operator: Operator::Or,
         operands: vec![to_from, to_to],
     });
-    
+
     // b.id <> anchor.id (exclude self-loops)
     let not_anchor = LogicalExpr::OperatorApplicationExp(OperatorApplication {
         operator: Operator::NotEqual,
@@ -194,12 +212,23 @@ fn generate_target_to_rel_bidirectional(
             }),
         ],
     });
-    
-    crate::debug_print!("    🔹 Bidirectional target->rel: ({}.{} = {}.{} OR {}.{} = {}.{}) AND {}.{} <> {}.{}",
-        target_alias, target_id_col, rel_alias, rel_from_col,
-        target_alias, target_id_col, rel_alias, rel_to_col,
-        target_alias, target_id_col, anchor_alias, anchor_id_col);
-    
+
+    crate::debug_print!(
+        "    🔹 Bidirectional target->rel: ({}.{} = {}.{} OR {}.{} = {}.{}) AND {}.{} <> {}.{}",
+        target_alias,
+        target_id_col,
+        rel_alias,
+        rel_from_col,
+        target_alias,
+        target_id_col,
+        rel_alias,
+        rel_to_col,
+        target_alias,
+        target_id_col,
+        anchor_alias,
+        anchor_id_col
+    );
+
     // Combine with AND
     OperatorApplication {
         operator: Operator::And,
@@ -241,7 +270,13 @@ impl AnalyzerPass for GraphJoinInference {
         // Empty joins vector = fully denormalized pattern (no JOINs needed)
         // Without this wrapper, RenderPlan will try to generate JOINs from raw GraphRel
         let optional_aliases = plan_ctx.get_optional_aliases().clone();
-        Self::build_graph_joins(logical_plan, &mut collected_graph_joins, optional_aliases, plan_ctx, graph_schema)
+        Self::build_graph_joins(
+            logical_plan,
+            &mut collected_graph_joins,
+            optional_aliases,
+            plan_ctx,
+            graph_schema,
+        )
     }
 }
 
@@ -270,21 +305,23 @@ impl GraphJoinInference {
     fn deduplicate_joins(joins: Vec<Join>) -> Vec<Join> {
         use std::collections::HashMap;
         let mut alias_to_join: HashMap<String, Join> = HashMap::new();
-        
+
         for join in joins {
             let alias = join.table_alias.clone();
-            
+
             if let Some(existing) = alias_to_join.get(&alias) {
                 // Compare joins - prefer one with TableAlias in joining_on (cross-table join)
                 let new_has_table_alias = Self::join_references_table_alias(&join);
                 let existing_has_table_alias = Self::join_references_table_alias(existing);
-                
+
                 crate::debug_print!("🔄 deduplicate_joins: alias='{}' has duplicate. new_has_table_alias={}, existing_has_table_alias={}",
                     alias, new_has_table_alias, existing_has_table_alias);
-                
+
                 if new_has_table_alias && !existing_has_table_alias {
                     // Prefer the new join (it references WITH aliases)
-                    crate::debug_print!("🔄 deduplicate_joins: replacing with new join (has TableAlias)");
+                    crate::debug_print!(
+                        "🔄 deduplicate_joins: replacing with new join (has TableAlias)"
+                    );
                     alias_to_join.insert(alias, join);
                 }
                 // Otherwise keep existing
@@ -292,10 +329,10 @@ impl GraphJoinInference {
                 alias_to_join.insert(alias, join);
             }
         }
-        
+
         alias_to_join.into_values().collect()
     }
-    
+
     /// Check if a join's joining_on condition references a TableAlias (WITH clause alias)
     fn join_references_table_alias(join: &Join) -> bool {
         for condition in &join.joining_on {
@@ -305,7 +342,7 @@ impl GraphJoinInference {
         }
         false
     }
-    
+
     /// Check if an OperatorApplication contains a TableAlias reference
     fn operator_application_references_table_alias(op_app: &OperatorApplication) -> bool {
         for operand in &op_app.operands {
@@ -362,26 +399,32 @@ impl GraphJoinInference {
     ) -> OperatorApplication {
         // Collect all node aliases from the right-side plan that should be remapped
         let node_aliases = Self::collect_node_aliases_from_plan(right_plan);
-        crate::debug_print!("📦 remap_node_aliases: target_alias='{}', node_aliases={:?}", target_alias, node_aliases);
-        
+        crate::debug_print!(
+            "📦 remap_node_aliases: target_alias='{}', node_aliases={:?}",
+            target_alias,
+            node_aliases
+        );
+
         // Remap operands
-        let remapped_operands: Vec<LogicalExpr> = op_app.operands.iter().map(|operand| {
-            Self::remap_alias_in_expr(operand.clone(), &node_aliases, target_alias)
-        }).collect();
-        
+        let remapped_operands: Vec<LogicalExpr> = op_app
+            .operands
+            .iter()
+            .map(|operand| Self::remap_alias_in_expr(operand.clone(), &node_aliases, target_alias))
+            .collect();
+
         OperatorApplication {
             operator: op_app.operator,
             operands: remapped_operands,
         }
     }
-    
+
     /// Collect all node aliases from a plan (left_connection, right_connection from GraphRel)
     fn collect_node_aliases_from_plan(plan: &Arc<LogicalPlan>) -> Vec<String> {
         let mut aliases = Vec::new();
         Self::collect_node_aliases_recursive(plan, &mut aliases);
         aliases
     }
-    
+
     fn collect_node_aliases_recursive(plan: &Arc<LogicalPlan>, aliases: &mut Vec<String>) {
         match plan.as_ref() {
             LogicalPlan::GraphRel(rel) => {
@@ -394,35 +437,51 @@ impl GraphJoinInference {
                 aliases.push(node.alias.clone());
                 Self::collect_node_aliases_recursive(&node.input, aliases);
             }
-            LogicalPlan::Projection(proj) => Self::collect_node_aliases_recursive(&proj.input, aliases),
-            LogicalPlan::Filter(filter) => Self::collect_node_aliases_recursive(&filter.input, aliases),
+            LogicalPlan::Projection(proj) => {
+                Self::collect_node_aliases_recursive(&proj.input, aliases)
+            }
+            LogicalPlan::Filter(filter) => {
+                Self::collect_node_aliases_recursive(&filter.input, aliases)
+            }
             _ => {}
         }
     }
-    
+
     /// Remap table aliases in an expression
-    fn remap_alias_in_expr(expr: LogicalExpr, source_aliases: &[String], target_alias: &str) -> LogicalExpr {
+    fn remap_alias_in_expr(
+        expr: LogicalExpr,
+        source_aliases: &[String],
+        target_alias: &str,
+    ) -> LogicalExpr {
         match expr {
             LogicalExpr::PropertyAccessExp(mut prop_acc) => {
                 if source_aliases.contains(&prop_acc.table_alias.0) {
-                    crate::debug_print!("📦 remap_alias_in_expr: remapping '{}' -> '{}'", prop_acc.table_alias.0, target_alias);
+                    crate::debug_print!(
+                        "📦 remap_alias_in_expr: remapping '{}' -> '{}'",
+                        prop_acc.table_alias.0,
+                        target_alias
+                    );
                     prop_acc.table_alias = TableAlias(target_alias.to_string());
                 }
                 LogicalExpr::PropertyAccessExp(prop_acc)
             }
             LogicalExpr::OperatorApplicationExp(op_app) => {
-                let remapped_operands: Vec<LogicalExpr> = op_app.operands.into_iter().map(|operand| {
-                    Self::remap_alias_in_expr(operand, source_aliases, target_alias)
-                }).collect();
+                let remapped_operands: Vec<LogicalExpr> = op_app
+                    .operands
+                    .into_iter()
+                    .map(|operand| Self::remap_alias_in_expr(operand, source_aliases, target_alias))
+                    .collect();
                 LogicalExpr::OperatorApplicationExp(OperatorApplication {
                     operator: op_app.operator,
                     operands: remapped_operands,
                 })
             }
             LogicalExpr::ScalarFnCall(mut fn_call) => {
-                fn_call.args = fn_call.args.into_iter().map(|arg| {
-                    Self::remap_alias_in_expr(arg, source_aliases, target_alias)
-                }).collect();
+                fn_call.args = fn_call
+                    .args
+                    .into_iter()
+                    .map(|arg| Self::remap_alias_in_expr(arg, source_aliases, target_alias))
+                    .collect();
                 LogicalExpr::ScalarFnCall(fn_call)
             }
             // Other expression types pass through unchanged
@@ -431,16 +490,16 @@ impl GraphJoinInference {
     }
 
     /// Handle FK-edge join pattern
-    /// 
+    ///
     /// For edges where the edge table = one of the node tables and the relationship
     /// is represented by a FK column, we skip the edge table scan and create a
     /// direct node-to-node JOIN.
-    /// 
+    ///
     /// Two variants:
     /// 1. Self-referencing: (child:Object)-[:PARENT]->(parent:Object) on same table
     ///    SQL: child.parent_id = parent.object_id
-    /// 
-    /// 2. Non-self-referencing: (o:Order)-[:PLACED_BY]->(c:Customer) 
+    ///
+    /// 2. Non-self-referencing: (o:Order)-[:PLACED_BY]->(c:Customer)
     ///    SQL: o.customer_id = c.customer_id
     #[allow(clippy::too_many_arguments)]
     fn handle_fk_edge_join(
@@ -478,28 +537,32 @@ impl GraphJoinInference {
         //   i.e., b.author_id = a.user_id
         //
         // For Incoming (a:Post)<-[:AUTHORED]-(b:User):
-        //   LEFT = User (users_bench), RIGHT = Post (posts_bench = relationship table)  
+        //   LEFT = User (users_bench), RIGHT = Post (posts_bench = relationship table)
         //   Due to GraphRel normalization, left=FROM, right=TO even for incoming
         //   JOIN condition same: b.author_id = a.user_id
-        
+
         // from_id is the FK column on the relationship table pointing to the from_node's PK
         // to_id is typically the relationship table's own PK (or the to_node's PK if same table)
-        let fk_col = rel_schema.from_id.clone();  // FK on relationship table
-        
-        crate::debug_print!("    🔗 FK column (on rel table): {}, left_node_id: {}", fk_col, left_node_id_column);
-        
+        let fk_col = rel_schema.from_id.clone(); // FK on relationship table
+
+        crate::debug_print!(
+            "    🔗 FK column (on rel table): {}, left_node_id: {}",
+            fk_col,
+            left_node_id_column
+        );
+
         // Mark the relationship alias as joined (even though we're not scanning its table separately)
         // This is needed for the query planner to understand the relationship exists
         joined_entities.insert(rel_alias.to_string());
-        
+
         // Determine if left is the anchor (FROM table)
         let left_is_anchor = !joined_entities.contains(left_alias);
-        
+
         if left_is_anchor {
             // Left node is the anchor (FROM clause)
             joined_entities.insert(left_alias.to_string());
             crate::debug_print!("    🔗 LEFT '{}' is anchor (FROM clause)", left_alias);
-            
+
             // Create JOIN for right node: right.fk_col = left.pk
             // The FK column (e.g., author_id) is on the RIGHT table (posts_bench)
             // and points to the LEFT table's PK (users.user_id)
@@ -512,26 +575,38 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(fk_col.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        fk_col.clone(),
+                                    ),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        left_node_id_column.clone(),
+                                    ),
                             }),
                         ],
                     }],
                     join_type: Self::determine_join_type(right_is_optional),
                     pre_filter: None,
                 };
-                crate::debug_print!("    🔗 Created JOIN for RIGHT '{}': {}.{} = {}.{}", 
-                    right_alias, right_alias, fk_col, left_alias, left_node_id_column);
+                crate::debug_print!(
+                    "    🔗 Created JOIN for RIGHT '{}': {}.{} = {}.{}",
+                    right_alias,
+                    right_alias,
+                    fk_col,
+                    left_alias,
+                    left_node_id_column
+                );
                 collected_graph_joins.push(right_join);
                 joined_entities.insert(right_alias.to_string());
             }
         } else {
             // Right node is the anchor (or left already joined)
             crate::debug_print!("    🔗 LEFT '{}' already joined, joining RIGHT", left_alias);
-            
+
             // Create JOIN for right node: right.fk_col = left.pk
             // Same logic as above - FK is on the right table, points to left's PK
             if right_is_referenced && !joined_entities.contains(right_alias) {
@@ -543,24 +618,36 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(fk_col.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        fk_col.clone(),
+                                    ),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_node_id_column.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        left_node_id_column.clone(),
+                                    ),
                             }),
                         ],
                     }],
                     join_type: Self::determine_join_type(right_is_optional),
                     pre_filter: None,
                 };
-                crate::debug_print!("    🔗 Created JOIN for RIGHT '{}': {}.{} = {}.{}", 
-                    right_alias, right_alias, fk_col, left_alias, left_node_id_column);
+                crate::debug_print!(
+                    "    🔗 Created JOIN for RIGHT '{}': {}.{} = {}.{}",
+                    right_alias,
+                    right_alias,
+                    fk_col,
+                    left_alias,
+                    left_node_id_column
+                );
                 collected_graph_joins.push(right_join);
                 joined_entities.insert(right_alias.to_string());
             }
         }
-        
+
         Ok(())
     }
 
@@ -737,18 +824,24 @@ impl GraphJoinInference {
         let mut from_marker_index: Option<usize> = None;
         for (i, join) in joins.iter().enumerate() {
             if join.joining_on.is_empty() {
-                crate::debug_print!("  🏠 Found FROM marker join: '{}' (empty joining_on)", join.table_alias);
+                crate::debug_print!(
+                    "  🏠 Found FROM marker join: '{}' (empty joining_on)",
+                    join.table_alias
+                );
                 from_marker_index = Some(i);
                 break;
             }
         }
-        
+
         // If we found a FROM marker, handle it directly
         if let Some(idx) = from_marker_index {
             let mut remaining_joins: Vec<Join> = joins.clone();
             let from_join = remaining_joins.remove(idx);
             let from_alias = from_join.table_alias.clone();
-            crate::debug_print!("  🏠 Using '{}' as FROM clause (explicit marker)", from_alias);
+            crate::debug_print!(
+                "  🏠 Using '{}' as FROM clause (explicit marker)",
+                from_alias
+            );
             return (Some(from_alias), remaining_joins);
         }
 
@@ -776,7 +869,7 @@ impl GraphJoinInference {
         // This is the true anchor - the table that other JOINs depend on but doesn't need a JOIN itself
         let mut available_tables: std::collections::HashSet<String> =
             std::collections::HashSet::new();
-        
+
         for table in &referenced_tables {
             if !join_aliases.contains(table) && !optional_aliases.contains(table) {
                 available_tables.insert(table.clone());
@@ -794,40 +887,46 @@ impl GraphJoinInference {
 
         // Track if we pulled a join out to be the FROM clause (for cyclic patterns)
         let mut from_join_index: Option<usize> = None;
-        
+
         // If no anchor found (all referenced tables are also being joined = cyclic pattern),
         // we need to pick a starting point and move it from JOIN list to FROM clause.
         if available_tables.is_empty() {
             crate::debug_print!("  ⚠️ No natural anchor - picking FROM table from joins...");
-            
+
             // Strategy: Find a join that can start the chain
             // Priority 1: Node tables (short aliases like 'a', 'b') - they're likely to be JOIN targets
             // Priority 2: Any required table
-            
+
             // First, find the best candidate for FROM clause
             for (i, join) in joins.iter().enumerate() {
                 // Skip optional tables - they can't be FROM
                 if optional_aliases.contains(&join.table_alias) {
                     continue;
                 }
-                
+
                 // Prefer short aliases (likely node tables like 'a', 'b')
-                let is_likely_node_table = !join.table_alias.starts_with("a") 
-                    || join.table_alias.len() < 5;
-                
+                let is_likely_node_table =
+                    !join.table_alias.starts_with("a") || join.table_alias.len() < 5;
+
                 if is_likely_node_table {
                     from_join_index = Some(i);
-                    crate::debug_print!("  📌 Moving '{}' to FROM clause (node table)", join.table_alias);
+                    crate::debug_print!(
+                        "  📌 Moving '{}' to FROM clause (node table)",
+                        join.table_alias
+                    );
                     break;
                 }
             }
-            
+
             // If no node table found, use first required table
             if from_join_index.is_none() {
                 for (i, join) in joins.iter().enumerate() {
                     if !optional_aliases.contains(&join.table_alias) {
                         from_join_index = Some(i);
-                        crate::debug_print!("  📌 Moving '{}' to FROM clause (first required)", join.table_alias);
+                        crate::debug_print!(
+                            "  📌 Moving '{}' to FROM clause (first required)",
+                            join.table_alias
+                        );
                         break;
                     }
                 }
@@ -841,14 +940,17 @@ impl GraphJoinInference {
 
         let mut ordered_joins = Vec::new();
         let mut remaining_joins = joins;
-        
+
         // Track the FROM clause table separately (for cyclic patterns where we pick from joins)
         let mut from_clause_alias: Option<String> = None;
-        
+
         // If we're pulling a join out for FROM clause, do that first
         if let Some(idx) = from_join_index {
             let from_join = remaining_joins.remove(idx);
-            crate::debug_print!("  🏠 Extracted '{}' for FROM clause (will NOT be in JOINs list)", from_join.table_alias);
+            crate::debug_print!(
+                "  🏠 Extracted '{}' for FROM clause (will NOT be in JOINs list)",
+                from_join.table_alias
+            );
             from_clause_alias = Some(from_join.table_alias.clone());
             available_tables.insert(from_join.table_alias.clone());
             // DON'T push to ordered_joins - the FROM table should not appear as a JOIN!
@@ -883,7 +985,8 @@ impl GraphJoinInference {
                 if all_available {
                     crate::debug_print!(
                         "  ? JOIN '{}' can be added (references: {:?})",
-                        table_alias, referenced_tables
+                        table_alias,
+                        referenced_tables
                     );
                     // This JOIN can be added now
                     let join = remaining_joins.remove(i);
@@ -894,7 +997,9 @@ impl GraphJoinInference {
                 } else {
                     crate::debug_print!(
                         "  ? JOIN '{}' must wait (needs: {:?}, have: {:?})",
-                        table_alias, referenced_tables, available_tables
+                        table_alias,
+                        referenced_tables,
+                        available_tables
                     );
                     i += 1;
                 }
@@ -934,7 +1039,7 @@ impl GraphJoinInference {
             }
             // Remove the table being joined (it shouldn't be the anchor)
             refs.remove(&first_join.table_alias);
-            
+
             // Find a reference that is not being joined anywhere else (this is the anchor)
             refs.into_iter()
                 .find(|r| !ordered_joins.iter().any(|j| &j.table_alias == r))
@@ -978,7 +1083,7 @@ impl GraphJoinInference {
             _ => {}
         }
     }
-    
+
     /// Attach pre_filter predicates to LEFT JOINs for optional aliases.
     /// This extracts predicates from GraphRel.where_predicate that reference ONLY
     /// the optional alias, and moves them into the JOIN's pre_filter field.
@@ -987,10 +1092,14 @@ impl GraphJoinInference {
         optional_aliases: &std::collections::HashSet<String>,
         logical_plan: &Arc<LogicalPlan>,
     ) -> Vec<Join> {
-        use crate::query_planner::logical_expr::{LogicalExpr, Operator, OperatorApplication as LogicalOpApp};
-        
+        use crate::query_planner::logical_expr::{
+            LogicalExpr, Operator, OperatorApplication as LogicalOpApp,
+        };
+
         // First, collect all predicates from GraphRel.where_predicate nodes
-        fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<(LogicalExpr, String, String, String)> {
+        fn collect_graphrel_predicates(
+            plan: &LogicalPlan,
+        ) -> Vec<(LogicalExpr, String, String, String)> {
             // Returns (predicate, left_connection, alias, right_connection) tuples
             let mut results = Vec::new();
             match plan {
@@ -1022,14 +1131,14 @@ impl GraphJoinInference {
             }
             results
         }
-        
+
         // Helper: check if expression references ONLY a single alias
         fn references_only_alias(expr: &LogicalExpr, alias: &str) -> bool {
             let mut refs = std::collections::HashSet::new();
             GraphJoinInference::extract_table_refs_from_expr(expr, &mut refs);
             refs.len() == 1 && refs.contains(alias)
         }
-        
+
         // Split AND-connected predicates
         fn split_and_predicates(expr: &LogicalExpr) -> Vec<LogicalExpr> {
             match expr {
@@ -1043,7 +1152,7 @@ impl GraphJoinInference {
                 _ => vec![expr.clone()],
             }
         }
-        
+
         // Combine predicates with AND
         fn combine_with_and(predicates: Vec<LogicalExpr>) -> Option<LogicalExpr> {
             if predicates.is_empty() {
@@ -1057,46 +1166,63 @@ impl GraphJoinInference {
                 }))
             }
         }
-        
+
         // Collect predicates from all optional GraphRels
         let graphrel_preds = collect_graphrel_predicates(logical_plan);
-        
+
         // Build a map of alias -> predicates for optional aliases
         // Only include predicates that reference the optional parts (rel alias or right_connection)
-        let mut alias_predicates: std::collections::HashMap<String, Vec<LogicalExpr>> = std::collections::HashMap::new();
-        
+        let mut alias_predicates: std::collections::HashMap<String, Vec<LogicalExpr>> =
+            std::collections::HashMap::new();
+
         for (predicate, _left_conn, rel_alias, right_conn) in graphrel_preds {
             let all_preds = split_and_predicates(&predicate);
-            
+
             for pred in all_preds {
                 // Only extract predicates for optional aliases (rel and right, not left which is anchor)
-                if references_only_alias(&pred, &rel_alias) && optional_aliases.contains(&rel_alias) {
-                    alias_predicates.entry(rel_alias.clone()).or_default().push(pred.clone());
+                if references_only_alias(&pred, &rel_alias) && optional_aliases.contains(&rel_alias)
+                {
+                    alias_predicates
+                        .entry(rel_alias.clone())
+                        .or_default()
+                        .push(pred.clone());
                 }
-                if references_only_alias(&pred, &right_conn) && optional_aliases.contains(&right_conn) {
-                    alias_predicates.entry(right_conn.clone()).or_default().push(pred.clone());
+                if references_only_alias(&pred, &right_conn)
+                    && optional_aliases.contains(&right_conn)
+                {
+                    alias_predicates
+                        .entry(right_conn.clone())
+                        .or_default()
+                        .push(pred.clone());
                 }
             }
         }
-        
+
         // Now attach predicates to the corresponding LEFT JOINs
-        joins.into_iter().map(|mut join| {
-            if matches!(join.join_type, crate::query_planner::logical_plan::JoinType::Left) {
-                if let Some(preds) = alias_predicates.get(&join.table_alias) {
-                    if !preds.is_empty() {
-                        let combined = combine_with_and(preds.clone());
-                        if combined.is_some() {
-                            crate::debug_print!(
-                                "DEBUG: Attaching pre_filter to LEFT JOIN on '{}': {:?}",
-                                join.table_alias, combined
-                            );
-                            join.pre_filter = combined;
+        joins
+            .into_iter()
+            .map(|mut join| {
+                if matches!(
+                    join.join_type,
+                    crate::query_planner::logical_plan::JoinType::Left
+                ) {
+                    if let Some(preds) = alias_predicates.get(&join.table_alias) {
+                        if !preds.is_empty() {
+                            let combined = combine_with_and(preds.clone());
+                            if combined.is_some() {
+                                crate::debug_print!(
+                                    "DEBUG: Attaching pre_filter to LEFT JOIN on '{}': {:?}",
+                                    join.table_alias,
+                                    combined
+                                );
+                                join.pre_filter = combined;
+                            }
                         }
                     }
                 }
-            }
-            join
-        }).collect()
+                join
+            })
+            .collect()
     }
 
     fn build_graph_joins(
@@ -1112,48 +1238,63 @@ impl GraphJoinInference {
             // we need to INHERIT the collected_graph_joins from outer context so that
             // outer relationship joins are applied to both branches.
             LogicalPlan::Union(union) => {
-                log::info!("🔄 Union detected in build_graph_joins, processing {} branches", union.inputs.len());
-                log::info!("🔄 Inherited {} joins from outer context", collected_graph_joins.len());
+                log::info!(
+                    "🔄 Union detected in build_graph_joins, processing {} branches",
+                    union.inputs.len()
+                );
+                log::info!(
+                    "🔄 Inherited {} joins from outer context",
+                    collected_graph_joins.len()
+                );
                 let mut any_transformed = false;
                 let graph_join_inference = GraphJoinInference::new();
-                
-                let transformed_branches: Result<Vec<Arc<LogicalPlan>>, _> = union.inputs.iter().map(|branch| {
-                    // Start with inherited joins from outer context (important for nested Unions in GraphRel)
-                    let mut branch_joins: Vec<Join> = collected_graph_joins.clone();
-                    let mut branch_joined_entities: HashSet<String> = HashSet::new();
-                    
-                    // Collect additional joins for this specific branch
-                    graph_join_inference.collect_graph_joins(
-                        branch.clone(),
-                        branch.clone(),
-                        &mut plan_ctx.clone(),  // Clone PlanCtx for each branch
-                        graph_schema,
-                        &mut branch_joins,
-                        &mut branch_joined_entities,
-                    )?;
-                    
-                    crate::debug_print!("🔹 Union branch collected {} total joins (including inherited)", branch_joins.len());
-                    
-                    // Build GraphJoins for this branch with combined joins
-                    let result = Self::build_graph_joins(
-                        branch.clone(),
-                        &mut branch_joins,
-                        optional_aliases.clone(),
-                        plan_ctx,
-                        graph_schema,
-                    )?;
-                    if matches!(result, Transformed::Yes(_)) {
-                        any_transformed = true;
-                    }
-                    Ok(result.get_plan())
-                }).collect();
-                
+
+                let transformed_branches: Result<Vec<Arc<LogicalPlan>>, _> = union
+                    .inputs
+                    .iter()
+                    .map(|branch| {
+                        // Start with inherited joins from outer context (important for nested Unions in GraphRel)
+                        let mut branch_joins: Vec<Join> = collected_graph_joins.clone();
+                        let mut branch_joined_entities: HashSet<String> = HashSet::new();
+
+                        // Collect additional joins for this specific branch
+                        graph_join_inference.collect_graph_joins(
+                            branch.clone(),
+                            branch.clone(),
+                            &mut plan_ctx.clone(), // Clone PlanCtx for each branch
+                            graph_schema,
+                            &mut branch_joins,
+                            &mut branch_joined_entities,
+                        )?;
+
+                        crate::debug_print!(
+                            "🔹 Union branch collected {} total joins (including inherited)",
+                            branch_joins.len()
+                        );
+
+                        // Build GraphJoins for this branch with combined joins
+                        let result = Self::build_graph_joins(
+                            branch.clone(),
+                            &mut branch_joins,
+                            optional_aliases.clone(),
+                            plan_ctx,
+                            graph_schema,
+                        )?;
+                        if matches!(result, Transformed::Yes(_)) {
+                            any_transformed = true;
+                        }
+                        Ok(result.get_plan())
+                    })
+                    .collect();
+
                 let branches = transformed_branches?;
                 if any_transformed {
-                    Transformed::Yes(Arc::new(LogicalPlan::Union(crate::query_planner::logical_plan::Union {
-                        inputs: branches,
-                        union_type: union.union_type.clone(),
-                    })))
+                    Transformed::Yes(Arc::new(LogicalPlan::Union(
+                        crate::query_planner::logical_plan::Union {
+                            inputs: branches,
+                            union_type: union.union_type.clone(),
+                        },
+                    )))
                 } else {
                     Transformed::No(logical_plan.clone())
                 }
@@ -1169,34 +1310,33 @@ impl GraphJoinInference {
                     plan_ctx,
                     graph_schema,
                 )?;
-                
+
                 // Get the processed child (or original if unchanged)
                 let processed_child = match &child_tf {
                     Transformed::Yes(p) => p.clone(),
                     Transformed::No(p) => p.clone(),
                 };
-                
+
                 // Build the new projection with the processed child
-                let new_projection = Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
-                    input: processed_child,
-                    items: projection.items.clone(),
-                    kind: projection.kind.clone(),
-                    distinct: projection.distinct,
-                }));
-                
+                let new_projection = Arc::new(LogicalPlan::Projection(
+                    crate::query_planner::logical_plan::Projection {
+                        input: processed_child,
+                        items: projection.items.clone(),
+                        kind: projection.kind.clone(),
+                        distinct: projection.distinct,
+                    },
+                ));
+
                 // DEDUPLICATION: Remove duplicate joins for the same table_alias
                 // When there are multiple joins for the same alias (e.g., from both infer_graph_join
                 // and cross-table join extraction), keep the one that references WITH clause aliases
                 // (like client_ip) rather than internal node aliases (like src2).
                 let deduped_joins = Self::deduplicate_joins(collected_graph_joins.clone());
-                
+
                 // Reorder JOINs before creating GraphJoins to ensure proper dependency order
-                let (anchor_table, reordered_joins) = Self::reorder_joins_by_dependencies(
-                    deduped_joins,
-                    &optional_aliases,
-                    plan_ctx,
-                );
-                
+                let (anchor_table, reordered_joins) =
+                    Self::reorder_joins_by_dependencies(deduped_joins, &optional_aliases, plan_ctx);
+
                 // Extract predicates for optional aliases and attach them to LEFT JOINs
                 let joins_with_pre_filter = Self::attach_pre_filters_to_joins(
                     reordered_joins,
@@ -1220,7 +1360,7 @@ impl GraphJoinInference {
                     plan_ctx,
                     graph_schema,
                 )?;
-                
+
                 // is_denormalized flag is set by view_optimizer pass - just rebuild
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -1286,30 +1426,33 @@ impl GraphJoinInference {
                 // The inner query block must have its own GraphJoins, not merged with outer joins
                 if group_by.is_materialization_boundary {
                     crate::debug_print!("🛑 build_graph_joins: GroupBy is_materialization_boundary=true, processing inner joins separately");
-                    
+
                     // Create fresh vectors for the inner query block
                     let mut inner_joins = Vec::new();
                     let mut inner_joined_entities = HashSet::new();
                     let inner_optional_aliases = std::collections::HashSet::new();
-                    
+
                     // IMPORTANT: We need to collect joins for the inner scope FIRST
                     // because collect_graph_joins stopped at the boundary during the main traversal
                     let graph_join_inference = GraphJoinInference;
                     graph_join_inference.collect_graph_joins(
                         group_by.input.clone(),
-                        group_by.input.clone(),  // root plan for inner scope
-                        &mut plan_ctx.clone(),   // Clone PlanCtx for inner scope
+                        group_by.input.clone(), // root plan for inner scope
+                        &mut plan_ctx.clone(),  // Clone PlanCtx for inner scope
                         graph_schema,
                         &mut inner_joins,
                         &mut inner_joined_entities,
                     )?;
-                    
-                    crate::debug_print!("🛑 build_graph_joins: Collected {} inner joins for boundary GroupBy", inner_joins.len());
-                    
+
+                    crate::debug_print!(
+                        "🛑 build_graph_joins: Collected {} inner joins for boundary GroupBy",
+                        inner_joins.len()
+                    );
+
                     // Now build the graph joins for the inner scope
                     let child_tf = Self::build_graph_joins(
                         group_by.input.clone(),
-                        &mut inner_joins,  // Use the inner joins we just collected
+                        &mut inner_joins, // Use the inner joins we just collected
                         inner_optional_aliases,
                         plan_ctx,
                         graph_schema,
@@ -1368,11 +1511,13 @@ impl GraphJoinInference {
                     graph_schema,
                 )?;
                 match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-                        input: new_input,
-                        expression: u.expression.clone(),
-                        alias: u.alias.clone(),
-                    }))),
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                        },
+                    ))),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
@@ -1382,14 +1527,16 @@ impl GraphJoinInference {
                 // 1. Process both sides to get their joins
                 // 2. Combine all joins into the parent collected_graph_joins
                 // 3. Add the join_condition as a join between the patterns
-                
-                crate::debug_print!("📦 CartesianProduct: Processing with join_condition={:?}", 
-                    cp.join_condition.is_some());
-                
+
+                crate::debug_print!(
+                    "📦 CartesianProduct: Processing with join_condition={:?}",
+                    cp.join_condition.is_some()
+                );
+
                 // Create separate join collections for each side
                 let mut left_joins: Vec<Join> = vec![];
                 let mut right_joins: Vec<Join> = vec![];
-                
+
                 let left_tf = Self::build_graph_joins(
                     cp.left.clone(),
                     &mut left_joins,
@@ -1404,84 +1551,110 @@ impl GraphJoinInference {
                     plan_ctx,
                     graph_schema,
                 )?;
-                
-                crate::debug_print!("📦 CartesianProduct: left_joins={}, right_joins={}", 
-                    left_joins.len(), right_joins.len());
-                
+
+                crate::debug_print!(
+                    "📦 CartesianProduct: left_joins={}, right_joins={}",
+                    left_joins.len(),
+                    right_joins.len()
+                );
+
                 // CRITICAL: Bubble up all joins to the parent collected_graph_joins
                 // The left side joins need to come first
                 collected_graph_joins.extend(left_joins.clone());
                 collected_graph_joins.extend(right_joins.clone());
-                
+
                 // CROSS-TABLE DENORMALIZED FIX: If both sides have 0 joins (fully denormalized)
                 // AND there's a join_condition, we need to create a JOIN for the right-side table.
                 // This connects the two fully denormalized patterns.
                 if left_joins.is_empty() && right_joins.is_empty() {
                     if let Some(join_cond) = &cp.join_condition {
                         crate::debug_print!("📦 CartesianProduct: Creating cross-table JOIN for fully denormalized patterns");
-                        
+
                         // CRITICAL: First, extract the LEFT-side table to use as FROM clause
                         // This is the anchor table that other tables join TO
-                        if let Some((left_table, left_alias)) = Self::extract_right_table_from_plan(&cp.left, graph_schema) {
-                            crate::debug_print!("📦 CartesianProduct: Left (anchor) table='{}', alias='{}'", left_table, left_alias);
-                            
+                        if let Some((left_table, left_alias)) =
+                            Self::extract_right_table_from_plan(&cp.left, graph_schema)
+                        {
+                            crate::debug_print!(
+                                "📦 CartesianProduct: Left (anchor) table='{}', alias='{}'",
+                                left_table,
+                                left_alias
+                            );
+
                             // Create a "FROM" marker join with empty joining_on
                             // This will be picked up by reorder_joins_by_dependencies as the anchor
                             let from_marker = Join {
                                 table_name: left_table.clone(),
                                 table_alias: left_alias.clone(),
-                                joining_on: vec![],  // Empty = this is the FROM table
+                                joining_on: vec![], // Empty = this is the FROM table
                                 join_type: JoinType::Inner,
                                 pre_filter: None,
                             };
                             collected_graph_joins.push(from_marker);
-                            crate::debug_print!("📦 CartesianProduct: Added FROM marker for left table");
-                        
+                            crate::debug_print!(
+                                "📦 CartesianProduct: Added FROM marker for left table"
+                            );
+
                             // Extract the right-side table info from the join_condition
                             // The join_condition should be: left_alias.column = right_alias.column
                             if let LogicalExpr::OperatorApplicationExp(op_app) = join_cond {
                                 // Find the right-side alias and table from the right GraphRel
-                                if let Some((right_table, right_alias)) = Self::extract_right_table_from_plan(&cp.right, graph_schema) {
-                                    crate::debug_print!("📦 CartesianProduct: Right table='{}', alias='{}'", right_table, right_alias);
-                                    
+                                if let Some((right_table, right_alias)) =
+                                    Self::extract_right_table_from_plan(&cp.right, graph_schema)
+                                {
+                                    crate::debug_print!(
+                                        "📦 CartesianProduct: Right table='{}', alias='{}'",
+                                        right_table,
+                                        right_alias
+                                    );
+
                                     // Remap node aliases in join condition to the relationship aliases
                                     // BOTH sides need remapping:
                                     // - left-side node aliases (e.g., ip1) -> left_alias (dns_log alias)
                                     // - right-side node aliases (e.g., ip2) -> right_alias (conn_log alias)
-                                    let mut remapped_join_cond = Self::remap_node_aliases_to_relationship(
-                                        op_app.clone(),
-                                        &cp.right,
-                                        &right_alias,
-                                    );
+                                    let mut remapped_join_cond =
+                                        Self::remap_node_aliases_to_relationship(
+                                            op_app.clone(),
+                                            &cp.right,
+                                            &right_alias,
+                                        );
                                     // Also remap left-side node aliases to the left table alias
                                     remapped_join_cond = Self::remap_node_aliases_to_relationship(
                                         remapped_join_cond,
                                         &cp.left,
                                         &left_alias,
                                     );
-                                    
+
                                     // Create a JOIN for the right-side table using the remapped join_condition
                                     let cross_join = Join {
                                         table_name: right_table,
                                         table_alias: right_alias,
                                         joining_on: vec![remapped_join_cond],
-                                        join_type: if cp.is_optional { JoinType::Left } else { JoinType::Inner },
+                                        join_type: if cp.is_optional {
+                                            JoinType::Left
+                                        } else {
+                                            JoinType::Inner
+                                        },
                                         pre_filter: None,
                                     };
                                     collected_graph_joins.push(cross_join);
-                                    crate::debug_print!("📦 CartesianProduct: Added cross-table JOIN, total joins now={}", 
+                                    crate::debug_print!("📦 CartesianProduct: Added cross-table JOIN, total joins now={}",
                                         collected_graph_joins.len());
                                 }
                             }
                         }
                     }
                 }
-                
-                crate::debug_print!("📦 CartesianProduct: Total bubbled up joins={}", 
-                    collected_graph_joins.len());
-                
+
+                crate::debug_print!(
+                    "📦 CartesianProduct: Total bubbled up joins={}",
+                    collected_graph_joins.len()
+                );
+
                 match (&left_tf, &right_tf) {
-                    (Transformed::No(_), Transformed::No(_)) => Transformed::No(logical_plan.clone()),
+                    (Transformed::No(_), Transformed::No(_)) => {
+                        Transformed::No(logical_plan.clone())
+                    }
                     _ => Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
                         crate::query_planner::logical_plan::CartesianProduct {
                             left: left_tf.get_plan().clone(),
@@ -1591,11 +1764,13 @@ impl GraphJoinInference {
                 // But pattern order is: a, then b, then c
                 // So for Incoming: process RIGHT first (contains earlier part of pattern)
                 // For Outgoing: process LEFT first (standard order)
-                
+
                 if graph_rel.direction == Direction::Incoming {
                     // Incoming: pattern flows right-to-left in AST
                     // Process RIGHT subtree first (earlier in pattern)
-                    crate::debug_print!("📊   ⬅️ INCOMING: Processing RIGHT branch first (pattern order)...");
+                    crate::debug_print!(
+                        "📊   ⬅️ INCOMING: Processing RIGHT branch first (pattern order)..."
+                    );
                     self.collect_graph_joins(
                         graph_rel.right.clone(),
                         root_plan.clone(),
@@ -1809,7 +1984,7 @@ impl GraphJoinInference {
                 // IMPORTANT: CartesianProduct children should be collected INDEPENDENTLY
                 // because they represent separate graph patterns that will be CROSS JOINed.
                 // We DON'T want aliases from one side affecting the other side's join inference.
-                
+
                 // Process LEFT side into the shared collections
                 // The left side is the "base" pattern (e.g., from WITH clause)
                 self.collect_graph_joins(
@@ -1820,9 +1995,9 @@ impl GraphJoinInference {
                     collected_graph_joins,
                     joined_entities,
                 )?;
-                
+
                 // For the RIGHT side, we still collect into shared collections,
-                // but the key is that joined_entities from LEFT will prevent 
+                // but the key is that joined_entities from LEFT will prevent
                 // the RIGHT side from trying to create conflicting joins
                 self.collect_graph_joins(
                     cp.right.clone(),
@@ -1859,19 +2034,19 @@ impl GraphJoinInference {
     // ========================================================================
     // PatternSchemaContext Integration (Phase 2)
     // ========================================================================
-    
+
     /// Compute PatternSchemaContext for a GraphRel.
-    /// 
+    ///
     /// This is the bridge between the logical plan (GraphRel) and the unified
     /// schema abstraction (PatternSchemaContext). Once computed, the context
     /// can be used for exhaustive pattern matching instead of scattered detection.
-    /// 
+    ///
     /// # Arguments
     /// * `graph_rel` - The relationship pattern from the logical plan
     /// * `plan_ctx` - Planning context with table contexts
     /// * `graph_schema` - The graph schema for schema lookups
     /// * `prev_edge_info` - Info about previous edge for multi-hop patterns
-    /// 
+    ///
     /// # Returns
     /// * `Some(PatternSchemaContext)` - If schemas can be resolved
     /// * `None` - If node/relationship schemas cannot be found (anonymous patterns)
@@ -1886,28 +2061,34 @@ impl GraphJoinInference {
         // 1. Get node labels from plan_ctx
         let left_alias = &graph_rel.left_connection;
         let right_alias = &graph_rel.right_connection;
-        
-        let left_ctx = plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone())).ok()?;
-        let right_ctx = plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone())).ok()?;
-        
+
+        let left_ctx = plan_ctx
+            .get_table_ctx_from_alias_opt(&Some(left_alias.clone()))
+            .ok()?;
+        let right_ctx = plan_ctx
+            .get_table_ctx_from_alias_opt(&Some(right_alias.clone()))
+            .ok()?;
+
         let left_label = left_ctx.get_label_str().ok()?;
         let right_label = right_ctx.get_label_str().ok()?;
-        
+
         // 2. Get relationship type(s) from labels
-        let rel_types: Vec<String> = graph_rel.labels.as_ref()
+        let rel_types: Vec<String> = graph_rel
+            .labels
+            .as_ref()
             .map(|labels| labels.clone())
             .unwrap_or_default();
-        
+
         if rel_types.is_empty() {
             crate::debug_print!("    ⚠️ compute_pattern_context: no relationship types found");
             return None;
         }
-        
+
         // 3. Look up schemas
         let left_node_schema = graph_schema.get_node_schema_opt(&left_label)?;
         let right_node_schema = graph_schema.get_node_schema_opt(&right_label)?;
         let rel_schema = graph_schema.get_relationships_schema_opt(&rel_types[0])?;
-        
+
         // 4. Compute PatternSchemaContext
         let ctx = PatternSchemaContext::analyze(
             left_node_schema,
@@ -1918,11 +2099,11 @@ impl GraphJoinInference {
             rel_types,
             prev_edge_info,
         );
-        
+
         crate::debug_print!("    ✅ compute_pattern_context: {}", ctx.debug_summary());
         Some(ctx)
     }
-    
+
     /// Log the pattern context for debugging purposes.
     /// This helps verify that the new abstraction correctly identifies schema patterns.
     #[allow(dead_code)]
@@ -1934,16 +2115,24 @@ impl GraphJoinInference {
     ) {
         if let Some(_ctx) = self.compute_pattern_context(graph_rel, plan_ctx, graph_schema, None) {
             crate::debug_print!("    📊 PatternSchemaContext for {}:", graph_rel.alias);
-            crate::debug_print!("       Left node:  {}", match &_ctx.left_node {
-                NodeAccessStrategy::OwnTable { table, .. } => format!("OwnTable({})", table),
-                NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => format!("Embedded({})", edge_alias),
-                NodeAccessStrategy::Virtual { label } => format!("Virtual({})", label),
-            });
-            crate::debug_print!("       Right node: {}", match &_ctx.right_node {
-                NodeAccessStrategy::OwnTable { table, .. } => format!("OwnTable({})", table),
-                NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => format!("Embedded({})", edge_alias),
-                NodeAccessStrategy::Virtual { label } => format!("Virtual({})", label),
-            });
+            crate::debug_print!(
+                "       Left node:  {}",
+                match &_ctx.left_node {
+                    NodeAccessStrategy::OwnTable { table, .. } => format!("OwnTable({})", table),
+                    NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } =>
+                        format!("Embedded({})", edge_alias),
+                    NodeAccessStrategy::Virtual { label } => format!("Virtual({})", label),
+                }
+            );
+            crate::debug_print!(
+                "       Right node: {}",
+                match &_ctx.right_node {
+                    NodeAccessStrategy::OwnTable { table, .. } => format!("OwnTable({})", table),
+                    NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } =>
+                        format!("Embedded({})", edge_alias),
+                    NodeAccessStrategy::Virtual { label } => format!("Virtual({})", label),
+                }
+            );
             crate::debug_print!("       Join:       {}", _ctx.join_strategy.description());
             crate::debug_print!("       Rel types:  {:?}", _ctx.rel_types);
         } else {
@@ -1954,7 +2143,7 @@ impl GraphJoinInference {
     // ========================================================================
     // PatternSchemaContext-Based Join Generation (Phase 3)
     // ========================================================================
-    
+
     /// Generate graph JOINs using PatternSchemaContext for exhaustive pattern matching.
     ///
     /// This is the new implementation that replaces the scattered detection logic
@@ -1992,14 +2181,20 @@ impl GraphJoinInference {
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
         crate::debug_print!("    📐 handle_graph_pattern_v2: {}", ctx.debug_summary());
-        crate::debug_print!("    📐 Node labels: left='{}', right='{}'", left_label, right_label);
-        
+        crate::debug_print!(
+            "    📐 Node labels: left='{}', right='{}'",
+            left_label,
+            right_label
+        );
+
         // Pre-filter for polymorphic edges:
         // 1. type_column IN (...) for relationship type
         // 2. from_label_column = 'X' and to_label_column = 'Y' for node type
         let type_filter = ctx.edge.get_type_filter(rel_alias);
-        let label_filter = ctx.edge.get_label_filter(rel_alias, left_label, right_label);
-        
+        let label_filter = ctx
+            .edge
+            .get_label_filter(rel_alias, left_label, right_label);
+
         // Combine filters
         let pre_filter: Option<LogicalExpr> = match (type_filter, label_filter) {
             (Some(tf), Some(lf)) => Some(LogicalExpr::Raw(format!("{} AND {}", tf, lf))),
@@ -2007,18 +2202,18 @@ impl GraphJoinInference {
             (None, Some(lf)) => Some(LogicalExpr::Raw(lf)),
             (None, None) => None,
         };
-        
+
         if pre_filter.is_some() {
             crate::debug_print!("    🔹 Polymorphic pre_filter: {:?}", pre_filter);
         }
-        
+
         match &ctx.join_strategy {
             // ================================================================
             // SingleTableScan: Fully denormalized - NO JOINs needed
             // ================================================================
             JoinStrategy::SingleTableScan { table: _ } => {
                 crate::debug_print!("    ✅ SingleTableScan: No JOINs needed (fully denormalized)");
-                
+
                 // Register both nodes as embedded on the edge for property resolution
                 if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.left_node {
                     let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
@@ -2040,41 +2235,50 @@ impl GraphJoinInference {
                         rel_type,
                     );
                 }
-                
+
                 // Mark all entities as "joined" (they share the same FROM table)
                 joined_entities.insert(left_alias.to_string());
                 joined_entities.insert(rel_alias.to_string());
                 joined_entities.insert(right_alias.to_string());
-                
+
                 Ok(())
             }
-            
+
             // ================================================================
             // Traditional: Standard node-edge-node JOINs
             // ================================================================
-            JoinStrategy::Traditional { left_join_col, right_join_col } => {
+            JoinStrategy::Traditional {
+                left_join_col,
+                right_join_col,
+            } => {
                 crate::debug_print!("    🔗 Traditional: Creating node-edge-node JOINs");
-                
+
                 // Get node ID columns from NodeAccessStrategy
                 let left_id_col = match &ctx.left_node {
                     NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
-                    _ => return Err(AnalyzerError::OptimizerError { message: 
-                        "Traditional strategy requires OwnTable nodes".to_string() }),
+                    _ => {
+                        return Err(AnalyzerError::OptimizerError {
+                            message: "Traditional strategy requires OwnTable nodes".to_string(),
+                        })
+                    }
                 };
                 let right_id_col = match &ctx.right_node {
                     NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
-                    _ => return Err(AnalyzerError::OptimizerError { message: 
-                        "Traditional strategy requires OwnTable nodes".to_string() }),
+                    _ => {
+                        return Err(AnalyzerError::OptimizerError {
+                            message: "Traditional strategy requires OwnTable nodes".to_string(),
+                        })
+                    }
                 };
-                
+
                 // Determine which node is already available (anchor) to connect the edge to
                 let left_available = joined_entities.contains(left_alias);
                 let right_available = joined_entities.contains(right_alias);
                 let is_first_relationship = joined_entities.is_empty();
-                
-                crate::debug_print!("       left_available={}, right_available={}, is_first={}, left_opt={}, right_opt={}", 
+
+                crate::debug_print!("       left_available={}, right_available={}, is_first={}, left_opt={}, right_opt={}",
                     left_available, right_available, is_first_relationship, left_is_optional, right_is_optional);
-                
+
                 // Determine connect order based on what's available and optionality:
                 // Priority order:
                 // 1. If one node is already joined, connect to it first
@@ -2098,17 +2302,20 @@ impl GraphJoinInference {
                     // Both same optionality - use default (left as anchor for first rel)
                     is_first_relationship && !left_is_optional
                 };
-                
+
                 if connect_left_first {
                     // Standard order: LEFT → EDGE → RIGHT
                     crate::debug_print!("       Connect order: LEFT → EDGE → RIGHT");
-                    
+
                     // If first relationship and left is anchor, mark it joined
                     if is_first_relationship && !left_is_optional {
-                        crate::debug_print!("       LEFT '{}' is anchor - will be FROM table", left_alias);
+                        crate::debug_print!(
+                            "       LEFT '{}' is anchor - will be FROM table",
+                            left_alias
+                        );
                         joined_entities.insert(left_alias.to_string());
                     }
-                    
+
                     // JOIN: Left node (if not yet joined)
                     if !joined_entities.contains(left_alias) {
                         let left_join = Join {
@@ -2133,7 +2340,7 @@ impl GraphJoinInference {
                         collected_graph_joins.push(left_join);
                         joined_entities.insert(left_alias.to_string());
                     }
-                    
+
                     // JOIN: Edge table (connects to left via from_id)
                     let rel_join = Join {
                         table_name: rel_cte_name.to_string(),
@@ -2156,7 +2363,7 @@ impl GraphJoinInference {
                     };
                     collected_graph_joins.push(rel_join);
                     joined_entities.insert(rel_alias.to_string());
-                    
+
                     // JOIN: Right node (connects to edge via to_id)
                     if !joined_entities.contains(right_alias) {
                         let right_join = Join {
@@ -2183,8 +2390,10 @@ impl GraphJoinInference {
                     }
                 } else {
                     // Reverse order: RIGHT → EDGE → LEFT (right is available, connect to it first)
-                    crate::debug_print!("       Connect order: RIGHT → EDGE → LEFT (right already available)");
-                    
+                    crate::debug_print!(
+                        "       Connect order: RIGHT → EDGE → LEFT (right already available)"
+                    );
+
                     // JOIN: Edge table (connects to RIGHT via to_id)
                     let rel_join = Join {
                         table_name: rel_cte_name.to_string(),
@@ -2207,7 +2416,7 @@ impl GraphJoinInference {
                     };
                     collected_graph_joins.push(rel_join);
                     joined_entities.insert(rel_alias.to_string());
-                    
+
                     // JOIN: Left node (connects to edge via from_id)
                     if !joined_entities.contains(left_alias) {
                         let left_join = Join {
@@ -2233,40 +2442,49 @@ impl GraphJoinInference {
                         joined_entities.insert(left_alias.to_string());
                     }
                 }
-                
+
                 Ok(())
             }
-            
+
             // ================================================================
             // MixedAccess: One node embedded, one requires JOIN
             // ================================================================
-            JoinStrategy::MixedAccess { joined_node, join_col } => {
+            JoinStrategy::MixedAccess {
+                joined_node,
+                join_col,
+            } => {
                 use crate::graph_catalog::pattern_schema::NodePosition;
-                
+
                 crate::debug_print!("    🔀 MixedAccess: {:?} node requires JOIN", joined_node);
-                
+
                 // Register the embedded node for property resolution
                 let (embedded_alias, embedded_is_from) = match joined_node {
                     NodePosition::Left => {
                         // Right is embedded
-                        if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.right_node {
+                        if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } =
+                            &ctx.right_node
+                        {
                             (right_alias, *is_from_node)
                         } else {
-                            return Err(AnalyzerError::OptimizerError { message: 
-                                "MixedAccess but right node not embedded".to_string() });
+                            return Err(AnalyzerError::OptimizerError {
+                                message: "MixedAccess but right node not embedded".to_string(),
+                            });
                         }
                     }
                     NodePosition::Right => {
                         // Left is embedded
-                        if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.left_node {
+                        if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } =
+                            &ctx.left_node
+                        {
                             (left_alias, *is_from_node)
                         } else {
-                            return Err(AnalyzerError::OptimizerError { message: 
-                                "MixedAccess but left node not embedded".to_string() });
+                            return Err(AnalyzerError::OptimizerError {
+                                message: "MixedAccess but left node not embedded".to_string(),
+                            });
                         }
                     }
                 };
-                
+
                 let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
                 plan_ctx.register_denormalized_alias(
                     embedded_alias.to_string(),
@@ -2276,37 +2494,50 @@ impl GraphJoinInference {
                     rel_type,
                 );
                 joined_entities.insert(embedded_alias.to_string());
-                
+
                 // Join the relationship table
                 // The join connects to the non-embedded node
-                let (join_node_alias, join_node_cte, join_node_id_col, join_node_optional) = match joined_node {
-                    NodePosition::Left => {
-                        let id = match &ctx.left_node {
-                            NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
-                            _ => return Err(AnalyzerError::OptimizerError { message: 
-                                "MixedAccess joined node must be OwnTable".to_string() }),
-                        };
-                        (left_alias, left_cte_name, id, left_is_optional)
-                    }
-                    NodePosition::Right => {
-                        let id = match &ctx.right_node {
-                            NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
-                            _ => return Err(AnalyzerError::OptimizerError { message: 
-                                "MixedAccess joined node must be OwnTable".to_string() }),
-                        };
-                        (right_alias, right_cte_name, id, right_is_optional)
-                    }
-                };
-                
+                let (join_node_alias, join_node_cte, join_node_id_col, join_node_optional) =
+                    match joined_node {
+                        NodePosition::Left => {
+                            let id = match &ctx.left_node {
+                                NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
+                                _ => {
+                                    return Err(AnalyzerError::OptimizerError {
+                                        message: "MixedAccess joined node must be OwnTable"
+                                            .to_string(),
+                                    })
+                                }
+                            };
+                            (left_alias, left_cte_name, id, left_is_optional)
+                        }
+                        NodePosition::Right => {
+                            let id = match &ctx.right_node {
+                                NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
+                                _ => {
+                                    return Err(AnalyzerError::OptimizerError {
+                                        message: "MixedAccess joined node must be OwnTable"
+                                            .to_string(),
+                                    })
+                                }
+                            };
+                            (right_alias, right_cte_name, id, right_is_optional)
+                        }
+                    };
+
                 // Determine anchor
                 let is_first_relationship = joined_entities.is_empty();
                 let node_is_anchor = is_first_relationship && !join_node_optional;
-                
+
                 if node_is_anchor {
-                    crate::debug_print!("       {:?} node '{}' is anchor", joined_node, join_node_alias);
+                    crate::debug_print!(
+                        "       {:?} node '{}' is anchor",
+                        joined_node,
+                        join_node_alias
+                    );
                     joined_entities.insert(join_node_alias.to_string());
                 }
-                
+
                 // JOIN: Relationship to non-embedded node
                 if !joined_entities.contains(join_node_alias) {
                     let node_join = Join {
@@ -2331,7 +2562,7 @@ impl GraphJoinInference {
                     collected_graph_joins.push(node_join);
                     joined_entities.insert(join_node_alias.to_string());
                 }
-                
+
                 // JOIN: Relationship table itself
                 let rel_join = Join {
                     table_name: rel_cte_name.to_string(),
@@ -2341,11 +2572,17 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(join_col.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        join_col.clone(),
+                                    ),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(join_node_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(join_node_id_col),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        join_node_id_col,
+                                    ),
                             }),
                         ],
                     }],
@@ -2354,17 +2591,27 @@ impl GraphJoinInference {
                 };
                 collected_graph_joins.push(rel_join);
                 joined_entities.insert(rel_alias.to_string());
-                
+
                 Ok(())
             }
-            
+
             // ================================================================
             // EdgeToEdge: Multi-hop denormalized (edge-to-edge JOIN)
             // ================================================================
-            JoinStrategy::EdgeToEdge { prev_edge_alias, prev_edge_col, curr_edge_col } => {
+            JoinStrategy::EdgeToEdge {
+                prev_edge_alias,
+                prev_edge_col,
+                curr_edge_col,
+            } => {
                 crate::debug_print!("    ⛓️ EdgeToEdge: Multi-hop denormalized JOIN");
-                crate::debug_print!("       {}.{} = {}.{}", prev_edge_alias, prev_edge_col, rel_alias, curr_edge_col);
-                
+                crate::debug_print!(
+                    "       {}.{} = {}.{}",
+                    prev_edge_alias,
+                    prev_edge_col,
+                    rel_alias,
+                    curr_edge_col
+                );
+
                 // Register nodes as embedded
                 let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
                 if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.left_node {
@@ -2385,7 +2632,7 @@ impl GraphJoinInference {
                         rel_type,
                     );
                 }
-                
+
                 // JOIN: Current edge to previous edge
                 let edge_join = Join {
                     table_name: rel_cte_name.to_string(),
@@ -2395,11 +2642,17 @@ impl GraphJoinInference {
                         operands: vec![
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(curr_edge_col.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        curr_edge_col.clone(),
+                                    ),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(prev_edge_alias.clone()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(prev_edge_col.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        prev_edge_col.clone(),
+                                    ),
                             }),
                         ],
                     }],
@@ -2407,24 +2660,24 @@ impl GraphJoinInference {
                     pre_filter,
                 };
                 collected_graph_joins.push(edge_join);
-                
+
                 // Mark all as joined
                 joined_entities.insert(left_alias.to_string());
                 joined_entities.insert(rel_alias.to_string());
                 joined_entities.insert(right_alias.to_string());
-                
+
                 Ok(())
             }
-            
+
             // ================================================================
             // CoupledSameRow: Same physical row, no additional JOIN
             // ================================================================
             JoinStrategy::CoupledSameRow { unified_alias } => {
                 crate::debug_print!("    🔄 CoupledSameRow: Unifying with '{}'", unified_alias);
-                
+
                 // Both edges read from the same row - just unify aliases
                 // The previous edge already created the FROM/JOIN, this one shares it
-                
+
                 // Register property resolution to use unified alias
                 let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
                 if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = &ctx.left_node {
@@ -2445,23 +2698,32 @@ impl GraphJoinInference {
                         rel_type,
                     );
                 }
-                
+
                 // Mark all as joined (they share the unified alias's table)
                 joined_entities.insert(left_alias.to_string());
                 joined_entities.insert(rel_alias.to_string());
                 joined_entities.insert(right_alias.to_string());
-                
+
                 Ok(())
             }
-            
+
             // ================================================================
             // FkEdgeJoin: Edge table IS one of the node tables (FK pattern)
             // ================================================================
-            JoinStrategy::FkEdgeJoin { from_id, to_id, join_side, is_self_referencing: _is_self_referencing } => {
+            JoinStrategy::FkEdgeJoin {
+                from_id,
+                to_id,
+                join_side,
+                is_self_referencing: _is_self_referencing,
+            } => {
                 use crate::graph_catalog::pattern_schema::NodePosition;
-                
-                crate::debug_print!("    🔑 FkEdgeJoin: join_side={:?}, self_ref={}", join_side, _is_self_referencing);
-                
+
+                crate::debug_print!(
+                    "    🔑 FkEdgeJoin: join_side={:?}, self_ref={}",
+                    join_side,
+                    _is_self_referencing
+                );
+
                 // FK-edge pattern: edge table IS one of the node tables
                 // We only need ONE join (to the node that ISN'T the edge table)
                 //
@@ -2472,11 +2734,11 @@ impl GraphJoinInference {
                 //
                 // join_side=Right: edge IS left node table
                 //   Example: (o:Order)-[:PLACED_BY]->(c:Customer) where orders IS the edge
-                //   Left (o/orders) is anchor, JOIN right (c/customers)  
+                //   Left (o/orders) is anchor, JOIN right (c/customers)
                 //   JOIN condition: customers.id = orders.to_id  ->  c.id = o.customer_id
-                
+
                 let is_first_relationship = joined_entities.is_empty();
-                
+
                 // Get node ID columns
                 let left_id_col = match &ctx.left_node {
                     NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
@@ -2486,22 +2748,31 @@ impl GraphJoinInference {
                     NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
                     _ => to_id.clone(),
                 };
-                
+
                 match join_side {
                     NodePosition::Left => {
                         // Edge IS the right/to_node table
                         // Right node is the anchor, JOIN left node
                         let right_is_anchor = is_first_relationship && !right_is_optional;
                         if right_is_anchor {
-                            crate::debug_print!("       RIGHT '{}' is anchor (IS edge table)", right_alias);
+                            crate::debug_print!(
+                                "       RIGHT '{}' is anchor (IS edge table)",
+                                right_alias
+                            );
                             joined_entities.insert(right_alias.to_string());
                         }
-                        
+
                         // Edge conceptually lives on right node's table
                         joined_entities.insert(rel_alias.to_string());
-                        
+
                         // JOIN left: left.id = right.from_id (right table has the FK column)
-                        crate::debug_print!("       JOIN: {}.{} = {}.{}", left_alias, left_id_col, right_alias, from_id);
+                        crate::debug_print!(
+                            "       JOIN: {}.{} = {}.{}",
+                            left_alias,
+                            left_id_col,
+                            right_alias,
+                            from_id
+                        );
                         if !joined_entities.contains(left_alias) {
                             let left_join = Join {
                                 table_name: left_cte_name.to_string(),
@@ -2527,19 +2798,28 @@ impl GraphJoinInference {
                         }
                     }
                     NodePosition::Right => {
-                        // Edge IS the left/from_node table  
+                        // Edge IS the left/from_node table
                         // Left node is the anchor, JOIN right node
                         let left_is_anchor = is_first_relationship && !left_is_optional;
                         if left_is_anchor {
-                            crate::debug_print!("       LEFT '{}' is anchor (IS edge table)", left_alias);
+                            crate::debug_print!(
+                                "       LEFT '{}' is anchor (IS edge table)",
+                                left_alias
+                            );
                             joined_entities.insert(left_alias.to_string());
                         }
-                        
+
                         // Edge conceptually lives on left node's table
                         joined_entities.insert(rel_alias.to_string());
-                        
+
                         // JOIN right: right.id = left.to_id (left table has the FK column)
-                        crate::debug_print!("       JOIN: {}.{} = {}.{}", right_alias, right_id_col, left_alias, to_id);
+                        crate::debug_print!(
+                            "       JOIN: {}.{} = {}.{}",
+                            right_alias,
+                            right_id_col,
+                            left_alias,
+                            to_id
+                        );
                         if !joined_entities.contains(right_alias) {
                             let right_join = Join {
                                 table_name: right_cte_name.to_string(),
@@ -2565,7 +2845,7 @@ impl GraphJoinInference {
                         }
                     }
                 }
-                
+
                 Ok(())
             }
         }
@@ -2586,7 +2866,8 @@ impl GraphJoinInference {
         );
         crate::debug_print!(
             "    � left_connection: {}, right_connection: {}",
-            graph_rel.left_connection, graph_rel.right_connection
+            graph_rel.left_connection,
+            graph_rel.right_connection
         );
         crate::debug_print!("    � joined_entities before: {:?}", joined_entities);
 
@@ -2597,18 +2878,22 @@ impl GraphJoinInference {
         // Skip join inference for TRULY variable-length paths (need recursive CTEs)
         // But DO process fixed-length patterns (*1, *2, *3) - they use inline JOINs
         if let Some(spec) = &graph_rel.variable_length {
-            let is_fixed_length = spec.exact_hop_count().is_some() 
-                && graph_rel.shortest_path_mode.is_none();
-            
+            let is_fixed_length =
+                spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
+
             if !is_fixed_length {
                 // Truly variable-length (*1..3, *, etc.) - skip, will use CTE path
-                crate::debug_print!("    � ? SKIP: Variable-length path detected (not fixed-length)");
+                crate::debug_print!(
+                    "    � ? SKIP: Variable-length path detected (not fixed-length)"
+                );
                 crate::debug_print!("    +- infer_graph_join EXIT\n");
                 return Ok(());
             }
             // Fixed-length (*1, *2, *3) - continue to generate JOINs
-            crate::debug_print!("    � Fixed-length pattern (*{}) detected - will generate inline JOINs", 
-                spec.exact_hop_count().unwrap());
+            crate::debug_print!(
+                "    � Fixed-length pattern (*{}) detected - will generate inline JOINs",
+                spec.exact_hop_count().unwrap()
+            );
         }
 
         // Check if nodes have labels - skip for anonymous nodes like ()-[r]->()
@@ -2641,7 +2926,7 @@ impl GraphJoinInference {
         } else {
             false
         };
-        
+
         let right_is_polymorphic_any = if let Ok(right_ctx) = &right_ctx_opt {
             if let Ok(right_label) = right_ctx.get_label_str() {
                 crate::debug_print!("    🔍 DEBUG: right_label = '{}'", right_label);
@@ -2654,15 +2939,18 @@ impl GraphJoinInference {
             crate::debug_print!("    🔍 DEBUG: right_ctx_opt is Err");
             false
         };
-        
-        crate::debug_print!("    🔍 DEBUG: right_is_polymorphic_any = {}", right_is_polymorphic_any);
-        
+
+        crate::debug_print!(
+            "    🔍 DEBUG: right_is_polymorphic_any = {}",
+            right_is_polymorphic_any
+        );
+
         if left_is_polymorphic_any {
             crate::debug_print!("    🚫 SKIP: Polymorphic $any left node - nothing to join from");
             crate::debug_print!("    +- infer_graph_join EXIT\n");
             return Ok(());
         }
-        
+
         // For polymorphic right nodes ($any), skip relationship join creation entirely
         // The CTE will handle the relationship join in plan_builder.rs
         // When right node is $any, we know this is a polymorphic/wildcard edge
@@ -2670,7 +2958,9 @@ impl GraphJoinInference {
         // 1. Have no explicit target type (wildcard like [r]->)
         // 2. Use polymorphic edge table with $any in schema
         if right_is_polymorphic_any {
-            crate::debug_print!("    🎯 SKIP: Polymorphic $any right node - CTE will handle relationship join");
+            crate::debug_print!(
+                "    🎯 SKIP: Polymorphic $any right node - CTE will handle relationship join"
+            );
             crate::debug_print!("    +- infer_graph_join EXIT\n");
             // Mark the relationship as "joined" to avoid issues in subsequent processing
             joined_entities.insert(graph_rel.alias.clone());
@@ -2730,7 +3020,8 @@ impl GraphJoinInference {
             Self::is_node_referenced(&graph_rel.left_connection, plan_ctx, &root_plan);
         crate::debug_print!(
             "    � LEFT '{}' referenced: {}",
-            graph_rel.left_connection, left_is_referenced
+            graph_rel.left_connection,
+            left_is_referenced
         );
 
         crate::debug_print!(
@@ -2741,7 +3032,8 @@ impl GraphJoinInference {
             Self::is_node_referenced(&graph_rel.right_connection, plan_ctx, &root_plan);
         crate::debug_print!(
             "    � RIGHT '{}' referenced: {}",
-            graph_rel.right_connection, right_is_referenced
+            graph_rel.right_connection,
+            right_is_referenced
         );
 
         // Extract all necessary data from graph_context BEFORE passing plan_ctx mutably
@@ -2770,17 +3062,34 @@ impl GraphJoinInference {
                 graph_schema,
                 Pass::GraphJoinInference,
             )?;
-            
+
             (
                 graph_context.left.alias.to_string(),
                 graph_context.rel.alias.to_string(),
                 graph_context.right.alias.to_string(),
-                graph_context.left.schema.node_id.columns().first().unwrap_or(&"id").to_string(),
-                graph_context.right.schema.node_id.columns().first().unwrap_or(&"id").to_string(),
+                graph_context
+                    .left
+                    .schema
+                    .node_id
+                    .columns()
+                    .first()
+                    .unwrap_or(&"id")
+                    .to_string(),
+                graph_context
+                    .right
+                    .schema
+                    .node_id
+                    .columns()
+                    .first()
+                    .unwrap_or(&"id")
+                    .to_string(),
                 graph_context.left.label.clone(),
                 graph_context.right.label.clone(),
                 // Get all labels from table_ctx for polymorphic IN clause support
-                graph_context.rel.table_ctx.get_labels()
+                graph_context
+                    .rel
+                    .table_ctx
+                    .get_labels()
                     .cloned()
                     .unwrap_or_else(|| vec![graph_context.rel.label.clone()]),
                 graph_context.left.schema.clone(),
@@ -2828,7 +3137,7 @@ impl GraphJoinInference {
         // ============================================================
         // Phase 4: Use PatternSchemaContext for exhaustive pattern matching
         // ============================================================
-        
+
         // Get previous edge info for multi-hop detection
         // This is critical for EdgeToEdge and CoupledSameRow strategies
         // Store in locals to avoid lifetime issues with borrowed references
@@ -2840,20 +3149,24 @@ impl GraphJoinInference {
                     left_alias, prev_alias, prev_type, is_from);
                 (prev_alias.clone(), prev_type.clone(), is_from)
             });
-        
+
         // Convert owned strings to borrowed references for the API
-        let prev_edge_info: Option<(&str, &str, bool)> = prev_edge_data.as_ref()
+        let prev_edge_info: Option<(&str, &str, bool)> = prev_edge_data
+            .as_ref()
             .map(|(alias, rel_type, is_from)| (alias.as_str(), rel_type.as_str(), *is_from));
-        
+
         // Compute PatternSchemaContext for this pattern
-        let ctx = self.compute_pattern_context(graph_rel, plan_ctx, graph_schema, prev_edge_info)
-            .ok_or_else(|| AnalyzerError::SchemaNotFound(
-                format!("Pattern context for: left={}, rel={}, right={}",
-                    left_alias, rel_alias, right_alias)
-            ))?;
-        
+        let ctx = self
+            .compute_pattern_context(graph_rel, plan_ctx, graph_schema, prev_edge_info)
+            .ok_or_else(|| {
+                AnalyzerError::SchemaNotFound(format!(
+                    "Pattern context for: left={}, rel={}, right={}",
+                    left_alias, rel_alias, right_alias
+                ))
+            })?;
+
         crate::debug_print!("    🔬 Using PatternSchemaContext: {}", ctx.debug_summary());
-        
+
         let result = self.handle_graph_pattern_v2(
             &ctx,
             &left_alias,
@@ -2884,7 +3197,6 @@ impl GraphJoinInference {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::{
         graph_catalog::graph_schema::{NodeIdSchema, NodeSchema, RelationshipSchema},
         query_planner::{
@@ -2895,6 +3207,7 @@ mod tests {
             plan_ctx::{PlanCtx, TableCtx},
         },
     };
+    use std::collections::HashMap;
 
     fn create_test_graph_schema() -> GraphSchema {
         let mut nodes = HashMap::new();
@@ -2908,19 +3221,18 @@ mod tests {
                 table_name: "Person".to_string(),
                 column_names: vec!["id".to_string(), "name".to_string(), "age".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
-                ),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
                 use_final: None,
-            filter: None,
+                filter: None,
                 is_denormalized: false,
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
 
@@ -2932,19 +3244,18 @@ mod tests {
                 table_name: "Company".to_string(),
                 column_names: vec!["id".to_string(), "name".to_string(), "founded".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
-                ),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
                 use_final: None,
-            filter: None,
+                filter: None,
                 is_denormalized: false,
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
 
@@ -2969,7 +3280,7 @@ mod tests {
                 view_parameters: None,
                 engine: None,
                 use_final: None,
-            filter: None,
+                filter: None,
                 edge_id: None,
                 type_column: None,
                 from_label_column: None,
@@ -2978,7 +3289,7 @@ mod tests {
                 to_label_values: None,
                 from_node_properties: None,
                 to_node_properties: None,
-            is_fk_edge: false,
+                is_fk_edge: false,
             },
         );
 
@@ -3003,7 +3314,7 @@ mod tests {
                 view_parameters: None,
                 engine: None,
                 use_final: None,
-            filter: None,
+                filter: None,
                 edge_id: None,
                 type_column: None,
                 from_label_column: None,
@@ -3012,7 +3323,7 @@ mod tests {
                 to_label_values: None,
                 from_node_properties: None,
                 to_node_properties: None,
-            is_fk_edge: false,
+                is_fk_edge: false,
             },
         );
 
@@ -3110,7 +3421,11 @@ mod tests {
         }))
     }
 
-    fn create_graph_node(input: Arc<LogicalPlan>, alias: &str, is_denormalized: bool) -> Arc<LogicalPlan> {
+    fn create_graph_node(
+        input: Arc<LogicalPlan>,
+        alias: &str,
+        is_denormalized: bool,
+    ) -> Arc<LogicalPlan> {
         Arc::new(LogicalPlan::GraphNode(GraphNode {
             input,
             alias: alias.to_string(),
@@ -3134,7 +3449,7 @@ mod tests {
         } else {
             None
         };
-        
+
         Arc::new(LogicalPlan::GraphRel(GraphRel {
             left,
             center,
@@ -3210,7 +3525,9 @@ mod tests {
             items: vec![ProjectionItem {
                 expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias("p1".to_string()),
-                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "name".to_string(),
+                    ),
                 }),
                 col_alias: None,
             }],
@@ -3336,7 +3653,9 @@ mod tests {
             items: vec![ProjectionItem {
                 expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias("p1".to_string()),
-                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "name".to_string(),
+                    ),
                 }),
                 col_alias: None,
             }],
@@ -3446,7 +3765,9 @@ mod tests {
             items: vec![ProjectionItem {
                 expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias("p1".to_string()),
-                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "name".to_string(),
+                    ),
                 }),
                 col_alias: None,
             }],
@@ -3538,7 +3859,9 @@ mod tests {
             items: vec![ProjectionItem {
                 expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias("p1".to_string()),
-                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "name".to_string(),
+                    ),
                 }),
                 col_alias: None,
             }],
@@ -3605,10 +3928,7 @@ mod tests {
                         assert_eq!(join_condition.operator, Operator::Equal);
                         assert_eq!(join_condition.operands.len(), 2);
 
-                        match (
-                            &join_condition.operands[0],
-                            &join_condition.operands[1],
-                        ) {
+                        match (&join_condition.operands[0], &join_condition.operands[1]) {
                             (
                                 LogicalExpr::PropertyAccessExp(node_prop),
                                 LogicalExpr::PropertyAccessExp(rel_prop),
@@ -3656,20 +3976,22 @@ mod tests {
 
         // After construction normalization: left=FROM (p1), right=TO (p2)
         let graph_rel = create_graph_rel(
-            p1_node,  // left = FROM node (p1 is the follower/source)
+            p1_node, // left = FROM node (p1 is the follower/source)
             f1_scan,
-            p2_node,  // right = TO node (p2 is the followed/target)
+            p2_node, // right = TO node (p2 is the followed/target)
             "f1",
             Direction::Incoming,
-            "p1",     // left_connection = FROM node
-            "p2",     // right_connection = TO node
+            "p1", // left_connection = FROM node
+            "p2", // right_connection = TO node
         );
         let input_logical_plan = Arc::new(LogicalPlan::Projection(Projection {
             input: graph_rel,
             items: vec![ProjectionItem {
                 expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias("p1".to_string()),
-                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "name".to_string(),
+                    ),
                 }),
                 col_alias: None,
             }],
@@ -3720,7 +4042,7 @@ mod tests {
                                 LogicalExpr::PropertyAccessExp(anchor_prop),
                             ) => {
                                 assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.raw(), "from_id");  // p1 is FROM/source, connects via from_id
+                                assert_eq!(rel_prop.column.raw(), "from_id"); // p1 is FROM/source, connects via from_id
                                 assert_eq!(anchor_prop.table_alias.0, "p1");
                                 assert_eq!(anchor_prop.column.raw(), "id");
                             }
@@ -3747,7 +4069,7 @@ mod tests {
                                 assert_eq!(p2_prop.table_alias.0, "p2");
                                 assert_eq!(p2_prop.column.raw(), "id");
                                 assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.raw(), "to_id");  // p2 is TO/target, connects via to_id
+                                assert_eq!(rel_prop.column.raw(), "to_id"); // p2 is TO/target, connects via to_id
                             }
                             _ => panic!("Expected PropertyAccessExp operands for p2 join"),
                         }
@@ -3810,7 +4132,9 @@ mod tests {
             items: vec![ProjectionItem {
                 expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias("p1".to_string()),
-                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "name".to_string(),
+                    ),
                 }),
                 col_alias: None,
             }],
@@ -3845,11 +4169,9 @@ mod tests {
                             graph_joins.joins.iter().map(|j| &j.table_alias).collect();
 
                         // Should contain joins for both relationships
-                        assert!(
-                            rel_aliases
-                                .iter()
-                                .any(|&alias| alias == "f1" || alias == "w1")
-                        );
+                        assert!(rel_aliases
+                            .iter()
+                            .any(|&alias| alias == "f1" || alias == "w1"));
 
                         // Should have joins for both relationships in the chain: (p1)-[f1:FOLLOWS]->(p2)-[w1:WORKS_AT]->(c1)
                         // Plus the referenced node (p1) and intermediate node (p2)
@@ -4011,10 +4333,10 @@ mod tests {
     }
 
     // ===== FK-Edge Pattern Tests =====
-    
+
     fn create_self_referencing_fk_schema() -> GraphSchema {
         use crate::graph_catalog::expression_parser::PropertyValue;
-        
+
         let mut nodes = HashMap::new();
         let mut relationships = HashMap::new();
 
@@ -4024,15 +4346,28 @@ mod tests {
             NodeSchema {
                 database: "test".to_string(),
                 table_name: "fs_objects".to_string(),
-                column_names: vec!["object_id".to_string(), "name".to_string(), "type".to_string(), "parent_id".to_string()],
+                column_names: vec![
+                    "object_id".to_string(),
+                    "name".to_string(),
+                    "type".to_string(),
+                    "parent_id".to_string(),
+                ],
                 primary_keys: "object_id".to_string(),
-                node_id: NodeIdSchema::single("object_id".to_string(), "UInt64".to_string(),
-                ),
+                node_id: NodeIdSchema::single("object_id".to_string(), "UInt64".to_string()),
                 property_mappings: {
                     let mut props = HashMap::new();
-                    props.insert("object_id".to_string(), PropertyValue::Column("object_id".to_string()));
-                    props.insert("name".to_string(), PropertyValue::Column("name".to_string()));
-                    props.insert("type".to_string(), PropertyValue::Column("type".to_string()));
+                    props.insert(
+                        "object_id".to_string(),
+                        PropertyValue::Column("object_id".to_string()),
+                    );
+                    props.insert(
+                        "name".to_string(),
+                        PropertyValue::Column("name".to_string()),
+                    );
+                    props.insert(
+                        "type".to_string(),
+                        PropertyValue::Column("type".to_string()),
+                    );
                     props
                 },
                 view_parameters: None,
@@ -4043,8 +4378,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
 
@@ -4054,12 +4389,12 @@ mod tests {
             "PARENT".to_string(),
             RelationshipSchema {
                 database: "test".to_string(),
-                table_name: "fs_objects".to_string(),  // Same as node table!
+                table_name: "fs_objects".to_string(), // Same as node table!
                 column_names: vec![],
                 from_node: "Object".to_string(),
-                to_node: "Object".to_string(),  // Self-referencing
-                from_id: "parent_id".to_string(),  // FK column
-                to_id: "object_id".to_string(),    // PK column
+                to_node: "Object".to_string(),    // Self-referencing
+                from_id: "parent_id".to_string(), // FK column
+                to_id: "object_id".to_string(),   // PK column
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),
@@ -4075,16 +4410,16 @@ mod tests {
                 to_label_values: None,
                 from_node_properties: None,
                 to_node_properties: None,
-                is_fk_edge: true,  // Self-referencing FK pattern
+                is_fk_edge: true, // Self-referencing FK pattern
             },
         );
 
         GraphSchema::build(1, "test".to_string(), nodes, relationships)
     }
-    
+
     fn create_non_self_referencing_fk_schema() -> GraphSchema {
         use crate::graph_catalog::expression_parser::PropertyValue;
-        
+
         let mut nodes = HashMap::new();
         let mut relationships = HashMap::new();
 
@@ -4094,14 +4429,23 @@ mod tests {
             NodeSchema {
                 database: "test".to_string(),
                 table_name: "orders".to_string(),
-                column_names: vec!["order_id".to_string(), "customer_id".to_string(), "total".to_string()],
+                column_names: vec![
+                    "order_id".to_string(),
+                    "customer_id".to_string(),
+                    "total".to_string(),
+                ],
                 primary_keys: "order_id".to_string(),
-                node_id: NodeIdSchema::single("order_id".to_string(), "UInt64".to_string(),
-                ),
+                node_id: NodeIdSchema::single("order_id".to_string(), "UInt64".to_string()),
                 property_mappings: {
                     let mut props = HashMap::new();
-                    props.insert("order_id".to_string(), PropertyValue::Column("order_id".to_string()));
-                    props.insert("total".to_string(), PropertyValue::Column("total".to_string()));
+                    props.insert(
+                        "order_id".to_string(),
+                        PropertyValue::Column("order_id".to_string()),
+                    );
+                    props.insert(
+                        "total".to_string(),
+                        PropertyValue::Column("total".to_string()),
+                    );
                     props
                 },
                 view_parameters: None,
@@ -4112,11 +4456,11 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
-        
+
         // Create Customer node
         nodes.insert(
             "Customer".to_string(),
@@ -4125,12 +4469,17 @@ mod tests {
                 table_name: "customers".to_string(),
                 column_names: vec!["customer_id".to_string(), "name".to_string()],
                 primary_keys: "customer_id".to_string(),
-                node_id: NodeIdSchema::single("customer_id".to_string(), "UInt64".to_string(),
-                ),
+                node_id: NodeIdSchema::single("customer_id".to_string(), "UInt64".to_string()),
                 property_mappings: {
                     let mut props = HashMap::new();
-                    props.insert("customer_id".to_string(), PropertyValue::Column("customer_id".to_string()));
-                    props.insert("name".to_string(), PropertyValue::Column("name".to_string()));
+                    props.insert(
+                        "customer_id".to_string(),
+                        PropertyValue::Column("customer_id".to_string()),
+                    );
+                    props.insert(
+                        "name".to_string(),
+                        PropertyValue::Column("name".to_string()),
+                    );
                     props
                 },
                 view_parameters: None,
@@ -4141,8 +4490,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
 
@@ -4152,7 +4501,7 @@ mod tests {
             "PLACED_BY".to_string(),
             RelationshipSchema {
                 database: "test".to_string(),
-                table_name: "orders".to_string(),  // Same as Order node table!
+                table_name: "orders".to_string(), // Same as Order node table!
                 column_names: vec![],
                 from_node: "Order".to_string(),
                 to_node: "Customer".to_string(),  // Different table
@@ -4173,56 +4522,59 @@ mod tests {
                 to_label_values: None,
                 from_node_properties: None,
                 to_node_properties: None,
-                is_fk_edge: true,  // FK-edge pattern (non-self-ref)
+                is_fk_edge: true, // FK-edge pattern (non-self-ref)
             },
         );
 
         GraphSchema::build(1, "test".to_string(), nodes, relationships)
     }
-    
+
     #[test]
     fn test_fk_edge_pattern_self_referencing() {
         // Test self-referencing FK: (child:Object)-[:PARENT]->(parent:Object)
         let schema = create_self_referencing_fk_schema();
-        
+
         // Verify schema detected FK pattern
         let rel_schema = schema.get_relationships_schemas().get("PARENT").unwrap();
-        assert!(rel_schema.is_fk_edge, "PARENT relationship should be FK-edge pattern");
+        assert!(
+            rel_schema.is_fk_edge,
+            "PARENT relationship should be FK-edge pattern"
+        );
         assert_eq!(rel_schema.from_node, "Object");
         assert_eq!(rel_schema.to_node, "Object");
-        assert_eq!(rel_schema.from_id, "parent_id");  // FK column
-        assert_eq!(rel_schema.to_id, "object_id");    // PK column
+        assert_eq!(rel_schema.from_id, "parent_id"); // FK column
+        assert_eq!(rel_schema.to_id, "object_id"); // PK column
     }
-    
+
     #[test]
     fn test_fk_edge_pattern_non_self_referencing() {
         // Test non-self-ref FK: (o:Order)-[:PLACED_BY]->(c:Customer)
         let schema = create_non_self_referencing_fk_schema();
-        
+
         // Verify schema detected FK pattern
         let rel_schema = schema.get_relationships_schemas().get("PLACED_BY").unwrap();
-        assert!(rel_schema.is_fk_edge, "PLACED_BY relationship should be FK-edge pattern");
+        assert!(
+            rel_schema.is_fk_edge,
+            "PLACED_BY relationship should be FK-edge pattern"
+        );
         assert_eq!(rel_schema.from_node, "Order");
         assert_eq!(rel_schema.to_node, "Customer");
-        assert_eq!(rel_schema.from_id, "order_id");     // Order's PK
-        assert_eq!(rel_schema.to_id, "customer_id");   // FK to Customer
+        assert_eq!(rel_schema.from_id, "order_id"); // Order's PK
+        assert_eq!(rel_schema.to_id, "customer_id"); // FK to Customer
     }
-    
+
     #[test]
     fn test_standard_edge_is_not_fk_pattern() {
         // Verify standard edge tables are NOT marked as FK pattern
         let schema = create_test_graph_schema();
-        
+
         let follows = schema.get_relationships_schemas().get("FOLLOWS").unwrap();
         assert!(!follows.is_fk_edge, "FOLLOWS should NOT be FK-edge pattern");
-        
+
         let works_at = schema.get_relationships_schemas().get("WORKS_AT").unwrap();
-        assert!(!works_at.is_fk_edge, "WORKS_AT should NOT be FK-edge pattern");
+        assert!(
+            !works_at.is_fk_edge,
+            "WORKS_AT should NOT be FK-edge pattern"
+        );
     }
 }
-
-
-
-
-
-

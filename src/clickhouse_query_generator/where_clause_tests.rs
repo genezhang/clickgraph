@@ -131,7 +131,8 @@ mod where_clause_tests {
 
         // Verify both filters present
         assert!(
-            sql.contains("WHERE start_node.full_name = 'Alice'") || sql.contains("full_name = 'Alice'"),
+            sql.contains("WHERE start_node.full_name = 'Alice'")
+                || sql.contains("full_name = 'Alice'"),
             "Start filter should be in base case. SQL:\n{}",
             sql
         );

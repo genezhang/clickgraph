@@ -8,9 +8,9 @@ use crate::{
     query_planner::logical_plan::plan_builder::build_logical_plan,
     render_plan::plan_builder::RenderPlanBuilder,
 };
+use serial_test::serial;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use serial_test::serial;
 
 // Helper to create empty schema for tests
 fn empty_test_schema() -> GraphSchema {
@@ -766,6 +766,3 @@ mod multiple_relationship_tests {
         }
     }
 }
-
-
-

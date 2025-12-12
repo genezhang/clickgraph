@@ -17,12 +17,15 @@
 
 use std::sync::Arc;
 
-use crate::graph_catalog::GraphSchema;
 use crate::graph_catalog::expression_parser::PropertyValue;
+use crate::graph_catalog::GraphSchema;
 use crate::query_planner::analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult};
-use crate::query_planner::logical_expr::{Direction, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias};
+use crate::query_planner::logical_expr::{
+    Direction, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
+};
 use crate::query_planner::logical_plan::{
-    Filter, GraphNode, GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, ProjectionKind, Union, UnionType,
+    Filter, GraphNode, GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem,
+    Union, UnionType,
 };
 use crate::query_planner::plan_ctx::PlanCtx;
 use crate::query_planner::transformed::Transformed;
@@ -49,39 +52,43 @@ fn transform_bidirectional(
         LogicalPlan::GraphRel(graph_rel) => {
             // Collect all undirected edges in this path to handle multi-hop patterns correctly
             let undirected_count = count_undirected_edges(plan);
-            
+
             if undirected_count > 0 {
                 crate::debug_print!(
                     "🔄 BidirectionalUnion: Found {} undirected edge(s) in path, generating {} UNION branches",
                     undirected_count,
                     1 << undirected_count  // 2^n
                 );
-                
+
                 // Generate all 2^n direction combinations
-                let branches = generate_direction_combinations(plan, undirected_count, graph_schema);
-                
+                let branches =
+                    generate_direction_combinations(plan, undirected_count, graph_schema);
+
                 if branches.len() == 1 {
                     // Only one branch (shouldn't happen if undirected_count > 0, but handle it)
                     return Ok(Transformed::Yes(branches.into_iter().next().unwrap()));
                 }
-                
+
                 // Create Union of all branches
                 let union = Union {
                     inputs: branches,
                     union_type: UnionType::All,
                 };
-                
+
                 crate::debug_print!(
                     "🔄 BidirectionalUnion: Created UNION ALL with {} branches for multi-hop pattern",
                     union.inputs.len()
                 );
-                
+
                 Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(union))))
             } else {
                 // No undirected edges, just recurse into children (they might have undirected patterns)
-                let transformed_left = transform_bidirectional(&graph_rel.left, plan_ctx, graph_schema)?;
-                let transformed_center = transform_bidirectional(&graph_rel.center, plan_ctx, graph_schema)?;
-                let transformed_right = transform_bidirectional(&graph_rel.right, plan_ctx, graph_schema)?;
+                let transformed_left =
+                    transform_bidirectional(&graph_rel.left, plan_ctx, graph_schema)?;
+                let transformed_center =
+                    transform_bidirectional(&graph_rel.center, plan_ctx, graph_schema)?;
+                let transformed_right =
+                    transform_bidirectional(&graph_rel.right, plan_ctx, graph_schema)?;
 
                 if matches!(
                     (&transformed_left, &transformed_center, &transformed_right),
@@ -114,32 +121,33 @@ fn transform_bidirectional(
             // If so, we need to handle the Projection AND the GraphRel together
             // so that column swaps are properly applied to the projection items
             let undirected_count = count_undirected_edges(&proj.input);
-            
+
             if undirected_count > 0 {
                 crate::debug_print!(
                     "🔄 BidirectionalUnion: Found {} undirected edge(s) in Projection input, generating {} UNION branches",
                     undirected_count,
                     1 << undirected_count
                 );
-                
+
                 // Generate direction combinations for the ENTIRE Projection(GraphRel) tree
                 // This ensures column swaps are applied to the projection items
-                let branches = generate_direction_combinations(plan, undirected_count, graph_schema);
-                
+                let branches =
+                    generate_direction_combinations(plan, undirected_count, graph_schema);
+
                 if branches.len() == 1 {
                     return Ok(Transformed::Yes(branches.into_iter().next().unwrap()));
                 }
-                
+
                 let union = Union {
                     inputs: branches,
                     union_type: UnionType::All,
                 };
-                
+
                 crate::debug_print!(
                     "🔄 BidirectionalUnion: Created UNION ALL with {} branches (with column swaps)",
                     union.inputs.len()
                 );
-                
+
                 Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(union))))
             } else {
                 // No undirected edges, just recurse normally
@@ -152,7 +160,9 @@ fn transform_bidirectional(
                             kind: proj.kind.clone(),
                             distinct: proj.distinct,
                         };
-                        Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(new_proj))))
+                        Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
+                            new_proj,
+                        ))))
                     }
                     Transformed::No(_) => Ok(Transformed::No(plan.clone())),
                 }
@@ -273,7 +283,9 @@ fn transform_bidirectional(
                         is_materialization_boundary: group_by.is_materialization_boundary,
                         exposed_alias: group_by.exposed_alias.clone(),
                     };
-                    Ok(Transformed::Yes(Arc::new(LogicalPlan::GroupBy(new_group_by))))
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::GroupBy(
+                        new_group_by,
+                    ))))
                 }
                 Transformed::No(_) => Ok(Transformed::No(plan.clone())),
             }
@@ -297,8 +309,11 @@ fn transform_bidirectional(
         LogicalPlan::CartesianProduct(cp) => {
             let transformed_left = transform_bidirectional(&cp.left, plan_ctx, graph_schema)?;
             let transformed_right = transform_bidirectional(&cp.right, plan_ctx, graph_schema)?;
-            
-            if matches!((&transformed_left, &transformed_right), (Transformed::No(_), Transformed::No(_))) {
+
+            if matches!(
+                (&transformed_left, &transformed_right),
+                (Transformed::No(_), Transformed::No(_))
+            ) {
                 Ok(Transformed::No(plan.clone()))
             } else {
                 let new_cp = crate::query_planner::logical_plan::CartesianProduct {
@@ -313,7 +328,9 @@ fn transform_bidirectional(
                     is_optional: cp.is_optional,
                     join_condition: cp.join_condition.clone(),
                 };
-                Ok(Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(new_cp))))
+                Ok(Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
+                    new_cp,
+                ))))
             }
         }
 
@@ -331,11 +348,12 @@ fn transform_bidirectional(
                 "🔄 BidirectionalUnion: Processing WithClause boundary (exports: {:?})",
                 with_clause.exported_aliases
             );
-            
+
             // Transform only the input (the query segment BEFORE this WITH)
             // Any bidirectional patterns in the input will be expanded to Union WITHIN this scope
-            let transformed_input = transform_bidirectional(&with_clause.input, plan_ctx, graph_schema)?;
-            
+            let transformed_input =
+                transform_bidirectional(&with_clause.input, plan_ctx, graph_schema)?;
+
             match transformed_input {
                 Transformed::Yes(new_input) => {
                     // The input was transformed (may now be a Union)
@@ -350,7 +368,9 @@ fn transform_bidirectional(
                         where_clause: with_clause.where_clause.clone(),
                         exported_aliases: with_clause.exported_aliases.clone(),
                     };
-                    Ok(Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with))))
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::WithClause(
+                        new_with,
+                    ))))
                 }
                 Transformed::No(_) => {
                     // No transformation needed
@@ -368,7 +388,11 @@ fn transform_bidirectional(
 fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
     match plan.as_ref() {
         LogicalPlan::GraphRel(graph_rel) => {
-            let self_count = if graph_rel.direction == Direction::Either { 1 } else { 0 };
+            let self_count = if graph_rel.direction == Direction::Either {
+                1
+            } else {
+                0
+            };
             let left_count = count_undirected_edges(&graph_rel.left);
             // CRITICAL FIX: Also recurse into right branch to find nested undirected edges
             // Without this, patterns like (a)-[:R1]-(b)<-[:R2]-(c) miss the R1 edge
@@ -376,18 +400,9 @@ fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
             self_count + left_count + right_count
         }
         LogicalPlan::Projection(proj) => {
-            // CRITICAL: WITH clause (ProjectionKind::With) creates a scope boundary.
-            // Undirected edges BEFORE a WITH have already been resolved into Union branches
-            // within the WITH's scope. Do NOT count them again for projections AFTER the WITH.
-            if proj.kind == ProjectionKind::With {
-                // Stop here - this is a WITH boundary
-                crate::debug_print!(
-                    "🔄 BidirectionalUnion: Stopping undirected edge count at Projection(With) boundary"
-                );
-                0
-            } else {
-                count_undirected_edges(&proj.input)
-            }
+            // Note: Projection(kind: With) no longer exists - WITH uses WithClause instead.
+            // Regular projections don't create scope boundaries - recurse into input.
+            count_undirected_edges(&proj.input)
         }
         // WithClause is an explicit boundary - do NOT count edges beyond it
         LogicalPlan::WithClause(_) => {
@@ -423,26 +438,41 @@ fn collect_relationship_info(plan: &Arc<LogicalPlan>, graph_schema: &GraphSchema
     rels
 }
 
-fn collect_relationship_info_inner(plan: &Arc<LogicalPlan>, graph_schema: &GraphSchema, rels: &mut Vec<RelInfo>) {
+fn collect_relationship_info_inner(
+    plan: &Arc<LogicalPlan>,
+    graph_schema: &GraphSchema,
+    rels: &mut Vec<RelInfo>,
+) {
     match plan.as_ref() {
         LogicalPlan::GraphRel(graph_rel) => {
             // Get from_id/to_id from the center ViewScan
             if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
-                let from_id = scan.from_id.clone().unwrap_or_else(|| "from_id".to_string());
+                let from_id = scan
+                    .from_id
+                    .clone()
+                    .unwrap_or_else(|| "from_id".to_string());
                 let to_id = scan.to_id.clone().unwrap_or_else(|| "to_id".to_string());
-                
+
                 // Look up edge_id from schema using relationship labels
-                let edge_id_cols = graph_rel.labels.as_ref()
+                let edge_id_cols = graph_rel
+                    .labels
+                    .as_ref()
                     .and_then(|labels| {
                         labels.iter().find_map(|label| {
-                            graph_schema.get_relationships_schema_opt(label.as_str())
+                            graph_schema
+                                .get_relationships_schema_opt(label.as_str())
                                 .and_then(|rel_schema| rel_schema.edge_id.as_ref())
-                                .map(|id| id.columns().iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                                .map(|id| {
+                                    id.columns()
+                                        .iter()
+                                        .map(|s| s.to_string())
+                                        .collect::<Vec<_>>()
+                                })
                         })
                     })
                     // Default to [from_id, to_id] if no edge_id defined
                     .unwrap_or_else(|| vec![from_id, to_id]);
-                
+
                 rels.push(RelInfo {
                     alias: graph_rel.alias.clone(),
                     edge_id_cols,
@@ -468,15 +498,15 @@ fn generate_relationship_uniqueness_filter(rels: &[RelInfo]) -> Option<LogicalEx
     if rels.len() < 2 {
         return None; // Need at least 2 relationships
     }
-    
+
     let mut filters = Vec::new();
-    
+
     // Generate pairwise filters: NOT (r1.col1 = r2.col1 AND r1.col2 = r2.col2 AND ...)
     for i in 0..rels.len() {
         for j in (i + 1)..rels.len() {
             let r1 = &rels[i];
             let r2 = &rels[j];
-            
+
             // Build equality comparisons for all edge_id columns
             // If edge_id columns differ between relationships, we can't compare them
             // (this happens when comparing different relationship types)
@@ -484,7 +514,7 @@ fn generate_relationship_uniqueness_filter(rels: &[RelInfo]) -> Option<LogicalEx
                 // Different edge types with different edge_id - they can't be the same edge
                 continue;
             }
-            
+
             // Build: NOT (r1.col1 = r2.col1 AND r1.col2 = r2.col2 AND ...)
             let mut col_equalities = Vec::new();
             for col in &r1.edge_id_cols {
@@ -496,53 +526,64 @@ fn generate_relationship_uniqueness_filter(rels: &[RelInfo]) -> Option<LogicalEx
                     table_alias: TableAlias(r2.alias.clone()),
                     column: PropertyValue::Column(col.clone()),
                 });
-                
+
                 let col_eq = LogicalExpr::OperatorApplicationExp(OperatorApplication {
                     operator: Operator::Equal,
                     operands: vec![r1_col, r2_col],
                 });
                 col_equalities.push(col_eq);
             }
-            
+
             if col_equalities.is_empty() {
                 continue;
             }
-            
+
             // AND all column equalities together
-            let all_equal = col_equalities.into_iter().reduce(|acc, eq| {
-                LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: Operator::And,
-                    operands: vec![acc, eq],
+            let all_equal = col_equalities
+                .into_iter()
+                .reduce(|acc, eq| {
+                    LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::And,
+                        operands: vec![acc, eq],
+                    })
                 })
-            }).unwrap();
-            
+                .unwrap();
+
             // NOT the result
             let not_equal = LogicalExpr::OperatorApplicationExp(OperatorApplication {
                 operator: Operator::Not,
                 operands: vec![all_equal],
             });
-            
+
             filters.push(not_equal);
         }
     }
-    
+
     if filters.is_empty() {
         return None;
     }
-    
+
     // Combine all filters with AND
-    Some(filters.into_iter().reduce(|acc, filter| {
-        LogicalExpr::OperatorApplicationExp(OperatorApplication {
-            operator: Operator::And,
-            operands: vec![acc, filter],
-        })
-    }).unwrap())
+    Some(
+        filters
+            .into_iter()
+            .reduce(|acc, filter| {
+                LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::And,
+                    operands: vec![acc, filter],
+                })
+            })
+            .unwrap(),
+    )
 }
 
 /// Wrap a plan with a relationship uniqueness filter if needed
-fn wrap_with_uniqueness_filter(plan: Arc<LogicalPlan>, graph_schema: &GraphSchema) -> Arc<LogicalPlan> {
+fn wrap_with_uniqueness_filter(
+    plan: Arc<LogicalPlan>,
+    graph_schema: &GraphSchema,
+) -> Arc<LogicalPlan> {
     let rels = collect_relationship_info(&plan, graph_schema);
-    
+
     if let Some(filter_expr) = generate_relationship_uniqueness_filter(&rels) {
         crate::debug_print!(
             "🔒 BidirectionalUnion: Adding relationship uniqueness filter for {} relationships (edge_id_cols: {:?})",
@@ -560,24 +601,28 @@ fn wrap_with_uniqueness_filter(plan: Arc<LogicalPlan>, graph_schema: &GraphSchem
 
 /// Generate all 2^n direction combinations for a path with n undirected edges.
 /// Each combination produces a fully-directed plan structure with correctly swapped columns.
-fn generate_direction_combinations(plan: &Arc<LogicalPlan>, undirected_count: usize, graph_schema: &GraphSchema) -> Vec<Arc<LogicalPlan>> {
+fn generate_direction_combinations(
+    plan: &Arc<LogicalPlan>,
+    undirected_count: usize,
+    graph_schema: &GraphSchema,
+) -> Vec<Arc<LogicalPlan>> {
     let total_combinations = 1 << undirected_count; // 2^n
     let mut branches = Vec::with_capacity(total_combinations);
-    
+
     for combination in 0..total_combinations {
         // Each bit in `combination` represents the direction of an undirected edge:
         // 0 = Outgoing, 1 = Incoming
         let mut column_swaps: ColumnSwapMap = std::collections::HashMap::new();
         let branch = apply_direction_combination(plan, combination, &mut column_swaps);
-        
+
         // Apply relationship uniqueness filter to prevent same edge from being used twice.
         // Uses edge_id columns from schema (or defaults to [from_id, to_id]).
         // This ensures Neo4j-compatible behavior where relationship instances are unique in paths.
         let filtered_branch = wrap_with_uniqueness_filter(branch, graph_schema);
-        
+
         branches.push(filtered_branch);
     }
-    
+
     branches
 }
 
@@ -604,9 +649,19 @@ fn apply_direction_combination_inner(
             // Recurse into BOTH left and right subtrees to handle nested undirected edges
             // This is critical for patterns like (a)-[:R1]-(b)<-[:R2]-(c) where the
             // undirected R1 edge is in the right branch of the outer R2 GraphRel.
-            let new_left = apply_direction_combination_inner(&graph_rel.left, combination, bit_position, column_swaps);
-            let new_right = apply_direction_combination_inner(&graph_rel.right, combination, bit_position, column_swaps);
-            
+            let new_left = apply_direction_combination_inner(
+                &graph_rel.left,
+                combination,
+                bit_position,
+                column_swaps,
+            );
+            let new_right = apply_direction_combination_inner(
+                &graph_rel.right,
+                combination,
+                bit_position,
+                column_swaps,
+            );
+
             // Determine this edge's direction
             let new_direction = if graph_rel.direction == Direction::Either {
                 let dir = if (combination >> *bit_position) & 1 == 0 {
@@ -615,9 +670,9 @@ fn apply_direction_combination_inner(
                     Direction::Incoming
                 };
                 *bit_position += 1;
-                
+
                 // For Incoming direction with denormalized nodes, record column swap info
-                // 
+                //
                 // In the plan, `a.code` is resolved to `a.Origin` (using node alias + column from from_props).
                 // For Incoming direction, we need to swap:
                 // - left_connection (e.g., "a") properties: from columns → to columns
@@ -626,23 +681,25 @@ fn apply_direction_combination_inner(
                 // So swap map should be keyed by node alias, not edge alias.
                 if dir == Direction::Incoming {
                     if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
-                        if let (Some(from_props), Some(to_props)) = (&scan.from_node_properties, &scan.to_node_properties) {
+                        if let (Some(from_props), Some(to_props)) =
+                            (&scan.from_node_properties, &scan.to_node_properties)
+                        {
                             let left_node = &graph_rel.left_connection;
                             let right_node = &graph_rel.right_connection;
-                            
+
                             // For each property, find the corresponding from and to columns
                             for (prop_name, from_col) in from_props {
                                 if let Some(to_col) = to_props.get(prop_name) {
                                     let from_col_name = from_col.raw().to_string();
                                     let to_col_name = to_col.raw().to_string();
-                                    
+
                                     if from_col_name != to_col_name {
                                         // For left_connection node: from → to (e.g., a.Origin → a.Dest)
                                         column_swaps.insert(
                                             (left_node.clone(), from_col_name.clone()),
                                             to_col_name.clone(),
                                         );
-                                        
+
                                         // For right_connection node: to → from (e.g., b.Dest → b.Origin)
                                         column_swaps.insert(
                                             (right_node.clone(), to_col_name.clone()),
@@ -654,38 +711,39 @@ fn apply_direction_combination_inner(
                         }
                     }
                 }
-                
+
                 dir
             } else {
                 graph_rel.direction.clone()
             };
-            
+
             // For Incoming direction (from bidirectional transformation), swap left/right both:
             // 1. The plan structures (left ↔ right) - so FROM/TO tables are swapped
             // 2. The connection strings (left_connection ↔ right_connection)
-            // 
+            //
             // This maintains the invariant that left is FROM and right is TO in the generated SQL.
             // The parser already does this swap for explicitly-written incoming patterns like (a)<-[r]-(b),
             // so we need to do the same when we create an Incoming branch from an Either pattern.
-            let (final_left, final_right, new_left_connection, new_right_connection) = 
-                if new_direction == Direction::Incoming && graph_rel.direction == Direction::Either {
+            let (final_left, final_right, new_left_connection, new_right_connection) =
+                if new_direction == Direction::Incoming && graph_rel.direction == Direction::Either
+                {
                     // Swap both plan structures and connections for the Incoming branch
                     // new_left/new_right were from recursively processing graph_rel.left/right
                     (
-                        new_right,  // Right becomes left (FROM table)
-                        new_left,   // Left becomes right (TO table)
-                        graph_rel.right_connection.clone(),  // Swap connections too
+                        new_right,                          // Right becomes left (FROM table)
+                        new_left,                           // Left becomes right (TO table)
+                        graph_rel.right_connection.clone(), // Swap connections too
                         graph_rel.left_connection.clone(),
                     )
                 } else {
                     (
                         new_left,
-                        new_right,  // Use recursively processed right
+                        new_right, // Use recursively processed right
                         graph_rel.left_connection.clone(),
                         graph_rel.right_connection.clone(),
                     )
                 };
-            
+
             // Create new GraphRel with the determined direction
             Arc::new(LogicalPlan::GraphRel(GraphRel {
                 left: final_left,
@@ -707,8 +765,13 @@ fn apply_direction_combination_inner(
         }
         LogicalPlan::Projection(proj) => {
             // Recurse into input first to build column_swaps
-            let new_input = apply_direction_combination_inner(&proj.input, combination, bit_position, column_swaps);
-            
+            let new_input = apply_direction_combination_inner(
+                &proj.input,
+                combination,
+                bit_position,
+                column_swaps,
+            );
+
             // Now apply column swaps to projection items
             let new_items = if !column_swaps.is_empty() {
                 proj.items
@@ -718,7 +781,7 @@ fn apply_direction_combination_inner(
             } else {
                 proj.items.clone()
             };
-            
+
             Arc::new(LogicalPlan::Projection(Projection {
                 input: new_input,
                 items: new_items,
@@ -727,7 +790,12 @@ fn apply_direction_combination_inner(
             }))
         }
         LogicalPlan::Filter(filter) => {
-            let new_input = apply_direction_combination_inner(&filter.input, combination, bit_position, column_swaps);
+            let new_input = apply_direction_combination_inner(
+                &filter.input,
+                combination,
+                bit_position,
+                column_swaps,
+            );
             Arc::new(LogicalPlan::Filter(Filter {
                 input: new_input,
                 predicate: filter.predicate.clone(),
@@ -740,7 +808,10 @@ fn apply_direction_combination_inner(
 
 /// Swap column references in a ProjectionItem based on direction changes
 /// For incoming direction, columns need to be swapped (from ↔ to)
-fn swap_projection_item_columns(item: &ProjectionItem, column_swaps: &ColumnSwapMap) -> ProjectionItem {
+fn swap_projection_item_columns(
+    item: &ProjectionItem,
+    column_swaps: &ColumnSwapMap,
+) -> ProjectionItem {
     ProjectionItem {
         expression: swap_expr_columns(&item.expression, column_swaps),
         col_alias: item.col_alias.clone(),
@@ -754,10 +825,10 @@ fn swap_expr_columns(expr: &LogicalExpr, column_swaps: &ColumnSwapMap) -> Logica
             // Check if this property access needs column swapping
             // The table_alias is the node alias (e.g., "a", "b", "c")
             // column_swaps maps (node_alias, column_name) -> swapped_column_name
-            
+
             let current_col = pa.column.raw();
             let node_alias = &pa.table_alias.0;
-            
+
             // Look up if this (node, column) needs swapping
             let key = (node_alias.clone(), current_col.to_string());
             if let Some(swapped_col) = column_swaps.get(&key) {
@@ -766,27 +837,50 @@ fn swap_expr_columns(expr: &LogicalExpr, column_swaps: &ColumnSwapMap) -> Logica
                     column: PropertyValue::Column(swapped_col.clone()),
                 });
             }
-            
+
             // No swap needed, return as-is
             expr.clone()
         }
-        LogicalExpr::OperatorApplicationExp(op) => {
-            LogicalExpr::OperatorApplicationExp(crate::query_planner::logical_expr::OperatorApplication {
+        LogicalExpr::OperatorApplicationExp(op) => LogicalExpr::OperatorApplicationExp(
+            crate::query_planner::logical_expr::OperatorApplication {
                 operator: op.operator.clone(),
-                operands: op.operands.iter().map(|o| swap_expr_columns(o, column_swaps)).collect(),
-            })
-        }
+                operands: op
+                    .operands
+                    .iter()
+                    .map(|o| swap_expr_columns(o, column_swaps))
+                    .collect(),
+            },
+        ),
         LogicalExpr::ScalarFnCall(call) => {
             LogicalExpr::ScalarFnCall(crate::query_planner::logical_expr::ScalarFnCall {
                 name: call.name.clone(),
-                args: call.args.iter().map(|a| swap_expr_columns(a, column_swaps)).collect(),
+                args: call
+                    .args
+                    .iter()
+                    .map(|a| swap_expr_columns(a, column_swaps))
+                    .collect(),
             })
         }
         LogicalExpr::Case(case) => {
             LogicalExpr::Case(crate::query_planner::logical_expr::LogicalCase {
-                expr: case.expr.as_ref().map(|e| Box::new(swap_expr_columns(e, column_swaps))),
-                when_then: case.when_then.iter().map(|(w, t)| (swap_expr_columns(w, column_swaps), swap_expr_columns(t, column_swaps))).collect(),
-                else_expr: case.else_expr.as_ref().map(|e| Box::new(swap_expr_columns(e, column_swaps))),
+                expr: case
+                    .expr
+                    .as_ref()
+                    .map(|e| Box::new(swap_expr_columns(e, column_swaps))),
+                when_then: case
+                    .when_then
+                    .iter()
+                    .map(|(w, t)| {
+                        (
+                            swap_expr_columns(w, column_swaps),
+                            swap_expr_columns(t, column_swaps),
+                        )
+                    })
+                    .collect(),
+                else_expr: case
+                    .else_expr
+                    .as_ref()
+                    .map(|e| Box::new(swap_expr_columns(e, column_swaps))),
             })
         }
         // For other expression types, return as-is
@@ -865,7 +959,8 @@ mod tests {
 
         let plan = Arc::new(LogicalPlan::GraphRel(graph_rel));
         let mut plan_ctx = PlanCtx::default();
-        let graph_schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+        let graph_schema =
+            GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
 
         let result = transform_bidirectional(&plan, &mut plan_ctx, &graph_schema);
         assert!(result.is_ok());
@@ -882,8 +977,14 @@ mod tests {
                         if let LogicalPlan::GraphRel(rel) = union.inputs[0].as_ref() {
                             assert_eq!(rel.direction, Direction::Outgoing);
                             // Outgoing branch: connections stay as original (a->b)
-                            assert_eq!(rel.left_connection, "a", "Outgoing branch should have left_connection='a'");
-                            assert_eq!(rel.right_connection, "b", "Outgoing branch should have right_connection='b'");
+                            assert_eq!(
+                                rel.left_connection, "a",
+                                "Outgoing branch should have left_connection='a'"
+                            );
+                            assert_eq!(
+                                rel.right_connection, "b",
+                                "Outgoing branch should have right_connection='b'"
+                            );
                         } else {
                             panic!("Expected GraphRel in first union branch");
                         }
@@ -895,8 +996,14 @@ mod tests {
                             // Incoming branch: connections should be swapped (b->a becomes a<-b)
                             // The parser normalizes so left=FROM, right=TO
                             // For incoming, we swap so JOIN conditions generate correctly
-                            assert_eq!(rel.left_connection, "b", "Incoming branch should have left_connection='b' (swapped)");
-                            assert_eq!(rel.right_connection, "a", "Incoming branch should have right_connection='a' (swapped)");
+                            assert_eq!(
+                                rel.left_connection, "b",
+                                "Incoming branch should have left_connection='b' (swapped)"
+                            );
+                            assert_eq!(
+                                rel.right_connection, "a",
+                                "Incoming branch should have right_connection='a' (swapped)"
+                            );
                         } else {
                             panic!("Expected GraphRel in second union branch");
                         }

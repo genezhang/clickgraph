@@ -48,17 +48,17 @@ pub enum OutputFormat {
 pub enum SqlDialect {
     #[serde(rename = "clickhouse")]
     ClickHouse,
-    
+
     // Future supported databases (not yet implemented - will return UnsupportedDialectError)
     #[serde(rename = "postgresql")]
     PostgreSQL,
-    
+
     #[serde(rename = "duckdb")]
     DuckDB,
-    
+
     #[serde(rename = "mysql")]
     MySQL,
-    
+
     #[serde(rename = "sqlite")]
     SQLite,
 }
@@ -80,7 +80,7 @@ impl SqlDialect {
             SqlDialect::SQLite => "sqlite",
         }
     }
-    
+
     /// Check if this dialect is currently supported (only ClickHouse in v0.5.1)
     pub fn is_supported(&self) -> bool {
         matches!(self, SqlDialect::ClickHouse)
@@ -131,29 +131,29 @@ pub struct SqlOnlyResponse {
 pub struct SqlGenerationRequest {
     /// Cypher query to translate
     pub query: String,
-    
+
     /// Target SQL dialect (default: "clickhouse")
     /// Currently only "clickhouse" is supported. Future: postgresql, duckdb, mysql, sqlite
     #[serde(default)]
     pub target_database: SqlDialect,
-    
+
     /// Schema to use (defaults to "default")
     pub schema_name: Option<String>,
-    
+
     /// Query parameters ($param in Cypher)
     pub parameters: Option<HashMap<String, Value>>,
-    
+
     /// View parameters for multi-tenancy (ClickHouse-specific)
     pub view_parameters: Option<HashMap<String, Value>>,
-    
+
     /// ClickHouse role name for RBAC via SET ROLE (ClickHouse-specific)
     pub role: Option<String>,
-    
+
     /// Pretty-print SQL with indentation (default: false)
     /// Reserved for future SQL formatting feature
     #[allow(dead_code)]
     pub format_sql: Option<bool>,
-    
+
     /// Include logical plan in response (default: false)
     pub include_plan: Option<bool>,
 }
@@ -163,36 +163,36 @@ pub struct SqlGenerationRequest {
 pub struct SqlGenerationResponse {
     /// Original Cypher query
     pub cypher_query: String,
-    
+
     /// Target database dialect ("clickhouse", "postgresql", etc.)
     pub target_database: String,
-    
+
     /// Array of SQL statements to execute in order
     /// Examples:
     /// - ["SELECT ..."] - simple query
     /// - ["SET ROLE analyst", "SELECT ..."] - with RBAC (ClickHouse)
     /// - ["CREATE TEMP TABLE ...", "SELECT ...", "DROP TABLE ..."] - future multi-step
     pub sql: Vec<String>,
-    
+
     /// Query parameters (if any)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parameters: Option<HashMap<String, Value>>,
-    
+
     /// View parameters (ClickHouse-specific)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub view_parameters: Option<HashMap<String, Value>>,
-    
+
     /// RBAC role (ClickHouse-specific)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    
+
     /// Query metadata
     pub metadata: SqlGenerationMetadata,
-    
+
     /// Logical plan (if include_plan=true)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logical_plan: Option<String>,
-    
+
     /// Dialect-specific notes or warnings (future use)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dialect_notes: Option<Vec<String>>,
@@ -203,19 +203,19 @@ pub struct SqlGenerationResponse {
 pub struct SqlGenerationMetadata {
     /// Type of query: "read", "call", etc.
     pub query_type: String,
-    
+
     /// Cache status: "HIT", "MISS"
     pub cache_status: String,
-    
+
     /// Parse time in milliseconds
     pub parse_time_ms: f64,
-    
+
     /// Planning time in milliseconds
     pub planning_time_ms: f64,
-    
+
     /// SQL generation time in milliseconds
     pub sql_generation_time_ms: f64,
-    
+
     /// Total time in milliseconds
     pub total_time_ms: f64,
 }
@@ -225,13 +225,13 @@ pub struct SqlGenerationMetadata {
 pub struct SqlGenerationError {
     /// Original Cypher query
     pub cypher_query: String,
-    
+
     /// Error message
     pub error: String,
-    
+
     /// Error type: "ParseError", "PlanningError", "RenderError", "SqlGenerationError"
     pub error_type: String,
-    
+
     /// Additional error details (if available)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_details: Option<ErrorDetails>,
@@ -243,15 +243,15 @@ pub struct ErrorDetails {
     /// Position in query string
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<usize>,
-    
+
     /// Line number (1-indexed)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<usize>,
-    
+
     /// Column number (1-indexed)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub column: Option<usize>,
-    
+
     /// Helpful hint for fixing the error
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,

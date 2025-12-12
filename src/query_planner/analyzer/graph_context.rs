@@ -4,7 +4,9 @@
 #![allow(dead_code)]
 
 use crate::{
-    graph_catalog::graph_schema::{edge_has_node_properties, GraphSchema, NodeSchema, RelationshipSchema},
+    graph_catalog::graph_schema::{
+        edge_has_node_properties, GraphSchema, NodeSchema, RelationshipSchema,
+    },
     query_planner::{
         analyzer::{
             analyzer_pass::AnalyzerResult,
@@ -103,12 +105,13 @@ pub fn get_graph_context<'a>(
         .replace(format!("_{}", Direction::Either).as_str(), "");
 
     // Get relationship schema for label inference (if needed)
-    let rel_schema_for_inference = graph_schema
-        .get_rel_schema(&original_rel_label)
-        .map_err(|e| AnalyzerError::GraphSchema {
-            pass: pass.clone(),
-            source: e,
-        })?;
+    let rel_schema_for_inference =
+        graph_schema
+            .get_rel_schema(&original_rel_label)
+            .map_err(|e| AnalyzerError::GraphSchema {
+                pass: pass.clone(),
+                source: e,
+            })?;
 
     // Try to get left label, or infer from relationship if anonymous
     // IMPORTANT: Must consider direction when inferring labels!
@@ -116,7 +119,7 @@ pub fn get_graph_context<'a>(
     //   - left (a) connects to to_id, so left label is rel.to_node
     //   - right (b) connects to from_id, so right label is rel.from_node
     // For (a)-[:REL]->(b) with Outgoing direction:
-    //   - left (a) connects to from_id, so left label is rel.from_node  
+    //   - left (a) connects to from_id, so left label is rel.from_node
     //   - right (b) connects to to_id, so right label is rel.to_node
     let left_label = match left_ctx.get_label_str() {
         Ok(label) => label,
@@ -140,7 +143,7 @@ pub fn get_graph_context<'a>(
             }
         }
     };
-    
+
     // NOTE: For polymorphic $any nodes, this function should not be called.
     // The graph_traversal_planning pass should skip $any nodes and let the normal JOIN path handle them.
     // If we reach here with $any, it's a programming error - but we'll handle it gracefully.
@@ -158,7 +161,7 @@ pub fn get_graph_context<'a>(
             pass: pass.clone(),
             source: e,
         })?;
-    
+
     // Handle $any (polymorphic) right node - create a placeholder schema
     // $any means the node type is determined at runtime from the edge's to_label_column
     let right_schema = if right_label == "$any" {
@@ -169,7 +172,10 @@ pub fn get_graph_context<'a>(
     } else {
         graph_schema
             .get_node_schema(&right_label)
-            .map_err(|e| AnalyzerError::GraphSchema { pass: pass.clone(), source: e })?
+            .map_err(|e| AnalyzerError::GraphSchema {
+                pass: pass.clone(),
+                source: e,
+            })?
     };
 
     // Use SQL tuple expressions for node IDs (handles both single and composite)
@@ -181,7 +187,7 @@ pub fn get_graph_context<'a>(
     // use the edge table instead of the node's "primary" table.
     // This handles cases where node data is denormalized onto edge tables.
     let rel_cte_name = format!("{}.{}", rel_schema.database, rel_schema.table_name);
-    
+
     // Left node: check if edge has properties for this node position
     let left_cte_name = if edge_has_node_properties(rel_schema, true) {
         // Edge has from_node_properties - node data is on edge table
@@ -189,7 +195,7 @@ pub fn get_graph_context<'a>(
     } else {
         format!("{}.{}", left_schema.database, left_schema.table_name)
     };
-    
+
     // Right node: check if edge has properties for this node position (skip for $any polymorphic nodes)
     let right_cte_name = if right_label == "$any" {
         // Polymorphic node - doesn't matter, won't be JOINed directly

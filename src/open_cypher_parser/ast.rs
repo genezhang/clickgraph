@@ -121,7 +121,7 @@ pub struct WithClause<'a> {
     pub order_by: Option<OrderByClause<'a>>,
     /// Optional SKIP clause - part of WITH syntax per OpenCypher spec
     pub skip: Option<SkipClause>,
-    /// Optional LIMIT clause - part of WITH syntax per OpenCypher spec  
+    /// Optional LIMIT clause - part of WITH syntax per OpenCypher spec
     pub limit: Option<LimitClause>,
     /// Optional WHERE clause after WITH - filters the intermediate result
     pub where_clause: Option<WhereClause<'a>>,
@@ -401,9 +401,9 @@ pub enum Operator {
     In, // IN [...]
     NotIn,
     // String predicates
-    StartsWith,       // STARTS WITH
-    EndsWith,         // ENDS WITH
-    Contains,         // CONTAINS
+    StartsWith, // STARTS WITH
+    EndsWith,   // ENDS WITH
+    Contains,   // CONTAINS
     // unary
     Not,
     Distinct, // e.g distinct name
@@ -514,7 +514,10 @@ pub enum Expression<'a> {
     /// Label expression: variable:Label
     /// Returns true if the variable has the specified label
     /// Example: message:Comment, n:Person
-    LabelExpression { variable: &'a str, label: &'a str },
+    LabelExpression {
+        variable: &'a str,
+        label: &'a str,
+    },
 }
 
 /// EXISTS subquery: checks if a pattern exists

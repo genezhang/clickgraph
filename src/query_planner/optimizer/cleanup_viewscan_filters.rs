@@ -10,14 +10,14 @@ use crate::query_planner::{
 /// Optimizer pass that clears ViewScan.view_filter after filters have been moved to GraphRel
 ///
 /// This pass runs AFTER FilterIntoGraphRel and removes redundant view_filter fields from
-/// ViewScan nodes that are INSIDE GraphRel contexts. After FilterIntoGraphRel consolidates 
+/// ViewScan nodes that are INSIDE GraphRel contexts. After FilterIntoGraphRel consolidates
 /// all filters into GraphRel.where_predicate, the view_filter fields become redundant.
 ///
 /// IMPORTANT: ViewScan nodes that are NOT inside a GraphRel (e.g., simple node-only queries
 /// like `MATCH (u:User) WHERE u.country = 'USA' RETURN u.name`) must KEEP their view_filter
 /// because there is no GraphRel.where_predicate to hold the filter.
 ///
-/// By clearing view_filter only in GraphRel contexts, we ensure filters are only collected 
+/// By clearing view_filter only in GraphRel contexts, we ensure filters are only collected
 /// from GraphRel.where_predicate for relationship queries, while node-only queries still
 /// work correctly.
 pub struct CleanupViewScanFilters;
@@ -43,51 +43,53 @@ impl CleanupViewScanFilters {
                     Transformed::Yes(new_scan)
                 } else {
                     if scan.view_filter.is_some() {
-                        log::debug!("CleanupViewScanFilters: Keeping view_filter (NOT inside GraphRel)");
+                        log::debug!(
+                            "CleanupViewScanFilters: Keeping view_filter (NOT inside GraphRel)"
+                        );
                     }
                     Transformed::No(logical_plan)
                 }
             }
-            
+
             // Recursively process all other node types, propagating inside_graph_rel context
             LogicalPlan::Projection(proj) => {
-                let input_tf = self.optimize_with_context(proj.input.clone(), plan_ctx, inside_graph_rel)?;
+                let input_tf =
+                    self.optimize_with_context(proj.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
-                    Transformed::Yes(new_input) => {
-                        Transformed::Yes(Arc::new(LogicalPlan::Projection(
-                            crate::query_planner::logical_plan::Projection {
-                                input: new_input,
-                                items: proj.items.clone(),
-                                kind: proj.kind.clone(),
-                                distinct: proj.distinct,
-                            },
-                        )))
-                    }
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(
+                        LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
+                            input: new_input,
+                            items: proj.items.clone(),
+                            kind: proj.kind.clone(),
+                            distinct: proj.distinct,
+                        }),
+                    )),
                     Transformed::No(_) => Transformed::No(logical_plan),
                 }
             }
-            
+
             LogicalPlan::Filter(filter) => {
-                let input_tf = self.optimize_with_context(filter.input.clone(), plan_ctx, inside_graph_rel)?;
+                let input_tf =
+                    self.optimize_with_context(filter.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
-                    Transformed::Yes(new_input) => {
-                        Transformed::Yes(Arc::new(LogicalPlan::Filter(
-                            crate::query_planner::logical_plan::Filter {
-                                input: new_input,
-                                predicate: filter.predicate.clone(),
-                            },
-                        )))
-                    }
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Filter(
+                        crate::query_planner::logical_plan::Filter {
+                            input: new_input,
+                            predicate: filter.predicate.clone(),
+                        },
+                    ))),
                     Transformed::No(_) => Transformed::No(logical_plan),
                 }
             }
-            
+
             LogicalPlan::GraphRel(graph_rel) => {
                 // Mark that we're now inside a GraphRel context
                 let left_tf = self.optimize_with_context(graph_rel.left.clone(), plan_ctx, true)?;
-                let center_tf = self.optimize_with_context(graph_rel.center.clone(), plan_ctx, true)?;
-                let right_tf = self.optimize_with_context(graph_rel.right.clone(), plan_ctx, true)?;
-                
+                let center_tf =
+                    self.optimize_with_context(graph_rel.center.clone(), plan_ctx, true)?;
+                let right_tf =
+                    self.optimize_with_context(graph_rel.right.clone(), plan_ctx, true)?;
+
                 match (left_tf, center_tf, right_tf) {
                     (Transformed::No(_), Transformed::No(_), Transformed::No(_)) => {
                         Transformed::No(logical_plan)
@@ -105,7 +107,7 @@ impl CleanupViewScanFilters {
                             Transformed::Yes(r) => r,
                             Transformed::No(r) => r,
                         };
-                        
+
                         Transformed::Yes(Arc::new(LogicalPlan::GraphRel(
                             crate::query_planner::logical_plan::GraphRel {
                                 left: new_left,
@@ -128,110 +130,115 @@ impl CleanupViewScanFilters {
                     }
                 }
             }
-            
+
             LogicalPlan::GraphNode(graph_node) => {
                 // GraphNode is NOT a GraphRel, so don't set inside_graph_rel = true
-                let input_tf = self.optimize_with_context(graph_node.input.clone(), plan_ctx, inside_graph_rel)?;
+                let input_tf = self.optimize_with_context(
+                    graph_node.input.clone(),
+                    plan_ctx,
+                    inside_graph_rel,
+                )?;
                 match input_tf {
-                    Transformed::Yes(new_input) => {
-                        Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
-                            crate::query_planner::logical_plan::GraphNode {
-                                input: new_input,
-                                alias: graph_node.alias.clone(),
-                                label: graph_node.label.clone(),
-                                is_denormalized: graph_node.is_denormalized,
-                            },
-                        )))
-                    }
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(
+                        LogicalPlan::GraphNode(crate::query_planner::logical_plan::GraphNode {
+                            input: new_input,
+                            alias: graph_node.alias.clone(),
+                            label: graph_node.label.clone(),
+                            is_denormalized: graph_node.is_denormalized,
+                        }),
+                    )),
                     Transformed::No(_) => Transformed::No(logical_plan),
                 }
             }
-            
+
             LogicalPlan::GroupBy(group_by) => {
-                let input_tf = self.optimize_with_context(group_by.input.clone(), plan_ctx, inside_graph_rel)?;
+                let input_tf =
+                    self.optimize_with_context(group_by.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
-                    Transformed::Yes(new_input) => {
-                        Transformed::Yes(Arc::new(LogicalPlan::GroupBy(
-                            crate::query_planner::logical_plan::GroupBy {
-                                input: new_input,
-                                expressions: group_by.expressions.clone(),
-                                having_clause: group_by.having_clause.clone(),
-                                is_materialization_boundary: group_by.is_materialization_boundary,
-                                exposed_alias: group_by.exposed_alias.clone(),
-                            },
-                        )))
-                    }
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(
+                        LogicalPlan::GroupBy(crate::query_planner::logical_plan::GroupBy {
+                            input: new_input,
+                            expressions: group_by.expressions.clone(),
+                            having_clause: group_by.having_clause.clone(),
+                            is_materialization_boundary: group_by.is_materialization_boundary,
+                            exposed_alias: group_by.exposed_alias.clone(),
+                        }),
+                    )),
                     Transformed::No(_) => Transformed::No(logical_plan),
                 }
             }
-            
+
             LogicalPlan::OrderBy(order_by) => {
-                let input_tf = self.optimize_with_context(order_by.input.clone(), plan_ctx, inside_graph_rel)?;
+                let input_tf =
+                    self.optimize_with_context(order_by.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
-                    Transformed::Yes(new_input) => {
-                        Transformed::Yes(Arc::new(LogicalPlan::OrderBy(
-                            crate::query_planner::logical_plan::OrderBy {
-                                input: new_input,
-                                items: order_by.items.clone(),
-                            },
-                        )))
-                    }
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(
+                        LogicalPlan::OrderBy(crate::query_planner::logical_plan::OrderBy {
+                            input: new_input,
+                            items: order_by.items.clone(),
+                        }),
+                    )),
                     Transformed::No(_) => Transformed::No(logical_plan),
                 }
             }
-            
+
             LogicalPlan::Limit(limit) => {
-                let input_tf = self.optimize_with_context(limit.input.clone(), plan_ctx, inside_graph_rel)?;
+                let input_tf =
+                    self.optimize_with_context(limit.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
-                    Transformed::Yes(new_input) => {
-                        Transformed::Yes(Arc::new(LogicalPlan::Limit(
-                            crate::query_planner::logical_plan::Limit {
-                                input: new_input,
-                                count: limit.count,
-                            },
-                        )))
-                    }
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Limit(
+                        crate::query_planner::logical_plan::Limit {
+                            input: new_input,
+                            count: limit.count,
+                        },
+                    ))),
                     Transformed::No(_) => Transformed::No(logical_plan),
                 }
             }
-            
+
             LogicalPlan::Skip(skip) => {
-                let input_tf = self.optimize_with_context(skip.input.clone(), plan_ctx, inside_graph_rel)?;
+                let input_tf =
+                    self.optimize_with_context(skip.input.clone(), plan_ctx, inside_graph_rel)?;
                 match input_tf {
-                    Transformed::Yes(new_input) => {
-                        Transformed::Yes(Arc::new(LogicalPlan::Skip(
-                            crate::query_planner::logical_plan::Skip {
-                                input: new_input,
-                                count: skip.count,
-                            },
-                        )))
-                    }
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Skip(
+                        crate::query_planner::logical_plan::Skip {
+                            input: new_input,
+                            count: skip.count,
+                        },
+                    ))),
                     Transformed::No(_) => Transformed::No(logical_plan),
                 }
             }
-            
+
             LogicalPlan::GraphJoins(graph_joins) => {
-                let input_tf = self.optimize_with_context(graph_joins.input.clone(), plan_ctx, inside_graph_rel)?;
+                let input_tf = self.optimize_with_context(
+                    graph_joins.input.clone(),
+                    plan_ctx,
+                    inside_graph_rel,
+                )?;
                 match input_tf {
-                    Transformed::Yes(new_input) => {
-                        Transformed::Yes(Arc::new(LogicalPlan::GraphJoins(
-                            crate::query_planner::logical_plan::GraphJoins {
-                                input: new_input,
-                                joins: graph_joins.joins.clone(),
-                                optional_aliases: graph_joins.optional_aliases.clone(),
-                                anchor_table: graph_joins.anchor_table.clone(),
-                            },
-                        )))
-                    }
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(
+                        LogicalPlan::GraphJoins(crate::query_planner::logical_plan::GraphJoins {
+                            input: new_input,
+                            joins: graph_joins.joins.clone(),
+                            optional_aliases: graph_joins.optional_aliases.clone(),
+                            anchor_table: graph_joins.anchor_table.clone(),
+                        }),
+                    )),
                     Transformed::No(_) => Transformed::No(logical_plan),
                 }
             }
-            
+
             LogicalPlan::CartesianProduct(cp) => {
-                let transformed_left = self.optimize_with_context(cp.left.clone(), plan_ctx, inside_graph_rel)?;
-                let transformed_right = self.optimize_with_context(cp.right.clone(), plan_ctx, inside_graph_rel)?;
-                
-                if matches!((&transformed_left, &transformed_right), (Transformed::No(_), Transformed::No(_))) {
+                let transformed_left =
+                    self.optimize_with_context(cp.left.clone(), plan_ctx, inside_graph_rel)?;
+                let transformed_right =
+                    self.optimize_with_context(cp.right.clone(), plan_ctx, inside_graph_rel)?;
+
+                if matches!(
+                    (&transformed_left, &transformed_right),
+                    (Transformed::No(_), Transformed::No(_))
+                ) {
                     Transformed::No(logical_plan)
                 } else {
                     let new_cp = crate::query_planner::logical_plan::CartesianProduct {
@@ -249,7 +256,7 @@ impl CleanupViewScanFilters {
                     Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(new_cp)))
                 }
             }
-            
+
             // Leaf nodes - no transformation needed
             LogicalPlan::Empty
             | LogicalPlan::Scan(_)
@@ -257,9 +264,13 @@ impl CleanupViewScanFilters {
             | LogicalPlan::Union(_)
             | LogicalPlan::Cte(_)
             | LogicalPlan::Unwind(_) => Transformed::No(logical_plan),
-            
+
             LogicalPlan::WithClause(with_clause) => {
-                let child_tf = self.optimize_with_context(with_clause.input.clone(), plan_ctx, inside_graph_rel)?;
+                let child_tf = self.optimize_with_context(
+                    with_clause.input.clone(),
+                    plan_ctx,
+                    inside_graph_rel,
+                )?;
                 match child_tf {
                     Transformed::Yes(new_input) => {
                         let new_with = crate::query_planner::logical_plan::WithClause {

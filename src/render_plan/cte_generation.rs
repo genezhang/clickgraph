@@ -238,8 +238,14 @@ pub(crate) fn analyze_property_requirements(
     if let Some((left_alias, right_alias, left_label, right_label, rel_type)) =
         get_variable_length_info(plan)
     {
-        let properties =
-            extract_var_len_properties(plan, &left_alias, &right_alias, &left_label, &right_label, Some(&rel_type));
+        let properties = extract_var_len_properties(
+            plan,
+            &left_alias,
+            &right_alias,
+            &left_label,
+            &right_label,
+            Some(&rel_type),
+        );
         // 🆕 IMMUTABLE PATTERN: Chain the builder method
         return context.with_properties(&left_alias, &right_alias, properties);
     }
@@ -395,9 +401,13 @@ pub(crate) fn extract_var_len_properties(
                             }
                         } else {
                             // Regular property - use denormalized-aware mapping
-                            let column_name =
-                                map_property_to_column_with_relationship_context(property_name, node_label, relationship_type, None)
-                                    .unwrap_or_else(|_| property_name.to_string());
+                            let column_name = map_property_to_column_with_relationship_context(
+                                property_name,
+                                node_label,
+                                relationship_type,
+                                None,
+                            )
+                            .unwrap_or_else(|_| property_name.to_string());
                             let alias = property_name.to_string();
 
                             properties.push(NodeProperty {

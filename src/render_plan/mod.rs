@@ -107,7 +107,7 @@ pub enum JoinType {
 
 /// ARRAY JOIN item for ClickHouse
 /// Maps from Cypher UNWIND clause
-/// 
+///
 /// Example: UNWIND r.items AS item
 /// Generates: ARRAY JOIN r.items AS item
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Default)]
@@ -145,7 +145,7 @@ impl TryFrom<LogicalJoin> for Join {
         } else {
             None
         };
-        
+
         let join = Join {
             table_alias: value.table_alias,
             table_name: value.table_name,

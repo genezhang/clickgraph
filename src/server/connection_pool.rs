@@ -93,13 +93,10 @@ pub struct PoolStats {
 impl ConnectionConfig {
     fn from_env() -> Result<Self, String> {
         Ok(Self {
-            url: env::var("CLICKHOUSE_URL")
-                .map_err(|_| "CLICKHOUSE_URL not set".to_string())?,
-            user: env::var("CLICKHOUSE_USER")
-                .map_err(|_| "CLICKHOUSE_USER not set".to_string())?,
+            url: env::var("CLICKHOUSE_URL").map_err(|_| "CLICKHOUSE_URL not set".to_string())?,
+            user: env::var("CLICKHOUSE_USER").map_err(|_| "CLICKHOUSE_USER not set".to_string())?,
             // Allow empty password for local development
-            password: env::var("CLICKHOUSE_PASSWORD")
-                .unwrap_or_default(),
+            password: env::var("CLICKHOUSE_PASSWORD").unwrap_or_default(),
             database: env::var("CLICKHOUSE_DATABASE")
                 .map_err(|_| "CLICKHOUSE_DATABASE not set".to_string())?,
         })
@@ -151,7 +148,7 @@ mod tests {
 
         // Verify pools exist (can't compare Client instances directly)
         // ClickHouse Client doesn't implement Debug or PartialEq
-        
+
         // Check stats to verify different roles created different pools
         let stats = pool.stats().await;
         assert_eq!(stats.total_role_pools, 2); // analyst + admin

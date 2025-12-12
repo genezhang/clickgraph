@@ -16,7 +16,7 @@ pub enum SchemaSource {
     Database,
 }
 
-use super::{GLOBAL_SCHEMA_CONFIG, GLOBAL_SCHEMA_CONFIGS, GLOBAL_SCHEMAS, models::GraphCatalog};
+use super::{models::GraphCatalog, GLOBAL_SCHEMAS, GLOBAL_SCHEMA_CONFIG, GLOBAL_SCHEMA_CONFIGS};
 
 /// Test basic ClickHouse connectivity
 async fn test_clickhouse_connection(client: Client) -> Result<(), String> {
@@ -84,15 +84,15 @@ pub async fn initialize_global_schema(
 
     // Try to load from YAML configuration first (preferred approach)
     if let Ok(yaml_config_path) = std::env::var("GRAPH_CONFIG_PATH") {
-        log::info!("Loading schema from GRAPH_CONFIG_PATH: {}", yaml_config_path);
+        log::info!(
+            "Loading schema from GRAPH_CONFIG_PATH: {}",
+            yaml_config_path
+        );
 
         match load_schema_and_config_from_yaml(&yaml_config_path, clickhouse_client.as_ref()).await
         {
             Ok((schema, config)) => {
-                log::info!(
-                    "✓ Loaded schema from YAML: {}",
-                    yaml_config_path
-                );
+                log::info!("✓ Loaded schema from YAML: {}", yaml_config_path);
 
                 // Validate schema against ClickHouse if requested
                 if validate_schema {
@@ -408,7 +408,9 @@ pub async fn load_schema_by_name(
                         }
                     }
                 } else {
-                    log::warn!("  ⚠ Schema validation requested but no ClickHouse client available");
+                    log::warn!(
+                        "  ⚠ Schema validation requested but no ClickHouse client available"
+                    );
                     log::warn!("    Skipping validation - some queries may fail at runtime");
                 }
             }
@@ -471,7 +473,9 @@ pub async fn load_schema_from_content(
                         }
                     }
                 } else {
-                    log::warn!("  ⚠ Schema validation requested but no ClickHouse client available");
+                    log::warn!(
+                        "  ⚠ Schema validation requested but no ClickHouse client available"
+                    );
                     log::warn!("    Skipping validation - some queries may fail at runtime");
                 }
             }
@@ -524,7 +528,7 @@ pub async fn get_graph_catalog(clickhouse_client: Client) -> Result<GraphSchema,
                 let create_graph_catalog_query = "
                 CREATE TABLE graph_catalog (
                     id UInt64,
-                    schema_json String 
+                    schema_json String
                 ) ENGINE = ReplacingMergeTree()
                 ORDER BY id";
 

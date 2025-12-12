@@ -20,10 +20,10 @@ pub const CH_AGG_PREFIX: &str = "chagg.";
 
 /// Registry of known ClickHouse aggregate functions
 /// These functions require GROUP BY when used with non-aggregated columns
-/// 
+///
 /// NOTE: For functions not in this registry, use ch.agg.functionName() to explicitly
 /// mark them as aggregates.
-/// 
+///
 /// Categories:
 /// - Basic: count, sum, avg, min, max, any, anyLast, first_value, last_value
 /// - Unique counting: uniq, uniqExact, uniqCombined, uniqCombined64, uniqHLL12, uniqTheta
@@ -39,7 +39,7 @@ pub const CH_AGG_PREFIX: &str = "chagg.";
 /// - Other: simpleLinearRegression, stochasticLinearRegression, entropy, sparkbar, groupConcat
 static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     let mut s = HashSet::new();
-    
+
     // Basic aggregates
     s.insert("count");
     s.insert("sum");
@@ -51,7 +51,7 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("anyheavy");
     s.insert("first_value");
     s.insert("last_value");
-    
+
     // Unique counting (HyperLogLog variants)
     s.insert("uniq");
     s.insert("uniqexact");
@@ -59,7 +59,7 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("uniqcombined64");
     s.insert("uniqhll12");
     s.insert("uniqtheta");
-    
+
     // Quantiles and percentiles (comprehensive - all ClickHouse quantile variants)
     s.insert("quantile");
     s.insert("quantiles");
@@ -77,8 +77,8 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("quantiletiming");
     s.insert("quantiletimingweighted");
     s.insert("quantiledeterministic");
-    s.insert("quantilegk");  // Greenwald-Khanna algorithm
-    s.insert("quantiledd");  // DDSketch algorithm
+    s.insert("quantilegk"); // Greenwald-Khanna algorithm
+    s.insert("quantiledd"); // DDSketch algorithm
     s.insert("quantileinterpolatedweighted");
     s.insert("quantileprometheushistogram");
     s.insert("quantilesexactexclusive");
@@ -93,7 +93,7 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("mediantdigest");
     s.insert("medianbfloat16");
     s.insert("mediandeterministic");
-    
+
     // Array collection
     s.insert("grouparray");
     s.insert("grouparraysample");
@@ -102,7 +102,7 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("grouparraymovingsum");
     s.insert("grouparraymovingavg");
     s.insert("grouparrayarray");
-    
+
     // Statistics
     s.insert("varpop");
     s.insert("varsamp");
@@ -115,22 +115,22 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("skewsamp");
     s.insert("kurtpop");
     s.insert("kurtsamp");
-    
+
     // TopK
     s.insert("topk");
     s.insert("topkweighted");
-    
+
     // ArgMin/Max
     s.insert("argmin");
     s.insert("argmax");
-    
+
     // Funnel and retention analysis
     s.insert("windowfunnel");
     s.insert("retention");
     s.insert("sequencematch");
     s.insert("sequencecount");
     s.insert("sequencenextnode");
-    
+
     // Bitmap aggregates
     s.insert("groupbitmap");
     s.insert("groupbitmapand");
@@ -139,7 +139,7 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("groupbitand");
     s.insert("groupbitor");
     s.insert("groupbitxor");
-    
+
     // Map aggregates
     s.insert("summap");
     s.insert("minmap");
@@ -147,15 +147,15 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("avgmap");
     s.insert("summapwithoverflow");
     s.insert("sumwithoverflow");
-    
+
     // Histogram
     s.insert("histogram");
-    
+
     // Regression
     s.insert("simplelinearregression");
     s.insert("stochasticlinearregression");
     s.insert("stochasticlogisticregression");
-    
+
     // Statistical tests
     s.insert("studentttest");
     s.insert("studentttestonesample");
@@ -163,7 +163,7 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("kolmogorovsmirnovtest");
     s.insert("meanztest");
     s.insert("analysisofvariance");
-    
+
     // Other useful aggregates
     s.insert("entropy");
     s.insert("mannwhitneyutest");
@@ -190,26 +190,26 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("avgweighted");
     s.insert("largesttrianglethreebuckets");
     s.insert("flamegraph");
-    
+
     // Approx TopK
     s.insert("approx_top_k");
     s.insert("approx_top_sum");
-    
+
     // ArgAnd variants
     s.insert("argandmin");
     s.insert("argandmax");
-    
+
     // Array variants
     s.insert("grouparraylast");
     s.insert("grouparraysorted");
     s.insert("grouparrayintersect");
     s.insert("timeseriesgrouparray");
-    
+
     // Matrix functions
     s.insert("corrmatrix");
     s.insert("covarpopmatrix");
     s.insert("covarsampmatrix");
-    
+
     // Stable variants (numerically stable algorithms)
     s.insert("corrstable");
     s.insert("varpopstable");
@@ -218,17 +218,17 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("stddevsampstable");
     s.insert("covarpopstable");
     s.insert("covarsampstable");
-    
+
     // Delta/rate functions
     s.insert("deltasumtimestamp");
     s.insert("deltasum");
-    
+
     // Merge functions (for combining partial aggregation states)
     s.insert("summerge");
     s.insert("countmerge");
     s.insert("avgmerge");
     s.insert("uniqmerge");
-    
+
     // Time series functions
     s.insert("timeseriesdeltaagrid");
     s.insert("timeseriesinstantdeltatogrid");
@@ -240,7 +240,7 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s.insert("timeseriespredictlineartogrid");
     s.insert("timeserieschangestogrid");
     s.insert("timeseriesresetstogrid");
-    
+
     s
 });
 
@@ -289,12 +289,12 @@ pub fn translate_scalar_function(
     fn_call: &ScalarFnCall,
 ) -> Result<String, ClickhouseQueryGeneratorError> {
     let fn_name = &fn_call.name;
-    
+
     // Check for ClickHouse pass-through prefixes (chagg. or ch.)
     if fn_name.starts_with(CH_AGG_PREFIX) || fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
         return translate_ch_passthrough(fn_call);
     }
-    
+
     let fn_name_lower = fn_name.to_lowercase();
 
     // Special handling for duration() with map argument
@@ -356,24 +356,24 @@ pub fn translate_scalar_function(
 }
 
 /// Translate a ClickHouse pass-through function (ch. prefix)
-/// 
+///
 /// The ch. prefix allows direct access to any ClickHouse function without
 /// requiring a Neo4j mapping. Uses dot notation for Neo4j ecosystem compatibility
 /// (consistent with apoc.*, gds.* patterns). Arguments still undergo property
 /// mapping and parameter substitution.
-/// 
+///
 /// # Examples
 /// ```cypher
 /// // Scalar functions
 /// RETURN ch.cityHash64(u.email) AS hash
 /// RETURN ch.JSONExtractString(u.metadata, 'field') AS field
-/// 
+///
 /// // URL functions
 /// RETURN ch.domain(u.url) AS domain
-/// 
-/// // IP functions  
+///
+/// // IP functions
 /// RETURN ch.IPv4NumToString(u.ip) AS ip_str
-/// 
+///
 /// // Geo functions
 /// RETURN ch.greatCircleDistance(lat1, lon1, lat2, lon2) AS distance
 /// ```
@@ -381,49 +381,56 @@ fn translate_ch_passthrough(
     fn_call: &ScalarFnCall,
 ) -> Result<String, ClickhouseQueryGeneratorError> {
     // Strip the ch. or chagg. prefix to get the raw ClickHouse function name
-    let ch_fn_name = get_ch_function_name(&fn_call.name)
-        .ok_or_else(|| ClickhouseQueryGeneratorError::SchemaError(
-            format!("Expected ch. or chagg. prefix in function name: {}", fn_call.name)
-        ))?;
-    
+    let ch_fn_name = get_ch_function_name(&fn_call.name).ok_or_else(|| {
+        ClickhouseQueryGeneratorError::SchemaError(format!(
+            "Expected ch. or chagg. prefix in function name: {}",
+            fn_call.name
+        ))
+    })?;
+
     if ch_fn_name.is_empty() {
         return Err(ClickhouseQueryGeneratorError::SchemaError(
-            "ch./chagg. prefix requires a function name (e.g., ch.cityHash64, chagg.myAgg)".to_string()
+            "ch./chagg. prefix requires a function name (e.g., ch.cityHash64, chagg.myAgg)"
+                .to_string(),
         ));
     }
-    
+
     // Convert arguments to SQL (this preserves property mapping)
-    let args_sql: Result<Vec<String>, _> =
-        fn_call.args.iter().map(|e| e.to_sql()).collect();
-    
+    let args_sql: Result<Vec<String>, _> = fn_call.args.iter().map(|e| e.to_sql()).collect();
+
     let args_sql = args_sql.map_err(|e| {
         ClickhouseQueryGeneratorError::SchemaError(format!(
             "Failed to convert {} arguments to SQL: {}",
             fn_call.name, e
         ))
     })?;
-    
+
     log::debug!(
         "ClickHouse pass-through: {}({}) -> {}({})",
         fn_call.name,
-        fn_call.args.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>().join(", "),
+        fn_call
+            .args
+            .iter()
+            .map(|a| format!("{:?}", a))
+            .collect::<Vec<_>>()
+            .join(", "),
         ch_fn_name,
         args_sql.join(", ")
     );
-    
+
     // Generate ClickHouse function call directly
     Ok(format!("{}({})", ch_fn_name, args_sql.join(", ")))
 }
 
 /// Translate Neo4j duration({...}) function to ClickHouse interval expressions
-/// 
+///
 /// Neo4j duration supports the following units (all plural and singular forms):
 /// - years, months, weeks, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds
-/// 
+///
 /// ClickHouse interval functions:
 /// - toIntervalYear(n), toIntervalMonth(n), toIntervalWeek(n), toIntervalDay(n)
 /// - toIntervalHour(n), toIntervalMinute(n), toIntervalSecond(n)
-/// 
+///
 /// Examples:
 ///   duration({days: 5}) -> toIntervalDay(5)
 ///   duration({days: 5, hours: 2}) -> (toIntervalDay(5) + toIntervalHour(2))
@@ -434,7 +441,7 @@ fn translate_duration_function(
     // duration() expects exactly one argument which should be a map literal
     if fn_call.args.len() != 1 {
         return Err(ClickhouseQueryGeneratorError::SchemaError(
-            "duration() requires exactly one map argument, e.g., duration({days: 5})".to_string()
+            "duration() requires exactly one map argument, e.g., duration({days: 5})".to_string(),
         ));
     }
 
@@ -443,7 +450,8 @@ fn translate_duration_function(
         LogicalExpr::MapLiteral(entries) => {
             if entries.is_empty() {
                 return Err(ClickhouseQueryGeneratorError::SchemaError(
-                    "duration() requires at least one time unit, e.g., duration({days: 5})".to_string()
+                    "duration() requires at least one time unit, e.g., duration({days: 5})"
+                        .to_string(),
                 ));
             }
 
@@ -453,7 +461,7 @@ fn translate_duration_function(
                 .map(|(key, value)| {
                     let value_sql = value.to_sql()?;
                     let key_lower = key.to_lowercase();
-                    
+
                     // Map Neo4j time unit to ClickHouse interval function
                     let interval_fn = match key_lower.as_str() {
                         "years" | "year" => "toIntervalYear",
@@ -480,13 +488,13 @@ fn translate_duration_function(
                             )));
                         }
                     };
-                    
+
                     Ok(format!("{}({})", interval_fn, value_sql))
                 })
                 .collect();
 
             let parts = interval_parts?;
-            
+
             // Combine multiple intervals with + operator
             if parts.len() == 1 {
                 Ok(parts[0].clone())
@@ -706,7 +714,10 @@ mod tests {
 
         let result = translate_scalar_function(&fn_call);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("requires a function name"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("requires a function name"));
     }
 
     #[test]
@@ -733,7 +744,7 @@ mod tests {
         assert!(is_ch_aggregate_function("windowFunnel"));
         assert!(is_ch_aggregate_function("retention"));
         assert!(is_ch_aggregate_function("simpleLinearRegression"));
-        
+
         // Not aggregates
         assert!(!is_ch_aggregate_function("cityHash64"));
         assert!(!is_ch_aggregate_function("JSONExtract"));
@@ -747,11 +758,11 @@ mod tests {
         assert!(is_ch_passthrough_aggregate("ch.quantile"));
         assert!(is_ch_passthrough_aggregate("ch.topK"));
         assert!(is_ch_passthrough_aggregate("ch.groupArray"));
-        
+
         // ch. prefixed non-aggregates
         assert!(!is_ch_passthrough_aggregate("ch.cityHash64"));
         assert!(!is_ch_passthrough_aggregate("ch.JSONExtract"));
-        
+
         // Non ch. prefixed
         assert!(!is_ch_passthrough_aggregate("uniq"));
         assert!(!is_ch_passthrough_aggregate("count"));
@@ -764,7 +775,7 @@ mod tests {
         assert!(is_ch_passthrough_aggregate("chagg.mySpecialFunc"));
         assert!(is_ch_passthrough_aggregate("chagg.uniq")); // Also works for known ones
         assert!(is_ch_passthrough_aggregate("chagg.anyNewFunction"));
-        
+
         // chagg. prefix starts_with check
         assert!(is_explicit_ch_aggregate("chagg.test"));
         assert!(!is_explicit_ch_aggregate("ch.test"));
@@ -776,11 +787,11 @@ mod tests {
         // ch. prefix
         assert_eq!(get_ch_function_name("ch.uniq"), Some("uniq"));
         assert_eq!(get_ch_function_name("ch.cityHash64"), Some("cityHash64"));
-        
+
         // chagg. prefix
         assert_eq!(get_ch_function_name("chagg.customAgg"), Some("customAgg"));
         assert_eq!(get_ch_function_name("chagg.uniq"), Some("uniq"));
-        
+
         // No prefix
         assert_eq!(get_ch_function_name("uniq"), None);
         assert_eq!(get_ch_function_name("count"), None);
@@ -814,28 +825,28 @@ mod tests {
         assert!(is_ch_aggregate_function("uniqExact"));
         assert!(is_ch_aggregate_function("uniqCombined"));
         assert!(is_ch_aggregate_function("uniqHLL12"));
-        
+
         // Quantiles
         assert!(is_ch_aggregate_function("quantile"));
         assert!(is_ch_aggregate_function("quantileExact"));
         assert!(is_ch_aggregate_function("quantileTDigest"));
         assert!(is_ch_aggregate_function("median"));
-        
+
         // Array collection
         assert!(is_ch_aggregate_function("groupArray"));
         assert!(is_ch_aggregate_function("groupUniqArray"));
         assert!(is_ch_aggregate_function("groupArraySample"));
-        
+
         // Statistics
         assert!(is_ch_aggregate_function("varPop"));
         assert!(is_ch_aggregate_function("stddevSamp"));
         assert!(is_ch_aggregate_function("corr"));
-        
+
         // Funnel analysis
         assert!(is_ch_aggregate_function("windowFunnel"));
         assert!(is_ch_aggregate_function("retention"));
         assert!(is_ch_aggregate_function("sequenceMatch"));
-        
+
         // Map aggregates
         assert!(is_ch_aggregate_function("sumMap"));
         assert!(is_ch_aggregate_function("avgMap"));
@@ -846,17 +857,16 @@ mod tests {
     #[test]
     fn test_translate_duration_single_days() {
         use crate::query_planner::logical_expr::Literal;
-        
+
         // duration({days: 5}) -> toIntervalDay(5)
         let fn_call = ScalarFnCall {
             name: "duration".to_string(),
-            args: vec![
-                LogicalExpr::MapLiteral(vec![
-                    ("days".to_string(), LogicalExpr::Literal(Literal::Integer(5)))
-                ])
-            ],
+            args: vec![LogicalExpr::MapLiteral(vec![(
+                "days".to_string(),
+                LogicalExpr::Literal(Literal::Integer(5)),
+            )])],
         };
-        
+
         let result = translate_scalar_function(&fn_call).unwrap();
         assert_eq!(result, "toIntervalDay(5)");
     }
@@ -864,18 +874,22 @@ mod tests {
     #[test]
     fn test_translate_duration_multiple_units() {
         use crate::query_planner::logical_expr::Literal;
-        
+
         // duration({days: 5, hours: 2}) -> (toIntervalDay(5) + toIntervalHour(2))
         let fn_call = ScalarFnCall {
             name: "duration".to_string(),
-            args: vec![
-                LogicalExpr::MapLiteral(vec![
-                    ("days".to_string(), LogicalExpr::Literal(Literal::Integer(5))),
-                    ("hours".to_string(), LogicalExpr::Literal(Literal::Integer(2)))
-                ])
-            ],
+            args: vec![LogicalExpr::MapLiteral(vec![
+                (
+                    "days".to_string(),
+                    LogicalExpr::Literal(Literal::Integer(5)),
+                ),
+                (
+                    "hours".to_string(),
+                    LogicalExpr::Literal(Literal::Integer(2)),
+                ),
+            ])],
         };
-        
+
         let result = translate_scalar_function(&fn_call).unwrap();
         assert_eq!(result, "(toIntervalDay(5) + toIntervalHour(2))");
     }
@@ -883,7 +897,7 @@ mod tests {
     #[test]
     fn test_translate_duration_all_units() {
         use crate::query_planner::logical_expr::Literal;
-        
+
         // Test various time units
         let test_cases = vec![
             (vec![("years", 1)], "toIntervalYear(1)"),
@@ -894,19 +908,18 @@ mod tests {
             (vec![("minutes", 6)], "toIntervalMinute(6)"),
             (vec![("seconds", 7)], "toIntervalSecond(7)"),
         ];
-        
+
         for (entries, expected) in test_cases {
             let fn_call = ScalarFnCall {
                 name: "duration".to_string(),
-                args: vec![
-                    LogicalExpr::MapLiteral(
-                        entries.iter()
-                            .map(|(k, v)| (k.to_string(), LogicalExpr::Literal(Literal::Integer(*v))))
-                            .collect()
-                    )
-                ],
+                args: vec![LogicalExpr::MapLiteral(
+                    entries
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), LogicalExpr::Literal(Literal::Integer(*v))))
+                        .collect(),
+                )],
             };
-            
+
             let result = translate_scalar_function(&fn_call).unwrap();
             assert_eq!(result, expected, "Failed for unit: {:?}", entries);
         }
@@ -915,21 +928,21 @@ mod tests {
     #[test]
     fn test_translate_duration_invalid_args() {
         use crate::query_planner::logical_expr::Literal;
-        
+
         // No arguments -> error
         let fn_call = ScalarFnCall {
             name: "duration".to_string(),
             args: vec![],
         };
         assert!(translate_scalar_function(&fn_call).is_err());
-        
+
         // Non-map argument -> error
         let fn_call = ScalarFnCall {
             name: "duration".to_string(),
             args: vec![LogicalExpr::Literal(Literal::Integer(5))],
         };
         assert!(translate_scalar_function(&fn_call).is_err());
-        
+
         // Empty map -> error
         let fn_call = ScalarFnCall {
             name: "duration".to_string(),

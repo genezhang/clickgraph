@@ -34,7 +34,7 @@ pub struct VariableLengthCteGenerator {
     pub path_variable: Option<String>, // Path variable name from MATCH clause (e.g., "p" in "MATCH p = ...")
     pub relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
     pub edge_id: Option<Identifier>, // Edge ID columns for relationship uniqueness (None = use from_id, to_id)
-    pub is_denormalized: bool, // True if BOTH nodes are virtual (for backward compat)
+    pub is_denormalized: bool,       // True if BOTH nodes are virtual (for backward compat)
     pub start_is_denormalized: bool, // True if start node is virtual (properties come from edge table)
     pub end_is_denormalized: bool, // True if end node is virtual (properties come from edge table)
     // FK-edge pattern: edge table = node table with FK column (e.g., parent_id -> object_id)
@@ -90,7 +90,7 @@ impl VariableLengthCteGenerator {
         end_node_filters: Option<String>, // WHERE clause for end node
         path_variable: Option<String>, // Path variable name (e.g., "p")
         relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
-        edge_id: Option<Identifier>,   // Edge ID for relationship uniqueness
+        edge_id: Option<Identifier>,             // Edge ID for relationship uniqueness
     ) -> Self {
         Self::new_with_polymorphic(
             spec,
@@ -202,7 +202,10 @@ impl VariableLengthCteGenerator {
 
         Self {
             spec,
-            cte_name: format!("vlp_{}", crate::query_planner::logical_plan::generate_cte_id()),
+            cte_name: format!(
+                "vlp_{}",
+                crate::query_planner::logical_plan::generate_cte_id()
+            ),
             start_node_table: start_table.to_string(),
             start_node_id_column: start_id_col.to_string(),
             start_node_alias: "start_node".to_string(),
@@ -242,11 +245,11 @@ impl VariableLengthCteGenerator {
     /// Create a generator for denormalized edges (node properties embedded in edge table)
     pub fn new_denormalized(
         spec: VariableLengthSpec,
-        relationship_table: &str,      // The only table - edge table with node properties
-        rel_from_col: &str,            // From column (e.g., "Origin")
-        rel_to_col: &str,              // To column (e.g., "Dest")
-        start_alias: &str,             // Cypher alias (e.g., "a")
-        end_alias: &str,               // Cypher alias (e.g., "b")
+        relationship_table: &str, // The only table - edge table with node properties
+        rel_from_col: &str,       // From column (e.g., "Origin")
+        rel_to_col: &str,         // To column (e.g., "Dest")
+        start_alias: &str,        // Cypher alias (e.g., "a")
+        end_alias: &str,          // Cypher alias (e.g., "b")
         shortest_path_mode: Option<ShortestPathMode>,
         start_node_filters: Option<String>,
         end_node_filters: Option<String>,
@@ -258,7 +261,10 @@ impl VariableLengthCteGenerator {
 
         Self {
             spec,
-            cte_name: format!("vlp_{}", crate::query_planner::logical_plan::generate_cte_id()),
+            cte_name: format!(
+                "vlp_{}",
+                crate::query_planner::logical_plan::generate_cte_id()
+            ),
             // For denormalized: node tables are NOT used, only relationship table
             start_node_table: relationship_table.to_string(), // Will be ignored
             start_node_id_column: rel_from_col.to_string(),   // Use from_col as start ID
@@ -283,7 +289,7 @@ impl VariableLengthCteGenerator {
             is_denormalized: true, // Enable denormalized mode (both nodes)
             start_is_denormalized: true, // Start node is denormalized
             end_is_denormalized: true, // End node is denormalized
-            is_fk_edge: false, // Denormalized edges are not FK-edges
+            is_fk_edge: false,     // Denormalized edges are not FK-edges
             // Polymorphic edge fields - not used for denormalized edges
             type_column: None,
             from_label_column: None,
@@ -301,15 +307,15 @@ impl VariableLengthCteGenerator {
     #[allow(clippy::too_many_arguments)]
     pub fn new_mixed(
         spec: VariableLengthSpec,
-        start_table: &str,             // Start node table (or rel table if start is denorm)
-        start_id_col: &str,            // Start ID column
-        relationship_table: &str,      // Relationship table
-        rel_from_col: &str,            // Relationship from column
-        rel_to_col: &str,              // Relationship to column
-        end_table: &str,               // End node table (or rel table if end is denorm)
-        end_id_col: &str,              // End ID column
-        start_alias: &str,             // Cypher alias for start node
-        end_alias: &str,               // Cypher alias for end node
+        start_table: &str,  // Start node table (or rel table if start is denorm)
+        start_id_col: &str, // Start ID column
+        relationship_table: &str, // Relationship table
+        rel_from_col: &str, // Relationship from column
+        rel_to_col: &str,   // Relationship to column
+        end_table: &str,    // End node table (or rel table if end is denorm)
+        end_id_col: &str,   // End ID column
+        start_alias: &str,  // Cypher alias for start node
+        end_alias: &str,    // Cypher alias for end node
         properties: Vec<NodeProperty>, // Properties to include
         shortest_path_mode: Option<ShortestPathMode>,
         start_node_filters: Option<String>,
@@ -317,14 +323,17 @@ impl VariableLengthCteGenerator {
         path_variable: Option<String>,
         relationship_types: Option<Vec<String>>,
         edge_id: Option<Identifier>,
-        start_is_denormalized: bool,   // Whether start node is denormalized
-        end_is_denormalized: bool,     // Whether end node is denormalized
+        start_is_denormalized: bool, // Whether start node is denormalized
+        end_is_denormalized: bool,   // Whether end node is denormalized
     ) -> Self {
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
 
         Self {
             spec,
-            cte_name: format!("vlp_{}", crate::query_planner::logical_plan::generate_cte_id()),
+            cte_name: format!(
+                "vlp_{}",
+                crate::query_planner::logical_plan::generate_cte_id()
+            ),
             start_node_table: start_table.to_string(),
             start_node_id_column: start_id_col.to_string(),
             start_node_alias: "start_node".to_string(),
@@ -382,7 +391,7 @@ impl VariableLengthCteGenerator {
     /// - `rel.interaction_type = 'FOLLOWS'` (type filter)
     /// - `rel.from_label = 'User'` (source node type filter)
     /// - `rel.to_label = 'User'` (target node type filter)
-    /// 
+    ///
     /// For multiple relationship types (e.g., [:FOLLOWS|LIKES]):
     /// - `rel.interaction_type IN ('FOLLOWS', 'LIKES')`
     fn generate_polymorphic_edge_filter(&self) -> Option<String> {
@@ -470,7 +479,7 @@ impl VariableLengthCteGenerator {
 
     /// Check if this is a heterogeneous polymorphic path (e.g., Group→*→User)
     /// where intermediate hops traverse through one type and final hop goes to another type.
-    /// 
+    ///
     /// Conditions for heterogeneous polymorphic path:
     /// 1. has to_label_column (polymorphic edge with target type discriminator)
     /// 2. start_node_table != end_node_table (different node types)
@@ -522,18 +531,16 @@ impl VariableLengthCteGenerator {
             None
         } else {
             let filter = filter_parts.join(" AND ");
-            crate::debug_print!("    🔹 VLP polymorphic edge filter (intermediate): {}", filter);
+            crate::debug_print!(
+                "    🔹 VLP polymorphic edge filter (intermediate): {}",
+                filter
+            );
             Some(filter)
         }
     }
 
     /// Set intermediate node info for heterogeneous polymorphic paths
-    pub fn set_intermediate_node(
-        &mut self,
-        table: &str,
-        id_column: &str,
-        label: &str,
-    ) {
+    pub fn set_intermediate_node(&mut self, table: &str, id_column: &str, label: &str) {
         self.intermediate_node_table = Some(table.to_string());
         self.intermediate_node_id_column = Some(id_column.to_string());
         self.intermediate_node_label = Some(label.to_string());
@@ -660,7 +667,7 @@ impl VariableLengthCteGenerator {
         if self.is_heterogeneous_polymorphic_path() {
             return self.generate_heterogeneous_polymorphic_sql();
         }
-        
+
         let min_hops = self.spec.effective_min_hops();
         let max_hops = self.spec.max_hops;
 
@@ -696,13 +703,13 @@ impl VariableLengthCteGenerator {
         // Recursive case: Add if we need more than just the base case
         // Skip for shortest path self-loops (zero-hop is always the answer)
         // Skip if max_hops == Some(0) (only zero-hop allowed)
-        let needs_recursion = !is_shortest_self_loop 
+        let needs_recursion = !is_shortest_self_loop
             && max_hops != Some(0)
             && (max_hops.is_none() || max_hops.unwrap() > min_hops);
 
         if needs_recursion {
             query_body.push_str("\n    UNION ALL\n");
-            
+
             let default_depth = if max_hops.is_none() {
                 // Unbounded case: use reasonable default
                 if self.shortest_path_mode.is_some() && min_hops == 0 {
@@ -713,7 +720,7 @@ impl VariableLengthCteGenerator {
             } else {
                 max_hops.unwrap()
             };
-            
+
             query_body.push_str(
                 &self.generate_recursive_case_with_cte_name(default_depth, &recursive_cte_name),
             );
@@ -834,42 +841,55 @@ impl VariableLengthCteGenerator {
     }
 
     /// Generate SQL for heterogeneous polymorphic paths (e.g., Group→*→User)
-    /// 
+    ///
     /// Uses a two-phase CTE structure:
     /// 1. `reachable_intermediates`: Recursively finds all intermediate nodes (Groups) reachable from start
     /// 2. Main CTE: Joins ALL reachable intermediates to end nodes (Users) via the relationship
-    /// 
+    ///
     /// Key insight: At each intermediate node, we can either:
     /// - Continue recursion (target is another intermediate/Group)
     /// - Collect terminal result (target is end node/User)
-    /// 
+    ///
     /// The final result includes Users reachable from ANY intermediate Group at ANY depth.
     fn generate_heterogeneous_polymorphic_sql(&self) -> String {
-        let intermediate_table = self.intermediate_node_table.as_ref()
+        let intermediate_table = self
+            .intermediate_node_table
+            .as_ref()
             .expect("intermediate_node_table must be set");
-        let intermediate_id_col = self.intermediate_node_id_column.as_ref()
+        let intermediate_id_col = self
+            .intermediate_node_id_column
+            .as_ref()
             .expect("intermediate_node_id_column must be set");
-        let intermediate_label = self.intermediate_node_label.as_ref()
+        let intermediate_label = self
+            .intermediate_node_label
+            .as_ref()
             .expect("intermediate_node_label must be set");
-        
+
         let min_hops = self.spec.effective_min_hops();
         let max_hops = self.spec.max_hops.unwrap_or(10);
-        
+
         crate::debug_print!("    🔸 Generating heterogeneous polymorphic SQL (two-phase):");
-        crate::debug_print!("      - start_table: {}, intermediate_table: {}, end_table: {}",
-            self.start_node_table, intermediate_table, self.end_node_table);
-        crate::debug_print!("      - intermediate_label: {}, to_node_label: {:?}",
-            intermediate_label, self.to_node_label);
+        crate::debug_print!(
+            "      - start_table: {}, intermediate_table: {}, end_table: {}",
+            self.start_node_table,
+            intermediate_table,
+            self.end_node_table
+        );
+        crate::debug_print!(
+            "      - intermediate_label: {}, to_node_label: {:?}",
+            intermediate_label,
+            self.to_node_label
+        );
         crate::debug_print!("      - min_hops: {}, max_hops: {}", min_hops, max_hops);
-        
+
         let reachable_cte_name = format!("{}_reachable", self.cte_name);
-        
+
         // Build qualified table names
         let start_table_qualified = self.format_table_name(&self.start_node_table);
         let rel_table_qualified = self.format_table_name(&self.relationship_table);
         let intermediate_table_qualified = self.format_table_name(intermediate_table);
         let end_table_qualified = self.format_table_name(&self.end_node_table);
-        
+
         // Build start node filter if exists
         // Replace "start_node." with the actual table name for the base case
         let start_filter = if let Some(ref filter) = self.start_node_filters {
@@ -878,25 +898,31 @@ impl VariableLengthCteGenerator {
         } else {
             String::new()
         };
-        
+
         // Build polymorphic filter for intermediate hops (member_type = 'Group')
         let intermediate_poly_filter = if let Some(ref to_label_col) = self.to_label_column {
-            format!("{}.{} = '{}'", self.relationship_alias, to_label_col, intermediate_label)
+            format!(
+                "{}.{} = '{}'",
+                self.relationship_alias, to_label_col, intermediate_label
+            )
         } else {
             "1=1".to_string()
         };
-        
+
         // Build polymorphic filter for final hop to end nodes (member_type = 'User')
         let end_poly_filter = if let Some(ref to_label_col) = self.to_label_column {
             if let Some(ref to_label) = self.to_node_label {
-                format!("{}.{} = '{}'", self.relationship_alias, to_label_col, to_label)
+                format!(
+                    "{}.{} = '{}'",
+                    self.relationship_alias, to_label_col, to_label
+                )
             } else {
                 "1=1".to_string()
             }
         } else {
             "1=1".to_string()
         };
-        
+
         // ============================================================
         // CTE 1: Find all reachable intermediate nodes (groups)
         // This includes the start node at depth 0, then recurses through
@@ -935,13 +961,13 @@ impl VariableLengthCteGenerator {
             max_hops = max_hops,
             intermediate_poly_filter = intermediate_poly_filter,
         );
-        
+
         // ============================================================
         // CTE 2: Collect end nodes (Users) from ALL reachable intermediates
         // Users at depth+1 from each reachable Group are included
         // This is the main CTE that produces the final result
         // ============================================================
-        
+
         // Build property selections for end nodes
         let mut prop_selects = Vec::new();
         for prop in &self.properties {
@@ -957,21 +983,21 @@ impl VariableLengthCteGenerator {
         } else {
             format!(",\n        {}", prop_selects.join(",\n        "))
         };
-        
+
         // Build end node filter if exists (e.g., user property filters)
         let end_filter = if let Some(ref filter) = self.end_node_filters {
             format!("\n    AND {}", filter)
         } else {
             String::new()
         };
-        
+
         // Apply min_hops and max_hops filters
         // The User is at depth+1 from the Group that contains them
         let hop_filter = format!(
             "\n    AND r.depth + 1 >= {} AND r.depth + 1 <= {}",
             min_hops, max_hops
         );
-        
+
         let main_cte = format!(
             "{main_cte} AS (\n\
             -- Collect end nodes (Users) from all reachable intermediates (Groups)\n\
@@ -1001,7 +1027,7 @@ impl VariableLengthCteGenerator {
             end_filter = end_filter,
             hop_filter = hop_filter,
         );
-        
+
         format!("{},\n{}", reachable_cte, main_cte)
     }
 
@@ -1009,7 +1035,7 @@ impl VariableLengthCteGenerator {
     /// Used with shortest path functions when pattern is *0..
     fn generate_zero_hop_base_case(&self) -> String {
         let path_edges_type = self.get_path_edges_array_type();
-        
+
         let mut select_items = vec![
             format!(
                 "{}.{} as start_id",
@@ -1024,7 +1050,10 @@ impl VariableLengthCteGenerator {
             format!("CAST([] AS {}) as path_edges", path_edges_type), // Empty edge array
             "CAST([] AS Array(String)) as path_relationships".to_string(), // Empty array with explicit type
             // Add path_nodes for UNWIND nodes(p) support - for zero hop, just the start node
-            format!("[{}.{}] as path_nodes", self.start_node_alias, self.start_node_id_column),
+            format!(
+                "[{}.{}] as path_nodes",
+                self.start_node_alias, self.start_node_id_column
+            ),
         ];
 
         // Add properties for start node (which is also the end node)
@@ -1085,28 +1114,28 @@ impl VariableLengthCteGenerator {
         // Mixed: one node virtual, one standard → use mixed generator
         // FK-edge: edge table = node table with FK column → 2-way join (no separate rel)
         // Full standard: both nodes standard → use standard generator
-        
+
         if self.is_denormalized {
             // Both nodes denormalized (fully virtual)
             return self.generate_denormalized_base_case(hop_count);
         }
-        
+
         // Check for mixed patterns (one side denormalized)
         if self.start_is_denormalized || self.end_is_denormalized {
             return self.generate_mixed_base_case(hop_count);
         }
-        
+
         // FK-edge pattern: edge table = node table with FK column
         // Use direct 2-way join: start_node.fk_col = end_node.id_col
         if self.is_fk_edge {
             return self.generate_fk_edge_base_case(hop_count);
         }
-        
+
         // Standard case: both nodes have their own tables
         if hop_count == 1 {
             // Build edge tuple for the base case
             let edge_tuple = self.build_edge_tuple_base();
-            
+
             // Build property selections
             let mut select_items = vec![
                 format!(
@@ -1123,8 +1152,10 @@ impl VariableLengthCteGenerator {
                 // Add path_nodes array for UNWIND nodes(p) support
                 format!(
                     "[{}.{}, {}.{}] as path_nodes",
-                    self.start_node_alias, self.start_node_id_column,
-                    self.end_node_alias, self.end_node_id_column
+                    self.start_node_alias,
+                    self.start_node_id_column,
+                    self.end_node_alias,
+                    self.end_node_id_column
                 ),
             ];
 
@@ -1170,12 +1201,12 @@ impl VariableLengthCteGenerator {
             // For shortest path queries, only include start filters in base case
             // End filters are applied in the _to_target wrapper CTE
             let mut where_conditions = Vec::new();
-            
+
             // Add polymorphic edge filter if this is a polymorphic edge table
             if let Some(poly_filter) = self.generate_polymorphic_edge_filter() {
                 where_conditions.push(poly_filter);
             }
-            
+
             if let Some(ref filters) = self.start_node_filters {
                 where_conditions.push(filters.clone());
             }
@@ -1220,27 +1251,27 @@ impl VariableLengthCteGenerator {
         if self.is_denormalized {
             return self.generate_denormalized_recursive_case(max_hops, cte_name);
         }
-        
+
         // Check for mixed patterns (one side denormalized)
         if self.start_is_denormalized || self.end_is_denormalized {
             return self.generate_mixed_recursive_case(max_hops, cte_name);
         }
-        
+
         // FK-edge pattern: edge table = node table with FK column
         if self.is_fk_edge {
             return self.generate_fk_edge_recursive_case(max_hops, cte_name);
         }
-        
+
         // Heterogeneous polymorphic path: recurse through intermediate type
         // e.g., Group→*→User should recurse through Group→Group, not User→User
         if self.is_heterogeneous_polymorphic_path() {
             return self.generate_heterogeneous_polymorphic_recursive_case(max_hops, cte_name);
         }
-        
+
         // Standard case: both nodes have their own tables
         // Build edge tuple for recursive case
         let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
-        
+
         // Build property selections for recursive case
         let mut select_items = vec![
             "vp.start_id".to_string(),
@@ -1282,16 +1313,13 @@ impl VariableLengthCteGenerator {
         }
 
         let select_clause = select_items.join(",\n        ");
-        
+
         // Build edge tuple check for cycle prevention
         let edge_tuple_check = self.build_edge_tuple_recursive(&self.relationship_alias);
 
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
-            format!(
-                "NOT has(vp.path_edges, {})",
-                edge_tuple_check
-            ), // Edge uniqueness check (Neo4j semantics)
+            format!("NOT has(vp.path_edges, {})", edge_tuple_check), // Edge uniqueness check (Neo4j semantics)
         ];
 
         // Add polymorphic edge filter if this is a polymorphic edge table
@@ -1337,33 +1365,42 @@ impl VariableLengthCteGenerator {
     // For paths like Group→*→User where intermediate hops traverse through
     // one type (Group→Group) and only the final hop goes to a different type (Group→User).
     // The recursive case uses the intermediate table (groups), not the end table (users).
-    
+
     /// Generate recursive case for heterogeneous polymorphic paths
     /// Recurses through intermediate_node_table (e.g., groups) with intermediate_node_label filter
-    fn generate_heterogeneous_polymorphic_recursive_case(&self, max_hops: u32, cte_name: &str) -> String {
+    fn generate_heterogeneous_polymorphic_recursive_case(
+        &self,
+        max_hops: u32,
+        cte_name: &str,
+    ) -> String {
         // Get intermediate table info (must be set for heterogeneous polymorphic paths)
-        let intermediate_table = self.intermediate_node_table.as_ref()
+        let intermediate_table = self
+            .intermediate_node_table
+            .as_ref()
             .expect("intermediate_node_table must be set for heterogeneous polymorphic paths");
-        let intermediate_id_col = self.intermediate_node_id_column.as_ref()
+        let intermediate_id_col = self
+            .intermediate_node_id_column
+            .as_ref()
             .expect("intermediate_node_id_column must be set for heterogeneous polymorphic paths");
-        
+
         crate::debug_print!("    🔸 Generating heterogeneous polymorphic recursive case:");
-        crate::debug_print!("      - start_table: {}, end_table: {}, intermediate_table: {}",
-            self.start_node_table, self.end_node_table, intermediate_table);
-        
+        crate::debug_print!(
+            "      - start_table: {}, end_table: {}, intermediate_table: {}",
+            self.start_node_table,
+            self.end_node_table,
+            intermediate_table
+        );
+
         // Build edge tuple for recursive case (using rel alias)
         let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
-        
+
         // Build property selections for recursive case
         // Note: For heterogeneous polymorphic paths, we track intermediate nodes in path
         // End properties are not available until the final join (in the outer SELECT)
         let mut select_items = vec![
             "vp.start_id".to_string(),
             // end_id comes from the intermediate node (Group), not the end table (User)
-            format!(
-                "intermediate_node.{} as end_id",
-                intermediate_id_col
-            ),
+            format!("intermediate_node.{} as end_id", intermediate_id_col),
             "vp.hop_count + 1 as hop_count".to_string(),
             format!(
                 "arrayConcat(vp.path_edges, [{}]) as path_edges",
@@ -1391,16 +1428,13 @@ impl VariableLengthCteGenerator {
         }
 
         let select_clause = select_items.join(",\n        ");
-        
+
         // Build edge tuple check for cycle prevention
         let edge_tuple_check = self.build_edge_tuple_recursive(&self.relationship_alias);
 
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
-            format!(
-                "NOT has(vp.path_edges, {})",
-                edge_tuple_check
-            ),
+            format!("NOT has(vp.path_edges, {})", edge_tuple_check),
         ];
 
         // Add polymorphic edge filter for INTERMEDIATE hops (e.g., member_type = 'Group')
@@ -1433,7 +1467,7 @@ impl VariableLengthCteGenerator {
     // Both nodes come from the same table, and the relationship is:
     // start_node.fk_col = end_node.id_col (e.g., child.parent_id = parent.object_id)
     // No separate relationship table exists.
-    
+
     /// Generate base case for FK-edge patterns (first hop)
     /// For FK-edge: FROM node_table start JOIN node_table end ON start.fk = end.id
     fn generate_fk_edge_base_case(&self, hop_count: u32) -> String {
@@ -1449,8 +1483,10 @@ impl VariableLengthCteGenerator {
         // For FK-edge, the edge is (start_node.fk_col, end_node.id_col)
         let edge_tuple = format!(
             "tuple({}.{}, {}.{})",
-            self.start_node_alias, self.relationship_from_column,
-            self.end_node_alias, self.end_node_id_column
+            self.start_node_alias,
+            self.relationship_from_column,
+            self.end_node_alias,
+            self.end_node_id_column
         );
 
         // Build property selections
@@ -1468,8 +1504,10 @@ impl VariableLengthCteGenerator {
             self.generate_relationship_type_for_hop(1),
             format!(
                 "[{}.{}, {}.{}] as path_nodes",
-                self.start_node_alias, self.start_node_id_column,
-                self.end_node_alias, self.end_node_id_column
+                self.start_node_alias,
+                self.start_node_id_column,
+                self.end_node_alias,
+                self.end_node_id_column
             ),
         ];
 
@@ -1506,7 +1544,7 @@ impl VariableLengthCteGenerator {
 
         // Add WHERE clause with start and end node filters
         let mut where_conditions = Vec::new();
-        
+
         if let Some(ref filters) = self.start_node_filters {
             where_conditions.push(filters.clone());
         }
@@ -1524,19 +1562,19 @@ impl VariableLengthCteGenerator {
     }
 
     /// Generate recursive case for FK-edge patterns
-    /// 
+    ///
     /// The expansion direction depends on which side is filtered:
-    /// 
+    ///
     /// **ANCESTORS query** (filter on start/child node, e.g., WHERE child.name = 'notes.txt'):
     /// - We want to find all ancestors (parents) of notes.txt
     /// - Base: notes.txt→Work (notes.txt.parent_id = Work.object_id)
     /// - Recurse: Work→Documents (Work.parent_id = Documents.object_id)
     /// - Strategy: APPEND expansion - add new edges at the END of the path
     /// - Anchor on end_id (the parent side), find their parents
-    /// 
+    ///
     /// **DESCENDANTS query** (filter on end/parent node, e.g., WHERE parent.name = 'root'):
     /// - We want to find all descendants (children) of root
-    /// - Base: Documents→root (Documents.parent_id = root.object_id)  
+    /// - Base: Documents→root (Documents.parent_id = root.object_id)
     /// - Recurse: Work→Documents (Work.parent_id = Documents.object_id)
     /// - Strategy: PREPEND expansion - add new edges at the START of the path
     /// - Anchor on start_id (the child side), find their children
@@ -1545,14 +1583,14 @@ impl VariableLengthCteGenerator {
         // If start_node_filters is set, we're finding ancestors (APPEND expansion)
         // If end_node_filters is set, we're finding descendants (PREPEND expansion)
         let expand_toward_parents = self.start_node_filters.is_some();
-        
+
         if expand_toward_parents {
             self.generate_fk_edge_recursive_append(max_hops, cte_name)
         } else {
             self.generate_fk_edge_recursive_prepend(max_hops, cte_name)
         }
     }
-    
+
     /// APPEND expansion: Find ancestors by following parent_id chain
     /// Used when start_node has a filter (e.g., WHERE child.name = 'notes.txt')
     fn generate_fk_edge_recursive_append(&self, max_hops: u32, cte_name: &str) -> String {
@@ -1560,15 +1598,14 @@ impl VariableLengthCteGenerator {
         // current.parent_id = new_end.object_id
         let edge_tuple_recursive = format!(
             "tuple({}.{}, {}.{})",
-            "current_node", self.relationship_from_column,
-            "new_end", self.end_node_id_column
+            "current_node", self.relationship_from_column, "new_end", self.end_node_id_column
         );
-        
+
         // Build property selections
         // start_id stays the same (notes.txt), end_id becomes new_end
         let mut select_items = vec![
-            "vp.start_id".to_string(),  // start stays the same
-            format!("{}.{} as end_id", "new_end", self.end_node_id_column),  // new parent
+            "vp.start_id".to_string(), // start stays the same
+            format!("{}.{} as end_id", "new_end", self.end_node_id_column), // new parent
             "vp.hop_count + 1 as hop_count".to_string(),
             // APPEND the new edge to path_edges
             format!(
@@ -1579,7 +1616,7 @@ impl VariableLengthCteGenerator {
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
             ),
-            // APPEND the new node to path_nodes  
+            // APPEND the new node to path_nodes
             format!(
                 "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
                 "new_end", self.end_node_id_column
@@ -1600,11 +1637,10 @@ impl VariableLengthCteGenerator {
         }
 
         let select_clause = select_items.join(",\n        ");
-        
+
         let edge_tuple_check = format!(
             "tuple(current_node.{}, new_end.{})",
-            self.relationship_from_column,
-            self.end_node_id_column
+            self.relationship_from_column, self.end_node_id_column
         );
 
         let where_conditions = vec![
@@ -1629,7 +1665,7 @@ impl VariableLengthCteGenerator {
             where_clause = where_clause
         )
     }
-    
+
     /// PREPEND expansion: Find descendants by finding nodes whose parent_id points to current
     /// Used when end_node has a filter (e.g., WHERE parent.name = 'root')
     fn generate_fk_edge_recursive_prepend(&self, max_hops: u32, cte_name: &str) -> String {
@@ -1637,15 +1673,14 @@ impl VariableLengthCteGenerator {
         // new_start.parent_id = current.object_id
         let edge_tuple_recursive = format!(
             "tuple({}.{}, {}.{})",
-            "new_start", self.relationship_from_column,
-            "current_node", self.end_node_id_column
+            "new_start", self.relationship_from_column, "current_node", self.end_node_id_column
         );
-        
+
         // Build property selections
         // The NEW start_id is new_start, end_id stays the same (root)
         let mut select_items = vec![
             format!("{}.{} as start_id", "new_start", self.start_node_id_column),
-            "vp.end_id".to_string(),  // end_id stays the same (root)
+            "vp.end_id".to_string(), // end_id stays the same (root)
             "vp.hop_count + 1 as hop_count".to_string(),
             // PREPEND the new edge to path_edges
             format!(
@@ -1677,11 +1712,10 @@ impl VariableLengthCteGenerator {
         }
 
         let select_clause = select_items.join(",\n        ");
-        
+
         let edge_tuple_check = format!(
             "tuple(new_start.{}, current_node.{})",
-            self.relationship_from_column,
-            self.end_node_id_column
+            self.relationship_from_column, self.end_node_id_column
         );
 
         let where_conditions = vec![
@@ -1711,7 +1745,7 @@ impl VariableLengthCteGenerator {
     // ======================================================================
     // For denormalized edges, node properties are embedded in the edge table.
     // No separate node tables exist - all data comes from the relationship table.
-    
+
     /// Generate base case for denormalized edges (first hop)
     /// For denormalized: FROM rel_table only (no node tables)
     fn generate_denormalized_base_case(&self, hop_count: u32) -> String {
@@ -1749,14 +1783,16 @@ impl VariableLengthCteGenerator {
         let mut where_conditions = Vec::new();
         if let Some(ref filters) = self.start_node_filters {
             // Rewrite start_node references to rel references
-            let rewritten = filters.replace("start_node.", &format!("{}.", self.relationship_alias));
+            let rewritten =
+                filters.replace("start_node.", &format!("{}.", self.relationship_alias));
             where_conditions.push(rewritten);
         }
-        
+
         if self.shortest_path_mode.is_none() {
             if let Some(ref filters) = self.end_node_filters {
                 // Rewrite end_node references to rel references
-                let rewritten = filters.replace("end_node.", &format!("{}.", self.relationship_alias));
+                let rewritten =
+                    filters.replace("end_node.", &format!("{}.", self.relationship_alias));
                 where_conditions.push(rewritten);
             }
         }
@@ -1793,7 +1829,8 @@ impl VariableLengthCteGenerator {
 
         if self.shortest_path_mode.is_none() {
             if let Some(ref filters) = self.end_node_filters {
-                let rewritten = filters.replace("end_node.", &format!("{}.", self.relationship_alias));
+                let rewritten =
+                    filters.replace("end_node.", &format!("{}.", self.relationship_alias));
                 where_conditions.push(rewritten);
             }
         }
@@ -1835,7 +1872,10 @@ impl VariableLengthCteGenerator {
         // Determine start_id and end_id based on which side is denormalized
         let start_id_expr = if self.start_is_denormalized {
             // Start is denorm: ID comes from relationship table from_col
-            format!("{}.{}", self.relationship_alias, self.relationship_from_column)
+            format!(
+                "{}.{}",
+                self.relationship_alias, self.relationship_from_column
+            )
         } else {
             // Start is standard: ID comes from start node table
             format!("{}.{}", self.start_node_alias, self.start_node_id_column)
@@ -1843,7 +1883,10 @@ impl VariableLengthCteGenerator {
 
         let end_id_expr = if self.end_is_denormalized {
             // End is denorm: ID comes from relationship table to_col
-            format!("{}.{}", self.relationship_alias, self.relationship_to_column)
+            format!(
+                "{}.{}",
+                self.relationship_alias, self.relationship_to_column
+            )
         } else {
             // End is standard: ID comes from end node table
             format!("{}.{}", self.end_node_alias, self.end_node_id_column)
@@ -1952,7 +1995,10 @@ impl VariableLengthCteGenerator {
 
         // End ID expression based on denormalization
         let end_id_expr = if self.end_is_denormalized {
-            format!("{}.{}", self.relationship_alias, self.relationship_to_column)
+            format!(
+                "{}.{}",
+                self.relationship_alias, self.relationship_to_column
+            )
         } else {
             format!("{}.{}", self.end_node_alias, self.end_node_id_column)
         };
@@ -2134,35 +2180,38 @@ mod tests {
         let spec = VariableLengthSpec::range(1, 3);
         let generator = VariableLengthCteGenerator::new_with_polymorphic(
             spec,
-            "users",         // start table
-            "user_id",       // start id column
-            "interactions",  // relationship table (polymorphic)
-            "from_id",       // from column
-            "to_id",         // to column
-            "users",         // end table
-            "user_id",       // end id column
-            "u1",            // start alias
-            "u2",            // end alias
-            vec![],          // no properties for test
-            None,            // no shortest path mode
-            None,            // no start node filters
-            None,            // no end node filters
-            None,            // no path variable
-            Some(vec!["FOLLOWS".to_string()]), // relationship type
-            None,            // no edge_id
+            "users",                              // start table
+            "user_id",                            // start id column
+            "interactions",                       // relationship table (polymorphic)
+            "from_id",                            // from column
+            "to_id",                              // to column
+            "users",                              // end table
+            "user_id",                            // end id column
+            "u1",                                 // start alias
+            "u2",                                 // end alias
+            vec![],                               // no properties for test
+            None,                                 // no shortest path mode
+            None,                                 // no start node filters
+            None,                                 // no end node filters
+            None,                                 // no path variable
+            Some(vec!["FOLLOWS".to_string()]),    // relationship type
+            None,                                 // no edge_id
             Some("interaction_type".to_string()), // type_column
-            None,            // no from_label_column
-            None,            // no to_label_column
-            Some("User".to_string()), // from_node_label
-            Some("User".to_string()), // to_node_label
+            None,                                 // no from_label_column
+            None,                                 // no to_label_column
+            Some("User".to_string()),             // from_node_label
+            Some("User".to_string()),             // to_node_label
         );
 
         let sql = generator.generate_recursive_sql();
         println!("Polymorphic edge SQL:\n{}", sql);
 
         // Should contain the polymorphic type filter
-        assert!(sql.contains("interaction_type = 'FOLLOWS'"), 
-               "Expected polymorphic filter in base case. SQL: {}", sql);
+        assert!(
+            sql.contains("interaction_type = 'FOLLOWS'"),
+            "Expected polymorphic filter in base case. SQL: {}",
+            sql
+        );
     }
 
     #[test]
@@ -2171,25 +2220,25 @@ mod tests {
         let spec = VariableLengthSpec::range(1, 3);
         let generator = VariableLengthCteGenerator::new_with_polymorphic(
             spec,
-            "users",         // start table
-            "user_id",       // start id column
-            "interactions",  // relationship table (polymorphic)
-            "from_id",       // from column
-            "to_id",         // to column
-            "users",         // end table
-            "user_id",       // end id column
-            "u1",            // start alias
-            "u2",            // end alias
-            vec![],          // no properties for test
-            None,            // no shortest path mode
-            None,            // no start node filters
-            None,            // no end node filters
-            None,            // no path variable
+            "users",                                                // start table
+            "user_id",                                              // start id column
+            "interactions", // relationship table (polymorphic)
+            "from_id",      // from column
+            "to_id",        // to column
+            "users",        // end table
+            "user_id",      // end id column
+            "u1",           // start alias
+            "u2",           // end alias
+            vec![],         // no properties for test
+            None,           // no shortest path mode
+            None,           // no start node filters
+            None,           // no end node filters
+            None,           // no path variable
             Some(vec!["FOLLOWS".to_string(), "LIKES".to_string()]), // multiple types
-            None,            // no edge_id
+            None,           // no edge_id
             Some("interaction_type".to_string()), // type_column
-            None,            // no from_label_column
-            None,            // no to_label_column
+            None,           // no from_label_column
+            None,           // no to_label_column
             Some("User".to_string()), // from_node_label
             Some("User".to_string()), // to_node_label
         );
@@ -2198,8 +2247,11 @@ mod tests {
         println!("Polymorphic edge multiple types SQL:\n{}", sql);
 
         // Should contain the polymorphic type filter with IN clause
-        assert!(sql.contains("interaction_type IN ('FOLLOWS', 'LIKES')"), 
-               "Expected polymorphic IN filter in base case. SQL: {}", sql);
+        assert!(
+            sql.contains("interaction_type IN ('FOLLOWS', 'LIKES')"),
+            "Expected polymorphic IN filter in base case. SQL: {}",
+            sql
+        );
     }
 }
 
@@ -2255,7 +2307,10 @@ impl ChainedJoinGenerator {
     /// Generate a CTE containing the chained JOIN query
     /// Even though it's not recursive, we wrap it in a CTE for consistency
     pub fn generate_cte(&self) -> Cte {
-        let cte_name = format!("chain_{}", crate::query_planner::logical_plan::generate_cte_id());
+        let cte_name = format!(
+            "chain_{}",
+            crate::query_planner::logical_plan::generate_cte_id()
+        );
         let cte_sql = self.generate_query();
 
         // Wrap the query body with CTE name, like recursive CTE does

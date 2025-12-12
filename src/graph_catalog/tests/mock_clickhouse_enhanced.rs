@@ -1,5 +1,5 @@
 //! Enhanced mock ClickHouse client for integration testing
-//! 
+//!
 //! This module provides a mock ClickHouse client that can:
 //! 1. Return schema information
 //! 2. Store and query mock data
@@ -128,7 +128,7 @@ impl MockClickHouseClient {
     pub async fn execute(&self, query: &str) -> Result<QueryResult> {
         // Basic SQL parsing - this is a simplified version
         let query = query.trim().to_lowercase();
-        
+
         if query.starts_with("select") {
             self.handle_select(&query)
         } else if query.starts_with("create table") {
@@ -143,7 +143,7 @@ impl MockClickHouseClient {
     fn handle_select(&self, query: &str) -> Result<QueryResult> {
         // Very basic SELECT handling - just returns all rows from the first table
         // In a real implementation, this would need proper SQL parsing
-        
+
         if let Some(table_name) = extract_table_name(query) {
             if let Some(table) = self.tables.get(table_name) {
                 let mut rows = Vec::new();

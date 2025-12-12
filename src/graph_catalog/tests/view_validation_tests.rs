@@ -30,11 +30,11 @@ fn test_validate_relationship_view() {
 
     // Create a view definition with relationships
     let mut view_def = GraphViewDefinition::new("social_graph");
-    
+
     // Add node mappings
     let user_mapping = NodeViewMapping::new("users", "id");
     view_def.add_node("User", user_mapping);
-    
+
     let post_mapping = NodeViewMapping::new("posts", "id");
     view_def.add_node("Post", post_mapping);
 
@@ -91,11 +91,11 @@ fn test_invalid_relationship_keys() {
 
     // Create a view definition with invalid relationship keys
     let mut view_def = GraphViewDefinition::new("social_graph");
-    
+
     // Add node mappings
     let user_mapping = NodeViewMapping::new("users", "id");
     view_def.add_node("User", user_mapping);
-    
+
     let post_mapping = NodeViewMapping::new("posts", "id");
     view_def.add_node("Post", post_mapping);
 

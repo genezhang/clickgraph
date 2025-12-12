@@ -146,19 +146,26 @@ impl DuplicateScansRemoving {
             LogicalPlan::Unwind(u) => {
                 let child_tf = Self::remove_duplicate_scans(u.input.clone(), traversed, plan_ctx)?;
                 match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(Unwind {
-                        input: new_input,
-                        expression: u.expression.clone(),
-                        alias: u.alias.clone(),
-                    }))),
+                    Transformed::Yes(new_input) => {
+                        Transformed::Yes(Arc::new(LogicalPlan::Unwind(Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                        })))
+                    }
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
             LogicalPlan::CartesianProduct(cp) => {
-                let transformed_left = Self::remove_duplicate_scans(cp.left.clone(), traversed, plan_ctx)?;
-                let transformed_right = Self::remove_duplicate_scans(cp.right.clone(), traversed, plan_ctx)?;
-                
-                if matches!((&transformed_left, &transformed_right), (Transformed::No(_), Transformed::No(_))) {
+                let transformed_left =
+                    Self::remove_duplicate_scans(cp.left.clone(), traversed, plan_ctx)?;
+                let transformed_right =
+                    Self::remove_duplicate_scans(cp.right.clone(), traversed, plan_ctx)?;
+
+                if matches!(
+                    (&transformed_left, &transformed_right),
+                    (Transformed::No(_), Transformed::No(_))
+                ) {
                     Transformed::No(logical_plan.clone())
                 } else {
                     let new_cp = crate::query_planner::logical_plan::CartesianProduct {
@@ -178,7 +185,8 @@ impl DuplicateScansRemoving {
             }
             LogicalPlan::WithClause(with_clause) => {
                 // WithClause is a boundary - transform its input independently
-                let child_tf = Self::remove_duplicate_scans(with_clause.input.clone(), traversed, plan_ctx)?;
+                let child_tf =
+                    Self::remove_duplicate_scans(with_clause.input.clone(), traversed, plan_ctx)?;
                 match child_tf {
                     Transformed::Yes(new_input) => {
                         let new_with = crate::query_planner::logical_plan::WithClause {

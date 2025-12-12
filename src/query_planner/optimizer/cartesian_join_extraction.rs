@@ -48,29 +48,45 @@ impl OptimizerPass for CartesianJoinExtraction {
                     // Get aliases from left and right sides
                     let left_aliases = collect_aliases_from_plan(&cp.left);
                     let right_aliases = collect_aliases_from_plan(&cp.right);
-                    
-                    crate::debug_print!("CartesianJoinExtraction: left_aliases = {:?}", left_aliases);
-                    crate::debug_print!("CartesianJoinExtraction: right_aliases = {:?}", right_aliases);
-                    
+
+                    crate::debug_print!(
+                        "CartesianJoinExtraction: left_aliases = {:?}",
+                        left_aliases
+                    );
+                    crate::debug_print!(
+                        "CartesianJoinExtraction: right_aliases = {:?}",
+                        right_aliases
+                    );
+
                     // Check if the filter predicate references both sides
                     let filter_aliases = collect_aliases_from_expr(&filter.predicate);
-                    crate::debug_print!("CartesianJoinExtraction: filter_aliases = {:?}", filter_aliases);
-                    
+                    crate::debug_print!(
+                        "CartesianJoinExtraction: filter_aliases = {:?}",
+                        filter_aliases
+                    );
+
                     let refs_left = filter_aliases.iter().any(|a| left_aliases.contains(a));
                     let refs_right = filter_aliases.iter().any(|a| right_aliases.contains(a));
-                    
-                    crate::debug_print!("CartesianJoinExtraction: refs_left={}, refs_right={}", refs_left, refs_right);
-                    
+
+                    crate::debug_print!(
+                        "CartesianJoinExtraction: refs_left={}, refs_right={}",
+                        refs_left,
+                        refs_right
+                    );
+
                     if refs_left && refs_right {
                         // This filter bridges both sides - extract it as a join condition
                         // and potentially split if there are multiple conditions
-                        let (join_conditions, remaining_filters) = 
-                            partition_filter_conditions(&filter.predicate, &left_aliases, &right_aliases);
-                        
+                        let (join_conditions, remaining_filters) = partition_filter_conditions(
+                            &filter.predicate,
+                            &left_aliases,
+                            &right_aliases,
+                        );
+
                         crate::debug_print!("CartesianJoinExtraction: Extracted {} join conditions, {} remaining filters",
                             join_conditions.as_ref().map(|_| 1).unwrap_or(0),
                             remaining_filters.as_ref().map(|_| 1).unwrap_or(0));
-                        
+
                         // Create new CartesianProduct with join_condition
                         let new_cp = CartesianProduct {
                             left: cp.left.clone(),
@@ -78,9 +94,9 @@ impl OptimizerPass for CartesianJoinExtraction {
                             is_optional: cp.is_optional,
                             join_condition: join_conditions.or_else(|| cp.join_condition.clone()),
                         };
-                        
+
                         let new_cp_plan = Arc::new(LogicalPlan::CartesianProduct(new_cp));
-                        
+
                         // If there are remaining filters, wrap the CartesianProduct
                         if let Some(remaining) = remaining_filters {
                             Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
@@ -116,7 +132,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                     }
                 }
             }
-            
+
             // Recursively process other node types
             LogicalPlan::Projection(projection) => {
                 let child_tf = self.optimize(projection.input.clone(), plan_ctx)?;
@@ -129,7 +145,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
-            
+
             LogicalPlan::Limit(limit) => {
                 let child_tf = self.optimize(limit.input.clone(), plan_ctx)?;
                 match child_tf {
@@ -141,7 +157,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
-            
+
             LogicalPlan::Skip(skip) => {
                 let child_tf = self.optimize(skip.input.clone(), plan_ctx)?;
                 match child_tf {
@@ -153,7 +169,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
-            
+
             LogicalPlan::OrderBy(order_by) => {
                 let child_tf = self.optimize(order_by.input.clone(), plan_ctx)?;
                 match child_tf {
@@ -165,7 +181,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
-            
+
             LogicalPlan::GroupBy(group_by) => {
                 let child_tf = self.optimize(group_by.input.clone(), plan_ctx)?;
                 match child_tf {
@@ -177,7 +193,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
-            
+
             LogicalPlan::GraphJoins(gj) => {
                 let child_tf = self.optimize(gj.input.clone(), plan_ctx)?;
                 match child_tf {
@@ -189,7 +205,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
-            
+
             LogicalPlan::Cte(cte) => {
                 let child_tf = self.optimize(cte.input.clone(), plan_ctx)?;
                 match child_tf {
@@ -201,13 +217,13 @@ impl OptimizerPass for CartesianJoinExtraction {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
-            
+
             LogicalPlan::GraphRel(gr) => {
                 // GraphRel has left, center, right children
                 let left_tf = self.optimize(gr.left.clone(), plan_ctx)?;
                 let right_tf = self.optimize(gr.right.clone(), plan_ctx)?;
                 let center_tf = self.optimize(gr.center.clone(), plan_ctx)?;
-                
+
                 match (&left_tf, &center_tf, &right_tf) {
                     (Transformed::No(_), Transformed::No(_), Transformed::No(_)) => {
                         Transformed::No(logical_plan.clone())
@@ -230,7 +246,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                     }
                 }
             }
-            
+
             LogicalPlan::GraphNode(gn) => {
                 let child_tf = self.optimize(gn.input.clone(), plan_ctx)?;
                 match child_tf {
@@ -242,13 +258,15 @@ impl OptimizerPass for CartesianJoinExtraction {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
-            
+
             LogicalPlan::CartesianProduct(cp) => {
                 let left_tf = self.optimize(cp.left.clone(), plan_ctx)?;
                 let right_tf = self.optimize(cp.right.clone(), plan_ctx)?;
-                
+
                 match (&left_tf, &right_tf) {
-                    (Transformed::No(_), Transformed::No(_)) => Transformed::No(logical_plan.clone()),
+                    (Transformed::No(_), Transformed::No(_)) => {
+                        Transformed::No(logical_plan.clone())
+                    }
                     _ => {
                         let new_cp = CartesianProduct {
                             left: match left_tf {
@@ -266,11 +284,11 @@ impl OptimizerPass for CartesianJoinExtraction {
                     }
                 }
             }
-            
+
             LogicalPlan::Union(union) => {
                 let mut any_transformed = false;
                 let mut new_inputs = Vec::new();
-                
+
                 for input in &union.inputs {
                     let tf = self.optimize(input.clone(), plan_ctx)?;
                     match tf {
@@ -283,19 +301,19 @@ impl OptimizerPass for CartesianJoinExtraction {
                         }
                     }
                 }
-                
+
                 if any_transformed {
                     Transformed::Yes(Arc::new(LogicalPlan::Union(
-                        crate::query_planner::logical_plan::Union { 
+                        crate::query_planner::logical_plan::Union {
                             inputs: new_inputs,
                             union_type: union.union_type.clone(),
-                        }
+                        },
                     )))
                 } else {
                     Transformed::No(logical_plan.clone())
                 }
             }
-            
+
             LogicalPlan::Unwind(u) => {
                 let child_tf = self.optimize(u.input.clone(), plan_ctx)?;
                 match child_tf {
@@ -307,13 +325,13 @@ impl OptimizerPass for CartesianJoinExtraction {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
-            
+
             // Leaf nodes - no transformation
             LogicalPlan::Empty
             | LogicalPlan::Scan(_)
             | LogicalPlan::ViewScan(_)
             | LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
-            
+
             LogicalPlan::WithClause(with_clause) => {
                 let child_tf = self.optimize(with_clause.input.clone(), plan_ctx)?;
                 match child_tf {
@@ -334,7 +352,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                 }
             }
         };
-        
+
         Ok(transformed_plan)
     }
 }
@@ -495,7 +513,7 @@ fn collect_aliases_from_plan_inner(plan: &LogicalPlan, aliases: &mut HashSet<Str
 
 /// Partition filter conditions into join conditions (those that bridge left and right)
 /// and remaining filters (those that don't).
-/// 
+///
 /// For now, we take the simple approach: if the entire expression references both sides,
 /// it becomes the join condition. A more sophisticated implementation would split AND
 /// conditions.
@@ -506,10 +524,10 @@ fn partition_filter_conditions(
 ) -> (Option<LogicalExpr>, Option<LogicalExpr>) {
     // Simple case: just check if the whole predicate is a cross-pattern condition
     let pred_aliases = collect_aliases_from_expr(predicate);
-    
+
     let refs_left = pred_aliases.iter().any(|a| left_aliases.contains(a));
     let refs_right = pred_aliases.iter().any(|a| right_aliases.contains(a));
-    
+
     if refs_left && refs_right {
         // This is a join condition
         // TODO: For AND expressions, we could split into join conditions and remaining filters
@@ -523,12 +541,14 @@ fn partition_filter_conditions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_collect_aliases_from_expr() {
-        use crate::query_planner::logical_expr::{PropertyAccess, TableAlias, OperatorApplication, Operator};
         use crate::graph_catalog::expression_parser::PropertyValue;
-        
+        use crate::query_planner::logical_expr::{
+            Operator, OperatorApplication, PropertyAccess, TableAlias,
+        };
+
         // ip1.ip = ip2.ip
         let expr = LogicalExpr::OperatorApplicationExp(OperatorApplication {
             operator: Operator::Equal,
@@ -543,7 +563,7 @@ mod tests {
                 }),
             ],
         });
-        
+
         let aliases = collect_aliases_from_expr(&expr);
         assert!(aliases.contains("ip1"));
         assert!(aliases.contains("ip2"));

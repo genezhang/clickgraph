@@ -210,19 +210,26 @@ impl AnalyzerPass for GraphTRaversalPlanning {
                 let child_tf =
                     self.analyze_with_graph_schema(u.input.clone(), plan_ctx, graph_schema)?;
                 match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-                        input: new_input,
-                        expression: u.expression.clone(),
-                        alias: u.alias.clone(),
-                    }))),
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                        },
+                    ))),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
             LogicalPlan::CartesianProduct(cp) => {
-                let transformed_left = self.analyze_with_graph_schema(cp.left.clone(), plan_ctx, graph_schema)?;
-                let transformed_right = self.analyze_with_graph_schema(cp.right.clone(), plan_ctx, graph_schema)?;
-                
-                if matches!((&transformed_left, &transformed_right), (Transformed::No(_), Transformed::No(_))) {
+                let transformed_left =
+                    self.analyze_with_graph_schema(cp.left.clone(), plan_ctx, graph_schema)?;
+                let transformed_right =
+                    self.analyze_with_graph_schema(cp.right.clone(), plan_ctx, graph_schema)?;
+
+                if matches!(
+                    (&transformed_left, &transformed_right),
+                    (Transformed::No(_), Transformed::No(_))
+                ) {
                     Transformed::No(logical_plan.clone())
                 } else {
                     let new_cp = crate::query_planner::logical_plan::CartesianProduct {
@@ -241,7 +248,11 @@ impl AnalyzerPass for GraphTRaversalPlanning {
                 }
             }
             LogicalPlan::WithClause(with_clause) => {
-                let child_tf = self.analyze_with_graph_schema(with_clause.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = self.analyze_with_graph_schema(
+                    with_clause.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 match child_tf {
                     Transformed::Yes(new_input) => {
                         let new_with = crate::query_planner::logical_plan::WithClause {
@@ -289,7 +300,7 @@ impl GraphTRaversalPlanning {
         // Check for $any nodes - skip graph traversal planning for polymorphic wildcards
         let left_alias = &graph_rel.left_connection;
         let right_alias = &graph_rel.right_connection;
-        
+
         if let Ok(left_ctx) = plan_ctx.get_node_table_ctx(left_alias) {
             if let Ok(left_label) = left_ctx.get_label_str() {
                 if left_label == "$any" {
@@ -298,7 +309,7 @@ impl GraphTRaversalPlanning {
                 }
             }
         }
-        
+
         if let Ok(right_ctx) = plan_ctx.get_node_table_ctx(right_alias) {
             if let Ok(right_label) = right_ctx.get_label_str() {
                 if right_label == "$any" {
@@ -307,7 +318,7 @@ impl GraphTRaversalPlanning {
                 }
             }
         }
-        
+
         let graph_context = graph_context::get_graph_context(
             graph_rel,
             plan_ctx,

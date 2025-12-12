@@ -167,7 +167,8 @@ impl PlanCtx {
     pub fn insert_table_ctx(&mut self, alias: String, table_ctx: TableCtx) {
         crate::debug_print!(
             "DEBUG PlanCtx::insert_table_ctx: alias='{}', in_optional_match_mode={}",
-            alias, self.in_optional_match_mode
+            alias,
+            self.in_optional_match_mode
         );
         self.alias_table_ctx_map.insert(alias.clone(), table_ctx);
 
@@ -305,15 +306,26 @@ impl PlanCtx {
         })?;
         Ok(self.alias_table_ctx_map.get_mut(&alias))
     }
-    
+
     /// Register a denormalized node alias with its associated edge
     /// Used for multi-hop denormalized patterns to create edge-to-edge JOINs
-    pub fn register_denormalized_alias(&mut self, alias: String, rel_alias: String, is_from_node: bool, node_label: String, rel_type: String) {
-        self.denormalized_node_edges.insert(alias, (rel_alias, is_from_node, node_label, rel_type));
+    pub fn register_denormalized_alias(
+        &mut self,
+        alias: String,
+        rel_alias: String,
+        is_from_node: bool,
+        node_label: String,
+        rel_type: String,
+    ) {
+        self.denormalized_node_edges
+            .insert(alias, (rel_alias, is_from_node, node_label, rel_type));
     }
-    
+
     /// Get denormalized alias info: returns (edge_alias, is_from_node, node_label, rel_type) if node is denormalized
-    pub fn get_denormalized_alias_info(&self, node_alias: &str) -> Option<(String, bool, String, String)> {
+    pub fn get_denormalized_alias_info(
+        &self,
+        node_alias: &str,
+    ) -> Option<(String, bool, String, String)> {
         self.denormalized_node_edges.get(node_alias).cloned()
     }
 }
@@ -403,19 +415,19 @@ impl PlanCtx {
                 self.alias_table_ctx_map.insert(alias, table_ctx);
             }
         }
-        
+
         // Merge optional aliases
         for alias in other.optional_aliases {
             self.optional_aliases.insert(alias);
         }
-        
+
         // Merge projection aliases
         for (alias, expr) in other.projection_aliases {
             if !self.projection_aliases.contains_key(&alias) {
                 self.projection_aliases.insert(alias, expr);
             }
         }
-        
+
         // Merge denormalized node edges
         for (alias, info) in other.denormalized_node_edges {
             if !self.denormalized_node_edges.contains_key(&alias) {

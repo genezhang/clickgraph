@@ -25,12 +25,12 @@ impl Identifier {
             Identifier::Composite(cols) => cols.iter().map(|s| s.as_str()).collect(),
         }
     }
-    
+
     /// Check if this is a composite identifier
     pub fn is_composite(&self) -> bool {
         matches!(self, Identifier::Composite(_))
     }
-    
+
     /// Get the single column name (panics if composite)
     pub fn as_single(&self) -> &str {
         match self {
@@ -38,7 +38,7 @@ impl Identifier {
             Identifier::Composite(_) => panic!("Called as_single() on composite identifier"),
         }
     }
-    
+
     /// Generate SQL tuple expression with alias prefix
     /// For single column: "alias.column"
     /// For composite: "(alias.col1, alias.col2, ...)"
@@ -46,7 +46,8 @@ impl Identifier {
         match self {
             Identifier::Single(col) => format!("{}.{}", alias, col),
             Identifier::Composite(cols) => {
-                let fields = cols.iter()
+                let fields = cols
+                    .iter()
                     .map(|c| format!("{}.{}", alias, c))
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -109,13 +110,13 @@ use std::path::Path;
 ///
 /// async fn load_config(client: Client) {
 ///     let mut validator = SchemaValidator::new(client);
-///     
+///
 ///     // Load and validate configuration
 ///     let config = GraphViewConfig::from_yaml_file_validated(
 ///         "views.yaml",
 ///         &mut validator
 ///     ).await.unwrap();
-///     
+///
 ///     // Use configuration...
 /// }
 /// ```
@@ -144,12 +145,12 @@ pub struct GraphSchemaConfig {
 pub struct GraphSchemaDefinition {
     /// Node definitions
     pub nodes: Vec<NodeDefinition>,
-    
+
     /// Relationship definitions (legacy, deprecated)
     /// Use `edges` field instead for new schemas
     #[serde(default)]
     pub relationships: Vec<RelationshipDefinition>,
-    
+
     /// Edge definitions (new, preferred)
     /// Supports standard and polymorphic edges with composite IDs
     #[serde(default)]
@@ -166,25 +167,25 @@ pub struct NodeDefinition {
     /// Source table name
     pub table: String,
     /// Node identifier - column name(s) for node ID
-    /// Supports single column: `node_id: user_id` 
+    /// Supports single column: `node_id: user_id`
     /// Or composite (future): `node_id: [tenant_id, user_id]`
-    /// 
+    ///
     /// Note: `id_column` is deprecated, use `node_id` instead
     #[serde(alias = "id_column")]
     pub node_id: Identifier,
-    
+
     /// Optional: Column containing node type discriminator (for shared tables)
     /// Used when multiple node labels share the same table
     /// Example: "fs_type" column distinguishes Folder vs File in fs_objects table
     #[serde(default)]
     pub label_column: Option<String>,
-    
+
     /// Optional: Value in label_column that identifies this node type
     /// Required when label_column is specified
     /// Example: "File" for File nodes in fs_objects table where fs_type='File'
     #[serde(default)]
     pub label_value: Option<String>,
-    
+
     /// Property mappings
     #[serde(rename = "property_mappings")]
     pub properties: HashMap<String, String>,
@@ -213,21 +214,20 @@ pub struct NodeDefinition {
     /// - "camelCase": Convert to camelCase (user_id → userId)
     #[serde(default = "default_naming_convention")]
     pub naming_convention: String,
-    
+
     // ===== Denormalized node support =====
-    
     /// Optional: Property mappings when this node appears as from_node in relationships
     /// Used for denormalized nodes where properties exist in edge table
     /// Example: {"code": "origin_code", "city": "origin_city"}
     #[serde(default)]
     pub from_node_properties: Option<HashMap<String, String>>,
-    
+
     /// Optional: Property mappings when this node appears as to_node in relationships
     /// Used for denormalized nodes where properties exist in edge table
     /// Example: {"code": "dest_code", "city": "dest_city"}
     #[serde(default)]
     pub to_node_properties: Option<HashMap<String, String>>,
-    
+
     /// Optional: SQL predicate filter applied to all queries on this node
     /// Column references are prefixed with table alias at query time
     /// Example: "is_active = 1 AND created_at >= now() - INTERVAL 30 DAY"
@@ -288,7 +288,7 @@ pub struct RelationshipDefinition {
     #[serde(default = "default_naming_convention")]
     pub naming_convention: String,
     /// Optional: Composite edge ID for cycle prevention in variable-length paths
-    /// Examples: 
+    /// Examples:
     ///   - Single: "relationship_id" or ["relationship_id"]
     ///   - Composite: ["from_id", "to_id", "timestamp"]
     /// Default: [from_id, to_id]
@@ -330,43 +330,42 @@ pub struct StandardEdgeDefinition {
     pub from_node: String,
     /// Target node label (known at config time)
     pub to_node: String,
-    
+
     /// Optional: Composite edge ID
-    /// Examples: 
+    /// Examples:
     ///   - Single: "relationship_id" or ["relationship_id"]
     ///   - Composite: ["from_id", "to_id", "timestamp"]
     /// Default: [from_id, to_id]
     #[serde(default)]
     pub edge_id: Option<Identifier>,
-    
+
     // NOTE: from_node_properties and to_node_properties are defined on NODE definitions,
     // not on edge definitions. The edge gets these from the node definitions based on
     // from_node and to_node labels during schema loading.
-    
     /// Property mappings for edge properties
     #[serde(rename = "property_mappings", default)]
     pub properties: HashMap<String, String>,
-    
+
     /// Optional: View parameters for parameterized views
     #[serde(default)]
     pub view_parameters: Option<Vec<String>>,
-    
+
     /// Optional: Whether to use FINAL keyword
     #[serde(default)]
     pub use_final: Option<bool>,
-    
+
     /// Optional: Auto-discover columns
     #[serde(default)]
     pub auto_discover_columns: bool,
-    
+
     /// Optional: Exclude columns from auto-discovery
     #[serde(default)]
     pub exclude_columns: Vec<String>,
-    
+
     /// Optional: Naming convention for auto-discovered properties
     #[serde(default = "default_naming_convention")]
     pub naming_convention: String,
-    
+
     /// Optional: SQL predicate filter applied to all queries on this edge
     /// Column references are prefixed with table alias at query time
     /// Example: "is_active = 1 AND created_at >= now() - INTERVAL 30 DAY"
@@ -375,7 +374,7 @@ pub struct StandardEdgeDefinition {
 }
 
 /// Polymorphic edge definition (one config → many edge types from explicit list)
-/// 
+///
 /// Supports two patterns:
 /// 1. **Full polymorphic**: Both endpoints vary based on label columns
 ///    - Requires: `type_column`, `from_label_column`, `to_label_column`
@@ -395,72 +394,72 @@ pub struct PolymorphicEdgeDefinition {
     pub from_id: String,
     /// To ID column name
     pub to_id: String,
-    
+
     /// Column containing edge type discriminator (optional if single type_value)
     /// Example: "relation_type"
     #[serde(default)]
     pub type_column: Option<String>,
-    
+
     /// Column containing source node label (for full polymorphic)
     /// Example: "from_type"
     /// Mutually exclusive with `from_node`
     #[serde(default)]
     pub from_label_column: Option<String>,
-    
+
     /// Fixed source node label (for fixed-endpoint polymorphic)
     /// Example: "Group"
     /// Mutually exclusive with `from_label_column`
     #[serde(default)]
     pub from_node: Option<String>,
-    
+
     /// Column containing target node label (for full polymorphic)
     /// Example: "to_type"
     /// Mutually exclusive with `to_node`
     #[serde(default)]
     pub to_label_column: Option<String>,
-    
+
     /// Fixed target node label (for fixed-endpoint polymorphic)
     /// Example: "Group"
     /// Mutually exclusive with `to_label_column`
     #[serde(default)]
     pub to_node: Option<String>,
-    
+
     /// Valid source node labels (for polymorphic from side)
     /// When from_label_column is used, these restrict which labels are allowed
     /// Example: ["User", "Group"] - only User and Group can be source nodes
     /// If not specified, any label is allowed (backward compatible)
     #[serde(default)]
     pub from_label_values: Option<Vec<String>>,
-    
+
     /// Valid target node labels (for polymorphic to side)
     /// When to_label_column is used, these restrict which labels are allowed
     /// Example: ["Folder", "File"] - only Folder and File can be target nodes
     /// If not specified, any label is allowed (backward compatible)
     #[serde(default)]
     pub to_label_values: Option<Vec<String>>,
-    
+
     /// List of edge types in this table (REQUIRED for production)
     /// Example: ["FOLLOWS", "LIKES", "AUTHORED"]
     /// One EdgeSchema will be generated per type value
     /// Node types (from_node/to_node) are matched at query time via label columns
     pub type_values: Vec<String>,
-    
+
     /// Optional: Composite edge ID
     #[serde(default)]
     pub edge_id: Option<Identifier>,
-    
+
     /// Property mappings (shared across all discovered edge types)
     #[serde(rename = "property_mappings", default)]
     pub properties: HashMap<String, String>,
-    
+
     /// Optional: View parameters
     #[serde(default)]
     pub view_parameters: Option<Vec<String>>,
-    
+
     /// Optional: Whether to use FINAL keyword
     #[serde(default)]
     pub use_final: Option<bool>,
-    
+
     /// Optional: SQL predicate filter applied to all queries on this edge
     /// Column references are prefixed with table alias at query time
     /// Example: "is_active = 1 AND created_at >= now() - INTERVAL 30 DAY"
@@ -501,16 +500,15 @@ fn parse_property_mappings(
     mappings: HashMap<String, String>,
 ) -> Result<HashMap<String, PropertyValue>, GraphSchemaError> {
     let mut parsed = HashMap::new();
-    
+
     for (key, value) in mappings {
-        let property_value = parse_property_value(&value).map_err(|e| {
-            GraphSchemaError::InvalidConfig {
+        let property_value =
+            parse_property_value(&value).map_err(|e| GraphSchemaError::InvalidConfig {
                 message: format!("Failed to parse property '{}': {}", key, e),
-            }
-        })?;
+            })?;
         parsed.insert(key, property_value);
     }
-    
+
     Ok(parsed)
 }
 
@@ -518,7 +516,7 @@ fn parse_property_mappings(
 // Schema Building Helpers
 // ============================================================================
 // These helper types and functions consolidate the shared logic between
-// `to_graph_schema()` (sync, no discovery) and `to_graph_schema_with_client()` 
+// `to_graph_schema()` (sync, no discovery) and `to_graph_schema_with_client()`
 // (async, with auto-discovery and engine detection).
 
 use super::engine_detection::TableEngine;
@@ -543,9 +541,9 @@ fn build_property_mappings(
     if !auto_discover {
         return manual_mappings;
     }
-    
+
     let mut mappings = HashMap::new();
-    
+
     // Apply auto-discovered columns first (if available)
     if let Some(ref columns) = discovery.columns {
         for col in columns {
@@ -555,15 +553,18 @@ fn build_property_mappings(
             }
         }
     }
-    
+
     // Manual mappings override auto-discovered (manual wins)
     mappings.extend(manual_mappings);
-    
+
     mappings
 }
 
 /// Determine use_final value from config and detected engine
-fn determine_use_final(config_use_final: Option<bool>, engine: &Option<TableEngine>) -> Option<bool> {
+fn determine_use_final(
+    config_use_final: Option<bool>,
+    engine: &Option<TableEngine>,
+) -> Option<bool> {
     // If config has explicit value, use it
     if config_use_final.is_some() {
         return config_use_final;
@@ -585,27 +586,27 @@ fn build_node_schema(
         &node_def.exclude_columns,
         &node_def.naming_convention,
     );
-    
+
     let property_mappings = parse_property_mappings(raw_mappings)?;
-    
+
     // Determine use_final
     let use_final = determine_use_final(node_def.use_final, &discovery.engine);
-    
+
     // Check if this is a denormalized node
-    let is_denormalized = node_def.from_node_properties.is_some() 
-        || node_def.to_node_properties.is_some();
-    
+    let is_denormalized =
+        node_def.from_node_properties.is_some() || node_def.to_node_properties.is_some();
+
     // Parse filter if provided
     let filter = if let Some(filter_str) = &node_def.filter {
-        Some(SchemaFilter::new(filter_str).map_err(|e| {
-            GraphSchemaError::ConfigReadError {
+        Some(
+            SchemaFilter::new(filter_str).map_err(|e| GraphSchemaError::ConfigReadError {
                 error: format!("Invalid filter for node '{}': {}", node_def.label, e),
-            }
-        })?)
+            })?,
+        )
     } else {
         None
     };
-    
+
     Ok(NodeSchema {
         database: node_def.database.clone(),
         table_name: node_def.table.clone(),
@@ -651,12 +652,12 @@ fn build_relationship_schema(
         &rel_def.exclude_columns,
         &rel_def.naming_convention,
     );
-    
+
     let property_mappings = parse_property_mappings(raw_mappings)?;
-    
+
     // Determine use_final
     let use_final = determine_use_final(rel_def.use_final, &discovery.engine);
-    
+
     let from_node = rel_def
         .from_node
         .as_ref()
@@ -667,51 +668,58 @@ fn build_relationship_schema(
         .as_ref()
         .unwrap_or(&default_node_type.to_string())
         .clone();
-    
+
     // Parse filter if provided
     let filter = if let Some(filter_str) = &rel_def.filter {
-        Some(SchemaFilter::new(filter_str).map_err(|e| {
-            GraphSchemaError::ConfigReadError {
-                error: format!("Invalid filter for relationship '{}': {}", rel_def.type_name, e),
-            }
-        })?)
+        Some(
+            SchemaFilter::new(filter_str).map_err(|e| GraphSchemaError::ConfigReadError {
+                error: format!(
+                    "Invalid filter for relationship '{}': {}",
+                    rel_def.type_name, e
+                ),
+            })?,
+        )
     } else {
         None
     };
-    
+
     // Look up denormalized node properties from NODE definitions
     // Try table-specific lookup first (composite key), then fall back to label-only
     let from_composite_key = format!("{}::{}::{}", rel_def.database, rel_def.table, from_node);
     let to_composite_key = format!("{}::{}::{}", rel_def.database, rel_def.table, to_node);
-    
-    let from_node_props = nodes.get(&from_composite_key)
+
+    let from_node_props = nodes
+        .get(&from_composite_key)
         .or_else(|| nodes.get(&from_node))
         .and_then(|n| n.from_properties.clone());
-    let to_node_props = nodes.get(&to_composite_key)
+    let to_node_props = nodes
+        .get(&to_composite_key)
         .or_else(|| nodes.get(&to_node))
         .and_then(|n| n.to_properties.clone());
-    
+
     // Detect FK-edge pattern:
     // The edge is represented by a FK column on one of the node tables.
     // - Edge table = from_node table OR to_node table
     // - No denormalized properties (from_node_props and to_node_props are None)
-    // 
+    //
     // This covers both:
     // 1. Self-referencing FK: from_node == to_node (e.g., parent_id in same table)
     // 2. Non-self-ref FK: from_node != to_node (e.g., orders.customer_id → customers)
     let edge_table = format!("{}.{}", rel_def.database, rel_def.table);
-    let from_node_table = nodes.get(&from_composite_key)
+    let from_node_table = nodes
+        .get(&from_composite_key)
         .or_else(|| nodes.get(&from_node))
         .map(|n| format!("{}.{}", n.database, n.table_name));
-    let to_node_table = nodes.get(&to_composite_key)
+    let to_node_table = nodes
+        .get(&to_composite_key)
         .or_else(|| nodes.get(&to_node))
         .map(|n| format!("{}.{}", n.database, n.table_name));
-    
-    let is_fk_edge = from_node_props.is_none() 
+
+    let is_fk_edge = from_node_props.is_none()
         && to_node_props.is_none()
-        && (from_node_table.as_ref() == Some(&edge_table) 
+        && (from_node_table.as_ref() == Some(&edge_table)
             || to_node_table.as_ref() == Some(&edge_table));
-    
+
     Ok(RelationshipSchema {
         database: rel_def.database.clone(),
         table_name: rel_def.table.clone(),
@@ -756,56 +764,66 @@ fn build_standard_edge_schema(
         &std_edge.exclude_columns,
         &std_edge.naming_convention,
     );
-    
+
     let property_mappings = parse_property_mappings(raw_mappings)?;
-    
+
     // Determine use_final
     let use_final = determine_use_final(std_edge.use_final, &discovery.engine);
-    
+
     // Parse filter if provided
     let filter = if let Some(filter_str) = &std_edge.filter {
-        Some(SchemaFilter::new(filter_str).map_err(|e| {
-            GraphSchemaError::ConfigReadError {
+        Some(
+            SchemaFilter::new(filter_str).map_err(|e| GraphSchemaError::ConfigReadError {
                 error: format!("Invalid filter for edge '{}': {}", std_edge.type_name, e),
-            }
-        })?)
+            })?,
+        )
     } else {
         None
     };
-    
+
     // Look up denormalized node properties from NODE definitions
     // Try table-specific lookup first (composite key), then fall back to label-only
-    let from_composite_key = format!("{}::{}::{}", std_edge.database, std_edge.table, std_edge.from_node);
-    let to_composite_key = format!("{}::{}::{}", std_edge.database, std_edge.table, std_edge.to_node);
-    
-    let from_node_props = nodes.get(&from_composite_key)
+    let from_composite_key = format!(
+        "{}::{}::{}",
+        std_edge.database, std_edge.table, std_edge.from_node
+    );
+    let to_composite_key = format!(
+        "{}::{}::{}",
+        std_edge.database, std_edge.table, std_edge.to_node
+    );
+
+    let from_node_props = nodes
+        .get(&from_composite_key)
         .or_else(|| nodes.get(&std_edge.from_node))
         .and_then(|n| n.from_properties.clone());
-    let to_node_props = nodes.get(&to_composite_key)
+    let to_node_props = nodes
+        .get(&to_composite_key)
         .or_else(|| nodes.get(&std_edge.to_node))
         .and_then(|n| n.to_properties.clone());
-    
+
     // Detect FK-edge pattern:
     // The edge is represented by a FK column on one of the node tables.
     // - Edge table = from_node table OR to_node table
     // - No denormalized properties (from_node_props and to_node_props are None)
-    // 
+    //
     // This covers both:
     // 1. Self-referencing FK: from_node == to_node (e.g., parent_id in same table)
     // 2. Non-self-ref FK: from_node != to_node (e.g., orders.customer_id → customers)
     let edge_table = format!("{}.{}", std_edge.database, std_edge.table);
-    let from_node_table = nodes.get(&from_composite_key)
+    let from_node_table = nodes
+        .get(&from_composite_key)
         .or_else(|| nodes.get(&std_edge.from_node))
         .map(|n| format!("{}.{}", n.database, n.table_name));
-    let to_node_table = nodes.get(&to_composite_key)
+    let to_node_table = nodes
+        .get(&to_composite_key)
         .or_else(|| nodes.get(&std_edge.to_node))
         .map(|n| format!("{}.{}", n.database, n.table_name));
-    
-    let is_fk_edge = from_node_props.is_none() 
+
+    let is_fk_edge = from_node_props.is_none()
         && to_node_props.is_none()
-        && (from_node_table.as_ref() == Some(&edge_table) 
+        && (from_node_table.as_ref() == Some(&edge_table)
             || to_node_table.as_ref() == Some(&edge_table));
-    
+
     Ok(RelationshipSchema {
         database: std_edge.database.clone(),
         table_name: std_edge.table.clone(),
@@ -837,7 +855,7 @@ fn build_standard_edge_schema(
 }
 
 /// Build RelationshipSchemas from a PolymorphicEdgeDefinition (one per type_value)
-/// 
+///
 /// Supports two patterns:
 /// 1. Full polymorphic: from_label_column + to_label_column + type_column
 /// 2. Fixed-endpoint: from_node/to_node for fixed sides, label_column for polymorphic side
@@ -846,27 +864,33 @@ fn build_polymorphic_edge_schemas(
     discovery: &TableDiscovery,
 ) -> Result<Vec<(String, RelationshipSchema)>, GraphSchemaError> {
     let property_mappings = parse_property_mappings(poly_edge.properties.clone())?;
-    
+
     // Determine use_final
     let use_final = determine_use_final(poly_edge.use_final, &discovery.engine);
-    
+
     // Parse filter if provided
     let filter = if let Some(filter_str) = &poly_edge.filter {
-        Some(SchemaFilter::new(filter_str).map_err(|e| {
-            GraphSchemaError::ConfigReadError {
+        Some(
+            SchemaFilter::new(filter_str).map_err(|e| GraphSchemaError::ConfigReadError {
                 error: format!("Invalid filter for polymorphic edge: {}", e),
-            }
-        })?)
+            })?,
+        )
     } else {
         None
     };
-    
+
     // Determine node types - fixed or polymorphic ($any)
-    let from_node = poly_edge.from_node.clone().unwrap_or_else(|| "$any".to_string());
-    let to_node = poly_edge.to_node.clone().unwrap_or_else(|| "$any".to_string());
-    
+    let from_node = poly_edge
+        .from_node
+        .clone()
+        .unwrap_or_else(|| "$any".to_string());
+    let to_node = poly_edge
+        .to_node
+        .clone()
+        .unwrap_or_else(|| "$any".to_string());
+
     let mut results = Vec::new();
-    
+
     for type_val in &poly_edge.type_values {
         let rel_schema = RelationshipSchema {
             database: poly_edge.database.clone(),
@@ -898,7 +922,7 @@ fn build_polymorphic_edge_schemas(
         };
         results.push((type_val.clone(), rel_schema));
     }
-    
+
     Ok(results)
 }
 
@@ -936,7 +960,7 @@ impl GraphSchemaConfig {
             if !seen_table_labels.insert(table_label_key) {
                 return Err(GraphSchemaError::InvalidConfig {
                     message: format!(
-                        "Duplicate node label '{}' on same table '{}.{}'", 
+                        "Duplicate node label '{}' on same table '{}.{}'",
                         node.label, node.database, node.table
                     ),
                 });
@@ -963,7 +987,7 @@ impl GraphSchemaConfig {
                     continue;
                 }
             };
-            
+
             if !seen_types.insert(type_name) {
                 return Err(GraphSchemaError::InvalidConfig {
                     message: format!("Duplicate edge type: {}", type_name),
@@ -993,30 +1017,38 @@ impl GraphSchemaConfig {
         for edge in &self.graph_schema.edges {
             if let EdgeDefinition::Standard(std_edge) = edge {
                 let edge_table_key = (std_edge.database.clone(), std_edge.table.clone());
-                
+
                 // Look up both node definitions
-                let from_node_def = node_by_table.get(&edge_table_key)
+                let from_node_def = node_by_table
+                    .get(&edge_table_key)
                     .filter(|n| n.label == std_edge.from_node);
-                let to_node_def = node_by_table.get(&edge_table_key)
+                let to_node_def = node_by_table
+                    .get(&edge_table_key)
                     .filter(|n| n.label == std_edge.to_node);
-                
+
                 // FK-edge pattern: edge table = from_node OR to_node table,
                 // with NO denormalized properties on either side
                 let has_any_node_props = from_node_def
                     .map(|n| n.from_node_properties.is_some() || n.to_node_properties.is_some())
                     .unwrap_or(false)
                     || to_node_def
-                    .map(|n| n.from_node_properties.is_some() || n.to_node_properties.is_some())
-                    .unwrap_or(false);
-                
-                let is_fk_edge = (from_node_def.is_some() || to_node_def.is_some()) && !has_any_node_props;
+                        .map(|n| n.from_node_properties.is_some() || n.to_node_properties.is_some())
+                        .unwrap_or(false);
+
+                let is_fk_edge =
+                    (from_node_def.is_some() || to_node_def.is_some()) && !has_any_node_props;
 
                 // Check if from_node shares the same table
                 if let Some(from_node_def) = from_node_def {
                     if !is_fk_edge {
                         // Denormalized pattern - must have from_node_properties
-                        if from_node_def.from_node_properties.is_none() || 
-                           from_node_def.from_node_properties.as_ref().unwrap().is_empty() {
+                        if from_node_def.from_node_properties.is_none()
+                            || from_node_def
+                                .from_node_properties
+                                .as_ref()
+                                .unwrap()
+                                .is_empty()
+                        {
                             return Err(GraphSchemaError::InvalidConfig {
                                 message: format!(
                                     "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing from_node_properties on node definition",
@@ -1032,8 +1064,9 @@ impl GraphSchemaConfig {
                 if let Some(to_node_def) = to_node_def {
                     if !is_fk_edge {
                         // Denormalized pattern - must have to_node_properties
-                        if to_node_def.to_node_properties.is_none() || 
-                           to_node_def.to_node_properties.as_ref().unwrap().is_empty() {
+                        if to_node_def.to_node_properties.is_none()
+                            || to_node_def.to_node_properties.as_ref().unwrap().is_empty()
+                        {
                             return Err(GraphSchemaError::InvalidConfig {
                                 message: format!(
                                     "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing to_node_properties on node definition",
@@ -1056,41 +1089,59 @@ impl GraphSchemaConfig {
             if let EdgeDefinition::Polymorphic(poly_edge) = edge {
                 // Validate source node specification
                 // Must have exactly one of: from_label_column OR from_node
-                let has_from_label = poly_edge.from_label_column.as_ref().map_or(false, |s| !s.is_empty());
-                let has_from_node = poly_edge.from_node.as_ref().map_or(false, |s| !s.is_empty());
-                
+                let has_from_label = poly_edge
+                    .from_label_column
+                    .as_ref()
+                    .map_or(false, |s| !s.is_empty());
+                let has_from_node = poly_edge
+                    .from_node
+                    .as_ref()
+                    .map_or(false, |s| !s.is_empty());
+
                 if has_from_label && has_from_node {
                     return Err(GraphSchemaError::InvalidConfig {
-                        message: "Polymorphic edge cannot have both from_label_column and from_node".to_string(),
+                        message:
+                            "Polymorphic edge cannot have both from_label_column and from_node"
+                                .to_string(),
                     });
                 }
                 if !has_from_label && !has_from_node {
                     return Err(GraphSchemaError::InvalidConfig {
-                        message: "Polymorphic edge requires either from_label_column or from_node".to_string(),
+                        message: "Polymorphic edge requires either from_label_column or from_node"
+                            .to_string(),
                     });
                 }
-                
+
                 // Validate target node specification
                 // Must have exactly one of: to_label_column OR to_node
-                let has_to_label = poly_edge.to_label_column.as_ref().map_or(false, |s| !s.is_empty());
+                let has_to_label = poly_edge
+                    .to_label_column
+                    .as_ref()
+                    .map_or(false, |s| !s.is_empty());
                 let has_to_node = poly_edge.to_node.as_ref().map_or(false, |s| !s.is_empty());
-                
+
                 if has_to_label && has_to_node {
                     return Err(GraphSchemaError::InvalidConfig {
-                        message: "Polymorphic edge cannot have both to_label_column and to_node".to_string(),
+                        message: "Polymorphic edge cannot have both to_label_column and to_node"
+                            .to_string(),
                     });
                 }
                 if !has_to_label && !has_to_node {
                     return Err(GraphSchemaError::InvalidConfig {
-                        message: "Polymorphic edge requires either to_label_column or to_node".to_string(),
+                        message: "Polymorphic edge requires either to_label_column or to_node"
+                            .to_string(),
                     });
                 }
-                
+
                 // Validate type_column: required if multiple type_values, optional if single
-                let has_type_column = poly_edge.type_column.as_ref().map_or(false, |s| !s.is_empty());
+                let has_type_column = poly_edge
+                    .type_column
+                    .as_ref()
+                    .map_or(false, |s| !s.is_empty());
                 if poly_edge.type_values.len() > 1 && !has_type_column {
                     return Err(GraphSchemaError::InvalidConfig {
-                        message: "Polymorphic edge with multiple type_values requires type_column".to_string(),
+                        message: "Polymorphic edge with multiple type_values requires type_column"
+                            .to_string(),
                     });
                 }
 
@@ -1128,7 +1179,7 @@ impl GraphSchemaConfig {
     }
 
     /// Convert to GraphSchema (sync version, no auto-discovery)
-    /// 
+    ///
     /// This is the sync version that doesn't require a ClickHouse connection.
     /// For auto-discovery and engine detection, use `to_graph_schema_with_client()`.
     pub fn to_graph_schema(&self) -> Result<GraphSchema, GraphSchemaError> {
@@ -1136,7 +1187,7 @@ impl GraphSchemaConfig {
 
         // No discovery data in sync mode
         let no_discovery = TableDiscovery::default();
-        
+
         let mut nodes = HashMap::new();
         let mut relationships = HashMap::new();
 
@@ -1145,7 +1196,10 @@ impl GraphSchemaConfig {
         for node_def in &self.graph_schema.nodes {
             let node_schema = build_node_schema(node_def, &no_discovery)?;
             // Composite key for table-specific lookup
-            let composite_key = format!("{}::{}::{}", node_def.database, node_def.table, node_def.label);
+            let composite_key = format!(
+                "{}::{}::{}",
+                node_def.database, node_def.table, node_def.label
+            );
             nodes.insert(composite_key, node_schema.clone());
             // Label-only key for backward compat (last one wins if duplicates)
             nodes.insert(node_def.label.clone(), node_schema);
@@ -1161,7 +1215,8 @@ impl GraphSchemaConfig {
 
         // Convert legacy relationship definitions using shared builder
         for rel_def in &self.graph_schema.relationships {
-            let rel_schema = build_relationship_schema(rel_def, &default_node_type, &nodes, &no_discovery)?;
+            let rel_schema =
+                build_relationship_schema(rel_def, &default_node_type, &nodes, &no_discovery)?;
             relationships.insert(rel_def.type_name.clone(), rel_schema);
         }
 
@@ -1224,22 +1279,28 @@ impl GraphSchemaConfig {
                     query_table_columns(client, &node_def.database, &node_def.table)
                         .await
                         .map_err(|e| GraphSchemaError::ConfigReadError {
-                            error: format!("Failed to query columns for node '{}': {}", node_def.label, e),
-                        })?
+                            error: format!(
+                                "Failed to query columns for node '{}': {}",
+                                node_def.label, e
+                            ),
+                        })?,
                 )
             } else {
                 None
             };
-            
+
             let engine = detect_table_engine(client, &node_def.database, &node_def.table)
                 .await
                 .ok();
-            
+
             let discovery = TableDiscovery { columns, engine };
-            
+
             let node_schema = build_node_schema(node_def, &discovery)?;
             // Composite key for table-specific lookup
-            let composite_key = format!("{}::{}::{}", node_def.database, node_def.table, node_def.label);
+            let composite_key = format!(
+                "{}::{}::{}",
+                node_def.database, node_def.table, node_def.label
+            );
             nodes.insert(composite_key, node_schema.clone());
             // Label-only key for backward compat (last one wins if duplicates)
             nodes.insert(node_def.label.clone(), node_schema);
@@ -1260,20 +1321,24 @@ impl GraphSchemaConfig {
                     query_table_columns(client, &rel_def.database, &rel_def.table)
                         .await
                         .map_err(|e| GraphSchemaError::ConfigReadError {
-                            error: format!("Failed to query columns for relationship '{}': {}", rel_def.type_name, e),
-                        })?
+                            error: format!(
+                                "Failed to query columns for relationship '{}': {}",
+                                rel_def.type_name, e
+                            ),
+                        })?,
                 )
             } else {
                 None
             };
-            
+
             let engine = detect_table_engine(client, &rel_def.database, &rel_def.table)
                 .await
                 .ok();
-            
+
             let discovery = TableDiscovery { columns, engine };
-            
-            let rel_schema = build_relationship_schema(rel_def, &default_node_type, &nodes, &discovery)?;
+
+            let rel_schema =
+                build_relationship_schema(rel_def, &default_node_type, &nodes, &discovery)?;
             relationships.insert(rel_def.type_name.clone(), rel_schema);
         }
 
@@ -1286,19 +1351,22 @@ impl GraphSchemaConfig {
                             query_table_columns(client, &std_edge.database, &std_edge.table)
                                 .await
                                 .map_err(|e| GraphSchemaError::ConfigReadError {
-                                    error: format!("Failed to query columns for edge '{}': {}", std_edge.type_name, e),
-                                })?
+                                    error: format!(
+                                        "Failed to query columns for edge '{}': {}",
+                                        std_edge.type_name, e
+                                    ),
+                                })?,
                         )
                     } else {
                         None
                     };
-                    
+
                     let engine = detect_table_engine(client, &std_edge.database, &std_edge.table)
                         .await
                         .ok();
-                    
+
                     let discovery = TableDiscovery { columns, engine };
-                    
+
                     let rel_schema = build_standard_edge_schema(std_edge, &nodes, &discovery)?;
                     relationships.insert(std_edge.type_name.clone(), rel_schema);
                 }
@@ -1308,10 +1376,15 @@ impl GraphSchemaConfig {
                     let engine = detect_table_engine(client, &poly_edge.database, &poly_edge.table)
                         .await
                         .ok();
-                    
-                    let discovery = TableDiscovery { columns: None, engine };
-                    
-                    for (type_name, rel_schema) in build_polymorphic_edge_schemas(poly_edge, &discovery)? {
+
+                    let discovery = TableDiscovery {
+                        columns: None,
+                        engine,
+                    };
+
+                    for (type_name, rel_schema) in
+                        build_polymorphic_edge_schemas(poly_edge, &discovery)?
+                    {
                         relationships.insert(type_name, rel_schema);
                     }
                 }
@@ -1356,12 +1429,12 @@ graph_schema:
         carrier: airline
 "#;
         let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
-        
+
         // Check that RelationshipDefinition has the edge_id
         assert_eq!(config.graph_schema.relationships.len(), 1);
         let rel = &config.graph_schema.relationships[0];
         assert!(rel.edge_id.is_some(), "edge_id should be parsed from YAML");
-        
+
         let edge_id = rel.edge_id.as_ref().unwrap();
         assert!(edge_id.is_composite(), "edge_id should be composite");
         assert_eq!(edge_id.columns(), vec!["flight_id", "flight_number"]);
@@ -1392,14 +1465,21 @@ graph_schema:
         carrier: airline
 "#;
         let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
-        
+
         // Convert to GraphSchema
-        let graph_schema = config.to_graph_schema().expect("Failed to convert to GraphSchema");
-        
+        let graph_schema = config
+            .to_graph_schema()
+            .expect("Failed to convert to GraphSchema");
+
         // Check that RelationshipSchema has the edge_id
-        let rel_schema = graph_schema.get_rel_schema("FLIGHT").expect("Failed to get rel schema");
-        assert!(rel_schema.edge_id.is_some(), "RelationshipSchema should have edge_id");
-        
+        let rel_schema = graph_schema
+            .get_rel_schema("FLIGHT")
+            .expect("Failed to get rel schema");
+        assert!(
+            rel_schema.edge_id.is_some(),
+            "RelationshipSchema should have edge_id"
+        );
+
         let edge_id = rel_schema.edge_id.as_ref().unwrap();
         assert!(edge_id.is_composite(), "edge_id should be composite");
         assert_eq!(edge_id.columns(), vec!["flight_id", "flight_number"]);
@@ -1529,7 +1609,7 @@ graph_schema:
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
-                    from_node_properties: None,  // Missing! Node is used as from_node in edge
+                    from_node_properties: None, // Missing! Node is used as from_node in edge
                     to_node_properties: Some({
                         let mut props = HashMap::new();
                         props.insert("city".to_string(), "DestCityName".to_string());
@@ -1602,7 +1682,7 @@ graph_schema:
                     to_node: None,
                     from_label_values: None,
                     to_label_values: None,
-                    type_values: vec!["FOLLOWS".to_string(), "LIKES".to_string()],  // Required!
+                    type_values: vec!["FOLLOWS".to_string(), "LIKES".to_string()], // Required!
                     edge_id: Some(Identifier::Composite(vec![
                         "from_id".to_string(),
                         "to_id".to_string(),
@@ -1657,7 +1737,7 @@ graph_schema:
                     to_node: None,
                     from_label_values: None,
                     to_label_values: None,
-                    type_values: vec![],  // Empty!
+                    type_values: vec![], // Empty!
                     edge_id: None,
                     properties: HashMap::new(),
                     view_parameters: None,
@@ -1725,10 +1805,10 @@ graph_schema:
                     table: "memberships".to_string(),
                     from_id: "parent_id".to_string(),
                     to_id: "member_id".to_string(),
-                    type_column: None,  // Not needed with single type_value
-                    from_label_column: None,  // Using fixed from_node instead
-                    to_label_column: Some("member_type".to_string()),  // Polymorphic target
-                    from_node: Some("Group".to_string()),  // Fixed source
+                    type_column: None,       // Not needed with single type_value
+                    from_label_column: None, // Using fixed from_node instead
+                    to_label_column: Some("member_type".to_string()), // Polymorphic target
+                    from_node: Some("Group".to_string()), // Fixed source
                     to_node: None,
                     from_label_values: None,
                     to_label_values: None,
@@ -1747,7 +1827,11 @@ graph_schema:
 
         // Should pass validation
         let result = config.validate();
-        assert!(result.is_ok(), "Fixed from_node with polymorphic to_label_column should be valid: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Fixed from_node with polymorphic to_label_column should be valid: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1781,9 +1865,9 @@ graph_schema:
                     from_id: "parent_id".to_string(),
                     to_id: "member_id".to_string(),
                     type_column: None,
-                    from_label_column: Some("from_type".to_string()),  // Both!
+                    from_label_column: Some("from_type".to_string()), // Both!
                     to_label_column: Some("to_type".to_string()),
-                    from_node: Some("Group".to_string()),  // Both!
+                    from_node: Some("Group".to_string()), // Both!
                     to_node: None,
                     from_label_values: None,
                     to_label_values: None,
@@ -1799,9 +1883,16 @@ graph_schema:
 
         // Should fail validation
         let result = config.validate();
-        assert!(result.is_err(), "Having both from_label_column and from_node should be invalid");
+        assert!(
+            result.is_err(),
+            "Having both from_label_column and from_node should be invalid"
+        );
         let err_msg = format!("{:?}", result.unwrap_err());
-        assert!(err_msg.contains("both"), "Error should mention 'both': {}", err_msg);
+        assert!(
+            err_msg.contains("both"),
+            "Error should mention 'both': {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -1835,9 +1926,9 @@ graph_schema:
                     from_id: "parent_id".to_string(),
                     to_id: "member_id".to_string(),
                     type_column: None,
-                    from_label_column: None,  // Neither!
+                    from_label_column: None, // Neither!
                     to_label_column: Some("to_type".to_string()),
-                    from_node: None,  // Neither!
+                    from_node: None, // Neither!
                     to_node: None,
                     from_label_values: None,
                     to_label_values: None,
@@ -1853,10 +1944,16 @@ graph_schema:
 
         // Should fail validation
         let result = config.validate();
-        assert!(result.is_err(), "Having neither from_label_column nor from_node should be invalid");
+        assert!(
+            result.is_err(),
+            "Having neither from_label_column nor from_node should be invalid"
+        );
         let err_msg = format!("{:?}", result.unwrap_err());
-        assert!(err_msg.contains("from_label_column") || err_msg.contains("from_node"), 
-                "Error should mention from_* options: {}", err_msg);
+        assert!(
+            err_msg.contains("from_label_column") || err_msg.contains("from_node"),
+            "Error should mention from_* options: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -1883,24 +1980,34 @@ mod zeek_tests {
     fn test_zeek_schema_parsing() {
         let yaml = std::fs::read_to_string("schemas/examples/zeek_dns_log.yaml")
             .expect("Failed to read zeek schema");
-        
-        let config = GraphSchemaConfig::from_yaml_str(&yaml)
-            .expect("Failed to parse YAML");
-        
+
+        let config = GraphSchemaConfig::from_yaml_str(&yaml).expect("Failed to parse YAML");
+
         println!("Schema name: {:?}", config.name);
         println!("Nodes count: {}", config.graph_schema.nodes.len());
         println!("Edges count: {}", config.graph_schema.edges.len());
-        println!("Relationships count: {}", config.graph_schema.relationships.len());
-        
+        println!(
+            "Relationships count: {}",
+            config.graph_schema.relationships.len()
+        );
+
         // Convert to GraphSchema
-        let schema = config.to_graph_schema().expect("Failed to convert to GraphSchema");
-        
-        println!("GraphSchema relationships: {}", schema.get_relationships_schemas().len());
+        let schema = config
+            .to_graph_schema()
+            .expect("Failed to convert to GraphSchema");
+
+        println!(
+            "GraphSchema relationships: {}",
+            schema.get_relationships_schemas().len()
+        );
         for (name, _rel) in schema.get_relationships_schemas() {
             println!("  - Relationship: {}", name);
         }
-        
-        assert!(schema.get_relationships_schemas().len() > 0, "Should have relationships!");
+
+        assert!(
+            schema.get_relationships_schemas().len() > 0,
+            "Should have relationships!"
+        );
     }
 }
 
@@ -1912,52 +2019,81 @@ mod group_membership_tests {
     fn test_group_membership_schema_parsing() {
         let yaml = std::fs::read_to_string("schemas/examples/group_membership.yaml")
             .expect("Failed to read group_membership schema");
-        
-        let config = GraphSchemaConfig::from_yaml_str(&yaml)
-            .expect("Failed to parse YAML");
-        
+
+        let config = GraphSchemaConfig::from_yaml_str(&yaml).expect("Failed to parse YAML");
+
         // Basic structure validation
         assert_eq!(config.name, Some("group_membership".to_string()));
-        assert_eq!(config.graph_schema.nodes.len(), 2, "Should have User and Group nodes");
-        assert_eq!(config.graph_schema.edges.len(), 1, "Should have one polymorphic edge");
-        
+        assert_eq!(
+            config.graph_schema.nodes.len(),
+            2,
+            "Should have User and Group nodes"
+        );
+        assert_eq!(
+            config.graph_schema.edges.len(),
+            1,
+            "Should have one polymorphic edge"
+        );
+
         // Validate the polymorphic edge configuration
         if let EdgeDefinition::Polymorphic(poly) = &config.graph_schema.edges[0] {
             // Verify fixed from_node
-            assert_eq!(poly.from_node, Some("Group".to_string()), 
-                       "from_node should be fixed to 'Group'");
-            assert!(poly.from_label_column.is_none(), 
-                    "from_label_column should be None when using fixed from_node");
-            
+            assert_eq!(
+                poly.from_node,
+                Some("Group".to_string()),
+                "from_node should be fixed to 'Group'"
+            );
+            assert!(
+                poly.from_label_column.is_none(),
+                "from_label_column should be None when using fixed from_node"
+            );
+
             // Verify polymorphic to_label_column
-            assert_eq!(poly.to_label_column, Some("member_type".to_string()),
-                       "to_label_column should be 'member_type'");
-            assert!(poly.to_node.is_none(),
-                    "to_node should be None when using polymorphic to_label_column");
-            
+            assert_eq!(
+                poly.to_label_column,
+                Some("member_type".to_string()),
+                "to_label_column should be 'member_type'"
+            );
+            assert!(
+                poly.to_node.is_none(),
+                "to_node should be None when using polymorphic to_label_column"
+            );
+
             // Verify single type_value (so type_column is not needed)
             assert_eq!(poly.type_values.len(), 1);
             assert_eq!(poly.type_values[0], "PARENT_OF");
-            assert!(poly.type_column.is_none(), 
-                    "type_column can be None with single type_value");
+            assert!(
+                poly.type_column.is_none(),
+                "type_column can be None with single type_value"
+            );
         } else {
             panic!("Expected Polymorphic edge definition");
         }
-        
+
         // Validate the config
         assert!(config.validate().is_ok(), "Schema validation should pass");
-        
+
         // Convert to GraphSchema
-        let schema = config.to_graph_schema().expect("Failed to convert to GraphSchema");
-        
+        let schema = config
+            .to_graph_schema()
+            .expect("Failed to convert to GraphSchema");
+
         println!("GraphSchema nodes: {}", schema.get_nodes_schemas().len());
-        println!("GraphSchema relationships: {}", schema.get_relationships_schemas().len());
+        println!(
+            "GraphSchema relationships: {}",
+            schema.get_relationships_schemas().len()
+        );
         for (name, rel) in schema.get_relationships_schemas() {
-            println!("  - Relationship: {} ({} -> {})", name, rel.from_node, rel.to_node);
+            println!(
+                "  - Relationship: {} ({} -> {})",
+                name, rel.from_node, rel.to_node
+            );
         }
-        
+
         // Should have generated relationships for PARENT_OF edge
-        assert!(!schema.get_relationships_schemas().is_empty(), 
-                "Should have generated relationships from polymorphic edge");
+        assert!(
+            !schema.get_relationships_schemas().is_empty(),
+            "Should have generated relationships from polymorphic edge"
+        );
     }
 }

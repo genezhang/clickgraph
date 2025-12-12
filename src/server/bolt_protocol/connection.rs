@@ -9,13 +9,13 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 
 use crate::packstream; // Our vendored packstream module
 
 use super::errors::{BoltError, BoltResult};
 use super::handler::BoltHandler;
-use super::messages::{BoltChunk, BoltMessage, signatures};
+use super::messages::{signatures, BoltChunk, BoltMessage};
 use super::{BoltConfig, BoltContext, ConnectionState, SUPPORTED_VERSIONS};
 
 /// Magic preamble for Bolt protocol

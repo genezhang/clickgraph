@@ -2,8 +2,8 @@ use nom::character::complete::char;
 use nom::combinator::cut;
 use nom::error::context;
 use nom::{
-    IResult, Parser, bytes::complete::tag_no_case, character::complete::multispace0,
-    multi::separated_list1, sequence::delimited,
+    bytes::complete::tag_no_case, character::complete::multispace0, multi::separated_list1,
+    sequence::delimited, IResult, Parser,
 };
 
 use super::ast::{MatchClause, PathPattern};
@@ -213,7 +213,12 @@ mod tests {
         let result = parse_match_clause(input);
         match result {
             Ok((remaining, clause)) => {
-                assert_eq!(remaining.trim(), "", "Should consume entire input, remaining: '{}'", remaining);
+                assert_eq!(
+                    remaining.trim(),
+                    "",
+                    "Should consume entire input, remaining: '{}'",
+                    remaining
+                );
                 assert_eq!(clause.path_patterns.len(), 1);
             }
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
@@ -227,7 +232,12 @@ mod tests {
         let result = parse_match_clause(input);
         match result {
             Ok((remaining, clause)) => {
-                assert_eq!(remaining.trim(), "", "Should consume entire input, remaining: '{}'", remaining);
+                assert_eq!(
+                    remaining.trim(),
+                    "",
+                    "Should consume entire input, remaining: '{}'",
+                    remaining
+                );
                 assert_eq!(clause.path_patterns.len(), 1);
             }
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
@@ -241,7 +251,12 @@ mod tests {
         let result = parse_match_clause(input);
         match result {
             Ok((remaining, clause)) => {
-                assert_eq!(remaining.trim(), "", "Should consume entire input, remaining: '{}'", remaining);
+                assert_eq!(
+                    remaining.trim(),
+                    "",
+                    "Should consume entire input, remaining: '{}'",
+                    remaining
+                );
                 assert_eq!(clause.path_patterns.len(), 1);
             }
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),

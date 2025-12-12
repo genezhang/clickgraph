@@ -16,7 +16,7 @@ mock! {
 /// Create a mock ClickHouse client with test data
 pub fn create_mock_client() -> MockClickHouse {
     let mut mock = MockClickHouse::new();
-    
+
     // Mock table schema responses
     mock.expect_get_table_schema()
         .with(mockall::predicate::eq("users"))

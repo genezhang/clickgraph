@@ -10,19 +10,18 @@
 /// - `ts >= now() - INTERVAL 7 DAY`
 /// - `proto = 'tcp' AND port IN (80, 443, 8080)`
 /// - `status IS NOT NULL AND active = true`
-
 use nom::{
-    IResult, Parser,
     branch::alt,
     bytes::complete::{tag, tag_no_case, take_until},
     character::complete::{char, multispace0, multispace1},
     combinator::value,
     multi::separated_list1,
     sequence::delimited,
+    IResult, Parser,
 };
 use serde::{Deserialize, Serialize};
 
-use super::expression_parser::{ClickHouseExpr, parse_clickhouse_scalar_expr};
+use super::expression_parser::{parse_clickhouse_scalar_expr, ClickHouseExpr};
 
 /// Filter predicate AST
 #[derive(Debug, Clone, PartialEq)]
@@ -66,10 +65,7 @@ pub enum FilterPredicate {
     },
 
     /// IS NULL / IS NOT NULL
-    IsNull {
-        expr: ClickHouseExpr,
-        negated: bool,
-    },
+    IsNull { expr: ClickHouseExpr, negated: bool },
 
     /// Parenthesized expression
     Parenthesized(Box<FilterPredicate>),
@@ -170,11 +166,13 @@ impl FilterPredicate {
                 format!("NOT {}", inner.to_sql(table_alias))
             }
 
-            FilterPredicate::In { expr, values, negated } => {
-                let values_sql: Vec<String> = values
-                    .iter()
-                    .map(|v| v.to_sql(table_alias))
-                    .collect();
+            FilterPredicate::In {
+                expr,
+                values,
+                negated,
+            } => {
+                let values_sql: Vec<String> =
+                    values.iter().map(|v| v.to_sql(table_alias)).collect();
                 let not_str = if *negated { "NOT " } else { "" };
                 format!(
                     "{} {}IN ({})",
@@ -184,7 +182,11 @@ impl FilterPredicate {
                 )
             }
 
-            FilterPredicate::Like { expr, pattern, negated } => {
+            FilterPredicate::Like {
+                expr,
+                pattern,
+                negated,
+            } => {
                 let not_str = if *negated { "NOT " } else { "" };
                 format!(
                     "{} {}LIKE '{}'",
@@ -194,7 +196,12 @@ impl FilterPredicate {
                 )
             }
 
-            FilterPredicate::Between { expr, low, high, negated } => {
+            FilterPredicate::Between {
+                expr,
+                low,
+                high,
+                negated,
+            } => {
                 let not_str = if *negated { "NOT " } else { "" };
                 format!(
                     "{} {}BETWEEN {} AND {}",
@@ -242,7 +249,9 @@ impl FilterPredicate {
                 cols
             }
             FilterPredicate::Like { expr, .. } => expr.get_columns(),
-            FilterPredicate::Between { expr, low, high, .. } => {
+            FilterPredicate::Between {
+                expr, low, high, ..
+            } => {
                 let mut cols = expr.get_columns();
                 cols.extend(low.get_columns());
                 cols.extend(high.get_columns());
@@ -263,13 +272,13 @@ pub fn parse_filter_predicate(input: &str) -> Result<(&str, FilterPredicate), St
 /// Parse OR expressions (lowest precedence for boolean)
 fn parse_or_expr(input: &str) -> IResult<&str, FilterPredicate> {
     let (input, left) = parse_and_expr(input)?;
-    
+
     let mut current = left;
     let mut current_input = input;
-    
+
     loop {
         let (new_input, _) = multispace0(current_input)?;
-        
+
         // Try to parse OR keyword
         if let Ok((new_input, _)) = tag_no_case::<_, _, nom::error::Error<_>>("OR")(new_input) {
             // Must have whitespace after OR
@@ -283,20 +292,20 @@ fn parse_or_expr(input: &str) -> IResult<&str, FilterPredicate> {
         }
         break;
     }
-    
+
     Ok((current_input, current))
 }
 
 /// Parse AND expressions
 fn parse_and_expr(input: &str) -> IResult<&str, FilterPredicate> {
     let (input, left) = parse_not_expr(input)?;
-    
+
     let mut current = left;
     let mut current_input = input;
-    
+
     loop {
         let (new_input, _) = multispace0(current_input)?;
-        
+
         // Try to parse AND keyword
         if let Ok((new_input, _)) = tag_no_case::<_, _, nom::error::Error<_>>("AND")(new_input) {
             // Must have whitespace after AND
@@ -310,14 +319,14 @@ fn parse_and_expr(input: &str) -> IResult<&str, FilterPredicate> {
         }
         break;
     }
-    
+
     Ok((current_input, current))
 }
 
 /// Parse NOT expressions
 fn parse_not_expr(input: &str) -> IResult<&str, FilterPredicate> {
     let (input, _) = multispace0(input)?;
-    
+
     // Try to parse NOT keyword
     if let Ok((input, _)) = tag_no_case::<_, _, nom::error::Error<_>>("NOT")(input) {
         if let Ok((input, _)) = multispace1::<_, nom::error::Error<_>>(input) {
@@ -325,14 +334,14 @@ fn parse_not_expr(input: &str) -> IResult<&str, FilterPredicate> {
             return Ok((input, FilterPredicate::Not(Box::new(inner))));
         }
     }
-    
+
     parse_comparison_expr(input)
 }
 
 /// Parse comparison expressions
 fn parse_comparison_expr(input: &str) -> IResult<&str, FilterPredicate> {
     let (input, _) = multispace0(input)?;
-    
+
     // Try parenthesized expression first
     if let Ok((input, _)) = char::<_, nom::error::Error<_>>('(')(input) {
         let (input, _) = multispace0(input)?;
@@ -341,42 +350,45 @@ fn parse_comparison_expr(input: &str) -> IResult<&str, FilterPredicate> {
         let (input, _) = char(')')(input)?;
         return Ok((input, FilterPredicate::Parenthesized(Box::new(inner))));
     }
-    
+
     // Parse left-hand side scalar expression
     let (input, left) = parse_clickhouse_scalar_expr(input)?;
     let (input, _) = multispace0(input)?;
-    
+
     // Try IS NULL / IS NOT NULL
     if let Ok((remaining, pred)) = parse_is_null(&left, input) {
         return Ok((remaining, pred));
     }
-    
+
     // Try IN / NOT IN
     if let Ok((remaining, pred)) = parse_in_expr(&left, input) {
         return Ok((remaining, pred));
     }
-    
+
     // Try LIKE / NOT LIKE
     if let Ok((remaining, pred)) = parse_like_expr(&left, input) {
         return Ok((remaining, pred));
     }
-    
+
     // Try BETWEEN / NOT BETWEEN
     if let Ok((remaining, pred)) = parse_between_expr(&left, input) {
         return Ok((remaining, pred));
     }
-    
+
     // Try comparison operators
     if let Ok((remaining, pred)) = parse_comparison_op(&left, input) {
         return Ok((remaining, pred));
     }
-    
+
     // Fall back to scalar expression (for boolean columns)
     Ok((input, FilterPredicate::Scalar(left)))
 }
 
 /// Parse comparison operator and right-hand side
-fn parse_comparison_op<'a>(left: &ClickHouseExpr, input: &'a str) -> IResult<&'a str, FilterPredicate> {
+fn parse_comparison_op<'a>(
+    left: &ClickHouseExpr,
+    input: &'a str,
+) -> IResult<&'a str, FilterPredicate> {
     let (input, op) = alt((
         value(ComparisonOp::NotEqual, tag("<>")),
         value(ComparisonOp::NotEqual, tag("!=")),
@@ -385,104 +397,125 @@ fn parse_comparison_op<'a>(left: &ClickHouseExpr, input: &'a str) -> IResult<&'a
         value(ComparisonOp::Less, tag("<")),
         value(ComparisonOp::Greater, tag(">")),
         value(ComparisonOp::Equal, tag("=")),
-    )).parse(input)?;
-    
+    ))
+    .parse(input)?;
+
     let (input, _) = multispace0(input)?;
     let (input, right) = parse_clickhouse_scalar_expr(input)?;
-    
-    Ok((input, FilterPredicate::Comparison {
-        left: left.clone(),
-        op,
-        right,
-    }))
+
+    Ok((
+        input,
+        FilterPredicate::Comparison {
+            left: left.clone(),
+            op,
+            right,
+        },
+    ))
 }
 
 /// Parse IS NULL / IS NOT NULL
 fn parse_is_null<'a>(left: &ClickHouseExpr, input: &'a str) -> IResult<&'a str, FilterPredicate> {
     let (input, _) = tag_no_case("IS")(input)?;
     let (input, _) = multispace1(input)?;
-    
+
     // Check for NOT
-    let (input, negated) = if let Ok((input, _)) = tag_no_case::<_, _, nom::error::Error<_>>("NOT")(input) {
-        let (input, _) = multispace1(input)?;
-        (input, true)
-    } else {
-        (input, false)
-    };
-    
+    let (input, negated) =
+        if let Ok((input, _)) = tag_no_case::<_, _, nom::error::Error<_>>("NOT")(input) {
+            let (input, _) = multispace1(input)?;
+            (input, true)
+        } else {
+            (input, false)
+        };
+
     let (input, _) = tag_no_case("NULL")(input)?;
-    
-    Ok((input, FilterPredicate::IsNull {
-        expr: left.clone(),
-        negated,
-    }))
+
+    Ok((
+        input,
+        FilterPredicate::IsNull {
+            expr: left.clone(),
+            negated,
+        },
+    ))
 }
 
 /// Parse IN / NOT IN
 fn parse_in_expr<'a>(left: &ClickHouseExpr, input: &'a str) -> IResult<&'a str, FilterPredicate> {
     // Check for NOT
-    let (input, negated) = if let Ok((input, _)) = tag_no_case::<_, _, nom::error::Error<_>>("NOT")(input) {
-        let (input, _) = multispace1(input)?;
-        (input, true)
-    } else {
-        (input, false)
-    };
-    
+    let (input, negated) =
+        if let Ok((input, _)) = tag_no_case::<_, _, nom::error::Error<_>>("NOT")(input) {
+            let (input, _) = multispace1(input)?;
+            (input, true)
+        } else {
+            (input, false)
+        };
+
     let (input, _) = tag_no_case("IN")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = char('(')(input)?;
     let (input, _) = multispace0(input)?;
-    
+
     let (input, values) = separated_list1(
         delimited(multispace0, char(','), multispace0),
         parse_clickhouse_scalar_expr,
-    ).parse(input)?;
-    
+    )
+    .parse(input)?;
+
     let (input, _) = multispace0(input)?;
     let (input, _) = char(')')(input)?;
-    
-    Ok((input, FilterPredicate::In {
-        expr: left.clone(),
-        values,
-        negated,
-    }))
+
+    Ok((
+        input,
+        FilterPredicate::In {
+            expr: left.clone(),
+            values,
+            negated,
+        },
+    ))
 }
 
 /// Parse LIKE / NOT LIKE
 fn parse_like_expr<'a>(left: &ClickHouseExpr, input: &'a str) -> IResult<&'a str, FilterPredicate> {
     // Check for NOT
-    let (input, negated) = if let Ok((input, _)) = tag_no_case::<_, _, nom::error::Error<_>>("NOT")(input) {
-        let (input, _) = multispace1(input)?;
-        (input, true)
-    } else {
-        (input, false)
-    };
-    
+    let (input, negated) =
+        if let Ok((input, _)) = tag_no_case::<_, _, nom::error::Error<_>>("NOT")(input) {
+            let (input, _) = multispace1(input)?;
+            (input, true)
+        } else {
+            (input, false)
+        };
+
     let (input, _) = tag_no_case("LIKE")(input)?;
     let (input, _) = multispace1(input)?;
-    
+
     // Parse string pattern
     let (input, _) = char('\'')(input)?;
     let (input, pattern) = take_until("'")(input)?;
     let (input, _) = char('\'')(input)?;
-    
-    Ok((input, FilterPredicate::Like {
-        expr: left.clone(),
-        pattern: pattern.to_string(),
-        negated,
-    }))
+
+    Ok((
+        input,
+        FilterPredicate::Like {
+            expr: left.clone(),
+            pattern: pattern.to_string(),
+            negated,
+        },
+    ))
 }
 
 /// Parse BETWEEN / NOT BETWEEN
-fn parse_between_expr<'a>(left: &ClickHouseExpr, input: &'a str) -> IResult<&'a str, FilterPredicate> {
+fn parse_between_expr<'a>(
+    left: &ClickHouseExpr,
+    input: &'a str,
+) -> IResult<&'a str, FilterPredicate> {
     // Check for NOT
-    let (input, negated) = if let Ok((input, _)) = tag_no_case::<_, _, nom::error::Error<_>>("NOT")(input) {
-        let (input, _) = multispace1(input)?;
-        (input, true)
-    } else {
-        (input, false)
-    };
-    
+    let (input, negated) =
+        if let Ok((input, _)) = tag_no_case::<_, _, nom::error::Error<_>>("NOT")(input) {
+            let (input, _) = multispace1(input)?;
+            (input, true)
+        } else {
+            (input, false)
+        };
+
     let (input, _) = tag_no_case("BETWEEN")(input)?;
     let (input, _) = multispace1(input)?;
     let (input, low) = parse_clickhouse_scalar_expr(input)?;
@@ -490,13 +523,16 @@ fn parse_between_expr<'a>(left: &ClickHouseExpr, input: &'a str) -> IResult<&'a 
     let (input, _) = tag_no_case("AND")(input)?;
     let (input, _) = multispace1(input)?;
     let (input, high) = parse_clickhouse_scalar_expr(input)?;
-    
-    Ok((input, FilterPredicate::Between {
-        expr: left.clone(),
-        low,
-        high,
-        negated,
-    }))
+
+    Ok((
+        input,
+        FilterPredicate::Between {
+            expr: left.clone(),
+            low,
+            high,
+            negated,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -532,7 +568,10 @@ mod tests {
     #[test]
     fn test_and_expression() {
         let filter = SchemaFilter::new("proto = 'tcp' AND port = 80").unwrap();
-        assert_eq!(filter.to_sql("t").unwrap(), "(t.proto = 'tcp' AND t.port = 80)");
+        assert_eq!(
+            filter.to_sql("t").unwrap(),
+            "(t.proto = 'tcp' AND t.port = 80)"
+        );
     }
 
     #[test]
@@ -565,7 +604,10 @@ mod tests {
     #[test]
     fn test_not_in_expression() {
         let filter = SchemaFilter::new("status NOT IN ('deleted', 'archived')").unwrap();
-        assert_eq!(filter.to_sql("t").unwrap(), "t.status NOT IN ('deleted', 'archived')");
+        assert_eq!(
+            filter.to_sql("t").unwrap(),
+            "t.status NOT IN ('deleted', 'archived')"
+        );
     }
 
     #[test]

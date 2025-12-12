@@ -2,8 +2,8 @@ use nom::character::complete::char;
 use nom::combinator::cut;
 use nom::error::context;
 use nom::{
-    IResult, Parser, bytes::complete::tag_no_case, character::complete::multispace0,
-    multi::separated_list1, sequence::delimited,
+    bytes::complete::tag_no_case, character::complete::multispace0, multi::separated_list1,
+    sequence::delimited, IResult, Parser,
 };
 
 use super::ast::{CreateClause, PathPattern};

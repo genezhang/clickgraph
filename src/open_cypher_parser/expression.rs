@@ -1,5 +1,4 @@
 use nom::{
-    IResult, Parser,
     branch::alt,
     bytes::complete::{tag, tag_no_case, take_until, take_while1},
     character::complete::{alphanumeric1, multispace0},
@@ -7,6 +6,7 @@ use nom::{
     error::{Error, ErrorKind},
     multi::separated_list0,
     sequence::{delimited, preceded, separated_pair, terminated},
+    IResult, Parser,
 };
 
 use nom::character::complete::char;
@@ -14,9 +14,11 @@ use nom::character::complete::char;
 use crate::open_cypher_parser::common::{self, ws};
 
 use super::{
-    ast::{Expression, ExistsSubquery, FunctionCall, Literal, Operator, OperatorApplication, PropertyAccess, ReduceExpression},
-    path_pattern,
-    where_clause,
+    ast::{
+        ExistsSubquery, Expression, FunctionCall, Literal, Operator, OperatorApplication,
+        PropertyAccess, ReduceExpression,
+    },
+    path_pattern, where_clause,
 };
 
 pub fn parse_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
@@ -74,26 +76,26 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
 fn parse_exists_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Parse EXISTS keyword
     let (input, _) = ws(tag_no_case("EXISTS")).parse(input)?;
-    
+
     // Parse opening brace
     let (input, _) = ws(char('{')).parse(input)?;
-    
+
     // Optionally skip MATCH keyword if present
     let (input, _) = opt(ws(tag_no_case("MATCH"))).parse(input)?;
-    
+
     // Parse the pattern
     let (input, pattern) = ws(path_pattern::parse_path_pattern).parse(input)?;
-    
+
     // Parse optional WHERE clause - convert the error type
     let (input, where_clause) = match opt(where_clause::parse_where_clause).parse(input) {
         Ok((rest, wc)) => (rest, wc),
         Err(nom::Err::Error(_)) | Err(nom::Err::Failure(_)) => (input, None),
         Err(nom::Err::Incomplete(n)) => return Err(nom::Err::Incomplete(n)),
     };
-    
+
     // Parse closing brace
     let (input, _) = ws(char('}')).parse(input)?;
-    
+
     Ok((
         input,
         Expression::ExistsExpression(Box::new(ExistsSubquery {
@@ -168,35 +170,35 @@ fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 fn parse_reduce_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Parse "reduce" keyword (case-insensitive)
     let (input, _) = ws(tag_no_case("reduce")).parse(input)?;
-    
+
     // Parse opening parenthesis
     let (input, _) = ws(char('(')).parse(input)?;
-    
+
     // Parse accumulator = initial_value
     let (input, accumulator) = ws(parse_identifier).parse(input)?;
     let (input, _) = ws(char('=')).parse(input)?;
     let (input, initial_value) = ws(parse_expression).parse(input)?;
-    
+
     // Parse comma separator
     let (input, _) = ws(char(',')).parse(input)?;
-    
+
     // Parse variable IN list
     let (input, variable) = ws(parse_identifier).parse(input)?;
     let (input, _) = ws(tag_no_case("IN")).parse(input)?;
-    
+
     // Parse the list expression - need to be careful to stop at '|'
     // We can't just use parse_expression because it would consume the '|'
     let (input, list) = parse_reduce_list_expression(input)?;
-    
+
     // Parse '|' separator
     let (input, _) = ws(char('|')).parse(input)?;
-    
+
     // Parse the expression (the body of the reduce)
     let (input, expression) = ws(parse_reduce_body_expression).parse(input)?;
-    
+
     // Parse closing parenthesis
     let (input, _) = ws(char(')')).parse(input)?;
-    
+
     Ok((
         input,
         Expression::ReduceExp(ReduceExpression {
@@ -214,24 +216,24 @@ fn parse_reduce_list_expression(input: &'_ str) -> IResult<&'_ str, Expression<'
     // Parse a simple expression that doesn't cross the '|' boundary
     // This handles: variable, list literal, function call, property access
     let (input, _) = multispace0.parse(input)?;
-    
+
     // Try to parse a list literal first
     if input.starts_with('[') {
         return parse_list_literal(input);
     }
-    
+
     // Try function call (e.g., nodes(path))
     let func_result = parse_function_call(input);
     if func_result.is_ok() {
         return func_result;
     }
-    
+
     // Try property access (e.g., u.friends)
     let prop_result = parse_property_access(input);
     if prop_result.is_ok() {
         return prop_result;
     }
-    
+
     // Fall back to simple variable
     let (input, var) = parse_identifier(input)?;
     Ok((input, Expression::Variable(var)))
@@ -244,7 +246,7 @@ fn parse_reduce_body_expression(input: &'_ str) -> IResult<&'_ str, Expression<'
     let mut depth = 0;
     let mut end_pos = 0;
     let chars: Vec<char> = input.chars().collect();
-    
+
     for (i, &c) in chars.iter().enumerate() {
         match c {
             '(' => depth += 1,
@@ -258,36 +260,36 @@ fn parse_reduce_body_expression(input: &'_ str) -> IResult<&'_ str, Expression<'
             _ => {}
         }
     }
-    
+
     if end_pos == 0 && depth == 0 {
         // No closing paren found at depth 0, use whole remaining input
         end_pos = input.len();
     }
-    
+
     let expr_str = &input[..end_pos];
     let remaining = &input[end_pos..];
-    
+
     // Now parse the expression substring
     let (leftover, expr) = parse_expression(expr_str.trim())?;
-    
+
     // Make sure we consumed the whole expression
     if !leftover.trim().is_empty() {
         return Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1)));
     }
-    
+
     Ok((remaining, expr))
 }
 
 fn parse_primary(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     alt((
-        parse_exists_expression,  // Must be before parse_function_call to catch EXISTS { }
+        parse_exists_expression, // Must be before parse_function_call to catch EXISTS { }
         parse_case_expression,
-        parse_reduce_expression,  // Must be before parse_function_call to catch reduce(...)
+        parse_reduce_expression, // Must be before parse_function_call to catch reduce(...)
         parse_path_pattern_expression,
         parse_function_call,
         parse_postfix_expression,
         parse_property_access,
-        parse_map_literal,        // Must be before list_literal (different brackets anyway)
+        parse_map_literal, // Must be before list_literal (different brackets anyway)
         parse_list_literal,
         parse_parameter,
         parse_literal_or_variable_expression,
@@ -301,7 +303,7 @@ pub fn parse_operator_symbols(input: &str) -> IResult<&str, Operator> {
         map(tag_no_case(">="), |_| Operator::GreaterThanEqual),
         map(tag_no_case("<="), |_| Operator::LessThanEqual),
         map(tag_no_case("<>"), |_| Operator::NotEqual),
-        map(tag_no_case("=~"), |_| Operator::RegexMatch),  // Must be before "=" to match first
+        map(tag_no_case("=~"), |_| Operator::RegexMatch), // Must be before "=" to match first
         map(tag_no_case(">"), |_| Operator::GreaterThan),
         map(tag_no_case("<"), |_| Operator::LessThan),
         map(tag_no_case("="), |_| Operator::Equal),
@@ -312,8 +314,14 @@ pub fn parse_operator_symbols(input: &str) -> IResult<&str, Operator> {
         map(tag_no_case("%"), |_| Operator::ModuloDivision),
         map(tag_no_case("^"), |_| Operator::Exponentiation),
         // String predicates - must be before IN to avoid partial match
-        map(preceded(ws(tag_no_case("STARTS")), ws(tag_no_case("WITH"))), |_| Operator::StartsWith),
-        map(preceded(ws(tag_no_case("ENDS")), ws(tag_no_case("WITH"))), |_| Operator::EndsWith),
+        map(
+            preceded(ws(tag_no_case("STARTS")), ws(tag_no_case("WITH"))),
+            |_| Operator::StartsWith,
+        ),
+        map(
+            preceded(ws(tag_no_case("ENDS")), ws(tag_no_case("WITH"))),
+            |_| Operator::EndsWith,
+        ),
         map(tag_no_case("CONTAINS"), |_| Operator::Contains),
         map(tag_no_case("NOT IN"), |_| Operator::NotIn),
         map(tag_no_case("IN"), |_| Operator::In),
@@ -485,9 +493,9 @@ pub fn parse_map_literal(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
             delimited(multispace0, char(','), multispace0),
             // Each entry is: key : value (using native tuple parser)
             (
-                parse_identifier,  // key (identifier)
-                delimited(multispace0, char(':'), multispace0),  // colon
-                parse_expression,  // value (any expression)
+                parse_identifier,                               // key (identifier)
+                delimited(multispace0, char(':'), multispace0), // colon
+                parse_expression,                               // value (any expression)
             ),
         ),
         // Closing brace with optional whitespace
@@ -534,13 +542,13 @@ fn parse_property_name(input: &str) -> IResult<&str, &str> {
 pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // First part: the base (e.g., "src")
     let (input, base_str) = common::parse_alphanumeric_with_underscore(input)?;
-    
+
     // Then: a dot
     let (input, _) = char('.')(input)?;
-    
+
     // Then: the property name (can be identifier or *)
     let (input, key_str) = parse_property_name(input)?;
-    
+
     let base = match parse_literal_or_variable_expression(base_str) {
         Ok((_, Expression::Variable(base))) => base,
         _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
@@ -593,7 +601,7 @@ pub fn parse_parameter_property_access_literal_variable_expression(
 /// Check if a string is a reserved Cypher keyword that cannot be used as a variable
 /// at the start of an expression. This catches cases like "WHERE AND ..." where AND
 /// is incorrectly treated as a variable name.
-/// 
+///
 /// We only block binary operators that require a left operand:
 /// - Logical: AND, OR, XOR
 /// - Note: NOT is a unary prefix operator, so it IS valid at expression start
@@ -612,7 +620,7 @@ fn parse_label_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     let (input, _) = char(':').parse(input)?;
     // Parse label name (identifier)
     let (input, label) = parse_identifier(input)?;
-    
+
     Ok((input, Expression::LabelExpression { variable, label }))
 }
 
@@ -624,8 +632,9 @@ pub fn parse_literal_or_variable_expression(input: &'_ str) -> IResult<&'_ str, 
         parse_label_expression,
         // Parse alphanumeric values but reject binary operators as standalone expressions
         |input| {
-            let (remaining, s) = ws(common::parse_alphanumeric_with_underscore_dot_star).parse(input)?;
-            
+            let (remaining, s) =
+                ws(common::parse_alphanumeric_with_underscore_dot_star).parse(input)?;
+
             if s.eq_ignore_ascii_case("null") {
                 Ok((remaining, Expression::Literal(Literal::Null)))
             } else if s.eq_ignore_ascii_case("true") {
@@ -859,9 +868,10 @@ mod tests {
     // reduce expression
     #[test]
     fn test_parse_reduce_expression_simple() {
-        let (rem, expr) = parse_expression("reduce(total = 0, x IN [1, 2, 3] | total + x)").unwrap();
+        let (rem, expr) =
+            parse_expression("reduce(total = 0, x IN [1, 2, 3] | total + x)").unwrap();
         assert_eq!(rem, "");
-        
+
         if let Expression::ReduceExp(reduce) = expr {
             assert_eq!(reduce.accumulator, "total");
             assert_eq!(reduce.variable, "x");
@@ -892,7 +902,7 @@ mod tests {
     fn test_parse_reduce_expression_with_variable_list() {
         let (rem, expr) = parse_expression("reduce(s = '', name IN names | s + name)").unwrap();
         assert_eq!(rem, "");
-        
+
         if let Expression::ReduceExp(reduce) = expr {
             assert_eq!(reduce.accumulator, "s");
             assert_eq!(reduce.variable, "name");
@@ -911,7 +921,7 @@ mod tests {
     fn test_parse_map_literal_single_entry() {
         let (rem, expr) = parse_map_literal("{days: 5}").unwrap();
         assert_eq!(rem, "");
-        
+
         if let Expression::MapLiteral(entries) = expr {
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].0, "days");
@@ -929,7 +939,7 @@ mod tests {
     fn test_parse_map_literal_multiple_entries() {
         let (rem, expr) = parse_map_literal("{days: 5, hours: 2}").unwrap();
         assert_eq!(rem, "");
-        
+
         if let Expression::MapLiteral(entries) = expr {
             assert_eq!(entries.len(), 2);
             assert_eq!(entries[0].0, "days");
@@ -943,7 +953,7 @@ mod tests {
     fn test_parse_map_literal_with_expression_value() {
         let (rem, expr) = parse_map_literal("{offset: x + 1}").unwrap();
         assert_eq!(rem, "");
-        
+
         if let Expression::MapLiteral(entries) = expr {
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].0, "offset");
@@ -962,7 +972,7 @@ mod tests {
     fn test_parse_duration_with_map_arg() {
         let (rem, expr) = parse_expression("duration({days: 5})").unwrap();
         assert_eq!(rem, "");
-        
+
         if let Expression::FunctionCallExp(fc) = expr {
             assert_eq!(fc.name, "duration");
             assert_eq!(fc.args.len(), 1);

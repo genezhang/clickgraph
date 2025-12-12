@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use super::auth::{AuthToken, AuthenticatedUser, Authenticator};
 use super::errors::{BoltError, BoltResult};
-use super::messages::{BoltMessage, signatures};
+use super::messages::{signatures, BoltMessage};
 use super::{BoltConfig, BoltContext, ConnectionState};
 
 use crate::clickhouse_query_generator;

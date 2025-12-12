@@ -1,9 +1,7 @@
 use super::errors::ClickhouseQueryGeneratorError;
 use super::function_registry::get_function_mapping;
 use super::function_translator::translate_scalar_function;
-use crate::query_planner::logical_expr::{
-    Literal, LogicalExpr, Operator,
-};
+use crate::query_planner::logical_expr::{Literal, LogicalExpr, Operator};
 use crate::query_planner::logical_plan::LogicalPlan;
 use std::sync::Arc;
 
@@ -11,20 +9,25 @@ use std::sync::Arc;
 fn contains_string_literal_logical(expr: &LogicalExpr) -> bool {
     match expr {
         LogicalExpr::Literal(Literal::String(_)) => true,
-        LogicalExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
-            op.operands.iter().any(|o| contains_string_literal_logical(o))
-        }
+        LogicalExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
+            .operands
+            .iter()
+            .any(|o| contains_string_literal_logical(o)),
         _ => false,
     }
 }
 
 /// Check if any operand in the expression is a string literal
 fn has_string_operand_logical(operands: &[LogicalExpr]) -> bool {
-    operands.iter().any(|op| contains_string_literal_logical(op))
+    operands
+        .iter()
+        .any(|op| contains_string_literal_logical(op))
 }
 
 /// Flatten nested + operations into a list of SQL strings for concat()
-fn flatten_addition_operands_logical(expr: &LogicalExpr) -> Result<Vec<String>, ClickhouseQueryGeneratorError> {
+fn flatten_addition_operands_logical(
+    expr: &LogicalExpr,
+) -> Result<Vec<String>, ClickhouseQueryGeneratorError> {
     match expr {
         LogicalExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
             let mut result = Vec::new();
@@ -80,7 +83,7 @@ impl ToSql for LogicalExpr {
                 let args_sql: Result<Vec<String>, _> =
                     fn_call.args.iter().map(|e| e.to_sql()).collect();
                 let args_sql = args_sql?;
-                
+
                 // Use function registry to translate Neo4j -> ClickHouse function names
                 let fn_name_lower = fn_call.name.to_lowercase();
                 if let Some(mapping) = get_function_mapping(&fn_name_lower) {
@@ -90,7 +93,11 @@ impl ToSql for LogicalExpr {
                     } else {
                         args_sql
                     };
-                    Ok(format!("{}({})", mapping.clickhouse_name, transformed_args.join(", ")))
+                    Ok(format!(
+                        "{}({})",
+                        mapping.clickhouse_name,
+                        transformed_args.join(", ")
+                    ))
                 } else {
                     // No mapping, use name directly (standard SQL functions like count, sum, etc.)
                     Ok(format!("{}({})", fn_call.name, args_sql.join(", ")))
@@ -133,7 +140,9 @@ impl ToSql for LogicalExpr {
                         // Use concat() for string concatenation, + for numeric
                         // Flatten nested + operations for cases like: a + ' - ' + b
                         if has_string_operand_logical(&op.operands) {
-                            let flattened: Vec<String> = op.operands.iter()
+                            let flattened: Vec<String> = op
+                                .operands
+                                .iter()
                                 .map(|o| flatten_addition_operands_logical(o))
                                 .collect::<Result<Vec<Vec<String>>, _>>()?
                                 .into_iter()
@@ -205,16 +214,25 @@ impl ToSql for LogicalExpr {
                     }
                     Operator::StartsWith => {
                         // ClickHouse: startsWith(haystack, prefix)
-                        Ok(format!("startsWith({}, {})", operands_sql[0], operands_sql[1]))
+                        Ok(format!(
+                            "startsWith({}, {})",
+                            operands_sql[0], operands_sql[1]
+                        ))
                     }
                     Operator::EndsWith => {
                         // ClickHouse: endsWith(haystack, suffix)
-                        Ok(format!("endsWith({}, {})", operands_sql[0], operands_sql[1]))
+                        Ok(format!(
+                            "endsWith({}, {})",
+                            operands_sql[0], operands_sql[1]
+                        ))
                     }
                     Operator::Contains => {
                         // ClickHouse: position(haystack, needle) > 0 or like(haystack, '%needle%')
                         // Using position() for efficiency
-                        Ok(format!("(position({}, {}) > 0)", operands_sql[0], operands_sql[1]))
+                        Ok(format!(
+                            "(position({}, {}) > 0)",
+                            operands_sql[0], operands_sql[1]
+                        ))
                     }
                     Operator::Not => Ok(format!("NOT ({})", operands_sql[0])),
                     Operator::Distinct => Ok(format!("DISTINCT {}", operands_sql[0])),
@@ -265,14 +283,17 @@ impl ToSql for LogicalExpr {
                 let init_sql = reduce.initial_value.to_sql()?;
                 let list_sql = reduce.list.to_sql()?;
                 let expr_sql = reduce.expression.to_sql()?;
-                
+
                 // Wrap numeric init values in toInt64() to prevent type mismatch
-                let init_cast = if matches!(*reduce.initial_value, LogicalExpr::Literal(Literal::Integer(_))) {
+                let init_cast = if matches!(
+                    *reduce.initial_value,
+                    LogicalExpr::Literal(Literal::Integer(_))
+                ) {
                     format!("toInt64({})", init_sql)
                 } else {
                     init_sql
                 };
-                
+
                 Ok(format!(
                     "arrayFold({}, {} -> {}, {}, {})",
                     reduce.variable, reduce.accumulator, expr_sql, list_sql, init_cast
@@ -298,7 +319,8 @@ impl ToSql for LogicalExpr {
                 // In a more sophisticated implementation, this could query a type column
                 log::warn!(
                     "LabelExpression {}:{} reached SQL generation - returning false",
-                    variable, label
+                    variable,
+                    label
                 );
                 Ok("false".to_string())
             }

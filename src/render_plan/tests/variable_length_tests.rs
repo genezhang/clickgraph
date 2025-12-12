@@ -152,7 +152,10 @@ mod validation_tests {
         // *0 is now allowed (for shortest path self-loops) with a warning
         let cypher = "MATCH (u1:User)-[:FOLLOWS*0]->(u2:User) RETURN u2";
         let result = open_cypher_parser::parse_query(cypher);
-        assert!(result.is_ok(), "Zero hops *0 should be allowed with warning");
+        assert!(
+            result.is_ok(),
+            "Zero hops *0 should be allowed with warning"
+        );
     }
 
     #[test]
@@ -160,7 +163,10 @@ mod validation_tests {
         // *0..5 is now allowed (for shortest path self-loops) with a warning
         let cypher = "MATCH (u1:User)-[:FOLLOWS*0..5]->(u2:User) RETURN u2";
         let result = open_cypher_parser::parse_query(cypher);
-        assert!(result.is_ok(), "Zero min *0..5 should be allowed with warning");
+        assert!(
+            result.is_ok(),
+            "Zero min *0..5 should be allowed with warning"
+        );
     }
 
     #[test]

@@ -113,8 +113,12 @@ impl AnalyzerPass for FilterTagging {
                     Transformed::Yes(plan) | Transformed::No(plan) => plan.as_ref(),
                 };
                 // Apply property mapping to the filter predicate
-                let mapped_predicate =
-                    self.apply_property_mapping(filter.predicate.clone(), plan_ctx, graph_schema, Some(child_plan_ref))?;
+                let mapped_predicate = self.apply_property_mapping(
+                    filter.predicate.clone(),
+                    plan_ctx,
+                    graph_schema,
+                    Some(child_plan_ref),
+                )?;
                 println!("FilterTagging: Mapped predicate: {:?}", mapped_predicate);
 
                 // Check if this filter references projection aliases (HAVING clause)
@@ -133,7 +137,8 @@ impl AnalyzerPass for FilterTagging {
                                     input: group_by.input.clone(),
                                     expressions: group_by.expressions.clone(),
                                     having_clause: Some(mapped_predicate.clone()),
-                                    is_materialization_boundary: group_by.is_materialization_boundary,
+                                    is_materialization_boundary: group_by
+                                        .is_materialization_boundary,
                                     exposed_alias: group_by.exposed_alias.clone(),
                                 });
                                 return Ok(Transformed::Yes(Arc::new(new_group_by)));
@@ -146,10 +151,12 @@ impl AnalyzerPass for FilterTagging {
                                 println!(
                                     "FilterTagging: Preserving cross-table join condition (has CartesianProduct descendant)"
                                 );
-                                return Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
-                                    input: child_tf.get_plan().clone(),
-                                    predicate: mapped_predicate,
-                                }))));
+                                return Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(
+                                    Filter {
+                                        input: child_tf.get_plan().clone(),
+                                        predicate: mapped_predicate,
+                                    },
+                                ))));
                             } else {
                                 println!(
                                     "FilterTagging: WARNING - projection alias reference but child is not GroupBy!"
@@ -173,7 +180,10 @@ impl AnalyzerPass for FilterTagging {
                 }
             }
             LogicalPlan::Projection(projection) => {
-                crate::debug_println!("🔍 FilterTagging: BEFORE processing Projection - distinct={}", projection.distinct);
+                crate::debug_println!(
+                    "🔍 FilterTagging: BEFORE processing Projection - distinct={}",
+                    projection.distinct
+                );
                 println!("FilterTagging: Processing Projection, analyzing child input");
                 println!(
                     "FilterTagging: Projection input type: {:?}",
@@ -229,10 +239,13 @@ impl AnalyzerPass for FilterTagging {
                         input: child_tf.get_plan(),
                         items: mapped_items,
                         kind: projection.kind.clone(),
-                        distinct: projection.distinct,  // PRESERVE distinct flag from original projection
+                        distinct: projection.distinct, // PRESERVE distinct flag from original projection
                     },
                 )));
-                crate::debug_println!("🔍 FilterTagging: AFTER creating new Projection - distinct={}", projection.distinct);
+                crate::debug_println!(
+                    "🔍 FilterTagging: AFTER creating new Projection - distinct={}",
+                    projection.distinct
+                );
                 result
             }
             LogicalPlan::GroupBy(group_by) => {
@@ -285,7 +298,8 @@ impl AnalyzerPass for FilterTagging {
                 // Instead, process each branch with property mapping only, keeping Filter nodes in tree.
                 let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
                 for input_plan in union.inputs.iter() {
-                    let child_tf = self.analyze_union_branch(input_plan.clone(), plan_ctx, graph_schema)?;
+                    let child_tf =
+                        self.analyze_union_branch(input_plan.clone(), plan_ctx, graph_schema)?;
                     inputs_tf.push(child_tf);
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
@@ -295,11 +309,13 @@ impl AnalyzerPass for FilterTagging {
                 let child_tf =
                     self.analyze_with_graph_schema(u.input.clone(), plan_ctx, graph_schema)?;
                 match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-                        input: new_input,
-                        expression: u.expression.clone(),
-                        alias: u.alias.clone(),
-                    }))),
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                        },
+                    ))),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
@@ -309,7 +325,9 @@ impl AnalyzerPass for FilterTagging {
                 let right_tf =
                     self.analyze_with_graph_schema(cp.right.clone(), plan_ctx, graph_schema)?;
                 match (&left_tf, &right_tf) {
-                    (Transformed::No(_), Transformed::No(_)) => Transformed::No(logical_plan.clone()),
+                    (Transformed::No(_), Transformed::No(_)) => {
+                        Transformed::No(logical_plan.clone())
+                    }
                     _ => Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
                         crate::query_planner::logical_plan::CartesianProduct {
                             left: left_tf.get_plan().clone(),
@@ -321,8 +339,12 @@ impl AnalyzerPass for FilterTagging {
                 }
             }
             LogicalPlan::WithClause(with_clause) => {
-                let child_tf = self.analyze_with_graph_schema(with_clause.input.clone(), plan_ctx, graph_schema)?;
-                
+                let child_tf = self.analyze_with_graph_schema(
+                    with_clause.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+
                 // Apply property mapping to WITH clause items (resolves LabelExpression, etc.)
                 let mut mapped_items = Vec::new();
                 for item in &with_clause.items {
@@ -336,7 +358,7 @@ impl AnalyzerPass for FilterTagging {
                         expression: mapped_expr.clone(),
                         col_alias: item.col_alias.clone(),
                     });
-                    
+
                     // Register WITH clause aliases as projection aliases
                     if let Some(col_alias) = &item.col_alias {
                         println!(
@@ -346,7 +368,7 @@ impl AnalyzerPass for FilterTagging {
                         plan_ctx.register_projection_alias(col_alias.0.clone(), mapped_expr);
                     }
                 }
-                
+
                 let new_with = crate::query_planner::logical_plan::WithClause {
                     input: child_tf.get_plan().clone(),
                     items: mapped_items,
@@ -380,7 +402,8 @@ impl FilterTagging {
         match plan.as_ref() {
             LogicalPlan::Filter(filter) => {
                 // Process child first
-                let child_tf = self.analyze_union_branch(filter.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf =
+                    self.analyze_union_branch(filter.input.clone(), plan_ctx, graph_schema)?;
                 let child_plan_ref = match &child_tf {
                     Transformed::Yes(p) | Transformed::No(p) => p.as_ref(),
                 };
@@ -398,7 +421,8 @@ impl FilterTagging {
                 }))))
             }
             LogicalPlan::Projection(projection) => {
-                let child_tf = self.analyze_union_branch(projection.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf =
+                    self.analyze_union_branch(projection.input.clone(), plan_ctx, graph_schema)?;
                 let child_plan_ref = match &child_tf {
                     Transformed::Yes(p) | Transformed::No(p) => p.as_ref(),
                 };
@@ -426,11 +450,13 @@ impl FilterTagging {
                 ))))
             }
             LogicalPlan::GraphNode(gn) => {
-                let child_tf = self.analyze_union_branch(gn.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf =
+                    self.analyze_union_branch(gn.input.clone(), plan_ctx, graph_schema)?;
                 Ok(gn.rebuild_or_clone(child_tf, plan.clone()))
             }
             LogicalPlan::GraphJoins(gj) => {
-                let child_tf = self.analyze_union_branch(gj.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf =
+                    self.analyze_union_branch(gj.input.clone(), plan_ctx, graph_schema)?;
                 Ok(gj.rebuild_or_clone(child_tf, plan.clone()))
             }
             // Leaf nodes - no transformation
@@ -454,9 +480,10 @@ impl FilterTagging {
             LogicalExpr::PropertyAccessExp(property_access) => {
                 println!(
                     "FilterTagging: apply_property_mapping for alias '{}', property '{}'",
-                    property_access.table_alias.0, property_access.column.raw()
+                    property_access.table_alias.0,
+                    property_access.column.raw()
                 );
-                
+
                 // Check if this is a temporal property access (e.g., birthday.year, birthday.month)
                 // These should be converted to function calls without table lookup
                 let col_name = property_access.column.raw().to_lowercase();
@@ -473,27 +500,32 @@ impl FilterTagging {
                     "quarter" => Some("quarter"),
                     _ => None,
                 };
-                
+
                 if let Some(func_name) = temporal_func {
                     // Convert property access to function call: birthday.year -> year(birthday)
                     println!(
                         "FilterTagging: Converting temporal property access {}.{} to {}({})",
-                        property_access.table_alias.0, property_access.column.raw(),
-                        func_name, property_access.table_alias.0
+                        property_access.table_alias.0,
+                        property_access.column.raw(),
+                        func_name,
+                        property_access.table_alias.0
                     );
-                    return Ok(LogicalExpr::ScalarFnCall(crate::query_planner::logical_expr::ScalarFnCall {
-                        name: func_name.to_string(),
-                        args: vec![LogicalExpr::TableAlias(property_access.table_alias)],
-                    }));
+                    return Ok(LogicalExpr::ScalarFnCall(
+                        crate::query_planner::logical_expr::ScalarFnCall {
+                            name: func_name.to_string(),
+                            args: vec![LogicalExpr::TableAlias(property_access.table_alias)],
+                        },
+                    ));
                 }
-                
+
                 // Get the table context for this alias
                 let table_ctx = plan_ctx
                     .get_table_ctx(&property_access.table_alias.0)
                     .map_err(|e| {
                         crate::debug_print!(
                             "FilterTagging: ERROR - Failed to get table_ctx for alias '{}': {:?}",
-                            property_access.table_alias.0, e
+                            property_access.table_alias.0,
+                            e
                         );
                         AnalyzerError::PlanCtx {
                             pass: Pass::FilterTagging,
@@ -529,13 +561,17 @@ impl FilterTagging {
                 // 3. find_owning_edge_for_node - traverse plan to find edge with from_node_properties/to_node_properties
                 //    (this works BEFORE graph_join_inference registers the info in plan_ctx)
                 let (is_denormalized, owning_edge_info) = if let Some(plan) = plan {
-                    let denorm_from_plan = Self::is_node_denormalized(plan, &property_access.table_alias.0);
-                    let denorm_from_ctx = plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0).is_some();
-                    
+                    let denorm_from_plan =
+                        Self::is_node_denormalized(plan, &property_access.table_alias.0);
+                    let denorm_from_ctx = plan_ctx
+                        .get_denormalized_alias_info(&property_access.table_alias.0)
+                        .is_some();
+
                     // Also check by traversing the plan to find which edge owns this node
-                    let edge_info = Self::find_owning_edge_for_node(plan, &property_access.table_alias.0);
+                    let edge_info =
+                        Self::find_owning_edge_for_node(plan, &property_access.table_alias.0);
                     let denorm_from_edge = edge_info.is_some();
-                    
+
                     let denorm = denorm_from_plan || denorm_from_ctx || denorm_from_edge;
                     println!(
                         "FilterTagging: Checking is_denormalized for alias='{}' - from_plan={}, from_ctx={}, from_edge={:?}, result={}",
@@ -552,7 +588,9 @@ impl FilterTagging {
 
                 println!(
                     "FilterTagging: is_denormalized={} for alias='{}', property='{}'",
-                    is_denormalized, property_access.table_alias.0, property_access.column.raw()
+                    is_denormalized,
+                    property_access.table_alias.0,
+                    property_access.column.raw()
                 );
 
                 let mapped_column = if is_denormalized {
@@ -560,14 +598,15 @@ impl FilterTagging {
                     if let Some(plan) = plan {
                         // First, check if plan_ctx knows which edge this node belongs to
                         // This is critical for multi-hop patterns where a node appears in multiple edges
-                        let denorm_info = plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0)
+                        let denorm_info = plan_ctx
+                            .get_denormalized_alias_info(&property_access.table_alias.0)
                             .or_else(|| {
                                 // Fallback: use the edge info we found during is_denormalized check
                                 owning_edge_info.map(|(edge, is_from)| {
                                     (edge, is_from, String::new(), String::new())
                                 })
                             });
-                        
+
                         if let Some((owning_edge, is_from_node, _, _)) = denorm_info {
                             println!(
                                 "FilterTagging: Node '{}' is denormalized on edge '{}', is_from={}",
@@ -585,15 +624,23 @@ impl FilterTagging {
                                     "FilterTagging: Found property '{}' in owning edge '{}' ViewScan -> '{}'",
                                     property_access.column.raw(), owning_edge, column
                                 );
-                                crate::graph_catalog::expression_parser::PropertyValue::Column(column)
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    column,
+                                )
                             } else {
                                 // Fallback to generic search
-                                if let Some(column) = Self::find_property_in_viewscan(plan, &property_access.table_alias.0, property_access.column.raw()) {
+                                if let Some(column) = Self::find_property_in_viewscan(
+                                    plan,
+                                    &property_access.table_alias.0,
+                                    property_access.column.raw(),
+                                ) {
                                     println!(
                                         "FilterTagging: Found property '{}' via fallback in ViewScan -> '{}'",
                                         property_access.column.raw(), column
                                     );
-                                    crate::graph_catalog::expression_parser::PropertyValue::Column(column)
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        column,
+                                    )
                                 } else {
                                     // Final fallback to role-aware mapping
                                     let role = if is_from_node {
@@ -602,13 +649,22 @@ impl FilterTagging {
                                         Some(crate::render_plan::cte_generation::NodeRole::To)
                                     };
                                     let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
-                                    view_resolver.resolve_node_property_with_role(&label, &property_access.column.raw(), role)?
+                                    view_resolver.resolve_node_property_with_role(
+                                        &label,
+                                        &property_access.column.raw(),
+                                        role,
+                                    )?
                                 }
                             }
-                        } else if let Some(column) = Self::find_property_in_viewscan(plan, &property_access.table_alias.0, property_access.column.raw()) {
+                        } else if let Some(column) = Self::find_property_in_viewscan(
+                            plan,
+                            &property_access.table_alias.0,
+                            property_access.column.raw(),
+                        ) {
                             println!(
                                 "FilterTagging: Found property '{}' directly in ViewScan -> '{}'",
-                                property_access.column.raw(), column
+                                property_access.column.raw(),
+                                column
                             );
                             crate::graph_catalog::expression_parser::PropertyValue::Column(column)
                         } else {
@@ -618,19 +674,28 @@ impl FilterTagging {
                                 property_access.column.raw()
                             );
                             // Get the node's role (From or To) from the plan context
-                            let role = Self::find_denormalized_context(plan, &property_access.table_alias.0, &label)
-                                .map(|(_, node_role, _)| node_role);
+                            let role = Self::find_denormalized_context(
+                                plan,
+                                &property_access.table_alias.0,
+                                &label,
+                            )
+                            .map(|(_, node_role, _)| node_role);
                             println!(
                                 "FilterTagging: Node role for alias '{}': {:?}",
                                 property_access.table_alias.0, role
                             );
                             let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
-                            view_resolver.resolve_node_property_with_role(&label, &property_access.column.raw(), role)?
+                            view_resolver.resolve_node_property_with_role(
+                                &label,
+                                &property_access.column.raw(),
+                                role,
+                            )?
                         }
                     } else {
                         // No plan context, use standard mapping (role unknown)
                         let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
-                        view_resolver.resolve_node_property(&label, &property_access.column.raw())?
+                        view_resolver
+                            .resolve_node_property(&label, &property_access.column.raw())?
                     }
                 } else {
                     // Use view resolver to map the property (standard path)
@@ -653,8 +718,8 @@ impl FilterTagging {
                         );
                         result?
                     } else {
-                        let result =
-                            view_resolver.resolve_node_property(&label, &property_access.column.raw());
+                        let result = view_resolver
+                            .resolve_node_property(&label, &property_access.column.raw());
                         println!("FilterTagging: resolve_node_property result: {:?}", result);
                         result?
                     }
@@ -687,13 +752,13 @@ impl FilterTagging {
             }
             LogicalExpr::ScalarFnCall(fn_call) => {
                 let fn_name_lower = fn_call.name.to_lowercase();
-                
+
                 // Handle id() function - resolve to actual ID column for WHERE clause usage
                 if fn_name_lower == "id" && fn_call.args.len() == 1 {
                     // Extract the alias from the argument
                     if let LogicalExpr::TableAlias(ref alias) = fn_call.args[0] {
                         let alias_str = &alias.0;
-                        
+
                         // Get the table context to determine if it's a node or relationship
                         if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias_str) {
                             if let Some(label) = table_ctx.get_label_opt() {
@@ -719,25 +784,41 @@ impl FilterTagging {
                                     // For nodes, check if it's denormalized and get the proper ID column
                                     // First check if this node is denormalized (has properties in edge table)
                                     let is_denormalized = if let Some(plan) = plan {
-                                        Self::is_node_denormalized(plan, alias_str) ||
-                                        Self::find_owning_edge_for_node(plan, alias_str).is_some()
+                                        Self::is_node_denormalized(plan, alias_str)
+                                            || Self::find_owning_edge_for_node(plan, alias_str)
+                                                .is_some()
                                     } else {
                                         false
                                     };
-                                    
+
                                     if is_denormalized {
                                         // For denormalized nodes, find the owning edge and get the ID from from_node/to_node properties
                                         if let Some(plan) = plan {
-                                            if let Some((owning_edge, is_from_node)) = Self::find_owning_edge_for_node(plan, alias_str) {
+                                            if let Some((owning_edge, is_from_node)) =
+                                                Self::find_owning_edge_for_node(plan, alias_str)
+                                            {
                                                 // Use find_property_in_viewscan_with_edge to get the actual column
                                                 // Node id_column in schema is the logical property name (e.g., "id")
-                                                let id_property = if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
-                                                    node_schema.node_id.columns().first().unwrap_or(&"id").to_string()
+                                                let id_property = if let Ok(node_schema) =
+                                                    graph_schema.get_node_schema(&label)
+                                                {
+                                                    node_schema
+                                                        .node_id
+                                                        .columns()
+                                                        .first()
+                                                        .unwrap_or(&"id")
+                                                        .to_string()
                                                 } else {
                                                     "id".to_string()
                                                 };
-                                                
-                                                Self::find_property_in_viewscan_with_edge(plan, alias_str, &id_property, &owning_edge, is_from_node)
+
+                                                Self::find_property_in_viewscan_with_edge(
+                                                    plan,
+                                                    alias_str,
+                                                    &id_property,
+                                                    &owning_edge,
+                                                    is_from_node,
+                                                )
                                             } else {
                                                 None
                                             }
@@ -746,14 +827,23 @@ impl FilterTagging {
                                         }
                                     } else {
                                         // For regular (non-denormalized) nodes, use the node_id column directly
-                                        if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
-                                            Some(node_schema.node_id.columns().first().unwrap_or(&"id").to_string())
+                                        if let Ok(node_schema) =
+                                            graph_schema.get_node_schema(&label)
+                                        {
+                                            Some(
+                                                node_schema
+                                                    .node_id
+                                                    .columns()
+                                                    .first()
+                                                    .unwrap_or(&"id")
+                                                    .to_string(),
+                                            )
                                         } else {
                                             None
                                         }
                                     }
                                 };
-                                
+
                                 if let Some(column) = id_column {
                                     println!(
                                         "FilterTagging: Resolved id({}) to PropertyAccess with column '{}'",
@@ -772,24 +862,34 @@ impl FilterTagging {
                         "FilterTagging: Could not resolve id() function, passing through unchanged"
                     );
                 }
-                
+
                 // Other graph introspection functions (type, labels, label) are handled by ProjectionTagging
                 // for RETURN clauses. In WHERE clauses, pass them through with mapped args.
                 if matches!(fn_name_lower.as_str(), "type" | "labels" | "label") {
                     let mut mapped_args = Vec::new();
                     for arg in fn_call.args {
-                        mapped_args.push(self.apply_property_mapping(arg, plan_ctx, graph_schema, plan)?);
+                        mapped_args.push(self.apply_property_mapping(
+                            arg,
+                            plan_ctx,
+                            graph_schema,
+                            plan,
+                        )?);
                     }
                     return Ok(LogicalExpr::ScalarFnCall(ScalarFnCall {
                         name: fn_call.name,
                         args: mapped_args,
                     }));
                 }
-                
+
                 // For other scalar functions, recursively apply property mapping to arguments
                 let mut mapped_args = Vec::new();
                 for arg in fn_call.args {
-                    mapped_args.push(self.apply_property_mapping(arg, plan_ctx, graph_schema, plan)?);
+                    mapped_args.push(self.apply_property_mapping(
+                        arg,
+                        plan_ctx,
+                        graph_schema,
+                        plan,
+                    )?);
                 }
                 Ok(LogicalExpr::ScalarFnCall(ScalarFnCall {
                     name: fn_call.name,
@@ -800,7 +900,12 @@ impl FilterTagging {
                 // Recursively apply property mapping to aggregate function arguments
                 let mut mapped_args = Vec::new();
                 for arg in agg_call.args {
-                    mapped_args.push(self.apply_property_mapping(arg, plan_ctx, graph_schema, plan)?);
+                    mapped_args.push(self.apply_property_mapping(
+                        arg,
+                        plan_ctx,
+                        graph_schema,
+                        plan,
+                    )?);
                 }
                 agg_call.args = mapped_args;
                 Ok(LogicalExpr::AggregateFnCall(agg_call))
@@ -818,14 +923,17 @@ impl FilterTagging {
                 }
                 Ok(LogicalExpr::List(mapped_elements))
             }
-            LogicalExpr::LabelExpression { variable, label: check_label } => {
+            LogicalExpr::LabelExpression {
+                variable,
+                label: check_label,
+            } => {
                 // Label expression: variable:Label
                 // Check if the variable has the specified label
-                // 
+                //
                 // For polymorphic tables (with label_column), generate SQL comparison:
                 //   m:Comment -> label_column = 'Comment'
                 // For non-polymorphic tables, resolve at compile-time to true/false
-                
+
                 if let Ok(table_ctx) = plan_ctx.get_table_ctx(&variable) {
                     if let Some(known_labels) = table_ctx.get_labels() {
                         // Check if this is a polymorphic table with label_column
@@ -853,16 +961,18 @@ impl FilterTagging {
                                 }
                             }
                         }
-                        
+
                         // Non-polymorphic table - resolve at compile-time
                         // Check if the check_label matches any of the known labels
-                        let matches = known_labels.iter().any(|l| l.eq_ignore_ascii_case(&check_label));
+                        let matches = known_labels
+                            .iter()
+                            .any(|l| l.eq_ignore_ascii_case(&check_label));
                         println!(
                             "FilterTagging: LabelExpression {} has labels {:?}, checking for '{}' -> {}",
                             variable, known_labels, check_label, matches
                         );
                         return Ok(LogicalExpr::Literal(
-                            crate::query_planner::logical_expr::Literal::Boolean(matches)
+                            crate::query_planner::logical_expr::Literal::Boolean(matches),
                         ));
                     }
                 }
@@ -872,7 +982,10 @@ impl FilterTagging {
                     "FilterTagging: LabelExpression {}:{} - cannot determine label statically",
                     variable, check_label
                 );
-                Ok(LogicalExpr::LabelExpression { variable, label: check_label })
+                Ok(LogicalExpr::LabelExpression {
+                    variable,
+                    label: check_label,
+                })
             }
             // For other expression types, return as-is
             other => Ok(other),
@@ -1114,15 +1227,19 @@ impl FilterTagging {
                 // IMPORTANT: Only extract if the operator is a filter-extractable operator (comparisons, boolean).
                 // Arithmetic operators like Addition should NOT be extracted as standalone filters.
                 // IMPORTANT: Use get_table_alias_if_single_table_condition to RECURSIVELY check all table aliases,
-                // not just direct operands. This handles cases like `r1.x + 100 <= r2.y` where the Addition 
+                // not just direct operands. This handles cases like `r1.x + 100 <= r2.y` where the Addition
                 // references r1 but is nested inside the comparison, so condition_belongs_to only saw r2.
                 let single_table_alias = Self::get_table_alias_if_single_table_condition(
                     &LogicalExpr::OperatorApplicationExp(op_app.clone()),
                     false, // not checking aggregate functions
                 );
                 let is_single_table_condition = single_table_alias.is_some();
-                
-                if !new_in_or && !agg_operand_found && is_single_table_condition && op_app.operator.is_filter_extractable() {
+
+                if !new_in_or
+                    && !agg_operand_found
+                    && is_single_table_condition
+                    && op_app.operator.is_filter_extractable()
+                {
                     extracted_filters.push(op_app);
                     return None;
                 } else if new_in_or || !is_single_table_condition {
@@ -1281,14 +1398,14 @@ impl FilterTagging {
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
                     let has_from_props = scan.from_node_properties.is_some();
                     let has_to_props = scan.to_node_properties.is_some();
-                    
+
                     // Check if left child is a GraphNode with this alias
                     if let LogicalPlan::GraphNode(left_node) = rel.left.as_ref() {
                         if left_node.alias == node_alias && has_from_props {
                             return Some((rel.alias.clone(), true)); // is_from_node = true
                         }
                     }
-                    
+
                     // Check if right child is a GraphNode with this alias
                     if let LogicalPlan::GraphNode(right_node) = rel.right.as_ref() {
                         if right_node.alias == node_alias && has_to_props {
@@ -1296,7 +1413,7 @@ impl FilterTagging {
                         }
                     }
                 }
-                
+
                 // Recurse into branches
                 if let Some(result) = Self::find_owning_edge_for_node(&rel.left, node_alias) {
                     return Some(result);
@@ -1310,9 +1427,15 @@ impl FilterTagging {
                 }
                 Self::find_owning_edge_for_node(&cp.right, node_alias)
             }
-            LogicalPlan::GraphNode(node) => Self::find_owning_edge_for_node(&node.input, node_alias),
-            LogicalPlan::Filter(filter) => Self::find_owning_edge_for_node(&filter.input, node_alias),
-            LogicalPlan::Projection(proj) => Self::find_owning_edge_for_node(&proj.input, node_alias),
+            LogicalPlan::GraphNode(node) => {
+                Self::find_owning_edge_for_node(&node.input, node_alias)
+            }
+            LogicalPlan::Filter(filter) => {
+                Self::find_owning_edge_for_node(&filter.input, node_alias)
+            }
+            LogicalPlan::Projection(proj) => {
+                Self::find_owning_edge_for_node(&proj.input, node_alias)
+            }
             LogicalPlan::GroupBy(gb) => Self::find_owning_edge_for_node(&gb.input, node_alias),
             LogicalPlan::OrderBy(ob) => Self::find_owning_edge_for_node(&ob.input, node_alias),
             LogicalPlan::Skip(skip) => Self::find_owning_edge_for_node(&skip.input, node_alias),
@@ -1407,49 +1530,113 @@ impl FilterTagging {
                         }
                     }
                 }
-                
+
                 // Recurse to find the owning edge
-                if let Some(col) = Self::find_property_in_viewscan_with_edge(&rel.left, alias, property, owning_edge, is_from_node) {
+                if let Some(col) = Self::find_property_in_viewscan_with_edge(
+                    &rel.left,
+                    alias,
+                    property,
+                    owning_edge,
+                    is_from_node,
+                ) {
                     return Some(col);
                 }
-                Self::find_property_in_viewscan_with_edge(&rel.right, alias, property, owning_edge, is_from_node)
+                Self::find_property_in_viewscan_with_edge(
+                    &rel.right,
+                    alias,
+                    property,
+                    owning_edge,
+                    is_from_node,
+                )
             }
-            LogicalPlan::GraphNode(node) => {
-                Self::find_property_in_viewscan_with_edge(&node.input, alias, property, owning_edge, is_from_node)
-            }
-            LogicalPlan::Projection(proj) => {
-                Self::find_property_in_viewscan_with_edge(&proj.input, alias, property, owning_edge, is_from_node)
-            }
-            LogicalPlan::Filter(filter) => {
-                Self::find_property_in_viewscan_with_edge(&filter.input, alias, property, owning_edge, is_from_node)
-            }
-            LogicalPlan::GraphJoins(joins) => {
-                Self::find_property_in_viewscan_with_edge(&joins.input, alias, property, owning_edge, is_from_node)
-            }
-            LogicalPlan::OrderBy(ob) => {
-                Self::find_property_in_viewscan_with_edge(&ob.input, alias, property, owning_edge, is_from_node)
-            }
-            LogicalPlan::Skip(skip) => {
-                Self::find_property_in_viewscan_with_edge(&skip.input, alias, property, owning_edge, is_from_node)
-            }
-            LogicalPlan::Limit(limit) => {
-                Self::find_property_in_viewscan_with_edge(&limit.input, alias, property, owning_edge, is_from_node)
-            }
-            LogicalPlan::GroupBy(gb) => {
-                Self::find_property_in_viewscan_with_edge(&gb.input, alias, property, owning_edge, is_from_node)
-            }
-            LogicalPlan::Unwind(u) => {
-                Self::find_property_in_viewscan_with_edge(&u.input, alias, property, owning_edge, is_from_node)
-            }
-            LogicalPlan::Cte(cte) => {
-                Self::find_property_in_viewscan_with_edge(&cte.input, alias, property, owning_edge, is_from_node)
-            }
+            LogicalPlan::GraphNode(node) => Self::find_property_in_viewscan_with_edge(
+                &node.input,
+                alias,
+                property,
+                owning_edge,
+                is_from_node,
+            ),
+            LogicalPlan::Projection(proj) => Self::find_property_in_viewscan_with_edge(
+                &proj.input,
+                alias,
+                property,
+                owning_edge,
+                is_from_node,
+            ),
+            LogicalPlan::Filter(filter) => Self::find_property_in_viewscan_with_edge(
+                &filter.input,
+                alias,
+                property,
+                owning_edge,
+                is_from_node,
+            ),
+            LogicalPlan::GraphJoins(joins) => Self::find_property_in_viewscan_with_edge(
+                &joins.input,
+                alias,
+                property,
+                owning_edge,
+                is_from_node,
+            ),
+            LogicalPlan::OrderBy(ob) => Self::find_property_in_viewscan_with_edge(
+                &ob.input,
+                alias,
+                property,
+                owning_edge,
+                is_from_node,
+            ),
+            LogicalPlan::Skip(skip) => Self::find_property_in_viewscan_with_edge(
+                &skip.input,
+                alias,
+                property,
+                owning_edge,
+                is_from_node,
+            ),
+            LogicalPlan::Limit(limit) => Self::find_property_in_viewscan_with_edge(
+                &limit.input,
+                alias,
+                property,
+                owning_edge,
+                is_from_node,
+            ),
+            LogicalPlan::GroupBy(gb) => Self::find_property_in_viewscan_with_edge(
+                &gb.input,
+                alias,
+                property,
+                owning_edge,
+                is_from_node,
+            ),
+            LogicalPlan::Unwind(u) => Self::find_property_in_viewscan_with_edge(
+                &u.input,
+                alias,
+                property,
+                owning_edge,
+                is_from_node,
+            ),
+            LogicalPlan::Cte(cte) => Self::find_property_in_viewscan_with_edge(
+                &cte.input,
+                alias,
+                property,
+                owning_edge,
+                is_from_node,
+            ),
             LogicalPlan::CartesianProduct(cp) => {
                 // Search both branches of the CartesianProduct for the owning edge
-                if let Some(col) = Self::find_property_in_viewscan_with_edge(&cp.left, alias, property, owning_edge, is_from_node) {
+                if let Some(col) = Self::find_property_in_viewscan_with_edge(
+                    &cp.left,
+                    alias,
+                    property,
+                    owning_edge,
+                    is_from_node,
+                ) {
                     return Some(col);
                 }
-                Self::find_property_in_viewscan_with_edge(&cp.right, alias, property, owning_edge, is_from_node)
+                Self::find_property_in_viewscan_with_edge(
+                    &cp.right,
+                    alias,
+                    property,
+                    owning_edge,
+                    is_from_node,
+                )
             }
             _ => None,
         }
@@ -1497,12 +1684,12 @@ impl FilterTagging {
                 // Example: (a)-[r1]->(b)-[r2]->(c)
                 //   - When looking for 'b', we should find it in r1 (where b is right_connection)
                 //   - Not in r2 (where b is left_connection, which would give wrong column)
-                
+
                 // First, recurse into left (inner GraphRels)
                 if let Some(col) = Self::find_property_in_viewscan(&rel.left, alias, property) {
                     return Some(col);
                 }
-                
+
                 // Then check the current GraphRel's connections ONLY if alias wasn't found in inner GraphRels
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
                     // Check if alias is the left (from) node of THIS relationship
@@ -1528,19 +1715,27 @@ impl FilterTagging {
                         }
                     }
                 }
-                
+
                 // Finally check center and right
                 if let Some(col) = Self::find_property_in_viewscan(&rel.center, alias, property) {
                     return Some(col);
                 }
                 Self::find_property_in_viewscan(&rel.right, alias, property)
             }
-            LogicalPlan::Filter(filter) => Self::find_property_in_viewscan(&filter.input, alias, property),
-            LogicalPlan::Projection(proj) => Self::find_property_in_viewscan(&proj.input, alias, property),
+            LogicalPlan::Filter(filter) => {
+                Self::find_property_in_viewscan(&filter.input, alias, property)
+            }
+            LogicalPlan::Projection(proj) => {
+                Self::find_property_in_viewscan(&proj.input, alias, property)
+            }
             LogicalPlan::GroupBy(gb) => Self::find_property_in_viewscan(&gb.input, alias, property),
             LogicalPlan::OrderBy(ob) => Self::find_property_in_viewscan(&ob.input, alias, property),
-            LogicalPlan::Skip(skip) => Self::find_property_in_viewscan(&skip.input, alias, property),
-            LogicalPlan::Limit(limit) => Self::find_property_in_viewscan(&limit.input, alias, property),
+            LogicalPlan::Skip(skip) => {
+                Self::find_property_in_viewscan(&skip.input, alias, property)
+            }
+            LogicalPlan::Limit(limit) => {
+                Self::find_property_in_viewscan(&limit.input, alias, property)
+            }
             LogicalPlan::Cte(cte) => Self::find_property_in_viewscan(&cte.input, alias, property),
             LogicalPlan::Union(union) => {
                 // For Union, search in all branches (they should all have the same alias)
@@ -1568,9 +1763,13 @@ impl FilterTagging {
         plan: &LogicalPlan,
         alias: &str,
         _label: &str,
-    ) -> Option<(Option<String>, crate::render_plan::cte_generation::NodeRole, String)> {
+    ) -> Option<(
+        Option<String>,
+        crate::render_plan::cte_generation::NodeRole,
+        String,
+    )> {
         use crate::render_plan::cte_generation::NodeRole;
-        
+
         match plan {
             LogicalPlan::GraphRel(rel) => {
                 // Check if this alias is the left or right connection of this relationship
@@ -1582,8 +1781,15 @@ impl FilterTagging {
                     let node_plan = if is_left { &rel.left } else { &rel.right };
                     if let LogicalPlan::GraphNode(node) = node_plan.as_ref() {
                         if node.is_denormalized {
-                            let rel_type = rel.labels.as_ref().and_then(|labels| labels.first().cloned());
-                            let role = if is_left { NodeRole::From } else { NodeRole::To };
+                            let rel_type = rel
+                                .labels
+                                .as_ref()
+                                .and_then(|labels| labels.first().cloned());
+                            let role = if is_left {
+                                NodeRole::From
+                            } else {
+                                NodeRole::To
+                            };
                             println!("find_denormalized_context: Returning rel_alias='{}' for node alias='{}'", rel.alias, alias);
                             return Some((rel_type, role, rel.alias.clone()));
                         }
@@ -1604,11 +1810,20 @@ impl FilterTagging {
                 if node.is_denormalized && node.alias == alias {
                     if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                         // Determine role based on which properties are available
-                        if scan.from_node_properties.is_some() && scan.to_node_properties.is_none() {
-                            println!("find_denormalized_context: Node-only FROM for alias='{}'", alias);
+                        if scan.from_node_properties.is_some() && scan.to_node_properties.is_none()
+                        {
+                            println!(
+                                "find_denormalized_context: Node-only FROM for alias='{}'",
+                                alias
+                            );
                             return Some((None, NodeRole::From, alias.to_string()));
-                        } else if scan.to_node_properties.is_some() && scan.from_node_properties.is_none() {
-                            println!("find_denormalized_context: Node-only TO for alias='{}'", alias);
+                        } else if scan.to_node_properties.is_some()
+                            && scan.from_node_properties.is_none()
+                        {
+                            println!(
+                                "find_denormalized_context: Node-only TO for alias='{}'",
+                                alias
+                            );
                             return Some((None, NodeRole::To, alias.to_string()));
                         }
                     }
@@ -1650,7 +1865,9 @@ mod tests {
     fn create_property_access(table: &str, column: &str) -> LogicalExpr {
         LogicalExpr::PropertyAccessExp(PropertyAccess {
             table_alias: TableAlias(table.to_string()),
-            column: crate::graph_catalog::expression_parser::PropertyValue::Column(column.to_string()),
+            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                column.to_string(),
+            ),
         })
     }
 
@@ -1715,9 +1932,18 @@ mod tests {
 
         // Person node with properties
         let mut person_props = HashMap::new();
-        person_props.insert("age".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("age".to_string()));
-        person_props.insert("status".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("status".to_string()));
-        person_props.insert("name".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()));
+        person_props.insert(
+            "age".to_string(),
+            crate::graph_catalog::expression_parser::PropertyValue::Column("age".to_string()),
+        );
+        person_props.insert(
+            "status".to_string(),
+            crate::graph_catalog::expression_parser::PropertyValue::Column("status".to_string()),
+        );
+        person_props.insert(
+            "name".to_string(),
+            crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+        );
 
         node_schemas.insert(
             "Person".to_string(),
@@ -1731,26 +1957,31 @@ mod tests {
                     "status".to_string(),
                 ],
                 primary_keys: "user_id".to_string(),
-                node_id: NodeIdSchema::single("user_id".to_string(), "UInt32".to_string(),
-                ),
+                node_id: NodeIdSchema::single("user_id".to_string(), "UInt32".to_string()),
                 property_mappings: person_props,
                 view_parameters: None,
                 engine: None,
                 use_final: None,
-            filter: None,
+                filter: None,
                 is_denormalized: false,
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
 
         // Company node
         let mut company_props = HashMap::new();
-        company_props.insert("name".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()));
-        company_props.insert("owner_id".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("owner_id".to_string()));
+        company_props.insert(
+            "name".to_string(),
+            crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+        );
+        company_props.insert(
+            "owner_id".to_string(),
+            crate::graph_catalog::expression_parser::PropertyValue::Column("owner_id".to_string()),
+        );
 
         node_schemas.insert(
             "Company".to_string(),
@@ -1763,25 +1994,29 @@ mod tests {
                     "owner_id".to_string(),
                 ],
                 primary_keys: "company_id".to_string(),
-                node_id: NodeIdSchema::single("company_id".to_string(), "UInt32".to_string(),
-                ),
+                node_id: NodeIdSchema::single("company_id".to_string(), "UInt32".to_string()),
                 property_mappings: company_props,
                 view_parameters: None,
                 engine: None,
                 use_final: None,
-            filter: None,
+                filter: None,
                 is_denormalized: false,
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
 
         // FOLLOWS relationship
         let mut follows_props = HashMap::new();
-        follows_props.insert("since".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("created_at".to_string()));
+        follows_props.insert(
+            "since".to_string(),
+            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                "created_at".to_string(),
+            ),
+        );
 
         rel_schemas.insert(
             "FOLLOWS".to_string(),
@@ -1803,7 +2038,7 @@ mod tests {
                 view_parameters: None,
                 engine: None,
                 use_final: None,
-            filter: None,
+                filter: None,
                 edge_id: None,
                 type_column: None,
                 from_label_column: None,
@@ -1812,7 +2047,7 @@ mod tests {
                 to_label_values: None,
                 from_node_properties: None,
                 to_node_properties: None,
-            is_fk_edge: false,
+                is_fk_edge: false,
             },
         );
 
@@ -1987,13 +2222,13 @@ mod tests {
         let user_ctx = plan_ctx.get_table_ctx("user").unwrap();
         assert_eq!(user_ctx.get_filters().len(), 0);
         // Should add projections for the property accesses in OR condition
-        assert_eq!(user_ctx.get_projections().len(), 1); // age 
+        assert_eq!(user_ctx.get_projections().len(), 1); // age
 
         // Should not extract any filters to user table but should add projections
         let company_ctx = plan_ctx.get_table_ctx("company").unwrap();
         assert_eq!(company_ctx.get_filters().len(), 0);
         // Should add projections for the property accesses in OR condition
-        assert_eq!(company_ctx.get_projections().len(), 1); // status 
+        assert_eq!(company_ctx.get_projections().len(), 1); // status
     }
 
     #[test]

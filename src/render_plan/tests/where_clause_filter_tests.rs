@@ -79,27 +79,45 @@ fn setup_test_graph_schema() -> GraphSchema {
             "user_id".to_string(),
         ],
         primary_keys: "id".to_string(),
-        node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
-        ),
+        node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
         property_mappings: [
-            ("name".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string())),
-            ("age".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("age".to_string())),
-            ("status".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("status".to_string())),
-            ("user_id".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("user_id".to_string())),
-            ("full_name".to_string(), crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string())), // Alias for name
+            (
+                "name".to_string(),
+                crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+            ),
+            (
+                "age".to_string(),
+                crate::graph_catalog::expression_parser::PropertyValue::Column("age".to_string()),
+            ),
+            (
+                "status".to_string(),
+                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                    "status".to_string(),
+                ),
+            ),
+            (
+                "user_id".to_string(),
+                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                    "user_id".to_string(),
+                ),
+            ),
+            (
+                "full_name".to_string(),
+                crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+            ), // Alias for name
         ]
         .into_iter()
         .collect(),
         view_parameters: None,
         engine: None,
         use_final: None,
-            filter: None,
+        filter: None,
         is_denormalized: false,
         from_properties: None,
         to_properties: None,
         denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+        label_column: None,
+        label_value: None,
     };
     nodes.insert("User".to_string(), user_node);
 
@@ -118,16 +136,16 @@ fn setup_test_graph_schema() -> GraphSchema {
         view_parameters: None,
         engine: None,
         use_final: None,
-            filter: None,
+        filter: None,
         edge_id: None,
         type_column: None,
         from_label_column: None,
         to_label_column: None,
         from_node_properties: None,
         to_node_properties: None,
-            from_label_values: None,
-            to_label_values: None,
-            is_fk_edge: false,
+        from_label_values: None,
+        to_label_values: None,
+        is_fk_edge: false,
     };
     relationships.insert("FOLLOWS".to_string(), follows_rel);
 
@@ -575,13 +593,15 @@ mod fixed_length_vlp_tests {
         // Should have a JOIN for the relationship
         assert!(
             sql.contains("JOIN") || sql.contains("join"),
-            "SQL should contain JOIN for *1 pattern. Got: {}", sql
+            "SQL should contain JOIN for *1 pattern. Got: {}",
+            sql
         );
-        
+
         // Should reference the follows table
         assert!(
             sql.contains("follows") || sql.contains("FOLLOWS"),
-            "SQL should reference follows relationship table. Got: {}", sql
+            "SQL should reference follows relationship table. Got: {}",
+            sql
         );
     }
 
@@ -596,7 +616,8 @@ mod fixed_length_vlp_tests {
         // Should have JOINs for two hops
         assert!(
             sql.contains("JOIN") || sql.contains("join"),
-            "SQL should contain JOIN for *2 pattern. Got: {}", sql
+            "SQL should contain JOIN for *2 pattern. Got: {}",
+            sql
         );
     }
 
@@ -611,7 +632,8 @@ mod fixed_length_vlp_tests {
         // Should have JOINs for three hops
         assert!(
             sql.contains("JOIN") || sql.contains("join"),
-            "SQL should contain JOIN for *3 pattern. Got: {}", sql
+            "SQL should contain JOIN for *3 pattern. Got: {}",
+            sql
         );
     }
 }
@@ -636,15 +658,17 @@ mod vlp_chained_pattern_filters {
         // Check for 'Charlie' in the SQL - it should be in the WHERE clause
         assert!(
             sql.contains("Charlie"),
-            "SQL should contain the filter value 'Charlie'. Got: {}", sql
+            "SQL should contain the filter value 'Charlie'. Got: {}",
+            sql
         );
-        
+
         // The filter should NOT be in the CTE base case (which filters 'a')
         // It should be in the final SELECT's WHERE clause
         let main_query = sql.split("SELECT").last().unwrap_or(&sql);
         assert!(
             main_query.contains("Charlie") || main_query.contains("WHERE"),
-            "Filter on chained node should be in the final query, not just the CTE. Main query: {}", main_query
+            "Filter on chained node should be in the final query, not just the CTE. Main query: {}",
+            main_query
         );
     }
 
@@ -655,16 +679,21 @@ mod vlp_chained_pattern_filters {
         let cypher = "MATCH (a:User)-[:FOLLOWS*]->(b:User)-[:FOLLOWS]->(c:User) WHERE a.name = 'Alice' AND c.name = 'Charlie' RETURN a, c";
         let sql = cypher_to_sql(cypher);
 
-        println!("Chained VLP with filters on start AND end nodes SQL:\n{}", sql);
+        println!(
+            "Chained VLP with filters on start AND end nodes SQL:\n{}",
+            sql
+        );
 
         // Both filter values should be present
         assert!(
             sql.contains("Alice"),
-            "SQL should contain the VLP start filter value 'Alice'. Got: {}", sql
+            "SQL should contain the VLP start filter value 'Alice'. Got: {}",
+            sql
         );
         assert!(
             sql.contains("Charlie"),
-            "SQL should contain the chained end filter value 'Charlie'. Got: {}", sql
+            "SQL should contain the chained end filter value 'Charlie'. Got: {}",
+            sql
         );
 
         // Check that the final query has WHERE clause (not just CTE)
@@ -694,7 +723,8 @@ mod vlp_chained_pattern_filters {
         // The filter should be present (in CTE)
         assert!(
             sql.contains("Alice"),
-            "SQL should contain the VLP start filter value 'Alice'. Got: {}", sql
+            "SQL should contain the VLP start filter value 'Alice'. Got: {}",
+            sql
         );
 
         // The filter should be in the CTE base case (WHERE ... start_node.name or similar)
@@ -703,7 +733,8 @@ mod vlp_chained_pattern_filters {
             let cte_part: &str = sql.split("UNION ALL").next().unwrap_or(&sql);
             assert!(
                 cte_part.contains("Alice"),
-                "VLP start filter should be in CTE base case. CTE part: {}", cte_part
+                "VLP start filter should be in CTE base case. CTE part: {}",
+                cte_part
             );
         }
     }
@@ -715,18 +746,23 @@ mod vlp_chained_pattern_filters {
         let cypher = "MATCH (a:User)-[:FOLLOWS*]->(b:User)-[:FOLLOWS]->(c:User)-[:FOLLOWS]->(d:User) WHERE d.name = 'David' RETURN d";
         let sql = cypher_to_sql(cypher);
 
-        println!("Multi-hop chained VLP with filter on last node SQL:\n{}", sql);
+        println!(
+            "Multi-hop chained VLP with filter on last node SQL:\n{}",
+            sql
+        );
 
         // The filter should be present
         assert!(
             sql.contains("David"),
-            "SQL should contain the filter value 'David'. Got: {}", sql
+            "SQL should contain the filter value 'David'. Got: {}",
+            sql
         );
-        
+
         // Should have JOINs for the chained relationships
         assert!(
             sql.to_lowercase().contains("join"),
-            "SQL should contain JOINs for chained relationships. Got: {}", sql
+            "SQL should contain JOINs for chained relationships. Got: {}",
+            sql
         );
     }
 }

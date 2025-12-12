@@ -49,8 +49,8 @@ mod edge_uniqueness_tests {
 
         // Check for tuple construction with from_id/to_id
         assert!(
-            sql.contains("tuple(rel.follower_id, rel.followed_id)") || 
-            sql.contains("tuple(r.follower_id, r.followed_id)"),
+            sql.contains("tuple(rel.follower_id, rel.followed_id)")
+                || sql.contains("tuple(r.follower_id, r.followed_id)"),
             "SQL should use tuple(from_id, to_id) as default edge ID. SQL:\n{}",
             sql
         );
@@ -111,8 +111,8 @@ mod edge_uniqueness_tests {
 
         // Check for composite tuple construction
         assert!(
-            sql.contains("tuple(rel.FlightDate, rel.FlightNum, rel.Origin, rel.Dest)") ||
-            sql.contains("tuple(r.FlightDate, r.FlightNum, r.Origin, r.Dest)"),
+            sql.contains("tuple(rel.FlightDate, rel.FlightNum, rel.Origin, rel.Dest)")
+                || sql.contains("tuple(r.FlightDate, r.FlightNum, r.Origin, r.Dest)"),
             "SQL should use composite tuple for edge ID. SQL:\n{}",
             sql
         );

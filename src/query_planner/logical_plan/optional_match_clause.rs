@@ -3,10 +3,7 @@ use std::sync::Arc;
 use crate::{
     open_cypher_parser::ast,
     query_planner::{
-        logical_plan::{
-            LogicalPlan,
-            plan_builder::LogicalPlanResult,
-        },
+        logical_plan::{plan_builder::LogicalPlanResult, LogicalPlan},
         plan_ctx::PlanCtx,
     },
 };

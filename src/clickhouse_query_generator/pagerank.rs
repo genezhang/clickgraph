@@ -218,17 +218,24 @@ ORDER BY pagerank DESC
 
                 node_tables.push(format!(
                     "SELECT {} AS node_id FROM {}",
-                    node_schema.node_id.columns().first().unwrap_or(&"id"), node_schema.table_name
+                    node_schema.node_id.columns().first().unwrap_or(&"id"),
+                    node_schema.table_name
                 ));
 
                 // All node types should have the same ID column structure for PageRank
-                let current_column = node_schema.node_id.columns().first().unwrap_or(&"id").to_string();
+                let current_column = node_schema
+                    .node_id
+                    .columns()
+                    .first()
+                    .unwrap_or(&"id")
+                    .to_string();
                 if id_column.is_none() {
                     id_column = Some(current_column);
                 } else if id_column.as_ref() != Some(&current_column) {
                     return Err(ClickhouseQueryGeneratorError::SchemaError(format!(
                         "Node label '{}' has different ID column '{}' than others",
-                        label, node_schema.node_id.columns().first().unwrap_or(&"id")
+                        label,
+                        node_schema.node_id.columns().first().unwrap_or(&"id")
                     )));
                 }
             }
@@ -253,7 +260,12 @@ ORDER BY pagerank DESC
 
             Ok((
                 node_schema.table_name.clone(),
-                node_schema.node_id.columns().first().unwrap_or(&"id").to_string(),
+                node_schema
+                    .node_id
+                    .columns()
+                    .first()
+                    .unwrap_or(&"id")
+                    .to_string(),
             ))
         }
     }

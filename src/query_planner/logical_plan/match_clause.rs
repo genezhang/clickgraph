@@ -13,9 +13,9 @@ use crate::{
     },
 };
 
-use super::{ViewScan, generate_id};
-use std::collections::HashMap;
+use super::{generate_id, ViewScan};
 use crate::graph_catalog::graph_schema::GraphSchema;
+use std::collections::HashMap;
 
 /// Maximum number of inferred types allowed before requiring explicit specification.
 /// This prevents accidentally generating huge UNION queries from ambiguous patterns.
@@ -23,21 +23,19 @@ use crate::graph_catalog::graph_schema::GraphSchema;
 const MAX_INFERRED_TYPES: usize = 4;
 
 /// Infer node label for standalone nodes when label is not specified.
-/// 
+///
 /// Handles single-schema inference: If schema has only one node type, use it.
 /// - Query: `MATCH (n) RETURN n`
 /// - Schema: Only one node type defined (e.g., User)
 /// - Result: n inferred as :User
-/// 
+///
 /// Returns:
 /// - `Ok(Some(label))` - Successfully inferred label
 /// - `Ok(None)` - Cannot infer (multiple node types or no nodes in schema)
 /// - `Err(TooManyInferredTypes)` - Too many matches, user must specify explicit type
-fn infer_node_label_from_schema(
-    schema: &GraphSchema,
-) -> LogicalPlanResult<Option<String>> {
+fn infer_node_label_from_schema(schema: &GraphSchema) -> LogicalPlanResult<Option<String>> {
     let node_schemas = schema.get_nodes_schemas();
-    
+
     // Case 1: Single node type in schema - use it
     if node_schemas.len() == 1 {
         let node_type = node_schemas.keys().next().unwrap().clone();
@@ -47,13 +45,13 @@ fn infer_node_label_from_schema(
         );
         return Ok(Some(node_type));
     }
-    
+
     // Case 2: No nodes in schema
     if node_schemas.is_empty() {
         log::debug!("Node inference: Schema has no node types defined, cannot infer");
         return Ok(None);
     }
-    
+
     // Case 3: Multiple node types - check if within limit for UNION generation
     let node_count = node_schemas.len();
     if node_count <= MAX_INFERRED_TYPES {
@@ -66,7 +64,7 @@ fn infer_node_label_from_schema(
         // For now, don't auto-generate UNION - require explicit label
         return Ok(None);
     }
-    
+
     // Case 4: Too many node types
     let types_preview: Vec<_> = node_schemas.keys().take(5).cloned().collect();
     let types_str = if node_count > 5 {
@@ -74,29 +72,30 @@ fn infer_node_label_from_schema(
     } else {
         node_schemas.keys().cloned().collect::<Vec<_>>().join(", ")
     };
-    
+
     log::info!(
         "Node inference: Schema has {} node types [{}], too many for auto-inference",
-        node_count, types_str
+        node_count,
+        types_str
     );
-    
+
     // Don't error - just return None to indicate no inference possible
     // User should specify an explicit label
     Ok(None)
 }
 
 /// Infer node labels from relationship schema when nodes are unlabeled.
-/// 
+///
 /// For example:
 /// - Query: `()-[r:FLIGHT]->()`
 /// - Schema: FLIGHT has from_node=Airport, to_node=Airport
 /// - Result: Both nodes inferred as Airport
-/// 
+///
 /// For polymorphic edges (multiple possible types), returns the list of possible labels:
 /// - Query: `(f:Folder)-[:CONTAINS]->(child)`
 /// - Schema: CONTAINS has to_label_values=[Folder, File]
 /// - Result: child could be Folder or File (needs UNION expansion)
-/// 
+///
 /// Returns (start_label, end_label, start_possible_labels, end_possible_labels)
 fn infer_node_labels_from_relationship(
     start_label: Option<String>,
@@ -104,34 +103,45 @@ fn infer_node_labels_from_relationship(
     rel_labels: &Option<Vec<String>>,
     direction: &ast::Direction,
     schema: &GraphSchema,
-) -> (Option<String>, Option<String>, Option<Vec<String>>, Option<Vec<String>>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<Vec<String>>,
+    Option<Vec<String>>,
+) {
     // If both labels are already specified, nothing to infer
     if start_label.is_some() && end_label.is_some() {
         return (start_label, end_label, None, None);
     }
-    
+
     // If no relationship type specified, can't infer node labels
     let rel_types = match rel_labels {
         Some(types) if !types.is_empty() => types,
         _ => return (start_label, end_label, None, None),
     };
-    
+
     // For now, only handle single relationship type
     // TODO: For multiple types like [:FOLLOWS|FRIENDS], find common node types
     if rel_types.len() != 1 {
-        log::debug!("Label inference: Multiple relationship types {:?}, skipping inference", rel_types);
+        log::debug!(
+            "Label inference: Multiple relationship types {:?}, skipping inference",
+            rel_types
+        );
         return (start_label, end_label, None, None);
     }
-    
+
     let rel_type = &rel_types[0];
     let rel_schema = match schema.get_rel_schema(rel_type) {
         Ok(s) => s,
         Err(_) => {
-            log::debug!("Label inference: Relationship '{}' not found in schema", rel_type);
+            log::debug!(
+                "Label inference: Relationship '{}' not found in schema",
+                rel_type
+            );
             return (start_label, end_label, None, None);
         }
     };
-    
+
     // Determine which schema fields apply based on direction
     // Outgoing: start=from, end=to
     // Incoming: start=to, end=from
@@ -143,8 +153,8 @@ fn infer_node_labels_from_relationship(
             &rel_schema.to_label_values,
         ),
         ast::Direction::Incoming => (
-            &rel_schema.to_node,    // Incoming: start is the "to" side
-            &rel_schema.from_node,  // Incoming: end is the "from" side
+            &rel_schema.to_node,   // Incoming: start is the "to" side
+            &rel_schema.from_node, // Incoming: end is the "from" side
             &rel_schema.to_label_values,
             &rel_schema.from_label_values,
         ),
@@ -160,12 +170,12 @@ fn infer_node_labels_from_relationship(
             )
         }
     };
-    
+
     let mut inferred_start = start_label.clone();
     let mut inferred_end = end_label.clone();
     let mut start_possible: Option<Vec<String>> = None;
     let mut end_possible: Option<Vec<String>> = None;
-    
+
     // Infer start node label if missing
     if start_label.is_none() {
         if let Some(values) = from_values {
@@ -174,7 +184,8 @@ fn infer_node_labels_from_relationship(
                 inferred_start = Some(values[0].clone());
                 log::info!(
                     "Label inference: Inferred start node label '{}' from relationship '{}'",
-                    values[0], rel_type
+                    values[0],
+                    rel_type
                 );
             } else if !values.is_empty() {
                 // Multiple types - use first and record alternatives for potential UNION
@@ -182,7 +193,9 @@ fn infer_node_labels_from_relationship(
                 start_possible = Some(values.clone());
                 log::info!(
                     "Label inference: Start node could be {:?} from relationship '{}', using '{}'",
-                    values, rel_type, values[0]
+                    values,
+                    rel_type,
+                    values[0]
                 );
             }
         } else {
@@ -190,11 +203,12 @@ fn infer_node_labels_from_relationship(
             inferred_start = Some(from_node.clone());
             log::info!(
                 "Label inference: Inferred start node label '{}' from relationship '{}'",
-                from_node, rel_type
+                from_node,
+                rel_type
             );
         }
     }
-    
+
     // Infer end node label if missing
     if end_label.is_none() {
         if let Some(values) = to_values {
@@ -203,7 +217,8 @@ fn infer_node_labels_from_relationship(
                 inferred_end = Some(values[0].clone());
                 log::info!(
                     "Label inference: Inferred end node label '{}' from relationship '{}'",
-                    values[0], rel_type
+                    values[0],
+                    rel_type
                 );
             } else if !values.is_empty() {
                 // Multiple types - use first and record alternatives for potential UNION
@@ -211,7 +226,9 @@ fn infer_node_labels_from_relationship(
                 end_possible = Some(values.clone());
                 log::info!(
                     "Label inference: End node could be {:?} from relationship '{}', using '{}'",
-                    values, rel_type, values[0]
+                    values,
+                    rel_type,
+                    values[0]
                 );
             }
         } else {
@@ -219,25 +236,26 @@ fn infer_node_labels_from_relationship(
             inferred_end = Some(to_node.clone());
             log::info!(
                 "Label inference: Inferred end node label '{}' from relationship '{}'",
-                to_node, rel_type
+                to_node,
+                rel_type
             );
         }
     }
-    
+
     (inferred_start, inferred_end, start_possible, end_possible)
 }
 
 /// Infer relationship type from typed node labels when edge is untyped.
-/// 
+///
 /// Handles two cases:
 /// 1. **Single-schema inference**: If schema has only one relationship, use it
 ///    - Query: `()-[r]->()`  →  infer r:ONLY_REL if only one relationship in schema
-/// 
+///
 /// 2. **Node-type inference**: If nodes are typed, find relationships that match
 ///    - Query: `(a:Airport)-[r]->()`  →  infer r:FLIGHT if FLIGHT is the only edge with from_node=Airport
 ///    - Query: `()-[r]->(a:Airport)`  →  infer r:FLIGHT if FLIGHT is the only edge with to_node=Airport
 ///    - Query: `(a:User)-[r]->(b:Post)`  →  infer r:LIKES if LIKES is the only User→Post edge
-/// 
+///
 /// Returns:
 /// - `Ok(Some(types))` - Successfully inferred relationship types
 /// - `Ok(None)` - Cannot infer (both nodes untyped with multi-schema, or no matches)
@@ -249,7 +267,7 @@ fn infer_relationship_type_from_nodes(
     schema: &GraphSchema,
 ) -> LogicalPlanResult<Option<Vec<String>>> {
     let rel_schemas = schema.get_relationships_schemas();
-    
+
     // Case 1: Single relationship in schema - use it regardless of node types
     if rel_schemas.len() == 1 {
         let rel_type = rel_schemas.keys().next().unwrap().clone();
@@ -259,14 +277,14 @@ fn infer_relationship_type_from_nodes(
         );
         return Ok(Some(vec![rel_type]));
     }
-    
+
     // Case 2: At least one node is typed - filter relationships by node type compatibility
     if start_label.is_none() && end_label.is_none() {
         log::debug!("Relationship inference: Both nodes untyped and schema has {} relationships, cannot infer",
             rel_schemas.len());
         return Ok(None);
     }
-    
+
     // Find relationships that match the typed node(s)
     let matching_types: Vec<String> = rel_schemas
         .iter()
@@ -275,7 +293,8 @@ fn infer_relationship_type_from_nodes(
             match direction {
                 ast::Direction::Outgoing => {
                     // start→end: from_node=start, to_node=end
-                    let from_ok = start_label.as_ref()
+                    let from_ok = start_label
+                        .as_ref()
                         .map(|l| {
                             // Check both from_node and from_label_values for polymorphic support
                             if l == &rel_schema.from_node {
@@ -287,7 +306,8 @@ fn infer_relationship_type_from_nodes(
                             false
                         })
                         .unwrap_or(true);
-                    let to_ok = end_label.as_ref()
+                    let to_ok = end_label
+                        .as_ref()
                         .map(|l| {
                             if l == &rel_schema.to_node {
                                 return true;
@@ -302,7 +322,8 @@ fn infer_relationship_type_from_nodes(
                 }
                 ast::Direction::Incoming => {
                     // start←end: from_node=end, to_node=start
-                    let from_ok = end_label.as_ref()
+                    let from_ok = end_label
+                        .as_ref()
                         .map(|l| {
                             if l == &rel_schema.from_node {
                                 return true;
@@ -313,7 +334,8 @@ fn infer_relationship_type_from_nodes(
                             false
                         })
                         .unwrap_or(true);
-                    let to_ok = start_label.as_ref()
+                    let to_ok = start_label
+                        .as_ref()
                         .map(|l| {
                             if l == &rel_schema.to_node {
                                 return true;
@@ -329,24 +351,52 @@ fn infer_relationship_type_from_nodes(
                 ast::Direction::Either => {
                     // Could match in either direction
                     let outgoing_ok = {
-                        let from_ok = start_label.as_ref()
-                            .map(|l| l == &rel_schema.from_node || 
-                                 rel_schema.from_label_values.as_ref().map(|v| v.contains(l)).unwrap_or(false))
+                        let from_ok = start_label
+                            .as_ref()
+                            .map(|l| {
+                                l == &rel_schema.from_node
+                                    || rel_schema
+                                        .from_label_values
+                                        .as_ref()
+                                        .map(|v| v.contains(l))
+                                        .unwrap_or(false)
+                            })
                             .unwrap_or(true);
-                        let to_ok = end_label.as_ref()
-                            .map(|l| l == &rel_schema.to_node ||
-                                 rel_schema.to_label_values.as_ref().map(|v| v.contains(l)).unwrap_or(false))
+                        let to_ok = end_label
+                            .as_ref()
+                            .map(|l| {
+                                l == &rel_schema.to_node
+                                    || rel_schema
+                                        .to_label_values
+                                        .as_ref()
+                                        .map(|v| v.contains(l))
+                                        .unwrap_or(false)
+                            })
                             .unwrap_or(true);
                         from_ok && to_ok
                     };
                     let incoming_ok = {
-                        let from_ok = end_label.as_ref()
-                            .map(|l| l == &rel_schema.from_node ||
-                                 rel_schema.from_label_values.as_ref().map(|v| v.contains(l)).unwrap_or(false))
+                        let from_ok = end_label
+                            .as_ref()
+                            .map(|l| {
+                                l == &rel_schema.from_node
+                                    || rel_schema
+                                        .from_label_values
+                                        .as_ref()
+                                        .map(|v| v.contains(l))
+                                        .unwrap_or(false)
+                            })
                             .unwrap_or(true);
-                        let to_ok = start_label.as_ref()
-                            .map(|l| l == &rel_schema.to_node ||
-                                 rel_schema.to_label_values.as_ref().map(|v| v.contains(l)).unwrap_or(false))
+                        let to_ok = start_label
+                            .as_ref()
+                            .map(|l| {
+                                l == &rel_schema.to_node
+                                    || rel_schema
+                                        .to_label_values
+                                        .as_ref()
+                                        .map(|v| v.contains(l))
+                                        .unwrap_or(false)
+                            })
                             .unwrap_or(true);
                         from_ok && to_ok
                     };
@@ -356,15 +406,16 @@ fn infer_relationship_type_from_nodes(
         })
         .map(|(type_name, _)| type_name.clone())
         .collect();
-    
+
     if matching_types.is_empty() {
         log::warn!(
             "Relationship inference: No relationships match {:?}->{:?}",
-            start_label, end_label
+            start_label,
+            end_label
         );
         return Ok(None);
     }
-    
+
     // Check if too many types would result in excessive UNION branches
     if matching_types.len() > MAX_INFERRED_TYPES {
         let types_preview: Vec<_> = matching_types.iter().take(5).cloned().collect();
@@ -373,23 +424,25 @@ fn infer_relationship_type_from_nodes(
         } else {
             matching_types.join(", ")
         };
-        
+
         log::error!(
             "Relationship inference: Too many matching types ({}) for {:?}->{:?}: [{}]. Max allowed is {}.",
             matching_types.len(), start_label, end_label, types_str, MAX_INFERRED_TYPES
         );
-        
+
         return Err(LogicalPlanError::TooManyInferredTypes {
             count: matching_types.len(),
             max: MAX_INFERRED_TYPES,
             types: types_str,
         });
     }
-    
+
     if matching_types.len() == 1 {
         log::info!(
             "Relationship inference: Inferred relationship type '{}' from node types {:?}->{:?}",
-            matching_types[0], start_label, end_label
+            matching_types[0],
+            start_label,
+            end_label
         );
     } else {
         log::info!(
@@ -397,7 +450,7 @@ fn infer_relationship_type_from_nodes(
             matching_types, start_label, end_label
         );
     }
-    
+
     Ok(Some(matching_types))
 }
 
@@ -427,7 +480,7 @@ fn generate_scan(
             };
             return Ok(Arc::new(LogicalPlan::Scan(scan)));
         }
-        
+
         log::debug!("Trying to create ViewScan for label '{}'", label_str);
         if let Some(view_scan) = try_generate_view_scan(&alias, &label_str, plan_ctx) {
             log::info!("✓ Successfully created ViewScan for label '{}'", label_str);
@@ -503,12 +556,16 @@ fn is_label_denormalized(label: &Option<String>, plan_ctx: &PlanCtx) -> bool {
         if let Ok(node_schema) = schema.get_node_schema(label_str) {
             crate::debug_print!(
                 "is_label_denormalized: label '{}' is_denormalized = {}",
-                label_str, node_schema.is_denormalized
+                label_str,
+                node_schema.is_denormalized
             );
             return node_schema.is_denormalized;
         }
     }
-    crate::debug_print!("is_label_denormalized: label {:?} not found or no label, returning false", label);
+    crate::debug_print!(
+        "is_label_denormalized: label {:?} not found or no label, returning false",
+        label
+    );
     false
 }
 
@@ -541,37 +598,39 @@ fn try_generate_view_scan(
     // we create a UNION ALL of all possible sources.
     //
     // For each relationship where this node appears:
-    // - If node is FROM → ViewScan with from_node_properties from that edge table  
+    // - If node is FROM → ViewScan with from_node_properties from that edge table
     // - If node is TO → ViewScan with to_node_properties from that edge table
     if node_schema.is_denormalized {
         log::info!(
             "✓ Denormalized node-only query for label '{}' - checking all tables",
             label
         );
-        
+
         // Check if this node appears in multiple relationships/tables
         if let Some(metadata) = schema.get_denormalized_node_metadata(label) {
             let rel_types = metadata.get_relationship_types();
-            
+
             if rel_types.len() > 1 || metadata.id_sources.values().any(|v| v.len() > 1) {
                 // MULTI-TABLE CASE: Node appears in multiple tables/positions
                 log::info!(
                     "✓ Denormalized node '{}' appears in {} relationship types - creating multi-table UNION",
                     label, rel_types.len()
                 );
-                
+
                 let mut union_inputs: Vec<Arc<LogicalPlan>> = Vec::new();
-                
+
                 for rel_type in &rel_types {
                     if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
                         let full_table_name = rel_schema.full_table_name();
-                        
+
                         // Check if this node is in FROM position
                         if rel_schema.from_node == label {
                             if let Some(ref from_props) = rel_schema.from_node_properties {
                                 log::debug!(
                                     "✓ Adding FROM branch for '{}' from table '{}' (rel: {})",
-                                    label, full_table_name, rel_type
+                                    label,
+                                    full_table_name,
+                                    rel_type
                                 );
                                 let mut from_scan = ViewScan::new(
                                     full_table_name.clone(),
@@ -587,16 +646,19 @@ fn try_generate_view_scan(
                                         .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
                                         .collect()
                                 );
-                                union_inputs.push(Arc::new(LogicalPlan::ViewScan(Arc::new(from_scan))));
+                                union_inputs
+                                    .push(Arc::new(LogicalPlan::ViewScan(Arc::new(from_scan))));
                             }
                         }
-                        
+
                         // Check if this node is in TO position
                         if rel_schema.to_node == label {
                             if let Some(ref to_props) = rel_schema.to_node_properties {
                                 log::debug!(
                                     "✓ Adding TO branch for '{}' from table '{}' (rel: {})",
-                                    label, full_table_name, rel_type
+                                    label,
+                                    full_table_name,
+                                    rel_type
                                 );
                                 let mut to_scan = ViewScan::new(
                                     full_table_name.clone(),
@@ -612,62 +674,75 @@ fn try_generate_view_scan(
                                         .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
                                         .collect()
                                 );
-                                union_inputs.push(Arc::new(LogicalPlan::ViewScan(Arc::new(to_scan))));
+                                union_inputs
+                                    .push(Arc::new(LogicalPlan::ViewScan(Arc::new(to_scan))));
                             }
                         }
                     }
                 }
-                
+
                 if union_inputs.is_empty() {
                     log::error!("No ViewScans generated for denormalized node '{}'", label);
                     return None;
                 }
-                
+
                 if union_inputs.len() == 1 {
-                    log::info!("✓ Single ViewScan for denormalized node '{}' (only one source)", label);
+                    log::info!(
+                        "✓ Single ViewScan for denormalized node '{}' (only one source)",
+                        label
+                    );
                     return Some(union_inputs.pop().unwrap());
                 }
-                
+
                 use crate::query_planner::logical_plan::{Union, UnionType};
                 let union = Union {
                     inputs: union_inputs,
                     union_type: UnionType::All,
                 };
-                
-                log::info!("✓ Created UNION ALL with {} branches for denormalized node '{}'", union.inputs.len(), label);
+
+                log::info!(
+                    "✓ Created UNION ALL with {} branches for denormalized node '{}'",
+                    union.inputs.len(),
+                    label
+                );
                 return Some(Arc::new(LogicalPlan::Union(union)));
             }
         }
-        
+
         // SINGLE-TABLE CASE: Fall through to existing logic
         let has_from_props = node_schema.from_properties.is_some();
         let has_to_props = node_schema.to_properties.is_some();
-        let source_table = node_schema.denormalized_source_table.as_ref()
+        let source_table = node_schema
+            .denormalized_source_table
+            .as_ref()
             .ok_or_else(|| {
                 log::error!("Denormalized node '{}' missing source table", label);
             });
-        
+
         if source_table.is_err() {
             log::error!("Cannot create ViewScan for denormalized node without source table");
             return None;
         }
         let source_table = source_table.unwrap();
-        
+
         log::debug!(
             "Denormalized node '{}': has_from_props={}, has_to_props={}, source_table={}",
-            label, has_from_props, has_to_props, source_table
+            label,
+            has_from_props,
+            has_to_props,
+            source_table
         );
-        
+
         // source_table is already fully qualified (database.table) from config.rs
         let full_table_name = source_table.clone();
-        
+
         // Case 3: BOTH from and to properties → UNION ALL of two ViewScans
         if has_from_props && has_to_props {
             log::info!(
                 "✓ Denormalized node '{}' has BOTH positions - creating UNION ALL",
                 label
             );
-            
+
             // Create FROM position ViewScan
             let mut from_scan = ViewScan::new(
                 full_table_name.clone(),
@@ -679,14 +754,22 @@ fn try_generate_view_scan(
             );
             from_scan.is_denormalized = true;
             from_scan.from_node_properties = node_schema.from_properties.as_ref().map(|props| {
-                props.iter()
-                    .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+                props
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                v.clone(),
+                            ),
+                        )
+                    })
                     .collect()
             });
             from_scan.schema_filter = node_schema.filter.clone();
             // Note: to_node_properties is None - this is the FROM branch
-            
-            // Create TO position ViewScan  
+
+            // Create TO position ViewScan
             let mut to_scan = ViewScan::new(
                 full_table_name,
                 None,
@@ -697,13 +780,21 @@ fn try_generate_view_scan(
             );
             to_scan.is_denormalized = true;
             to_scan.to_node_properties = node_schema.to_properties.as_ref().map(|props| {
-                props.iter()
-                    .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+                props
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                v.clone(),
+                            ),
+                        )
+                    })
                     .collect()
             });
             to_scan.schema_filter = node_schema.filter.clone();
             // Note: from_node_properties is None - this is the TO branch
-            
+
             // Create Union of the two ViewScans
             use crate::query_planner::logical_plan::{Union, UnionType};
             let union = Union {
@@ -713,11 +804,11 @@ fn try_generate_view_scan(
                 ],
                 union_type: UnionType::All,
             };
-            
+
             log::info!("✓ Created UNION ALL for denormalized node '{}'", label);
             return Some(Arc::new(LogicalPlan::Union(union)));
         }
-        
+
         // Case 1 or 2: Only one position - single ViewScan
         let mut view_scan = ViewScan::new(
             full_table_name,
@@ -727,25 +818,37 @@ fn try_generate_view_scan(
             vec![],
             vec![],
         );
-        
+
         view_scan.is_denormalized = true;
         view_scan.from_node_properties = node_schema.from_properties.as_ref().map(|props| {
-            props.iter()
-                .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+            props
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()),
+                    )
+                })
                 .collect()
         });
         view_scan.to_node_properties = node_schema.to_properties.as_ref().map(|props| {
-            props.iter()
-                .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+            props
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()),
+                    )
+                })
                 .collect()
         });
         view_scan.schema_filter = node_schema.filter.clone();
-        
+
         log::info!(
             "✓ Created denormalized ViewScan for '{}' (single position)",
             label
         );
-        
+
         return Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))));
     }
 
@@ -788,36 +891,53 @@ fn try_generate_view_scan(
 
     // Create ViewScan with the actual table name from schema
     let mut view_scan = ViewScan::new(
-        full_table_name,                    // Use fully qualified table name (database.table)
-        None,                               // No filter condition yet
-        property_mapping,                   // Property mappings from schema
-        node_schema.node_id.columns().first().unwrap_or(&"id").to_string(), // ID column from schema (first for composite)
-        vec!["id".to_string()],             // Basic output schema
-        vec![],                             // No projections yet
+        full_table_name,  // Use fully qualified table name (database.table)
+        None,             // No filter condition yet
+        property_mapping, // Property mappings from schema
+        node_schema
+            .node_id
+            .columns()
+            .first()
+            .unwrap_or(&"id")
+            .to_string(), // ID column from schema (first for composite)
+        vec!["id".to_string()], // Basic output schema
+        vec![],           // No projections yet
     );
 
     // Set view parameters if this is a parameterized view
     view_scan.view_parameter_names = view_parameter_names;
     view_scan.view_parameter_values = view_parameter_values;
-    
+
     // Set denormalized flag and properties from schema
     view_scan.is_denormalized = node_schema.is_denormalized;
-    
+
     // Populate denormalized node properties (for role-based mapping)
     if node_schema.is_denormalized {
         // Convert from HashMap<String, String> to HashMap<String, PropertyValue>
         view_scan.from_node_properties = node_schema.from_properties.as_ref().map(|props| {
-            props.iter()
-                .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+            props
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()),
+                    )
+                })
                 .collect()
         });
-        
+
         view_scan.to_node_properties = node_schema.to_properties.as_ref().map(|props| {
-            props.iter()
-                .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+            props
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()),
+                    )
+                })
                 .collect()
         });
-        
+
         log::debug!(
             "ViewScan: Populated denormalized properties for label '{}' - from_props={:?}, to_props={:?}",
             label,
@@ -825,14 +945,14 @@ fn try_generate_view_scan(
             view_scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>())
         );
     }
-    
+
     log::debug!(
         "ViewScan: Set is_denormalized={} for node label '{}' (table: {})",
         node_schema.is_denormalized,
         label,
         node_schema.table_name
     );
-    
+
     // Set schema-level filter if defined in schema
     view_scan.schema_filter = node_schema.filter.clone();
     if view_scan.schema_filter.is_some() {
@@ -935,16 +1055,16 @@ fn try_generate_relationship_view_scan(
     // Set view parameters if this is a parameterized view
     view_scan.view_parameter_names = view_parameter_names;
     view_scan.view_parameter_values = view_parameter_values;
-    
+
     // Populate polymorphic edge fields from schema
     // Copy label columns even if type_column is None (fixed-endpoint pattern)
     view_scan.type_column = rel_schema.type_column.clone();
     view_scan.from_label_column = rel_schema.from_label_column.clone();
     view_scan.to_label_column = rel_schema.to_label_column.clone();
-    
-    if rel_schema.type_column.is_some() 
-        || rel_schema.from_label_column.is_some() 
-        || rel_schema.to_label_column.is_some() 
+
+    if rel_schema.type_column.is_some()
+        || rel_schema.from_label_column.is_some()
+        || rel_schema.to_label_column.is_some()
     {
         log::debug!(
             "ViewScan: Populated polymorphic fields for rel '{}' - type_column={:?}, from_label={:?}, to_label={:?}",
@@ -954,20 +1074,32 @@ fn try_generate_relationship_view_scan(
             view_scan.to_label_column
         );
     }
-    
+
     // Set denormalized node properties from schema
     // Convert HashMap<String, String> to HashMap<String, PropertyValue>
     view_scan.from_node_properties = rel_schema.from_node_properties.as_ref().map(|props| {
-        props.iter()
-            .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+        props
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()),
+                )
+            })
             .collect()
     });
     view_scan.to_node_properties = rel_schema.to_node_properties.as_ref().map(|props| {
-        props.iter()
-            .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+        props
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()),
+                )
+            })
             .collect()
     });
-    
+
     if view_scan.from_node_properties.is_some() || view_scan.to_node_properties.is_some() {
         log::debug!(
             "ViewScan: Set denormalized node properties for rel '{}' - from_props={:?}, to_props={:?}",
@@ -976,7 +1108,7 @@ fn try_generate_relationship_view_scan(
             view_scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>())
         );
     }
-    
+
     // Set schema-level filter if defined in schema
     view_scan.schema_filter = rel_schema.filter.clone();
     if view_scan.schema_filter.is_some() {
@@ -1006,14 +1138,18 @@ fn generate_relationship_center(
     // Try to generate a ViewScan for the relationship if we have a single type
     if let Some(labels) = rel_labels {
         log::debug!("Relationship has {} labels: {:?}", labels.len(), labels);
-        
+
         // Deduplicate labels - [:FOLLOWS|FOLLOWS] should be treated as single type
         let unique_labels: Vec<_> = {
             let mut seen = std::collections::HashSet::new();
             labels.iter().filter(|l| seen.insert(*l)).cloned().collect()
         };
-        log::debug!("After deduplication: {} unique labels: {:?}", unique_labels.len(), unique_labels);
-        
+        log::debug!(
+            "After deduplication: {} unique labels: {:?}",
+            unique_labels.len(),
+            unique_labels
+        );
+
         if unique_labels.len() == 1 {
             log::debug!(
                 "Trying to create Relationship ViewScan for type '{}'",
@@ -1134,10 +1270,10 @@ fn traverse_connected_pattern_with_mode<'a>(
     // we need to ensure the shared node gets the same alias in both patterns.
     // Use pointer equality to detect shared Rc instances.
     use std::collections::HashMap;
-    
+
     // Use usize from Rc::as_ptr() cast as the key for pointer-based identity
     let mut node_alias_map: HashMap<usize, String> = HashMap::new();
-    
+
     for connected_pattern in connected_patterns.iter() {
         // Check start_node - use address as key
         let start_ptr = connected_pattern.start_node.as_ptr() as usize;
@@ -1151,7 +1287,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             drop(start_node_ref);
             node_alias_map.insert(start_ptr, alias);
         }
-        
+
         // Check end_node - use address as key
         let end_ptr = connected_pattern.end_node.as_ptr() as usize;
         if !node_alias_map.contains_key(&end_ptr) {
@@ -1165,8 +1301,11 @@ fn traverse_connected_pattern_with_mode<'a>(
             node_alias_map.insert(end_ptr, alias);
         }
     }
-    
-    crate::debug_print!("║ Pre-assigned {} node aliases for shared node detection", node_alias_map.len());
+
+    crate::debug_print!(
+        "║ Pre-assigned {} node aliases for shared node detection",
+        node_alias_map.len()
+    );
 
     for (pattern_idx, connected_pattern) in connected_patterns.iter().enumerate() {
         crate::debug_print!("┌─ Processing connected_pattern #{}", pattern_idx);
@@ -1181,7 +1320,8 @@ fn traverse_connected_pattern_with_mode<'a>(
 
         crate::debug_print!(
             "│ Start node: alias='{}', label={:?}",
-            start_node_alias, start_node_label
+            start_node_alias,
+            start_node_label
         );
 
         let start_node_props = start_node_ref
@@ -1221,7 +1361,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 // 2. If nodes are typed, find relationships that match those types
                 // 3. Otherwise, expand to all matching relationship types for UNION
                 let graph_schema = plan_ctx.schema();
-                
+
                 infer_relationship_type_from_nodes(
                     &start_node_label,
                     &end_node_label,
@@ -1233,7 +1373,7 @@ fn traverse_connected_pattern_with_mode<'a>(
 
         // === LABEL INFERENCE ===
         // If nodes are unlabeled but relationship type is known, try to infer node labels from schema
-        let (inferred_start_label, inferred_end_label, start_possible_labels, end_possible_labels) = 
+        let (inferred_start_label, inferred_end_label, start_possible_labels, end_possible_labels) =
             infer_node_labels_from_relationship(
                 start_node_label.clone(),
                 end_node_label.clone(),
@@ -1241,11 +1381,11 @@ fn traverse_connected_pattern_with_mode<'a>(
                 &rel.direction,
                 plan_ctx.schema(),
             );
-        
+
         // Use inferred labels (single type inference)
         let start_node_label = inferred_start_label;
         let end_node_label = inferred_end_label;
-        
+
         // TODO: Handle polymorphic inference (multiple possible types)
         // For now, log a warning if we have multiple possible types
         if let Some(ref possible) = start_possible_labels {
@@ -1257,7 +1397,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         }
         if let Some(ref possible) = end_possible_labels {
             log::warn!(
-                "Label inference: End node has multiple possible types {:?}, using first", 
+                "Label inference: End node has multiple possible types {:?}, using first",
                 possible
             );
             // Could generate UNION here for polymorphic support
@@ -1265,11 +1405,14 @@ fn traverse_connected_pattern_with_mode<'a>(
 
         crate::debug_print!(
             "│ Relationship: alias='{}', labels={:?}, direction={:?}",
-            rel_alias, rel_labels, rel.direction
+            rel_alias,
+            rel_labels,
+            rel.direction
         );
         crate::debug_print!(
             "│ After inference: start_label={:?}, end_label={:?}",
-            start_node_label, end_node_label
+            start_node_label,
+            end_node_label
         );
 
         log::debug!("Parsed relationship labels: {:?}", rel_labels);
@@ -1281,7 +1424,8 @@ fn traverse_connected_pattern_with_mode<'a>(
 
         crate::debug_print!(
             "│ End node: alias='{}', label={:?}",
-            end_node_alias, end_node_label
+            end_node_alias,
+            end_node_label
         );
 
         let end_node_props = end_node_ref
@@ -1321,10 +1465,13 @@ fn traverse_connected_pattern_with_mode<'a>(
             let (left_node, right_node) = match rel.direction {
                 ast::Direction::Outgoing => {
                     // (a)-[:r1]->(b)-[:r2]->(c): existing plan (a-r1-b) on left, new node (c) on right
-                    
+
                     // Check if end_node is denormalized - if so, don't create a separate scan
                     let (scan, is_denorm) = if is_label_denormalized(&end_node_label, plan_ctx) {
-                        crate::debug_print!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
+                        crate::debug_print!(
+                            "=== End node '{}' is DENORMALIZED, creating Empty scan ===",
+                            end_node_alias
+                        );
                         (Arc::new(LogicalPlan::Empty), true)
                     } else {
                         let scan = generate_scan(
@@ -1335,7 +1482,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                         let is_d = is_denormalized_scan(&scan);
                         (scan, is_d)
                     };
-                    
+
                     (
                         plan.clone(),
                         Arc::new(LogicalPlan::GraphNode(GraphNode {
@@ -1348,10 +1495,13 @@ fn traverse_connected_pattern_with_mode<'a>(
                 }
                 ast::Direction::Incoming => {
                     // (c)<-[:r2]-(b)<-[:r1]-(a): new node (c) on left, existing plan (b-r1-a) on right
-                    
+
                     // Check if end_node is denormalized - if so, don't create a separate scan
                     let (scan, is_denorm) = if is_label_denormalized(&end_node_label, plan_ctx) {
-                        crate::debug_print!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
+                        crate::debug_print!(
+                            "=== End node '{}' is DENORMALIZED, creating Empty scan ===",
+                            end_node_alias
+                        );
                         (Arc::new(LogicalPlan::Empty), true)
                     } else {
                         let scan = generate_scan(
@@ -1362,7 +1512,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                         let is_d = is_denormalized_scan(&scan);
                         (scan, is_d)
                     };
-                    
+
                     (
                         Arc::new(LogicalPlan::GraphNode(GraphNode {
                             input: scan,
@@ -1375,10 +1525,13 @@ fn traverse_connected_pattern_with_mode<'a>(
                 }
                 ast::Direction::Either => {
                     // Either direction: existing plan on left, new node on right
-                    
+
                     // Check if end_node is denormalized - if so, don't create a separate scan
                     let (scan, is_denorm) = if is_label_denormalized(&end_node_label, plan_ctx) {
-                        crate::debug_print!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
+                        crate::debug_print!(
+                            "=== End node '{}' is DENORMALIZED, creating Empty scan ===",
+                            end_node_alias
+                        );
                         (Arc::new(LogicalPlan::Empty), true)
                     } else {
                         let scan = generate_scan(
@@ -1389,7 +1542,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                         let is_d = is_denormalized_scan(&scan);
                         (scan, is_d)
                     };
-                    
+
                     (
                         plan.clone(),
                         Arc::new(LogicalPlan::GraphNode(GraphNode {
@@ -1409,7 +1562,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                 if alias_map.contains_key(&left_conn) && !alias_map.contains_key(&right_conn) {
                     // left_conn exists, right_conn is new -> left_conn is anchor
                     Some(left_conn.clone())
-                } else if alias_map.contains_key(&right_conn) && !alias_map.contains_key(&left_conn) {
+                } else if alias_map.contains_key(&right_conn) && !alias_map.contains_key(&left_conn)
+                {
                     // right_conn exists, left_conn is new -> right_conn is anchor
                     Some(right_conn.clone())
                 } else {
@@ -1485,15 +1639,23 @@ fn traverse_connected_pattern_with_mode<'a>(
                 table_ctx.append_properties(end_node_props);
             }
 
-            let (start_scan, start_is_denorm) = if is_label_denormalized(&start_node_label, plan_ctx) {
-                crate::debug_print!("=== Start node '{}' is DENORMALIZED, creating Empty scan ===", start_node_alias);
-                (Arc::new(LogicalPlan::Empty), true)
-            } else {
-                let scan = generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?;
-                let is_d = is_denormalized_scan(&scan);
-                (scan, is_d)
-            };
-            
+            let (start_scan, start_is_denorm) =
+                if is_label_denormalized(&start_node_label, plan_ctx) {
+                    crate::debug_print!(
+                        "=== Start node '{}' is DENORMALIZED, creating Empty scan ===",
+                        start_node_alias
+                    );
+                    (Arc::new(LogicalPlan::Empty), true)
+                } else {
+                    let scan = generate_scan(
+                        start_node_alias.clone(),
+                        start_node_label.clone(),
+                        plan_ctx,
+                    )?;
+                    let is_d = is_denormalized_scan(&scan);
+                    (scan, is_d)
+                };
+
             let start_graph_node = GraphNode {
                 input: start_scan,
                 alias: start_node_alias.clone(),
@@ -1592,40 +1754,61 @@ fn traverse_connected_pattern_with_mode<'a>(
             }
 
             crate::debug_print!("=== CHECKING EXISTING PLAN ===");
-            crate::debug_print!("=== plan discriminant: {:?} ===", std::mem::discriminant(&*plan));
-            
+            crate::debug_print!(
+                "=== plan discriminant: {:?} ===",
+                std::mem::discriminant(&*plan)
+            );
+
             // Check if we have a non-empty input plan (e.g., from WITH clause or previous MATCH)
             // If so, we need to create a CartesianProduct to join the previous plan with this new pattern
             let has_existing_plan = !matches!(plan.as_ref(), LogicalPlan::Empty);
-            
+
             crate::debug_print!("=== has_existing_plan: {} ===", has_existing_plan);
-            
+
             if has_existing_plan {
-                crate::debug_print!("=== DISCONNECTED PATTERN WITH EXISTING PLAN: Creating CartesianProduct ===");
-                crate::debug_print!("=== Existing plan type: {:?} ===", std::mem::discriminant(&*plan));
+                crate::debug_print!(
+                    "=== DISCONNECTED PATTERN WITH EXISTING PLAN: Creating CartesianProduct ==="
+                );
+                crate::debug_print!(
+                    "=== Existing plan type: {:?} ===",
+                    std::mem::discriminant(&*plan)
+                );
             }
 
             // we will keep start graph node at the right side and end at the left side
             crate::debug_print!("=== DISCONNECTED PATTERN: About to create start_graph_node ===");
-            
-            let (start_scan, start_is_denorm) = if is_label_denormalized(&start_node_label, plan_ctx) {
-                crate::debug_print!("=== Start node '{}' is DENORMALIZED, creating Empty scan ===", start_node_alias);
-                (Arc::new(LogicalPlan::Empty), true)
-            } else {
-                let scan = generate_scan(start_node_alias.clone(), start_node_label.clone(), plan_ctx)?;
-                crate::debug_print!("=== DISCONNECTED: start_scan created, calling is_denormalized_scan ===");
-                let is_d = is_denormalized_scan(&scan);
-                crate::debug_print!("=== DISCONNECTED: start_is_denorm = {} ===", is_d);
-                (scan, is_d)
-            };
-            
+
+            let (start_scan, start_is_denorm) =
+                if is_label_denormalized(&start_node_label, plan_ctx) {
+                    crate::debug_print!(
+                        "=== Start node '{}' is DENORMALIZED, creating Empty scan ===",
+                        start_node_alias
+                    );
+                    (Arc::new(LogicalPlan::Empty), true)
+                } else {
+                    let scan = generate_scan(
+                        start_node_alias.clone(),
+                        start_node_label.clone(),
+                        plan_ctx,
+                    )?;
+                    crate::debug_print!(
+                        "=== DISCONNECTED: start_scan created, calling is_denormalized_scan ==="
+                    );
+                    let is_d = is_denormalized_scan(&scan);
+                    crate::debug_print!("=== DISCONNECTED: start_is_denorm = {} ===", is_d);
+                    (scan, is_d)
+                };
+
             let start_graph_node = GraphNode {
                 input: start_scan,
                 alias: start_node_alias.clone(),
                 label: start_node_label.clone().map(|s| s.to_string()),
                 is_denormalized: start_is_denorm,
             };
-            crate::debug_print!("=== DISCONNECTED: start_graph_node created with is_denormalized={} ===", start_graph_node.is_denormalized);
+            crate::debug_print!(
+                "=== DISCONNECTED: start_graph_node created with is_denormalized={} ===",
+                start_graph_node.is_denormalized
+            );
             plan_ctx.insert_table_ctx(
                 start_node_alias.clone(),
                 TableCtx::build(
@@ -1638,14 +1821,17 @@ fn traverse_connected_pattern_with_mode<'a>(
             );
 
             let (end_scan, end_is_denorm) = if is_label_denormalized(&end_node_label, plan_ctx) {
-                crate::debug_print!("=== End node '{}' is DENORMALIZED, creating Empty scan ===", end_node_alias);
+                crate::debug_print!(
+                    "=== End node '{}' is DENORMALIZED, creating Empty scan ===",
+                    end_node_alias
+                );
                 (Arc::new(LogicalPlan::Empty), true)
             } else {
                 let scan = generate_scan(end_node_alias.clone(), end_node_label.clone(), plan_ctx)?;
                 let is_d = is_denormalized_scan(&scan);
                 (scan, is_d)
             };
-            
+
             let end_graph_node = GraphNode {
                 input: end_scan,
                 alias: end_node_alias.clone(),
@@ -1690,7 +1876,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                 let alias_map = plan_ctx.get_alias_table_ctx_map();
                 if alias_map.contains_key(&left_conn) && !alias_map.contains_key(&right_conn) {
                     Some(left_conn.clone())
-                } else if alias_map.contains_key(&right_conn) && !alias_map.contains_key(&left_conn) {
+                } else if alias_map.contains_key(&right_conn) && !alias_map.contains_key(&left_conn)
+                {
                     Some(right_conn.clone())
                 } else {
                     None
@@ -1749,17 +1936,22 @@ fn traverse_connected_pattern_with_mode<'a>(
 
             // Create the GraphRel for this pattern
             let new_pattern = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
-            
+
             // If we have an existing plan (e.g., from WITH clause), combine with CartesianProduct
             if has_existing_plan {
                 plan = Arc::new(LogicalPlan::CartesianProduct(CartesianProduct {
-                    left: plan.clone(), // Previous plan (e.g., Projection from WITH)
-                    right: new_pattern, // New disconnected pattern
-                    is_optional,        // Pass through the is_optional flag
+                    left: plan.clone(),   // Previous plan (e.g., Projection from WITH)
+                    right: new_pattern,   // New disconnected pattern
+                    is_optional,          // Pass through the is_optional flag
                     join_condition: None, // Will be populated by optimizer if WHERE bridges both sides
                 }));
-                crate::debug_print!("│ ✓ Created CartesianProduct (combining existing plan with new pattern)");
-                crate::debug_print!("│   Plan is now: CartesianProduct(optional: {})", is_optional);
+                crate::debug_print!(
+                    "│ ✓ Created CartesianProduct (combining existing plan with new pattern)"
+                );
+                crate::debug_print!(
+                    "│   Plan is now: CartesianProduct(optional: {})",
+                    is_optional
+                );
             } else {
                 plan = new_pattern;
                 crate::debug_print!("│ ✓ Created GraphRel (first pattern - disconnected)");
@@ -1788,19 +1980,20 @@ fn traverse_node_pattern(
         .ok_or(LogicalPlanError::EmptyNode)?
         .to_string();
     let mut node_label: Option<String> = node_pattern.label.map(|val| val.to_string());
-    
+
     // === SINGLE-NODE-SCHEMA INFERENCE ===
     // If no label provided and schema has only one node type, use it
     if node_label.is_none() {
         if let Ok(Some(inferred_label)) = infer_node_label_from_schema(plan_ctx.schema()) {
             log::info!(
                 "Node '{}' label inferred as '{}' (single node type in schema)",
-                node_alias, inferred_label
+                node_alias,
+                inferred_label
             );
             node_label = Some(inferred_label);
         }
     }
-    
+
     let node_props: Vec<Property> = node_pattern
         .properties
         .clone()
@@ -1830,28 +2023,35 @@ fn traverse_node_pattern(
         );
 
         let scan = generate_scan(node_alias.clone(), node_label.clone(), plan_ctx)?;
-        
+
         // Check if this is a Union (denormalized node with BOTH positions)
         // In that case, wrap EACH branch in its own GraphNode, then return the Union
         if let LogicalPlan::Union(union) = scan.as_ref() {
-            log::info!("✓ Wrapping Union branches in GraphNodes for alias '{}'", node_alias);
-            let wrapped_inputs: Vec<Arc<LogicalPlan>> = union.inputs.iter().map(|branch| {
-                let is_denorm = is_denormalized_scan(branch);
-                Arc::new(LogicalPlan::GraphNode(GraphNode {
-                    input: branch.clone(),
-                    alias: node_alias.clone(),
-                    label: node_label.clone().map(|s| s.to_string()),
-                    is_denormalized: is_denorm,
-                }))
-            }).collect();
-            
+            log::info!(
+                "✓ Wrapping Union branches in GraphNodes for alias '{}'",
+                node_alias
+            );
+            let wrapped_inputs: Vec<Arc<LogicalPlan>> = union
+                .inputs
+                .iter()
+                .map(|branch| {
+                    let is_denorm = is_denormalized_scan(branch);
+                    Arc::new(LogicalPlan::GraphNode(GraphNode {
+                        input: branch.clone(),
+                        alias: node_alias.clone(),
+                        label: node_label.clone().map(|s| s.to_string()),
+                        is_denormalized: is_denorm,
+                    }))
+                })
+                .collect();
+
             let wrapped_union = Union {
                 inputs: wrapped_inputs,
                 union_type: union.union_type.clone(),
             };
             return Ok(Arc::new(LogicalPlan::Union(wrapped_union)));
         }
-        
+
         // Normal case: single ViewScan wrapped in GraphNode
         let is_denorm = is_denormalized_scan(&scan);
         let graph_node = GraphNode {
@@ -2097,7 +2297,8 @@ mod tests {
                     LogicalPlan::Scan(scan) => {
                         // Fallback Scan when ViewScan creation fails or schema not available
                         assert_eq!(scan.table_alias, Some("customer".to_string()));
-                        assert_eq!(scan.table_name, Some("Person".to_string())); // Now we pass the label!
+                        assert_eq!(scan.table_name, Some("Person".to_string()));
+                        // Now we pass the label!
                     }
                     _ => panic!("Expected ViewScan or Scan as input"),
                 }
@@ -2147,7 +2348,7 @@ mod tests {
         // Should have updated the existing table context
         let table_ctx = plan_ctx.get_table_ctx("customer").unwrap();
         assert_eq!(table_ctx.get_label_opt(), Some("Person".to_string())); // Label should be updated
-        // Note: properties get moved to filters after convert_properties_to_operator_application
+                                                                           // Note: properties get moved to filters after convert_properties_to_operator_application
     }
 
     #[test]
@@ -2504,7 +2705,7 @@ mod tests {
     // ==========================================
 
     fn create_test_schema_with_relationships() -> GraphSchema {
-        use crate::graph_catalog::graph_schema::{NodeSchema, NodeIdSchema, RelationshipSchema};
+        use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema, RelationshipSchema};
         use std::collections::HashMap;
 
         let mut nodes = HashMap::new();
@@ -2515,8 +2716,7 @@ mod tests {
                 table_name: "airports".to_string(),
                 column_names: vec!["id".to_string(), "code".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
-                ),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -2526,8 +2726,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
         nodes.insert(
@@ -2537,8 +2737,7 @@ mod tests {
                 table_name: "users".to_string(),
                 column_names: vec!["id".to_string(), "name".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
-                ),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -2548,8 +2747,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
         nodes.insert(
@@ -2559,8 +2758,7 @@ mod tests {
                 table_name: "posts".to_string(),
                 column_names: vec!["id".to_string(), "title".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
-                ),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -2570,8 +2768,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
 
@@ -2665,7 +2863,7 @@ mod tests {
     }
 
     fn create_single_relationship_schema() -> GraphSchema {
-        use crate::graph_catalog::graph_schema::{NodeSchema, NodeIdSchema, RelationshipSchema};
+        use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema, RelationshipSchema};
         use std::collections::HashMap;
 
         let mut nodes = HashMap::new();
@@ -2676,8 +2874,7 @@ mod tests {
                 table_name: "persons".to_string(),
                 column_names: vec!["id".to_string(), "name".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
-                ),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -2687,8 +2884,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
 
@@ -2731,11 +2928,12 @@ mod tests {
         let schema = create_single_relationship_schema();
 
         let result = infer_relationship_type_from_nodes(
-            &None,  // untyped start
-            &None,  // untyped end
+            &None, // untyped start
+            &None, // untyped end
             &ast::Direction::Outgoing,
             &schema,
-        ).expect("Should not error");
+        )
+        .expect("Should not error");
 
         assert!(result.is_some());
         let types = result.unwrap();
@@ -2753,7 +2951,8 @@ mod tests {
             &None,
             &ast::Direction::Outgoing,
             &schema,
-        ).expect("Should not error");
+        )
+        .expect("Should not error");
 
         assert!(result.is_some());
         let types = result.unwrap();
@@ -2771,7 +2970,8 @@ mod tests {
             &Some("Post".to_string()),
             &ast::Direction::Outgoing,
             &schema,
-        ).expect("Should not error");
+        )
+        .expect("Should not error");
 
         assert!(result.is_some());
         let types = result.unwrap();
@@ -2789,7 +2989,8 @@ mod tests {
             &Some("Post".to_string()),
             &ast::Direction::Outgoing,
             &schema,
-        ).expect("Should not error");
+        )
+        .expect("Should not error");
 
         assert!(result.is_some());
         let types = result.unwrap();
@@ -2807,7 +3008,8 @@ mod tests {
             &None,
             &ast::Direction::Outgoing,
             &schema,
-        ).expect("Should not error");
+        )
+        .expect("Should not error");
 
         assert!(result.is_some());
         let types = result.unwrap();
@@ -2826,7 +3028,8 @@ mod tests {
             &Some("Post".to_string()),
             &ast::Direction::Incoming,
             &schema,
-        ).expect("Should not error");
+        )
+        .expect("Should not error");
 
         // Incoming means: from=end(Post), to=start(None)
         // LIKES has from=User, to=Post
@@ -2853,7 +3056,8 @@ mod tests {
             &None,
             &ast::Direction::Incoming,
             &schema,
-        ).expect("Should not error");
+        )
+        .expect("Should not error");
 
         // Incoming: from=end(None), to=start(User)
         // FOLLOWS: from=User, to=User - matches (to=User checks against start)
@@ -2874,7 +3078,8 @@ mod tests {
             &Some("User".to_string()),
             &ast::Direction::Outgoing,
             &schema,
-        ).expect("Should not error");
+        )
+        .expect("Should not error");
 
         // FLIGHT: Airport→Airport - doesn't match (to=Airport != User)
         // LIKES: User→Post - doesn't match (from=User != Airport)
@@ -2887,12 +3092,9 @@ mod tests {
         // ()-[r]->() with multiple relationships should return None
         let schema = create_test_schema_with_relationships();
 
-        let result = infer_relationship_type_from_nodes(
-            &None,
-            &None,
-            &ast::Direction::Outgoing,
-            &schema,
-        ).expect("Should not error");
+        let result =
+            infer_relationship_type_from_nodes(&None, &None, &ast::Direction::Outgoing, &schema)
+                .expect("Should not error");
 
         // Both nodes untyped and schema has 3 relationships - cannot infer
         assert!(result.is_none());
@@ -2956,7 +3158,7 @@ mod tests {
     #[test]
     fn test_infer_relationship_type_too_many_matches_error() {
         // Create a schema with many relationship types from User
-        use crate::graph_catalog::graph_schema::{NodeSchema, NodeIdSchema, RelationshipSchema};
+        use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema, RelationshipSchema};
         use std::collections::HashMap;
 
         let mut nodes = HashMap::new();
@@ -2967,8 +3169,7 @@ mod tests {
                 table_name: "users".to_string(),
                 column_names: vec!["id".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
-                ),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -2978,8 +3179,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
 
@@ -3028,7 +3229,11 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            LogicalPlanError::TooManyInferredTypes { count, max, types: _ } => {
+            LogicalPlanError::TooManyInferredTypes {
+                count,
+                max,
+                types: _,
+            } => {
                 assert_eq!(count, 6);
                 assert_eq!(max, MAX_INFERRED_TYPES);
             }
@@ -3041,7 +3246,7 @@ mod tests {
     // ========================================
 
     fn create_single_node_schema() -> GraphSchema {
-        use crate::graph_catalog::graph_schema::{NodeSchema, NodeIdSchema};
+        use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
         use std::collections::HashMap;
 
         let mut nodes = HashMap::new();
@@ -3052,8 +3257,7 @@ mod tests {
                 table_name: "persons".to_string(),
                 column_names: vec!["id".to_string(), "name".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
-                ),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -3063,8 +3267,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
 
@@ -3075,7 +3279,7 @@ mod tests {
     }
 
     fn create_multi_node_schema() -> GraphSchema {
-        use crate::graph_catalog::graph_schema::{NodeSchema, NodeIdSchema};
+        use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
         use std::collections::HashMap;
 
         let mut nodes = HashMap::new();
@@ -3087,8 +3291,7 @@ mod tests {
                     table_name: format!("{}s", node_type.to_lowercase()),
                     column_names: vec!["id".to_string()],
                     primary_keys: "id".to_string(),
-                    node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
-                    ),
+                    node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
                     property_mappings: HashMap::new(),
                     view_parameters: None,
                     engine: None,
@@ -3098,8 +3301,8 @@ mod tests {
                     from_properties: None,
                     to_properties: None,
                     denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                    label_column: None,
+                    label_value: None,
                 },
             );
         }
@@ -3124,7 +3327,7 @@ mod tests {
         let schema = create_single_node_schema();
 
         let result = infer_node_label_from_schema(&schema).expect("should not error");
-        
+
         assert_eq!(result, Some("Person".to_string()));
     }
 
@@ -3134,7 +3337,7 @@ mod tests {
         let schema = create_multi_node_schema();
 
         let result = infer_node_label_from_schema(&schema).expect("should not error");
-        
+
         // Should not auto-infer when multiple types exist
         assert_eq!(result, None);
     }
@@ -3145,7 +3348,7 @@ mod tests {
         let schema = create_empty_node_schema();
 
         let result = infer_node_label_from_schema(&schema).expect("should not error");
-        
+
         assert_eq!(result, None);
     }
 
@@ -3153,7 +3356,7 @@ mod tests {
     fn test_infer_node_label_many_nodes_no_error() {
         // When schema has many node types, should return None without error
         // (unlike relationships, we don't generate UNION for standalone nodes yet)
-        use crate::graph_catalog::graph_schema::{NodeSchema, NodeIdSchema};
+        use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
         use std::collections::HashMap;
 
         let mut nodes = HashMap::new();
@@ -3165,8 +3368,7 @@ mod tests {
                     table_name: format!("type_{}", i),
                     column_names: vec!["id".to_string()],
                     primary_keys: "id".to_string(),
-                    node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
-                    ),
+                    node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
                     property_mappings: HashMap::new(),
                     view_parameters: None,
                     engine: None,
@@ -3176,8 +3378,8 @@ mod tests {
                     from_properties: None,
                     to_properties: None,
                     denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                    label_column: None,
+                    label_value: None,
                 },
             );
         }
@@ -3185,7 +3387,7 @@ mod tests {
         let schema = GraphSchema::build(1, "test_db".to_string(), nodes, HashMap::new());
 
         let result = infer_node_label_from_schema(&schema).expect("should not error");
-        
+
         // Should not auto-infer when many types exist (just return None, no error)
         assert_eq!(result, None);
     }
@@ -3194,7 +3396,7 @@ mod tests {
     fn test_infer_node_label_denormalized_single_node() {
         // Single denormalized node type should still be inferred
         // The inference works at schema level - denormalized handling is done later
-        use crate::graph_catalog::graph_schema::{NodeSchema, NodeIdSchema};
+        use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
         use std::collections::HashMap;
 
         let mut nodes = HashMap::new();
@@ -3202,17 +3404,16 @@ mod tests {
             "Airport".to_string(),
             NodeSchema {
                 database: "test_db".to_string(),
-                table_name: "flights".to_string(),  // Edge table
+                table_name: "flights".to_string(), // Edge table
                 column_names: vec!["Origin".to_string(), "Dest".to_string()],
                 primary_keys: "Origin".to_string(),
-                node_id: NodeIdSchema::single("Origin".to_string(), "String".to_string(),
-                ),
+                node_id: NodeIdSchema::single("Origin".to_string(), "String".to_string()),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
                 use_final: None,
                 filter: None,
-                is_denormalized: true,  // Denormalized node!
+                is_denormalized: true, // Denormalized node!
                 from_properties: Some({
                     let mut m = HashMap::new();
                     m.insert("code".to_string(), "Origin".to_string());
@@ -3224,8 +3425,8 @@ mod tests {
                     m
                 }),
                 denormalized_source_table: Some("test_db.flights".to_string()),
-            label_column: None,
-            label_value: None,
+                label_column: None,
+                label_value: None,
             },
         );
 
@@ -3239,7 +3440,7 @@ mod tests {
     #[test]
     fn test_infer_relationship_type_polymorphic_edge() {
         // Polymorphic edge with from_label_values should match typed nodes
-        use crate::graph_catalog::graph_schema::{NodeSchema, NodeIdSchema, RelationshipSchema};
+        use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema, RelationshipSchema};
         use std::collections::HashMap;
 
         let mut nodes = HashMap::new();
@@ -3251,8 +3452,7 @@ mod tests {
                     table_name: format!("{}s", node_type.to_lowercase()),
                     column_names: vec!["id".to_string()],
                     primary_keys: "id".to_string(),
-                    node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string(),
-                    ),
+                    node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
                     property_mappings: HashMap::new(),
                     view_parameters: None,
                     engine: None,
@@ -3262,8 +3462,8 @@ mod tests {
                     from_properties: None,
                     to_properties: None,
                     denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
+                    label_column: None,
+                    label_value: None,
                 },
             );
         }
@@ -3276,7 +3476,7 @@ mod tests {
                 database: "test_db".to_string(),
                 table_name: "memberships".to_string(),
                 column_names: vec!["member_id".to_string(), "group_id".to_string()],
-                from_node: "$any".to_string(),  // Polymorphic
+                from_node: "$any".to_string(), // Polymorphic
                 to_node: "Group".to_string(),
                 from_id: "member_id".to_string(),
                 to_id: "group_id".to_string(),
@@ -3291,7 +3491,7 @@ mod tests {
                 type_column: None,
                 from_label_column: Some("member_type".to_string()),
                 to_label_column: None,
-                from_label_values: Some(vec!["User".to_string(), "Group".to_string()]),  // Polymorphic!
+                from_label_values: Some(vec!["User".to_string(), "Group".to_string()]), // Polymorphic!
                 to_label_values: None,
                 from_node_properties: None,
                 to_node_properties: None,
@@ -3307,7 +3507,8 @@ mod tests {
             &Some("Group".to_string()),
             &ast::Direction::Outgoing,
             &schema,
-        ).expect("should not error");
+        )
+        .expect("should not error");
 
         assert_eq!(result, Some(vec!["MEMBER_OF".to_string()]));
     }

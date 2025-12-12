@@ -1,7 +1,7 @@
 use nom::{
-    IResult, Parser,
     bytes::complete::{tag_no_case, take_while1},
     error::context,
+    IResult, Parser,
 };
 
 use super::{ast::UseClause, common::ws, errors::OpenCypherParsingError};

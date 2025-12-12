@@ -140,7 +140,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: new_graph_rel,
                                 items: proj.items.clone(),
                                 kind: proj.kind.clone(),
-                                distinct: proj.distinct,  // PRESERVE distinct flag
+                                distinct: proj.distinct, // PRESERVE distinct flag
                             },
                         ));
 
@@ -234,7 +234,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: new_view_scan,
                                 items: proj.items.clone(),
                                 kind: proj.kind.clone(),
-                                distinct: proj.distinct,  // PRESERVE distinct flag
+                                distinct: proj.distinct, // PRESERVE distinct flag
                             },
                         ));
 
@@ -324,7 +324,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: child_plan.clone(),
                                 items: proj.items.clone(),
                                 kind: proj.kind.clone(),
-                                distinct: proj.distinct,  // PRESERVE distinct flag
+                                distinct: proj.distinct, // PRESERVE distinct flag
                             },
                         ))));
                     }
@@ -453,7 +453,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: new_view_scan,
                                 items: proj.items.clone(),
                                 kind: proj.kind.clone(),
-                                distinct: proj.distinct,  // PRESERVE distinct flag
+                                distinct: proj.distinct, // PRESERVE distinct flag
                             }));
 
                             println!(
@@ -468,7 +468,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                         );
                     }
                 }
-                
+
                 // Check if child is a GraphNode containing a ViewScan that needs filters injected
                 if let LogicalPlan::GraphNode(graph_node) = child_plan.as_ref() {
                     if let LogicalPlan::ViewScan(view_scan) = graph_node.input.as_ref() {
@@ -476,15 +476,17 @@ impl OptimizerPass for FilterIntoGraphRel {
                             "FilterIntoGraphRel: Projection has GraphNode('{}') → ViewScan child, source_table='{}'",
                             graph_node.alias, view_scan.source_table
                         );
-                        
+
                         // Skip if ViewScan already has filters
                         if view_scan.view_filter.is_some() {
                             println!("FilterIntoGraphRel: GraphNode's ViewScan already has view_filter, skipping");
                         } else {
                             // Look for filters in plan_ctx for the GraphNode's alias
                             let mut filters_to_apply: Vec<LogicalExpr> = Vec::new();
-                            
-                            if let Ok(table_ctx) = plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_node.alias.clone())) {
+
+                            if let Ok(table_ctx) = plan_ctx
+                                .get_table_ctx_from_alias_opt(&Some(graph_node.alias.clone()))
+                            {
                                 let filters = table_ctx.get_filters();
                                 if !filters.is_empty() {
                                     println!(
@@ -496,16 +498,18 @@ impl OptimizerPass for FilterIntoGraphRel {
                                     filters_to_apply.extend(filters.clone());
                                 }
                             }
-                            
+
                             // If we found filters, inject them into ViewScan
                             if !filters_to_apply.is_empty() {
                                 println!(
                                     "FilterIntoGraphRel: Injecting {} filters into GraphNode's ViewScan.view_filter",
                                     filters_to_apply.len()
                                 );
-                                
-                                use crate::query_planner::logical_expr::{Operator, OperatorApplication};
-                                
+
+                                use crate::query_planner::logical_expr::{
+                                    Operator, OperatorApplication,
+                                };
+
                                 // Combine all filters with AND
                                 let combined_predicate =
                                     filters_to_apply.into_iter().reduce(|acc, filter| {
@@ -514,10 +518,10 @@ impl OptimizerPass for FilterIntoGraphRel {
                                             operands: vec![acc, filter],
                                         })
                                     });
-                                
+
                                 if let Some(predicate) = combined_predicate {
                                     println!("FilterIntoGraphRel: Combined predicate for GraphNode: {:?}", predicate);
-                                    
+
                                     // Create new ViewScan with the filter
                                     let new_view_scan = Arc::new(LogicalPlan::ViewScan(Arc::new(
                                         crate::query_planner::logical_plan::ViewScan {
@@ -530,12 +534,20 @@ impl OptimizerPass for FilterIntoGraphRel {
                                             from_id: view_scan.from_id.clone(),
                                             to_id: view_scan.to_id.clone(),
                                             input: view_scan.input.clone(),
-                                            view_parameter_names: view_scan.view_parameter_names.clone(),
-                                            view_parameter_values: view_scan.view_parameter_values.clone(),
+                                            view_parameter_names: view_scan
+                                                .view_parameter_names
+                                                .clone(),
+                                            view_parameter_values: view_scan
+                                                .view_parameter_values
+                                                .clone(),
                                             use_final: view_scan.use_final,
                                             is_denormalized: view_scan.is_denormalized,
-                                            from_node_properties: view_scan.from_node_properties.clone(),
-                                            to_node_properties: view_scan.to_node_properties.clone(),
+                                            from_node_properties: view_scan
+                                                .from_node_properties
+                                                .clone(),
+                                            to_node_properties: view_scan
+                                                .to_node_properties
+                                                .clone(),
                                             type_column: view_scan.type_column.clone(),
                                             type_values: view_scan.type_values.clone(),
                                             from_label_column: view_scan.from_label_column.clone(),
@@ -543,7 +555,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                             schema_filter: view_scan.schema_filter.clone(),
                                         },
                                     )));
-                                    
+
                                     // Create new GraphNode with the modified ViewScan
                                     let new_graph_node = Arc::new(LogicalPlan::GraphNode(
                                         crate::query_planner::logical_plan::GraphNode {
@@ -553,7 +565,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                             is_denormalized: graph_node.is_denormalized,
                                         },
                                     ));
-                                    
+
                                     // Create new Projection with the modified GraphNode
                                     let new_proj = Arc::new(LogicalPlan::Projection(Projection {
                                         input: new_graph_node,
@@ -561,7 +573,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                         kind: proj.kind.clone(),
                                         distinct: proj.distinct,
                                     }));
-                                    
+
                                     println!(
                                         "FilterIntoGraphRel: Successfully created Projection with filtered GraphNode → ViewScan"
                                     );
@@ -584,7 +596,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             input: new_input,
                             items: proj.items.clone(),
                             kind: proj.kind.clone(),
-                            distinct: proj.distinct,  // PRESERVE distinct flag
+                            distinct: proj.distinct, // PRESERVE distinct flag
                         })))
                     }
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
@@ -595,13 +607,14 @@ impl OptimizerPass for FilterIntoGraphRel {
                     "FilterIntoGraphRel: Processing GraphRel with left_connection='{}', right_connection='{}'",
                     graph_rel.left_connection, graph_rel.right_connection
                 );
-                
+
                 // Extract filters from plan_ctx for this GraphRel's aliases
                 let mut combined_filters: Vec<LogicalExpr> = vec![];
-                
+
                 // Track which aliases we've collected filters for (from existing predicate)
-                let mut collected_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
-                
+                let mut collected_aliases: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+
                 // Analyze existing predicate to find which aliases are already covered
                 if let Some(existing_pred) = &graph_rel.where_predicate {
                     log::debug!(
@@ -609,18 +622,23 @@ impl OptimizerPass for FilterIntoGraphRel {
                     );
                     // Extract aliases referenced in existing predicate
                     extract_referenced_aliases(existing_pred, &mut collected_aliases);
-                    log::debug!("FilterIntoGraphRel: Existing predicate covers aliases: {:?}", collected_aliases);
+                    log::debug!(
+                        "FilterIntoGraphRel: Existing predicate covers aliases: {:?}",
+                        collected_aliases
+                    );
                     combined_filters.push(existing_pred.clone());
                 }
-                
+
                 // Check if the left child is also a GraphRel (multi-hop pattern)
                 // In that case, the left_connection's filters should be handled by the inner GraphRel
-                let skip_left_connection = matches!(graph_rel.left.as_ref(), LogicalPlan::GraphRel(_));
-                
+                let skip_left_connection =
+                    matches!(graph_rel.left.as_ref(), LogicalPlan::GraphRel(_));
+
                 // Check left connection for filters (only if not already collected AND not a multi-hop pattern)
-                if !skip_left_connection && !collected_aliases.contains(&graph_rel.left_connection) {
-                    if let Ok(table_ctx) =
-                        plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_rel.left_connection.clone()))
+                if !skip_left_connection && !collected_aliases.contains(&graph_rel.left_connection)
+                {
+                    if let Ok(table_ctx) = plan_ctx
+                        .get_table_ctx_from_alias_opt(&Some(graph_rel.left_connection.clone()))
                     {
                         let filters = table_ctx.get_filters().clone();
                         if !filters.is_empty() {
@@ -642,13 +660,16 @@ impl OptimizerPass for FilterIntoGraphRel {
                 } else if skip_left_connection {
                     log::debug!("FilterIntoGraphRel: Skipping left alias '{}' - multi-hop pattern, will be handled by inner GraphRel", graph_rel.left_connection);
                 } else {
-                    log::debug!("FilterIntoGraphRel: Skipping left alias '{}' - already collected", graph_rel.left_connection);
+                    log::debug!(
+                        "FilterIntoGraphRel: Skipping left alias '{}' - already collected",
+                        graph_rel.left_connection
+                    );
                 }
 
                 // Check right connection for filters (only if not already collected)
                 if !collected_aliases.contains(&graph_rel.right_connection) {
-                    if let Ok(table_ctx) =
-                        plan_ctx.get_table_ctx_from_alias_opt(&Some(graph_rel.right_connection.clone()))
+                    if let Ok(table_ctx) = plan_ctx
+                        .get_table_ctx_from_alias_opt(&Some(graph_rel.right_connection.clone()))
                     {
                         let filters = table_ctx.get_filters().clone();
                         if !filters.is_empty() {
@@ -668,7 +689,10 @@ impl OptimizerPass for FilterIntoGraphRel {
                         }
                     }
                 } else {
-                    log::debug!("FilterIntoGraphRel: Skipping right alias '{}' - already collected", graph_rel.right_connection);
+                    log::debug!(
+                        "FilterIntoGraphRel: Skipping right alias '{}' - already collected",
+                        graph_rel.right_connection
+                    );
                 }
 
                 // Check edge/relationship alias for filters (only if not already collected)
@@ -694,7 +718,10 @@ impl OptimizerPass for FilterIntoGraphRel {
                         }
                     }
                 } else {
-                    log::debug!("FilterIntoGraphRel: Skipping edge alias '{}' - already collected", graph_rel.alias);
+                    log::debug!(
+                        "FilterIntoGraphRel: Skipping edge alias '{}' - already collected",
+                        graph_rel.alias
+                    );
                 }
 
                 // If we found filters, combine them with existing predicate
@@ -721,15 +748,32 @@ impl OptimizerPass for FilterIntoGraphRel {
                         let right_tf = self.optimize(graph_rel.right.clone(), plan_ctx)?;
 
                         // Rebuild with new filters and optimized children
-                        let (new_left, new_center, new_right) = match (left_tf, center_tf, right_tf) {
-                            (Transformed::Yes(l), Transformed::Yes(c), Transformed::Yes(r)) => (l, c, r),
-                            (Transformed::Yes(l), Transformed::Yes(c), Transformed::No(r)) => (l, c, r),
-                            (Transformed::Yes(l), Transformed::No(c), Transformed::Yes(r)) => (l, c, r),
-                            (Transformed::No(l), Transformed::Yes(c), Transformed::Yes(r)) => (l, c, r),
-                            (Transformed::Yes(l), Transformed::No(c), Transformed::No(r)) => (l, c, r),
-                            (Transformed::No(l), Transformed::Yes(c), Transformed::No(r)) => (l, c, r),
-                            (Transformed::No(l), Transformed::No(c), Transformed::Yes(r)) => (l, c, r),
-                            (Transformed::No(l), Transformed::No(c), Transformed::No(r)) => (l, c, r),
+                        let (new_left, new_center, new_right) = match (left_tf, center_tf, right_tf)
+                        {
+                            (Transformed::Yes(l), Transformed::Yes(c), Transformed::Yes(r)) => {
+                                (l, c, r)
+                            }
+                            (Transformed::Yes(l), Transformed::Yes(c), Transformed::No(r)) => {
+                                (l, c, r)
+                            }
+                            (Transformed::Yes(l), Transformed::No(c), Transformed::Yes(r)) => {
+                                (l, c, r)
+                            }
+                            (Transformed::No(l), Transformed::Yes(c), Transformed::Yes(r)) => {
+                                (l, c, r)
+                            }
+                            (Transformed::Yes(l), Transformed::No(c), Transformed::No(r)) => {
+                                (l, c, r)
+                            }
+                            (Transformed::No(l), Transformed::Yes(c), Transformed::No(r)) => {
+                                (l, c, r)
+                            }
+                            (Transformed::No(l), Transformed::No(c), Transformed::Yes(r)) => {
+                                (l, c, r)
+                            }
+                            (Transformed::No(l), Transformed::No(c), Transformed::No(r)) => {
+                                (l, c, r)
+                            }
                         };
 
                         let new_graph_rel = Arc::new(LogicalPlan::GraphRel(GraphRel {
@@ -923,19 +967,24 @@ impl OptimizerPass for FilterIntoGraphRel {
             LogicalPlan::Unwind(u) => {
                 let child_tf = self.optimize(u.input.clone(), plan_ctx)?;
                 match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-                        input: new_input,
-                        expression: u.expression.clone(),
-                        alias: u.alias.clone(),
-                    }))),
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                        },
+                    ))),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
             LogicalPlan::CartesianProduct(cp) => {
                 let transformed_left = self.optimize(cp.left.clone(), plan_ctx)?;
                 let transformed_right = self.optimize(cp.right.clone(), plan_ctx)?;
-                
-                if matches!((&transformed_left, &transformed_right), (Transformed::No(_), Transformed::No(_))) {
+
+                if matches!(
+                    (&transformed_left, &transformed_right),
+                    (Transformed::No(_), Transformed::No(_))
+                ) {
                     Transformed::No(logical_plan.clone())
                 } else {
                     let new_cp = crate::query_planner::logical_plan::CartesianProduct {

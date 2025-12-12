@@ -8,12 +8,10 @@ use crate::query_planner::logical_expr::LogicalExpr;
 
 use crate::query_planner::logical_expr::{
     AggregateFnCall as LogicalAggregateFnCall, Column as LogicalColumn,
-    ColumnAlias as LogicalColumnAlias, ExistsSubquery as LogicalExistsSubquery,
-    InSubquery as LogicalInSubquery, Literal as LogicalLiteral,
-    LogicalCase, Operator as LogicalOperator, OperatorApplication as LogicalOperatorApplication,
-    PathPattern, Direction, PatternCount as LogicalPatternCount,
-    PropertyAccess as LogicalPropertyAccess, ScalarFnCall as LogicalScalarFnCall,
-    TableAlias as LogicalTableAlias, ReduceExpr as LogicalReduceExpr,
+    ColumnAlias as LogicalColumnAlias, Direction, ExistsSubquery as LogicalExistsSubquery,
+    InSubquery as LogicalInSubquery, Literal as LogicalLiteral, LogicalCase,
+    Operator as LogicalOperator, OperatorApplication as LogicalOperatorApplication, PathPattern, PropertyAccess as LogicalPropertyAccess, ScalarFnCall as LogicalScalarFnCall,
+    TableAlias as LogicalTableAlias,
 };
 use crate::query_planner::logical_plan::LogicalPlan;
 
@@ -23,123 +21,135 @@ use super::errors::RenderBuildError;
 /// This is a simplified approach that generates basic EXISTS SQL
 fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderBuildError> {
     use crate::server::GLOBAL_SCHEMAS;
-    
+
     // Try to extract pattern info from the subplan
     // The subplan is typically a GraphRel representing a relationship pattern
     match exists.subplan.as_ref() {
         LogicalPlan::GraphRel(graph_rel) => {
             // Get the relationship type
-            let rel_type = graph_rel.labels.as_ref()
+            let rel_type = graph_rel
+                .labels
+                .as_ref()
                 .and_then(|l| l.first())
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "UNKNOWN".to_string());
-            
+
             // Get the start node alias (the correlated variable)
             let start_alias = &graph_rel.left_connection;
-            
+
             // Try to get schema for relationship lookup
             // GLOBAL_SCHEMAS is OnceCell<RwLock<HashMap<String, GraphSchema>>>
             let schemas_lock = GLOBAL_SCHEMAS.get();
             let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-            let schema = schemas_guard.as_ref()
+            let schema = schemas_guard
+                .as_ref()
                 .and_then(|guard| guard.get("default"));
-            
+
             // Look up the relationship table and columns using public accessors
             if let Some(schema) = schema {
                 if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
                     let table_name = &rel_schema.table_name;
                     let from_col = &rel_schema.from_id; // from_id is the FK column
-                    
+
                     // Get the start node's ID column from its label
-                    let start_id_sql = if let LogicalPlan::GraphNode(start_node) = graph_rel.left.as_ref() {
-                        if let Some(label) = &start_node.label {
-                            let node_schema = schema.get_node_schema_opt(label)
-                                .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                            node_schema.node_id.sql_tuple(start_alias)
+                    let start_id_sql =
+                        if let LogicalPlan::GraphNode(start_node) = graph_rel.left.as_ref() {
+                            if let Some(label) = &start_node.label {
+                                let node_schema =
+                                    schema.get_node_schema_opt(label).ok_or_else(|| {
+                                        RenderBuildError::NodeSchemaNotFound(label.clone())
+                                    })?;
+                                node_schema.node_id.sql_tuple(start_alias)
+                            } else {
+                                // No label - infer from relationship schema
+                                let node_type = &rel_schema.from_node;
+                                let node_schema =
+                                    schema.get_node_schema_opt(node_type).ok_or_else(|| {
+                                        RenderBuildError::NodeSchemaNotFound(node_type.clone())
+                                    })?;
+                                node_schema.node_id.sql_tuple(start_alias)
+                            }
                         } else {
-                            // No label - infer from relationship schema
-                            let node_type = &rel_schema.from_node;
-                            let node_schema = schema.get_node_schema_opt(node_type)
-                                .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
-                            node_schema.node_id.sql_tuple(start_alias)
-                        }
-                    } else {
-                        // Not a GraphNode - error, can't infer
-                        return Err(RenderBuildError::InvalidRenderPlan(
-                            "EXISTS pattern left side is not a GraphNode".to_string()
-                        ));
-                    };
-                    
+                            // Not a GraphNode - error, can't infer
+                            return Err(RenderBuildError::InvalidRenderPlan(
+                                "EXISTS pattern left side is not a GraphNode".to_string(),
+                            ));
+                        };
+
                     // Generate the EXISTS SQL
                     // EXISTS (SELECT 1 FROM edge_table WHERE edge_table.from_id = outer.node_id)
                     return Ok(format!(
                         "SELECT 1 FROM {} WHERE {}.{} = {}",
-                        table_name,
-                        table_name, from_col,
-                        start_id_sql
+                        table_name, table_name, from_col, start_id_sql
                     ));
                 }
             }
-            
+
             // No schema found - this is an error
-            Err(RenderBuildError::InvalidRenderPlan(
-                format!("Cannot generate EXISTS pattern: relationship schema '{}' not found. \
-                         Please define this relationship in your YAML schema configuration.", rel_type)
-            ))
+            Err(RenderBuildError::InvalidRenderPlan(format!(
+                "Cannot generate EXISTS pattern: relationship schema '{}' not found. \
+                         Please define this relationship in your YAML schema configuration.",
+                rel_type
+            )))
         }
         _ => {
             // For other plan types, this is unsupported
             Err(RenderBuildError::UnsupportedFeature(
-                "EXISTS pattern with non-GraphRel subplan".to_string()
+                "EXISTS pattern with non-GraphRel subplan".to_string(),
             ))
         }
     }
 }
 
 /// Generate SQL for a pattern count (size() on patterns)
-/// 
+///
 /// For `size((n)-[:REL]->())` pattern, generates:
 /// ```sql
 /// (SELECT COUNT(*) FROM rel_table WHERE rel_table.from_id = n.id)
 /// ```
 fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBuildError> {
     use crate::server::GLOBAL_SCHEMAS;
-    
+
     match pattern {
         PathPattern::ConnectedPattern(connected_patterns) => {
             if connected_patterns.is_empty() {
                 return Err(RenderBuildError::InvalidRenderPlan(
-                    "Empty connected pattern in size()".to_string()
+                    "Empty connected pattern in size()".to_string(),
                 ));
             }
-            
+
             // Handle single-hop pattern (most common case)
             let conn = &connected_patterns[0];
-            
+
             // Get the start node alias (the correlated variable)
-            let start_alias = conn.start_node.name.as_ref()
-                .ok_or_else(|| RenderBuildError::InvalidRenderPlan(
-                    "size() pattern requires named start node".to_string()
-                ))?;
-            
+            let start_alias = conn.start_node.name.as_ref().ok_or_else(|| {
+                RenderBuildError::InvalidRenderPlan(
+                    "size() pattern requires named start node".to_string(),
+                )
+            })?;
+
             // Get the end node alias (can be anonymous/None)
             let end_alias = conn.end_node.name.as_ref().map(|s| s.to_string());
-            
+
             // Get relationship type
-            let rel_type = conn.relationship.labels.as_ref()
+            let rel_type = conn
+                .relationship
+                .labels
+                .as_ref()
                 .and_then(|l| l.first())
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "UNKNOWN".to_string());
-            
+
             // Determine direction
             let is_undirected = matches!(conn.relationship.direction, Direction::Either);
-            
+
             // Try to get schema for relationship lookup
             let schemas_lock = GLOBAL_SCHEMAS.get();
             let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-            let schema = schemas_guard.as_ref()
+            let schema = schemas_guard
+                .as_ref()
                 .and_then(|guard| guard.get("default"));
-            
+
             // Look up the relationship table and columns
             if let Some(schema) = schema {
                 if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
@@ -151,34 +161,46 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                     };
                     let from_col = &rel_schema.from_id;
                     let to_col = &rel_schema.to_id;
-                    
+
                     // Get the start node's ID column
                     // First try the explicit label from the pattern, then fall back to relationship schema
                     let start_id_sql = if let Some(label) = &conn.start_node.label {
-                        let node_schema = schema.get_node_schema_opt(label)
+                        let node_schema = schema
+                            .get_node_schema_opt(label)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
                         node_schema.node_id.sql_tuple(start_alias)
                     } else {
                         // No label in pattern - infer from relationship's from_node
                         let node_type = &rel_schema.from_node;
-                        let node_schema = schema.get_node_schema_opt(node_type)
-                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
+                        let node_schema =
+                            schema.get_node_schema_opt(node_type).ok_or_else(|| {
+                                RenderBuildError::NodeSchemaNotFound(node_type.clone())
+                            })?;
                         node_schema.node_id.sql_tuple(start_alias)
                     };
-                    
+
                     // Get end node's ID column
                     let end_id_sql = if let Some(label) = &conn.end_node.label {
-                        let node_schema = schema.get_node_schema_opt(label)
+                        let node_schema = schema
+                            .get_node_schema_opt(label)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                        end_alias.as_ref().map(|alias| node_schema.node_id.sql_tuple(alias)).unwrap_or_default()
+                        end_alias
+                            .as_ref()
+                            .map(|alias| node_schema.node_id.sql_tuple(alias))
+                            .unwrap_or_default()
                     } else {
                         // No label in pattern - infer from relationship's to_node
                         let node_type = &rel_schema.to_node;
-                        let node_schema = schema.get_node_schema_opt(node_type)
-                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
-                        end_alias.as_ref().map(|alias| node_schema.node_id.sql_tuple(alias)).unwrap_or_default()
+                        let node_schema =
+                            schema.get_node_schema_opt(node_type).ok_or_else(|| {
+                                RenderBuildError::NodeSchemaNotFound(node_type.clone())
+                            })?;
+                        end_alias
+                            .as_ref()
+                            .map(|alias| node_schema.node_id.sql_tuple(alias))
+                            .unwrap_or_default()
                     };
-                    
+
                     // Generate COUNT SQL based on end node and direction
                     let count_sql = match (end_alias.as_ref(), is_undirected) {
                         (None, false) => {
@@ -195,20 +217,28 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                                 _ => format!(
                                     "(SELECT COUNT(*) FROM {} WHERE {}.{} = {} OR {}.{} = {})",
                                     full_table,
-                                    table_name, from_col, start_id_sql,
-                                    table_name, to_col, start_id_sql
+                                    table_name,
+                                    from_col,
+                                    start_id_sql,
+                                    table_name,
+                                    to_col,
+                                    start_id_sql
                                 ),
                             }
-                        },
+                        }
                         (None, true) => {
                             // Anonymous end node, undirected: count both directions
                             format!(
                                 "(SELECT COUNT(*) FROM {} WHERE {}.{} = {} OR {}.{} = {})",
                                 full_table,
-                                table_name, from_col, start_id_sql,
-                                table_name, to_col, start_id_sql
+                                table_name,
+                                from_col,
+                                start_id_sql,
+                                table_name,
+                                to_col,
+                                start_id_sql
                             )
-                        },
+                        }
                         (Some(end), true) => {
                             // Named end node, undirected: check both directions
                             format!(
@@ -219,7 +249,7 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                                 table_name, from_col, end_id_sql,
                                 table_name, to_col, start_id_sql
                             )
-                        },
+                        }
                         (Some(end), false) => {
                             // Named end node, directed: check single direction
                             let (from_match_sql, to_match_sql) = match conn.relationship.direction {
@@ -230,16 +260,20 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                             format!(
                                 "(SELECT COUNT(*) FROM {} WHERE {}.{} = {} AND {}.{} = {})",
                                 full_table,
-                                table_name, from_col, from_match_sql,
-                                table_name, to_col, to_match_sql
+                                table_name,
+                                from_col,
+                                from_match_sql,
+                                table_name,
+                                to_col,
+                                to_match_sql
                             )
-                        },
+                        }
                     };
-                    
+
                     return Ok(count_sql);
                 }
             }
-            
+
             // No schema found - this is an error, not a fallback scenario
             Err(RenderBuildError::InvalidRenderPlan(
                 format!("Cannot generate size() pattern count: relationship schema '{}' not found. \
@@ -247,66 +281,71 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                          from_node, to_node, and ID column mappings.", rel_type)
             ))
         }
-        PathPattern::Node(_) => {
-            Err(RenderBuildError::InvalidRenderPlan(
-                "size() pattern with single node is not supported".to_string()
-            ))
-        }
+        PathPattern::Node(_) => Err(RenderBuildError::InvalidRenderPlan(
+            "size() pattern with single node is not supported".to_string(),
+        )),
         PathPattern::ShortestPath(_) | PathPattern::AllShortestPaths(_) => {
             Err(RenderBuildError::InvalidRenderPlan(
-                "size() pattern with shortest path is not supported".to_string()
+                "size() pattern with shortest path is not supported".to_string(),
             ))
         }
     }
 }
 
 /// Generate NOT EXISTS SQL for a PathPattern (negative pattern matching / anti-join)
-/// 
+///
 /// For `NOT (a)-[:REL]-(b)` pattern, generates:
 /// ```sql
 /// NOT EXISTS (
-///     SELECT 1 FROM rel_table 
+///     SELECT 1 FROM rel_table
 ///     WHERE (rel_table.from_id = a.id AND rel_table.to_id = b.id)
 ///        OR (rel_table.from_id = b.id AND rel_table.to_id = a.id)  -- for undirected
 /// )
 /// ```
-fn generate_not_exists_from_path_pattern(pattern: &PathPattern) -> Result<String, RenderBuildError> {
+fn generate_not_exists_from_path_pattern(
+    pattern: &PathPattern,
+) -> Result<String, RenderBuildError> {
     use crate::server::GLOBAL_SCHEMAS;
-    
+
     match pattern {
         PathPattern::ConnectedPattern(connected_patterns) => {
             if connected_patterns.is_empty() {
                 return Err(RenderBuildError::InvalidRenderPlan(
-                    "Empty connected pattern in NOT expression".to_string()
+                    "Empty connected pattern in NOT expression".to_string(),
                 ));
             }
-            
+
             // Handle single-hop pattern (most common case for anti-join)
             let conn = &connected_patterns[0];
-            
+
             // Get the start and end node aliases (end node can be anonymous)
-            let start_alias = conn.start_node.name.as_ref()
-                .ok_or_else(|| RenderBuildError::InvalidRenderPlan(
-                    "NOT pattern requires named start node".to_string()
-                ))?;
+            let start_alias = conn.start_node.name.as_ref().ok_or_else(|| {
+                RenderBuildError::InvalidRenderPlan(
+                    "NOT pattern requires named start node".to_string(),
+                )
+            })?;
             // End alias is optional - if None, we only check the from_id
             let end_alias = conn.end_node.name.as_ref();
-            
+
             // Get the relationship type
-            let rel_type = conn.relationship.labels.as_ref()
+            let rel_type = conn
+                .relationship
+                .labels
+                .as_ref()
                 .and_then(|l| l.first())
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "UNKNOWN".to_string());
-            
+
             // Get direction
             let is_undirected = conn.relationship.direction == Direction::Either;
-            
+
             // Try to get schema for relationship lookup
             let schemas_lock = GLOBAL_SCHEMAS.get();
             let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-            let schema = schemas_guard.as_ref()
+            let schema = schemas_guard
+                .as_ref()
                 .and_then(|guard| guard.get("default"));
-            
+
             // Look up the relationship table and columns
             if let Some(schema) = schema {
                 if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
@@ -315,32 +354,42 @@ fn generate_not_exists_from_path_pattern(pattern: &PathPattern) -> Result<String
                     let full_table = format!("{}.{}", db_name, table_name);
                     let from_col = &rel_schema.from_id;
                     let to_col = &rel_schema.to_id;
-                    
+
                     // Get the node ID columns from their labels or infer from relationship schema
                     let start_id_sql = if let Some(label) = &conn.start_node.label {
-                        let node_schema = schema.get_node_schema_opt(label)
+                        let node_schema = schema
+                            .get_node_schema_opt(label)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
                         node_schema.node_id.sql_tuple(start_alias)
                     } else {
                         // Infer from relationship's from_node
                         let node_type = &rel_schema.from_node;
-                        let node_schema = schema.get_node_schema_opt(node_type)
-                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
+                        let node_schema =
+                            schema.get_node_schema_opt(node_type).ok_or_else(|| {
+                                RenderBuildError::NodeSchemaNotFound(node_type.clone())
+                            })?;
                         node_schema.node_id.sql_tuple(start_alias)
                     };
-                    
+
                     let end_id_sql = if let Some(label) = &conn.end_node.label {
-                        let node_schema = schema.get_node_schema_opt(label)
+                        let node_schema = schema
+                            .get_node_schema_opt(label)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                        end_alias.map(|alias| node_schema.node_id.sql_tuple(alias)).unwrap_or_default()
+                        end_alias
+                            .map(|alias| node_schema.node_id.sql_tuple(alias))
+                            .unwrap_or_default()
                     } else {
                         // Infer from relationship's to_node
                         let node_type = &rel_schema.to_node;
-                        let node_schema = schema.get_node_schema_opt(node_type)
-                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
-                        end_alias.map(|alias| node_schema.node_id.sql_tuple(alias)).unwrap_or_default()
+                        let node_schema =
+                            schema.get_node_schema_opt(node_type).ok_or_else(|| {
+                                RenderBuildError::NodeSchemaNotFound(node_type.clone())
+                            })?;
+                        end_alias
+                            .map(|alias| node_schema.node_id.sql_tuple(alias))
+                            .unwrap_or_default()
                     };
-                    
+
                     // Generate the NOT EXISTS SQL
                     let exists_sql = match (end_alias, is_undirected) {
                         // Anonymous end node: just check if any relationship exists from start node
@@ -355,23 +404,29 @@ fn generate_not_exists_from_path_pattern(pattern: &PathPattern) -> Result<String
                                     "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {})",
                                     full_table, table_name, to_col, start_id_sql
                                 ),
-                                _ => format!(
+                                _ => {
+                                    format!(
                                     "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {})",
-                                    full_table, 
+                                    full_table,
                                     table_name, from_col, start_id_sql,
                                     table_name, to_col, start_id_sql
-                                ),
+                                )
+                                }
                             }
-                        },
+                        }
                         (None, true) => {
                             // Undirected with anonymous end: check either direction
                             format!(
                                 "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {})",
-                                full_table, 
-                                table_name, from_col, start_id_sql,
-                                table_name, to_col, start_id_sql
+                                full_table,
+                                table_name,
+                                from_col,
+                                start_id_sql,
+                                table_name,
+                                to_col,
+                                start_id_sql
                             )
-                        },
+                        }
                         (Some(end), true) => {
                             // Named end node, undirected: check both directions
                             format!(
@@ -384,7 +439,7 @@ fn generate_not_exists_from_path_pattern(pattern: &PathPattern) -> Result<String
                                 table_name, from_col, end_id_sql,
                                 table_name, to_col, start_id_sql
                             )
-                        },
+                        }
                         (Some(end), false) => {
                             // Named end node, directed: check single direction
                             let (from_match_sql, to_match_sql) = match conn.relationship.direction {
@@ -395,16 +450,20 @@ fn generate_not_exists_from_path_pattern(pattern: &PathPattern) -> Result<String
                             format!(
                                 "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {})",
                                 full_table,
-                                table_name, from_col, from_match_sql,
-                                table_name, to_col, to_match_sql
+                                table_name,
+                                from_col,
+                                from_match_sql,
+                                table_name,
+                                to_col,
+                                to_match_sql
                             )
-                        },
+                        }
                     };
-                    
+
                     return Ok(exists_sql);
                 }
             }
-            
+
             // Fallback: generate a reasonable default
             let table_name = rel_type.to_lowercase();
             match (end_alias, is_undirected) {
@@ -424,14 +483,12 @@ fn generate_not_exists_from_path_pattern(pattern: &PathPattern) -> Result<String
                 )),
             }
         }
-        PathPattern::Node(_) => {
-            Err(RenderBuildError::InvalidRenderPlan(
-                "NOT pattern with single node is not supported".to_string()
-            ))
-        }
+        PathPattern::Node(_) => Err(RenderBuildError::InvalidRenderPlan(
+            "NOT pattern with single node is not supported".to_string(),
+        )),
         PathPattern::ShortestPath(_) | PathPattern::AllShortestPaths(_) => {
             Err(RenderBuildError::InvalidRenderPlan(
-                "NOT pattern with shortest path is not supported".to_string()
+                "NOT pattern with shortest path is not supported".to_string(),
             ))
         }
     }
@@ -562,14 +619,14 @@ pub enum Operator {
     GreaterThan,
     LessThanEqual,
     GreaterThanEqual,
-    RegexMatch,  // =~ (regex match)
+    RegexMatch, // =~ (regex match)
     And,
     Or,
     In,
     NotIn,
-    StartsWith,   // STARTS WITH
-    EndsWith,     // ENDS WITH
-    Contains,     // CONTAINS
+    StartsWith, // STARTS WITH
+    EndsWith,   // ENDS WITH
+    Contains,   // CONTAINS
     Not,
     Distinct,
     IsNull,
@@ -658,10 +715,11 @@ impl TryFrom<LogicalExpr> for RenderExpr {
             }
             LogicalExpr::MapLiteral(entries) => {
                 // Convert map literal - preserve key-value pairs
-                let converted_entries: Result<Vec<(String, RenderExpr)>, RenderBuildError> = entries
-                    .into_iter()
-                    .map(|(k, v)| Ok((k, RenderExpr::try_from(v)?)))
-                    .collect();
+                let converted_entries: Result<Vec<(String, RenderExpr)>, RenderBuildError> =
+                    entries
+                        .into_iter()
+                        .map(|(k, v)| Ok((k, RenderExpr::try_from(v)?)))
+                        .collect();
                 RenderExpr::MapLiteral(converted_entries?)
             }
             LogicalExpr::LabelExpression { variable, label } => {
@@ -669,7 +727,8 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                 // If it reaches here, return false (unknown label)
                 log::warn!(
                     "LabelExpression {}:{} reached RenderExpr conversion - returning false",
-                    variable, label
+                    variable,
+                    label
                 );
                 RenderExpr::Literal(Literal::Boolean(false))
             }
@@ -834,26 +893,26 @@ impl TryFrom<LogicalAggregateFnCall> for AggregateFnCall {
         // Special case: count(node_variable) should become count(*)
         // When counting a graph node (e.g., count(friend)), the argument is a TableAlias
         // which doesn't exist as a column name inside subqueries. Convert to count(*).
-        let converted_args: Vec<RenderExpr> = if agg.name.to_lowercase() == "count" && agg.args.len() == 1 {
-            match &agg.args[0] {
-                crate::query_planner::logical_expr::LogicalExpr::TableAlias(_) => {
-                    // count(node_var) -> count(*)
-                    vec![RenderExpr::Star]
-                }
-                _ => {
-                    agg.args
+        let converted_args: Vec<RenderExpr> =
+            if agg.name.to_lowercase() == "count" && agg.args.len() == 1 {
+                match &agg.args[0] {
+                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(_) => {
+                        // count(node_var) -> count(*)
+                        vec![RenderExpr::Star]
+                    }
+                    _ => agg
+                        .args
                         .into_iter()
                         .map(RenderExpr::try_from)
-                        .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?
+                        .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
                 }
-            }
-        } else {
-            agg.args
-                .into_iter()
-                .map(RenderExpr::try_from)
-                .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?
-        };
-        
+            } else {
+                agg.args
+                    .into_iter()
+                    .map(RenderExpr::try_from)
+                    .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?
+            };
+
         let agg_fn = AggregateFnCall {
             name: agg.name,
             args: converted_args,

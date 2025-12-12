@@ -150,17 +150,20 @@ impl AnalyzerPass for QueryValidation {
                 // Check if node types match, treating "$any" as wildcard
                 let from_matches = rel_schema.from_node == *from || rel_schema.from_node == "$any";
                 let to_matches = rel_schema.to_node == *to || rel_schema.to_node == "$any";
-                
+
                 log::debug!(
                     "QueryValidation: rel={}, from={}, to={}, schema.from={}, schema.to={}, from_matches={}, to_matches={}",
                     graph_rel.alias, from, to, rel_schema.from_node, rel_schema.to_node, from_matches, to_matches
                 );
-                
+
                 if (from_matches && to_matches)
                     || (graph_rel.direction == Direction::Either
-                        && (rel_schema.from_node == "$any" || rel_schema.to_node == "$any"
-                            || ([rel_schema.from_node.clone(), rel_schema.to_node.clone()].contains(&from)
-                                && [rel_schema.from_node.clone(), rel_schema.to_node.clone()].contains(&to))))
+                        && (rel_schema.from_node == "$any"
+                            || rel_schema.to_node == "$any"
+                            || ([rel_schema.from_node.clone(), rel_schema.to_node.clone()]
+                                .contains(&from)
+                                && [rel_schema.from_node.clone(), rel_schema.to_node.clone()]
+                                    .contains(&to))))
                 {
                     // valid graph - ClickGraph only supports edge list (relationships as explicit tables)
                     Transformed::No(logical_plan.clone())
@@ -226,19 +229,26 @@ impl AnalyzerPass for QueryValidation {
                 let child_tf =
                     self.analyze_with_graph_schema(u.input.clone(), plan_ctx, graph_schema)?;
                 match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-                        input: new_input,
-                        expression: u.expression.clone(),
-                        alias: u.alias.clone(),
-                    }))),
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                        },
+                    ))),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
             LogicalPlan::CartesianProduct(cp) => {
-                let transformed_left = self.analyze_with_graph_schema(cp.left.clone(), plan_ctx, graph_schema)?;
-                let transformed_right = self.analyze_with_graph_schema(cp.right.clone(), plan_ctx, graph_schema)?;
-                
-                if matches!((&transformed_left, &transformed_right), (Transformed::No(_), Transformed::No(_))) {
+                let transformed_left =
+                    self.analyze_with_graph_schema(cp.left.clone(), plan_ctx, graph_schema)?;
+                let transformed_right =
+                    self.analyze_with_graph_schema(cp.right.clone(), plan_ctx, graph_schema)?;
+
+                if matches!(
+                    (&transformed_left, &transformed_right),
+                    (Transformed::No(_), Transformed::No(_))
+                ) {
                     Transformed::No(logical_plan.clone())
                 } else {
                     let new_cp = crate::query_planner::logical_plan::CartesianProduct {
@@ -257,7 +267,11 @@ impl AnalyzerPass for QueryValidation {
                 }
             }
             LogicalPlan::WithClause(with_clause) => {
-                let child_tf = self.analyze_with_graph_schema(with_clause.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = self.analyze_with_graph_schema(
+                    with_clause.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 match child_tf {
                     Transformed::Yes(new_input) => {
                         let new_with = crate::query_planner::logical_plan::WithClause {

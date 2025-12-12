@@ -3,25 +3,17 @@
 //! Some functions in this module are reserved for future use or used only in specific code paths.
 #![allow(dead_code)]
 
-use crate::clickhouse_query_generator::variable_length_cte::{
-    VariableLengthCteGenerator,
-};
-use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
 use crate::graph_catalog::expression_parser::PropertyValue;
+use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_plan::LogicalPlan;
 
 use super::cte_generation::map_property_to_column_with_schema;
 use super::errors::RenderBuildError;
 use super::filter_pipeline::categorize_filters;
 use super::plan_builder::RenderPlanBuilder;
-use super::render_expr::{
-    Literal, Operator, PropertyAccess,
-    RenderExpr,
-};
-use super::{
-    Cte, Join,
-    JoinType,
-};
+use super::render_expr::{Literal, Operator, PropertyAccess, RenderExpr};
+use super::{Cte, Join, JoinType};
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
 
@@ -44,9 +36,11 @@ fn has_string_operand(operands: &[RenderExpr]) -> bool {
 /// Flatten nested + operations into a list of operands for concat()
 fn flatten_addition_operands(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> Vec<String> {
     match expr {
-        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
-            op.operands.iter().flat_map(|o| flatten_addition_operands(o, alias_mapping)).collect()
-        }
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
+            .operands
+            .iter()
+            .flat_map(|o| flatten_addition_operands(o, alias_mapping))
+            .collect(),
         _ => vec![render_expr_to_sql_string(expr, alias_mapping)],
     }
 }
@@ -65,9 +59,7 @@ fn extract_node_alias(plan: &LogicalPlan) -> Option<String> {
 /// Returns the raw filter SQL with table alias replaced to match CTE convention
 fn extract_schema_filter_from_node(plan: &LogicalPlan, cte_alias: &str) -> Option<String> {
     match plan {
-        LogicalPlan::GraphNode(node) => {
-            extract_schema_filter_from_node(&node.input, cte_alias)
-        }
+        LogicalPlan::GraphNode(node) => extract_schema_filter_from_node(&node.input, cte_alias),
         LogicalPlan::ViewScan(view_scan) => {
             if let Some(ref schema_filter) = view_scan.schema_filter {
                 // Convert schema filter to SQL with the CTE alias
@@ -76,9 +68,7 @@ fn extract_schema_filter_from_node(plan: &LogicalPlan, cte_alias: &str) -> Optio
                 None
             }
         }
-        LogicalPlan::Filter(filter) => {
-            extract_schema_filter_from_node(&filter.input, cte_alias)
-        }
+        LogicalPlan::Filter(filter) => extract_schema_filter_from_node(&filter.input, cte_alias),
         _ => None,
     }
 }
@@ -141,7 +131,9 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
                     // Use concat() for string concatenation
                     // Flatten nested + operations for cases like: a + ' - ' + b
                     if has_string_operand(&op.operands) {
-                        let flattened: Vec<String> = op.operands.iter()
+                        let flattened: Vec<String> = op
+                            .operands
+                            .iter()
                             .flat_map(|o| flatten_addition_operands(o, alias_mapping))
                             .collect();
                         format!("concat({})", flattened.join(", "))
@@ -245,14 +237,17 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
             let init_sql = render_expr_to_sql_string(&reduce.initial_value, alias_mapping);
             let list_sql = render_expr_to_sql_string(&reduce.list, alias_mapping);
             let expr_sql = render_expr_to_sql_string(&reduce.expression, alias_mapping);
-            
+
             // Wrap numeric init values in toInt64() to prevent type mismatch
-            let init_cast = if matches!(*reduce.initial_value, RenderExpr::Literal(Literal::Integer(_))) {
+            let init_cast = if matches!(
+                *reduce.initial_value,
+                RenderExpr::Literal(Literal::Integer(_))
+            ) {
                 format!("toInt64({})", init_sql)
             } else {
                 init_sql
             };
-            
+
             format!(
                 "arrayFold({}, {} -> {}, {}, {})",
                 reduce.variable, reduce.accumulator, expr_sql, list_sql, init_cast
@@ -456,7 +451,12 @@ pub fn table_to_id_column_with_schema(
     for node_schema in schema.get_nodes_schemas().values() {
         let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
         if node_schema.table_name == table || fully_qualified == table {
-            return node_schema.node_id.columns().first().unwrap_or(&"id").to_string();
+            return node_schema
+                .node_id
+                .columns()
+                .first()
+                .unwrap_or(&"id")
+                .to_string();
         }
     }
 
@@ -512,8 +512,9 @@ fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
             // Get the node label for this table alias
             if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
                 // Map the property to the correct column
-                let mapped_column = map_property_to_column_with_schema(&prop.column.0.raw(), &node_label)
-                    .unwrap_or_else(|_| prop.column.0.raw().to_string());
+                let mapped_column =
+                    map_property_to_column_with_schema(&prop.column.0.raw(), &node_label)
+                        .unwrap_or_else(|_| prop.column.0.raw().to_string());
                 prop.column = super::render_expr::Column(PropertyValue::Column(mapped_column));
             }
         }
@@ -531,7 +532,8 @@ fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
         RenderExpr::TableAlias(alias) => {
             // For denormalized nodes, convert TableAlias to PropertyAccess with the ID column
             // This is especially important for GROUP BY expressions
-            if let Some((rel_alias, id_column)) = get_denormalized_node_id_reference(&alias.0, plan) {
+            if let Some((rel_alias, id_column)) = get_denormalized_node_id_reference(&alias.0, plan)
+            {
                 *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: super::render_expr::TableAlias(rel_alias),
                     column: super::render_expr::Column(PropertyValue::Column(id_column)),
@@ -616,7 +618,7 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
                     }
                 }
             }
-            
+
             // Recursively check left and right branches
             // Check right branch first (more recent relationships take precedence for multi-hop)
             if let Some(result) = get_denormalized_node_id_reference(alias, &rel.right) {
@@ -643,15 +645,17 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
         LogicalPlan::Filter(filter) => get_denormalized_node_id_reference(alias, &filter.input),
         LogicalPlan::Projection(proj) => get_denormalized_node_id_reference(alias, &proj.input),
         LogicalPlan::GraphJoins(joins) => get_denormalized_node_id_reference(alias, &joins.input),
-        LogicalPlan::OrderBy(order_by) => get_denormalized_node_id_reference(alias, &order_by.input),
+        LogicalPlan::OrderBy(order_by) => {
+            get_denormalized_node_id_reference(alias, &order_by.input)
+        }
         LogicalPlan::Skip(skip) => get_denormalized_node_id_reference(alias, &skip.input),
         LogicalPlan::Limit(limit) => get_denormalized_node_id_reference(alias, &limit.input),
-        LogicalPlan::GroupBy(group_by) => get_denormalized_node_id_reference(alias, &group_by.input),
-        LogicalPlan::Cte(cte) => get_denormalized_node_id_reference(alias, &cte.input),
-        LogicalPlan::CartesianProduct(cp) => {
-            get_denormalized_node_id_reference(alias, &cp.left)
-                .or_else(|| get_denormalized_node_id_reference(alias, &cp.right))
+        LogicalPlan::GroupBy(group_by) => {
+            get_denormalized_node_id_reference(alias, &group_by.input)
         }
+        LogicalPlan::Cte(cte) => get_denormalized_node_id_reference(alias, &cte.input),
+        LogicalPlan::CartesianProduct(cp) => get_denormalized_node_id_reference(alias, &cp.left)
+            .or_else(|| get_denormalized_node_id_reference(alias, &cp.right)),
         _ => None,
     }
 }
@@ -714,7 +718,7 @@ pub fn extract_ctes_with_context(
                     .unwrap_or_else(|| label_to_table_name(&start_label));
                 let end_table = extract_table_name(&graph_rel.right)
                     .unwrap_or_else(|| label_to_table_name(&end_label));
-                
+
                 // Get rel_table from ViewScan's source_table (authoritative) or fall back to label lookup
                 let rel_table = match graph_rel.center.as_ref() {
                     LogicalPlan::ViewScan(vs) => {
@@ -849,7 +853,7 @@ pub fn extract_ctes_with_context(
                 // Generate CTE with filters
                 // For shortest path queries, always use recursive CTE (even for exact hops)
                 // because we need proper filtering and shortest path selection logic
-                
+
                 // 🎯 DECISION POINT: CTE or inline JOINs?
                 let use_chained_join =
                     spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
@@ -862,18 +866,16 @@ pub fn extract_ctes_with_context(
                         "CTE BRANCH: Fixed-length pattern (*{}) detected - skipping CTE, using inline JOINs",
                         exact_hops
                     );
-                    
+
                     // Extract CTEs from child plans (if any)
                     let child_ctes =
                         extract_ctes_with_context(&graph_rel.right, last_node_alias, context)?;
-                    
+
                     return Ok(child_ctes);
                 } else {
                     // ✅ Truly variable-length or shortest path → RECURSIVE CTE!
-                    println!(
-                        "CTE BRANCH: Variable-length pattern detected - using recursive CTE"
-                    );
-                    
+                    println!("CTE BRANCH: Variable-length pattern detected - using recursive CTE");
+
                     // Check if nodes are denormalized (properties embedded in edge table)
                     let start_is_denormalized = match graph_rel.left.as_ref() {
                         LogicalPlan::GraphNode(node) => node.is_denormalized,
@@ -885,12 +887,14 @@ pub fn extract_ctes_with_context(
                     };
                     let both_denormalized = start_is_denormalized && end_is_denormalized;
                     let is_mixed = start_is_denormalized != end_is_denormalized;
-                    
+
                     // 🎯 Extract schema filters from start and end nodes
                     // Schema filters are defined in YAML and should be applied to CTE base/recursive cases
-                    let start_schema_filter = extract_schema_filter_from_node(&graph_rel.left, "start_node");
-                    let end_schema_filter = extract_schema_filter_from_node(&graph_rel.right, "end_node");
-                    
+                    let start_schema_filter =
+                        extract_schema_filter_from_node(&graph_rel.left, "start_node");
+                    let end_schema_filter =
+                        extract_schema_filter_from_node(&graph_rel.right, "end_node");
+
                     // Combine user filters with schema filters using AND
                     let combined_start_filters = match (&start_filters_sql, &start_schema_filter) {
                         (Some(user), Some(schema)) => Some(format!("({}) AND ({})", user, schema)),
@@ -898,33 +902,40 @@ pub fn extract_ctes_with_context(
                         (None, Some(schema)) => Some(schema.clone()),
                         (None, None) => None,
                     };
-                    
+
                     let combined_end_filters = match (&end_filters_sql, &end_schema_filter) {
                         (Some(user), Some(schema)) => Some(format!("({}) AND ({})", user, schema)),
                         (Some(user), None) => Some(user.clone()),
                         (None, Some(schema)) => Some(schema.clone()),
                         (None, None) => None,
                     };
-                    
+
                     if start_schema_filter.is_some() || end_schema_filter.is_some() {
-                        log::info!("CTE: Applying schema filters - start: {:?}, end: {:?}", 
-                                  start_schema_filter, end_schema_filter);
+                        log::info!(
+                            "CTE: Applying schema filters - start: {:?}, end: {:?}",
+                            start_schema_filter,
+                            end_schema_filter
+                        );
                     }
-                    
+
                     // Get edge_id from relationship schema if available
                     // Use the first relationship label to look up the schema
-                    let (edge_id, type_column, from_label_column, to_label_column, is_fk_edge) = if let Some(schema) = context.schema() {
-                        if let Some(labels) = &graph_rel.labels {
-                            if let Some(first_label) = labels.first() {
-                                // Try to get relationship schema by label (not table name)
-                                if let Ok(rel_schema) = schema.get_rel_schema(first_label) {
-                                    (
-                                        rel_schema.edge_id.clone(),
-                                        rel_schema.type_column.clone(),
-                                        rel_schema.from_label_column.clone(),
-                                        rel_schema.to_label_column.clone(),
-                                        rel_schema.is_fk_edge,
-                                    )
+                    let (edge_id, type_column, from_label_column, to_label_column, is_fk_edge) =
+                        if let Some(schema) = context.schema() {
+                            if let Some(labels) = &graph_rel.labels {
+                                if let Some(first_label) = labels.first() {
+                                    // Try to get relationship schema by label (not table name)
+                                    if let Ok(rel_schema) = schema.get_rel_schema(first_label) {
+                                        (
+                                            rel_schema.edge_id.clone(),
+                                            rel_schema.type_column.clone(),
+                                            rel_schema.from_label_column.clone(),
+                                            rel_schema.to_label_column.clone(),
+                                            rel_schema.is_fk_edge,
+                                        )
+                                    } else {
+                                        (None, None, None, None, false)
+                                    }
                                 } else {
                                     (None, None, None, None, false)
                                 }
@@ -933,23 +944,20 @@ pub fn extract_ctes_with_context(
                             }
                         } else {
                             (None, None, None, None, false)
-                        }
-                    } else {
-                        (None, None, None, None, false)
-                    };
-                    
+                        };
+
                     if is_fk_edge {
                         log::debug!("CTE: Detected FK-edge pattern for relationship type");
                     }
-                    
+
                     // Choose generator based on denormalized status
                     let mut generator = if both_denormalized {
                         log::debug!("CTE: Using denormalized generator for variable-length path (both nodes virtual)");
                         VariableLengthCteGenerator::new_denormalized(
                             spec.clone(),
-                            &rel_table,   // The only table - edge table
-                            &from_col,    // From column
-                            &to_col,      // To column
+                            &rel_table, // The only table - edge table
+                            &from_col,  // From column
+                            &to_col,    // To column
                             &graph_rel.left_connection,
                             &graph_rel.right_connection,
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()),
@@ -961,7 +969,7 @@ pub fn extract_ctes_with_context(
                             edge_id,
                         )
                     } else if is_mixed {
-                        log::debug!("CTE: Using mixed generator for variable-length path (start_denorm={}, end_denorm={})", 
+                        log::debug!("CTE: Using mixed generator for variable-length path (start_denorm={}, end_denorm={})",
                                   start_is_denormalized, end_is_denormalized);
                         VariableLengthCteGenerator::new_mixed(
                             spec.clone(),
@@ -1004,29 +1012,35 @@ pub fn extract_ctes_with_context(
                             combined_end_filters,
                             graph_rel.path_variable.clone(),
                             graph_rel.labels.clone(),
-                            edge_id, // Pass edge_id from schema
-                            type_column.clone(), // Polymorphic edge type discriminator
-                            from_label_column, // Polymorphic edge from label column
-                            to_label_column.clone(), // Polymorphic edge to label column
+                            edge_id,                   // Pass edge_id from schema
+                            type_column.clone(),       // Polymorphic edge type discriminator
+                            from_label_column,         // Polymorphic edge from label column
+                            to_label_column.clone(),   // Polymorphic edge to label column
                             Some(start_label.clone()), // Expected from node label
-                            Some(end_label.clone()), // Expected to node label
-                            is_fk_edge, // FK-edge pattern flag
+                            Some(end_label.clone()),   // Expected to node label
+                            is_fk_edge,                // FK-edge pattern flag
                         )
                     };
-                    
+
                     // For heterogeneous polymorphic paths (start_label != end_label with to_label_column),
                     // set intermediate node info to enable proper recursive traversal.
                     // The intermediate type is the same as start type (Group→Group recursion).
                     if to_label_column.is_some() && start_label != end_label {
-                        log::info!("CTE: Setting intermediate node for heterogeneous polymorphic path");
+                        log::info!(
+                            "CTE: Setting intermediate node for heterogeneous polymorphic path"
+                        );
                         log::info!("  - start_label: {}, end_label: {}", start_label, end_label);
-                        log::info!("  - intermediate: table={}, id_col={}, label={}", 
-                                  start_table, start_id_col, start_label);
+                        log::info!(
+                            "  - intermediate: table={}, id_col={}, label={}",
+                            start_table,
+                            start_id_col,
+                            start_label
+                        );
                         generator.set_intermediate_node(&start_table, &start_id_col, &start_label);
                     }
-                    
+
                     let var_len_cte = generator.generate_cte();
-                    
+
                     // Also extract CTEs from child plans
                     let mut child_ctes =
                         extract_ctes_with_context(&graph_rel.right, last_node_alias, context)?;
@@ -1045,22 +1059,24 @@ pub fn extract_ctes_with_context(
                     labels,
                     labels.len()
                 );
-                
+
                 // Deduplicate labels to handle cases like [:FOLLOWS|FOLLOWS]
                 let unique_labels: Vec<String> = {
                     let mut seen = std::collections::HashSet::new();
-                    labels.iter()
+                    labels
+                        .iter()
                         .filter(|l| seen.insert((*l).clone()))
                         .cloned()
                         .collect()
                 };
-                
+
                 if unique_labels.len() > 1 {
                     // Multiple distinct relationship types: create a UNION CTE
                     let rel_tables = rel_types_to_table_names(&unique_labels);
                     crate::debug_print!(
                         "DEBUG cte_extraction: Resolved tables for labels {:?}: {:?}",
-                        unique_labels, rel_tables
+                        unique_labels,
+                        rel_tables
                     );
 
                     // Check if this is a polymorphic edge (all types map to same table with type_column)
@@ -1080,35 +1096,58 @@ pub fn extract_ctes_with_context(
                         // Get schema info from context
                         if let Some(schema) = context.schema() {
                             if let Ok(rel_schema) = schema.get_rel_schema(&unique_labels[0]) {
-                                let table_name = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+                                let table_name =
+                                    format!("{}.{}", rel_schema.database, rel_schema.table_name);
                                 let from_col = &rel_schema.from_id;
                                 let to_col = &rel_schema.to_id;
-                                let type_col = rel_schema.type_column.as_ref().expect("polymorphic edge must have type_column");
-                                
+                                let type_col = rel_schema
+                                    .type_column
+                                    .as_ref()
+                                    .expect("polymorphic edge must have type_column");
+
                                 // For polymorphic edges, use a single query with IN clause
                                 // This is more efficient than UNION of identical table scans
                                 // Include type_column for relationship property access
-                                let type_values: Vec<String> = unique_labels.iter().map(|l| format!("'{}'", l)).collect();
+                                let type_values: Vec<String> =
+                                    unique_labels.iter().map(|l| format!("'{}'", l)).collect();
                                 let type_in_clause = type_values.join(", ");
-                                
+
                                 vec![format!(
                                     "SELECT {from_col} as from_node_id, {to_col} as to_node_id, {type_col} as interaction_type FROM {table_name} WHERE {type_col} IN ({type_in_clause})"
                                 )]
                             } else {
                                 // Fallback if schema lookup fails
-                                rel_tables.iter().map(|table| {
-                                    let (from_col, to_col) = get_relationship_columns_by_table(table)
-                                        .unwrap_or(("from_node_id".to_string(), "to_node_id".to_string()));
-                                    format!("SELECT {} as from_node_id, {} as to_node_id FROM {}", from_col, to_col, table)
-                                }).collect()
+                                rel_tables
+                                    .iter()
+                                    .map(|table| {
+                                        let (from_col, to_col) =
+                                            get_relationship_columns_by_table(table).unwrap_or((
+                                                "from_node_id".to_string(),
+                                                "to_node_id".to_string(),
+                                            ));
+                                        format!(
+                                            "SELECT {} as from_node_id, {} as to_node_id FROM {}",
+                                            from_col, to_col, table
+                                        )
+                                    })
+                                    .collect()
                             }
                         } else {
                             // No schema in context, fallback
-                            rel_tables.iter().map(|table| {
-                                let (from_col, to_col) = get_relationship_columns_by_table(table)
-                                    .unwrap_or(("from_node_id".to_string(), "to_node_id".to_string()));
-                                format!("SELECT {} as from_node_id, {} as to_node_id FROM {}", from_col, to_col, table)
-                            }).collect()
+                            rel_tables
+                                .iter()
+                                .map(|table| {
+                                    let (from_col, to_col) =
+                                        get_relationship_columns_by_table(table).unwrap_or((
+                                            "from_node_id".to_string(),
+                                            "to_node_id".to_string(),
+                                        ));
+                                    format!(
+                                        "SELECT {} as from_node_id, {} as to_node_id FROM {}",
+                                        from_col, to_col, table
+                                    )
+                                })
+                                .collect()
                         }
                     } else {
                         // Regular multiple relationship types: UNION of different tables
@@ -1117,7 +1156,10 @@ pub fn extract_ctes_with_context(
                             .map(|table| {
                                 // Get the correct column names for this table
                                 let (from_col, to_col) = get_relationship_columns_by_table(table)
-                                    .unwrap_or(("from_node_id".to_string(), "to_node_id".to_string())); // fallback
+                                    .unwrap_or((
+                                        "from_node_id".to_string(),
+                                        "to_node_id".to_string(),
+                                    )); // fallback
                                 format!(
                                     "SELECT {} as from_node_id, {} as to_node_id FROM {}",
                                     from_col, to_col, table
@@ -1135,7 +1177,10 @@ pub fn extract_ctes_with_context(
                     // Format as proper CTE: cte_name AS (union_sql)
                     let formatted_union_sql = format!("{} AS (\n{}\n)", cte_name, union_sql);
 
-                    crate::debug_println!("DEBUG cte_extraction: Generated UNION CTE: {}", cte_name);
+                    crate::debug_println!(
+                        "DEBUG cte_extraction: Generated UNION CTE: {}",
+                        cte_name
+                    );
 
                     relationship_ctes.push(Cte {
                         cte_name: cte_name.clone(),
@@ -1143,7 +1188,9 @@ pub fn extract_ctes_with_context(
                         is_recursive: false,
                     });
                 } else {
-                    crate::debug_println!("DEBUG cte_extraction: Single relationship type, no UNION needed");
+                    crate::debug_println!(
+                        "DEBUG cte_extraction: Single relationship type, no UNION needed"
+                    );
                 }
             } else {
                 crate::debug_println!("DEBUG cte_extraction: No labels on GraphRel!");
@@ -1152,13 +1199,15 @@ pub fn extract_ctes_with_context(
             // IMPORTANT: Recurse into left and right branches to collect CTEs from nested GraphRels
             // This is needed for multi-hop polymorphic patterns like (u)-[r1]->(m)-[r2]->(t)
             // where both r1 and r2 are wildcard edges needing their own CTEs
-            let mut left_ctes = extract_ctes_with_context(&graph_rel.left, last_node_alias, context)?;
-            let mut right_ctes = extract_ctes_with_context(&graph_rel.right, last_node_alias, context)?;
-            
+            let mut left_ctes =
+                extract_ctes_with_context(&graph_rel.left, last_node_alias, context)?;
+            let mut right_ctes =
+                extract_ctes_with_context(&graph_rel.right, last_node_alias, context)?;
+
             // Combine all CTEs: left branch + right branch + current relationship
             left_ctes.append(&mut right_ctes);
             left_ctes.append(&mut relationship_ctes);
-            
+
             Ok(left_ctes)
         }
         LogicalPlan::Filter(filter) => {
@@ -1256,7 +1305,11 @@ pub fn extract_ctes_with_context(
         LogicalPlan::Unwind(u) => extract_ctes_with_context(&u.input, last_node_alias, context),
         LogicalPlan::CartesianProduct(cp) => {
             let mut ctes = extract_ctes_with_context(&cp.left, last_node_alias, context)?;
-            ctes.append(&mut extract_ctes_with_context(&cp.right, last_node_alias, context)?);
+            ctes.append(&mut extract_ctes_with_context(
+                &cp.right,
+                last_node_alias,
+                context,
+            )?);
             Ok(ctes)
         }
         LogicalPlan::WithClause(wc) => {
@@ -1294,9 +1347,7 @@ pub fn has_variable_length_rel(plan: &LogicalPlan) -> Option<(String, String)> {
         }
         // For GraphRel without variable_length, check nested GraphRels in left branch
         // This handles chained patterns like (u)-[*]->(g)-[:REL]->(f)
-        LogicalPlan::GraphRel(rel) => {
-            has_variable_length_rel(&rel.left)
-        }
+        LogicalPlan::GraphRel(rel) => has_variable_length_rel(&rel.left),
         LogicalPlan::GraphNode(node) => has_variable_length_rel(&node.input),
         LogicalPlan::Filter(filter) => has_variable_length_rel(&filter.input),
         LogicalPlan::Projection(proj) => has_variable_length_rel(&proj.input),
@@ -1320,16 +1371,14 @@ pub fn is_variable_length_denormalized(plan: &LogicalPlan) -> bool {
             _ => false,
         }
     }
-    
+
     match plan {
         LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
             // Check if either left or right node is denormalized
             check_node_denormalized(&rel.left) || check_node_denormalized(&rel.right)
         }
         // For GraphRel without variable_length, check nested GraphRels in left branch
-        LogicalPlan::GraphRel(rel) => {
-            is_variable_length_denormalized(&rel.left)
-        }
+        LogicalPlan::GraphRel(rel) => is_variable_length_denormalized(&rel.left),
         LogicalPlan::GraphNode(node) => is_variable_length_denormalized(&node.input),
         LogicalPlan::Filter(filter) => is_variable_length_denormalized(&filter.input),
         LogicalPlan::Projection(proj) => is_variable_length_denormalized(&proj.input),
@@ -1359,11 +1408,11 @@ impl VariableLengthDenormInfo {
     pub fn is_fully_denormalized(&self) -> bool {
         self.start_is_denormalized && self.end_is_denormalized
     }
-    
+
     pub fn is_mixed(&self) -> bool {
         self.start_is_denormalized != self.end_is_denormalized
     }
-    
+
     pub fn is_any_denormalized(&self) -> bool {
         self.start_is_denormalized || self.end_is_denormalized
     }
@@ -1377,7 +1426,7 @@ pub fn get_variable_length_denorm_info(plan: &LogicalPlan) -> Option<VariableLen
             _ => false,
         }
     }
-    
+
     match plan {
         LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
             // Extract table names and id columns from the nodes' ViewScans
@@ -1385,7 +1434,7 @@ pub fn get_variable_length_denorm_info(plan: &LogicalPlan) -> Option<VariableLen
             let end_table = extract_table_name(&rel.right);
             let start_id_col = extract_id_column(&rel.left);
             let end_id_col = extract_id_column(&rel.right);
-            
+
             Some(VariableLengthDenormInfo {
                 start_is_denormalized: check_node_denormalized(&rel.left),
                 end_is_denormalized: check_node_denormalized(&rel.right),
@@ -1418,9 +1467,9 @@ pub fn get_variable_length_denorm_info(plan: &LogicalPlan) -> Option<VariableLen
 /// Used for SELECT rewriting to map f.Origin → t.start_id, f.Dest → t.end_id
 #[derive(Debug, Clone)]
 pub struct VariableLengthRelInfo {
-    pub rel_alias: String,    // e.g., "f"
-    pub from_col: String,     // e.g., "Origin"  
-    pub to_col: String,       // e.g., "Dest"
+    pub rel_alias: String, // e.g., "f"
+    pub from_col: String,  // e.g., "Origin"
+    pub to_col: String,    // e.g., "Dest"
 }
 
 /// Extract relationship info (alias, from_col, to_col) from a variable-length path
@@ -1475,13 +1524,13 @@ pub fn get_fixed_path_variable(plan: &LogicalPlan) -> Option<(String, u32)> {
             if rel.variable_length.is_some() {
                 return None;
             }
-            
+
             if let Some(ref path_var) = rel.path_variable {
                 // Count hops by traversing the GraphRel chain
                 let hop_count = count_hops_in_graph_rel(plan);
                 return Some((path_var.clone(), hop_count));
             }
-            
+
             // Check nested GraphRels
             if let LogicalPlan::GraphRel(_) = rel.left.as_ref() {
                 return get_fixed_path_variable(&rel.left);
@@ -1535,16 +1584,18 @@ pub struct FixedPathInfo {
 
 /// Extract complete path information from fixed multi-hop patterns
 /// Returns FixedPathInfo with all node and relationship aliases
-pub fn get_fixed_path_info(plan: &LogicalPlan) -> Result<Option<FixedPathInfo>, super::errors::RenderBuildError> {
+pub fn get_fixed_path_info(
+    plan: &LogicalPlan,
+) -> Result<Option<FixedPathInfo>, super::errors::RenderBuildError> {
     // First find the path variable and hop count
     let (path_var_name, hop_count) = match get_fixed_path_variable(plan) {
         Some(info) => info,
         None => return Ok(None),
     };
-    
+
     // Then extract all aliases and node ID mappings
     let (node_aliases, rel_aliases, node_id_columns) = collect_path_aliases_with_ids(plan)?;
-    
+
     Ok(Some(FixedPathInfo {
         path_var_name,
         node_aliases,
@@ -1555,13 +1606,27 @@ pub fn get_fixed_path_info(plan: &LogicalPlan) -> Result<Option<FixedPathInfo>, 
 }
 
 /// Collect node and relationship aliases plus ID column mappings
-fn collect_path_aliases_with_ids(plan: &LogicalPlan) -> Result<(Vec<String>, Vec<String>, std::collections::HashMap<String, (String, String)>), super::errors::RenderBuildError> {
+fn collect_path_aliases_with_ids(
+    plan: &LogicalPlan,
+) -> Result<
+    (
+        Vec<String>,
+        Vec<String>,
+        std::collections::HashMap<String, (String, String)>,
+    ),
+    super::errors::RenderBuildError,
+> {
     let mut node_aliases = Vec::new();
     let mut rel_aliases = Vec::new();
     let mut node_id_columns = std::collections::HashMap::new();
-    
-    collect_path_aliases_with_ids_recursive(plan, &mut node_aliases, &mut rel_aliases, &mut node_id_columns)?;
-    
+
+    collect_path_aliases_with_ids_recursive(
+        plan,
+        &mut node_aliases,
+        &mut rel_aliases,
+        &mut node_id_columns,
+    )?;
+
     Ok((node_aliases, rel_aliases, node_id_columns))
 }
 
@@ -1575,17 +1640,28 @@ fn collect_path_aliases_with_ids_recursive(
     match plan {
         LogicalPlan::GraphRel(rel) => {
             // Process left side first (may be another GraphRel or the start node)
-            collect_path_aliases_with_ids_recursive(&rel.left, node_aliases, rel_aliases, node_id_columns)?;
-            
+            collect_path_aliases_with_ids_recursive(
+                &rel.left,
+                node_aliases,
+                rel_aliases,
+                node_id_columns,
+            )?;
+
             // Get the from_id and to_id columns from the ViewScan
             if let LogicalPlan::ViewScan(view_scan) = rel.center.as_ref() {
                 // ViewScan should ALWAYS have from_id and to_id for relationship scans
                 // If missing, this is a query planner bug, not a user error
-                let from_id = view_scan.from_id.clone()
-                    .ok_or_else(|| super::errors::RenderBuildError::ViewScanMissingRelationshipColumn("from_id".to_string()))?;
-                let to_id = view_scan.to_id.clone()
-                    .ok_or_else(|| super::errors::RenderBuildError::ViewScanMissingRelationshipColumn("to_id".to_string()))?;
-                
+                let from_id = view_scan.from_id.clone().ok_or_else(|| {
+                    super::errors::RenderBuildError::ViewScanMissingRelationshipColumn(
+                        "from_id".to_string(),
+                    )
+                })?;
+                let to_id = view_scan.to_id.clone().ok_or_else(|| {
+                    super::errors::RenderBuildError::ViewScanMissingRelationshipColumn(
+                        "to_id".to_string(),
+                    )
+                })?;
+
                 // Map left node to this relationship's from_id (if not already mapped)
                 if !node_id_columns.contains_key(&rel.left_connection) {
                     node_id_columns.insert(
@@ -1593,17 +1669,14 @@ fn collect_path_aliases_with_ids_recursive(
                         (rel.alias.clone(), from_id.clone()),
                     );
                 }
-                
+
                 // Map right node to this relationship's to_id
-                node_id_columns.insert(
-                    rel.right_connection.clone(),
-                    (rel.alias.clone(), to_id),
-                );
+                node_id_columns.insert(rel.right_connection.clone(), (rel.alias.clone(), to_id));
             }
-            
+
             // Add this relationship
             rel_aliases.push(rel.alias.clone());
-            
+
             // Add the right node
             if let LogicalPlan::GraphNode(right_node) = rel.right.as_ref() {
                 if !node_aliases.contains(&right_node.alias) {
@@ -1617,28 +1690,68 @@ fn collect_path_aliases_with_ids_recursive(
                 node_aliases.push(node.alias.clone());
             }
             // Recurse into input
-            collect_path_aliases_with_ids_recursive(&node.input, node_aliases, rel_aliases, node_id_columns)?;
+            collect_path_aliases_with_ids_recursive(
+                &node.input,
+                node_aliases,
+                rel_aliases,
+                node_id_columns,
+            )?;
         }
         LogicalPlan::Filter(filter) => {
-            collect_path_aliases_with_ids_recursive(&filter.input, node_aliases, rel_aliases, node_id_columns)?;
+            collect_path_aliases_with_ids_recursive(
+                &filter.input,
+                node_aliases,
+                rel_aliases,
+                node_id_columns,
+            )?;
         }
         LogicalPlan::Projection(proj) => {
-            collect_path_aliases_with_ids_recursive(&proj.input, node_aliases, rel_aliases, node_id_columns)?;
+            collect_path_aliases_with_ids_recursive(
+                &proj.input,
+                node_aliases,
+                rel_aliases,
+                node_id_columns,
+            )?;
         }
         LogicalPlan::GraphJoins(joins) => {
-            collect_path_aliases_with_ids_recursive(&joins.input, node_aliases, rel_aliases, node_id_columns)?;
+            collect_path_aliases_with_ids_recursive(
+                &joins.input,
+                node_aliases,
+                rel_aliases,
+                node_id_columns,
+            )?;
         }
         LogicalPlan::GroupBy(gb) => {
-            collect_path_aliases_with_ids_recursive(&gb.input, node_aliases, rel_aliases, node_id_columns)?;
+            collect_path_aliases_with_ids_recursive(
+                &gb.input,
+                node_aliases,
+                rel_aliases,
+                node_id_columns,
+            )?;
         }
         LogicalPlan::OrderBy(ob) => {
-            collect_path_aliases_with_ids_recursive(&ob.input, node_aliases, rel_aliases, node_id_columns)?;
+            collect_path_aliases_with_ids_recursive(
+                &ob.input,
+                node_aliases,
+                rel_aliases,
+                node_id_columns,
+            )?;
         }
         LogicalPlan::Skip(skip) => {
-            collect_path_aliases_with_ids_recursive(&skip.input, node_aliases, rel_aliases, node_id_columns)?;
+            collect_path_aliases_with_ids_recursive(
+                &skip.input,
+                node_aliases,
+                rel_aliases,
+                node_id_columns,
+            )?;
         }
         LogicalPlan::Limit(limit) => {
-            collect_path_aliases_with_ids_recursive(&limit.input, node_aliases, rel_aliases, node_id_columns)?;
+            collect_path_aliases_with_ids_recursive(
+                &limit.input,
+                node_aliases,
+                rel_aliases,
+                node_id_columns,
+            )?;
         }
         _ => {}
     }
@@ -1650,7 +1763,7 @@ fn collect_path_aliases_with_ids_recursive(
 // ============================================================================
 
 /// Schema type classification for VLP query generation
-/// 
+///
 /// Different schema types require different SQL generation strategies:
 /// - Normal: Separate node and edge tables, standard JOIN patterns
 /// - Polymorphic: Single edge table with type_column, nodes still separate
@@ -1661,17 +1774,17 @@ pub enum VlpSchemaType {
     /// Standard schema: separate tables for nodes and edges
     /// Example: users table + follows table
     Normal,
-    
+
     /// Polymorphic edge: single edge table with type_column to distinguish edge types
     /// Example: interactions table with interaction_type column
     /// Nodes still have separate tables
     Polymorphic,
-    
+
     /// Denormalized: node properties embedded in edge table
     /// Example: flights table with Origin/Dest as node IDs and OriginCity/DestCity as properties
     /// No separate node tables exist
     Denormalized,
-    
+
     /// FK-Edge: edge is represented by a FK column on the node table
     /// Example: fs_objects table with parent_id FK column
     /// Edge table == Node table (self-referencing)
@@ -1679,48 +1792,48 @@ pub enum VlpSchemaType {
 }
 
 /// Consolidated VLP context containing all information needed for SQL generation
-/// 
+///
 /// This struct gathers all the scattered VLP-related info into one place,
 /// making it easier to reason about and pass through the code.
 #[derive(Debug, Clone)]
 pub struct VlpContext {
     /// Schema type determines SQL generation strategy
     pub schema_type: VlpSchemaType,
-    
+
     /// True if exact hop count (e.g., *2, *3), false if range/unbounded
     pub is_fixed_length: bool,
-    
+
     /// Exact hop count if fixed-length, None otherwise
     pub exact_hops: Option<u32>,
-    
+
     /// Min/max hops for range patterns
     pub min_hops: Option<u32>,
     pub max_hops: Option<u32>,
-    
+
     /// Start node information
     pub start_alias: String,
     pub start_table: String,
     pub start_id_col: String,
-    
-    /// End node information  
+
+    /// End node information
     pub end_alias: String,
     pub end_table: String,
     pub end_id_col: String,
-    
+
     /// Relationship information
     pub rel_alias: String,
     pub rel_table: String,
     pub rel_from_col: String,
     pub rel_to_col: String,
-    
+
     /// For polymorphic edges: type column and value
     pub type_column: Option<String>,
     pub type_value: Option<String>,
-    
+
     /// For denormalized edges: property mappings (logical_name -> ClickHouse column/expression)
     pub from_node_properties: Option<std::collections::HashMap<String, PropertyValue>>,
     pub to_node_properties: Option<std::collections::HashMap<String, PropertyValue>>,
-    
+
     /// For FK-edge patterns: true if edge is represented by FK on node table
     pub is_fk_edge: bool,
 }
@@ -1730,12 +1843,12 @@ impl VlpContext {
     pub fn needs_cte(&self) -> bool {
         !self.is_fixed_length
     }
-    
+
     /// Check if nodes have separate tables (not denormalized)
     pub fn has_separate_node_tables(&self) -> bool {
         self.schema_type != VlpSchemaType::Denormalized && self.schema_type != VlpSchemaType::FkEdge
     }
-    
+
     /// Check if this is an FK-edge pattern
     pub fn is_fk_edge(&self) -> bool {
         self.schema_type == VlpSchemaType::FkEdge || self.is_fk_edge
@@ -1743,34 +1856,36 @@ impl VlpContext {
 }
 
 /// Detect VLP schema type from a GraphRel
-pub fn detect_vlp_schema_type(graph_rel: &crate::query_planner::logical_plan::GraphRel) -> VlpSchemaType {
+pub fn detect_vlp_schema_type(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+) -> VlpSchemaType {
     // Check if nodes are denormalized
     let left_is_denorm = is_node_denormalized_from_graph_node(&graph_rel.left);
     let right_is_denorm = is_node_denormalized_from_graph_node(&graph_rel.right);
-    
+
     if left_is_denorm && right_is_denorm {
         return VlpSchemaType::Denormalized;
     }
-    
+
     // Check for FK-edge pattern: edge table == node table (self-referencing FK)
     // This is detected by checking if rel_table == start_table == end_table
     let rel_table = extract_table_name(&graph_rel.center);
     let start_table = extract_node_table(&graph_rel.left);
     let end_table = extract_node_table(&graph_rel.right);
-    
+
     if let (Some(rt), Some(st), Some(et)) = (rel_table, start_table, end_table) {
         if rt == st && rt == et {
             return VlpSchemaType::FkEdge;
         }
     }
-    
+
     // Check for polymorphic edge (has type_column)
     if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
         if scan.type_column.is_some() {
             return VlpSchemaType::Polymorphic;
         }
     }
-    
+
     VlpSchemaType::Normal
 }
 
@@ -1797,43 +1912,55 @@ fn is_node_denormalized_from_graph_node(plan: &LogicalPlan) -> bool {
 }
 
 /// Build a complete VlpContext from a GraphRel
-/// 
+///
 /// This gathers all VLP-related information into a single struct
-pub fn build_vlp_context(graph_rel: &crate::query_planner::logical_plan::GraphRel) -> Option<VlpContext> {
+pub fn build_vlp_context(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+) -> Option<VlpContext> {
     let spec = graph_rel.variable_length.as_ref()?;
-    
+
     let schema_type = detect_vlp_schema_type(graph_rel);
-    let is_fixed_length = spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
+    let is_fixed_length =
+        spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
     let exact_hops = spec.exact_hop_count();
-    
+
     // Extract start node info
-    let (start_alias, start_table, start_id_col) = extract_node_info(&graph_rel.left, schema_type, &graph_rel.center)?;
-    
+    let (start_alias, start_table, start_id_col) =
+        extract_node_info(&graph_rel.left, schema_type, &graph_rel.center)?;
+
     // Extract end node info
-    let (end_alias, end_table, end_id_col) = extract_node_info(&graph_rel.right, schema_type, &graph_rel.center)?;
-    
+    let (end_alias, end_table, end_id_col) =
+        extract_node_info(&graph_rel.right, schema_type, &graph_rel.center)?;
+
     // Extract relationship info
     let rel_alias = graph_rel.alias.clone();
     let rel_table = extract_table_name(&graph_rel.center)?;
     let rel_cols = extract_relationship_columns(&graph_rel.center)?;
-    
+
     // Extract polymorphic type info
     let (type_column, type_value) = if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
-        (scan.type_column.clone(), graph_rel.labels.as_ref().and_then(|l| l.first().cloned()))
+        (
+            scan.type_column.clone(),
+            graph_rel.labels.as_ref().and_then(|l| l.first().cloned()),
+        )
     } else {
         (None, None)
     };
-    
+
     // Extract denormalized property mappings
-    let (from_node_properties, to_node_properties) = if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
-        (scan.from_node_properties.clone(), scan.to_node_properties.clone())
-    } else {
-        (None, None)
-    };
-    
+    let (from_node_properties, to_node_properties) =
+        if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+            (
+                scan.from_node_properties.clone(),
+                scan.to_node_properties.clone(),
+            )
+        } else {
+            (None, None)
+        };
+
     // Detect FK-edge pattern
     let is_fk_edge = schema_type == VlpSchemaType::FkEdge;
-    
+
     Some(VlpContext {
         schema_type,
         is_fixed_length,
@@ -1867,7 +1994,7 @@ fn extract_node_info(
     match node_plan {
         LogicalPlan::GraphNode(node) => {
             let alias = node.alias.clone();
-            
+
             match schema_type {
                 VlpSchemaType::Denormalized => {
                     // For denormalized, table comes from relationship
@@ -1900,7 +2027,9 @@ fn extract_node_info(
 }
 
 /// Extract variable length spec from the plan
-pub fn get_variable_length_spec(plan: &LogicalPlan) -> Option<crate::query_planner::logical_plan::VariableLengthSpec> {
+pub fn get_variable_length_spec(
+    plan: &LogicalPlan,
+) -> Option<crate::query_planner::logical_plan::VariableLengthSpec> {
     match plan {
         LogicalPlan::GraphRel(rel) => {
             // Check if this GraphRel has variable_length
@@ -1908,8 +2037,7 @@ pub fn get_variable_length_spec(plan: &LogicalPlan) -> Option<crate::query_plann
                 return rel.variable_length.clone();
             }
             // Recursively check nested GraphRels (for chained patterns like (a)-[*]->(b)-[:R]->(c))
-            get_variable_length_spec(&rel.left)
-                .or_else(|| get_variable_length_spec(&rel.right))
+            get_variable_length_spec(&rel.left).or_else(|| get_variable_length_spec(&rel.right))
         }
         LogicalPlan::GraphNode(node) => get_variable_length_spec(&node.input),
         LogicalPlan::Filter(filter) => get_variable_length_spec(&filter.input),
@@ -1926,7 +2054,9 @@ pub fn get_variable_length_spec(plan: &LogicalPlan) -> Option<crate::query_plann
 }
 
 /// Extract shortest path mode from the plan
-pub fn get_shortest_path_mode(plan: &LogicalPlan) -> Option<crate::query_planner::logical_plan::ShortestPathMode> {
+pub fn get_shortest_path_mode(
+    plan: &LogicalPlan,
+) -> Option<crate::query_planner::logical_plan::ShortestPathMode> {
     match plan {
         LogicalPlan::GraphRel(rel) => rel.shortest_path_mode.clone(),
         LogicalPlan::GraphNode(node) => get_shortest_path_mode(&node.input),
@@ -2003,7 +2133,7 @@ pub fn get_node_schema_by_table<'a>(
 }
 
 /// Expand fixed-length path patterns into inline JOINs
-/// 
+///
 /// This function generates JOIN clauses for exact hop-count patterns (*2, *3, etc.)
 /// without using CTEs. It directly chains relationship and node JOINs.
 ///
@@ -2013,7 +2143,7 @@ pub fn get_node_schema_by_table<'a>(
 /// * `start_id_col` - ID column for start node
 /// * `rel_table` - Table name for relationship
 /// * `from_col` - From-node ID column in relationship table
-/// * `to_col` - To-node ID column in relationship table  
+/// * `to_col` - To-node ID column in relationship table
 /// * `end_table` - Table name for end node
 /// * `end_id_col` - ID column for end node
 /// * `start_alias` - Cypher alias for start node
@@ -2033,18 +2163,20 @@ pub fn expand_fixed_length_joins(
     start_alias: &str,
     end_alias: &str,
 ) -> Vec<Join> {
-    use super::render_expr::{Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias};
-    
+    use super::render_expr::{
+        Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    };
+
     let mut joins = Vec::new();
-    
+
     println!(
         "expand_fixed_length_joins: Generating {} hops from {} to {}",
         exact_hops, start_alias, end_alias
     );
-    
+
     for hop in 1..=exact_hops {
         let rel_alias = format!("r{}", hop);
-        
+
         // Determine previous node/relationship alias
         let prev_alias = if hop == 1 {
             start_alias.to_string()
@@ -2052,13 +2184,13 @@ pub fn expand_fixed_length_joins(
             // Bridge directly through previous relationship's to_id
             format!("r{}", hop - 1)
         };
-        
+
         let prev_id_col = if hop == 1 {
             start_id_col.to_string()
         } else {
             to_col.to_string() // Bridge through previous relationship's to_id
         };
-        
+
         // Add relationship JOIN
         joins.push(Join {
             table_name: rel_table.to_string(),
@@ -2079,11 +2211,11 @@ pub fn expand_fixed_length_joins(
             join_type: JoinType::Inner,
             pre_filter: None,
         });
-        
+
         // TODO: Add intermediate node JOIN only if properties referenced
         // For now, always bridge directly through relationship IDs (optimization!)
     }
-    
+
     // Always add final node JOIN (the endpoint)
     let last_rel = format!("r{}", exact_hops);
     joins.push(Join {
@@ -2105,17 +2237,17 @@ pub fn expand_fixed_length_joins(
         join_type: JoinType::Inner,
         pre_filter: None,
     });
-    
+
     println!(
         "expand_fixed_length_joins: Generated {} JOINs (no intermediate nodes)",
         joins.len()
     );
-    
+
     joins
 }
 
 /// Schema-aware fixed-length VLP JOIN generation using VlpContext
-/// 
+///
 /// This is the consolidated version that handles all schema types correctly:
 /// - Normal: FROM start_node, JOINs through r1...rN, final JOIN to end_node
 /// - Polymorphic: Same as Normal (nodes have separate tables)
@@ -2124,32 +2256,34 @@ pub fn expand_fixed_length_joins(
 /// # Returns
 /// (from_table, from_alias, joins) - The FROM table info and JOIN clauses
 pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, String, Vec<Join>) {
-    use super::render_expr::{Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias};
-    
+    use super::render_expr::{
+        Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    };
+
     let exact_hops = ctx.exact_hops.unwrap_or(1);
     let mut joins = Vec::new();
-    
+
     println!(
         "expand_fixed_length_joins_with_context: schema_type={:?}, {} hops from {} to {}",
         ctx.schema_type, exact_hops, ctx.start_alias, ctx.end_alias
     );
-    
+
     match ctx.schema_type {
         VlpSchemaType::Denormalized => {
             // DENORMALIZED: No separate node tables
             // FROM: edge_table AS r1 (the first hop becomes FROM)
             // JOINs: r2 ON r1.to_id = r2.from_id, ..., rN ON r(N-1).to_id = rN.from_id
             // No final node JOIN needed - end node properties come from rN.to_node_properties
-            
+
             // First hop is the FROM table, not a JOIN
             let from_table = ctx.rel_table.clone();
             let from_alias = "r1".to_string();
-            
+
             // Generate JOINs for hops 2..N
             for hop in 2..=exact_hops {
                 let rel_alias = format!("r{}", hop);
                 let prev_alias = format!("r{}", hop - 1);
-                
+
                 joins.push(Join {
                     table_name: ctx.rel_table.clone(),
                     table_alias: rel_alias.clone(),
@@ -2170,32 +2304,34 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     pre_filter: None,
                 });
             }
-            
+
             println!(
                 "expand_fixed_length_joins_with_context [DENORMALIZED]: FROM {} AS {}, {} JOINs",
-                from_table, from_alias, joins.len()
+                from_table,
+                from_alias,
+                joins.len()
             );
-            
+
             (from_table, from_alias, joins)
         }
-        
+
         VlpSchemaType::Normal | VlpSchemaType::Polymorphic => {
             // NORMAL/POLYMORPHIC: Separate node tables exist
             // FROM: start_node_table AS start_alias
             // JOINs: r1 ON start.id = r1.from_id, r2 ON r1.to_id = r2.from_id, ..., end ON rN.to_id = end.id
-            
+
             let from_table = ctx.start_table.clone();
             let from_alias = ctx.start_alias.clone();
-            
+
             for hop in 1..=exact_hops {
                 let rel_alias = format!("r{}", hop);
-                
+
                 let (prev_alias, prev_id_col) = if hop == 1 {
                     (ctx.start_alias.clone(), ctx.start_id_col.clone())
                 } else {
                     (format!("r{}", hop - 1), ctx.rel_to_col.clone())
                 };
-                
+
                 // Add relationship JOIN
                 joins.push(Join {
                     table_name: ctx.rel_table.clone(),
@@ -2217,7 +2353,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     pre_filter: None,
                 });
             }
-            
+
             // Add final node JOIN
             let last_rel = format!("r{}", exact_hops);
             joins.push(Join {
@@ -2239,15 +2375,15 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 join_type: JoinType::Inner,
                 pre_filter: None,
             });
-            
+
             println!(
                 "expand_fixed_length_joins_with_context [NORMAL/POLYMORPHIC]: FROM {} AS {}, {} JOINs",
                 from_table, from_alias, joins.len()
             );
-            
+
             (from_table, from_alias, joins)
         }
-        
+
         VlpSchemaType::FkEdge => {
             // FK-EDGE: Edge is FK column on node table, no separate edge table
             // FROM: start_node_table AS start_alias
@@ -2257,10 +2393,10 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
             // FROM fs_objects AS child
             // JOIN fs_objects AS m1 ON child.parent_id = m1.object_id  -- hop 1
             // JOIN fs_objects AS parent ON m1.parent_id = parent.object_id  -- hop 2
-            
+
             let from_table = ctx.start_table.clone();
             let from_alias = ctx.start_alias.clone();
-            
+
             for hop in 1..=exact_hops {
                 let is_last_hop = hop == exact_hops;
                 let current_alias = if is_last_hop {
@@ -2268,13 +2404,13 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 } else {
                     format!("m{}", hop)
                 };
-                
+
                 let prev_alias = if hop == 1 {
                     ctx.start_alias.clone()
                 } else {
                     format!("m{}", hop - 1)
                 };
-                
+
                 // FK-edge: prev_node.fk_col = current_node.id_col
                 // Example: child.parent_id = m1.object_id
                 joins.push(Join {
@@ -2297,23 +2433,25 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     pre_filter: None,
                 });
             }
-            
+
             println!(
                 "expand_fixed_length_joins_with_context [FK-EDGE]: FROM {} AS {}, {} JOINs",
-                from_table, from_alias, joins.len()
+                from_table,
+                from_alias,
+                joins.len()
             );
-            
+
             (from_table, from_alias, joins)
         }
     }
 }
 
 /// Generate cycle prevention filters for fixed-length paths
-/// 
+///
 /// Prevents nodes from being revisited in a path by ensuring:
 /// 1. Start node != End node
 /// 2. All intermediate relationship endpoints are unique
-/// 
+///
 /// For *2: `a.user_id != c.user_id AND r1.followed_id != r2.follower_id`
 /// For *3: `a.user_id != d.user_id AND r1.followed_id != r2.follower_id AND r2.followed_id != r3.follower_id`
 ///
@@ -2350,7 +2488,7 @@ pub fn generate_cycle_prevention_filters(
 }
 
 /// Generate cycle prevention filters for fixed-length paths with composite IDs
-/// 
+///
 /// Supports both simple and composite primary keys. For composite keys, generates
 /// NOT (col1=col1 AND col2=col2 AND ...) conditions.
 ///
@@ -2364,7 +2502,7 @@ pub fn generate_cycle_prevention_filters(
 /// * `exact_hops` - Number of relationship hops
 /// * `start_id_cols` - ID column names for start node
 /// * `to_cols` - "to" ID column names for relationships
-/// * `from_cols` - "from" ID column names for relationships  
+/// * `from_cols` - "from" ID column names for relationships
 /// * `end_id_cols` - ID column names for end node
 /// * `start_alias` - Alias for start node (e.g., "a")
 /// * `end_alias` - Alias for end node (e.g., "c")
@@ -2380,17 +2518,22 @@ pub fn generate_cycle_prevention_filters_composite(
     start_alias: &str,
     end_alias: &str,
 ) -> Option<RenderExpr> {
-    use super::render_expr::{Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias};
-    
+    use super::render_expr::{
+        Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    };
+
     if exact_hops == 0 {
         return None;
     }
-    
+
     let mut filters = Vec::new();
-    
+
     // Helper to generate composite equality check: NOT (col1=col1 AND col2=col2 AND ...)
-    let generate_composite_not_equal = |left_alias: &str, left_cols: &[&str], 
-                                       right_alias: &str, right_cols: &[&str]| -> RenderExpr {
+    let generate_composite_not_equal = |left_alias: &str,
+                                        left_cols: &[&str],
+                                        right_alias: &str,
+                                        right_cols: &[&str]|
+     -> RenderExpr {
         if left_cols.len() == 1 {
             // Simple ID: a.user_id != c.user_id
             RenderExpr::OperatorApplicationExp(OperatorApplication {
@@ -2408,7 +2551,9 @@ pub fn generate_cycle_prevention_filters_composite(
             })
         } else {
             // Composite ID: NOT (a.col1 = c.col1 AND a.col2 = c.col2 AND ...)
-            let equality_checks: Vec<RenderExpr> = left_cols.iter().zip(right_cols.iter())
+            let equality_checks: Vec<RenderExpr> = left_cols
+                .iter()
+                .zip(right_cols.iter())
                 .map(|(left_col, right_col)| {
                     RenderExpr::OperatorApplicationExp(OperatorApplication {
                         operator: Operator::Equal,
@@ -2425,19 +2570,22 @@ pub fn generate_cycle_prevention_filters_composite(
                     })
                 })
                 .collect();
-            
+
             // Combine equality checks with AND
             let combined_equality = if equality_checks.len() == 1 {
                 equality_checks.into_iter().next().unwrap()
             } else {
-                equality_checks.into_iter().reduce(|acc, expr| {
-                    RenderExpr::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::And,
-                        operands: vec![acc, expr],
+                equality_checks
+                    .into_iter()
+                    .reduce(|acc, expr| {
+                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![acc, expr],
+                        })
                     })
-                }).unwrap()
+                    .unwrap()
             };
-            
+
             // Wrap in NOT
             RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: Operator::Not,
@@ -2445,15 +2593,17 @@ pub fn generate_cycle_prevention_filters_composite(
             })
         }
     };
-    
+
     // 1. Start node != End node (prevents returning to the starting point)
     filters.push(generate_composite_not_equal(
-        start_alias, start_id_cols,
-        end_alias, end_id_cols,
+        start_alias,
+        start_id_cols,
+        end_alias,
+        end_id_cols,
     ));
-    
+
     // NOTE: We previously had cycle prevention for intermediate nodes, but it was WRONG.
-    // The condition `r1.to_id != r2.from_id` blocks VALID paths because that's exactly 
+    // The condition `r1.to_id != r2.from_id` blocks VALID paths because that's exactly
     // how paths connect (r1.to_id = r2.from_id is the JOIN condition).
     //
     // For proper cycle prevention (no node visited twice), we would need to track all
@@ -2462,7 +2612,7 @@ pub fn generate_cycle_prevention_filters_composite(
     //
     // For now, we only prevent returning to the start node, which is the most common
     // cycle prevention requirement. Full cycle detection can be added later if needed.
-    
+
     // Combine all filters with AND
     if filters.is_empty() {
         None
@@ -2470,11 +2620,16 @@ pub fn generate_cycle_prevention_filters_composite(
         Some(filters.into_iter().next().unwrap())
     } else {
         // Combine with AND
-        Some(filters.into_iter().reduce(|acc, filter| {
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::And,
-                operands: vec![acc, filter],
-            })
-        }).unwrap())
+        Some(
+            filters
+                .into_iter()
+                .reduce(|acc, filter| {
+                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::And,
+                        operands: vec![acc, filter],
+                    })
+                })
+                .unwrap(),
+        )
     }
 }

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::graph_catalog::SchemaValidator;
     use crate::graph_catalog::testing::mock_clickhouse::create_test_table_schemas;
+    use crate::graph_catalog::SchemaValidator;
 
     #[test]
     fn test_create_schema_validator() {

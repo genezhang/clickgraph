@@ -13,23 +13,27 @@ pub fn evaluate_where_clause<'a>(
     plan: Arc<LogicalPlan>,
 ) -> Arc<LogicalPlan> {
     let predicates: LogicalExpr = where_clause.conditions.clone().into();
-    
+
     // If input is a Union, push Filter into each branch
     // Each branch needs its own copy of the filter (will be mapped to correct columns by FilterTagging)
     if let LogicalPlan::Union(union) = plan.as_ref() {
-        let filtered_branches: Vec<Arc<LogicalPlan>> = union.inputs.iter().map(|branch| {
-            Arc::new(LogicalPlan::Filter(Filter {
-                input: branch.clone(),
-                predicate: predicates.clone(),
-            }))
-        }).collect();
-        
+        let filtered_branches: Vec<Arc<LogicalPlan>> = union
+            .inputs
+            .iter()
+            .map(|branch| {
+                Arc::new(LogicalPlan::Filter(Filter {
+                    input: branch.clone(),
+                    predicate: predicates.clone(),
+                }))
+            })
+            .collect();
+
         return Arc::new(LogicalPlan::Union(Union {
             inputs: filtered_branches,
             union_type: union.union_type.clone(),
         }));
     }
-    
+
     Arc::new(LogicalPlan::Filter(Filter {
         input: plan,
         predicate: predicates,

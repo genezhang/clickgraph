@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::query_planner::{
     analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult},
     logical_expr::LogicalExpr,
-    logical_plan::{GroupBy, LogicalPlan, Projection, ProjectionItem, ProjectionKind},
+    logical_plan::{GroupBy, LogicalPlan, Projection, ProjectionItem},
     plan_ctx::PlanCtx,
     transformed::Transformed,
 };
@@ -97,219 +97,139 @@ impl AnalyzerPass for GroupByBuilding {
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Projection(projection) => {
-                // Check if this is a WITH projection (ProjectionKind::With)
-                if matches!(projection.kind, ProjectionKind::With) {
-                    println!(
-                        "GroupByBuilding: Processing Projection(kind=With) with {} items",
-                        projection.items.len()
-                    );
-
-                    // First, analyze the child
-                    let child_tf = self.analyze(projection.input.clone(), _plan_ctx)?;
-
-                    // Check if any items contain aggregations
-                    let has_aggregations = projection
-                        .items
-                        .iter()
-                        .any(|item| matches!(item.expression, LogicalExpr::AggregateFnCall(_)));
-
-                    if has_aggregations {
-                        // WITH contains aggregations - convert to GroupBy
-                        // This creates a MATERIALIZATION BOUNDARY - subsequent MATCH patterns
-                        // must reference this as a CTE, not flatten into the same query.
-                        
-                        // Non-aggregated items become GROUP BY expressions
-                        // IMPORTANT: Exclude any computed expressions that contain aggregates (e.g., COUNT(b) * 10)
-                        let non_agg_items: Vec<ProjectionItem> = projection
-                            .items
-                            .iter()
-                            .filter(|item| !Self::contains_aggregate(&item.expression))
-                            .cloned()
-                            .collect();
-
-                        // Extract the exposed alias (the table/node alias being grouped)
-                        // For `WITH f, count(*) AS cnt`, the exposed alias is "f"
-                        let exposed_alias = non_agg_items.iter().find_map(|item| {
-                            match &item.expression {
-                                LogicalExpr::TableAlias(alias) => Some(alias.0.clone()),
-                                LogicalExpr::PropertyAccessExp(prop) if prop.column.raw() == "*" => {
-                                    Some(prop.table_alias.0.clone())
-                                }
-                                _ => None,
-                            }
-                        });
-
-                        let grouping_exprs: Vec<LogicalExpr> = non_agg_items
-                            .into_iter()
-                            .map(|item| item.expression)
-                            .collect();
-
-                        println!(
-                            "GroupByBuilding: Converting WITH Projection to GroupBy with {} grouping expressions, exposed_alias={:?}, is_materialization_boundary=true",
-                            grouping_exprs.len(), exposed_alias
-                        );
-
-                        // Create inner Projection with all WITH items (including aggregations)
-                        let inner_projection = Arc::new(LogicalPlan::Projection(Projection {
-                            input: child_tf.get_plan(),
-                            items: projection.items.clone(),
-                            kind: ProjectionKind::Return, // Inner projection is like RETURN
-                            distinct: false,
-                        }));
-
-                        // Wrap in GroupBy - marked as materialization boundary
-                        Transformed::Yes(Arc::new(LogicalPlan::GroupBy(GroupBy {
-                            input: inner_projection,
-                            expressions: grouping_exprs,
-                            having_clause: None, // Will be set later if Filter follows
-                            is_materialization_boundary: true, // KEY: This forms a query block boundary
-                            exposed_alias,
-                        })))
-                    } else {
-                        // No aggregations - keep as Projection and PRESERVE kind as With
-                        // This is important for render_plan to identify WITH clause boundaries
-                        println!(
-                            "GroupByBuilding: Converting WITH Projection to regular Projection (no aggregations, keeping kind=With)"
-                        );
-                        Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
-                            input: child_tf.get_plan(),
-                            items: projection.items.clone(),
-                            kind: ProjectionKind::With, // PRESERVE With kind for scope boundary detection
-                            distinct: false,
-                        })))
-                    }
-                } else {
-                    // This is a RETURN projection - check for aggregations
-                    println!(
+                // This is a RETURN projection - check for aggregations
+                println!(
                         "GroupByBuilding: Processing Projection(kind=Return) with {} items, distinct={}",
                         projection.items.len(),
                         projection.distinct
                     );
 
-                    // Use contains_aggregate to properly detect aggregates including computed expressions
-                    let non_agg_projections: Vec<ProjectionItem> = projection
-                        .items
-                        .iter()
-                        .filter(|item| !Self::contains_aggregate(&item.expression))
-                        .cloned()
-                        .collect();
+                // Use contains_aggregate to properly detect aggregates including computed expressions
+                let non_agg_projections: Vec<ProjectionItem> = projection
+                    .items
+                    .iter()
+                    .filter(|item| !Self::contains_aggregate(&item.expression))
+                    .cloned()
+                    .collect();
 
-                    let agg_count = projection.items.len() - non_agg_projections.len();
-                    println!(
-                        "GroupByBuilding: Found {} aggregations, {} non-aggregations",
-                        agg_count,
-                        non_agg_projections.len()
-                    );
+                let agg_count = projection.items.len() - non_agg_projections.len();
+                println!(
+                    "GroupByBuilding: Found {} aggregations, {} non-aggregations",
+                    agg_count,
+                    non_agg_projections.len()
+                );
 
-                    // First check if RETURN has its own aggregations
-                    if non_agg_projections.len() < projection.items.len()
-                        && !non_agg_projections.is_empty()
-                    {
-                        // RETURN has aggregations - this is potentially a two-level aggregation pattern
-                        // First, analyze the child to create inner GroupBy (for WITH)
-                        let child_tf = self.analyze(projection.input.clone(), _plan_ctx)?;
-                        let analyzed_child = child_tf.get_plan();
-                        
-                        // Check if this is a two-level aggregation pattern:
-                        // RETURN has aggregations AND its child is a GroupBy (from WITH)
-                        // In this case, we need to wrap the GroupBy in a CTE structure
-                        if let LogicalPlan::GroupBy(_inner_group_by) = analyzed_child.as_ref() {
-                            println!(
+                // First check if RETURN has its own aggregations
+                if non_agg_projections.len() < projection.items.len()
+                    && !non_agg_projections.is_empty()
+                {
+                    // RETURN has aggregations - this is potentially a two-level aggregation pattern
+                    // First, analyze the child to create inner GroupBy (for WITH)
+                    let child_tf = self.analyze(projection.input.clone(), _plan_ctx)?;
+                    let analyzed_child = child_tf.get_plan();
+
+                    // Check if this is a two-level aggregation pattern:
+                    // RETURN has aggregations AND its child is a GroupBy (from WITH)
+                    // In this case, we need to wrap the GroupBy in a CTE structure
+                    if let LogicalPlan::GroupBy(_inner_group_by) = analyzed_child.as_ref() {
+                        println!(
                                 "GroupByBuilding: Two-level aggregation detected - RETURN aggregates over WITH GroupBy"
                             );
-                            
-                            // Create a nested GroupBy structure:
-                            // Outer GroupBy (RETURN's aggregation) wraps the Projection which references the inner GroupBy
-                            let new_projection = Arc::new(LogicalPlan::Projection(Projection {
-                                input: analyzed_child.clone(),
-                                items: projection.items.clone(),
-                                kind: projection.kind.clone(),
-                                distinct: projection.distinct,
-                            }));
-                            
-                            Transformed::Yes(Arc::new(LogicalPlan::GroupBy(GroupBy {
-                                input: new_projection,
-                                expressions: non_agg_projections
-                                    .into_iter()
-                                    .map(|item| item.expression)
-                                    .collect(),
-                                having_clause: None,
-                                is_materialization_boundary: false,
-                                exposed_alias: None,
-                            })))
-                        } else {
-                            // Single-level aggregation - just wrap the analyzed child
-                            let new_projection = Arc::new(LogicalPlan::Projection(Projection {
-                                input: analyzed_child,
-                                items: projection.items.clone(),
-                                kind: projection.kind.clone(),
-                                distinct: projection.distinct,
-                            }));
-                            
-                            println!(
-                                "GroupByBuilding: Creating GroupBy node with {} grouping expressions",
-                                non_agg_projections.len()
-                            );
-                            Transformed::Yes(Arc::new(LogicalPlan::GroupBy(GroupBy {
-                                input: new_projection,
-                                expressions: non_agg_projections
-                                    .into_iter()
-                                    .map(|item| item.expression)
-                                    .collect(),
-                                having_clause: None,
-                                is_materialization_boundary: false,
-                                exposed_alias: None,
-                            })))
-                        }
+
+                        // Create a nested GroupBy structure:
+                        // Outer GroupBy (RETURN's aggregation) wraps the Projection which references the inner GroupBy
+                        let new_projection = Arc::new(LogicalPlan::Projection(Projection {
+                            input: analyzed_child.clone(),
+                            items: projection.items.clone(),
+                            kind: projection.kind.clone(),
+                            distinct: projection.distinct,
+                        }));
+
+                        Transformed::Yes(Arc::new(LogicalPlan::GroupBy(GroupBy {
+                            input: new_projection,
+                            expressions: non_agg_projections
+                                .into_iter()
+                                .map(|item| item.expression)
+                                .collect(),
+                            having_clause: None,
+                            is_materialization_boundary: false,
+                            exposed_alias: None,
+                        })))
                     } else {
-                        // No aggregations in RETURN - recurse into child first, then check for optimization
+                        // Single-level aggregation - just wrap the analyzed child
+                        let new_projection = Arc::new(LogicalPlan::Projection(Projection {
+                            input: analyzed_child,
+                            items: projection.items.clone(),
+                            kind: projection.kind.clone(),
+                            distinct: projection.distinct,
+                        }));
+
                         println!(
-                            "GroupByBuilding: No aggregations in this Projection, recursing into child"
+                            "GroupByBuilding: Creating GroupBy node with {} grouping expressions",
+                            non_agg_projections.len()
                         );
-                        let child_tf = self.analyze(projection.input.clone(), _plan_ctx)?;
-                        
-                        // Get the transformed plan (clone it so we can check and potentially return it)
-                        let transformed_child = child_tf.clone().get_plan();
-                        
-                        // OPTIMIZATION: Check if the TRANSFORMED child is now a GroupBy
-                        // and if RETURN just passes through WITH aliases unchanged
-                        if let LogicalPlan::GroupBy(group_by) = transformed_child.as_ref() {
-                            println!(
+                        Transformed::Yes(Arc::new(LogicalPlan::GroupBy(GroupBy {
+                            input: new_projection,
+                            expressions: non_agg_projections
+                                .into_iter()
+                                .map(|item| item.expression)
+                                .collect(),
+                            having_clause: None,
+                            is_materialization_boundary: false,
+                            exposed_alias: None,
+                        })))
+                    }
+                } else {
+                    // No aggregations in RETURN - recurse into child first, then check for optimization
+                    println!(
+                        "GroupByBuilding: No aggregations in this Projection, recursing into child"
+                    );
+                    let child_tf = self.analyze(projection.input.clone(), _plan_ctx)?;
+
+                    // Get the transformed plan (clone it so we can check and potentially return it)
+                    let transformed_child = child_tf.clone().get_plan();
+
+                    // OPTIMIZATION: Check if the TRANSFORMED child is now a GroupBy
+                    // and if RETURN just passes through WITH aliases unchanged
+                    if let LogicalPlan::GroupBy(group_by) = transformed_child.as_ref() {
+                        println!(
                                 "GroupByBuilding: Transformed child is GroupBy, checking for pass-through optimization"
                             );
-                            
-                            // Extract aliases from the inner Projection (WITH clause)
-                            if let LogicalPlan::Projection(inner_proj) = group_by.input.as_ref() {
-                                let with_aliases: std::collections::HashSet<String> = inner_proj
-                                    .items
-                                    .iter()
-                                    .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
-                                    .collect();
-                                
-                                // Check if all RETURN items are simple TableAlias pass-throughs
-                                let all_pass_through = projection.items.iter().all(|item| {
-                                    if let LogicalExpr::TableAlias(alias) = &item.expression {
-                                        // Check if alias is from WITH and output alias matches
-                                        with_aliases.contains(&alias.0) && 
-                                        item.col_alias.as_ref().map_or(false, |col| col.0 == alias.0)
-                                    } else {
-                                        false
-                                    }
-                                });
-                                
-                                if all_pass_through && projection.items.len() == with_aliases.len() {
-                                    println!(
+
+                        // Extract aliases from the inner Projection (WITH clause)
+                        if let LogicalPlan::Projection(inner_proj) = group_by.input.as_ref() {
+                            let with_aliases: std::collections::HashSet<String> = inner_proj
+                                .items
+                                .iter()
+                                .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                                .collect();
+
+                            // Check if all RETURN items are simple TableAlias pass-throughs
+                            let all_pass_through = projection.items.iter().all(|item| {
+                                if let LogicalExpr::TableAlias(alias) = &item.expression {
+                                    // Check if alias is from WITH and output alias matches
+                                    with_aliases.contains(&alias.0)
+                                        && item
+                                            .col_alias
+                                            .as_ref()
+                                            .map_or(false, |col| col.0 == alias.0)
+                                } else {
+                                    false
+                                }
+                            });
+
+                            if all_pass_through && projection.items.len() == with_aliases.len() {
+                                println!(
                                         "GroupByBuilding: OPTIMIZATION - RETURN passes through all WITH aliases unchanged, eliminating outer Projection"
                                     );
-                                    // Just return the GroupBy directly, skipping the outer Projection
-                                    return Ok(child_tf);
-                                }
+                                // Just return the GroupBy directly, skipping the outer Projection
+                                return Ok(child_tf);
                             }
                         }
-                        
-                        // Not a pass-through or child isn't GroupBy - keep the Projection
-                        projection.rebuild_or_clone(child_tf, logical_plan.clone())
                     }
+
+                    // Not a pass-through or child isn't GroupBy - keep the Projection
+                    projection.rebuild_or_clone(child_tf, logical_plan.clone())
                 }
             }
             LogicalPlan::GroupBy(group_by) => {
@@ -340,59 +260,6 @@ impl AnalyzerPass for GroupByBuilding {
             LogicalPlan::Filter(filter) => {
                 println!("GroupByBuilding: Processing Filter node");
 
-                // Check if child is Projection(kind=With) with aggregations (before transformation)
-                if let LogicalPlan::Projection(projection) = filter.input.as_ref() {
-                    if matches!(projection.kind, ProjectionKind::With) {
-                        // Check if WITH has aggregations
-                        let has_aggregations = projection
-                            .items
-                            .iter()
-                            .any(|item| matches!(item.expression, LogicalExpr::AggregateFnCall(_)));
-
-                        if has_aggregations {
-                            println!(
-                                "GroupByBuilding: Filter's child is WITH Projection with aggregations"
-                            );
-                            let refs_proj_alias =
-                                Self::references_projection_alias(&filter.predicate, _plan_ctx);
-                            println!(
-                                "GroupByBuilding: Filter references WITH alias: {}",
-                                refs_proj_alias
-                            );
-
-                            // Analyze the Projection(kind=With) node first to convert it to GroupBy
-                            let with_tf = self.analyze(filter.input.clone(), _plan_ctx)?;
-                            let with_plan = with_tf.get_plan();
-
-                            if refs_proj_alias {
-                                // This filter should become HAVING clause
-                                if let LogicalPlan::GroupBy(group_by) = with_plan.as_ref() {
-                                    println!(
-                                        "GroupByBuilding: Converting Filter after WITH to HAVING clause"
-                                    );
-                                    return Ok(Transformed::Yes(Arc::new(LogicalPlan::GroupBy(
-                                        GroupBy {
-                                            input: group_by.input.clone(),
-                                            expressions: group_by.expressions.clone(),
-                                            having_clause: Some(filter.predicate.clone()),
-                                            is_materialization_boundary: group_by.is_materialization_boundary,
-                                            exposed_alias: group_by.exposed_alias.clone(),
-                                        },
-                                    ))));
-                                }
-                            }
-
-                            // Otherwise, keep as WHERE filter
-                            return Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(
-                                crate::query_planner::logical_plan::Filter {
-                                    input: with_plan.clone(),
-                                    predicate: filter.predicate.clone(),
-                                },
-                            ))));
-                        }
-                    }
-                }
-
                 // First, analyze the child to potentially create GroupBy nodes
                 let child_tf = self.analyze(filter.input.clone(), _plan_ctx)?;
 
@@ -419,7 +286,8 @@ impl AnalyzerPass for GroupByBuilding {
                                         input: group_by.input.clone(),
                                         expressions: group_by.expressions.clone(),
                                         having_clause: Some(filter.predicate.clone()),
-                                        is_materialization_boundary: group_by.is_materialization_boundary,
+                                        is_materialization_boundary: group_by
+                                            .is_materialization_boundary,
                                         exposed_alias: group_by.exposed_alias.clone(),
                                     },
                                 ))));
@@ -464,19 +332,24 @@ impl AnalyzerPass for GroupByBuilding {
             LogicalPlan::Unwind(u) => {
                 let child_tf = self.analyze(u.input.clone(), _plan_ctx)?;
                 match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-                        input: new_input,
-                        expression: u.expression.clone(),
-                        alias: u.alias.clone(),
-                    }))),
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                        },
+                    ))),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
             LogicalPlan::CartesianProduct(cp) => {
                 let transformed_left = self.analyze(cp.left.clone(), _plan_ctx)?;
                 let transformed_right = self.analyze(cp.right.clone(), _plan_ctx)?;
-                
-                if matches!((&transformed_left, &transformed_right), (Transformed::No(_), Transformed::No(_))) {
+
+                if matches!(
+                    (&transformed_left, &transformed_right),
+                    (Transformed::No(_), Transformed::No(_))
+                ) {
                     Transformed::No(logical_plan.clone())
                 } else {
                     let new_cp = crate::query_planner::logical_plan::CartesianProduct {
@@ -534,7 +407,9 @@ mod tests {
     fn create_property_access(table: &str, column: &str) -> LogicalExpr {
         LogicalExpr::PropertyAccessExp(PropertyAccess {
             table_alias: TableAlias(table.to_string()),
-            column: crate::graph_catalog::expression_parser::PropertyValue::Column(column.to_string()),
+            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                column.to_string(),
+            ),
         })
     }
 

@@ -1,11 +1,11 @@
 //! Mock ClickHouse client for testing graph view validation.
-//! 
+//!
 //! This module provides a mock ClickHouse client that simulates database schema queries
 //! for testing purposes. It includes predefined schemas for common test tables and
 //! handles error cases for invalid tables.
-//! 
+//!
 //! # Test Schema
-//! 
+//!
 //! ## Users Table
 //! ```sql
 //! CREATE TABLE users (
@@ -16,7 +16,7 @@
 //!     is_active UInt8
 //! )
 //! ```
-//! 
+//!
 //! ## Posts Table
 //! ```sql
 //! CREATE TABLE posts (
@@ -27,12 +27,12 @@
 //!     post_date DateTime
 //! )
 //! ```
-//! 
+//!
 //! # Usage
-//! 
+//!
 //! ```rust,no_run
 //! use crate::graph_catalog::tests::mock_clickhouse::mock_clickhouse_client;
-//! 
+//!
 //! #[tokio::test]
 //! async fn test_schema_validation() {
 //!     let client = mock_clickhouse_client();
@@ -61,10 +61,10 @@ mock! {
 /// Test helper to create a mock ClickHouse client with predefined schema responses
 pub fn mock_clickhouse_client() -> MockClient {
     let mut client = MockClient::new();
-    
+
     // Set up mock responses for table schemas
     let mut table_schemas = HashMap::new();
-    
+
     // Mock users table schema
     table_schemas.insert(
         "users",

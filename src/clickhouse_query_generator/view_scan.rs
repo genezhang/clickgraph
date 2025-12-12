@@ -3,7 +3,6 @@
 //! This module handles converting ViewScan operations from the logical plan
 //! into equivalent SQL queries.
 
-
 use crate::query_planner::logical_plan::{LogicalPlan, ViewScan};
 
 /// Build a SQL query for a ViewScan operation

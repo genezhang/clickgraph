@@ -1,28 +1,25 @@
 /// Property expression parser for ClickHouse scalar expressions
-/// 
+///
 /// Parses simple expressions used in schema property mappings:
 /// - Column references: `user_id`, `full_name`
 /// - Quoted identifiers: `"First Name"`, `` `User-ID` ``
 /// - Function calls: `concat(first_name, ' ', last_name)`
 /// - Math operations: `score / 100.0`, `price * quantity`
 /// - Array indexing: `tags[1]`
-/// 
+///
 /// Does NOT support (use at query time):
 /// - Conditionals: `CASE WHEN`, `multiIf()`, `IF()`
 /// - Comparisons: `age >= 18`
 /// - Boolean logic: `AND`, `OR`, `NOT`
 /// - Lambdas: `arrayMap(x -> expr, arr)`
-
 use nom::{
-    IResult, Parser,
     branch::alt,
     bytes::complete::{tag, take_until},
-    character::complete::{
-        alphanumeric1, char, digit1, multispace0, one_of,
-    },
+    character::complete::{alphanumeric1, char, digit1, multispace0, one_of},
     combinator::{map, opt, recognize},
     multi::{many0, separated_list0},
     sequence::{delimited, preceded},
+    IResult, Parser,
 };
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +29,7 @@ use serde::{Deserialize, Serialize};
 pub enum PropertyValue {
     /// Simple column reference (stored as string)
     Column(String),
-    
+
     /// Expression (stored as raw string, parsed on demand)
     Expression(String),
 }
@@ -57,7 +54,10 @@ impl PropertyValue {
                     Ok((_, ast)) => ast.to_sql(table_alias),
                     Err(_) => {
                         // Fallback: treat as raw SQL
-                        crate::debug_print!("Warning: Failed to parse expression '{}', using as-is", expr);
+                        crate::debug_print!(
+                            "Warning: Failed to parse expression '{}', using as-is",
+                            expr
+                        );
                         expr.clone()
                     }
                 }
@@ -82,14 +82,17 @@ impl PropertyValue {
                     Ok((_, ast)) => ast.to_sql_no_alias(),
                     Err(_) => {
                         // Fallback: treat as raw SQL
-                        crate::debug_print!("Warning: Failed to parse expression '{}', using as-is", expr);
+                        crate::debug_print!(
+                            "Warning: Failed to parse expression '{}', using as-is",
+                            expr
+                        );
                         expr.clone()
                     }
                 }
             }
         }
     }
-    
+
     /// Get raw value (for debugging)
     pub fn raw(&self) -> &str {
         match self {
@@ -97,7 +100,7 @@ impl PropertyValue {
             PropertyValue::Expression(expr) => expr,
         }
     }
-    
+
     /// Get all column references from this value
     pub fn get_columns(&self) -> Vec<String> {
         match self {
@@ -118,29 +121,29 @@ impl PropertyValue {
 pub enum ClickHouseExpr {
     /// Column reference: user_id
     Column(String),
-    
+
     /// Quoted column: "First Name" or `User-ID`
     QuotedColumn(String),
-    
+
     /// Function call: concat(a, b)
     FunctionCall {
         name: String,
         args: Vec<ClickHouseExpr>,
     },
-    
+
     /// Binary operation: a + b, score / 100.0
     BinaryOp {
         op: Operator,
         left: Box<ClickHouseExpr>,
         right: Box<ClickHouseExpr>,
     },
-    
+
     /// Array indexing: tags[1]
     ArrayIndex {
         array: Box<ClickHouseExpr>,
         index: Box<ClickHouseExpr>,
     },
-    
+
     /// Literal: 'string', 123, 45.67
     Literal(Literal),
 }
@@ -167,7 +170,7 @@ impl ClickHouseExpr {
             ClickHouseExpr::Literal(_) => vec![],
         }
     }
-    
+
     /// Generate SQL with table alias prefix
     pub fn to_sql(&self, table_alias: &str) -> String {
         match self {
@@ -178,27 +181,25 @@ impl ClickHouseExpr {
                 format!("{}.\"{}\"", table_alias, col)
             }
             ClickHouseExpr::FunctionCall { name, args } => {
-                let args_sql: Vec<String> = args.iter()
-                    .map(|a| a.to_sql(table_alias))
-                    .collect();
+                let args_sql: Vec<String> = args.iter().map(|a| a.to_sql(table_alias)).collect();
                 format!("{}({})", name, args_sql.join(", "))
             }
             ClickHouseExpr::BinaryOp { op, left, right } => {
-                format!("({} {} {})", 
+                format!(
+                    "({} {} {})",
                     left.to_sql(table_alias),
                     op.to_str(),
                     right.to_sql(table_alias)
                 )
             }
             ClickHouseExpr::ArrayIndex { array, index } => {
-                format!("{}[{}]",
+                format!(
+                    "{}[{}]",
                     array.to_sql(table_alias),
                     index.to_sql(table_alias)
                 )
             }
-            ClickHouseExpr::Literal(lit) => {
-                lit.to_sql()
-            }
+            ClickHouseExpr::Literal(lit) => lit.to_sql(),
         }
     }
 
@@ -209,27 +210,21 @@ impl ClickHouseExpr {
             ClickHouseExpr::Column(col) => col.clone(),
             ClickHouseExpr::QuotedColumn(col) => format!("\"{}\"", col),
             ClickHouseExpr::FunctionCall { name, args } => {
-                let args_sql: Vec<String> = args.iter()
-                    .map(|a| a.to_sql_no_alias())
-                    .collect();
+                let args_sql: Vec<String> = args.iter().map(|a| a.to_sql_no_alias()).collect();
                 format!("{}({})", name, args_sql.join(", "))
             }
             ClickHouseExpr::BinaryOp { op, left, right } => {
-                format!("({} {} {})", 
+                format!(
+                    "({} {} {})",
                     left.to_sql_no_alias(),
                     op.to_str(),
                     right.to_sql_no_alias()
                 )
             }
             ClickHouseExpr::ArrayIndex { array, index } => {
-                format!("{}[{}]",
-                    array.to_sql_no_alias(),
-                    index.to_sql_no_alias()
-                )
+                format!("{}[{}]", array.to_sql_no_alias(), index.to_sql_no_alias())
             }
-            ClickHouseExpr::Literal(lit) => {
-                lit.to_sql()
-            }
+            ClickHouseExpr::Literal(lit) => lit.to_sql(),
         }
     }
 }
@@ -275,12 +270,12 @@ impl Operator {
 /// Parse property value (entry point)
 pub fn parse_property_value(value: &str) -> Result<PropertyValue, String> {
     let value = value.trim();
-    
+
     // Check for simple column name
     if is_simple_column(value) {
         return Ok(PropertyValue::Column(value.to_string()));
     }
-    
+
     // Parse as expression
     match parse_clickhouse_scalar_expr(value) {
         Ok((remaining, _ast)) => {
@@ -291,9 +286,7 @@ pub fn parse_property_value(value: &str) -> Result<PropertyValue, String> {
             // Store as expression (raw string)
             Ok(PropertyValue::Expression(value.to_string()))
         }
-        Err(e) => {
-            Err(format!("Parse error: {:?}", e))
-        }
+        Err(e) => Err(format!("Parse error: {:?}", e)),
     }
 }
 
@@ -301,14 +294,15 @@ fn is_simple_column(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }
-    
+
     let first = s.chars().next().unwrap();
     if !first.is_alphabetic() && first != '_' {
         return false;
     }
-    
+
     // Allow alphanumeric, underscore, and dot (for nested columns like id.orig_h)
-    s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    s.chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
 }
 
 fn needs_quoting(col: &str) -> bool {
@@ -329,16 +323,16 @@ fn parse_binary_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
 
 fn parse_additive_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
     let (input, left) = parse_multiplicative_expr(input)?;
-    
+
     // Try to parse additional additive operations
     let mut current_left = left;
     let mut current_input = input;
-    
+
     loop {
         let (new_input, _) = multispace0(current_input)?;
-        
+
         // Try to parse + or -
-        if let Ok((new_input, _)) = char::<_,nom::error::Error<_>>('+')(new_input) {
+        if let Ok((new_input, _)) = char::<_, nom::error::Error<_>>('+')(new_input) {
             let op = Operator::Addition;
             let (new_input, _) = multispace0(new_input)?;
             if let Ok((new_input, right)) = parse_multiplicative_expr(new_input) {
@@ -374,25 +368,26 @@ fn parse_additive_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
 
 fn parse_multiplicative_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
     let (input, left) = parse_postfix_expr(input)?;
-    
+
     // Try to parse additional multiplicative operations
     let mut current_left = left;
     let mut current_input = input;
-    
+
     loop {
         let (new_input, _) = multispace0(current_input)?;
-        
+
         // Try to parse *, /, or %
-        let op_and_input = if let Ok((new_input, _)) = char::<_, nom::error::Error<_>>('*')(new_input) {
-            Some((new_input, Operator::Multiplication))
-        } else if let Ok((new_input, _)) = char::<_, nom::error::Error<_>>('/')(new_input) {
-            Some((new_input, Operator::Division))
-        } else if let Ok((new_input, _)) = char::<_, nom::error::Error<_>>('%')(new_input) {
-            Some((new_input, Operator::Modulo))
-        } else {
-            None
-        };
-        
+        let op_and_input =
+            if let Ok((new_input, _)) = char::<_, nom::error::Error<_>>('*')(new_input) {
+                Some((new_input, Operator::Multiplication))
+            } else if let Ok((new_input, _)) = char::<_, nom::error::Error<_>>('/')(new_input) {
+                Some((new_input, Operator::Division))
+            } else if let Ok((new_input, _)) = char::<_, nom::error::Error<_>>('%')(new_input) {
+                Some((new_input, Operator::Modulo))
+            } else {
+                None
+            };
+
         match op_and_input {
             Some((new_input, op)) => {
                 let (new_input, _) = multispace0(new_input)?;
@@ -416,19 +411,19 @@ fn parse_multiplicative_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
 /// Parse postfix operations (array indexing)
 fn parse_postfix_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
     let (input, mut expr) = parse_primary_expr(input)?;
-    
+
     // Handle array indexing: expr[index]
     let mut current_input = input;
     loop {
         let (new_input, _) = multispace0(current_input)?;
-        
+
         match char::<_, nom::error::Error<_>>('[')(new_input) {
             Ok((new_input, _)) => {
                 let (new_input, _) = multispace0(new_input)?;
                 let (new_input, index) = parse_clickhouse_scalar_expr(new_input)?;
                 let (new_input, _) = multispace0(new_input)?;
                 let (new_input, _) = char(']')(new_input)?;
-                
+
                 expr = ClickHouseExpr::ArrayIndex {
                     array: Box::new(expr),
                     index: Box::new(index),
@@ -438,7 +433,7 @@ fn parse_postfix_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
             Err(_) => break,
         }
     }
-    
+
     Ok((current_input, expr))
 }
 
@@ -446,7 +441,7 @@ fn parse_postfix_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
 fn parse_primary_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
     alt((
         parse_function_call_expr,
-        parse_literal_expr,        // Try literals before identifiers
+        parse_literal_expr, // Try literals before identifiers
         parse_quoted_identifier,
         parse_identifier_expr,
         delimited(
@@ -454,7 +449,8 @@ fn parse_primary_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
             delimited(multispace0, parse_clickhouse_scalar_expr, multispace0),
             char(')'),
         ),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 /// Parse function call: concat(a, b)
@@ -463,19 +459,23 @@ fn parse_function_call_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
     let (input, _) = multispace0(input)?;
     let (input, _) = char('(')(input)?;
     let (input, _) = multispace0(input)?;
-    
+
     let (input, args) = separated_list0(
         delimited(multispace0, char(','), multispace0),
         parse_clickhouse_scalar_expr,
-    ).parse(input)?;
-    
+    )
+    .parse(input)?;
+
     let (input, _) = multispace0(input)?;
     let (input, _) = char(')')(input)?;
-    
-    Ok((input, ClickHouseExpr::FunctionCall {
-        name: name.to_string(),
-        args,
-    }))
+
+    Ok((
+        input,
+        ClickHouseExpr::FunctionCall {
+            name: name.to_string(),
+            args,
+        },
+    ))
 }
 
 /// Parse quoted identifier: "First Name" or `User-ID`
@@ -491,21 +491,24 @@ fn parse_quoted_identifier(input: &str) -> IResult<&str, ClickHouseExpr> {
             delimited(char('`'), take_until("`"), char('`')),
             |s: &str| ClickHouseExpr::QuotedColumn(s.to_string()),
         ),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 /// Parse bare identifier
 fn parse_identifier_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
     map(parse_identifier_str, |s| {
         ClickHouseExpr::Column(s.to_string())
-    }).parse(input)
+    })
+    .parse(input)
 }
 
 fn parse_identifier_str(input: &str) -> IResult<&str, &str> {
     recognize((
         alt((alphanumeric1, tag("_"))),
         many0(alt((alphanumeric1, tag("_")))),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 /// Parse literal: 'string', 123, 45.67
@@ -524,15 +527,12 @@ fn parse_literal_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
                 ClickHouseExpr::Literal(Literal::Integer(s.parse().unwrap()))
             }
         }),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 fn recognize_number(input: &str) -> IResult<&str, &str> {
-    recognize((
-        opt(one_of("+-")),
-        digit1,
-        opt(preceded(char('.'), digit1)),
-    )).parse(input)
+    recognize((opt(one_of("+-")), digit1, opt(preceded(char('.'), digit1)))).parse(input)
 }
 
 #[cfg(test)]
@@ -575,14 +575,20 @@ mod tests {
     fn test_quoted_columns() {
         let pv = parse_property_value(r#"concat("First Name", " ", "Last Name")"#).unwrap();
         // All quoted identifiers are treated as columns
-        assert_eq!(pv.to_sql("u"), r#"concat(u."First Name", u." ", u."Last Name")"#);
+        assert_eq!(
+            pv.to_sql("u"),
+            r#"concat(u."First Name", u." ", u."Last Name")"#
+        );
     }
 
     #[test]
     fn test_backtick_columns() {
         let pv = parse_property_value(r#"concat(`User-ID`, `_`, `Tenant-ID`)"#).unwrap();
         // All backtick identifiers are treated as columns
-        assert_eq!(pv.to_sql("u"), r#"concat(u."User-ID", u."_", u."Tenant-ID")"#);
+        assert_eq!(
+            pv.to_sql("u"),
+            r#"concat(u."User-ID", u."_", u."Tenant-ID")"#
+        );
     }
 
     #[test]

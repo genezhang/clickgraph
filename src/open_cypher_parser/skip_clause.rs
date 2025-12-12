@@ -1,4 +1,4 @@
-use nom::{IResult, Parser, bytes::complete::tag_no_case, combinator::cut, error::context};
+use nom::{bytes::complete::tag_no_case, combinator::cut, error::context, IResult, Parser};
 
 use super::{
     ast::{Expression, Literal, SkipClause},

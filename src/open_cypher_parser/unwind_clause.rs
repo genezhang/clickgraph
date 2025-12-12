@@ -1,9 +1,4 @@
-use nom::{
-    IResult, Parser,
-    bytes::complete::tag_no_case,
-    combinator::cut,
-    error::context,
-};
+use nom::{bytes::complete::tag_no_case, combinator::cut, error::context, IResult, Parser};
 
 use super::{
     ast::{Expression, UnwindClause},
@@ -31,7 +26,7 @@ fn identifier_parser(input: &str) -> IResult<&str, &str, OpenCypherParsingError<
 }
 
 /// Parse an UNWIND clause: UNWIND <expression> AS <alias>
-/// 
+///
 /// Examples:
 /// - UNWIND [1, 2, 3] AS x
 /// - UNWIND r.items AS item
@@ -99,7 +94,10 @@ mod tests {
         // The expression should be a property access
         match clause.expression {
             Expression::PropertyAccessExp(_) => (),
-            _ => panic!("Expected property access expression, got {:?}", clause.expression),
+            _ => panic!(
+                "Expected property access expression, got {:?}",
+                clause.expression
+            ),
         }
     }
 

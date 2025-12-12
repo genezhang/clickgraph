@@ -1,5 +1,7 @@
 use crate::{
-    clickhouse_query_generator::{is_ch_passthrough_aggregate, CH_PASSTHROUGH_PREFIX, CH_AGG_PREFIX},
+    clickhouse_query_generator::{
+        is_ch_passthrough_aggregate, CH_AGG_PREFIX, CH_PASSTHROUGH_PREFIX,
+    },
     open_cypher_parser::{self},
     query_planner::logical_plan::LogicalPlan,
 };
@@ -71,7 +73,10 @@ pub enum LogicalExpr {
     /// Label expression: variable:Label
     /// Returns true if the variable has the specified label
     /// Example: message:Comment evaluates to boolean
-    LabelExpression { variable: String, label: String },
+    LabelExpression {
+        variable: String,
+        label: String,
+    },
 
     /// Pattern count: size((n)-[:REL]->())
     /// Counts the number of matches for a relationship pattern
@@ -179,14 +184,14 @@ pub enum Operator {
     GreaterThan,
     LessThanEqual,
     GreaterThanEqual,
-    RegexMatch,  // =~ (regex match)
+    RegexMatch, // =~ (regex match)
     And,
     Or,
     In,
     NotIn,
-    StartsWith,   // STARTS WITH
-    EndsWith,     // ENDS WITH
-    Contains,     // CONTAINS
+    StartsWith, // STARTS WITH
+    EndsWith,   // ENDS WITH
+    Contains,   // CONTAINS
     Not,
     Distinct,
     IsNull,
@@ -388,7 +393,7 @@ impl<'a> From<open_cypher_parser::ast::OperatorApplication<'a>> for OperatorAppl
 impl<'a> From<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
     fn from(value: open_cypher_parser::ast::FunctionCall<'a>) -> Self {
         let name_lower = value.name.to_lowercase();
-        
+
         // Special handling for size() with pattern argument
         // size((n)-[:REL]->()) should become PatternCount
         if name_lower == "size" && value.args.len() == 1 {
@@ -398,19 +403,20 @@ impl<'a> From<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
                 });
             }
         }
-        
+
         // Standard Neo4j aggregate functions
         let agg_fns = ["count", "min", "max", "avg", "sum", "collect"];
-        
+
         // Check if it's a standard aggregate function
         let is_standard_agg = agg_fns.contains(&name_lower.as_str());
-        
+
         // Check if it's a ch./chagg. prefixed ClickHouse aggregate function
         // chagg. prefix is ALWAYS an aggregate (explicit declaration)
         // ch. prefix checks against the aggregate registry
-        let is_ch_agg = value.name.starts_with(CH_AGG_PREFIX) 
-            || (value.name.starts_with(CH_PASSTHROUGH_PREFIX) && is_ch_passthrough_aggregate(&value.name));
-        
+        let is_ch_agg = value.name.starts_with(CH_AGG_PREFIX)
+            || (value.name.starts_with(CH_PASSTHROUGH_PREFIX)
+                && is_ch_passthrough_aggregate(&value.name));
+
         if is_standard_agg || is_ch_agg {
             LogicalExpr::AggregateFnCall(AggregateFnCall {
                 name: value.name,
@@ -524,13 +530,13 @@ impl<'a> From<open_cypher_parser::ast::Case<'a>> for LogicalCase {
 
 impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
     fn from(exists: open_cypher_parser::ast::ExistsSubquery<'a>) -> Self {
+        use crate::query_planner::logical_plan::{Filter, GraphNode, GraphRel, LogicalPlan, Scan};
         use open_cypher_parser::ast::PathPattern as AstPathPattern;
-        use crate::query_planner::logical_plan::{LogicalPlan, Scan, GraphNode, GraphRel, Filter};
-        
+
         // Convert the pattern to a logical plan structure
         // The EXISTS pattern gets converted to a subplan that can be checked for existence
         let pattern = exists.pattern;
-        
+
         // Build the logical plan from the pattern based on its type
         let base_plan = match pattern {
             AstPathPattern::Node(node) => {
@@ -556,7 +562,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                     let start = cp.start_node.borrow();
                     let end = cp.end_node.borrow();
                     let rel = &cp.relationship;
-                    
+
                     let start_scan = LogicalPlan::Scan(Scan {
                         table_alias: start.name.map(|s| s.to_string()),
                         table_name: start.label.map(|s| s.to_string()),
@@ -567,12 +573,16 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                         label: start.label.map(|s| s.to_string()),
                         is_denormalized: false,
                     });
-                    
+
                     let rel_scan = LogicalPlan::Scan(Scan {
                         table_alias: rel.name.map(|s| s.to_string()),
-                        table_name: rel.labels.as_ref().and_then(|l| l.first()).map(|s| s.to_string()),
+                        table_name: rel
+                            .labels
+                            .as_ref()
+                            .and_then(|l| l.first())
+                            .map(|s| s.to_string()),
                     });
-                    
+
                     let end_scan = LogicalPlan::Scan(Scan {
                         table_alias: end.name.map(|s| s.to_string()),
                         table_name: end.label.map(|s| s.to_string()),
@@ -583,13 +593,13 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                         label: end.label.map(|s| s.to_string()),
                         is_denormalized: false,
                     });
-                    
+
                     let direction = match rel.direction {
                         open_cypher_parser::ast::Direction::Outgoing => Direction::Outgoing,
                         open_cypher_parser::ast::Direction::Incoming => Direction::Incoming,
                         open_cypher_parser::ast::Direction::Either => Direction::Either,
                     };
-                    
+
                     Arc::new(LogicalPlan::GraphRel(GraphRel {
                         left: Arc::new(start_node),
                         center: Arc::new(rel_scan),
@@ -603,7 +613,10 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                         shortest_path_mode: None,
                         path_variable: None,
                         where_predicate: None,
-                        labels: rel.labels.as_ref().map(|l| l.iter().map(|s| s.to_string()).collect()),
+                        labels: rel
+                            .labels
+                            .as_ref()
+                            .map(|l| l.iter().map(|s| s.to_string()).collect()),
                         is_optional: None,
                         anchor_connection: None,
                     }))
@@ -618,7 +631,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                 return ExistsSubquery::from(inner_exists);
             }
         };
-        
+
         // If there's a WHERE clause, add a filter
         let plan = if let Some(where_clause) = exists.where_clause {
             Arc::new(LogicalPlan::Filter(Filter {
@@ -628,7 +641,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
         } else {
             base_plan
         };
-        
+
         ExistsSubquery { subplan: plan }
     }
 }
@@ -665,29 +678,23 @@ impl<'a> From<open_cypher_parser::ast::Expression<'a>> for LogicalExpr {
                 // The pattern needs to be converted to a scan + filter structure
                 LogicalExpr::ExistsSubquery(ExistsSubquery::from(*exists))
             }
-            Expression::ReduceExp(reduce) => {
-                LogicalExpr::ReduceExpr(ReduceExpr {
-                    accumulator: reduce.accumulator.to_string(),
-                    initial_value: Box::new(LogicalExpr::from(*reduce.initial_value)),
-                    variable: reduce.variable.to_string(),
-                    list: Box::new(LogicalExpr::from(*reduce.list)),
-                    expression: Box::new(LogicalExpr::from(*reduce.expression)),
-                })
-            }
-            Expression::MapLiteral(entries) => {
-                LogicalExpr::MapLiteral(
-                    entries
-                        .into_iter()
-                        .map(|(k, v)| (k.to_string(), LogicalExpr::from(v)))
-                        .collect()
-                )
-            }
-            Expression::LabelExpression { variable, label } => {
-                LogicalExpr::LabelExpression {
-                    variable: variable.to_string(),
-                    label: label.to_string(),
-                }
-            }
+            Expression::ReduceExp(reduce) => LogicalExpr::ReduceExpr(ReduceExpr {
+                accumulator: reduce.accumulator.to_string(),
+                initial_value: Box::new(LogicalExpr::from(*reduce.initial_value)),
+                variable: reduce.variable.to_string(),
+                list: Box::new(LogicalExpr::from(*reduce.list)),
+                expression: Box::new(LogicalExpr::from(*reduce.expression)),
+            }),
+            Expression::MapLiteral(entries) => LogicalExpr::MapLiteral(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), LogicalExpr::from(v)))
+                    .collect(),
+            ),
+            Expression::LabelExpression { variable, label } => LogicalExpr::LabelExpression {
+                variable: variable.to_string(),
+                label: label.to_string(),
+            },
         }
     }
 }
@@ -1086,7 +1093,13 @@ mod tests {
     #[test]
     fn test_ch_aggregate_function_classification() {
         // Test ch. prefixed ClickHouse aggregate functions are classified as aggregates
-        let ch_agg_functions = ["ch.uniq", "ch.quantile", "ch.topK", "ch.groupArray", "ch.argMax"];
+        let ch_agg_functions = [
+            "ch.uniq",
+            "ch.quantile",
+            "ch.topK",
+            "ch.groupArray",
+            "ch.argMax",
+        ];
 
         for func_name in &ch_agg_functions {
             let ast_function_call = ast::FunctionCall {

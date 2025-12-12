@@ -6,7 +6,6 @@ use nom::character::complete::char;
 use nom::combinator::peek;
 use nom::error::ErrorKind;
 use nom::{
-    IResult, Parser,
     branch::alt,
     bytes::complete::{tag, tag_no_case},
     character::complete::{multispace0, space0},
@@ -14,6 +13,7 @@ use nom::{
     error::Error,
     multi::separated_list0,
     sequence::{delimited, separated_pair},
+    IResult, Parser,
 };
 
 use super::ast::{
@@ -220,10 +220,10 @@ pub fn parse_properties(input: &'_ str) -> IResult<&'_ str, Vec<Property<'_>>> {
                             key,
                             value: value_expression,
                         })
-                    }
-                )
+                    },
+                ),
             ),
-            delimited(space0, char('}'), space0)
+            delimited(space0, char('}'), space0),
         ),
         // Parameter variant: no curly braces are expected.
         map(ws(parse_parameter), |expr| {
@@ -232,8 +232,9 @@ pub fn parse_properties(input: &'_ str) -> IResult<&'_ str, Vec<Property<'_>>> {
             } else {
                 unreachable!()
             }
-        })
-    )).parse(input)
+        }),
+    ))
+    .parse(input)
 }
 
 fn parse_name_or_label_with_properties(
@@ -572,8 +573,8 @@ mod tests {
 
     use super::*;
     use nom::{
-        Err,
         error::{Error, ErrorKind},
+        Err,
     };
     use std::rc::Rc;
 
@@ -584,9 +585,13 @@ mod tests {
         let result = parse_properties(input);
         assert!(result.is_ok(), "Failed to parse {{id: 1}}: {:?}", result);
         let (remaining, props) = result.unwrap();
-        assert_eq!(remaining, "", "Should consume entire input, got: '{}'", remaining);
+        assert_eq!(
+            remaining, "",
+            "Should consume entire input, got: '{}'",
+            remaining
+        );
         assert_eq!(props.len(), 1, "Should have one property");
-        
+
         match &props[0] {
             Property::PropertyKV(kv) => {
                 assert_eq!(kv.key, "id");
@@ -603,10 +608,14 @@ mod tests {
     fn test_parse_properties_with_float_literal() {
         let input = "{price: 3.14}";
         let result = parse_properties(input);
-        assert!(result.is_ok(), "Failed to parse {{price: 3.14}}: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Failed to parse {{price: 3.14}}: {:?}",
+            result
+        );
         let (remaining, props) = result.unwrap();
         assert_eq!(remaining, "", "Should consume entire input");
-        
+
         match &props[0] {
             Property::PropertyKV(kv) => {
                 assert_eq!(kv.key, "price");
@@ -624,10 +633,14 @@ mod tests {
         // Full pattern test: (n:User {id: 1})
         let input = "(n:User {id: 1})";
         let result = parse_path_pattern(input);
-        assert!(result.is_ok(), "Failed to parse (n:User {{id: 1}}): {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Failed to parse (n:User {{id: 1}}): {:?}",
+            result
+        );
         let (remaining, pattern) = result.unwrap();
         assert_eq!(remaining, "", "Should consume entire input");
-        
+
         match pattern {
             PathPattern::Node(node) => {
                 assert_eq!(node.name, Some("n"));
@@ -643,10 +656,18 @@ mod tests {
         // Test with underscore in property key
         let input = "(u:User {user_id: 1})";
         let result = parse_path_pattern(input);
-        assert!(result.is_ok(), "Failed to parse (u:User {{user_id: 1}}): {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Failed to parse (u:User {{user_id: 1}}): {:?}",
+            result
+        );
         let (remaining, pattern) = result.unwrap();
-        assert_eq!(remaining, "", "Should consume entire input, remaining: '{}'", remaining);
-        
+        assert_eq!(
+            remaining, "",
+            "Should consume entire input, remaining: '{}'",
+            remaining
+        );
+
         match pattern {
             PathPattern::Node(node) => {
                 assert_eq!(node.name, Some("u"));
@@ -1029,7 +1050,10 @@ mod tests {
             min_hops: Some(0),
             max_hops: Some(5),
         };
-        assert!(zero_spec.validate().is_ok(), "Zero hops should be allowed with warning");
+        assert!(
+            zero_spec.validate().is_ok(),
+            "Zero hops should be allowed with warning"
+        );
     }
 
     #[test]

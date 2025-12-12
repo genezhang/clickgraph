@@ -1,25 +1,25 @@
 use crate::render_plan::RenderPlan;
 
 mod common;
+#[cfg(test)]
+mod edge_uniqueness_tests;
 mod errors;
 mod function_registry;
 mod function_translator;
 pub mod pagerank;
-pub mod to_sql;  // Made public for EXISTS subquery support
+pub mod to_sql; // Made public for EXISTS subquery support
 mod to_sql_query;
 pub mod variable_length_cte;
 mod view_query;
 mod view_scan;
 #[cfg(test)]
 mod where_clause_tests;
-#[cfg(test)]
-mod edge_uniqueness_tests;
 
 pub use errors::ClickhouseQueryGeneratorError;
 pub use function_translator::{
-    get_ch_function_name, get_supported_functions, is_ch_aggregate_function,
-    is_ch_passthrough, is_ch_passthrough_aggregate, is_explicit_ch_aggregate,
-    is_function_supported, translate_scalar_function, CH_AGG_PREFIX, CH_PASSTHROUGH_PREFIX,
+    get_ch_function_name, get_supported_functions, is_ch_aggregate_function, is_ch_passthrough,
+    is_ch_passthrough_aggregate, is_explicit_ch_aggregate, is_function_supported,
+    translate_scalar_function, CH_AGG_PREFIX, CH_PASSTHROUGH_PREFIX,
 };
 pub use variable_length_cte::{NodeProperty, VariableLengthCteGenerator};
 

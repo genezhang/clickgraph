@@ -11,16 +11,15 @@ use crate::{
     query_planner::{
         analyzer::{
             analyzer_pass::AnalyzerPass, bidirectional_union::BidirectionalUnion,
-            duplicate_scans_removing::DuplicateScansRemoving,
-            filter_tagging::FilterTagging, graph_join_inference::GraphJoinInference,
+            duplicate_scans_removing::DuplicateScansRemoving, filter_tagging::FilterTagging,
+            graph_join_inference::GraphJoinInference,
             graph_traversal_planning::GraphTRaversalPlanning, group_by_building::GroupByBuilding,
             plan_sanitization::PlanSanitization, projection_tagging::ProjectionTagging,
             query_validation::QueryValidation, schema_inference::SchemaInference,
         },
         logical_plan::LogicalPlan,
         optimizer::{
-            cartesian_join_extraction::CartesianJoinExtraction,
-            optimizer_pass::OptimizerPass,
+            cartesian_join_extraction::CartesianJoinExtraction, optimizer_pass::OptimizerPass,
         },
     },
 };
@@ -154,19 +153,25 @@ pub fn final_analyzing(
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
     // Debug: Print projection items before sanitization
     if let LogicalPlan::Projection(proj) = plan.as_ref() {
-        crate::debug_print!("final_analyzing BEFORE sanitization: {} projection items", proj.items.len());
+        crate::debug_print!(
+            "final_analyzing BEFORE sanitization: {} projection items",
+            proj.items.len()
+        );
         for (_i, _item) in proj.items.iter().enumerate() {
             crate::debug_print!("  item {}: expr={:?}", _i, _item.expression);
         }
     }
-    
+
     let plan_sanitization = PlanSanitization::new();
     let transformed_plan = plan_sanitization.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
-    
+
     // Debug: Print projection items after sanitization
     if let LogicalPlan::Projection(proj) = plan.as_ref() {
-        crate::debug_print!("final_analyzing AFTER sanitization: {} projection items", proj.items.len());
+        crate::debug_print!(
+            "final_analyzing AFTER sanitization: {} projection items",
+            proj.items.len()
+        );
         for (_i, _item) in proj.items.iter().enumerate() {
             crate::debug_print!("  item {}: expr={:?}", _i, _item.expression);
         }

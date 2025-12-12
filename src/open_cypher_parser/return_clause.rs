@@ -1,11 +1,11 @@
 use nom::{
-    IResult, Parser,
     bytes::complete::tag_no_case,
     character::complete::{char, multispace0},
     combinator::{cut, opt},
     error::context,
     multi::separated_list1,
     sequence::{delimited, preceded},
+    IResult, Parser,
 };
 
 use super::{
@@ -43,7 +43,10 @@ pub fn parse_return_clause(
     )
     .parse(input)?;
 
-    let return_clause = ReturnClause { distinct, return_items };
+    let return_clause = ReturnClause {
+        distinct,
+        return_items,
+    };
 
     Ok((input, return_clause))
 }
@@ -222,7 +225,7 @@ mod tests {
     #[test]
     fn test_parse_return_clause_map_literal() {
         use crate::open_cypher_parser::ast::Literal;
-        
+
         let input = "RETURN {days: 5} AS d";
         let res = parse_return_clause(input);
         match res {

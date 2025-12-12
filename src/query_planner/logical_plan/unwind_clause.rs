@@ -3,24 +3,24 @@ use std::sync::Arc;
 use crate::{
     open_cypher_parser::ast::UnwindClause,
     query_planner::{
-        logical_plan::{LogicalPlan, Unwind},
         logical_expr::LogicalExpr,
+        logical_plan::{LogicalPlan, Unwind},
         plan_ctx::{PlanCtx, TableCtx},
     },
 };
 
 /// Evaluate an UNWIND clause and wrap the current plan with an Unwind node
-/// 
+///
 /// UNWIND transforms array values into individual rows.
 /// In ClickHouse, this maps to ARRAY JOIN.
-/// 
+///
 /// Example:
 /// ```cypher
 /// MATCH (n:Node)
 /// UNWIND n.items AS item
 /// RETURN n.id, item
 /// ```
-/// 
+///
 /// Generates:
 /// ```sql
 /// SELECT n.id, item
@@ -34,49 +34,44 @@ pub fn evaluate_unwind_clause(
 ) -> Arc<LogicalPlan> {
     // Convert the Cypher expression to a LogicalExpr
     let expression = LogicalExpr::from(unwind_clause.expression.clone());
-    
+
     // Register the UNWIND alias as a projection alias
     // This allows subsequent clauses (WHERE, RETURN) to reference it
     let alias_expr = LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(
-        unwind_clause.alias.to_string()
+        unwind_clause.alias.to_string(),
     ));
     plan_ctx.register_projection_alias(unwind_clause.alias.to_string(), alias_expr);
-    
+
     // Also register as table context so projection tagging can find it
     // UNWIND aliases represent scalar values (array elements), not nodes/relationships
     // They have no label or properties, but need to be in table context for lookups
     let unwind_table_ctx = TableCtx::build(
         unwind_clause.alias.to_string(),
-        None,  // No labels - UNWIND produces scalar values, not nodes
+        None,   // No labels - UNWIND produces scalar values, not nodes
         vec![], // No properties
         false,  // Not a relationship
         true,   // Explicit alias (user-defined)
     );
     plan_ctx.insert_table_ctx(unwind_clause.alias.to_string(), unwind_table_ctx);
-    
+
     let unwind = Unwind {
         input: plan,
         expression,
         alias: unwind_clause.alias.to_string(),
     };
-    
+
     Arc::new(LogicalPlan::Unwind(unwind))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::open_cypher_parser::ast::{Expression, Literal, PropertyAccess};
     use crate::graph_catalog::graph_schema::GraphSchema;
+    use crate::open_cypher_parser::ast::{Expression, Literal, PropertyAccess};
     use std::collections::HashMap;
 
     fn create_test_plan_ctx() -> PlanCtx {
-        let schema = GraphSchema::build(
-            1,
-            "test".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-        );
+        let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
         PlanCtx::new(std::sync::Arc::new(schema))
     }
 
@@ -140,7 +135,10 @@ mod tests {
                             _ => panic!("Expected Column property value"),
                         }
                     }
-                    _ => panic!("Expected property access expression, got {:?}", unwind.expression),
+                    _ => panic!(
+                        "Expected property access expression, got {:?}",
+                        unwind.expression
+                    ),
                 }
             }
             _ => panic!("Expected Unwind plan"),

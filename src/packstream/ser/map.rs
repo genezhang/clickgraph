@@ -527,7 +527,9 @@ impl<S: SerializeMap> Serializer for &mut InnerMapSerializer<S> {
     }
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-        crate::debug_print!("DEBUGPRINT[1]: map.rs:525 (after fn serialize_map(self, _len: Option<usiz…)");
+        crate::debug_print!(
+            "DEBUGPRINT[1]: map.rs:525 (after fn serialize_map(self, _len: Option<usiz…)"
+        );
         crate::debug_print!("DEBUGPRINT[2]: map.rs:525: _len={:#?}", _len);
         let len = _len.ok_or_else(|| SerError::custom("inner map with unknown length"))?;
         self.inner.serialize_entry("$$__MAP__$$", &len)?;
@@ -540,7 +542,9 @@ impl<S: SerializeMap> Serializer for &mut InnerMapSerializer<S> {
         _name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
-        crate::debug_print!("DEBUGPRINT[3]: map.rs:534 (after ) -> Result<Self::SerializeStruct, Self:…)");
+        crate::debug_print!(
+            "DEBUGPRINT[3]: map.rs:534 (after ) -> Result<Self::SerializeStruct, Self:…)"
+        );
         self.serialize_map(Some(_len))
     }
 
@@ -551,7 +555,9 @@ impl<S: SerializeMap> Serializer for &mut InnerMapSerializer<S> {
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        crate::debug_print!("DEBUGPRINT[4]: map.rs:545 (after ) -> Result<Self::SerializeStructVariant…)");
+        crate::debug_print!(
+            "DEBUGPRINT[4]: map.rs:545 (after ) -> Result<Self::SerializeStructVariant…)"
+        );
         self.serialize_map(Some(_len))
     }
 
