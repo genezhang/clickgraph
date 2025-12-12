@@ -66,8 +66,20 @@ setup_medium_benchmark_data.sql
 # VS Code
 .vscode/
 
-# archive files
+# Internal development documentation (not for public release)
 archive/
+notes/
+docs/
+
+# Keep only user-facing docs (negation patterns)
+!docs/getting-started.md
+!docs/api.md
+!docs/schema-reference.md
+!docs/configuration.md
+!docs/features.md
+!docs/variable-length-paths-guide.md
+!docs/docker-deployment.md
+!docs/denormalized-edge-tables.md
 
 # Development assistants
 .claude/
