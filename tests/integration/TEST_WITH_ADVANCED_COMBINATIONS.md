@@ -50,7 +50,17 @@ Tests edge cases for CTE hoisting:
 
 **Why**: Deep nesting tests recursive hoisting logic.
 
-### 7. Regression Tests
+### 7. Parameters + WITH
+Tests parameter substitution across WITH boundaries:
+- Parameter in WHERE before WITH
+- Parameter in WITH WHERE clause
+- Multiple parameters with WITH
+- Parameter in aggregation expressions
+- VLP + WITH + parameters
+
+**Why**: Parameters ($param) should work orthogonally across all query patterns, including WITH clauses.
+
+### 8. Regression Tests
 Tests previously failing patterns:
 - LDBC IC-1 pattern (VLP + WITH + aggregation)
 - TableAlias GROUP BY expansion
@@ -87,7 +97,17 @@ python3 tests/integration/test_with_advanced_combinations.py
 
 ## Test Results (Initial Run - Dec 12, 2025)
 
-**Status**: 0/17 passing (test infrastructure works, database setup needed)
+**Status**: 0/22 passing (test infrastructure works, database setup needed)
+
+**Test Count**: 22 tests across 8 categories
+- Category 1 (VLP): 3 tests
+- Category 2 (OPTIONAL MATCH): 3 tests
+- Category 3 (Multiple rel types): 2 tests
+- Category 4 (Aggregations): 3 tests
+- Category 5 (Modifiers): 2 tests
+- Category 6 (Validation): 2 tests
+- Category 7 (Parameters): 5 tests ⭐ NEW
+- Category 8 (Regressions): 2 tests
 
 **Known Issues Found**:
 1. ✅ Three-level WITH nesting fails: "Cannot render plan with remaining WITH clauses"
@@ -101,12 +121,19 @@ python3 tests/integration/test_with_advanced_combinations.py
 3. ⚠️ Database setup: Tests need `brahmand` database with social network data
    - Action: Add setup instructions
 
+4. ⚠️ Parameters in VLP hop ranges: `*1..$maxHops` not supported
+   - Error: "Parameters are not yet supported in properties"
+   - Workaround: Use literal hop ranges, parameters work in WHERE/WITH clauses
+   - Priority: LOW (rare use case, workaround available)
+   - Location: `src/query_planner/logical_plan/match_clause.rs:1082`
+
 ## Success Criteria
 
-- [ ] All 17 tests passing
+- [ ] All 22 tests passing
 - [ ] VLP CTEs properly hoisted in WITH chains
 - [ ] GROUP BY correctly expands TableAlias references
 - [ ] Multiple CTE ordering validated
+- [ ] Parameters work correctly across WITH boundaries
 - [ ] No SQL generation errors
 - [ ] Query results match expected patterns
 
@@ -114,13 +141,15 @@ python3 tests/integration/test_with_advanced_combinations.py
 
 1. Add shortest path + WITH combinations
 2. Add EXISTS pattern + WITH tests
-3. Add NOT pattern + WITH tests  
-4. Performance benchmarks for complex combinations
-5. Memory usage tests for deeply nested CTEs
+3. Add NOT pattern + WITH tests
+4. Add parameter arrays with WITH (e.g., `WHERE u.id IN $userIds`)
+5. Performance benchmarks for complex combinations
+6. Memory usage tests for deeply nested CTEs
 
 ## References
 
 - Architectural fragility analysis: `notes/architectural-fragility-analysis.md`
 - CTE hoisting fix: Commit 755285f
 - CTE validation: Commit d38d9fd
+- Parameter substitution: `src/server/parameter_substitution.rs`
 - Related issues: `KNOWN_ISSUES.md`

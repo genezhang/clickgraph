@@ -43,15 +43,21 @@ class TestResult:
         return self.failed == 0
 
 
-def test_query(result, test_name, query, check_fn=None, should_fail=False):
+def test_query(result, test_name, query, check_fn=None, should_fail=False, parameters=None):
     """Execute a test query and validate results"""
     print(f"\n🧪 Test: {test_name}")
     print(f"   Query: {query[:100]}..." if len(query) > 100 else f"   Query: {query}")
+    if parameters:
+        print(f"   Parameters: {parameters}")
     
     try:
+        payload = {"query": query}
+        if parameters:
+            payload["parameters"] = parameters
+        
         response = requests.post(
             f"{SERVER_URL}/query",
-            json={"query": query},
+            json=payload,
             headers={"Content-Type": "application/json"},
             timeout=30  # Longer timeout for complex queries
         )
@@ -411,13 +417,97 @@ def run_tests():
     )
     
     # ========================================================================
-    # Category 7: Regression Tests (Previously Failing Queries)
+    # Category 7: Parameters + WITH
     # ========================================================================
     print("\n" + "="*70)
-    print("CATEGORY 7: Regression Tests")
+    print("CATEGORY 7: Parameters + WITH")
     print("="*70)
     
-    # Test 7.1: LDBC IC-1 pattern (VLP + WITH + aggregation)
+    # Test 7.1: Parameter in WHERE before WITH
+    test_query(
+        result,
+        "Parameter in WHERE before WITH",
+        """
+        MATCH (u:User)
+        WHERE u.user_id = $userId
+        WITH u, u.name as username
+        RETURN username
+        """,
+        check_has_results(),
+        parameters={"userId": 1}
+    )
+    
+    # Test 7.2: Parameter in WITH WHERE clause
+    test_query(
+        result,
+        "Parameter in WITH WHERE clause",
+        """
+        MATCH (u:User)-[:FOLLOWS]->(f:User)
+        WITH u, COUNT(f) as following_count
+        WHERE following_count > $minFollows
+        RETURN u.user_id, following_count
+        ORDER BY following_count DESC
+        LIMIT 5
+        """,
+        check_has_results(),
+        parameters={"minFollows": 0}
+    )
+    
+    # Test 7.3: Multiple parameters across WITH boundary
+    test_query(
+        result,
+        "Multiple parameters with WITH",
+        """
+        MATCH (u:User)
+        WHERE u.user_id >= $minId AND u.user_id <= $maxId
+        WITH u, u.name as name
+        WHERE length(name) > $minNameLen
+        RETURN u.user_id, name
+        ORDER BY u.user_id
+        LIMIT 5
+        """,
+        check_has_results(),
+        parameters={"minId": 1, "maxId": 10, "minNameLen": 3}
+    )
+    
+    # Test 7.4: Parameter in aggregation expression
+    test_query(
+        result,
+        "Parameter in aggregation with WITH",
+        """
+        MATCH (u:User)-[:FOLLOWS]->(f:User)
+        WITH u, COUNT(f) * $multiplier as weighted_follows
+        RETURN u.user_id, weighted_follows
+        ORDER BY weighted_follows DESC
+        LIMIT 5
+        """,
+        check_has_results(),
+        parameters={"multiplier": 2}
+    )
+    
+    # Test 7.5: VLP + WITH + parameters
+    test_query(
+        result,
+        "VLP + WITH + parameters",
+        """
+        MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)
+        WHERE a.user_id = $startId
+        WITH a, COUNT(DISTINCT b) as reachable
+        WHERE reachable > $minReachable
+        RETURN a.user_id, reachable
+        """,
+        check_has_recursive_cte(),
+        parameters={"startId": 1, "minReachable": 0}
+    )
+    
+    # ========================================================================
+    # Category 8: Regression Tests
+    # ========================================================================
+    print("\n" + "="*70)
+    print("CATEGORY 8: Regression Tests")
+    print("="*70)
+    
+    # Test 8.1: LDBC IC-1 pattern (VLP + WITH + aggregation)
     test_query(
         result,
         "LDBC IC-1 pattern",
@@ -431,7 +521,7 @@ def run_tests():
         check_has_recursive_cte()
     )
     
-    # Test 7.2: GROUP BY with TableAlias expansion
+    # Test 8.2: GROUP BY with TableAlias expansion
     test_query(
         result,
         "TableAlias GROUP BY expansion",
