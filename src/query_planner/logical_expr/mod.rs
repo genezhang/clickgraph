@@ -59,6 +59,48 @@ pub enum LogicalExpr {
     /// EXISTS subquery expression
     /// Checks if a pattern exists in the graph
     ExistsSubquery(ExistsSubquery),
+
+    /// Reduce expression: fold list into single value
+    /// reduce(acc = init, x IN list | expr)
+    ReduceExpr(ReduceExpr),
+
+    /// Map literal: {key1: value1, key2: value2}
+    /// Used in duration({days: 5}), point({x: 1, y: 2}), etc.
+    MapLiteral(Vec<(String, LogicalExpr)>),
+
+    /// Label expression: variable:Label
+    /// Returns true if the variable has the specified label
+    /// Example: message:Comment evaluates to boolean
+    LabelExpression { variable: String, label: String },
+
+    /// Pattern count: size((n)-[:REL]->())
+    /// Counts the number of matches for a relationship pattern
+    /// Generates a correlated COUNT(*) subquery
+    PatternCount(PatternCount),
+}
+
+/// Pattern count for size() on patterns
+/// Represents size((n)-[:REL]->()) which counts pattern matches
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct PatternCount {
+    /// The pattern to count
+    pub pattern: PathPattern,
+}
+
+/// Reduce expression for folding a list into a single value
+/// Syntax: reduce(accumulator = initial, variable IN list | expression)
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct ReduceExpr {
+    /// Name of the accumulator variable
+    pub accumulator: String,
+    /// Initial value for the accumulator
+    pub initial_value: Box<LogicalExpr>,
+    /// Iteration variable name
+    pub variable: String,
+    /// List to iterate over
+    pub list: Box<LogicalExpr>,
+    /// Expression evaluated for each element
+    pub expression: Box<LogicalExpr>,
 }
 
 /// EXISTS subquery for checking pattern existence
@@ -345,9 +387,20 @@ impl<'a> From<open_cypher_parser::ast::OperatorApplication<'a>> for OperatorAppl
 
 impl<'a> From<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
     fn from(value: open_cypher_parser::ast::FunctionCall<'a>) -> Self {
+        let name_lower = value.name.to_lowercase();
+        
+        // Special handling for size() with pattern argument
+        // size((n)-[:REL]->()) should become PatternCount
+        if name_lower == "size" && value.args.len() == 1 {
+            if let open_cypher_parser::ast::Expression::PathPattern(ref pp) = value.args[0] {
+                return LogicalExpr::PatternCount(PatternCount {
+                    pattern: PathPattern::from(pp.clone()),
+                });
+            }
+        }
+        
         // Standard Neo4j aggregate functions
         let agg_fns = ["count", "min", "max", "avg", "sum", "collect"];
-        let name_lower = value.name.to_lowercase();
         
         // Check if it's a standard aggregate function
         let is_standard_agg = agg_fns.contains(&name_lower.as_str());
@@ -611,6 +664,29 @@ impl<'a> From<open_cypher_parser::ast::Expression<'a>> for LogicalExpr {
                 // Convert the EXISTS pattern to a logical plan
                 // The pattern needs to be converted to a scan + filter structure
                 LogicalExpr::ExistsSubquery(ExistsSubquery::from(*exists))
+            }
+            Expression::ReduceExp(reduce) => {
+                LogicalExpr::ReduceExpr(ReduceExpr {
+                    accumulator: reduce.accumulator.to_string(),
+                    initial_value: Box::new(LogicalExpr::from(*reduce.initial_value)),
+                    variable: reduce.variable.to_string(),
+                    list: Box::new(LogicalExpr::from(*reduce.list)),
+                    expression: Box::new(LogicalExpr::from(*reduce.expression)),
+                })
+            }
+            Expression::MapLiteral(entries) => {
+                LogicalExpr::MapLiteral(
+                    entries
+                        .into_iter()
+                        .map(|(k, v)| (k.to_string(), LogicalExpr::from(v)))
+                        .collect()
+                )
+            }
+            Expression::LabelExpression { variable, label } => {
+                LogicalExpr::LabelExpression {
+                    variable: variable.to_string(),
+                    label: label.to_string(),
+                }
             }
         }
     }

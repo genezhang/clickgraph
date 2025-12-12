@@ -11,9 +11,9 @@ use crate::query_planner::logical_expr::{
     ColumnAlias as LogicalColumnAlias, ExistsSubquery as LogicalExistsSubquery,
     InSubquery as LogicalInSubquery, Literal as LogicalLiteral,
     LogicalCase, Operator as LogicalOperator, OperatorApplication as LogicalOperatorApplication,
-    PathPattern, Direction,
+    PathPattern, Direction, PatternCount as LogicalPatternCount,
     PropertyAccess as LogicalPropertyAccess, ScalarFnCall as LogicalScalarFnCall,
-    TableAlias as LogicalTableAlias,
+    TableAlias as LogicalTableAlias, ReduceExpr as LogicalReduceExpr,
 };
 use crate::query_planner::logical_plan::LogicalPlan;
 
@@ -84,6 +84,180 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
         _ => {
             // For other plan types, generate a simple placeholder
             Ok("SELECT 1".to_string())
+        }
+    }
+}
+
+/// Generate SQL for a pattern count (size() on patterns)
+/// 
+/// For `size((n)-[:REL]->())` pattern, generates:
+/// ```sql
+/// (SELECT COUNT(*) FROM rel_table WHERE rel_table.from_id = n.id)
+/// ```
+fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBuildError> {
+    use crate::server::GLOBAL_SCHEMAS;
+    
+    match pattern {
+        PathPattern::ConnectedPattern(connected_patterns) => {
+            if connected_patterns.is_empty() {
+                return Err(RenderBuildError::InvalidRenderPlan(
+                    "Empty connected pattern in size()".to_string()
+                ));
+            }
+            
+            // Handle single-hop pattern (most common case)
+            let conn = &connected_patterns[0];
+            
+            // Get the start node alias (the correlated variable)
+            let start_alias = conn.start_node.name.as_ref()
+                .ok_or_else(|| RenderBuildError::InvalidRenderPlan(
+                    "size() pattern requires named start node".to_string()
+                ))?;
+            
+            // Get the end node alias (can be anonymous/None)
+            let end_alias = conn.end_node.name.as_ref().map(|s| s.to_string());
+            
+            // Get relationship type
+            let rel_type = conn.relationship.labels.as_ref()
+                .and_then(|l| l.first())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "UNKNOWN".to_string());
+            
+            // Determine direction
+            let is_undirected = matches!(conn.relationship.direction, Direction::Either);
+            
+            // Try to get schema for relationship lookup
+            let schemas_lock = GLOBAL_SCHEMAS.get();
+            let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
+            let schema = schemas_guard.as_ref()
+                .and_then(|guard| guard.get("default"));
+            
+            // Look up the relationship table and columns
+            if let Some(schema) = schema {
+                if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
+                    let table_name = &rel_schema.table_name;
+                    let full_table = if !rel_schema.database.is_empty() {
+                        format!("{}.{}", rel_schema.database, table_name)
+                    } else {
+                        table_name.clone()
+                    };
+                    let from_col = &rel_schema.from_id;
+                    let to_col = &rel_schema.to_id;
+                    
+                    // Get the start node's ID column
+                    // First try the explicit label from the pattern, then fall back to relationship schema
+                    let start_id_col = if let Some(label) = &conn.start_node.label {
+                        schema.get_node_schema_opt(label)
+                            .map(|n| n.node_id.column().to_string())
+                            .unwrap_or_else(|| "id".to_string())
+                    } else {
+                        // No label in pattern - infer from relationship's from_node
+                        schema.get_node_schema_opt(&rel_schema.from_node)
+                            .map(|n| n.node_id.column().to_string())
+                            .unwrap_or_else(|| "id".to_string())
+                    };
+                    
+                    // Get end node's ID column
+                    let end_id_col = if let Some(label) = &conn.end_node.label {
+                        schema.get_node_schema_opt(label)
+                            .map(|n| n.node_id.column().to_string())
+                            .unwrap_or_else(|| "id".to_string())
+                    } else {
+                        // No label in pattern - infer from relationship's to_node
+                        schema.get_node_schema_opt(&rel_schema.to_node)
+                            .map(|n| n.node_id.column().to_string())
+                            .unwrap_or_else(|| "id".to_string())
+                    };
+                    
+                    // Generate COUNT SQL based on end node and direction
+                    let count_sql = match (end_alias.as_ref(), is_undirected) {
+                        (None, false) => {
+                            // Anonymous end node, directed: just count from_id matches
+                            match conn.relationship.direction {
+                                Direction::Outgoing => format!(
+                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {}.{})",
+                                    full_table, table_name, from_col, start_alias, start_id_col
+                                ),
+                                Direction::Incoming => format!(
+                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {}.{})",
+                                    full_table, table_name, to_col, start_alias, start_id_col
+                                ),
+                                _ => format!(
+                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {}.{} OR {}.{} = {}.{})",
+                                    full_table,
+                                    table_name, from_col, start_alias, start_id_col,
+                                    table_name, to_col, start_alias, start_id_col
+                                ),
+                            }
+                        },
+                        (None, true) => {
+                            // Anonymous end node, undirected: count both directions
+                            format!(
+                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {}.{} OR {}.{} = {}.{})",
+                                full_table,
+                                table_name, from_col, start_alias, start_id_col,
+                                table_name, to_col, start_alias, start_id_col
+                            )
+                        },
+                        (Some(end), true) => {
+                            // Named end node, undirected: check both directions
+                            format!(
+                                "(SELECT COUNT(*) FROM {} WHERE ({}.{} = {}.{} AND {}.{} = {}.{}) OR ({}.{} = {}.{} AND {}.{} = {}.{}))",
+                                full_table,
+                                table_name, from_col, start_alias, start_id_col,
+                                table_name, to_col, end, end_id_col,
+                                table_name, from_col, end, end_id_col,
+                                table_name, to_col, start_alias, start_id_col
+                            )
+                        },
+                        (Some(end), false) => {
+                            // Named end node, directed: check single direction
+                            let (fk_from, fk_to, from_id, to_id) = match conn.relationship.direction {
+                                Direction::Outgoing => (start_alias.as_str(), end.as_str(), &start_id_col, &end_id_col),
+                                Direction::Incoming => (end.as_str(), start_alias.as_str(), &end_id_col, &start_id_col),
+                                _ => (start_alias.as_str(), end.as_str(), &start_id_col, &end_id_col),
+                            };
+                            format!(
+                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {}.{} AND {}.{} = {}.{})",
+                                full_table,
+                                table_name, from_col, fk_from, from_id,
+                                table_name, to_col, fk_to, to_id
+                            )
+                        },
+                    };
+                    
+                    return Ok(count_sql);
+                }
+            }
+            
+            // Fallback: generate a reasonable default using convention
+            let table_name = rel_type.to_lowercase();
+            match (end_alias, is_undirected) {
+                (None, _) => Ok(format!(
+                    "(SELECT COUNT(*) FROM {} WHERE {}.from_id = {}.id OR {}.to_id = {}.id)",
+                    table_name, table_name, start_alias, table_name, start_alias
+                )),
+                (Some(end), true) => Ok(format!(
+                    "(SELECT COUNT(*) FROM {} WHERE ({}.from_id = {}.id AND {}.to_id = {}.id) OR ({}.from_id = {}.id AND {}.to_id = {}.id))",
+                    table_name,
+                    table_name, start_alias, table_name, end,
+                    table_name, end, table_name, start_alias
+                )),
+                (Some(end), false) => Ok(format!(
+                    "(SELECT COUNT(*) FROM {} WHERE {}.from_id = {}.id AND {}.to_id = {}.id)",
+                    table_name, table_name, start_alias, table_name, end
+                )),
+            }
+        }
+        PathPattern::Node(_) => {
+            Err(RenderBuildError::InvalidRenderPlan(
+                "size() pattern with single node is not supported".to_string()
+            ))
+        }
+        PathPattern::ShortestPath(_) | PathPattern::AllShortestPaths(_) => {
+            Err(RenderBuildError::InvalidRenderPlan(
+                "size() pattern with shortest path is not supported".to_string()
+            ))
         }
     }
 }
@@ -284,6 +458,39 @@ pub enum RenderExpr {
 
     /// EXISTS subquery expression - checks if a pattern exists
     ExistsSubquery(ExistsSubquery),
+
+    /// Reduce expression: fold list into single value
+    ReduceExpr(ReduceExpr),
+
+    /// Map literal: {key1: value1, key2: value2}
+    /// Used in duration({days: 5}), point({x: 1, y: 2}), etc.
+    MapLiteral(Vec<(String, RenderExpr)>),
+
+    /// Pattern count: pre-rendered SQL for size((n)-[:REL]->())
+    PatternCount(PatternCount),
+}
+
+/// Pattern count for size() on patterns
+/// Contains pre-rendered SQL for a correlated COUNT(*) subquery
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct PatternCount {
+    /// Pre-rendered SQL for the pattern count subquery
+    pub sql: String,
+}
+
+/// Reduce expression for folding a list into a single value
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct ReduceExpr {
+    /// Name of the accumulator variable
+    pub accumulator: String,
+    /// Initial value for the accumulator
+    pub initial_value: Box<RenderExpr>,
+    /// Iteration variable name
+    pub variable: String,
+    /// List to iterate over
+    pub list: Box<RenderExpr>,
+    /// Expression evaluated for each element
+    pub expression: Box<RenderExpr>,
 }
 
 /// EXISTS subquery for render plan
@@ -426,6 +633,38 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                 // the normal RenderPlan structure (no select items needed)
                 let sql = generate_exists_sql(&exists)?;
                 RenderExpr::ExistsSubquery(ExistsSubquery { sql })
+            }
+            LogicalExpr::ReduceExpr(reduce) => {
+                // Convert LogicalExpr::ReduceExpr to RenderExpr::ReduceExpr
+                RenderExpr::ReduceExpr(ReduceExpr {
+                    accumulator: reduce.accumulator,
+                    initial_value: Box::new(RenderExpr::try_from(*reduce.initial_value)?),
+                    variable: reduce.variable,
+                    list: Box::new(RenderExpr::try_from(*reduce.list)?),
+                    expression: Box::new(RenderExpr::try_from(*reduce.expression)?),
+                })
+            }
+            LogicalExpr::MapLiteral(entries) => {
+                // Convert map literal - preserve key-value pairs
+                let converted_entries: Result<Vec<(String, RenderExpr)>, RenderBuildError> = entries
+                    .into_iter()
+                    .map(|(k, v)| Ok((k, RenderExpr::try_from(v)?)))
+                    .collect();
+                RenderExpr::MapLiteral(converted_entries?)
+            }
+            LogicalExpr::LabelExpression { variable, label } => {
+                // LabelExpression should have been resolved at analysis time
+                // If it reaches here, return false (unknown label)
+                log::warn!(
+                    "LabelExpression {}:{} reached RenderExpr conversion - returning false",
+                    variable, label
+                );
+                RenderExpr::Literal(Literal::Boolean(false))
+            }
+            LogicalExpr::PatternCount(pc) => {
+                // Generate the pattern count SQL (correlated COUNT(*) subquery)
+                let sql = generate_pattern_count_sql(&pc.pattern)?;
+                RenderExpr::PatternCount(PatternCount { sql })
             }
             // PathPattern is not present in RenderExpr
             _ => unimplemented!("Conversion for this LogicalExpr variant is not implemented"),
@@ -580,13 +819,32 @@ impl TryFrom<LogicalAggregateFnCall> for AggregateFnCall {
     type Error = RenderBuildError;
 
     fn try_from(agg: LogicalAggregateFnCall) -> Result<Self, Self::Error> {
-        let agg_fn = AggregateFnCall {
-            name: agg.name,
-            args: agg
-                .args
+        // Special case: count(node_variable) should become count(*)
+        // When counting a graph node (e.g., count(friend)), the argument is a TableAlias
+        // which doesn't exist as a column name inside subqueries. Convert to count(*).
+        let converted_args: Vec<RenderExpr> = if agg.name.to_lowercase() == "count" && agg.args.len() == 1 {
+            match &agg.args[0] {
+                crate::query_planner::logical_expr::LogicalExpr::TableAlias(_) => {
+                    // count(node_var) -> count(*)
+                    vec![RenderExpr::Star]
+                }
+                _ => {
+                    agg.args
+                        .into_iter()
+                        .map(RenderExpr::try_from)
+                        .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?
+                }
+            }
+        } else {
+            agg.args
                 .into_iter()
                 .map(RenderExpr::try_from)
-                .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
+                .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?
+        };
+        
+        let agg_fn = AggregateFnCall {
+            name: agg.name,
+            args: converted_args,
         };
         Ok(agg_fn)
     }

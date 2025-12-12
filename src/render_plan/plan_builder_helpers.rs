@@ -575,7 +575,18 @@ pub(super) fn is_standalone_expression(expr: &RenderExpr) -> bool {
         | RenderExpr::ColumnAlias(_)
         | RenderExpr::AggregateFnCall(_)
         | RenderExpr::InSubquery(_)
-        | RenderExpr::ExistsSubquery(_) => false,
+        | RenderExpr::ExistsSubquery(_)
+        | RenderExpr::PatternCount(_) => false,  // Pattern count references outer context
+        RenderExpr::ReduceExpr(reduce) => {
+            // ReduceExpr is standalone if all its sub-expressions are standalone
+            is_standalone_expression(&reduce.initial_value)
+                && is_standalone_expression(&reduce.list)
+                && is_standalone_expression(&reduce.expression)
+        }
+        RenderExpr::MapLiteral(entries) => {
+            // MapLiteral is standalone if all values are standalone
+            entries.iter().all(|(_, v)| is_standalone_expression(v))
+        }
         RenderExpr::Raw(_) => false, // Be conservative with raw SQL
     }
 }

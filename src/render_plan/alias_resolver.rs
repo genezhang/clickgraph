@@ -311,6 +311,17 @@ impl AliasResolverContext {
                 LogicalExpr::ExistsSubquery(subq)
             }
             
+            LogicalExpr::ReduceExpr(mut reduce) => {
+                // Transform expressions inside reduce
+                reduce.initial_value = Box::new(self.transform_expr(*reduce.initial_value));
+                reduce.list = Box::new(self.transform_expr(*reduce.list));
+                reduce.expression = Box::new(self.transform_expr(*reduce.expression));
+                LogicalExpr::ReduceExpr(reduce)
+            }
+            
+            // PatternCount is rendered directly with schema lookup, no alias transformation needed
+            LogicalExpr::PatternCount(pc) => LogicalExpr::PatternCount(pc),
+            
             // These don't contain PropertyAccess
             LogicalExpr::Literal(_) |
             LogicalExpr::Raw(_) |
@@ -320,7 +331,9 @@ impl AliasResolverContext {
             LogicalExpr::Column(_) |
             LogicalExpr::Parameter(_) |
             LogicalExpr::Operator(_) |
-            LogicalExpr::PathPattern(_) => expr,
+            LogicalExpr::PathPattern(_) |
+            LogicalExpr::MapLiteral(_) |
+            LogicalExpr::LabelExpression { .. } => expr,
         }
     }
     

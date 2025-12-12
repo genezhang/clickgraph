@@ -62,6 +62,20 @@ pub struct NodeSchema {
     /// Example: Some("flights")
     #[serde(skip)]
     pub denormalized_source_table: Option<String>,
+    
+    // ===== Polymorphic table support =====
+    
+    /// Optional: Column containing node type discriminator (for shared tables)
+    /// Used when multiple node labels share the same table
+    /// Example: "type" column distinguishes Post vs Comment in Message table
+    #[serde(skip)]
+    pub label_column: Option<String>,
+    
+    /// Optional: Value in label_column that identifies this node type
+    /// Required when label_column is specified
+    /// Example: "Comment" for Comment nodes in Message table where type='Comment'
+    #[serde(skip)]
+    pub label_value: Option<String>,
 }
 
 impl NodeSchema {
@@ -119,6 +133,8 @@ impl NodeSchema {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         }
     }
 }
@@ -940,6 +956,8 @@ mod tests {
             from_properties: Some(from_props.clone()),
             to_properties: Some(to_props.clone()),
             denormalized_source_table: Some("test.flights".to_string()),
+            label_column: None,
+            label_value: None,
         };
         
         let flight_edge = RelationshipSchema {
@@ -1001,6 +1019,8 @@ mod tests {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         };
         
         let flight_edge = RelationshipSchema {
@@ -1061,6 +1081,8 @@ mod tests {
             from_properties: Some(from_props_airport.clone()),
             to_properties: None,
             denormalized_source_table: Some("test.flights".to_string()),
+            label_column: None,
+            label_value: None,
         };
         
         let user = NodeSchema {
@@ -1084,6 +1106,8 @@ mod tests {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         };
         
         let mut from_props = HashMap::new();
@@ -1151,6 +1175,8 @@ mod tests {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         };
         
         let mut to_props_post = HashMap::new();
@@ -1173,6 +1199,8 @@ mod tests {
             from_properties: None,
             to_properties: Some(to_props_post.clone()),
             denormalized_source_table: Some("test.posts".to_string()),
+            label_column: None,
+            label_value: None,
         };
         
         let mut to_props = HashMap::new();
@@ -1248,6 +1276,8 @@ mod tests {
             from_properties: Some(from_props_min.clone()),
             to_properties: Some(to_props_min.clone()),
             denormalized_source_table: Some("test.flights".to_string()),
+            label_column: None,
+            label_value: None,
         };
         
         let mut from_props = HashMap::new();
@@ -1308,6 +1338,8 @@ mod tests {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         };
         
         let flight_edge = RelationshipSchema {
@@ -1365,6 +1397,8 @@ mod tests {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         };
         
         let mut from_props = HashMap::new();
@@ -1415,6 +1449,8 @@ mod tests {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("prop1".to_string(), PropertyValue::Column("col1".to_string()));

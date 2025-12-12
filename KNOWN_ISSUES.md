@@ -1,6 +1,6 @@
 # Known Issues
 
-**Active Issues**: 5  
+**Active Issues**: 10  
 **Last Updated**: December 11, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
@@ -149,7 +149,77 @@ RETURN name, follows
 
 ---
 
-### 6. Anonymous Nodes Without Labels (Partial Support)
+### 7. Pattern Comprehension - NOT IMPLEMENTED
+
+**Status**: 🔴 Not Implemented  
+**Severity**: LOW  
+**Affects**: LDBC BI queries using `[(pattern) | expression]` syntax
+
+**Symptom**: Parser does not recognize pattern comprehension syntax, resulting in parse errors.
+
+**Example (fails)**:
+```cypher
+MATCH (p:Person)
+RETURN p.name, [(p)-[:KNOWS]->(f) | f.name] AS friendNames
+```
+
+**Root Cause**: Pattern comprehension (`[pattern | expression]`) is a distinct syntactic construct that requires:
+1. Parser support for the bracket-pattern-pipe syntax
+2. Query planner support to convert to correlated subqueries
+3. SQL generation for array aggregation with subqueries
+
+**Workaround**: Use explicit COLLECT with OPTIONAL MATCH or separate queries:
+```cypher
+-- ✅ Works: Using OPTIONAL MATCH + COLLECT
+MATCH (p:Person)
+OPTIONAL MATCH (p)-[:KNOWS]->(f)
+WITH p, collect(f.name) AS friendNames
+RETURN p.name, friendNames
+```
+
+**Future**: Implementing pattern comprehension would require significant parser and planner changes. Consider priority based on user demand.
+
+---
+
+### 8. CALL Subquery - NOT IMPLEMENTED
+
+**Status**: 🔴 Not Implemented  
+**Severity**: LOW  
+**Affects**: Queries using `CALL { ... }` subquery blocks
+
+**Symptom**: CALL subquery blocks are ignored by the parser. The query executes using only the outer MATCH, silently omitting the CALL block.
+
+**Example (partial execution)**:
+```cypher
+MATCH (p:Person)
+CALL {
+  WITH p
+  MATCH (p)-[:KNOWS]->(f)
+  RETURN count(f) AS friendCount
+}
+RETURN p.name, friendCount
+```
+The above query executes as if it were just `MATCH (p:Person) RETURN p.name`, with `friendCount` undefined.
+
+**Root Cause**: The parser does not implement CALL subquery grammar. This is a Neo4j 4.x+ feature that allows:
+- Correlated subqueries with WITH import
+- UNION within subqueries
+- Isolated variable scoping
+
+**Workaround**: Restructure using WITH clauses or multiple queries:
+```cypher
+-- ✅ Works: Using WITH + OPTIONAL MATCH
+MATCH (p:Person)
+OPTIONAL MATCH (p)-[:KNOWS]->(f)
+WITH p, count(f) AS friendCount
+RETURN p.name, friendCount
+```
+
+**Future**: CALL subquery implementation would require parser grammar extension and planner support for correlated subquery execution. Consider priority based on user demand.
+
+---
+
+### 9. Anonymous Nodes Without Labels (Partial Support)
 
 **Status**: 🟡 Partial Support  
 **Severity**: LOW
@@ -167,7 +237,73 @@ RETURN name, follows
 
 ---
 
+### 10. Edge Type Predicate in Expressions - NOT IMPLEMENTED
+
+**Status**: 🟡 Not Implemented (Deferred)  
+**Severity**: LOW  
+**Affects**: Queries using `r:TYPE` as expression in WHERE/WITH clauses
+
+**What Works** ✅:
+- **Node label predicate** `n:Label` in expressions (WHERE/WITH) - fully implemented
+- **Node polymorphic support**: Tables with `label_column` generate runtime checks
+- **Edge type in MATCH**: `MATCH (a)-[r:FOLLOWS]->(b)` works correctly
+
+**Limitation**:
+Edge type predicates as expressions (`r:TYPE`) are not supported:
+```cypher
+-- ❌ Not supported: Edge type as expression
+MATCH (a)-[r:INTERACTION]->(b)
+WITH r, r:FOLLOWS AS isFollow, r:LIKES AS isLike
+RETURN ...
+```
+
+**Root Cause**: Label predicates were implemented for nodes only. Edge type predicates would require:
+1. Extending `LabelExpression` handling to check if variable is a relationship
+2. Looking up `type_column` from `RelationshipSchema` (already exists)
+3. Generating `type_column = 'TYPE'` comparison
+
+**Workaround**: Use separate MATCH patterns or filter on edge properties:
+```cypher
+-- ✅ Works: Filter on edge property directly
+MATCH (a)-[r]->(b)
+WHERE r.type = 'FOLLOWS'
+RETURN r
+```
+
+**Future**: Implementation is straightforward (mirrors node label predicate) but deferred due to low demand. Can be added if needed for specific use cases.
+
+---
+
 ## Fixed Issues (December 2025)
+
+### size() on Patterns - FIXED
+
+**Status**: ✅ Fixed (Dec 11, 2025)
+**Feature**: Pattern counting with `size((n)-[:REL]->())` 
+
+Successfully implemented correlated COUNT(*) subquery generation for pattern counting. The implementation correctly infers node ID columns from relationship schema when labels aren't specified in the pattern.
+
+**Example that works**:
+```cypher
+MATCH (u:User)
+RETURN u.name, size((u)-[:FOLLOWS]->()) AS followerCount
+```
+
+**Generated SQL**:
+```sql
+SELECT u.full_name AS "u.name",
+  (SELECT COUNT(*) FROM user_follows_bench 
+   WHERE user_follows_bench.follower_id = u.user_id) AS "followerCount"
+FROM users_bench AS u
+```
+
+**Key Features**:
+- Parser: `size((n)-[:REL]->())` parses as FunctionCall with PathPattern argument
+- Planner: Automatic conversion to PatternCount LogicalExpr variant
+- SQL Gen: Correlated subquery with proper node ID column lookup from relationship schema
+- Schema-aware: Falls back to relationship's from_node/to_node types when pattern doesn't specify labels
+
+**Technical Details**: When the pattern `(u)-[:FOLLOWS]->()` doesn't have explicit labels, the code looks up the FOLLOWS relationship schema to determine that the from_node is "User", then looks up the User node schema to get the correct ID column (`user_id` instead of defaulting to `id`).
 
 ### Undirected VLP with WITH Clause - FIXED
 

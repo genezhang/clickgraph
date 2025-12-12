@@ -1,4 +1,5 @@
 use crate::{
+    query_planner::logical_expr::ScalarFnCall as LogicalScalarFnCall,
     query_planner::logical_plan::LogicalPlan,
     render_plan::{
         render_expr::{
@@ -15,7 +16,7 @@ use crate::{
 
 // Import function translator for Neo4j -> ClickHouse function mappings
 use super::function_registry::get_function_mapping;
-use super::function_translator::{get_ch_function_name, CH_PASSTHROUGH_PREFIX};
+use super::function_translator::{get_ch_function_name, translate_scalar_function, CH_PASSTHROUGH_PREFIX};
 
 /// Check if an expression contains a string literal (recursively for nested + operations)
 fn contains_string_literal(expr: &RenderExpr) -> bool {
@@ -342,16 +343,29 @@ impl ToSql for Cte {
 
                 // Handle UNION plans - the union branches contain their own SELECTs
                 if plan.union.0.is_some() {
-                    // Check if ORDER BY, SKIP, or LIMIT are present on the UNION wrapper
-                    let needs_subquery = !plan.order_by.0.is_empty() 
+                    // Check if we have custom SELECT items (WITH projection), modifiers, or GROUP BY
+                    let has_custom_select = !plan.select.items.is_empty();
+                    let has_order_by_skip_limit = !plan.order_by.0.is_empty() 
                         || plan.limit.0.is_some() 
                         || plan.skip.0.is_some();
+                    let has_group_by = !plan.group_by.0.is_empty();
+                    let needs_subquery = has_custom_select || has_order_by_skip_limit || has_group_by;
                     
                     if needs_subquery {
-                        // Wrap UNION in a subquery to apply ORDER BY/LIMIT/SKIP
-                        cte_body.push_str("SELECT * FROM (\n");
+                        // Wrap UNION in a subquery to apply SELECT projection, ORDER BY/LIMIT/SKIP, or GROUP BY
+                        if has_custom_select {
+                            // Use custom SELECT items (e.g., WITH friend.firstName AS name)
+                            cte_body.push_str(&plan.select.to_sql());
+                        } else {
+                            cte_body.push_str("SELECT * ");
+                        }
+                        cte_body.push_str("FROM (\n");
                         cte_body.push_str(&plan.union.to_sql());
                         cte_body.push_str(") AS __union\n");
+                        
+                        // Add GROUP BY if present (for aggregations)
+                        cte_body.push_str(&plan.group_by.to_sql());
+                        
                         cte_body.push_str(&plan.order_by.to_sql());
                         
                         // Handle SKIP/LIMIT - either or both may be present
@@ -632,8 +646,57 @@ impl RenderExpr {
                 format!("[{}]", inner)
             }
             RenderExpr::ScalarFnCall(fn_call) => {
-                // Check if we have a Neo4j -> ClickHouse mapping
+                // Check for special functions that need custom handling
                 let fn_name_lower = fn_call.name.to_lowercase();
+                
+                // Special handling for duration() with map argument
+                if fn_name_lower == "duration" && fn_call.args.len() == 1 {
+                    if let RenderExpr::MapLiteral(entries) = &fn_call.args[0] {
+                        if !entries.is_empty() {
+                            // Convert duration({days: 5, hours: 2}) -> (toIntervalDay(5) + toIntervalHour(2))
+                            let interval_parts: Vec<String> = entries
+                                .iter()
+                                .filter_map(|(key, value)| {
+                                    let value_sql = value.to_sql();
+                                    let key_lower = key.to_lowercase();
+                                    
+                                    // Map Neo4j time unit to ClickHouse interval function
+                                    let result = match key_lower.as_str() {
+                                        "years" | "year" => format!("toIntervalYear({})", value_sql),
+                                        "months" | "month" => format!("toIntervalMonth({})", value_sql),
+                                        "weeks" | "week" => format!("toIntervalWeek({})", value_sql),
+                                        "days" | "day" => format!("toIntervalDay({})", value_sql),
+                                        "hours" | "hour" => format!("toIntervalHour({})", value_sql),
+                                        "minutes" | "minute" => format!("toIntervalMinute({})", value_sql),
+                                        "seconds" | "second" => format!("toIntervalSecond({})", value_sql),
+                                        "milliseconds" | "millisecond" => {
+                                            format!("toIntervalSecond({} / 1000.0)", value_sql)
+                                        }
+                                        "microseconds" | "microsecond" => {
+                                            format!("toIntervalSecond({} / 1000000.0)", value_sql)
+                                        }
+                                        "nanoseconds" | "nanosecond" => {
+                                            format!("toIntervalSecond({} / 1000000000.0)", value_sql)
+                                        }
+                                        _ => {
+                                            log::warn!("Unknown duration unit '{}', using as-is", key);
+                                            return None;
+                                        }
+                                    };
+                                    Some(result)
+                                })
+                                .collect();
+                            
+                            if interval_parts.len() == 1 {
+                                return interval_parts[0].clone();
+                            } else {
+                                return format!("({})", interval_parts.join(" + "));
+                            }
+                        }
+                    }
+                }
+                
+                // Check if we have a Neo4j -> ClickHouse mapping
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {
                         // Convert arguments to SQL
@@ -715,8 +778,25 @@ impl RenderExpr {
                 table_alias,
                 column,
             }) => {
-                // Use PropertyValue.to_sql() to handle both simple columns and expressions
-                column.0.to_sql(&table_alias.0)
+                // Check if this is a temporal property access (e.g., birthday.year, birthday.month)
+                // These should be converted to function calls (e.g., year(birthday), month(birthday))
+                let col_name = column.0.raw().to_lowercase();
+                match col_name.as_str() {
+                    "year" => format!("toYear({})", table_alias.0),
+                    "month" => format!("toMonth({})", table_alias.0),
+                    "day" => format!("toDayOfMonth({})", table_alias.0),
+                    "hour" => format!("toHour({})", table_alias.0),
+                    "minute" => format!("toMinute({})", table_alias.0),
+                    "second" => format!("toSecond({})", table_alias.0),
+                    "dayofweek" | "dow" => format!("toDayOfWeek({})", table_alias.0),
+                    "dayofyear" | "doy" => format!("toDayOfYear({})", table_alias.0),
+                    "week" => format!("toWeek({})", table_alias.0),
+                    "quarter" => format!("toQuarter({})", table_alias.0),
+                    _ => {
+                        // Regular property access - use PropertyValue.to_sql() to handle both simple columns and expressions
+                        column.0.to_sql(&table_alias.0)
+                    }
+                }
             }
             RenderExpr::OperatorApplicationExp(op) => {
                 fn op_str(o: Operator) -> &'static str {
@@ -874,6 +954,42 @@ impl RenderExpr {
             RenderExpr::ExistsSubquery(exists) => {
                 // Use the pre-generated SQL from the ExistsSubquery
                 format!("EXISTS ({})", exists.sql)
+            }
+            RenderExpr::ReduceExpr(reduce) => {
+                // Convert to ClickHouse arrayFold((acc, x) -> expr, list, init)
+                // Cast numeric init to Int64 to prevent type mismatch issues
+                let init_sql = reduce.initial_value.to_sql();
+                let list_sql = reduce.list.to_sql();
+                let expr_sql = reduce.expression.to_sql();
+                
+                // Wrap numeric init values in toInt64() to prevent type mismatch
+                let init_cast = if matches!(*reduce.initial_value, RenderExpr::Literal(Literal::Integer(_))) {
+                    format!("toInt64({})", init_sql)
+                } else {
+                    init_sql
+                };
+                
+                format!(
+                    "arrayFold({}, {} -> {}, {}, {})",
+                    reduce.variable, reduce.accumulator, expr_sql, list_sql, init_cast
+                )
+            }
+            RenderExpr::MapLiteral(entries) => {
+                // Map literals are handled specially by function translator
+                // If we reach here directly, just format as key-value pairs for debugging
+                // In practice, duration({days: 5}) is handled by translate_scalar_function
+                let pairs: Vec<String> = entries
+                    .iter()
+                    .map(|(k, v)| {
+                        let val_sql = v.to_sql();
+                        format!("'{}': {}", k, val_sql)
+                    })
+                    .collect();
+                format!("{{{}}}", pairs.join(", "))
+            }
+            RenderExpr::PatternCount(pc) => {
+                // Use the pre-generated SQL from PatternCount (correlated subquery)
+                pc.sql.clone()
             }
         }
     }

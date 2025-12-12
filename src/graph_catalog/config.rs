@@ -615,6 +615,8 @@ fn build_node_schema(
         } else {
             None
         },
+        label_column: node_def.label_column.clone(),
+        label_value: node_def.label_value.clone(),
     })
 }
 

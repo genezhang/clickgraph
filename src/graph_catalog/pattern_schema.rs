@@ -913,6 +913,8 @@ mod tests {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         }
     }
 
@@ -931,6 +933,8 @@ mod tests {
             filter: None,
             is_denormalized: true,
             denormalized_source_table: Some(format!("test_db.{}", table)),
+            label_column: None,
+            label_value: None,
             from_properties: Some(HashMap::from([
                 ("code".to_string(), "Origin".to_string()),
             ])),

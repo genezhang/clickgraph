@@ -1,0 +1,204 @@
+{
+  "timestamp": "2025-12-11T11:34:50.015331",
+  "iterations": 5,
+  "results": {
+    "IS": [
+      {
+        "query_id": "IS1",
+        "name": "Person Profile",
+        "avg_ms": 8.456945419311523,
+        "min_ms": 7.623434066772461,
+        "max_ms": 10.049581527709961,
+        "row_count": 1
+      },
+      {
+        "query_id": "IS2",
+        "name": "Recent Posts",
+        "avg_ms": 38.17553520202637,
+        "min_ms": 34.4390869140625,
+        "max_ms": 42.8767204284668,
+        "row_count": 10
+      },
+      {
+        "query_id": "IS3",
+        "name": "Friends",
+        "avg_ms": 24.17454719543457,
+        "min_ms": 22.571802139282227,
+        "max_ms": 26.37171745300293,
+        "row_count": 10
+      },
+      {
+        "query_id": "IS4",
+        "name": "Message Content",
+        "avg_ms": 5.103778839111328,
+        "min_ms": 4.456758499145508,
+        "max_ms": 6.172895431518555,
+        "row_count": 1
+      },
+      {
+        "query_id": "IS5",
+        "name": "Message Creator",
+        "avg_ms": 12.993621826171875,
+        "min_ms": 11.850595474243164,
+        "max_ms": 14.073371887207031,
+        "row_count": 1
+      },
+      {
+        "query_id": "IS6",
+        "name": "Forum of Message",
+        "avg_ms": 13.723134994506836,
+        "min_ms": 12.693643569946289,
+        "max_ms": 14.737367630004883,
+        "row_count": 1
+      },
+      {
+        "query_id": "IS7",
+        "name": "Replies to Message",
+        "avg_ms": 350.5439758300781,
+        "min_ms": 172.99675941467285,
+        "max_ms": 555.8085441589355,
+        "row_count": 4
+      }
+    ],
+    "IC": [
+      {
+        "query_id": "IC1",
+        "name": "Friends with Name (Variable Path)",
+        "avg_ms": 62.25905418395996,
+        "min_ms": 57.11960792541504,
+        "max_ms": 70.18160820007324,
+        "row_count": 1
+      },
+      {
+        "query_id": "IC2",
+        "name": "Recent Friend Posts",
+        "avg_ms": 420.97249031066895,
+        "min_ms": 250.97393989562988,
+        "max_ms": 548.4006404876709,
+        "row_count": 20
+      },
+      {
+        "query_id": "IC3",
+        "name": "Friends in Countries (Simplified)",
+        "avg_ms": 212.88623809814453,
+        "min_ms": 196.9301700592041,
+        "max_ms": 229.71415519714355,
+        "row_count": 0
+      },
+      {
+        "query_id": "IC4",
+        "name": "New Topics (Simplified)",
+        "avg_ms": 279.0550231933594,
+        "min_ms": 243.0422306060791,
+        "max_ms": 296.008825302124,
+        "row_count": 9
+      },
+      {
+        "query_id": "IC5",
+        "name": "New Groups (Simplified)",
+        "avg_ms": 419.5496082305908,
+        "min_ms": 214.57457542419434,
+        "max_ms": 545.7041263580322,
+        "row_count": 20
+      },
+      {
+        "query_id": "IC7",
+        "name": "Recent Likers (Simplified)",
+        "avg_ms": 148.43850135803223,
+        "min_ms": 135.5452537536621,
+        "max_ms": 168.0166721343994,
+        "row_count": 0
+      },
+      {
+        "query_id": "IC8",
+        "name": "Recent Replies",
+        "avg_ms": 636.3119125366211,
+        "min_ms": 417.44303703308105,
+        "max_ms": 949.0280151367188,
+        "row_count": 20
+      },
+      {
+        "query_id": "IC9",
+        "name": "FoF Posts (Simplified)",
+        "avg_ms": 472.83897399902344,
+        "min_ms": 400.0508785247803,
+        "max_ms": 555.8750629425049,
+        "row_count": 20
+      },
+      {
+        "query_id": "IC11",
+        "name": "Job Referral (Simplified)",
+        "avg_ms": 46.53310775756836,
+        "min_ms": 44.92640495300293,
+        "max_ms": 49.93939399719238,
+        "row_count": 0
+      },
+      {
+        "query_id": "IC12",
+        "name": "Expert Search (Simplified)",
+        "avg_ms": 770.8667278289795,
+        "min_ms": 437.1485710144043,
+        "max_ms": 953.6933898925781,
+        "row_count": 5
+      },
+      {
+        "query_id": "IC13",
+        "name": "Path Between Two People",
+        "avg_ms": 27.065086364746094,
+        "min_ms": 25.878429412841797,
+        "max_ms": 28.305530548095703,
+        "row_count": 1
+      }
+    ],
+    "BI": [
+      {
+        "query_id": "BI1",
+        "name": "Post Count",
+        "avg_ms": 3.4854888916015625,
+        "min_ms": 2.8107166290283203,
+        "max_ms": 4.162311553955078,
+        "row_count": 1
+      },
+      {
+        "query_id": "BI2",
+        "name": "Posts per Tag",
+        "avg_ms": 170.69849967956543,
+        "min_ms": 155.7326316833496,
+        "max_ms": 196.7456340789795,
+        "row_count": 20
+      },
+      {
+        "query_id": "BI3",
+        "name": "Forum Members",
+        "avg_ms": -139.33095932006836,
+        "min_ms": -1133.779525756836,
+        "max_ms": 372.6463317871094,
+        "row_count": 20
+      },
+      {
+        "query_id": "BI4",
+        "name": "Top Content Creators",
+        "avg_ms": 178.44629287719727,
+        "min_ms": 171.00167274475098,
+        "max_ms": 191.91575050354004,
+        "row_count": 20
+      },
+      {
+        "query_id": "BI5",
+        "name": "Tag Engagement",
+        "avg_ms": 335.8607769012451,
+        "min_ms": 311.45548820495605,
+        "max_ms": 368.4861660003662,
+        "row_count": 20
+      },
+      {
+        "query_id": "BI6",
+        "name": "Related Tags",
+        "avg_ms": 322.79977798461914,
+        "min_ms": 227.21219062805176,
+        "max_ms": 488.36302757263184,
+        "row_count": 11940
+      }
+    ]
+  }
+}

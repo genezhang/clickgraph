@@ -31,6 +31,14 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
         RenderExpr::InSubquery(subquery) => references_alias(&subquery.expr, alias),
         // EXISTS subqueries don't reference aliases in the outer scope directly
         RenderExpr::ExistsSubquery(_) => false,
+        // PatternCount is a self-contained subquery, no outer alias references
+        RenderExpr::PatternCount(_) => false,
+        // ReduceExpr may contain aliases in its sub-expressions
+        RenderExpr::ReduceExpr(reduce) => {
+            references_alias(&reduce.initial_value, alias)
+                || references_alias(&reduce.list, alias)
+                || references_alias(&reduce.expression, alias)
+        }
         // Simple expressions that don't contain aliases
         RenderExpr::Literal(_)
         | RenderExpr::Raw(_)
@@ -39,6 +47,10 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
         | RenderExpr::ColumnAlias(_)
         | RenderExpr::Column(_)
         | RenderExpr::Parameter(_) => false,
+        // MapLiteral may contain aliases in its values
+        RenderExpr::MapLiteral(entries) => {
+            entries.iter().any(|(_, v)| references_alias(v, alias))
+        }
     }
 }
 

@@ -2526,6 +2526,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
         nodes.insert(
@@ -2546,6 +2548,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
         nodes.insert(
@@ -2566,6 +2570,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
 
@@ -2681,6 +2687,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
 
@@ -2970,6 +2978,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
 
@@ -3053,6 +3063,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
 
@@ -3086,6 +3098,8 @@ mod tests {
                     from_properties: None,
                     to_properties: None,
                     denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
                 },
             );
         }
@@ -3162,6 +3176,8 @@ mod tests {
                     from_properties: None,
                     to_properties: None,
                     denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
                 },
             );
         }
@@ -3208,6 +3224,8 @@ mod tests {
                     m
                 }),
                 denormalized_source_table: Some("test_db.flights".to_string()),
+            label_column: None,
+            label_value: None,
             },
         );
 
@@ -3244,6 +3262,8 @@ mod tests {
                     from_properties: None,
                     to_properties: None,
                     denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
                 },
             );
         }

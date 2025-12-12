@@ -4,7 +4,7 @@ use super::to_sql::ToSql;
 /// Neo4j Function Translator
 ///
 /// Translates Neo4j function calls to ClickHouse SQL equivalents
-use crate::query_planner::logical_expr::ScalarFnCall;
+use crate::query_planner::logical_expr::{LogicalExpr, ScalarFnCall};
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
@@ -297,6 +297,12 @@ pub fn translate_scalar_function(
     
     let fn_name_lower = fn_name.to_lowercase();
 
+    // Special handling for duration() with map argument
+    // Neo4j: duration({days: 5, hours: 2}) -> ClickHouse: (toIntervalDay(5) + toIntervalHour(2))
+    if fn_name_lower == "duration" {
+        return translate_duration_function(fn_call);
+    }
+
     // Look up function mapping
     match get_function_mapping(&fn_name_lower) {
         Some(mapping) => {
@@ -407,6 +413,104 @@ fn translate_ch_passthrough(
     
     // Generate ClickHouse function call directly
     Ok(format!("{}({})", ch_fn_name, args_sql.join(", ")))
+}
+
+/// Translate Neo4j duration({...}) function to ClickHouse interval expressions
+/// 
+/// Neo4j duration supports the following units (all plural and singular forms):
+/// - years, months, weeks, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds
+/// 
+/// ClickHouse interval functions:
+/// - toIntervalYear(n), toIntervalMonth(n), toIntervalWeek(n), toIntervalDay(n)
+/// - toIntervalHour(n), toIntervalMinute(n), toIntervalSecond(n)
+/// 
+/// Examples:
+///   duration({days: 5}) -> toIntervalDay(5)
+///   duration({days: 5, hours: 2}) -> (toIntervalDay(5) + toIntervalHour(2))
+///   duration({months: 1, days: 15}) -> (toIntervalMonth(1) + toIntervalDay(15))
+fn translate_duration_function(
+    fn_call: &ScalarFnCall,
+) -> Result<String, ClickhouseQueryGeneratorError> {
+    // duration() expects exactly one argument which should be a map literal
+    if fn_call.args.len() != 1 {
+        return Err(ClickhouseQueryGeneratorError::SchemaError(
+            "duration() requires exactly one map argument, e.g., duration({days: 5})".to_string()
+        ));
+    }
+
+    // Extract the map argument
+    match &fn_call.args[0] {
+        LogicalExpr::MapLiteral(entries) => {
+            if entries.is_empty() {
+                return Err(ClickhouseQueryGeneratorError::SchemaError(
+                    "duration() requires at least one time unit, e.g., duration({days: 5})".to_string()
+                ));
+            }
+
+            // Map Neo4j duration units to ClickHouse interval functions
+            let interval_parts: Result<Vec<String>, _> = entries
+                .iter()
+                .map(|(key, value)| {
+                    let value_sql = value.to_sql()?;
+                    let key_lower = key.to_lowercase();
+                    
+                    // Map Neo4j time unit to ClickHouse interval function
+                    let interval_fn = match key_lower.as_str() {
+                        "years" | "year" => "toIntervalYear",
+                        "months" | "month" => "toIntervalMonth",
+                        "weeks" | "week" => "toIntervalWeek",
+                        "days" | "day" => "toIntervalDay",
+                        "hours" | "hour" => "toIntervalHour",
+                        "minutes" | "minute" => "toIntervalMinute",
+                        "seconds" | "second" => "toIntervalSecond",
+                        // For sub-second precision, convert to seconds (ClickHouse doesn't have ms/us/ns intervals)
+                        "milliseconds" | "millisecond" => {
+                            return Ok(format!("toIntervalSecond({} / 1000.0)", value_sql));
+                        }
+                        "microseconds" | "microsecond" => {
+                            return Ok(format!("toIntervalSecond({} / 1000000.0)", value_sql));
+                        }
+                        "nanoseconds" | "nanosecond" => {
+                            return Ok(format!("toIntervalSecond({} / 1000000000.0)", value_sql));
+                        }
+                        _ => {
+                            return Err(ClickhouseQueryGeneratorError::SchemaError(format!(
+                                "Unknown duration unit '{}'. Supported: years, months, weeks, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds",
+                                key
+                            )));
+                        }
+                    };
+                    
+                    Ok(format!("{}({})", interval_fn, value_sql))
+                })
+                .collect();
+
+            let parts = interval_parts?;
+            
+            // Combine multiple intervals with + operator
+            if parts.len() == 1 {
+                Ok(parts[0].clone())
+            } else {
+                Ok(format!("({})", parts.join(" + ")))
+            }
+        }
+        _ => {
+            // If not a map literal, try to use it as a duration string (e.g., "P1D")
+            // This is an ISO 8601 duration format that Neo4j also supports
+            let arg_sql = fn_call.args[0].to_sql()?;
+            log::warn!(
+                "duration() called with non-map argument: {}. This may not work correctly in ClickHouse.",
+                arg_sql
+            );
+            // Attempt to parse as ISO 8601 duration - ClickHouse doesn't natively support this,
+            // but we could potentially support it via string parsing
+            Err(ClickhouseQueryGeneratorError::SchemaError(format!(
+                "duration() requires a map argument like duration({{days: 5}}), got: {}. \
+                 ISO 8601 duration strings are not yet supported.",
+                arg_sql
+            )))
+        }
+    }
 }
 
 /// Check if a function uses ClickHouse pass-through (ch. prefix)
@@ -735,5 +839,102 @@ mod tests {
         // Map aggregates
         assert!(is_ch_aggregate_function("sumMap"));
         assert!(is_ch_aggregate_function("avgMap"));
+    }
+
+    // ===== Duration Function Tests =====
+
+    #[test]
+    fn test_translate_duration_single_days() {
+        use crate::query_planner::logical_expr::Literal;
+        
+        // duration({days: 5}) -> toIntervalDay(5)
+        let fn_call = ScalarFnCall {
+            name: "duration".to_string(),
+            args: vec![
+                LogicalExpr::MapLiteral(vec![
+                    ("days".to_string(), LogicalExpr::Literal(Literal::Integer(5)))
+                ])
+            ],
+        };
+        
+        let result = translate_scalar_function(&fn_call).unwrap();
+        assert_eq!(result, "toIntervalDay(5)");
+    }
+
+    #[test]
+    fn test_translate_duration_multiple_units() {
+        use crate::query_planner::logical_expr::Literal;
+        
+        // duration({days: 5, hours: 2}) -> (toIntervalDay(5) + toIntervalHour(2))
+        let fn_call = ScalarFnCall {
+            name: "duration".to_string(),
+            args: vec![
+                LogicalExpr::MapLiteral(vec![
+                    ("days".to_string(), LogicalExpr::Literal(Literal::Integer(5))),
+                    ("hours".to_string(), LogicalExpr::Literal(Literal::Integer(2)))
+                ])
+            ],
+        };
+        
+        let result = translate_scalar_function(&fn_call).unwrap();
+        assert_eq!(result, "(toIntervalDay(5) + toIntervalHour(2))");
+    }
+
+    #[test]
+    fn test_translate_duration_all_units() {
+        use crate::query_planner::logical_expr::Literal;
+        
+        // Test various time units
+        let test_cases = vec![
+            (vec![("years", 1)], "toIntervalYear(1)"),
+            (vec![("months", 2)], "toIntervalMonth(2)"),
+            (vec![("weeks", 3)], "toIntervalWeek(3)"),
+            (vec![("days", 4)], "toIntervalDay(4)"),
+            (vec![("hours", 5)], "toIntervalHour(5)"),
+            (vec![("minutes", 6)], "toIntervalMinute(6)"),
+            (vec![("seconds", 7)], "toIntervalSecond(7)"),
+        ];
+        
+        for (entries, expected) in test_cases {
+            let fn_call = ScalarFnCall {
+                name: "duration".to_string(),
+                args: vec![
+                    LogicalExpr::MapLiteral(
+                        entries.iter()
+                            .map(|(k, v)| (k.to_string(), LogicalExpr::Literal(Literal::Integer(*v))))
+                            .collect()
+                    )
+                ],
+            };
+            
+            let result = translate_scalar_function(&fn_call).unwrap();
+            assert_eq!(result, expected, "Failed for unit: {:?}", entries);
+        }
+    }
+
+    #[test]
+    fn test_translate_duration_invalid_args() {
+        use crate::query_planner::logical_expr::Literal;
+        
+        // No arguments -> error
+        let fn_call = ScalarFnCall {
+            name: "duration".to_string(),
+            args: vec![],
+        };
+        assert!(translate_scalar_function(&fn_call).is_err());
+        
+        // Non-map argument -> error
+        let fn_call = ScalarFnCall {
+            name: "duration".to_string(),
+            args: vec![LogicalExpr::Literal(Literal::Integer(5))],
+        };
+        assert!(translate_scalar_function(&fn_call).is_err());
+        
+        // Empty map -> error
+        let fn_call = ScalarFnCall {
+            name: "duration".to_string(),
+            args: vec![LogicalExpr::MapLiteral(vec![])],
+        };
+        assert!(translate_scalar_function(&fn_call).is_err());
     }
 }

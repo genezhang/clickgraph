@@ -239,8 +239,42 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
             // Use the pre-generated SQL from ExistsSubquery
             format!("EXISTS ({})", exists.sql)
         }
+        RenderExpr::ReduceExpr(reduce) => {
+            // Convert to ClickHouse arrayFold((acc, x) -> expr, list, init)
+            // Cast numeric init to Int64 to prevent type mismatch issues
+            let init_sql = render_expr_to_sql_string(&reduce.initial_value, alias_mapping);
+            let list_sql = render_expr_to_sql_string(&reduce.list, alias_mapping);
+            let expr_sql = render_expr_to_sql_string(&reduce.expression, alias_mapping);
+            
+            // Wrap numeric init values in toInt64() to prevent type mismatch
+            let init_cast = if matches!(*reduce.initial_value, RenderExpr::Literal(Literal::Integer(_))) {
+                format!("toInt64({})", init_sql)
+            } else {
+                init_sql
+            };
+            
+            format!(
+                "arrayFold({}, {} -> {}, {}, {})",
+                reduce.variable, reduce.accumulator, expr_sql, list_sql, init_cast
+            )
+        }
+        RenderExpr::PatternCount(pc) => {
+            // Use the pre-generated SQL from PatternCount
+            pc.sql.clone()
+        }
         RenderExpr::Star => "*".to_string(),
         RenderExpr::Parameter(param) => format!("${}", param),
+        RenderExpr::MapLiteral(entries) => {
+            // Map literals handled specially for duration(), point(), etc.
+            let pairs: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| {
+                    let val_sql = render_expr_to_sql_string(v, alias_mapping);
+                    format!("'{}': {}", k, val_sql)
+                })
+                .collect();
+            format!("{{{}}}", pairs.join(", "))
+        }
     }
 }
 

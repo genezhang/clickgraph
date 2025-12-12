@@ -205,4 +205,27 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_parse_where_label_expression() {
+        // Test WHERE with label expression: WHERE u:User
+        let input = "WHERE u:User";
+        let result = parse_where_clause(input);
+        match result {
+            Ok((remaining, clause)) => {
+                assert_eq!(remaining, "", "WHERE u:User should be valid");
+                // Check that the conditions is a LabelExpression
+                if let crate::open_cypher_parser::ast::Expression::LabelExpression { variable, label } = clause.conditions {
+                    assert_eq!(variable, "u");
+                    assert_eq!(label, "User");
+                    println!("Correctly parsed WHERE u:User as LabelExpression");
+                } else {
+                    panic!("Expected LabelExpression, got: {:?}", clause.conditions);
+                }
+            }
+            Err(e) => {
+                panic!("WHERE u:User should be valid, but got error: {:?}", e);
+            }
+        }
+    }
 }

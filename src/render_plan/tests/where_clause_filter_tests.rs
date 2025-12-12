@@ -98,6 +98,8 @@ fn setup_test_graph_schema() -> GraphSchema {
         from_properties: None,
         to_properties: None,
         denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
     };
     nodes.insert("User".to_string(), user_node);
 

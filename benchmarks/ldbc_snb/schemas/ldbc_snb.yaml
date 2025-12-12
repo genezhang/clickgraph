@@ -61,11 +61,13 @@ graph_schema:
     # -------------------------------------------------------------------------
     # Message - unified view of Post and Comment (virtual label)
     # Note: Uses the Message view that unions Post and Comment
+    # The 'type' column distinguishes between 'Post' and 'Comment'
     # -------------------------------------------------------------------------
     - label: Message
       database: ldbc
       table: Message
       node_id: id
+      label_column: type  # Polymorphic: type='Post' or type='Comment'
       property_mappings:
         id: id
         creationDate: creationDate
@@ -210,11 +212,13 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
       database: ldbc
-      table: Person_isLocatedIn_Place
-      from_id: Person_id
-      to_id: Place_id
+      table: Person_isLocatedIn_City
+      from_id: PersonId
+      to_id: CityId
       from_node: Person
       to_node: City
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Person HAS_INTEREST Tag
@@ -226,32 +230,36 @@ graph_schema:
       to_id: TagId
       from_node: Person
       to_node: Tag
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Person STUDY_AT Organisation (university)
     # -------------------------------------------------------------------------
     - type: STUDY_AT
       database: ldbc
-      table: Person_studyAt_Organisation
-      from_id: Person_id
-      to_id: Organisation_id
+      table: Person_studyAt_University
+      from_id: PersonId
+      to_id: UniversityId
       from_node: Person
       to_node: University
       property_mappings:
         classYear: classYear
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Person WORK_AT Organisation (company)
     # -------------------------------------------------------------------------
     - type: WORK_AT
       database: ldbc
-      table: Person_workAt_Organisation
-      from_id: Person_id
-      to_id: Organisation_id
+      table: Person_workAt_Company
+      from_id: PersonId
+      to_id: CompanyId
       from_node: Person
       to_node: Company
       property_mappings:
         workFrom: workFrom
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Person LIKES Post
@@ -461,14 +469,17 @@ graph_schema:
 
     # -------------------------------------------------------------------------
     # Post IS_LOCATED_IN Place
+    # NOTE: Post_isLocatedIn_Place has bad data, use Post_isLocatedIn_Country instead
     # -------------------------------------------------------------------------
     - type: POST_IS_LOCATED_IN
       database: ldbc
-      table: Post_isLocatedIn_Place
-      from_id: Post_id
-      to_id: Place_id
+      table: Post_isLocatedIn_Country
+      from_id: PostId
+      to_id: CountryId
       from_node: Post
       to_node: Country
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Post POST_LOCATED_IN Country (for IC3 query)
@@ -483,11 +494,14 @@ graph_schema:
 
     # -------------------------------------------------------------------------
     # Comment IS_LOCATED_IN Place
+    # NOTE: Comment_isLocatedIn_Place has bad data, use Comment_isLocatedIn_Country instead
     # -------------------------------------------------------------------------
     - type: COMMENT_IS_LOCATED_IN
       database: ldbc
-      table: Comment_isLocatedIn_Place
-      from_id: Comment_id
-      to_id: Place_id
+      table: Comment_isLocatedIn_Country
+      from_id: CommentId
+      to_id: CountryId
       from_node: Comment
       to_node: Country
+      property_mappings:
+        creationDate: creationDate

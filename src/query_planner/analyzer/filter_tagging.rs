@@ -322,22 +322,42 @@ impl AnalyzerPass for FilterTagging {
             }
             LogicalPlan::WithClause(with_clause) => {
                 let child_tf = self.analyze_with_graph_schema(with_clause.input.clone(), plan_ctx, graph_schema)?;
-                match child_tf {
-                    Transformed::Yes(new_input) => {
-                        let new_with = crate::query_planner::logical_plan::WithClause {
-                            input: new_input,
-                            items: with_clause.items.clone(),
-                            distinct: with_clause.distinct,
-                            order_by: with_clause.order_by.clone(),
-                            skip: with_clause.skip,
-                            limit: with_clause.limit,
-                            where_clause: with_clause.where_clause.clone(),
-                            exported_aliases: with_clause.exported_aliases.clone(),
-                        };
-                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                
+                // Apply property mapping to WITH clause items (resolves LabelExpression, etc.)
+                let mut mapped_items = Vec::new();
+                for item in &with_clause.items {
+                    let mapped_expr = self.apply_property_mapping(
+                        item.expression.clone(),
+                        plan_ctx,
+                        graph_schema,
+                        Some(with_clause.input.as_ref()),
+                    )?;
+                    mapped_items.push(ProjectionItem {
+                        expression: mapped_expr.clone(),
+                        col_alias: item.col_alias.clone(),
+                    });
+                    
+                    // Register WITH clause aliases as projection aliases
+                    if let Some(col_alias) = &item.col_alias {
+                        println!(
+                            "FilterTagging: Registering WITH clause alias: {} -> {:?}",
+                            col_alias.0, mapped_expr
+                        );
+                        plan_ctx.register_projection_alias(col_alias.0.clone(), mapped_expr);
                     }
-                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
+                
+                let new_with = crate::query_planner::logical_plan::WithClause {
+                    input: child_tf.get_plan().clone(),
+                    items: mapped_items,
+                    distinct: with_clause.distinct,
+                    order_by: with_clause.order_by.clone(),
+                    skip: with_clause.skip,
+                    limit: with_clause.limit,
+                    where_clause: with_clause.where_clause.clone(),
+                    exported_aliases: with_clause.exported_aliases.clone(),
+                };
+                Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
             }
         })
     }
@@ -436,6 +456,37 @@ impl FilterTagging {
                     "FilterTagging: apply_property_mapping for alias '{}', property '{}'",
                     property_access.table_alias.0, property_access.column.raw()
                 );
+                
+                // Check if this is a temporal property access (e.g., birthday.year, birthday.month)
+                // These should be converted to function calls without table lookup
+                let col_name = property_access.column.raw().to_lowercase();
+                let temporal_func = match col_name.as_str() {
+                    "year" => Some("year"),
+                    "month" => Some("month"),
+                    "day" => Some("day"),
+                    "hour" => Some("hour"),
+                    "minute" => Some("minute"),
+                    "second" => Some("second"),
+                    "dayofweek" | "dow" => Some("dayOfWeek"),
+                    "dayofyear" | "doy" => Some("dayOfYear"),
+                    "week" => Some("week"),
+                    "quarter" => Some("quarter"),
+                    _ => None,
+                };
+                
+                if let Some(func_name) = temporal_func {
+                    // Convert property access to function call: birthday.year -> year(birthday)
+                    println!(
+                        "FilterTagging: Converting temporal property access {}.{} to {}({})",
+                        property_access.table_alias.0, property_access.column.raw(),
+                        func_name, property_access.table_alias.0
+                    );
+                    return Ok(LogicalExpr::ScalarFnCall(crate::query_planner::logical_expr::ScalarFnCall {
+                        name: func_name.to_string(),
+                        args: vec![LogicalExpr::TableAlias(property_access.table_alias)],
+                    }));
+                }
+                
                 // Get the table context for this alias
                 let table_ctx = plan_ctx
                     .get_table_ctx(&property_access.table_alias.0)
@@ -766,6 +817,62 @@ impl FilterTagging {
                     )?);
                 }
                 Ok(LogicalExpr::List(mapped_elements))
+            }
+            LogicalExpr::LabelExpression { variable, label: check_label } => {
+                // Label expression: variable:Label
+                // Check if the variable has the specified label
+                // 
+                // For polymorphic tables (with label_column), generate SQL comparison:
+                //   m:Comment -> label_column = 'Comment'
+                // For non-polymorphic tables, resolve at compile-time to true/false
+                
+                if let Ok(table_ctx) = plan_ctx.get_table_ctx(&variable) {
+                    if let Some(known_labels) = table_ctx.get_labels() {
+                        // Check if this is a polymorphic table with label_column
+                        // We need to look up the node schema to see if it has label_column
+                        if let Some(first_label) = known_labels.first() {
+                            if let Ok(node_schema) = graph_schema.get_node_schema(first_label) {
+                                if let Some(label_col) = &node_schema.label_column {
+                                    // Polymorphic table - generate runtime check: label_column = 'check_label'
+                                    println!(
+                                        "FilterTagging: LabelExpression {}:{} - polymorphic table with label_column='{}', generating runtime check",
+                                        variable, check_label, label_col
+                                    );
+                                    return Ok(LogicalExpr::OperatorApplicationExp(
+                                        crate::query_planner::logical_expr::OperatorApplication {
+                                            operator: crate::query_planner::logical_expr::Operator::Equal,
+                                            operands: vec![
+                                                LogicalExpr::PropertyAccessExp(crate::query_planner::logical_expr::PropertyAccess {
+                                                    table_alias: crate::query_planner::logical_expr::TableAlias(variable.clone()),
+                                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(label_col.clone()),
+                                                }),
+                                                LogicalExpr::Literal(crate::query_planner::logical_expr::Literal::String(check_label.clone())),
+                                            ],
+                                        }
+                                    ));
+                                }
+                            }
+                        }
+                        
+                        // Non-polymorphic table - resolve at compile-time
+                        // Check if the check_label matches any of the known labels
+                        let matches = known_labels.iter().any(|l| l.eq_ignore_ascii_case(&check_label));
+                        println!(
+                            "FilterTagging: LabelExpression {} has labels {:?}, checking for '{}' -> {}",
+                            variable, known_labels, check_label, matches
+                        );
+                        return Ok(LogicalExpr::Literal(
+                            crate::query_planner::logical_expr::Literal::Boolean(matches)
+                        ));
+                    }
+                }
+                // If we can't determine the label statically, keep the expression as-is
+                // This will need to be handled at SQL generation time
+                println!(
+                    "FilterTagging: LabelExpression {}:{} - cannot determine label statically",
+                    variable, check_label
+                );
+                Ok(LogicalExpr::LabelExpression { variable, label: check_label })
             }
             // For other expression types, return as-is
             other => Ok(other),
@@ -1635,6 +1742,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
 
@@ -1665,6 +1774,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
 

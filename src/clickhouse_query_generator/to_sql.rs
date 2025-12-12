@@ -101,9 +101,26 @@ impl ToSql for LogicalExpr {
                 translate_scalar_function(fn_call)
             }
             LogicalExpr::PropertyAccessExp(prop) => {
-                // PropertyValue already knows if it's an expression or simple column
-                // Use its to_sql() method which handles both cases efficiently
-                Ok(prop.column.to_sql(&prop.table_alias.0))
+                // Check if this is a temporal property access (e.g., birthday.year, birthday.month)
+                // These should be converted to function calls (e.g., toYear(birthday), toMonth(birthday))
+                let col_name = prop.column.raw().to_lowercase();
+                match col_name.as_str() {
+                    "year" => Ok(format!("toYear({})", prop.table_alias.0)),
+                    "month" => Ok(format!("toMonth({})", prop.table_alias.0)),
+                    "day" => Ok(format!("toDayOfMonth({})", prop.table_alias.0)),
+                    "hour" => Ok(format!("toHour({})", prop.table_alias.0)),
+                    "minute" => Ok(format!("toMinute({})", prop.table_alias.0)),
+                    "second" => Ok(format!("toSecond({})", prop.table_alias.0)),
+                    "dayofweek" | "dow" => Ok(format!("toDayOfWeek({})", prop.table_alias.0)),
+                    "dayofyear" | "doy" => Ok(format!("toDayOfYear({})", prop.table_alias.0)),
+                    "week" => Ok(format!("toWeek({})", prop.table_alias.0)),
+                    "quarter" => Ok(format!("toQuarter({})", prop.table_alias.0)),
+                    _ => {
+                        // Regular property access - PropertyValue already knows if it's an expression or simple column
+                        // Use its to_sql() method which handles both cases efficiently
+                        Ok(prop.column.to_sql(&prop.table_alias.0))
+                    }
+                }
             }
             LogicalExpr::OperatorApplicationExp(op) => {
                 let operands_sql: Vec<String> = op
@@ -239,6 +256,51 @@ impl ToSql for LogicalExpr {
                 // Generate EXISTS (SELECT 1 FROM ... WHERE ...)
                 let subquery_sql = exists_subquery.subplan.to_sql()?;
                 Ok(format!("EXISTS ({})", subquery_sql))
+            }
+            LogicalExpr::ReduceExpr(reduce) => {
+                // Convert Cypher reduce(acc = init, x IN list | expr) to ClickHouse arrayFold
+                // ClickHouse syntax: arrayFold((acc, x) -> expr, list, init)
+                // Note: Cast init to Int64 to avoid type mismatch issues when the lambda
+                // expression returns a wider type than the inferred initial value type
+                let init_sql = reduce.initial_value.to_sql()?;
+                let list_sql = reduce.list.to_sql()?;
+                let expr_sql = reduce.expression.to_sql()?;
+                
+                // Wrap numeric init values in toInt64() to prevent type mismatch
+                let init_cast = if matches!(*reduce.initial_value, LogicalExpr::Literal(Literal::Integer(_))) {
+                    format!("toInt64({})", init_sql)
+                } else {
+                    init_sql
+                };
+                
+                Ok(format!(
+                    "arrayFold({}, {} -> {}, {}, {})",
+                    reduce.variable, reduce.accumulator, expr_sql, list_sql, init_cast
+                ))
+            }
+            LogicalExpr::MapLiteral(entries) => {
+                // Map literals are handled specially by function translator
+                // If we reach here directly, just format as key-value pairs for debugging
+                // In practice, duration({days: 5}) is handled by translate_scalar_function
+                let pairs: Result<Vec<String>, _> = entries
+                    .iter()
+                    .map(|(k, v)| {
+                        let val_sql = v.to_sql()?;
+                        Ok(format!("'{}': {}", k, val_sql))
+                    })
+                    .collect();
+                Ok(format!("{{{}}}", pairs?.join(", ")))
+            }
+            LogicalExpr::LabelExpression { variable, label } => {
+                // Label expression should typically be resolved at planning time
+                // If we reach here, it means we couldn't determine the label statically
+                // Generate a fallback that returns false (unknown label)
+                // In a more sophisticated implementation, this could query a type column
+                log::warn!(
+                    "LabelExpression {}:{} reached SQL generation - returning false",
+                    variable, label
+                );
+                Ok("false".to_string())
             }
             LogicalExpr::PathPattern(_) => {
                 // Path patterns are handled at the logical plan level, not expression level

@@ -14,7 +14,7 @@ use nom::character::complete::char;
 use crate::open_cypher_parser::common::{self, ws};
 
 use super::{
-    ast::{Expression, ExistsSubquery, FunctionCall, Literal, Operator, OperatorApplication, PropertyAccess},
+    ast::{Expression, ExistsSubquery, FunctionCall, Literal, Operator, OperatorApplication, PropertyAccess, ReduceExpression},
     path_pattern,
     where_clause,
 };
@@ -160,14 +160,134 @@ fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     ))
 }
 
+/// Parse reduce expression
+/// Syntax: reduce(accumulator = initial, variable IN list | expression)
+/// Examples:
+///   reduce(total = 0, x IN [1, 2, 3] | total + x)
+///   reduce(s = '', name IN names | s + name)
+fn parse_reduce_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    // Parse "reduce" keyword (case-insensitive)
+    let (input, _) = ws(tag_no_case("reduce")).parse(input)?;
+    
+    // Parse opening parenthesis
+    let (input, _) = ws(char('(')).parse(input)?;
+    
+    // Parse accumulator = initial_value
+    let (input, accumulator) = ws(parse_identifier).parse(input)?;
+    let (input, _) = ws(char('=')).parse(input)?;
+    let (input, initial_value) = ws(parse_expression).parse(input)?;
+    
+    // Parse comma separator
+    let (input, _) = ws(char(',')).parse(input)?;
+    
+    // Parse variable IN list
+    let (input, variable) = ws(parse_identifier).parse(input)?;
+    let (input, _) = ws(tag_no_case("IN")).parse(input)?;
+    
+    // Parse the list expression - need to be careful to stop at '|'
+    // We can't just use parse_expression because it would consume the '|'
+    let (input, list) = parse_reduce_list_expression(input)?;
+    
+    // Parse '|' separator
+    let (input, _) = ws(char('|')).parse(input)?;
+    
+    // Parse the expression (the body of the reduce)
+    let (input, expression) = ws(parse_reduce_body_expression).parse(input)?;
+    
+    // Parse closing parenthesis
+    let (input, _) = ws(char(')')).parse(input)?;
+    
+    Ok((
+        input,
+        Expression::ReduceExp(ReduceExpression {
+            accumulator,
+            initial_value: Box::new(initial_value),
+            variable,
+            list: Box::new(list),
+            expression: Box::new(expression),
+        }),
+    ))
+}
+
+/// Parse the list expression in reduce, stopping at '|'
+fn parse_reduce_list_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    // Parse a simple expression that doesn't cross the '|' boundary
+    // This handles: variable, list literal, function call, property access
+    let (input, _) = multispace0.parse(input)?;
+    
+    // Try to parse a list literal first
+    if input.starts_with('[') {
+        return parse_list_literal(input);
+    }
+    
+    // Try function call (e.g., nodes(path))
+    let func_result = parse_function_call(input);
+    if func_result.is_ok() {
+        return func_result;
+    }
+    
+    // Try property access (e.g., u.friends)
+    let prop_result = parse_property_access(input);
+    if prop_result.is_ok() {
+        return prop_result;
+    }
+    
+    // Fall back to simple variable
+    let (input, var) = parse_identifier(input)?;
+    Ok((input, Expression::Variable(var)))
+}
+
+/// Parse the body expression in reduce, stopping at ')'
+fn parse_reduce_body_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    // Parse expression but be careful with parentheses
+    // We need to track depth to handle nested expressions
+    let mut depth = 0;
+    let mut end_pos = 0;
+    let chars: Vec<char> = input.chars().collect();
+    
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    end_pos = i;
+                    break;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    
+    if end_pos == 0 && depth == 0 {
+        // No closing paren found at depth 0, use whole remaining input
+        end_pos = input.len();
+    }
+    
+    let expr_str = &input[..end_pos];
+    let remaining = &input[end_pos..];
+    
+    // Now parse the expression substring
+    let (leftover, expr) = parse_expression(expr_str.trim())?;
+    
+    // Make sure we consumed the whole expression
+    if !leftover.trim().is_empty() {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1)));
+    }
+    
+    Ok((remaining, expr))
+}
+
 fn parse_primary(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     alt((
         parse_exists_expression,  // Must be before parse_function_call to catch EXISTS { }
         parse_case_expression,
+        parse_reduce_expression,  // Must be before parse_function_call to catch reduce(...)
         parse_path_pattern_expression,
         parse_function_call,
         parse_postfix_expression,
         parse_property_access,
+        parse_map_literal,        // Must be before list_literal (different brackets anyway)
         parse_list_literal,
         parse_parameter,
         parse_literal_or_variable_expression,
@@ -353,6 +473,37 @@ pub fn parse_function_call(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     ))
 }
 
+/// Parse a map literal: {key1: value1, key2: value2}
+/// Used in duration({days: 5}), point({x: 1, y: 2}), etc.
+pub fn parse_map_literal(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    // Parse content within { ... } as comma-separated key:value pairs
+    let (input, entries) = delimited(
+        // Opening brace with optional whitespace
+        delimited(multispace0, char('{'), multispace0),
+        // Zero or more key:value pairs separated by commas
+        separated_list0(
+            delimited(multispace0, char(','), multispace0),
+            // Each entry is: key : value (using native tuple parser)
+            (
+                parse_identifier,  // key (identifier)
+                delimited(multispace0, char(':'), multispace0),  // colon
+                parse_expression,  // value (any expression)
+            ),
+        ),
+        // Closing brace with optional whitespace
+        delimited(multispace0, char('}'), multispace0),
+    )
+    .parse(input)?;
+
+    // Transform (key, _, value) tuples into (key, value) pairs
+    let pairs: Vec<(&str, Expression)> = entries
+        .into_iter()
+        .map(|(key, _, value)| (key, value))
+        .collect();
+
+    Ok((input, Expression::MapLiteral(pairs)))
+}
+
 pub fn parse_list_literal(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Parse content within [ ... ] as a comma-separated list of expressions.
     let (input, exprs) = delimited(
@@ -451,10 +602,26 @@ fn is_binary_operator_keyword(s: &str) -> bool {
     matches!(upper.as_str(), "AND" | "OR" | "XOR")
 }
 
+/// Parse a label expression: variable:Label
+/// This checks if a variable has a specific label
+/// Example: message:Comment, n:Person
+fn parse_label_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    // Parse variable name (identifier)
+    let (input, variable) = ws(parse_identifier).parse(input)?;
+    // Parse colon
+    let (input, _) = char(':').parse(input)?;
+    // Parse label name (identifier)
+    let (input, label) = parse_identifier(input)?;
+    
+    Ok((input, Expression::LabelExpression { variable, label }))
+}
+
 pub fn parse_literal_or_variable_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     alt((
         map(ws(parse_string_literal), Expression::Literal),
         map(ws(parse_double_quoted_string_literal), Expression::Literal),
+        // Try label expression first (variable:Label)
+        parse_label_expression,
         // Parse alphanumeric values but reject binary operators as standalone expressions
         |input| {
             let (remaining, s) = ws(common::parse_alphanumeric_with_underscore_dot_star).parse(input)?;
@@ -687,5 +854,198 @@ mod tests {
             ],
         });
         assert_eq!(&expr, &expected);
+    }
+
+    // reduce expression
+    #[test]
+    fn test_parse_reduce_expression_simple() {
+        let (rem, expr) = parse_expression("reduce(total = 0, x IN [1, 2, 3] | total + x)").unwrap();
+        assert_eq!(rem, "");
+        
+        if let Expression::ReduceExp(reduce) = expr {
+            assert_eq!(reduce.accumulator, "total");
+            assert_eq!(reduce.variable, "x");
+            // Check initial value is 0
+            if let Expression::Literal(Literal::Integer(n)) = *reduce.initial_value {
+                assert_eq!(n, 0);
+            } else {
+                panic!("Expected integer literal for initial value");
+            }
+            // Check list has 3 elements
+            if let Expression::List(items) = *reduce.list {
+                assert_eq!(items.len(), 3);
+            } else {
+                panic!("Expected list for list expression");
+            }
+            // Check expression is addition
+            if let Expression::OperatorApplicationExp(op) = *reduce.expression {
+                assert_eq!(op.operator, Operator::Addition);
+            } else {
+                panic!("Expected operator application for expression");
+            }
+        } else {
+            panic!("Expected ReduceExp variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_reduce_expression_with_variable_list() {
+        let (rem, expr) = parse_expression("reduce(s = '', name IN names | s + name)").unwrap();
+        assert_eq!(rem, "");
+        
+        if let Expression::ReduceExp(reduce) = expr {
+            assert_eq!(reduce.accumulator, "s");
+            assert_eq!(reduce.variable, "name");
+            // Check list is a variable reference
+            if let Expression::Variable(var) = *reduce.list {
+                assert_eq!(var, "names");
+            } else {
+                panic!("Expected variable for list expression");
+            }
+        } else {
+            panic!("Expected ReduceExp variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_map_literal_single_entry() {
+        let (rem, expr) = parse_map_literal("{days: 5}").unwrap();
+        assert_eq!(rem, "");
+        
+        if let Expression::MapLiteral(entries) = expr {
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].0, "days");
+            if let Expression::Literal(Literal::Integer(n)) = entries[0].1 {
+                assert_eq!(n, 5);
+            } else {
+                panic!("Expected integer literal for value");
+            }
+        } else {
+            panic!("Expected MapLiteral variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_map_literal_multiple_entries() {
+        let (rem, expr) = parse_map_literal("{days: 5, hours: 2}").unwrap();
+        assert_eq!(rem, "");
+        
+        if let Expression::MapLiteral(entries) = expr {
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].0, "days");
+            assert_eq!(entries[1].0, "hours");
+        } else {
+            panic!("Expected MapLiteral variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_map_literal_with_expression_value() {
+        let (rem, expr) = parse_map_literal("{offset: x + 1}").unwrap();
+        assert_eq!(rem, "");
+        
+        if let Expression::MapLiteral(entries) = expr {
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].0, "offset");
+            // Value should be an operator application (x + 1)
+            if let Expression::OperatorApplicationExp(op) = &entries[0].1 {
+                assert_eq!(op.operator, Operator::Addition);
+            } else {
+                panic!("Expected operator application for value");
+            }
+        } else {
+            panic!("Expected MapLiteral variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_duration_with_map_arg() {
+        let (rem, expr) = parse_expression("duration({days: 5})").unwrap();
+        assert_eq!(rem, "");
+        
+        if let Expression::FunctionCallExp(fc) = expr {
+            assert_eq!(fc.name, "duration");
+            assert_eq!(fc.args.len(), 1);
+            if let Expression::MapLiteral(entries) = &fc.args[0] {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].0, "days");
+            } else {
+                panic!("Expected MapLiteral argument");
+            }
+        } else {
+            panic!("Expected FunctionCallExp variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_label_expression() {
+        // Test basic label expression
+        let (rem, expr) = parse_label_expression("u:User").unwrap();
+        assert_eq!(rem, "");
+        if let Expression::LabelExpression { variable, label } = expr {
+            assert_eq!(variable, "u");
+            assert_eq!(label, "User");
+        } else {
+            panic!("Expected LabelExpression, got {:?}", expr);
+        }
+
+        // Test with different casing
+        let (rem, expr) = parse_label_expression("message:Comment").unwrap();
+        assert_eq!(rem, "");
+        if let Expression::LabelExpression { variable, label } = expr {
+            assert_eq!(variable, "message");
+            assert_eq!(label, "Comment");
+        } else {
+            panic!("Expected LabelExpression, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_label_expression_in_full_expression() {
+        // Test label expression through parse_expression
+        let (rem, expr) = parse_expression("u:User").unwrap();
+        assert_eq!(rem, "");
+        if let Expression::LabelExpression { variable, label } = expr {
+            assert_eq!(variable, "u");
+            assert_eq!(label, "User");
+        } else {
+            panic!("Expected LabelExpression, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_size_with_pattern() {
+        // Test size() with a simple path pattern: size((n)-[:KNOWS]->())
+        let (rem, expr) = parse_expression("size((n)-[:KNOWS]->())").unwrap();
+        assert_eq!(rem, "");
+        if let Expression::FunctionCallExp(fc) = expr {
+            assert_eq!(fc.name, "size");
+            assert_eq!(fc.args.len(), 1);
+            if let Expression::PathPattern(_) = &fc.args[0] {
+                // Good - the argument is a path pattern
+            } else {
+                panic!("Expected PathPattern argument, got {:?}", fc.args[0]);
+            }
+        } else {
+            panic!("Expected FunctionCallExp, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_size_with_bidirectional_pattern() {
+        // Test size() with anonymous bidirectional pattern: size((p)-[:KNOWS]-())
+        let (rem, expr) = parse_expression("size((p)-[:KNOWS]-())").unwrap();
+        assert_eq!(rem, "");
+        if let Expression::FunctionCallExp(fc) = expr {
+            assert_eq!(fc.name, "size");
+            assert_eq!(fc.args.len(), 1);
+            if let Expression::PathPattern(_) = &fc.args[0] {
+                // Good - the argument is a path pattern
+            } else {
+                panic!("Expected PathPattern argument, got {:?}", fc.args[0]);
+            }
+        } else {
+            panic!("Expected FunctionCallExp, got {:?}", expr);
+        }
     }
 }

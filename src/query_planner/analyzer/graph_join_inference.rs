@@ -4484,6 +4484,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
 
@@ -4506,6 +4508,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
 
@@ -5589,6 +5593,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
 
@@ -5656,6 +5662,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
         
@@ -5683,6 +5691,8 @@ mod tests {
                 from_properties: None,
                 to_properties: None,
                 denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
             },
         );
 

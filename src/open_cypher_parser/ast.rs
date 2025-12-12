@@ -505,6 +505,16 @@ pub enum Expression<'a> {
     /// EXISTS subquery expression: EXISTS { (pattern) } or EXISTS { MATCH (pattern) WHERE ... }
     /// Evaluates to true if the pattern matches at least one result
     ExistsExpression(Box<ExistsSubquery<'a>>),
+    /// Reduce expression: reduce(acc = init, x IN list | expr)
+    /// Folds a list into a single value using an accumulator
+    ReduceExp(ReduceExpression<'a>),
+    /// Map literal: {key1: value1, key2: value2}
+    /// Used in duration({days: 5}), point({x: 1, y: 2}), etc.
+    MapLiteral(Vec<(&'a str, Expression<'a>)>),
+    /// Label expression: variable:Label
+    /// Returns true if the variable has the specified label
+    /// Example: message:Comment, n:Person
+    LabelExpression { variable: &'a str, label: &'a str },
 }
 
 /// EXISTS subquery: checks if a pattern exists
@@ -517,6 +527,25 @@ pub struct ExistsSubquery<'a> {
     pub pattern: PathPattern<'a>,
     /// Optional WHERE clause for filtering the pattern
     pub where_clause: Option<Box<WhereClause<'a>>>,
+}
+
+/// Reduce expression: aggregates list elements into a single value
+/// Syntax: reduce(accumulator = initial, variable IN list | expression)
+/// Examples:
+///   reduce(total = 0, x IN [1, 2, 3] | total + x) => 6
+///   reduce(s = '', name IN names | s + name + ', ') => 'Alice, Bob, '
+#[derive(Debug, PartialEq, Clone)]
+pub struct ReduceExpression<'a> {
+    /// Name of the accumulator variable (e.g., "total")
+    pub accumulator: &'a str,
+    /// Initial value for the accumulator (e.g., 0)
+    pub initial_value: Box<Expression<'a>>,
+    /// Iteration variable name (e.g., "x")
+    pub variable: &'a str,
+    /// List expression to iterate over
+    pub list: Box<Expression<'a>>,
+    /// Expression to compute for each element (can reference both accumulator and variable)
+    pub expression: Box<Expression<'a>>,
 }
 
 impl fmt::Display for Expression<'_> {

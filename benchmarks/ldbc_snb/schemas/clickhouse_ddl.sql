@@ -291,13 +291,15 @@ SELECT
 FROM ldbc.Comment;
 
 -- Unified Message creator view
+-- Note: Uses CamelCase column names (PostId, PersonId) to match actual table schema
 CREATE VIEW IF NOT EXISTS ldbc.Message_hasCreator_Person AS
-SELECT Post_id AS Message_id, Person_id FROM ldbc.Post_hasCreator_Person
+SELECT PostId AS Message_id, PersonId AS Person_id FROM ldbc.Post_hasCreator_Person
 UNION ALL
-SELECT Comment_id AS Message_id, Person_id FROM ldbc.Comment_hasCreator_Person;
+SELECT CommentId AS Message_id, PersonId AS Person_id FROM ldbc.Comment_hasCreator_Person;
 
 -- Unified likes view
+-- Note: Uses CamelCase column names (PersonId, PostId, CommentId) to match actual table schema
 CREATE VIEW IF NOT EXISTS ldbc.Person_likes_Message AS
-SELECT Person_id, Post_id AS Message_id, creationDate FROM ldbc.Person_likes_Post
+SELECT PersonId AS Person_id, PostId AS Message_id, creationDate FROM ldbc.Person_likes_Post
 UNION ALL
-SELECT Person_id, Comment_id AS Message_id, creationDate FROM ldbc.Person_likes_Comment;
+SELECT PersonId AS Person_id, CommentId AS Message_id, creationDate FROM ldbc.Person_likes_Comment;

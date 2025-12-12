@@ -423,6 +423,11 @@ fn build_chained_with_match_cte_plan(
     let mut all_ctes: Vec<Cte> = Vec::new();
     let mut iteration = 0;
     
+    // Track aliases that have been converted to CTEs across ALL iterations
+    // This prevents re-processing the same alias in subsequent iterations
+    // (important for chained WITH like `WITH DISTINCT fof WITH fof`)
+    let mut processed_cte_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    
     log::info!("🔧 build_chained_with_match_cte_plan: Starting iterative WITH processing");
     
     // Process WITH clauses iteratively until none remain
@@ -461,12 +466,21 @@ fn build_chained_with_match_cte_plan(
         log::info!("🔧 build_chained_with_match_cte_plan: Sorted aliases: {:?}", 
                    aliases_to_process.iter().map(|(a, _)| a).collect::<Vec<_>>());
         
-        // Track aliases that have been converted to CTEs in this iteration
-        let mut processed_cte_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Track if any alias was actually processed in this iteration
+        let mut any_processed_this_iteration = false;
         
         // Process each alias group
         // For aliases with multiple WITH clauses (from Union branches), combine them with UNION ALL
         for (with_alias, plan_count) in aliases_to_process {
+            // Skip if this alias has already been processed in a previous iteration
+            // This handles chained WITH (e.g., `WITH DISTINCT fof WITH fof`)
+            // where after processing `fof`, the outer `WITH fof` wrapper still exists
+            // but now refers to a CTE - we don't want to process it again
+            if processed_cte_aliases.contains(&with_alias) {
+                log::info!("🔧 build_chained_with_match_cte_plan: Skipping alias '{}' - already processed as CTE in previous iteration", with_alias);
+                continue;
+            }
+            
             log::info!("🔧 build_chained_with_match_cte_plan: Processing {} WITH clause(s) for alias '{}'", 
                        plan_count, with_alias);
             
@@ -507,19 +521,61 @@ fn build_chained_with_match_cte_plan(
             }
             log::info!("🔧 build_chained_with_match_cte_plan: Pre-WITH aliases to filter: {:?}", pre_with_aliases);
             
+            /// Check if a plan is a CTE reference (ViewScan or GraphNode wrapping ViewScan with table starting with "with_")
+            fn is_cte_reference(plan: &LogicalPlan) -> Option<String> {
+                match plan {
+                    LogicalPlan::ViewScan(vs) if vs.source_table.starts_with("with_") => {
+                        Some(vs.source_table.clone())
+                    }
+                    LogicalPlan::GraphNode(gn) => {
+                        if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                            if vs.source_table.starts_with("with_") {
+                                return Some(vs.source_table.clone());
+                            }
+                        }
+                        None
+                    }
+                    _ => None
+                }
+            }
+            
             // Render each WITH clause plan
             let mut rendered_plans: Vec<RenderPlan> = Vec::new();
             for with_plan in with_plans.iter() {
                 log::info!("🔧 build_chained_with_match_cte_plan: Rendering WITH plan for '{}' - plan type: {:?}", 
                            with_alias, std::mem::discriminant(with_plan));
                 
-                // Extract the plan to render and the WITH clause modifiers (ORDER BY, SKIP, LIMIT)
-                let (plan_to_render, with_order_by, with_skip, with_limit) = match with_plan {
+                // Check if this is a passthrough WITH whose input is already a CTE reference
+                // E.g., `WITH fof` after `WITH DISTINCT fof` - the second WITH just passes through
+                // Skip creating another CTE and use the existing one
+                if let LogicalPlan::WithClause(wc) = with_plan {
+                    if let Some(existing_cte) = is_cte_reference(&wc.input) {
+                        // Check if this is a simple passthrough (same alias, no modifications)
+                        let is_simple_passthrough = wc.items.len() == 1 
+                            && wc.order_by.is_none() 
+                            && wc.skip.is_none() 
+                            && wc.limit.is_none()
+                            && !wc.distinct
+                            && matches!(
+                                &wc.items[0].expression,
+                                crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
+                            );
+                        
+                        if is_simple_passthrough {
+                            log::info!("🔧 build_chained_with_match_cte_plan: Skipping passthrough WITH for '{}' - input is already CTE '{}'", 
+                                       with_alias, existing_cte);
+                            continue;
+                        }
+                    }
+                }
+                
+                // Extract the plan to render, WITH items, and modifiers (ORDER BY, SKIP, LIMIT)
+                let (plan_to_render, with_items, with_distinct, with_order_by, with_skip, with_limit) = match with_plan {
                     LogicalPlan::WithClause(wc) => {
                         log::info!("🔧 build_chained_with_match_cte_plan: Unwrapping WithClause, rendering input");
                         log::info!("🔧 build_chained_with_match_cte_plan: wc.input type: {:?}", std::mem::discriminant(wc.input.as_ref()));
-                        log::info!("🔧 build_chained_with_match_cte_plan: wc has order_by={:?}, skip={:?}, limit={:?}", 
-                                   wc.order_by.is_some(), wc.skip, wc.limit);
+                        log::info!("🔧 build_chained_with_match_cte_plan: wc has {} items, order_by={:?}, skip={:?}, limit={:?}", 
+                                   wc.items.len(), wc.order_by.is_some(), wc.skip, wc.limit);
                         // Debug: if it's GraphJoins, log the joins
                         if let LogicalPlan::GraphJoins(gj) = wc.input.as_ref() {
                             log::info!("🔧 build_chained_with_match_cte_plan: wc.input is GraphJoins with {} joins", gj.joins.len());
@@ -528,7 +584,7 @@ fn build_chained_with_match_cte_plan(
                                     i, join.table_name.as_str(), join.table_alias.as_str(), join.joining_on);
                             }
                         }
-                        (wc.input.as_ref(), wc.order_by.clone(), wc.skip, wc.limit)
+                        (wc.input.as_ref(), Some(wc.items.clone()), wc.distinct, wc.order_by.clone(), wc.skip, wc.limit)
                     }
                     LogicalPlan::Projection(proj) => {
                         log::info!("🔧 build_chained_with_match_cte_plan: WITH projection input type: {:?}", 
@@ -538,9 +594,9 @@ fn build_chained_with_match_cte_plan(
                             log::info!("🔧 build_chained_with_match_cte_plan: Filter input type: {:?}", 
                                        std::mem::discriminant(filter.input.as_ref()));
                         }
-                        (with_plan as &LogicalPlan, None, None, None)
+                        (with_plan as &LogicalPlan, None, false, None, None, None)
                     }
-                    _ => (with_plan as &LogicalPlan, None, None, None),
+                    _ => (with_plan as &LogicalPlan, None, false, None, None, None),
                 };
                 
                 match render_without_with_detection(plan_to_render, schema) {
@@ -549,6 +605,61 @@ fn build_chained_with_match_cte_plan(
                         log::info!("🔧 build_chained_with_match_cte_plan: Rendered SQL JOINs: {} join(s)", rendered.joins.0.len());
                         for (i, join) in rendered.joins.0.iter().enumerate() {
                             log::info!("🔧 build_chained_with_match_cte_plan: JOIN {}: {:?}", i, join);
+                        }
+                        
+                        // Apply WITH items projection if present
+                        // This handles cases like `WITH friend.firstName AS name` or `WITH count(friend) AS cnt`
+                        if let Some(ref items) = with_items {
+                            let needs_projection = items.iter().any(|item| {
+                                !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::TableAlias(_))
+                            });
+                            
+                            let has_aggregation = items.iter().any(|item| {
+                                matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_))
+                            });
+                            
+                            if needs_projection || has_aggregation {
+                                log::info!("🔧 build_chained_with_match_cte_plan: Applying WITH items projection (needs_projection={}, has_aggregation={})", 
+                                           needs_projection, has_aggregation);
+                                
+                                // Convert LogicalExpr items to RenderExpr SelectItems
+                                let select_items: Vec<SelectItem> = items.iter()
+                                    .filter_map(|item| {
+                                        let expr_result: Result<RenderExpr, _> = item.expression.clone().try_into();
+                                        expr_result.ok().map(|expr| {
+                                            SelectItem {
+                                                expression: expr,
+                                                col_alias: item.col_alias.as_ref().map(|a| crate::render_plan::render_expr::ColumnAlias(a.0.clone())),
+                                            }
+                                        })
+                                    })
+                                    .collect();
+                                
+                                if !select_items.is_empty() {
+                                    // For UNION plans, we need to apply projection over the union
+                                    // We do this by keeping the UNION structure but replacing SELECT items
+                                    // The union branches already have all columns, so we wrap with our projection
+                                    // This creates: SELECT <with_items> FROM (SELECT * FROM table1 UNION ALL SELECT * FROM table2) AS __union
+                                    
+                                    // For both UNION and non-UNION: apply projection to SELECT
+                                    rendered.select = SelectItems { 
+                                        items: select_items, 
+                                        distinct: with_distinct,
+                                    };
+                                    
+                                    // If there's aggregation, add GROUP BY for non-aggregate expressions
+                                    if has_aggregation {
+                                        let group_by_exprs: Vec<RenderExpr> = items.iter()
+                                            .filter(|item| !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)))
+                                            .filter_map(|item| {
+                                                let expr_result: Result<RenderExpr, _> = item.expression.clone().try_into();
+                                                expr_result.ok()
+                                            })
+                                            .collect();
+                                        rendered.group_by = GroupByExpressions(group_by_exprs);
+                                    }
+                                }
+                            }
                         }
                         
                         // Apply WithClause's ORDER BY, SKIP, LIMIT to the rendered plan
@@ -663,8 +774,18 @@ fn build_chained_with_match_cte_plan(
                 }
             }
             
+            // Mark that we processed something this iteration
+            any_processed_this_iteration = true;
+            
             log::info!("🔧 build_chained_with_match_cte_plan: Replaced WITH clauses for alias '{}' with CTE reference (processed_cte_aliases: {:?})", 
                        with_alias, processed_cte_aliases);
+        }
+        
+        // If no aliases were processed this iteration, break to avoid infinite loop
+        // This can happen when all remaining WITH clauses are passthrough wrappers
+        if !any_processed_this_iteration {
+            log::info!("🔧 build_chained_with_match_cte_plan: No aliases processed in iteration {}, breaking out", iteration);
+            break;
         }
         
         log::info!("🔧 build_chained_with_match_cte_plan: Iteration {} complete, checking for more WITH clauses", iteration);
@@ -2105,7 +2226,10 @@ fn replace_with_clause_with_cte_reference(
     }
     
     // Helper to create a CTE reference node
-    fn create_cte_reference(cte_name: &str, with_alias: &str) -> LogicalPlan {
+    fn create_cte_reference(cte_name: &str, _with_alias: &str) -> LogicalPlan {
+        // Use a table alias that won't conflict with column aliases
+        // Use "_t" suffix to avoid conflicts with output column names like "name"
+        let table_alias = format!("{}_t", cte_name);
         LogicalPlan::GraphNode(GraphNode {
             input: Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan {
                 source_table: cte_name.to_string(),
@@ -2129,7 +2253,7 @@ fn replace_with_clause_with_cte_reference(
                 to_label_column: None,
                 schema_filter: None,
             }))),
-            alias: with_alias.to_string(),
+            alias: table_alias,
             label: None,
             is_denormalized: false,
         })
@@ -2337,6 +2461,44 @@ fn replace_with_clause_with_cte_reference_v2(
         false
     }
     
+    /// Check if a plan is a CTE reference (GraphNode wrapping ViewScan with CTE table name)
+    /// and the given WithClause is a simple passthrough (no modifications).
+    fn is_simple_cte_passthrough(new_input: &LogicalPlan, wc: &crate::query_planner::logical_plan::WithClause) -> bool {
+        // Check if new_input is a CTE reference
+        let is_cte_ref = match new_input {
+            LogicalPlan::GraphNode(gn) => {
+                if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                    vs.source_table.starts_with("with_")
+                } else {
+                    false
+                }
+            }
+            LogicalPlan::ViewScan(vs) => vs.source_table.starts_with("with_"),
+            _ => false
+        };
+        
+        if !is_cte_ref {
+            return false;
+        }
+        
+        // Check if this WithClause is a simple passthrough (no modifications)
+        // - Single item that's just a TableAlias
+        // - No DISTINCT (already applied in inner CTE)
+        // - No ORDER BY, SKIP, LIMIT modifiers
+        let is_passthrough = wc.items.len() == 1 
+            && wc.order_by.is_none() 
+            && wc.skip.is_none() 
+            && wc.limit.is_none()
+            && !wc.distinct
+            && wc.where_clause.is_none()
+            && matches!(
+                &wc.items[0].expression,
+                crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
+            );
+        
+        is_passthrough
+    }
+    
     // Helper to generate a key for a WithClause (matches the key generation in find_all_with_clauses_grouped)
     fn get_with_clause_key(wc: &crate::query_planner::logical_plan::WithClause) -> String {
         if !wc.exported_aliases.is_empty() {
@@ -2348,7 +2510,10 @@ fn replace_with_clause_with_cte_reference_v2(
     }
     
     // Helper to create a CTE reference node
-    fn create_cte_reference(cte_name: &str, with_alias: &str) -> LogicalPlan {
+    fn create_cte_reference(cte_name: &str, _with_alias: &str) -> LogicalPlan {
+        // Use a table alias that won't conflict with column aliases
+        // Use "_t" suffix to avoid conflicts with output column names like "name"
+        let table_alias = format!("{}_t", cte_name);
         LogicalPlan::GraphNode(GraphNode {
             input: Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan {
                 source_table: cte_name.to_string(),
@@ -2372,7 +2537,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 to_label_column: None,
                 schema_filter: None,
             }))),
-            alias: with_alias.to_string(),
+            alias: table_alias,
             label: None,
             is_denormalized: false,
         })
@@ -2397,6 +2562,14 @@ fn replace_with_clause_with_cte_reference_v2(
                 // (We should be processing inner ones first)
                 log::debug!("🔧 replace_v2: Target WithClause has nested WITH - should process inner first!");
                 let new_input = replace_with_clause_with_cte_reference_v2(&wc.input, with_alias, cte_name, pre_with_aliases)?;
+                
+                // Check if after recursion, the new_input is a CTE reference
+                // and this WITH is a simple passthrough - if so, collapse it
+                if is_simple_cte_passthrough(&new_input, wc) {
+                    log::debug!("🔧 replace_v2: Collapsing passthrough WithClause to CTE reference");
+                    return Ok(new_input);
+                }
+                
                 Ok(LogicalPlan::WithClause(crate::query_planner::logical_plan::WithClause {
                     input: Arc::new(new_input),
                     items: wc.items.clone(),
@@ -2412,6 +2585,14 @@ fn replace_with_clause_with_cte_reference_v2(
                 // to find and replace the inner one
                 log::debug!("🔧 replace_v2: Not target WithClause (key='{}') - recursing into input to find '{}'", this_wc_key, with_alias);
                 let new_input = replace_with_clause_with_cte_reference_v2(&wc.input, with_alias, cte_name, pre_with_aliases)?;
+                
+                // Check if after recursion, the new_input is a CTE reference
+                // and this WITH is a simple passthrough - if so, collapse it
+                if is_simple_cte_passthrough(&new_input, wc) {
+                    log::debug!("🔧 replace_v2: Collapsing passthrough WithClause (not target) to CTE reference");
+                    return Ok(new_input);
+                }
+                
                 Ok(LogicalPlan::WithClause(crate::query_planner::logical_plan::WithClause {
                     input: Arc::new(new_input),
                     items: wc.items.clone(),

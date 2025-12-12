@@ -1,0 +1,21 @@
+// Q4. New topics
+/*
+:params { personId: 4398046511333, startDate: 1275350400000, endDate: 1277856000000 }
+*/
+MATCH (person:Person {id: $personId })-[:KNOWS]-(friend:Person),
+      (friend)<-[:HAS_CREATOR]-(post:Post)-[:HAS_TAG]->(tag)
+WITH DISTINCT tag, post
+WITH tag,
+     CASE
+       WHEN $endDate > post.creationDate >= $startDate THEN 1
+       ELSE 0
+     END AS valid,
+     CASE
+       WHEN $startDate > post.creationDate THEN 1
+       ELSE 0
+     END AS inValid
+WITH tag, sum(valid) AS postCount, sum(inValid) AS inValidPostCount
+WHERE postCount>0 AND inValidPostCount=0
+RETURN tag.name AS tagName, postCount
+ORDER BY postCount DESC, tagName ASC
+LIMIT 10

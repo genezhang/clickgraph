@@ -218,4 +218,32 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_parse_return_clause_map_literal() {
+        use crate::open_cypher_parser::ast::Literal;
+        
+        let input = "RETURN {days: 5} AS d";
+        let res = parse_return_clause(input);
+        match res {
+            Ok((remaining, return_clause)) => {
+                assert_eq!(remaining, "");
+                assert_eq!(return_clause.return_items.len(), 1);
+                let item = &return_clause.return_items[0];
+                assert_eq!(item.alias, Some("d"));
+                if let Expression::MapLiteral(entries) = &item.expression {
+                    assert_eq!(entries.len(), 1);
+                    assert_eq!(entries[0].0, "days");
+                    if let Expression::Literal(Literal::Integer(n)) = entries[0].1 {
+                        assert_eq!(n, 5);
+                    } else {
+                        panic!("Expected integer literal for value");
+                    }
+                } else {
+                    panic!("Expected MapLiteral, got {:?}", item.expression);
+                }
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
 }

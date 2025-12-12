@@ -39,6 +39,8 @@ fn setup_denormalized_schema() -> GraphSchema {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         },
     );
 
@@ -324,6 +326,8 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         },
     );
 

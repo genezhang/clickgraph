@@ -41,6 +41,8 @@ fn setup_polymorphic_schema() -> GraphSchema {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         },
     );
 
@@ -67,6 +69,8 @@ fn setup_polymorphic_schema() -> GraphSchema {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         },
     );
 
@@ -301,6 +305,8 @@ fn test_non_polymorphic_relationship() {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         },
     );
 
@@ -387,6 +393,8 @@ fn test_fixed_endpoint_polymorphic_edge() {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         },
     );
     
@@ -409,6 +417,8 @@ fn test_fixed_endpoint_polymorphic_edge() {
             from_properties: None,
             to_properties: None,
             denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
         },
     );
     
