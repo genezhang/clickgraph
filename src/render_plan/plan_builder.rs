@@ -913,6 +913,105 @@ fn extract_cte_references(plan: &LogicalPlan) -> std::collections::HashMap<Strin
     refs
 }
 
+/// Update all GraphJoins.cte_references in the plan tree with the latest mapping.
+/// This is needed after CTE processing updates the cte_references map, so SQL rendering
+/// uses the correct CTE names (e.g., 'with_a_cte_0_0' instead of 'with_a_cte').
+fn update_graph_joins_cte_refs(
+    plan: &LogicalPlan,
+    cte_references: &std::collections::HashMap<String, String>,
+) -> RenderPlanBuilderResult<LogicalPlan> {
+    use crate::query_planner::logical_plan::*;
+    use std::sync::Arc;
+
+    match plan {
+        LogicalPlan::GraphJoins(gj) => {
+            log::info!(
+                "🔧 update_graph_joins_cte_refs: Updating GraphJoins.cte_references from {:?} to {:?}",
+                gj.cte_references,
+                cte_references
+            );
+            
+            let new_input = update_graph_joins_cte_refs(&gj.input, cte_references)?;
+            
+            Ok(LogicalPlan::GraphJoins(GraphJoins {
+                input: Arc::new(new_input),
+                joins: gj.joins.clone(),
+                optional_aliases: gj.optional_aliases.clone(),
+                anchor_table: gj.anchor_table.clone(),
+                cte_references: cte_references.clone(), // UPDATE HERE!
+            }))
+        }
+        LogicalPlan::Projection(proj) => {
+            let new_input = update_graph_joins_cte_refs(&proj.input, cte_references)?;
+            Ok(LogicalPlan::Projection(Projection {
+                input: Arc::new(new_input),
+                items: proj.items.clone(),
+                distinct: proj.distinct,
+            }))
+        }
+        LogicalPlan::Filter(f) => {
+            let new_input = update_graph_joins_cte_refs(&f.input, cte_references)?;
+            Ok(LogicalPlan::Filter(Filter {
+                input: Arc::new(new_input),
+                predicate: f.predicate.clone(),
+            }))
+        }
+        LogicalPlan::GroupBy(gb) => {
+            let new_input = update_graph_joins_cte_refs(&gb.input, cte_references)?;
+            Ok(LogicalPlan::GroupBy(GroupBy {
+                input: Arc::new(new_input),
+                expressions: gb.expressions.clone(),
+                having_clause: gb.having_clause.clone(),
+                is_materialization_boundary: gb.is_materialization_boundary,
+                exposed_alias: gb.exposed_alias.clone(),
+            }))
+        }
+        LogicalPlan::OrderBy(ob) => {
+            let new_input = update_graph_joins_cte_refs(&ob.input, cte_references)?;
+            Ok(LogicalPlan::OrderBy(OrderBy {
+                input: Arc::new(new_input),
+                items: ob.items.clone(),
+            }))
+        }
+        LogicalPlan::Limit(lim) => {
+            let new_input = update_graph_joins_cte_refs(&lim.input, cte_references)?;
+            Ok(LogicalPlan::Limit(Limit {
+                input: Arc::new(new_input),
+                count: lim.count,
+            }))
+        }
+        LogicalPlan::Skip(skip) => {
+            let new_input = update_graph_joins_cte_refs(&skip.input, cte_references)?;
+            Ok(LogicalPlan::Skip(Skip {
+                input: Arc::new(new_input),
+                count: skip.count,
+            }))
+        }
+        LogicalPlan::GraphRel(rel) => {
+            let new_left = update_graph_joins_cte_refs(&rel.left, cte_references)?;
+            let new_right = update_graph_joins_cte_refs(&rel.right, cte_references)?;
+            Ok(LogicalPlan::GraphRel(GraphRel {
+                left: Arc::new(new_left),
+                center: rel.center.clone(),
+                right: Arc::new(new_right),
+                alias: rel.alias.clone(),
+                direction: rel.direction.clone(),
+                left_connection: rel.left_connection.clone(),
+                right_connection: rel.right_connection.clone(),
+                is_rel_anchor: rel.is_rel_anchor,
+                variable_length: rel.variable_length.clone(),
+                shortest_path_mode: rel.shortest_path_mode.clone(),
+                path_variable: rel.path_variable.clone(),
+                where_predicate: rel.where_predicate.clone(),
+                labels: rel.labels.clone(),
+                is_optional: rel.is_optional,
+                anchor_connection: rel.anchor_connection.clone(),
+            }))
+        }
+        other => Ok(other.clone()),
+    }
+}
+
 /// Handle CHAINED WITH patterns iteratively.
 ///
 /// For queries like: MATCH...WITH a MATCH...WITH a,b MATCH...RETURN
@@ -946,17 +1045,24 @@ fn build_chained_with_match_cte_plan(
     // (important for chained WITH like `WITH DISTINCT fof WITH fof`)
     let mut processed_cte_aliases: std::collections::HashSet<String> =
         std::collections::HashSet::new();
+        
+    // Track sequence numbers for each alias to generate unique CTE names
+    // Maps alias → next sequence number (e.g., "a" → 3 means next CTE is with_a_cte_3)
+    let mut cte_sequence_numbers: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     // Extract CTE references from GraphJoins (set by analyzer phase)
-    // This maps alias → CTE name (e.g., "a" → "with_a_cte_0")
-    let cte_references = extract_cte_references(&current_plan);
+    // This maps alias → CTE name (e.g., "a" → "with_a_cte")
+    // CRITICAL: Make this mutable so we can update it as we create new CTEs
+    let mut cte_references = extract_cte_references(&current_plan);
 
-    log::info!("🔧 build_chained_with_match_cte_plan: Starting iterative WITH processing");
-    log::info!("🔧 build_chained_with_match_cte_plan: CTE references from analyzer: {:?}", cte_references);
+    log::warn!("🔧 build_chained_with_match_cte_plan: Starting iterative WITH processing");
+    log::warn!("🔧 build_chained_with_match_cte_plan: CTE references from analyzer: {:?}", cte_references);
 
     // Process WITH clauses iteratively until none remain
     while has_with_clause_in_graph_rel(&current_plan) {
         iteration += 1;
+        log::warn!("🔧 build_chained_with_match_cte_plan: ========== ITERATION {} ==========", iteration);
         if iteration > MAX_WITH_ITERATIONS {
             return Err(RenderBuildError::InvalidRenderPlan(format!(
                 "Exceeded maximum WITH clause iterations ({})",
@@ -964,7 +1070,7 @@ fn build_chained_with_match_cte_plan(
             )));
         }
 
-        log::info!(
+        log::warn!(
             "🔧 build_chained_with_match_cte_plan: Iteration {} - processing WITH clause",
             iteration
         );
@@ -973,14 +1079,61 @@ fn build_chained_with_match_cte_plan(
         // This handles Union branches that each have their own WITH clause with the same alias
         // Note: We collect the data without holding references across the mutation
         let grouped_withs = find_all_with_clauses_grouped(&current_plan);
+        
+        log::warn!("🔧 build_chained_with_match_cte_plan: Found {} alias groups from find_all_with_clauses_grouped", grouped_withs.len());
+        for (alias, plans) in &grouped_withs {
+            log::warn!("🔧 build_chained_with_match_cte_plan:   Alias '{}': {} plan(s)", alias, plans.len());
+        }
 
         if grouped_withs.is_empty() {
             log::warn!("🔧 build_chained_with_match_cte_plan: has_with_clause_in_graph_rel returned true but no WITH clauses found");
             break;
         }
 
+        // CRITICAL FIX: For aliases with multiple WITH clauses (nested consecutive WITH with same alias),
+        // we should only process the INNERMOST one per iteration. The others will be processed
+        // in subsequent iterations after the inner one is converted to a CTE.
+        //
+        // Filter strategy: For each alias, only keep the WITH clause whose input has NO nested WITH clauses.
+        // This is the "innermost" WITH that should be processed first.
+        let mut filtered_grouped_withs: std::collections::HashMap<String, Vec<LogicalPlan>> =
+            std::collections::HashMap::new();
+        
+        for (alias, plans) in grouped_withs {
+            // Record original count before filtering
+            let original_count = plans.len();
+            
+            // Find plans that are innermost (no nested WITH in their input)
+            let innermost_plans: Vec<LogicalPlan> = plans
+                .into_iter()
+                .filter(|plan| {
+                    if let LogicalPlan::WithClause(wc) = plan {
+                        let has_nested = plan_contains_with_clause(&wc.input);
+                        if has_nested {
+                            log::warn!("🔧 build_chained_with_match_cte_plan: Skipping WITH '{}' with nested WITH clauses (will process in next iteration)", alias);
+                        } else {
+                            log::warn!("🔧 build_chained_with_match_cte_plan: Keeping innermost WITH '{}' for processing", alias);
+                        }
+                        !has_nested
+                    } else {
+                        log::warn!("🔧 build_chained_with_match_cte_plan: Plan for alias '{}' is not WithClause: {:?}", alias, std::mem::discriminant(plan));
+                        true  // Not a WithClause, keep it
+                    }
+                })
+                .collect();
+            
+            if !innermost_plans.is_empty() {
+                log::warn!("🔧 build_chained_with_match_cte_plan: Alias '{}': filtered {} plan(s) to {} innermost", 
+                           alias, original_count, innermost_plans.len());
+                filtered_grouped_withs.insert(alias, innermost_plans);
+            } else {
+                log::warn!("🔧 build_chained_with_match_cte_plan: Alias '{}': NO innermost plans after filtering {} total", 
+                           alias, original_count);
+            }
+        }
+
         // Collect alias info for processing (to avoid holding references across mutation)
-        let mut aliases_to_process: Vec<(String, usize)> = grouped_withs
+        let mut aliases_to_process: Vec<(String, usize)> = filtered_grouped_withs
             .iter()
             .map(|(alias, plans)| (alias.clone(), plans.len()))
             .collect();
@@ -1012,23 +1165,18 @@ fn build_chained_with_match_cte_plan(
                 with_alias
             );
 
-            // Re-find the WITH clauses for this alias (since we need to re-query after mutations)
-            let current_grouped = find_all_with_clauses_grouped(&current_plan);
-            log::info!(
-                "🔧 build_chained_with_match_cte_plan: After re-query, grouped aliases: {:?}",
-                current_grouped.keys().collect::<Vec<_>>()
-            );
-            let with_plans = match current_grouped.get(&with_alias) {
+            // Get the WITH plans from our filtered map
+            let with_plans = match filtered_grouped_withs.get(&with_alias) {
                 Some(plans) => {
                     log::info!(
-                        "🔧 build_chained_with_match_cte_plan: Found {} plan(s) for alias '{}'",
+                        "🔧 build_chained_with_match_cte_plan: Found {} plan(s) for alias '{}' in filtered map",
                         plans.len(),
                         with_alias
                     );
                     plans.clone() // Clone the Vec<LogicalPlan> to avoid moving from borrowed data
                 }
                 None => {
-                    log::info!("🔧 build_chained_with_match_cte_plan: Alias '{}' already processed, skipping", with_alias);
+                    log::info!("🔧 build_chained_with_match_cte_plan: Alias '{}' not in filtered map (all WITH clauses had nested WITH), skipping", with_alias);
                     continue;
                 }
             };
@@ -1092,13 +1240,20 @@ fn build_chained_with_match_cte_plan(
                             && wc.skip.is_none()
                             && wc.limit.is_none()
                             && !wc.distinct
+                            && wc.where_clause.is_none()  // CRITICAL: WHERE clause makes it not a passthrough!
                             && matches!(
                                 &wc.items[0].expression,
                                 crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
                             );
 
+                        log::warn!("🔧 build_chained_with_match_cte_plan: Checking passthrough: items={}, order_by={}, skip={}, limit={}, distinct={}, where_clause={}, is_table_alias={}, is_passthrough={}",
+                                   wc.items.len(), wc.order_by.is_some(), wc.skip.is_some(), wc.limit.is_some(), wc.distinct,
+                                   wc.where_clause.is_some(),
+                                   matches!(&wc.items[0].expression, crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)),
+                                   is_simple_passthrough);
+
                         if is_simple_passthrough {
-                            log::info!("🔧 build_chained_with_match_cte_plan: Skipping passthrough WITH for '{}' - input is already CTE '{}'",
+                            log::warn!("🔧 build_chained_with_match_cte_plan: Skipping passthrough WITH for '{}' - input is already CTE '{}'",
                                        with_alias, existing_cte);
                             continue;
                         }
@@ -1412,36 +1567,16 @@ fn build_chained_with_match_cte_plan(
                 )));
             }
 
-            // Look up CTE name from analyzer's cte_references
-            // If not found, generate a fallback name (should not happen after analyzer runs)
-            let cte_name = if let Some(name) = cte_references.get(&with_alias) {
-                log::info!("🔧 build_chained_with_match_cte_plan: Using CTE name '{}' from analyzer for alias '{}'", name, with_alias);
-                name.clone()
-            } else {
-                // Fallback: generate name without counter (legacy behavior)
-                let fallback = format!("with_{}_cte", with_alias.replace(".*", ""));
-                log::warn!("🔧 build_chained_with_match_cte_plan: CTE name not found in cte_references for '{}', using fallback '{}'", with_alias, fallback);
-                fallback
-            };
-
-            // Check if we already created a CTE with this name
-            // This can happen when the same WITH alias appears in multiple places in the plan tree
-            // (e.g., in different Union branches or nested patterns)
-            if all_ctes.iter().any(|cte| cte.cte_name == cte_name) {
-                log::info!("🔧 build_chained_with_match_cte_plan: CTE '{}' already exists, just replacing WITH clauses with references", cte_name);
-                
-                // Still need to replace any remaining WITH clauses with CTE references
-                current_plan = replace_with_clause_with_cte_reference_v2(
-                    &current_plan,
-                    &with_alias,
-                    &cte_name,
-                    &pre_with_aliases,
-                    &cte_schemas,
-                )?;
-                
-                any_processed_this_iteration = true;
-                continue;  // Skip CTE creation, just do replacement
-            }
+            // Generate unique CTE name using sequence number for this alias
+            // Simple scheme: with_a_cte_1, with_a_cte_2, with_a_cte_3
+            // Get or initialize sequence number for this alias
+            let seq_num = cte_sequence_numbers.entry(with_alias.clone()).or_insert(1);
+            let current_seq = *seq_num;
+            let cte_name = format!("with_{}_cte_{}", with_alias.replace(".*", ""), current_seq);
+            *seq_num += 1; // Increment for next iteration
+            
+            log::info!("🔧 build_chained_with_match_cte_plan: Generated unique CTE name '{}' for alias '{}' (sequence {})", 
+                       cte_name, with_alias, current_seq);
 
             // Create CTE content - if multiple renders, combine with UNION ALL
             // Extract ORDER BY, SKIP, LIMIT from first rendered plan (they should all have the same modifiers)
@@ -1540,8 +1675,10 @@ fn build_chained_with_match_cte_plan(
                 property_names_for_schema
             );
 
-            // Replace ALL WITH clauses with this alias with CTE reference
+            // Replacing WITH clauses with this alias with CTE reference
             // Also pass pre_with_aliases so joins from the pre-WITH scope can be filtered out
+            log::warn!("🔧 build_chained_with_match_cte_plan: Replacing WITH clauses for alias '{}' with CTE '{}'", with_alias, cte_name);
+            log::warn!("🔧 build_chained_with_match_cte_plan: BEFORE replacement - plan discriminant: {:?}", std::mem::discriminant(&current_plan));
             current_plan = replace_with_clause_with_cte_reference_v2(
                 &current_plan,
                 &with_alias,
@@ -1549,10 +1686,18 @@ fn build_chained_with_match_cte_plan(
                 &pre_with_aliases,
                 &cte_schemas,
             )?;
+            log::warn!("🔧 build_chained_with_match_cte_plan: AFTER replacement - plan discriminant: {:?}", std::mem::discriminant(&current_plan));
+            log::warn!("🔧 build_chained_with_match_cte_plan: Replacement complete for '{}'", with_alias);
 
             // Track that this alias is now a CTE (so subsequent iterations don't filter it)
             // Add the full composite alias 
             processed_cte_aliases.insert(with_alias.clone());
+            
+            // CRITICAL: Update cte_references to point to the NEW CTE name
+            // This ensures subsequent references to this alias (in the final query or later CTEs)
+            // use the MOST RECENT CTE, not the original one from the analyzer
+            cte_references.insert(with_alias.clone(), cte_name.clone());
+            log::warn!("🔧 build_chained_with_match_cte_plan: Updated cte_references: '{}' → '{}'", with_alias, cte_name);
             
             log::info!("🔧 build_chained_with_match_cte_plan: Added '{}' to processed_cte_aliases", with_alias);
             
@@ -1644,6 +1789,11 @@ fn build_chained_with_match_cte_plan(
                 &exported_aliases_set,
                 &cte_schemas,
             )?;
+            
+            // CRITICAL: Update all GraphJoins.cte_references with the latest CTE mapping
+            // After replacement, the plan may have GraphJoins with stale cte_references from analyzer
+            log::info!("🔧 build_chained_with_match_cte_plan: Updating GraphJoins.cte_references with latest mapping: {:?}", cte_references);
+            current_plan = update_graph_joins_cte_refs(&current_plan, &cte_references)?;
         }
     }
 
@@ -3685,7 +3835,7 @@ fn replace_with_clause_with_cte_reference_v2(
             // 1. It contains a WITH clause, OR
             // 2. It has a GraphNode with the matching alias
             fn needs_processing(plan: &LogicalPlan, with_alias: &str) -> bool {
-                match plan {
+                let result = match plan {
                     LogicalPlan::GraphNode(node) => node.alias == with_alias,
                     LogicalPlan::WithClause(wc) => needs_processing(&wc.input, with_alias),
                     LogicalPlan::GraphRel(rel) => {
@@ -3696,14 +3846,19 @@ fn replace_with_clause_with_cte_reference_v2(
                     LogicalPlan::GraphJoins(gj) => needs_processing(&gj.input, with_alias),
                     LogicalPlan::Filter(f) => needs_processing(&f.input, with_alias),
                     _ => plan_contains_with_clause(plan),
-                }
+                };
+                log::warn!(
+                    "🔧 replace_v2: needs_processing({:?}, '{}') = {}",
+                    std::mem::discriminant(plan),
+                    with_alias,
+                    result
+                );
+                result
             }
-
-            // NEW: Check for innermost WithClause
-            let new_left: Arc<LogicalPlan> = if is_innermost_with_clause(&graph_rel.left)
-            {
-                Arc::new(create_cte_reference(cte_name, with_alias, cte_schemas))
-            } else if plan_contains_with_clause(&graph_rel.left)
+            // Always recurse for WithClause - the WithClause case will handle replacement
+            // Don't shortcut with is_innermost_with_clause check because the WithClause's input
+            // might contain a GraphNode that needs updating from a previous iteration
+            let new_left: Arc<LogicalPlan> = if plan_contains_with_clause(&graph_rel.left)
                 || needs_processing(&graph_rel.left, with_alias)
             {
                 Arc::new(replace_with_clause_with_cte_reference_v2(
@@ -3716,10 +3871,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 graph_rel.left.clone()
             };
 
-            let new_right: Arc<LogicalPlan> = if is_innermost_with_clause(&graph_rel.right)
-            {
-                Arc::new(create_cte_reference(cte_name, with_alias, cte_schemas))
-            } else if plan_contains_with_clause(&graph_rel.right)
+            let new_right: Arc<LogicalPlan> = if plan_contains_with_clause(&graph_rel.right)
                 || needs_processing(&graph_rel.right, with_alias)
             {
                 Arc::new(replace_with_clause_with_cte_reference_v2(
@@ -4026,15 +4178,19 @@ fn replace_with_clause_with_cte_reference_v2(
             let node_matches_cte = with_parts.contains(&node.alias.as_str());
             
             if node_matches_cte {
-                log::info!(
-                    "🔧 replace_v2: GraphNode '{}' matches CTE exported alias '{}' - replacing with CTE reference",
-                    node.alias, with_alias
+                log::debug!(
+                    "🔧 replace_v2: GraphNode '{}' matches CTE exported alias '{}' - replacing with CTE reference '{}'",
+                    node.alias, with_alias, cte_name
                 );
                 
                 // Replace this GraphNode with a CTE reference
                 // The CTE contains all the columns for the exported aliases
                 Ok(create_cte_reference(cte_name, &node.alias, cte_schemas))
             } else {
+                log::debug!(
+                    "🔧 replace_v2: GraphNode '{}' does NOT match CTE - keeping with recursed input",
+                    node.alias
+                );
                 // This GraphNode doesn't match - keep it but use the recursed input
                 Ok(LogicalPlan::GraphNode(GraphNode {
                     input: Arc::new(new_input),

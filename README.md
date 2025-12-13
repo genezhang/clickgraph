@@ -152,7 +152,7 @@ flowchart LR
     style Clients fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
 ```
 
-**Three-tier architecture:** Graph clients → ClickGraph translator → ClickHouse storage
+**Three-tier architecture:** Graph clients → ClickGraph translator → ClickHouse database
 
 Both protocols share the same underlying query engine and ClickHouse backend. Both are production-ready.
 
@@ -283,7 +283,7 @@ cypher-shell -a bolt://localhost:7687 -u neo4j -p password
 
 ## 💻 Interactive CLI Client
 
-ClickGraph includes an interactive command-line client for easy querying:
+ClickGraph includes an interactive command-line client for easy querying (inherited from Brahmand):
 
 ### Build and Run
 
