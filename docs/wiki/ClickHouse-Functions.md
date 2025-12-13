@@ -42,6 +42,7 @@ MATCH (u:User) RETURN u.country, chagg.myCustomAgg(u.score) AS result
   - [Funnel Analysis](#funnel-analysis)
   - [Statistics](#statistics)
   - [Map Aggregates](#map-aggregates)
+- [Lambda Expressions](#lambda-expressions) ⭐ **NEW**
 - [Explicit Aggregate Prefix: chagg.](#explicit-aggregate-prefix-chagg)
 - [Function Reference Tables](#function-reference-tables)
 - [Limitations](#limitations)
@@ -516,26 +517,219 @@ RETURN u.country, chagg.uniq(u.email) AS unique_emails
 
 ---
 
-## Limitations
+## Lambda Expressions
 
-### Lambda Expressions NOT Supported
+**Status**: ⭐ **NEW** (v0.5.5+) - Full support for inline anonymous functions.
 
-ClickHouse array functions that require lambda notation cannot be used:
+Lambda expressions enable passing inline functions to ClickHouse higher-order functions, unlocking powerful array manipulation and data transformation capabilities.
 
+### Syntax
+
+**Single Parameter**:
 ```cypher
--- ❌ NOT SUPPORTED: Lambda syntax not parsed
-ch.arrayMap(x -> x * 2, arr)           -- Fails
-ch.arrayFilter(x -> x > 0, arr)        -- Fails
-ch.arrayReduce('sum', x -> x * x, arr) -- Fails
-
--- ✅ SUPPORTED: Functions without lambdas work fine
-ch.arraySum(arr)                       -- Works
-ch.arrayDistinct(arr)                  -- Works
-ch.arrayConcat(arr1, arr2)             -- Works
-ch.arrayStringConcat(arr, ', ')        -- Works
+parameter -> expression
 ```
 
-**Workaround**: Perform lambda-based transformations in your application layer.
+**Multiple Parameters**:
+```cypher
+(param1, param2, ...) -> expression
+```
+
+### Basic Examples
+
+```cypher
+-- Filter array elements
+RETURN ch.arrayFilter(x -> x > 5, [1,2,3,4,5,6,7,8,9,10]) AS filtered
+-- Result: [6,7,8,9,10]
+
+-- Transform array values
+RETURN ch.arrayMap(x -> x * 2, [1,2,3,4,5]) AS doubled
+-- Result: [2,4,6,8,10]
+
+-- Check if any element matches
+RETURN ch.arrayExists(x -> x > 100, [10,20,30]) AS has_large
+-- Result: false
+
+-- Check if all elements match
+RETURN ch.arrayAll(x -> x > 0, [1,2,3,4,5]) AS all_positive
+-- Result: true
+
+-- Combine two arrays element-wise
+RETURN ch.arrayMap((x, y) -> x + y, [1,2,3], [10,20,30]) AS sums
+-- Result: [11,22,33]
+```
+
+### Lambda in Graph Queries
+
+**Filter User Scores**:
+```cypher
+MATCH (u:User)
+RETURN u.name, 
+       ch.arrayFilter(x -> x > 90, u.scores) AS high_scores
+ORDER BY ch.length(high_scores) DESC
+LIMIT 10
+```
+
+**Transform and Aggregate**:
+```cypher
+MATCH (p:Post)
+WHERE ch.arrayExists(tag -> tag IN ['tech', 'science'], p.tags)
+RETURN p.title,
+       ch.arrayMap(tag -> ch.upper(tag), p.tags) AS normalized_tags
+```
+
+**Data Validation**:
+```cypher
+MATCH (u:User)
+WHERE NOT ch.arrayAll(x -> x >= 0 AND x <= 100, u.scores)
+RETURN u.user_id, u.scores AS invalid_scores
+```
+
+### Supported Functions
+
+**Array Transformation**:
+- `ch.arrayFilter(lambda, array)` - Filter elements matching condition
+- `ch.arrayMap(lambda, array1, [array2, ...])` - Transform elements
+- `ch.arrayFill(lambda, array)` - Fill forward based on condition
+- `ch.arrayCumSum(lambda, array)` - Cumulative sum with lambda
+- `ch.arraySplit(lambda, array)` - Split array by condition
+
+**Array Predicates**:
+- `ch.arrayExists(lambda, array)` - Check if any element matches
+- `ch.arrayAll(lambda, array)` - Check if all elements match
+- `ch.arrayFirst(lambda, array)` - Get first matching element
+- `ch.arrayFirstIndex(lambda, array)` - Get index of first match
+
+**Array Aggregation**:
+- `ch.arrayFold(lambda, array, initial)` - Reduce array to single value
+- `ch.arrayReduce('aggFunc', array)` - Apply aggregate to array elements
+
+### Real-World Examples
+
+**Price Analysis**:
+```cypher
+MATCH (p:Product)
+RETURN p.name,
+       p.prices AS original_prices,
+       ch.arrayMap(x -> x * 0.8, p.prices) AS discounted_prices
+```
+
+**Tag Normalization**:
+```cypher
+MATCH (a:Article)
+RETURN a.title,
+       ch.arrayFilter(
+         tag -> ch.length(tag) > 2,
+         ch.arrayMap(t -> ch.lower(ch.trim(t)), a.tags)
+       ) AS clean_tags
+```
+
+**Time Series Filtering**:
+```cypher
+MATCH (s:Sensor)
+WITH s, ch.now() AS current_time
+RETURN s.sensor_id,
+       ch.arrayFilter(
+         ts -> ts > current_time - 3600,
+         s.event_timestamps
+       ) AS recent_events
+```
+
+**Chaining Operations**:
+```cypher
+RETURN ch.arrayMap(
+  x -> x * x,
+  ch.arrayFilter(n -> n % 2 = 0, [1,2,3,4,5,6,7,8,9,10])
+) AS even_squares
+-- Result: [4,16,36,64,100]
+```
+
+### Variable Scoping
+
+- **Lambda parameters** are local variables (e.g., `x`, `score`, `tag`)
+- **Lambda body** can reference:
+  - Lambda parameters
+  - Node/edge properties (e.g., `u.threshold`)
+  - WITH clause variables
+  - Literal values
+
+```cypher
+MATCH (u:User)
+WITH u, 80 AS passing_grade
+RETURN u.name,
+       ch.arrayFilter(score -> score >= passing_grade, u.scores) AS passed
+```
+
+### Performance Tips
+
+1. **Use arrayExists for early termination** instead of arrayFilter + count:
+   ```cypher
+   -- ✅ Fast (stops at first match)
+   WHERE ch.arrayExists(x -> x > 100, scores)
+   
+   -- ❌ Slower (processes entire array)
+   WHERE ch.length(ch.arrayFilter(x -> x > 100, scores)) > 0
+   ```
+
+2. **Push filters before transformations**:
+   ```cypher
+   -- ✅ Better (filter first, transform less)
+   ch.arrayMap(x -> x * 2, ch.arrayFilter(x -> x > 50, numbers))
+   
+   -- ❌ Worse (transform all, then filter)
+   ch.arrayFilter(x -> x > 100, ch.arrayMap(x -> x * 2, numbers))
+   ```
+
+3. **Use arrayAll for validation**:
+   ```cypher
+   -- ✅ Efficient (dedicated function)
+   WHERE ch.arrayAll(x -> x >= 0, values)
+   
+   -- ❌ Less efficient (manual comparison)
+   WHERE ch.length(values) = ch.length(ch.arrayFilter(x -> x >= 0, values))
+   ```
+
+### Common Errors
+
+**Lambda parameter conflicts with alias**:
+```cypher
+-- ❌ Wrong: 'user' conflicts with node alias
+MATCH (user:User)
+RETURN ch.arrayFilter(user -> user > 0, user.scores)
+
+-- ✅ Correct: Use different parameter name
+MATCH (user:User)
+RETURN ch.arrayFilter(x -> x > 0, user.scores)
+```
+
+**Missing array argument**:
+```cypher
+-- ❌ Wrong: Lambda alone doesn't make sense
+RETURN ch.arrayFilter(x -> x > 5)
+
+-- ✅ Correct: Provide array to filter
+RETURN ch.arrayFilter(x -> x > 5, [1,2,3,4,5,6,7,8,9])
+```
+
+**Type mismatch**:
+```cypher
+-- ❌ Wrong: Comparing number to string
+RETURN ch.arrayFilter(x -> x > 'abc', [1,2,3])
+
+-- ✅ Correct: Use appropriate comparison
+RETURN ch.arrayFilter(s -> s > 'abc', ['aaa', 'bbb', 'ccc'])
+```
+
+### Lambda Limitations
+
+- **No nested lambdas**: `x -> y -> x + y` not supported (use multiple calls)
+- **No destructuring**: Parameters must be simple identifiers
+- **No type checking**: All validation happens at ClickHouse query time
+- **No closure mutation**: Lambda parameters are read-only
+
+---
+
+## Limitations
 
 ### Parametric Aggregates
 

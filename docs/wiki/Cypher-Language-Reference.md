@@ -1413,259 +1413,45 @@ MATCH (u:User) RETURN u.country, ch.uniq(u.user_id) AS unique_users
 
 ### Lambda Expressions
 
-Lambda expressions enable passing inline anonymous functions to ClickHouse higher-order functions, unlocking powerful array manipulation and data transformation capabilities.
+**Status**: ⭐ **NEW** (v0.5.5+)
 
-#### Syntax
+Lambda expressions enable passing inline anonymous functions to ClickHouse higher-order array functions.
 
-**Single Parameter**:
-```cypher
-parameter -> expression
-```
-
-**Multiple Parameters**:
-```cypher
-(param1, param2, ...) -> expression
-```
-
-#### Basic Examples
+#### Quick Syntax
 
 ```cypher
--- Filter array elements
-RETURN ch.arrayFilter(x -> x > 5, [1,2,3,4,5,6,7,8,9,10]) AS filtered
+-- Single parameter
+RETURN ch.arrayFilter(x -> x > 5, [1,2,3,4,5,6,7,8,9,10])
 -- Result: [6,7,8,9,10]
 
--- Transform array values
-RETURN ch.arrayMap(x -> x * 2, [1,2,3,4,5]) AS doubled
--- Result: [2,4,6,8,10]
-
--- Check if any element matches
-RETURN ch.arrayExists(x -> x > 100, [10,20,30]) AS has_large
--- Result: false
-
--- Check if all elements match
-RETURN ch.arrayAll(x -> x > 0, [1,2,3,4,5]) AS all_positive
--- Result: true
-```
-
-#### Lambda with Multiple Parameters
-
-```cypher
--- Combine two arrays element-wise
-RETURN ch.arrayMap((x, y) -> x + y, [1,2,3], [10,20,30]) AS sums
+-- Multiple parameters
+RETURN ch.arrayMap((x, y) -> x + y, [1,2,3], [10,20,30])
 -- Result: [11,22,33]
 
--- Multiply corresponding elements
-RETURN ch.arrayMap((x, y) -> x * y, [2,3,4], [5,6,7]) AS products
--- Result: [10,18,28]
-```
-
-#### Lambda in Graph Queries
-
-**Filter User Scores**:
-```cypher
+-- In graph queries
 MATCH (u:User)
-RETURN u.name, 
-       ch.arrayFilter(x -> x > 90, u.scores) AS high_scores
-ORDER BY ch.length(high_scores) DESC
-LIMIT 10
+WHERE ch.arrayExists(score -> score > 90, u.exam_scores)
+RETURN u.name, u.exam_scores
 ```
 
-**Transform and Aggregate**:
-```cypher
-MATCH (p:Post)
-WHERE ch.arrayExists(tag -> tag IN ['tech', 'science'], p.tags)
-RETURN p.title,
-       ch.arrayMap(tag -> ch.upper(tag), p.tags) AS normalized_tags
-```
+#### Supported Functions
 
-**Complex Filtering**:
-```cypher
-MATCH (u:User)
-WHERE ch.arrayAll(score -> score >= 60, u.exam_scores)
-RETURN u.name, u.exam_scores AS passing_scores
-```
+Lambdas work with ClickHouse array functions:
+- `ch.arrayFilter()` - Filter elements
+- `ch.arrayMap()` - Transform elements
+- `ch.arrayExists()` - Check if any match
+- `ch.arrayAll()` - Check if all match
+- `ch.arrayFirst()` - Get first match
+- `ch.arrayFold()` - Reduce array
+- And more...
 
-#### Supported ClickHouse Functions
-
-**Array Transformation**:
-- `ch.arrayFilter(lambda, array)` - Filter elements matching condition
-- `ch.arrayMap(lambda, array1, [array2, ...])` - Transform elements
-- `ch.arrayFill(lambda, array)` - Fill forward based on condition
-- `ch.arrayCumSum(lambda, array)` - Cumulative sum with lambda
-- `ch.arraySplit(lambda, array)` - Split array by condition
-
-**Array Predicates**:
-- `ch.arrayExists(lambda, array)` - Check if any element matches
-- `ch.arrayAll(lambda, array)` - Check if all elements match
-- `ch.arrayFirst(lambda, array)` - Get first matching element
-- `ch.arrayFirstIndex(lambda, array)` - Get index of first match
-
-**Array Aggregation**:
-- `ch.arrayFold(lambda, array, initial)` - Reduce array to single value
-- `ch.arrayReduce('aggFunc', array)` - Apply aggregate to array elements
-
-#### Real-World Examples
-
-**Data Validation**:
-```cypher
-// Find users with invalid scores (outside 0-100 range)
-MATCH (u:User)
-WHERE NOT ch.arrayAll(x -> x >= 0 AND x <= 100, u.scores)
-RETURN u.user_id, u.scores AS invalid_scores
-```
-
-**Price Analysis**:
-```cypher
-// Calculate discounted prices
-MATCH (p:Product)
-RETURN p.name,
-       p.prices AS original_prices,
-       ch.arrayMap(x -> x * 0.8, p.prices) AS discounted_prices
-```
-
-**Tag Normalization**:
-```cypher
-// Normalize and filter tags
-MATCH (a:Article)
-RETURN a.title,
-       ch.arrayFilter(
-         tag -> ch.length(tag) > 2,
-         ch.arrayMap(t -> ch.lower(ch.trim(t)), a.tags)
-       ) AS clean_tags
-```
-
-**Time Series Filtering**:
-```cypher
-// Filter recent events from timestamp array
-MATCH (s:Sensor)
-WITH s, ch.now() AS current_time
-RETURN s.sensor_id,
-       ch.arrayFilter(
-         ts -> ts > current_time - 3600,
-         s.event_timestamps
-       ) AS recent_events
-```
-
-#### Nested Lambda Expressions
-
-Lambda expressions can reference outer variables and node properties:
-
-```cypher
-MATCH (u:User)
-WITH u, 80 AS passing_grade
-RETURN u.name,
-       ch.arrayFilter(score -> score >= passing_grade, u.scores) AS passed
-```
-
-#### Variable Scoping
-
-- **Lambda parameters** are local variables (e.g., `x`, `score`, `tag`)
-- **Lambda body** can reference:
-  - Lambda parameters
-  - Node/edge properties (e.g., `u.threshold`)
-  - WITH clause variables
-  - Literal values
-
-```cypher
-MATCH (config:Config {key: 'min_score'})
-MATCH (u:User)
-RETURN u.name,
-       ch.arrayFilter(x -> x >= config.value, u.scores) AS qualified
-```
-
-#### Common Patterns
-
-**Chaining Array Operations**:
-```cypher
-RETURN ch.arrayMap(
-  x -> x * x,
-  ch.arrayFilter(n -> n % 2 = 0, [1,2,3,4,5,6,7,8,9,10])
-) AS even_squares
--- Result: [4,16,36,64,100]
-```
-
-**Conditional Transformation**:
-```cypher
-MATCH (p:Product)
-RETURN p.name,
-       ch.arrayMap(
-         price -> CASE WHEN price > 100 THEN price * 0.9 ELSE price END,
-         p.historical_prices
-       ) AS adjusted_prices
-```
-
-#### Performance Tips
-
-1. **Use arrayExists for early termination** instead of arrayFilter + count:
-   ```cypher
-   -- ✅ Fast (stops at first match)
-   WHERE ch.arrayExists(x -> x > 100, scores)
-   
-   -- ❌ Slower (processes entire array)
-   WHERE ch.length(ch.arrayFilter(x -> x > 100, scores)) > 0
-   ```
-
-2. **Push filters before transformations**:
-   ```cypher
-   -- ✅ Better (filter first, transform less)
-   ch.arrayMap(x -> x * 2, ch.arrayFilter(x -> x > 50, numbers))
-   
-   -- ❌ Worse (transform all, then filter)
-   ch.arrayFilter(x -> x > 100, ch.arrayMap(x -> x * 2, numbers))
-   ```
-
-3. **Use arrayAll for validation**:
-   ```cypher
-   -- ✅ Efficient (dedicated function)
-   WHERE ch.arrayAll(x -> x >= 0, values)
-   
-   -- ❌ Less efficient (manual comparison)
-   WHERE ch.length(values) = ch.length(ch.arrayFilter(x -> x >= 0, values))
-   ```
-
-#### Common Errors
-
-**Error: Lambda parameter conflicts with alias**
-```cypher
--- ❌ Wrong: 'user' conflicts with node alias
-MATCH (user:User)
-RETURN ch.arrayFilter(user -> user > 0, user.scores)
-
--- ✅ Correct: Use different parameter name
-MATCH (user:User)
-RETURN ch.arrayFilter(x -> x > 0, user.scores)
-```
-
-**Error: Missing array argument**
-```cypher
--- ❌ Wrong: Lambda alone doesn't make sense
-RETURN ch.arrayFilter(x -> x > 5)
-
--- ✅ Correct: Provide array to filter
-RETURN ch.arrayFilter(x -> x > 5, [1,2,3,4,5,6,7,8,9])
-```
-
-**Error: Type mismatch**
-```cypher
--- ❌ Wrong: Comparing number to string
-RETURN ch.arrayFilter(x -> x > 'abc', [1,2,3])
-
--- ✅ Correct: Use appropriate comparison
-RETURN ch.arrayFilter(s -> s > 'abc', ['aaa', 'bbb', 'ccc'])
-```
-
-#### Limitations
-
-- **No nested lambdas**: `x -> y -> x + y` not supported (use multiple calls)
-- **No destructuring**: Parameters must be simple identifiers
-- **No type checking**: All validation happens at ClickHouse query time
-- **No closure mutation**: Lambda parameters are read-only
-
-#### See Also
-
-- **[ClickHouse Functions](ClickHouse-Functions.md)** - Complete ClickHouse function reference
-- **[Cypher Functions](Cypher-Functions.md)** - Standard Cypher functions
-- **[Array Functions](https://clickhouse.com/docs/en/sql-reference/functions/array-functions)** - ClickHouse array docs
+📖 **Complete Documentation**: See [ClickHouse Functions - Lambda Expressions](ClickHouse-Functions.md#lambda-expressions) for:
+- Full syntax reference
+- Real-world examples (data validation, price analysis, tag normalization)
+- Variable scoping rules
+- Performance optimization tips
+- Common errors and solutions
+- Complete function reference
 
 ---
 
