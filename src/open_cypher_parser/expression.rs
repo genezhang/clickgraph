@@ -15,8 +15,8 @@ use crate::open_cypher_parser::common::{self, ws};
 
 use super::{
     ast::{
-        ExistsSubquery, Expression, FunctionCall, Literal, Operator, OperatorApplication,
-        PropertyAccess, ReduceExpression,
+        ExistsSubquery, Expression, FunctionCall, LambdaExpression, Literal, Operator,
+        OperatorApplication, PropertyAccess, ReduceExpression,
     },
     path_pattern, where_clause,
 };
@@ -462,21 +462,62 @@ pub fn parse_identifier(input: &str) -> IResult<&str, &str> {
 }
 
 pub fn parse_function_call(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // First, parse the function name.
-    let (input, name) = ws(parse_identifier).parse(input)?;
+    // First, parse the function name - support dotted names like ch.arrayFilter
+    // Parse identifier parts separated by dots
+    let (input, name_parts) = separated_list0(char('.'), ws(parse_identifier)).parse(input)?;
+    
+    // If no dots found, need at least one identifier
+    if name_parts.is_empty() {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::Alpha)));
+    }
+    
+    let name = name_parts.join(".");
+    
     // Then parse the comma-separated arguments within parentheses.
+    // Need to try lambda first before regular expression
     let (input, args) = delimited(
         ws(char('(')),
-        separated_list0(ws(char(',')), parse_expression),
+        separated_list0(ws(char(',')), alt((parse_lambda_expression, parse_expression))),
         ws(char(')')),
     )
     .parse(input)?;
 
     Ok((
         input,
-        Expression::FunctionCallExp(FunctionCall {
-            name: name.to_string(),
-            args,
+        Expression::FunctionCallExp(FunctionCall { name, args }),
+    ))
+}
+
+/// Parse a lambda expression: param -> body or (param1, param2) -> body
+/// Examples:
+///   x -> x > 5
+///   (x, y) -> x + y
+///   elem -> elem.field = 'value'
+pub fn parse_lambda_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    // Try single parameter: x ->
+    let single_param = map(
+        terminated(ws(parse_identifier), ws(tag("->"))),
+        |param| vec![param],
+    );
+    
+    // Try multiple parameters: (x, y) ->
+    let multi_param = delimited(
+        ws(char('(')),
+        separated_list0(ws(char(',')), ws(parse_identifier)),
+        delimited(ws(char(')')), ws(tag("->")), multispace0),
+    );
+    
+    // Parse parameters (single or multiple)
+    let (input, params) = alt((multi_param, single_param)).parse(input)?;
+    
+    // Parse the body expression
+    let (input, body) = parse_expression(input)?;
+    
+    Ok((
+        input,
+        Expression::Lambda(LambdaExpression {
+            params,
+            body: Box::new(body),
         }),
     ))
 }
@@ -1053,6 +1094,71 @@ mod tests {
                 // Good - the argument is a path pattern
             } else {
                 panic!("Expected PathPattern argument, got {:?}", fc.args[0]);
+            }
+        } else {
+            panic!("Expected FunctionCallExp, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_lambda_single_param() {
+        // Test single parameter lambda: x -> x > 5
+        let (rem, lambda) = parse_lambda_expression("x -> x > 5").unwrap();
+        assert_eq!(rem, "");
+        if let Expression::Lambda(l) = lambda {
+            assert_eq!(l.params.len(), 1);
+            assert_eq!(l.params[0], "x");
+            // Body should be an operator application: x > 5
+            if let Expression::OperatorApplicationExp(op) = *l.body {
+                assert_eq!(op.operator, Operator::GreaterThan);
+            } else {
+                panic!("Expected OperatorApplicationExp, got {:?}", l.body);
+            }
+        } else {
+            panic!("Expected Lambda, got {:?}", lambda);
+        }
+    }
+
+    #[test]
+    fn test_parse_lambda_multi_param() {
+        // Test multiple parameter lambda: (x, y) -> x + y
+        let (rem, lambda) = parse_lambda_expression("(x, y) -> x + y").unwrap();
+        assert_eq!(rem, "");
+        if let Expression::Lambda(l) = lambda {
+            assert_eq!(l.params.len(), 2);
+            assert_eq!(l.params[0], "x");
+            assert_eq!(l.params[1], "y");
+            // Body should be an operator application: x + y
+            if let Expression::OperatorApplicationExp(op) = *l.body {
+                assert_eq!(op.operator, Operator::Addition);
+            } else {
+                panic!("Expected OperatorApplicationExp, got {:?}", l.body);
+            }
+        } else {
+            panic!("Expected Lambda, got {:?}", lambda);
+        }
+    }
+
+    #[test]
+    fn test_parse_lambda_in_function_call() {
+        // Test lambda as function argument: ch.arrayFilter(x -> x > 5, [1,2,3])
+        let (rem, expr) = parse_expression("ch.arrayFilter(x -> x > 5, [1,2,3])").unwrap();
+        assert_eq!(rem, "");
+        if let Expression::FunctionCallExp(fc) = expr {
+            assert_eq!(fc.name, "ch.arrayFilter");
+            assert_eq!(fc.args.len(), 2);
+            // First argument should be a lambda
+            if let Expression::Lambda(l) = &fc.args[0] {
+                assert_eq!(l.params.len(), 1);
+                assert_eq!(l.params[0], "x");
+            } else {
+                panic!("Expected Lambda argument, got {:?}", fc.args[0]);
+            }
+            // Second argument should be a list
+            if let Expression::List(_) = &fc.args[1] {
+                // Good
+            } else {
+                panic!("Expected List argument, got {:?}", fc.args[1]);
             }
         } else {
             panic!("Expected FunctionCallExp, got {:?}", expr);

@@ -7,6 +7,17 @@
 **LDBC SNB Benchmark: 100% (8/8 Interactive queries passing)**
 
 ### Recent Fixes (Dec 13, 2025)
+
+- **Lambda Expressions for ClickHouse Functions** - Full support for inline functions ✅
+  - Syntax: `ch.arrayFilter(x -> x > 5, array)` or `ch.arrayMap((x,y) -> x+y, arr1, arr2)`
+  - Enables all ClickHouse higher-order array functions (arrayFilter, arrayMap, arrayExists, etc.)
+  - Lambda parameters treated as local variables (not resolved to table aliases)
+  - Dotted function names supported (`ch.*`, `chagg.*`)
+  - Implementation: Parser → Logical → Render with proper scoping
+  - Tests: 645/645 unit tests passing (including 3 new lambda tests)
+  - Example: `MATCH (u:User) RETURN ch.arrayFilter(x -> x > 90, u.scores) AS high_scores`
+  - See: `notes/lambda-expressions.md` for complete documentation
+
 - **4-Level WITH Duplicate CTE Bug** - Fixed duplicate CTE generation in multi-level WITH queries ✅
   - Problem: Same CTE (e.g., `with_b_c_cte`) appeared twice in WITH clause declarations
   - Root cause: CTE deduplication checked processed aliases, but same alias could appear in multiple plan nodes

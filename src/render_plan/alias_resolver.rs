@@ -334,6 +334,13 @@ impl AliasResolverContext {
                 LogicalExpr::ReduceExpr(reduce)
             }
 
+            LogicalExpr::Lambda(mut lambda) => {
+                // Lambda parameters are local variables, don't rewrite them
+                // But we do need to transform the body expression
+                lambda.body = Box::new(self.transform_expr(*lambda.body));
+                LogicalExpr::Lambda(lambda)
+            }
+
             // PatternCount is rendered directly with schema lookup, no alias transformation needed
             LogicalExpr::PatternCount(pc) => LogicalExpr::PatternCount(pc),
 

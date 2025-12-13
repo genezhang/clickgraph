@@ -82,6 +82,11 @@ pub enum LogicalExpr {
     /// Counts the number of matches for a relationship pattern
     /// Generates a correlated COUNT(*) subquery
     PatternCount(PatternCount),
+
+    /// Lambda expression: param -> body
+    /// Used in ClickHouse array functions
+    /// Example: x -> x > 5
+    Lambda(LambdaExpr),
 }
 
 /// Pattern count for size() on patterns
@@ -114,6 +119,16 @@ pub struct ExistsSubquery {
     /// The logical plan representing the EXISTS pattern
     #[serde(with = "serde_arc")]
     pub subplan: Arc<LogicalPlan>,
+}
+
+/// Lambda expression for ClickHouse array functions
+/// Example: x -> x > 5, (x, y) -> x + y
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct LambdaExpr {
+    /// Parameter names (one or more)
+    pub params: Vec<String>,
+    /// Body expression (can reference params)
+    pub body: Box<LogicalExpr>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -695,6 +710,10 @@ impl<'a> From<open_cypher_parser::ast::Expression<'a>> for LogicalExpr {
                 variable: variable.to_string(),
                 label: label.to_string(),
             },
+            Expression::Lambda(lambda) => LogicalExpr::Lambda(LambdaExpr {
+                params: lambda.params.iter().map(|s| s.to_string()).collect(),
+                body: Box::new(LogicalExpr::from(*lambda.body)),
+            }),
         }
     }
 }

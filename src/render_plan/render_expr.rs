@@ -762,6 +762,18 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                 let sql = generate_pattern_count_sql(&pc.pattern)?;
                 RenderExpr::PatternCount(PatternCount { sql })
             }
+            LogicalExpr::Lambda(lambda) => {
+                // Lambda expressions are rendered directly to ClickHouse lambda syntax
+                // Format: param -> body or (param1, param2) -> body
+                let params_str = if lambda.params.len() == 1 {
+                    lambda.params[0].clone()
+                } else {
+                    format!("({})", lambda.params.join(", "))
+                };
+                let body_sql = RenderExpr::try_from(*lambda.body)?.to_sql();
+                let lambda_sql = format!("{} -> {}", params_str, body_sql);
+                RenderExpr::Raw(lambda_sql)
+            }
             // PathPattern is not present in RenderExpr
             _ => unimplemented!("Conversion for this LogicalExpr variant is not implemented"),
         };

@@ -518,6 +518,23 @@ pub enum Expression<'a> {
         variable: &'a str,
         label: &'a str,
     },
+    /// Lambda expression: param -> body
+    /// Used in ClickHouse array functions like arrayFilter, arrayMap
+    /// Example: x -> x > 5, (x, y) -> x + y
+    Lambda(LambdaExpression<'a>),
+}
+
+/// Lambda expression for ClickHouse array functions
+/// Examples:
+///   x -> x > 5
+///   (x, y) -> x + y
+///   elem -> elem.field = 'value'
+#[derive(Debug, PartialEq, Clone)]
+pub struct LambdaExpression<'a> {
+    /// Parameter names (single or multiple)
+    pub params: Vec<&'a str>,
+    /// Body expression (can reference params)
+    pub body: Box<Expression<'a>>,
 }
 
 /// EXISTS subquery: checks if a pattern exists

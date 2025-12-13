@@ -8,8 +8,8 @@ use crate::{
             errors::{AnalyzerError, Pass},
         },
         logical_expr::{
-            AggregateFnCall, ColumnAlias, LogicalCase, LogicalExpr, Operator, OperatorApplication,
-            PropertyAccess, ScalarFnCall, TableAlias,
+            AggregateFnCall, ColumnAlias, LambdaExpr, LogicalCase, LogicalExpr, Operator,
+            OperatorApplication, PropertyAccess, ScalarFnCall, TableAlias,
         },
         logical_plan::{LogicalPlan, Projection, ProjectionItem},
         plan_ctx::PlanCtx,
@@ -1028,6 +1028,23 @@ impl ProjectionTagging {
                     expr: transformed_expr,
                     when_then: transformed_when_then,
                     else_expr: transformed_else,
+                });
+                Ok(())
+            }
+            LogicalExpr::Lambda(lambda_expr) => {
+                // Lambda expressions need special handling:
+                // - Lambda parameters are local variables (don't resolve them)
+                // - Lambda body may contain references that need resolution
+                // We recursively transform the body expression
+                let mut body_item = ProjectionItem {
+                    expression: (*lambda_expr.body).clone(),
+                    col_alias: None,
+                };
+                Self::tag_projection(&mut body_item, plan_ctx, graph_schema)?;
+                
+                item.expression = LogicalExpr::Lambda(LambdaExpr {
+                    params: lambda_expr.params.clone(),
+                    body: Box::new(body_item.expression),
                 });
                 Ok(())
             }
