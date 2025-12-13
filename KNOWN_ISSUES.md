@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 10  
-**Last Updated**: December 11, 2025
+**Active Issues**: 11  
+**Last Updated**: December 13, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -10,7 +10,55 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Active Issues
 
-### 1. WITH Aggregation (count, collect, etc.) - INCOMPLETE
+### 1. 4-Level WITH CTE Column References - INCOMPLETE
+
+**Status**: 🟡 Partial Fix (duplicate CTEs resolved, column refs remain broken)  
+**Severity**: HIGH  
+**Affects**: Multi-level WITH queries (4+ levels)
+
+**Fixed**: ✅ Duplicate CTE generation (Dec 13, 2025)
+- Same CTE no longer appears twice in WITH clause
+- Deduplication checks CTE name in `all_ctes` before creation
+
+**Remaining Issues**:
+1. **Invalid JOIN conditions**: CTE uses out-of-scope variables in joins
+2. **Incorrect column selection**: CTE selects all previous aliases instead of only exported ones
+
+**Example (partially works)**:
+```cypher
+MATCH (a:User) WHERE a.user_id = 1 WITH a 
+MATCH (a)-[:FOLLOWS]->(b:User) WITH a, b 
+MATCH (b)-[:FOLLOWS]->(c:User) WITH b, c 
+MATCH (c)-[:FOLLOWS]->(d:User) RETURN b.name, c.name, d.name
+```
+
+**Current Generated SQL** (broken):
+```sql
+WITH with_b_c_cte AS (
+    SELECT a.*, b.*, c.*  -- ❌ Should only select b.*, c.*
+    FROM with_a_b_cte AS a_b
+    JOIN user_follows_bench AS t2 ON t2.follower_id = b.id  -- ❌ b.id out of scope
+    JOIN users_bench AS c ON c.user_id = t2.followed_id
+)
+```
+
+**Expected SQL**:
+```sql
+WITH with_b_c_cte AS (
+    SELECT b.*, c.*  -- ✅ Only exported aliases
+    FROM with_a_b_cte AS a_b
+    JOIN user_follows_bench AS t2 ON t2.follower_id = a_b.b_user_id  -- ✅ CTE column ref
+    JOIN users_bench AS c ON c.user_id = t2.followed_id
+)
+```
+
+**Root Cause**: CTE content generation doesn't filter columns based on `exported_aliases` from WithClause.
+
+**Workaround**: Avoid 4+ level WITH queries until fixed.
+
+---
+
+### 2. WITH Aggregation (count, collect, etc.) - INCOMPLETE
 
 **Status**: 🟡 Partial Implementation  
 **Severity**: MEDIUM  

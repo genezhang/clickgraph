@@ -25,6 +25,31 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
     // Try to extract pattern info from the subplan
     // The subplan is typically a GraphRel representing a relationship pattern
     match exists.subplan.as_ref() {
+        // For WITH clauses and other complex plans, use the full render pipeline
+        LogicalPlan::WithClause(_) | LogicalPlan::GraphJoins(_) | LogicalPlan::CartesianProduct(_) => {
+            use crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql;
+            use crate::render_plan::plan_builder::RenderPlanBuilder;
+            
+            // Get schema from GLOBAL_SCHEMAS
+            let schemas_lock = GLOBAL_SCHEMAS.get();
+            let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
+            let schema = schemas_guard
+                .as_ref()
+                .and_then(|guard| guard.values().next())
+                .ok_or_else(|| {
+                    RenderBuildError::InvalidRenderPlan(
+                        "No schema available for EXISTS subquery".to_string(),
+                    )
+                })?;
+            
+            // Convert logical plan to render plan using the full pipeline
+            let render_plan = exists.subplan.to_render_plan(schema)?;
+            
+            // Generate SQL from render plan
+            let sql = render_plan_to_sql(render_plan, 10); // Use default max_cte_depth
+            
+            Ok(sql)
+        }
         LogicalPlan::GraphRel(graph_rel) => {
             // Get the relationship type
             let rel_type = graph_rel

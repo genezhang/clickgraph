@@ -92,6 +92,7 @@ This is where ClickGraph differentiates - direct access to ClickHouse's analytic
 ### Choose ClickGraph When:
 
 - ✅ You already use ClickHouse for analytics
+- ✅ You may have other sources but accessed from ClickHouse
 - ✅ You want graph queries without data movement
 - ✅ You need ClickHouse's analytical functions (quantiles, funnels, HLL)
 - ✅ You prefer Cypher and Neo4j compatibility

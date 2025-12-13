@@ -8,7 +8,7 @@ mod function_registry;
 mod function_translator;
 pub mod pagerank;
 pub mod to_sql; // Made public for EXISTS subquery support
-mod to_sql_query;
+pub mod to_sql_query; // Made public for EXISTS subquery generation with WITH clauses
 pub mod variable_length_cte;
 mod view_query;
 mod view_scan;

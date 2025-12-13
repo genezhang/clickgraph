@@ -315,7 +315,7 @@ impl GraphJoinInference {
                 
                 // Now register this WithClause's CTE references (will overwrite inner ones for same alias)
                 // Found a WITH clause - register exported aliases as CTE references
-                // CTE name format: with_{aliases}_cte{N}
+                // CTE name format: with_{aliases}_cte (no counter needed - render phase handles duplicates)
                 let cte_name = if wc.exported_aliases.len() == 1 {
                     format!("with_{}_cte", wc.exported_aliases[0])
                 } else {

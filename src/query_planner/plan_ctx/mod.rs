@@ -203,6 +203,9 @@ pub struct PlanCtx {
     /// When true, variable lookup stops here and doesn't search parent scope
     /// Example: MATCH (a)-[]->(b) WITH a MATCH (a)-[]->(b)  // second b is different!
     is_with_scope: bool,
+    /// Counter for generating unique CTE names (ensures with_a_b_cte_0, with_a_b_cte_1, etc.)
+    /// Incremented each time a WITH clause is processed to prevent duplicate CTE names
+    pub(crate) cte_counter: usize,
 }
 
 impl PlanCtx {
@@ -423,6 +426,7 @@ impl PlanCtx {
             denormalized_node_edges: HashMap::new(),
             parent_scope: None,
             is_with_scope: false,
+            cte_counter: 0,
         }
     }
 
@@ -439,6 +443,7 @@ impl PlanCtx {
             denormalized_node_edges: HashMap::new(),
             parent_scope: None,
             is_with_scope: false,
+            cte_counter: 0,
         }
     }
 
@@ -459,6 +464,7 @@ impl PlanCtx {
             denormalized_node_edges: HashMap::new(),
             parent_scope: None,
             is_with_scope: false,
+            cte_counter: 0,
         }
     }
 
@@ -485,6 +491,7 @@ impl PlanCtx {
             denormalized_node_edges: HashMap::new(),
             parent_scope: Some(Box::new(parent.clone())),
             is_with_scope,
+            cte_counter: 0,
         }
     }
 
@@ -504,6 +511,7 @@ impl PlanCtx {
             denormalized_node_edges: HashMap::new(),
             parent_scope: None,
             is_with_scope: false,
+            cte_counter: 0,
         }
     }
 

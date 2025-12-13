@@ -490,6 +490,42 @@ fn replace_wildcards_with_group_by_columns(
 // WITH Clause CTE Builders
 // ============================================================================
 
+/// Extract CTE references from GraphJoins in the plan tree
+/// Returns a map of alias → CTE name (e.g., "a" → "with_a_cte_0")
+fn extract_cte_references(plan: &LogicalPlan) -> std::collections::HashMap<String, String> {
+    let mut refs = std::collections::HashMap::new();
+    
+    match plan {
+        LogicalPlan::GraphJoins(gj) => {
+            refs.extend(gj.cte_references.clone());
+            refs.extend(extract_cte_references(&gj.input));
+        }
+        LogicalPlan::GraphRel(gr) => {
+            refs.extend(extract_cte_references(&gr.left));
+            refs.extend(extract_cte_references(&gr.center));
+            refs.extend(extract_cte_references(&gr.right));
+        }
+        LogicalPlan::GraphNode(gn) => {
+            refs.extend(extract_cte_references(&gn.input));
+        }
+        LogicalPlan::WithClause(wc) => {
+            refs.extend(extract_cte_references(&wc.input));
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            refs.extend(extract_cte_references(&cp.left));
+            refs.extend(extract_cte_references(&cp.right));
+        }
+        LogicalPlan::Union(u) => {
+            for input in &u.inputs {
+                refs.extend(extract_cte_references(input));
+            }
+        }
+        _ => {}
+    }
+    
+    refs
+}
+
 /// Handle CHAINED WITH patterns iteratively.
 ///
 /// For queries like: MATCH...WITH a MATCH...WITH a,b MATCH...RETURN
@@ -524,7 +560,12 @@ fn build_chained_with_match_cte_plan(
     let mut processed_cte_aliases: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
+    // Extract CTE references from GraphJoins (set by analyzer phase)
+    // This maps alias → CTE name (e.g., "a" → "with_a_cte_0")
+    let cte_references = extract_cte_references(&current_plan);
+
     log::info!("🔧 build_chained_with_match_cte_plan: Starting iterative WITH processing");
+    log::info!("🔧 build_chained_with_match_cte_plan: CTE references from analyzer: {:?}", cte_references);
 
     // Process WITH clauses iteratively until none remain
     while has_with_clause_in_graph_rel(&current_plan) {
@@ -578,15 +619,6 @@ fn build_chained_with_match_cte_plan(
         // Process each alias group
         // For aliases with multiple WITH clauses (from Union branches), combine them with UNION ALL
         for (with_alias, plan_count) in aliases_to_process {
-            // Skip if this alias has already been processed in a previous iteration
-            // This handles chained WITH (e.g., `WITH DISTINCT fof WITH fof`)
-            // where after processing `fof`, the outer `WITH fof` wrapper still exists
-            // but now refers to a CTE - we don't want to process it again
-            if processed_cte_aliases.contains(&with_alias) {
-                log::info!("🔧 build_chained_with_match_cte_plan: Skipping alias '{}' - already processed as CTE in previous iteration", with_alias);
-                continue;
-            }
-
             log::info!(
                 "🔧 build_chained_with_match_cte_plan: Processing {} WITH clause(s) for alias '{}'",
                 plan_count,
@@ -916,12 +948,36 @@ fn build_chained_with_match_cte_plan(
                 )));
             }
 
-            // Generate CTE name WITHOUT counter to match analyzer's prediction
-            // Analyzer predicts: "with_a_b_cte", so render must create the same name
-            let cte_name = format!(
-                "with_{}_cte",
-                with_alias.replace(".*", "")
-            );
+            // Look up CTE name from analyzer's cte_references
+            // If not found, generate a fallback name (should not happen after analyzer runs)
+            let cte_name = if let Some(name) = cte_references.get(&with_alias) {
+                log::info!("🔧 build_chained_with_match_cte_plan: Using CTE name '{}' from analyzer for alias '{}'", name, with_alias);
+                name.clone()
+            } else {
+                // Fallback: generate name without counter (legacy behavior)
+                let fallback = format!("with_{}_cte", with_alias.replace(".*", ""));
+                log::warn!("🔧 build_chained_with_match_cte_plan: CTE name not found in cte_references for '{}', using fallback '{}'", with_alias, fallback);
+                fallback
+            };
+
+            // Check if we already created a CTE with this name
+            // This can happen when the same WITH alias appears in multiple places in the plan tree
+            // (e.g., in different Union branches or nested patterns)
+            if all_ctes.iter().any(|cte| cte.cte_name == cte_name) {
+                log::info!("🔧 build_chained_with_match_cte_plan: CTE '{}' already exists, just replacing WITH clauses with references", cte_name);
+                
+                // Still need to replace any remaining WITH clauses with CTE references
+                current_plan = replace_with_clause_with_cte_reference_v2(
+                    &current_plan,
+                    &with_alias,
+                    &cte_name,
+                    &pre_with_aliases,
+                    &cte_schemas,
+                )?;
+                
+                any_processed_this_iteration = true;
+                continue;  // Skip CTE creation, just do replacement
+            }
 
             // Create CTE content - if multiple renders, combine with UNION ALL
             // Extract ORDER BY, SKIP, LIMIT from first rendered plan (they should all have the same modifiers)
@@ -1031,12 +1087,14 @@ fn build_chained_with_match_cte_plan(
             )?;
 
             // Track that this alias is now a CTE (so subsequent iterations don't filter it)
-            // For composite aliases like "friend_post", track the individual parts
-            for part in with_alias.split('_') {
-                if !part.is_empty() {
-                    processed_cte_aliases.insert(part.to_string());
-                }
-            }
+            // Add the full composite alias 
+            processed_cte_aliases.insert(with_alias.clone());
+            
+            log::info!("🔧 build_chained_with_match_cte_plan: Added '{}' to processed_cte_aliases", with_alias);
+            
+            // DON'T add individual parts - this causes issues with detecting duplicates
+            // Example: "b_c" should not add "b" and "c" separately, because that would
+            // prevent processing "b_c" again if it appears multiple times in the plan
 
             // Mark that we processed something this iteration
             any_processed_this_iteration = true;

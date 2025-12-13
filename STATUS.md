@@ -7,6 +7,14 @@
 **LDBC SNB Benchmark: 100% (8/8 Interactive queries passing)**
 
 ### Recent Fixes (Dec 13, 2025)
+- **4-Level WITH Duplicate CTE Bug** - Fixed duplicate CTE generation in multi-level WITH queries ✅
+  - Problem: Same CTE (e.g., `with_b_c_cte`) appeared twice in WITH clause declarations
+  - Root cause: CTE deduplication checked processed aliases, but same alias could appear in multiple plan nodes
+  - Solution: Check if CTE already exists in `all_ctes` by name before creating, still replace WITH clauses
+  - Files: `render_plan/plan_builder.rs` (lines 963-982)
+  - Impact: 4+ level WITH queries now generate valid SQL without duplicate CTEs
+  - Example: `WITH a ... WITH a,b ... WITH b,c ... WITH c,d` now works correctly
+
 - **WITH + WHERE after aggregation → HAVING clause** - Critical bug fix ✅
   - Problem: WHERE clause after WITH with aggregation was completely missing from SQL
   - Should generate: `GROUP BY ... HAVING cnt > 2` but generated: `GROUP BY ...` (no HAVING)
