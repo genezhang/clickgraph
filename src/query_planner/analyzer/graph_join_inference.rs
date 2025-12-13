@@ -1442,7 +1442,6 @@ impl GraphJoinInference {
                     crate::query_planner::logical_plan::Projection {
                         input: processed_child,
                         items: projection.items.clone(),
-                        kind: projection.kind.clone(),
                         distinct: projection.distinct,
                     },
                 ));
@@ -3693,7 +3692,6 @@ mod tests {
                 }),
                 col_alias: None,
             }],
-            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
             distinct: false,
         }));
 
@@ -3821,7 +3819,6 @@ mod tests {
                 }),
                 col_alias: None,
             }],
-            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
             distinct: false,
         }));
 
@@ -3933,7 +3930,6 @@ mod tests {
                 }),
                 col_alias: None,
             }],
-            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
             distinct: false,
         }));
 
@@ -4027,7 +4023,6 @@ mod tests {
                 }),
                 col_alias: None,
             }],
-            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
             distinct: false,
         }));
 
@@ -4157,7 +4152,6 @@ mod tests {
                 }),
                 col_alias: None,
             }],
-            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
             distinct: false,
         }));
 
@@ -4300,7 +4294,6 @@ mod tests {
                 }),
                 col_alias: None,
             }],
-            kind: crate::query_planner::logical_plan::ProjectionKind::Return,
             distinct: false,
         }));
 

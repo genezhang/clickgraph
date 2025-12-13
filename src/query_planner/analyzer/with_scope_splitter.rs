@@ -139,7 +139,6 @@ impl WithScopeSplitter {
                     let new_proj = crate::query_planner::logical_plan::Projection {
                         input: input.get_plan().clone(),
                         items: proj.items.clone(),
-                        kind: proj.kind.clone(),
                         distinct: proj.distinct,
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(

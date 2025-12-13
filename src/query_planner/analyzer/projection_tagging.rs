@@ -85,7 +85,6 @@ impl AnalyzerPass for ProjectionTagging {
                 let result = Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
                     input: child_tf.get_plan(), // Use transformed child instead of original
                     items: proj_items_to_mutate,
-                    kind: projection.kind.clone(),
                     distinct: projection.distinct,
                 })));
                 crate::debug_println!(

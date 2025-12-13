@@ -157,7 +157,6 @@ fn transform_bidirectional(
                         let new_proj = Projection {
                             input: new_input,
                             items: proj.items.clone(),
-                            kind: proj.kind.clone(),
                             distinct: proj.distinct,
                         };
                         Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
@@ -785,7 +784,6 @@ fn apply_direction_combination_inner(
             Arc::new(LogicalPlan::Projection(Projection {
                 input: new_input,
                 items: new_items,
-                kind: proj.kind.clone(),
                 distinct: proj.distinct,
             }))
         }

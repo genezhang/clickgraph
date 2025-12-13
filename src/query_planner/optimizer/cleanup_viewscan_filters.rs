@@ -60,7 +60,6 @@ impl CleanupViewScanFilters {
                         LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
                             input: new_input,
                             items: proj.items.clone(),
-                            kind: proj.kind.clone(),
                             distinct: proj.distinct,
                         }),
                     )),

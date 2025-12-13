@@ -531,7 +531,7 @@ fn test_analyzer_denormalized_property_integration() {
     };
     use crate::query_planner::logical_plan::LogicalPlan;
     use crate::query_planner::logical_plan::ViewScan;
-    use crate::query_planner::logical_plan::{Filter, Projection, ProjectionItem, ProjectionKind};
+    use crate::query_planner::logical_plan::{Filter, Projection, ProjectionItem};
     use crate::query_planner::plan_ctx::PlanCtx;
     use std::sync::Arc;
 
@@ -691,7 +691,6 @@ fn test_analyzer_denormalized_property_integration() {
                 "dest_city".to_string(),
             )),
         }],
-        kind: ProjectionKind::Return,
         distinct: false,
     }));
 
@@ -800,7 +799,7 @@ fn test_denormalized_standalone_node_return_all_properties() {
     use crate::graph_catalog::expression_parser::PropertyValue;
     use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
     use crate::query_planner::logical_plan::{
-        GraphNode, LogicalPlan, Projection, ProjectionItem, ProjectionKind, ViewScan,
+        GraphNode, LogicalPlan, Projection, ProjectionItem, ViewScan,
     };
     use crate::render_plan::plan_builder::RenderPlanBuilder; // Import trait!
     use std::sync::Arc;
@@ -841,7 +840,6 @@ fn test_denormalized_standalone_node_return_all_properties() {
             expression: LogicalExpr::TableAlias(TableAlias("a".to_string())),
             col_alias: None,
         }],
-        kind: ProjectionKind::Return,
         input: Arc::new(graph_node),
         distinct: false,
     });
@@ -902,7 +900,7 @@ fn test_denormalized_standalone_node_both_positions() {
     use crate::graph_catalog::expression_parser::PropertyValue;
     use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
     use crate::query_planner::logical_plan::{
-        GraphNode, LogicalPlan, Projection, ProjectionItem, ProjectionKind, Union, UnionType,
+        GraphNode, LogicalPlan, Projection, ProjectionItem, Union, UnionType,
         ViewScan,
     };
     use crate::render_plan::plan_builder::RenderPlanBuilder;
@@ -978,7 +976,6 @@ fn test_denormalized_standalone_node_both_positions() {
             expression: LogicalExpr::TableAlias(TableAlias("a".to_string())),
             col_alias: None,
         }],
-        kind: ProjectionKind::Return,
         input: Arc::new(union),
         distinct: false,
     });

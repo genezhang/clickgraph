@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::query_planner::{
     analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult},
     logical_expr::LogicalExpr,
-    logical_plan::{GroupBy, LogicalPlan, Projection, ProjectionItem, ProjectionKind},
+    logical_plan::{GroupBy, LogicalPlan, Projection, ProjectionItem},
     plan_ctx::PlanCtx,
     transformed::Transformed,
 };
@@ -97,13 +97,6 @@ impl AnalyzerPass for GroupByBuilding {
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Projection(projection) => {
-                // This is a RETURN projection - check for aggregations
-                println!(
-                        "GroupByBuilding: Processing Projection(kind=Return) with {} items, distinct={}",
-                        projection.items.len(),
-                        projection.distinct
-                    );
-
                 // Use contains_aggregate to properly detect aggregates including computed expressions
                 let non_agg_projections: Vec<ProjectionItem> = projection
                     .items
@@ -141,7 +134,6 @@ impl AnalyzerPass for GroupByBuilding {
                         let new_projection = Arc::new(LogicalPlan::Projection(Projection {
                             input: analyzed_child.clone(),
                             items: projection.items.clone(),
-                            kind: projection.kind.clone(),
                             distinct: projection.distinct,
                         }));
 
@@ -160,7 +152,6 @@ impl AnalyzerPass for GroupByBuilding {
                         let new_projection = Arc::new(LogicalPlan::Projection(Projection {
                             input: analyzed_child,
                             items: projection.items.clone(),
-                            kind: projection.kind.clone(),
                             distinct: projection.distinct,
                         }));
 
@@ -446,7 +437,6 @@ mod tests {
                     col_alias: None,
                 },
             ],
-            kind: ProjectionKind::Return,
             distinct: false,
         }));
 
@@ -496,7 +486,6 @@ mod tests {
                     col_alias: None,
                 },
             ],
-            kind: ProjectionKind::Return,
             distinct: false,
         }));
 
@@ -530,7 +519,6 @@ mod tests {
                     col_alias: None,
                 },
             ],
-            kind: ProjectionKind::Return,
             distinct: false,
         }));
 
@@ -568,7 +556,6 @@ mod tests {
                     col_alias: None,
                 },
             ],
-            kind: ProjectionKind::Return,
             distinct: false,
         }));
 
@@ -614,7 +601,6 @@ mod tests {
         let projection = Arc::new(LogicalPlan::Projection(Projection {
             input: scan,
             items: vec![],
-            kind: ProjectionKind::Return,
             distinct: false,
         }));
 

@@ -139,7 +139,6 @@ impl OptimizerPass for FilterIntoGraphRel {
                             crate::query_planner::logical_plan::Projection {
                                 input: new_graph_rel,
                                 items: proj.items.clone(),
-                                kind: proj.kind.clone(),
                                 distinct: proj.distinct, // PRESERVE distinct flag
                             },
                         ));
@@ -233,7 +232,6 @@ impl OptimizerPass for FilterIntoGraphRel {
                             crate::query_planner::logical_plan::Projection {
                                 input: new_view_scan,
                                 items: proj.items.clone(),
-                                kind: proj.kind.clone(),
                                 distinct: proj.distinct, // PRESERVE distinct flag
                             },
                         ));
@@ -323,7 +321,6 @@ impl OptimizerPass for FilterIntoGraphRel {
                             Projection {
                                 input: child_plan.clone(),
                                 items: proj.items.clone(),
-                                kind: proj.kind.clone(),
                                 distinct: proj.distinct, // PRESERVE distinct flag
                             },
                         ))));
@@ -452,7 +449,6 @@ impl OptimizerPass for FilterIntoGraphRel {
                             let new_proj = Arc::new(LogicalPlan::Projection(Projection {
                                 input: new_view_scan,
                                 items: proj.items.clone(),
-                                kind: proj.kind.clone(),
                                 distinct: proj.distinct, // PRESERVE distinct flag
                             }));
 
@@ -570,7 +566,6 @@ impl OptimizerPass for FilterIntoGraphRel {
                                     let new_proj = Arc::new(LogicalPlan::Projection(Projection {
                                         input: new_graph_node,
                                         items: proj.items.clone(),
-                                        kind: proj.kind.clone(),
                                         distinct: proj.distinct,
                                     }));
 
@@ -595,7 +590,6 @@ impl OptimizerPass for FilterIntoGraphRel {
                         Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
                             input: new_input,
                             items: proj.items.clone(),
-                            kind: proj.kind.clone(),
                             distinct: proj.distinct, // PRESERVE distinct flag
                         })))
                     }

@@ -238,7 +238,6 @@ impl AnalyzerPass for FilterTagging {
                     crate::query_planner::logical_plan::Projection {
                         input: child_tf.get_plan(),
                         items: mapped_items,
-                        kind: projection.kind.clone(),
                         distinct: projection.distinct, // PRESERVE distinct flag from original projection
                     },
                 )));
@@ -444,7 +443,6 @@ impl FilterTagging {
                     crate::query_planner::logical_plan::Projection {
                         input: child_tf.get_plan().clone(),
                         items: mapped_items,
-                        kind: projection.kind.clone(),
                         distinct: projection.distinct,
                     },
                 ))))

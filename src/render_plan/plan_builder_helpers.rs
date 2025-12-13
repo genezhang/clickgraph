@@ -2258,7 +2258,7 @@ pub(super) fn find_nested_union(
     }
 }
 
-/// Check if a GraphRel has a Projection(kind=With) as its right side.
+/// Check if a GraphRel has a WithClause as its right side.
 /// This indicates a "WITH ... MATCH" pattern that requires CTE-based processing.
 /// The WITH clause creates a derived table that the subsequent MATCH must join against.
 ///
@@ -2267,7 +2267,7 @@ pub(super) fn find_nested_union(
 /// that contains a separate pattern (the first MATCH).
 pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
 
-    // Helper to check if a plan contains actual WITH clause (Projection(kind=With) or WithClause)
+    // Helper to check if a plan contains actual WITH clause )
     fn contains_actual_with_clause(plan: &LogicalPlan) -> bool {
         match plan {
             // New WithClause type takes precedence

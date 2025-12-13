@@ -4,7 +4,7 @@ use crate::{
         AggregateFnCall, ColumnAlias, LogicalExpr, PropertyAccess, TableAlias,
     },
     query_planner::logical_plan::{
-        LogicalPlan, Projection, ProjectionItem, ProjectionKind, Union, UnionType,
+        LogicalPlan, Projection, ProjectionItem, Union, UnionType,
     },
 };
 use std::collections::HashSet;
@@ -235,7 +235,6 @@ pub fn evaluate_return_clause<'a>(
                 Arc::new(LogicalPlan::Projection(Projection {
                     input: branch.clone(),
                     items: projection_items.clone(),
-                    kind: ProjectionKind::Return,
                     distinct: return_clause.distinct,
                 }))
             })
@@ -258,7 +257,6 @@ pub fn evaluate_return_clause<'a>(
     let result = Arc::new(LogicalPlan::Projection(Projection {
         input: plan,
         items: projection_items,
-        kind: ProjectionKind::Return,
         distinct: return_clause.distinct,
     }));
     crate::debug_println!(
@@ -374,7 +372,6 @@ fn build_union_with_aggregation(
             Arc::new(LogicalPlan::Projection(Projection {
                 input: branch.clone(),
                 items: inner_items.clone(),
-                kind: ProjectionKind::Return, // Inner projection for RETURN aggregation over UNION
                 distinct: false, // No DISTINCT on inner - UNION will handle dedup if needed
             }))
         })
@@ -431,7 +428,6 @@ fn build_union_with_aggregation(
         Arc::new(LogicalPlan::Projection(Projection {
             input: group_by,
             items: outer_items,
-            kind: ProjectionKind::Return,
             distinct,
         }))
     } else {
@@ -439,7 +435,6 @@ fn build_union_with_aggregation(
         Arc::new(LogicalPlan::Projection(Projection {
             input: inner_union,
             items: outer_items,
-            kind: ProjectionKind::Return,
             distinct,
         }))
     }

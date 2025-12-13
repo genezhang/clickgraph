@@ -603,15 +603,6 @@ pub struct Filter {
     pub predicate: LogicalExpr,
 }
 
-/// Distinguishes between WITH and RETURN projections.
-/// Indicates the source of a Projection node.
-/// Note: WITH clauses now use the separate WithClause logical plan node.
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub enum ProjectionKind {
-    /// Created by RETURN clause - final projection
-    Return,
-}
-
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Projection {
     #[serde(with = "serde_arc")]
@@ -619,7 +610,6 @@ pub struct Projection {
     pub items: Vec<ProjectionItem>,
     /// Indicates whether this projection comes from RETURN clause.
     /// Always Return since WITH clauses use the separate WithClause node.
-    pub kind: ProjectionKind,
     /// Whether DISTINCT should be applied to results
     pub distinct: bool,
 }
@@ -732,7 +722,6 @@ impl Projection {
                 let new_node = LogicalPlan::Projection(Projection {
                     input: new_input.clone(),
                     items: self.items.clone(),
-                    kind: self.kind.clone(),
                     distinct: self.distinct,
                 });
                 crate::debug_println!(
@@ -1045,7 +1034,6 @@ impl LogicalPlan {
                 expression: LogicalExpr::Literal(Literal::Integer(1)),
                 col_alias: None,
             }],
-            kind: ProjectionKind::Return,
             distinct: false,
         })
     }
@@ -1303,7 +1291,6 @@ mod tests {
         let projection = Projection {
             input: original_input.clone(),
             items: projection_items.clone(),
-            kind: ProjectionKind::Return,
             distinct: false,
         };
 
@@ -1525,7 +1512,6 @@ mod tests {
                     col_alias: None,
                 },
             ],
-            kind: ProjectionKind::Return,
             distinct: false,
         });
 
