@@ -490,6 +490,8 @@ RETURN u.name, u.email, u.age
 
 Chain query parts and perform intermediate processing.
 
+> **Alias Requirements**: Complex expressions (aggregations, arithmetic, function calls) in WITH clauses **REQUIRE** explicit aliases using `AS`. Simple node/edge references can omit aliases.
+
 ### Basic WITH
 
 ```cypher
@@ -498,6 +500,38 @@ MATCH (u:User)
 WITH u, count(*) AS friend_count
 WHERE friend_count > 10
 RETURN u.name, friend_count
+```
+
+### Alias Requirements
+
+**✅ Valid - No alias needed for simple references:**
+```cypher
+WITH u                     -- Node reference
+WITH a, b                  -- Multiple nodes
+WITH e                     -- Edge reference
+WITH u.name                -- Property access (exports node 'u')
+```
+
+**✅ Valid - Explicit aliases for complex expressions:**
+```cypher
+WITH count(u) AS user_count              -- Aggregation
+WITH u.age + 5 AS age_adjusted           -- Arithmetic
+WITH toLower(u.email) AS email_lower     -- Function call
+WITH u, count(e) AS edge_count           -- Mixed simple + complex
+```
+
+**❌ Invalid - Missing required aliases:**
+```cypher
+WITH count(u)              -- ERROR: Aggregation needs alias
+WITH u.age + 5             -- ERROR: Expression needs alias
+WITH toLower(u.email)      -- ERROR: Function call needs alias
+```
+
+**Error Message:**
+```
+PLANNING_ERROR: WITH clause validation error: Expression without alias: `...`. 
+Complex expressions (aggregations, arithmetic, function calls) require explicit aliases. 
+Use 'AS alias_name'.
 ```
 
 ### Filtering After Aggregation

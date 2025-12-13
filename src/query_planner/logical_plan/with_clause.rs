@@ -1,7 +1,9 @@
 use crate::{
     open_cypher_parser::ast::WithClause as AstWithClause,
-    query_planner::logical_expr::LogicalExpr,
-    query_planner::logical_plan::{LogicalPlan, OrderByItem, ProjectionItem, WithClause},
+    query_planner::{
+        logical_expr::LogicalExpr,
+        logical_plan::{errors::LogicalPlanError, LogicalPlan, OrderByItem, ProjectionItem, WithClause},
+    },
 };
 use std::sync::Arc;
 
@@ -22,10 +24,12 @@ use std::sync::Arc;
 /// Example: `WITH a, b.name as name` creates:
 /// - WithClause with items: [a, b.name as name], exported_aliases: [a, name]
 /// - GroupByBuilding leaves as WithClause (no aggregations)
+///
+/// Returns an error if any WITH item lacks a required alias (complex expressions must have aliases).
 pub fn evaluate_with_clause<'a>(
     with_clause: &AstWithClause<'a>,
     plan: Arc<LogicalPlan>,
-) -> Arc<LogicalPlan> {
+) -> Result<Arc<LogicalPlan>, LogicalPlanError> {
     let projection_items: Vec<ProjectionItem> = with_clause
         .with_items
         .iter()
@@ -41,8 +45,8 @@ pub fn evaluate_with_clause<'a>(
         with_clause.limit.is_some()
     );
 
-    // Create the new WithClause type with all modifiers
-    let mut with_node = WithClause::new(plan, projection_items).with_distinct(with_clause.distinct);
+    // Create the new WithClause type with all modifiers - returns error if items lack required aliases
+    let mut with_node = WithClause::new(plan, projection_items)?.with_distinct(with_clause.distinct);
 
     // Add ORDER BY if present
     if let Some(ref order_by_ast) = with_clause.order_by {
@@ -70,5 +74,5 @@ pub fn evaluate_with_clause<'a>(
         with_node = with_node.with_where(predicate);
     }
 
-    Arc::new(LogicalPlan::WithClause(with_node))
+    Ok(Arc::new(LogicalPlan::WithClause(with_node)))
 }

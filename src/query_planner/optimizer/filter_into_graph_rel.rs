@@ -1009,6 +1009,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             limit: with_clause.limit,
                             where_clause: with_clause.where_clause.clone(),
                             exported_aliases: with_clause.exported_aliases.clone(),
+                            cte_references: with_clause.cte_references.clone(),
                         };
                         Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
                     }

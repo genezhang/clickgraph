@@ -251,6 +251,7 @@ impl AliasResolverContext {
                     limit: wc.limit,
                     where_clause: wc.where_clause.clone(),
                     exported_aliases: wc.exported_aliases.clone(),
+                    cte_references: wc.cte_references.clone(),
                 })
             }
         }

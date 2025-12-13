@@ -265,13 +265,41 @@ pub struct WithClause {
     /// Derived from items but stored explicitly for easy boundary checking.
     /// E.g., `WITH a, b.name AS name` exports ["a", "name"]
     pub exported_aliases: Vec<String>,
+
+    /// CTE references map: alias → CTE name
+    /// Populated by analyzer to resolve which variables come from previous CTEs.
+    /// Example: {"b": "with_a_b_cte"} means variable `b` comes from CTE `with_a_b_cte`.
+    /// This allows render phase to be "dumb" - no searching, just lookup.
+    pub cte_references: std::collections::HashMap<String, String>,
 }
 
 impl WithClause {
-    /// Create a new WithClause with just the essential fields
-    pub fn new(input: Arc<LogicalPlan>, items: Vec<ProjectionItem>) -> Self {
+    /// Validate that all projection items either have explicit aliases or can have aliases extracted.
+    /// Complex expressions (aggregations, arithmetic, function calls) REQUIRE explicit aliases.
+    fn validate_items(items: &[ProjectionItem]) -> Result<(), errors::LogicalPlanError> {
+        for item in items {
+            // Check if item has explicit alias or can extract one
+            let has_alias = item.col_alias.is_some() || Self::extract_alias_from_expr(&item.expression).is_some();
+            
+            if !has_alias {
+                // Item has no extractable alias - this is an error
+                let expr_str = format!("{:?}", item.expression); // Use debug format for now
+                return Err(errors::LogicalPlanError::WithClauseValidation(
+                    format!("Expression without alias: `{}`. Complex expressions (aggregations, arithmetic, function calls) require explicit aliases. Use 'AS alias_name'.", expr_str)
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Create a new WithClause with just the essential fields.
+    /// Returns an error if any item lacks a required alias.
+    pub fn new(input: Arc<LogicalPlan>, items: Vec<ProjectionItem>) -> Result<Self, errors::LogicalPlanError> {
+        // Validate items before proceeding
+        Self::validate_items(&items)?;
+        
         let exported_aliases = Self::extract_exported_aliases(&items);
-        Self {
+        Ok(Self {
             input,
             items,
             distinct: false,
@@ -280,7 +308,8 @@ impl WithClause {
             limit: None,
             where_clause: None,
             exported_aliases,
-        }
+            cte_references: std::collections::HashMap::new(),
+        })
     }
 
     /// Create a WithClause with DISTINCT

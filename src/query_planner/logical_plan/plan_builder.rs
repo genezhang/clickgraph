@@ -112,8 +112,8 @@ fn process_with_clause_chain<'a>(
         with_clause_ast.with_items.len()
     );
 
-    // Process the WITH projection itself
-    logical_plan = with_clause::evaluate_with_clause(with_clause_ast, logical_plan);
+    // Process the WITH projection itself - returns error if items lack required aliases
+    logical_plan = with_clause::evaluate_with_clause(with_clause_ast, logical_plan)?;
 
     // Extract exported aliases from the WITH clause node
     let exported_aliases = if let LogicalPlan::WithClause(ref with_node) = *logical_plan {

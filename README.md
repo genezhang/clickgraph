@@ -132,21 +132,27 @@ See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
 ## Architecture
 
-ClickGraph runs as a lightweight graph wrapper alongside ClickHouse with dual protocol support:
+ClickGraph runs as a lightweight stateless query translator alongside ClickHouse:
 
-![acrhitecture](./docs/images/architecture.png)
+```mermaid
+flowchart LR
+    Clients["📱 Graph Clients<br/><br/>HTTP/REST<br/>Bolt Protocol<br/>(Neo4j tools)"]
+    
+    ClickGraph["⚡ ClickGraph<br/><br/>Cypher → SQL<br/>Translator<br/><br/>:8080 (HTTP)<br/>:7687 (Bolt)"]
+    
+    ClickHouse["💾 ClickHouse®<br/><br/>Columnar Storage<br/>Query Engine"]
+    
+    Clients -->|Cypher| ClickGraph
+    ClickGraph -->|SQL| ClickHouse
+    ClickHouse -->|Results| ClickGraph
+    ClickGraph -->|Results| Clients
+    
+    style ClickGraph fill:#e1f5ff,stroke:#0288d1,stroke-width:3px
+    style ClickHouse fill:#fff3e0,stroke:#f57c00,stroke-width:3px
+    style Clients fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+```
 
-### HTTP API (Port 8080)
-1. **Client** sends HTTP POST request with Cypher query to ClickGraph
-2. **ClickGraph** parses & plans the query, translates to ClickHouse SQL
-3. **ClickHouse** executes the SQL and returns results
-4. **ClickGraph** sends JSON results back to the client
-
-### Bolt Protocol (Port 7687)
-1. **Neo4j Driver/Tool** connects via Bolt protocol to ClickGraph
-2. **ClickGraph** handles Bolt handshake, authentication, and message protocol
-3. **Cypher queries** are executed through the same query engine as HTTP
-4. **Results** are streamed back via Bolt protocol format
+**Three-tier architecture:** Graph clients → ClickGraph translator → ClickHouse storage
 
 Both protocols share the same underlying query engine and ClickHouse backend. Both are production-ready.
 

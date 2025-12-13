@@ -253,7 +253,13 @@ impl AnalyzerPass for GraphJoinInference {
         // CRITICAL: Before collecting joins, scan for WITH clauses and register their
         // exported aliases as CTE references in plan_ctx. This enables proper variable
         // resolution when subsequent patterns reference those aliases.
-        self.register_with_cte_references(&logical_plan, plan_ctx)?;
+        let mut captured_cte_refs = Vec::new(); // Vec<(CTE name, refs map)>
+        self.register_with_cte_references(&logical_plan, plan_ctx, &mut captured_cte_refs)?;
+        
+        log::info!("🔍 Captured {} WITH clause CTE references", captured_cte_refs.len());
+        for (cte_name, refs) in &captured_cte_refs {
+            log::info!("   {} → {:?}", cte_name, refs);
+        }
 
         let mut collected_graph_joins: Vec<Join> = vec![];
         let mut joined_entities: HashSet<String> = HashSet::new();
@@ -283,6 +289,7 @@ impl AnalyzerPass for GraphJoinInference {
             optional_aliases,
             plan_ctx,
             graph_schema,
+            &captured_cte_refs,
         )
     }
 }
@@ -302,6 +309,7 @@ impl GraphJoinInference {
         &self,
         plan: &Arc<LogicalPlan>,
         plan_ctx: &mut PlanCtx,
+        captured_refs: &mut Vec<(String, std::collections::HashMap<String, String>)>, // (CTE name, refs map)
     ) -> AnalyzerResult<()> {
         use crate::query_planner::plan_ctx::TableCtx;
         
@@ -311,7 +319,19 @@ impl GraphJoinInference {
                 // This ensures inner (nested) WITH clauses are processed before outer ones
                 // So the LATEST (outermost) WITH clause's CTE reference takes precedence
                 // Example: WITH a (outer) WITH a, b (inner) → final a should reference outer CTE
-                self.register_with_cte_references(&wc.input, plan_ctx)?;
+                self.register_with_cte_references(&wc.input, plan_ctx, captured_refs)?;
+                
+                // CRITICAL: Capture CTE references BEFORE updating plan_ctx
+                // This preserves which variables come from previous CTEs
+                let mut refs_for_this_with = std::collections::HashMap::new();
+                for alias in &wc.exported_aliases {
+                    if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
+                        if let Some(cte_name) = table_ctx.get_cte_name() {
+                            refs_for_this_with.insert(alias.clone(), cte_name.clone());
+                            log::info!("   📌 Captured '{}' → '{}' (from previous CTE)", alias, cte_name);
+                        }
+                    }
+                }
                 
                 // Now register this WithClause's CTE references (will overwrite inner ones for same alias)
                 // Found a WITH clause - register exported aliases as CTE references
@@ -327,6 +347,9 @@ impl GraphJoinInference {
                     wc.exported_aliases,
                     cte_name
                 );
+                
+                // Store captured refs for later use by build_graph_joins
+                captured_refs.push((cte_name.clone(), refs_for_this_with));
                 
                 // For each exported alias, add a TableCtx pointing to the CTE
                 for alias in &wc.exported_aliases {
@@ -353,47 +376,47 @@ impl GraphJoinInference {
             
             // Recurse through all container nodes
             LogicalPlan::Projection(p) => {
-                self.register_with_cte_references(&p.input, plan_ctx)?;
+                self.register_with_cte_references(&p.input, plan_ctx, captured_refs)?;
             }
             LogicalPlan::GraphNode(gn) => {
-                self.register_with_cte_references(&gn.input, plan_ctx)?;
+                self.register_with_cte_references(&gn.input, plan_ctx, captured_refs)?;
             }
             LogicalPlan::GraphRel(gr) => {
-                self.register_with_cte_references(&gr.left, plan_ctx)?;
-                self.register_with_cte_references(&gr.right, plan_ctx)?;
+                self.register_with_cte_references(&gr.left, plan_ctx, captured_refs)?;
+                self.register_with_cte_references(&gr.right, plan_ctx, captured_refs)?;
             }
             LogicalPlan::GraphJoins(gj) => {
-                self.register_with_cte_references(&gj.input, plan_ctx)?;
+                self.register_with_cte_references(&gj.input, plan_ctx, captured_refs)?;
             }
             LogicalPlan::Filter(f) => {
-                self.register_with_cte_references(&f.input, plan_ctx)?;
+                self.register_with_cte_references(&f.input, plan_ctx, captured_refs)?;
             }
             LogicalPlan::GroupBy(gb) => {
-                self.register_with_cte_references(&gb.input, plan_ctx)?;
+                self.register_with_cte_references(&gb.input, plan_ctx, captured_refs)?;
             }
             LogicalPlan::OrderBy(ob) => {
-                self.register_with_cte_references(&ob.input, plan_ctx)?;
+                self.register_with_cte_references(&ob.input, plan_ctx, captured_refs)?;
             }
             LogicalPlan::Skip(s) => {
-                self.register_with_cte_references(&s.input, plan_ctx)?;
+                self.register_with_cte_references(&s.input, plan_ctx, captured_refs)?;
             }
             LogicalPlan::Limit(l) => {
-                self.register_with_cte_references(&l.input, plan_ctx)?;
+                self.register_with_cte_references(&l.input, plan_ctx, captured_refs)?;
             }
             LogicalPlan::Union(u) => {
                 for input in &u.inputs {
-                    self.register_with_cte_references(input, plan_ctx)?;
+                    self.register_with_cte_references(input, plan_ctx, captured_refs)?;
                 }
             }
             LogicalPlan::CartesianProduct(cp) => {
-                self.register_with_cte_references(&cp.left, plan_ctx)?;
-                self.register_with_cte_references(&cp.right, plan_ctx)?;
+                self.register_with_cte_references(&cp.left, plan_ctx, captured_refs)?;
+                self.register_with_cte_references(&cp.right, plan_ctx, captured_refs)?;
             }
             LogicalPlan::Unwind(uw) => {
-                self.register_with_cte_references(&uw.input, plan_ctx)?;
+                self.register_with_cte_references(&uw.input, plan_ctx, captured_refs)?;
             }
             LogicalPlan::Cte(cte) => {
-                self.register_with_cte_references(&cte.input, plan_ctx)?;
+                self.register_with_cte_references(&cte.input, plan_ctx, captured_refs)?;
             }
             
             // Leaf nodes - nothing to recurse
@@ -1350,6 +1373,7 @@ impl GraphJoinInference {
         optional_aliases: std::collections::HashSet<String>,
         plan_ctx: &PlanCtx,
         graph_schema: &GraphSchema,
+        captured_cte_refs: &[(String, std::collections::HashMap<String, String>)],
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             // If input is a Union, process each branch
@@ -1399,6 +1423,7 @@ impl GraphJoinInference {
                             optional_aliases.clone(),
                             plan_ctx,
                             graph_schema,
+                            captured_cte_refs,
                         )?;
                         if matches!(result, Transformed::Yes(_)) {
                             any_transformed = true;
@@ -1429,6 +1454,7 @@ impl GraphJoinInference {
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
 
                 // Get the processed child (or original if unchanged)
@@ -1487,6 +1513,7 @@ impl GraphJoinInference {
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
 
                 // is_denormalized flag is set by view_optimizer pass - just rebuild
@@ -1499,6 +1526,7 @@ impl GraphJoinInference {
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
                 let center_tf = Self::build_graph_joins(
                     graph_rel.center.clone(),
@@ -1506,6 +1534,7 @@ impl GraphJoinInference {
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
                 let right_tf = Self::build_graph_joins(
                     graph_rel.right.clone(),
@@ -1513,6 +1542,7 @@ impl GraphJoinInference {
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
 
                 graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
@@ -1524,6 +1554,7 @@ impl GraphJoinInference {
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -1536,6 +1567,7 @@ impl GraphJoinInference {
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -1546,6 +1578,7 @@ impl GraphJoinInference {
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
                 filter.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -1585,6 +1618,7 @@ impl GraphJoinInference {
                         inner_optional_aliases,
                         plan_ctx,
                         graph_schema,
+                            captured_cte_refs,
                     )?;
                     group_by.rebuild_or_clone(child_tf, logical_plan.clone())
                 } else {
@@ -1594,6 +1628,7 @@ impl GraphJoinInference {
                         optional_aliases,
                         plan_ctx,
                         graph_schema,
+                            captured_cte_refs,
                     )?;
                     group_by.rebuild_or_clone(child_tf, logical_plan.clone())
                 }
@@ -1605,6 +1640,7 @@ impl GraphJoinInference {
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
                 order_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -1615,6 +1651,7 @@ impl GraphJoinInference {
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
                 skip.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -1625,6 +1662,7 @@ impl GraphJoinInference {
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -1638,6 +1676,7 @@ impl GraphJoinInference {
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
                 match child_tf {
                     Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
@@ -1672,6 +1711,7 @@ impl GraphJoinInference {
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
                 let right_tf = Self::build_graph_joins(
                     cp.right.clone(),
@@ -1679,6 +1719,7 @@ impl GraphJoinInference {
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
+                            captured_cte_refs,
                 )?;
 
                 crate::debug_print!(
@@ -1816,9 +1857,35 @@ impl GraphJoinInference {
                     with_clause.exported_aliases.len()
                 );
                 
-                // Return the WithClause unchanged - don't wrap it in GraphJoins
-                // The rendering phase will handle CTE generation
-                Transformed::No(logical_plan.clone())
+                // Look up the captured CTE references for this WITH clause
+                let cte_name = if with_clause.exported_aliases.len() == 1 {
+                    format!("with_{}_cte", with_clause.exported_aliases[0])
+                } else {
+                    format!("with_{}_cte", with_clause.exported_aliases.join("_"))
+                };
+                
+                let cte_references = captured_cte_refs.iter()
+                    .find(|(name, _)| name == &cte_name)
+                    .map(|(_, refs)| refs.clone())
+                    .unwrap_or_default();
+                
+                log::info!("   ✓ Found {} CTE references for '{}': {:?}", 
+                           cte_references.len(), cte_name, cte_references);
+                
+                // Return a new WithClause with cte_references populated
+                Transformed::Yes(Arc::new(LogicalPlan::WithClause(
+                    crate::query_planner::logical_plan::WithClause {
+                        input: with_clause.input.clone(),
+                        items: with_clause.items.clone(),
+                        distinct: with_clause.distinct,
+                        order_by: with_clause.order_by.clone(),
+                        skip: with_clause.skip,
+                        limit: with_clause.limit,
+                        where_clause: with_clause.where_clause.clone(),
+                        exported_aliases: with_clause.exported_aliases.clone(),
+                        cte_references,
+                    },
+                )))
             }
         };
         Ok(transformed_plan)

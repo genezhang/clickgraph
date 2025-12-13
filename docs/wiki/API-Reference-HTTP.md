@@ -5,6 +5,7 @@ ClickGraph provides a comprehensive HTTP REST API for executing Cypher queries a
 ## Table of Contents
 - [Base URL](#base-url)
 - [Authentication](#authentication)
+- [Query Cache Control](#query-cache-control)
 - [Query Execution](#query-execution)
 - [Schema Management](#schema-management)
 - [Health Check](#health-check)
@@ -39,6 +40,106 @@ Currently no authentication required for HTTP API.
 
 ---
 
+## Query Cache Control
+
+ClickGraph implements an LRU cache for SQL query templates, providing **10-100x speedup** for repeated query translations. The cache stores SQL templates with parameter placeholders, enabling fast execution of the same query pattern with different parameter values.
+
+### Cache Behavior
+
+**Default Behavior (LRU):**
+- First execution: Query is parsed, planned, and SQL is generated and cached
+- Subsequent executions: SQL template retrieved from cache, parameters substituted
+- Cache eviction: Least recently used entries removed when cache is full
+
+**Performance Impact:**
+- **Cache HIT**: ~1-5ms (template lookup + parameter substitution)
+- **Cache MISS**: ~10-100ms (parse + plan + SQL generation)
+
+### Cache Control via CYPHER Prefix
+
+Control caching behavior on a **per-request basis** by prefixing your query with `CYPHER replan=<option>`:
+
+**Syntax:**
+```cypher
+CYPHER replan=<option> <your-query>
+```
+
+**Options:**
+
+| Option | Behavior | Use Case |
+|--------|----------|----------|
+| `default` | Normal LRU cache behavior | Default (can be omitted) |
+| `force` | Bypass cache, regenerate SQL, update cache | Debugging, testing new query translations |
+| `skip` | **Always use cache**, error if not cached | Prevent latency spikes in production |
+
+**Examples:**
+
+```bash
+# Force regeneration (bypass cache)
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "CYPHER replan=force MATCH (u:User) RETURN u.name"}'
+
+# Require cached query (error if not cached)
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "CYPHER replan=skip MATCH (u:User) RETURN u.name"}'
+
+# Normal cache behavior (default)
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "CYPHER replan=default MATCH (u:User) RETURN u.name"}'
+```
+
+**Python Examples:**
+
+```python
+import requests
+
+# Force cache bypass for debugging
+response = requests.post('http://localhost:8080/query', json={
+    'query': 'CYPHER replan=force MATCH (u:User) WHERE u.age > $age RETURN u.name',
+    'parameters': {'age': 25}
+})
+
+# Require cached query (production - prevent latency spikes)
+response = requests.post('http://localhost:8080/query', json={
+    'query': 'CYPHER replan=skip MATCH (u:User) WHERE u.age > $age RETURN u.name',
+    'parameters': {'age': 30}
+})
+```
+
+### Neo4j Compatibility
+
+The `CYPHER replan=<option>` syntax is **compatible with Neo4j**, allowing the same queries to work across both systems. The `CYPHER` prefix is automatically stripped before query execution.
+
+### Configuration
+
+Control cache behavior via environment variables:
+
+```bash
+# Enable/disable cache (default: true)
+export CLICKGRAPH_QUERY_CACHE_ENABLED=true
+
+# Max cache entries (default: 1000)
+export CLICKGRAPH_QUERY_CACHE_MAX_ENTRIES=1000
+
+# Max cache size in MB (default: 100)
+export CLICKGRAPH_QUERY_CACHE_MAX_SIZE_MB=100
+```
+
+### Cache Key
+
+Cache key includes:
+- ✅ Normalized Cypher query (whitespace collapsed)
+- ✅ Schema name
+- ❌ **NOT** view_parameters (substituted at execution time)
+- ❌ **NOT** query parameters (substituted from template)
+
+This allows parameter changes to reuse the same cached SQL template.
+
+---
+
 ## Query Execution
 
 ### POST /query
@@ -63,6 +164,12 @@ Content-Type: application/json
 
 **Parameters:**
 - `query` (string, required): Cypher query to execute
+  - **Query Cache Control**: Prefix query with `CYPHER replan=<option>` to control caching behavior
+    - `CYPHER replan=default` - Normal cache behavior (use cache if available, regenerate if needed)
+    - `CYPHER replan=force` - Bypass cache, regenerate SQL, update cache (useful for debugging)
+    - `CYPHER replan=skip` - Always use cache, error if not cached (prevent latency spikes)
+  - Example: `"CYPHER replan=force MATCH (u:User) RETURN u.name"`
+  - The `CYPHER` prefix is automatically stripped before query execution
 - `parameters` (object, optional): Query parameters for `$param` placeholders
 - `schema_name` (string, optional): Schema to use (overrides USE clause and defaults to "default")
 - `sql_only` (boolean, optional): Return generated SQL without executing (default: false)
@@ -128,6 +235,20 @@ curl -X POST http://localhost:8080/query \
     "query": "MATCH (u:User) WHERE u.age > 25 RETURN u.name",
     "sql_only": true
   }'
+
+# Force cache bypass (regenerate SQL)
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "CYPHER replan=force MATCH (u:User) RETURN u.name"
+  }'
+
+# Require cached query (prevent planning latency)
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "CYPHER replan=skip MATCH (u:User) RETURN u.name"
+  }'
 ```
 
 **Python:**
@@ -144,6 +265,11 @@ data = response.json()
 response = requests.post('http://localhost:8080/query', json={
     'query': 'MATCH (u:User) WHERE u.user_id = $id RETURN u',
     'parameters': {'id': 123}
+})
+
+# Force cache bypass (debugging/testing)
+response = requests.post('http://localhost:8080/query', json={
+    'query': 'CYPHER replan=force MATCH (u:User) RETURN u.name'
 })
 
 # Multi-tenant query

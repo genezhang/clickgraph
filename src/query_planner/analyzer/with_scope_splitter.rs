@@ -94,6 +94,7 @@ impl WithScopeSplitter {
                     limit: wc.limit,
                     exported_aliases: wc.exported_aliases.clone(),
                     where_clause: wc.where_clause.clone(),
+                    cte_references: wc.cte_references.clone(),
                 };
 
                 log::info!(
