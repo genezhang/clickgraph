@@ -24,6 +24,9 @@ pub struct TableCtx {
     projection_items: Vec<ProjectionItem>,
     is_rel: bool,
     explicit_alias: bool,
+    /// If Some, this alias references a CTE instead of a base table
+    /// Format: "with_a_cte1" or "with_a_b_cte2"
+    cte_reference: Option<String>,
 }
 
 impl TableCtx {
@@ -50,7 +53,38 @@ impl TableCtx {
             projection_items: vec![],
             is_rel,
             explicit_alias,
+            cte_reference: None,
         }
+    }
+
+    /// Create a TableCtx that references a CTE instead of a base table.
+    /// Used when an alias was exported from a WITH clause.
+    pub fn new_with_cte_reference(alias: String, cte_name: String) -> Self {
+        TableCtx {
+            alias,
+            labels: None, // Label will be resolved from CTE schema later
+            properties: vec![],
+            filter_predicates: vec![],
+            projection_items: vec![],
+            is_rel: false,
+            explicit_alias: true,
+            cte_reference: Some(cte_name),
+        }
+    }
+
+    /// Check if this alias references a CTE
+    pub fn is_cte_reference(&self) -> bool {
+        self.cte_reference.is_some()
+    }
+
+    /// Get the CTE name if this is a CTE reference
+    pub fn get_cte_name(&self) -> Option<&String> {
+        self.cte_reference.as_ref()
+    }
+
+    /// Set the CTE reference for this alias
+    pub fn set_cte_reference(&mut self, cte_ref: Option<String>) {
+        self.cte_reference = cte_ref;
     }
 
     pub fn get_label_str(&self) -> Result<String, PlanCtxError> {
@@ -161,6 +195,14 @@ pub struct PlanCtx {
     /// Track denormalized node-to-edge mappings: node_alias -> (edge_alias, is_from_node, node_label, rel_type)
     /// Used for multi-hop denormalized patterns to create edge-to-edge JOINs
     denormalized_node_edges: HashMap<String, (String, bool, String, String)>,
+    /// Parent scope for WITH clause nesting (enables proper variable scoping)
+    /// Lookup chain: current scope → parent scope → ... → root scope (global schema)
+    /// Example: MATCH (a) WITH a MATCH (b) → second MATCH has parent scope containing 'a'
+    parent_scope: Option<Box<PlanCtx>>,
+    /// Flag indicating this scope was created by WITH clause (acts as scope barrier)
+    /// When true, variable lookup stops here and doesn't search parent scope
+    /// Example: MATCH (a)-[]->(b) WITH a MATCH (a)-[]->(b)  // second b is different!
+    is_with_scope: bool,
 }
 
 impl PlanCtx {
@@ -228,17 +270,39 @@ impl PlanCtx {
         &mut self.alias_table_ctx_map
     }
 
+    /// Iterate over all table contexts (alias, TableCtx pairs)
+    pub fn iter_table_contexts(&self) -> impl Iterator<Item = (&String, &TableCtx)> {
+        self.alias_table_ctx_map.iter()
+    }
+
     /// Get the graph schema for this query
     pub fn schema(&self) -> &GraphSchema {
         &self.schema
     }
 
     pub fn get_table_ctx(&self, alias: &str) -> Result<&TableCtx, PlanCtxError> {
-        self.alias_table_ctx_map
-            .get(alias)
-            .ok_or(PlanCtxError::TableCtx {
+        // Try current scope first
+        if let Some(ctx) = self.alias_table_ctx_map.get(alias) {
+            return Ok(ctx);
+        }
+        
+        // WITH scope acts as a barrier - don't look beyond it
+        // This implements WITH's shielding semantics: only exported variables are visible
+        if self.is_with_scope {
+            return Err(PlanCtxError::TableCtx {
                 alias: alias.to_string(),
-            })
+            });
+        }
+        
+        // Search parent scope recursively (scope chain)
+        if let Some(parent) = &self.parent_scope {
+            return parent.get_table_ctx(alias);
+        }
+        
+        // Not found in any scope
+        Err(PlanCtxError::TableCtx {
+            alias: alias.to_string(),
+        })
     }
 
     pub fn get_table_ctx_from_alias_opt(
@@ -271,6 +335,12 @@ impl PlanCtx {
             })
     }
 
+    /// Get mutable reference to table context in CURRENT SCOPE ONLY.
+    /// 
+    /// NOTE: This does NOT search parent scopes. Mutable access is restricted to
+    /// the current scope to maintain proper scope isolation. If you need to mutate
+    /// a variable from a parent scope (e.g., from WITH), it should already be in
+    /// the current scope (copied during WITH processing).
     pub fn get_mut_table_ctx(&mut self, alias: &str) -> Result<&mut TableCtx, PlanCtxError> {
         self.alias_table_ctx_map
             .get_mut(alias)
@@ -293,6 +363,9 @@ impl PlanCtx {
     //         })
     // }
 
+    /// Get optional mutable reference to table context in CURRENT SCOPE ONLY.
+    /// 
+    /// NOTE: This does NOT search parent scopes. See get_mut_table_ctx() for rationale.
     pub fn get_mut_table_ctx_opt(&mut self, alias: &str) -> Option<&mut TableCtx> {
         self.alias_table_ctx_map.get_mut(alias)
     }
@@ -328,6 +401,12 @@ impl PlanCtx {
     ) -> Option<(String, bool, String, String)> {
         self.denormalized_node_edges.get(node_alias).cloned()
     }
+
+    /// Get an iterator over all aliases and their TableCtx in the CURRENT scope only.
+    /// Used for copying child scope state back to parent scope.
+    pub fn iter_aliases(&self) -> impl Iterator<Item = (&String, &TableCtx)> {
+        self.alias_table_ctx_map.iter()
+    }
 }
 
 impl PlanCtx {
@@ -342,10 +421,12 @@ impl PlanCtx {
             tenant_id: None,
             view_parameter_values: None,
             denormalized_node_edges: HashMap::new(),
+            parent_scope: None,
+            is_with_scope: false,
         }
     }
 
-    /// Create a new PlanCtx with the given schema and tenant_id
+    /// Create a new PlanCtx with the given schema and tenant ID
     pub fn with_tenant(schema: Arc<GraphSchema>, tenant_id: Option<String>) -> Self {
         PlanCtx {
             alias_table_ctx_map: HashMap::new(),
@@ -356,6 +437,8 @@ impl PlanCtx {
             tenant_id,
             view_parameter_values: None,
             denormalized_node_edges: HashMap::new(),
+            parent_scope: None,
+            is_with_scope: false,
         }
     }
 
@@ -374,6 +457,34 @@ impl PlanCtx {
             tenant_id,
             view_parameter_values,
             denormalized_node_edges: HashMap::new(),
+            parent_scope: None,
+            is_with_scope: false,
+        }
+    }
+
+    /// Create a child scope with parent context (for WITH clause scoping)
+    /// The child scope inherits schema, tenant_id, and view_parameters from parent
+    /// but has its own alias_table_ctx_map for local variables
+    ///
+    /// **CRITICAL**: Set `is_with_scope=true` when creating scope for WITH clause!
+    /// This makes the scope act as a barrier preventing lookup of parent variables.
+    ///
+    /// Example: MATCH (a)-[]->(b) WITH a MATCH (a)-[]->(b)
+    ///   - Scope1 (before WITH): {a: User, b: User}
+    ///   - Scope2 (WITH, is_with_scope=true): {a: User} - shields b from Scope1!
+    ///   - Second MATCH creates NEW b in Scope2, different from Scope1's b
+    pub fn with_parent_scope(parent: &PlanCtx, is_with_scope: bool) -> Self {
+        PlanCtx {
+            alias_table_ctx_map: HashMap::new(),
+            optional_aliases: HashSet::new(),
+            projection_aliases: HashMap::new(),
+            in_optional_match_mode: false,
+            schema: parent.schema.clone(),
+            tenant_id: parent.tenant_id.clone(),
+            view_parameter_values: parent.view_parameter_values.clone(),
+            denormalized_node_edges: HashMap::new(),
+            parent_scope: Some(Box::new(parent.clone())),
+            is_with_scope,
         }
     }
 
@@ -391,6 +502,8 @@ impl PlanCtx {
             tenant_id: None,
             view_parameter_values: None,
             denormalized_node_edges: HashMap::new(),
+            parent_scope: None,
+            is_with_scope: false,
         }
     }
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::query_planner::{
     analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult},
     logical_expr::LogicalExpr,
-    logical_plan::{GroupBy, LogicalPlan, Projection, ProjectionItem},
+    logical_plan::{GroupBy, LogicalPlan, Projection, ProjectionItem, ProjectionKind},
     plan_ctx::PlanCtx,
     transformed::Transformed,
 };

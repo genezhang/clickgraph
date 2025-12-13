@@ -250,8 +250,14 @@ impl AnalyzerPass for GraphJoinInference {
             std::mem::discriminant(&*logical_plan)
         );
 
+        // CRITICAL: Before collecting joins, scan for WITH clauses and register their
+        // exported aliases as CTE references in plan_ctx. This enables proper variable
+        // resolution when subsequent patterns reference those aliases.
+        self.register_with_cte_references(&logical_plan, plan_ctx)?;
+
         let mut collected_graph_joins: Vec<Join> = vec![];
         let mut joined_entities: HashSet<String> = HashSet::new();
+        let cte_scope_aliases = HashSet::new(); // Start with empty CTE scope
         self.collect_graph_joins(
             logical_plan.clone(),
             logical_plan.clone(), // Pass root plan for reference checking
@@ -259,6 +265,7 @@ impl AnalyzerPass for GraphJoinInference {
             graph_schema,
             &mut collected_graph_joins,
             &mut joined_entities,
+            &cte_scope_aliases,
         )?;
 
         println!(
@@ -283,6 +290,118 @@ impl AnalyzerPass for GraphJoinInference {
 impl GraphJoinInference {
     pub fn new() -> Self {
         GraphJoinInference
+    }
+
+    /// Scan the plan for WITH clauses and register their exported aliases as CTE references.
+    /// This enables proper variable resolution when subsequent patterns reference those aliases.
+    ///
+    /// Example: MATCH (a) WITH a MATCH (a)-[:F]->(b) WITH a,b MATCH (b)-[:F]->(c)
+    /// - After first WITH: 'a' resolves to with_a_cte1
+    /// - After second WITH: 'a' and 'b' resolve to with_a_b_cte2
+    fn register_with_cte_references(
+        &self,
+        plan: &Arc<LogicalPlan>,
+        plan_ctx: &mut PlanCtx,
+    ) -> AnalyzerResult<()> {
+        use crate::query_planner::plan_ctx::TableCtx;
+        
+        match plan.as_ref() {
+            LogicalPlan::WithClause(wc) => {
+                // IMPORTANT: Recurse into input FIRST, then process this WithClause
+                // This ensures inner (nested) WITH clauses are processed before outer ones
+                // So the LATEST (outermost) WITH clause's CTE reference takes precedence
+                // Example: WITH a (outer) WITH a, b (inner) → final a should reference outer CTE
+                self.register_with_cte_references(&wc.input, plan_ctx)?;
+                
+                // Now register this WithClause's CTE references (will overwrite inner ones for same alias)
+                // Found a WITH clause - register exported aliases as CTE references
+                // CTE name format: with_{aliases}_cte{N}
+                let cte_name = if wc.exported_aliases.len() == 1 {
+                    format!("with_{}_cte", wc.exported_aliases[0])
+                } else {
+                    format!("with_{}_cte", wc.exported_aliases.join("_"))
+                };
+                
+                log::info!(
+                    "🔍 register_with_cte_references: Found WITH exporting {:?} → CTE '{}'",
+                    wc.exported_aliases,
+                    cte_name
+                );
+                
+                // For each exported alias, add a TableCtx pointing to the CTE
+                for alias in &wc.exported_aliases {
+                    // Check if this alias already has a TableCtx (from parsing phase)
+                    if let Ok(existing_ctx) = plan_ctx.get_table_ctx(alias) {
+                        // Update the existing context to reference the CTE
+                        // Clone it, update cte_reference, and re-insert
+                        let mut updated_ctx = existing_ctx.clone();
+                        updated_ctx.set_cte_reference(Some(cte_name.clone()));
+                        plan_ctx.insert_table_ctx(alias.clone(), updated_ctx);
+                        log::info!("   ✓ Updated '{}' to reference CTE '{}'", alias, cte_name);
+                    } else {
+                        // No existing context - create a minimal one
+                        // This shouldn't happen in normal queries, but handle it gracefully
+                        let table_ctx = TableCtx::new_with_cte_reference(
+                            alias.clone(),
+                            cte_name.clone(),
+                        );
+                        plan_ctx.insert_table_ctx(alias.clone(), table_ctx);
+                        log::info!("   ✓ Created '{}' → CTE '{}'", alias, cte_name);
+                    }
+                }
+            }
+            
+            // Recurse through all container nodes
+            LogicalPlan::Projection(p) => {
+                self.register_with_cte_references(&p.input, plan_ctx)?;
+            }
+            LogicalPlan::GraphNode(gn) => {
+                self.register_with_cte_references(&gn.input, plan_ctx)?;
+            }
+            LogicalPlan::GraphRel(gr) => {
+                self.register_with_cte_references(&gr.left, plan_ctx)?;
+                self.register_with_cte_references(&gr.right, plan_ctx)?;
+            }
+            LogicalPlan::GraphJoins(gj) => {
+                self.register_with_cte_references(&gj.input, plan_ctx)?;
+            }
+            LogicalPlan::Filter(f) => {
+                self.register_with_cte_references(&f.input, plan_ctx)?;
+            }
+            LogicalPlan::GroupBy(gb) => {
+                self.register_with_cte_references(&gb.input, plan_ctx)?;
+            }
+            LogicalPlan::OrderBy(ob) => {
+                self.register_with_cte_references(&ob.input, plan_ctx)?;
+            }
+            LogicalPlan::Skip(s) => {
+                self.register_with_cte_references(&s.input, plan_ctx)?;
+            }
+            LogicalPlan::Limit(l) => {
+                self.register_with_cte_references(&l.input, plan_ctx)?;
+            }
+            LogicalPlan::Union(u) => {
+                for input in &u.inputs {
+                    self.register_with_cte_references(input, plan_ctx)?;
+                }
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                self.register_with_cte_references(&cp.left, plan_ctx)?;
+                self.register_with_cte_references(&cp.right, plan_ctx)?;
+            }
+            LogicalPlan::Unwind(uw) => {
+                self.register_with_cte_references(&uw.input, plan_ctx)?;
+            }
+            LogicalPlan::Cte(cte) => {
+                self.register_with_cte_references(&cte.input, plan_ctx)?;
+            }
+            
+            // Leaf nodes - nothing to recurse
+            LogicalPlan::ViewScan(_) | LogicalPlan::Scan(_) | 
+            LogicalPlan::Empty | LogicalPlan::PageRank(_) => {}
+        }
+        
+        Ok(())
     }
 
     /// Determines the appropriate join type based on whether the table alias
@@ -1265,6 +1384,7 @@ impl GraphJoinInference {
                             graph_schema,
                             &mut branch_joins,
                             &mut branch_joined_entities,
+                            &HashSet::new(), // Empty CTE scope for Union branches
                         )?;
 
                         crate::debug_print!(
@@ -1344,12 +1464,21 @@ impl GraphJoinInference {
                     &new_projection,
                 );
 
+                // Build CTE references map from plan_ctx
+                let mut cte_references = std::collections::HashMap::new();
+                for (alias, table_ctx) in plan_ctx.iter_table_contexts() {
+                    if let Some(cte_name) = table_ctx.get_cte_name() {
+                        cte_references.insert(alias.clone(), cte_name.clone());
+                    }
+                }
+
                 // wrap the outer projection i.e. first occurance in the tree walk with Graph joins
                 Transformed::Yes(Arc::new(LogicalPlan::GraphJoins(GraphJoins {
                     input: new_projection,
                     joins: joins_with_pre_filter,
                     optional_aliases,
                     anchor_table,
+                    cte_references,
                 })))
             }
             LogicalPlan::GraphNode(graph_node) => {
@@ -1442,6 +1571,7 @@ impl GraphJoinInference {
                         graph_schema,
                         &mut inner_joins,
                         &mut inner_joined_entities,
+                        &HashSet::new(), // Empty CTE scope for inner GroupBy scope
                     )?;
 
                     crate::debug_print!(
@@ -1666,29 +1796,30 @@ impl GraphJoinInference {
                 }
             }
             LogicalPlan::WithClause(with_clause) => {
-                let child_tf = Self::build_graph_joins(
-                    with_clause.input.clone(),
-                    collected_graph_joins,
-                    optional_aliases,
-                    plan_ctx,
-                    graph_schema,
-                )?;
-                match child_tf {
-                    Transformed::Yes(new_input) => {
-                        let new_with = crate::query_planner::logical_plan::WithClause {
-                            input: new_input,
-                            items: with_clause.items.clone(),
-                            distinct: with_clause.distinct,
-                            order_by: with_clause.order_by.clone(),
-                            skip: with_clause.skip,
-                            limit: with_clause.limit,
-                            where_clause: with_clause.where_clause.clone(),
-                            exported_aliases: with_clause.exported_aliases.clone(),
-                        };
-                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
-                    }
-                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
-                }
+                // CRITICAL: WITH creates a scope boundary - DON'T traverse into it!
+                // The WithScopeSplitter pass has already marked this as a boundary.
+                // Joins should only be computed within each scope, not across scopes.
+                //
+                // Why: WITH materializes intermediate results. The pattern BEFORE the WITH
+                // is independent from the pattern AFTER the WITH. Computing joins across
+                // this boundary would waste work and create stale join data.
+                //
+                // Example:
+                //   MATCH (a)-[:F]->(b) WITH a, b  [Scope 1: compute joins for a→b]
+                //   MATCH (b)-[:F]->(c) RETURN c   [Scope 2: compute joins for b→c]
+                //
+                // GraphJoinInference should compute:
+                //   - Scope 1: joins for (a)-[:F]->(b)
+                //   - Scope 2: joins for (b)-[:F]->(c)
+                // NOT: joins for the entire (a)-[:F]->(b)-[:F]->(c) pattern!
+                log::info!(
+                    "⛔ GraphJoinInference: Encountered WITH scope boundary with {} exported aliases - NOT traversing",
+                    with_clause.exported_aliases.len()
+                );
+                
+                // Return the WithClause unchanged - don't wrap it in GraphJoins
+                // The rendering phase will handle CTE generation
+                Transformed::No(logical_plan.clone())
             }
         };
         Ok(transformed_plan)
@@ -1702,6 +1833,7 @@ impl GraphJoinInference {
         graph_schema: &GraphSchema,
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
+        cte_scope_aliases: &HashSet<String>, // Aliases exported from WITH CTEs in parent scopes
     ) -> AnalyzerResult<()> {
         crate::debug_print!("\n+- collect_graph_joins ENTER");
         crate::debug_print!(
@@ -1724,6 +1856,7 @@ impl GraphJoinInference {
                     graph_schema,
                     collected_graph_joins,
                     joined_entities,
+                    cte_scope_aliases,
                 )
             }
             LogicalPlan::GraphNode(graph_node) => {
@@ -1739,6 +1872,7 @@ impl GraphJoinInference {
                     graph_schema,
                     collected_graph_joins,
                     joined_entities,
+                    cte_scope_aliases,
                 )
             }
             LogicalPlan::ViewScan(_) => {
@@ -1778,6 +1912,7 @@ impl GraphJoinInference {
                         graph_schema,
                         collected_graph_joins,
                         joined_entities,
+                        cte_scope_aliases,
                     )?;
                     crate::debug_print!(
                         "📊   ✓ RIGHT done. Joins now: {}",
@@ -1808,6 +1943,7 @@ impl GraphJoinInference {
                         graph_schema,
                         collected_graph_joins,
                         joined_entities,
+                        cte_scope_aliases,
                     );
                     crate::debug_print!(
                         "📊   ✓ LEFT done. Joins now: {}",
@@ -1824,6 +1960,7 @@ impl GraphJoinInference {
                         graph_schema,
                         collected_graph_joins,
                         joined_entities,
+                        cte_scope_aliases,
                     )?;
                     crate::debug_print!(
                         "📊   ✓ LEFT done. Joins now: {}",
@@ -1854,6 +1991,7 @@ impl GraphJoinInference {
                         graph_schema,
                         collected_graph_joins,
                         joined_entities,
+                        cte_scope_aliases,
                     );
                     crate::debug_print!(
                         "📊   ✓ RIGHT done. Joins now: {}",
@@ -1871,6 +2009,7 @@ impl GraphJoinInference {
                     graph_schema,
                     collected_graph_joins,
                     joined_entities,
+                    cte_scope_aliases,
                 )
             }
             LogicalPlan::Scan(_) => {
@@ -1890,6 +2029,7 @@ impl GraphJoinInference {
                     graph_schema,
                     collected_graph_joins,
                     joined_entities,
+                    cte_scope_aliases,
                 )
             }
             LogicalPlan::Filter(filter) => {
@@ -1901,6 +2041,7 @@ impl GraphJoinInference {
                     graph_schema,
                     collected_graph_joins,
                     joined_entities,
+                    cte_scope_aliases,
                 )
             }
             LogicalPlan::GroupBy(group_by) => {
@@ -1920,6 +2061,7 @@ impl GraphJoinInference {
                         graph_schema,
                         collected_graph_joins,
                         joined_entities,
+                        cte_scope_aliases,
                     )
                 }
             }
@@ -1932,6 +2074,7 @@ impl GraphJoinInference {
                     graph_schema,
                     collected_graph_joins,
                     joined_entities,
+                    cte_scope_aliases,
                 )
             }
             LogicalPlan::Skip(skip) => {
@@ -1943,6 +2086,7 @@ impl GraphJoinInference {
                     graph_schema,
                     collected_graph_joins,
                     joined_entities,
+                    cte_scope_aliases,
                 )
             }
             LogicalPlan::Limit(limit) => {
@@ -1954,6 +2098,7 @@ impl GraphJoinInference {
                     graph_schema,
                     collected_graph_joins,
                     joined_entities,
+                    cte_scope_aliases,
                 )
             }
             LogicalPlan::Union(_union) => {
@@ -1977,6 +2122,7 @@ impl GraphJoinInference {
                     graph_schema,
                     collected_graph_joins,
                     joined_entities,
+                    cte_scope_aliases,
                 )
             }
             LogicalPlan::CartesianProduct(cp) => {
@@ -1994,6 +2140,7 @@ impl GraphJoinInference {
                     graph_schema,
                     collected_graph_joins,
                     joined_entities,
+                    cte_scope_aliases,
                 )?;
 
                 // For the RIGHT side, we still collect into shared collections,
@@ -2006,18 +2153,33 @@ impl GraphJoinInference {
                     graph_schema,
                     collected_graph_joins,
                     joined_entities,
+                    cte_scope_aliases,
                 )
             }
             LogicalPlan::WithClause(with_clause) => {
-                crate::debug_print!("📎 WithClause, recursing into input");
-                self.collect_graph_joins(
-                    with_clause.input.clone(),
-                    root_plan.clone(),
-                    plan_ctx,
-                    graph_schema,
-                    collected_graph_joins,
-                    joined_entities,
-                )
+                // CRITICAL: WITH creates a scope boundary - the pattern INSIDE belongs to a different scope
+                // However, EXPORTED aliases are visible to downstream patterns and should be tracked
+                // in cte_scope_aliases so GraphNodes can resolve them as CTE references.
+                //
+                // What we do:
+                // 1. Stop recursion (don't collect joins from inside the WITH)
+                // 2. Pass exported_aliases to downstream patterns (they're in CTE scope)
+                //
+                // This respects the materialization boundary set by WithScopeSplitter.
+                crate::debug_print!(
+                    "⛔ WithClause scope boundary - stopping join collection"
+                );
+                crate::debug_print!(
+                    "   Exported aliases (will be in CTE scope): {:?}",
+                    with_clause.exported_aliases
+                );
+                
+                // The exported aliases are NOW in CTE scope for any code that follows
+                // We would pass them down, but we've hit a boundary so there's nothing to recurse into
+                // The ACTUAL propagation happens in the outer scope that contains this WITH
+                
+                // Don't recurse - treat this as a boundary
+                Ok(())
             }
         };
 

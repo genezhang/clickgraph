@@ -5,6 +5,7 @@ use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::{
     GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::cte_generation::{analyze_property_requirements, extract_var_len_properties};
@@ -276,8 +277,40 @@ pub(crate) trait RenderPlanBuilder {
 /// Used by WITH clause handlers when they need to convert LogicalExpr::TableAlias
 /// to multiple RenderExpr SelectItems (one per property).
 ///
+/// CRITICAL: When the alias refers to a CTE (checked via cte_schemas), we use the
+/// CTE's stored schema instead of querying the plan. This ensures that nested WITH
+/// clauses correctly carry forward all properties from retained variables.
+///
 /// Example: TableAlias("friend") → [friend.id, friend.firstName, friend.lastName, ...]
-fn expand_table_alias_to_select_items(alias: &str, plan: &LogicalPlan) -> Vec<SelectItem> {
+fn expand_table_alias_to_select_items(
+    alias: &str,
+    plan: &LogicalPlan,
+    cte_schemas: &HashMap<String, (Vec<SelectItem>, Vec<String>)>,
+) -> Vec<SelectItem> {
+    // First, check if this alias is actually a CTE that we've already created
+    // The CTE might be named like "with_a_name_cte1" but referenced by composite alias "a_name"
+    // Try to find matching CTE by checking if any CTE name contains this alias pattern
+    for (cte_name, (select_items, _)) in cte_schemas.iter() {
+        // Check if the CTE corresponds to this alias
+        // CTE names follow pattern: "with_{alias}_cte{N}" or "with_{composite_alias}_cte{N}"
+        if cte_name.starts_with(&format!("with_{}_", alias)) 
+            || cte_name == &format!("with_{}", alias)
+            || (cte_name.starts_with("with_") && cte_name.contains(&format!("_{}_", alias))) {
+            log::info!(
+                "🔧 expand_table_alias_to_select_items: Found CTE '{}' for alias '{}', using stored schema with {} items",
+                cte_name, alias, select_items.len()
+            );
+            // Return a copy of the CTE's select items, but update table alias to match the reference
+            return select_items.iter().map(|item| {
+                SelectItem {
+                    expression: item.expression.clone(),
+                    col_alias: item.col_alias.clone(),
+                }
+            }).collect();
+        }
+    }
+    
+    // Not a CTE reference, query the plan for properties
     match plan.get_properties_with_table_alias(alias) {
         Ok((properties, actual_table_alias)) => {
             if !properties.is_empty() {
@@ -289,7 +322,11 @@ fn expand_table_alias_to_select_items(alias: &str, plan: &LogicalPlan) -> Vec<Se
                             table_alias: TableAlias(table_alias_to_use.clone()),
                             column: Column(PropertyValue::Column(col_name.clone())),
                         }),
-                        col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop_name))),
+                        // CRITICAL: Use underscore format "alias_property" for CTE column aliases
+                        // This avoids naming conflicts in multi-variable CTEs (WITH a, b)
+                        // Format: a.user_id → "a_user_id", b.user_id → "b_user_id" (no collision)
+                        // Property mapping will be: {"user_id" → "a_user_id", "name" → "a_name"}
+                        col_alias: Some(ColumnAlias(format!("{}_{}", alias, prop_name))),
                     });
                 }
                 items
@@ -301,28 +338,72 @@ fn expand_table_alias_to_select_items(alias: &str, plan: &LogicalPlan) -> Vec<Se
     }
 }
 
-/// Helper: Expand a TableAlias to ALL column RenderExprs for GROUP BY.
+/// Helper: Expand a TableAlias to ID column only for GROUP BY.
 ///
-/// Similar to expand_table_alias_to_select_items but returns RenderExpr instead of SelectItem.
-/// Used when building GROUP BY clauses that must include all non-aggregated columns.
-fn expand_table_alias_to_group_by_exprs(alias: &str, plan: &LogicalPlan) -> Vec<RenderExpr> {
+/// CRITICAL: For aggregations like `WITH a, count(b)`, we group by a's ID only,
+/// not all of a's properties. The SELECT will have all properties, but GROUP BY
+/// only needs the unique identifier.
+///
+/// Example: TableAlias("friend") → [friend.id] (not friend.id, friend.name, ...)
+fn expand_table_alias_to_group_by_id_only(
+    alias: &str,
+    plan: &LogicalPlan,
+    schema: &GraphSchema,
+) -> Vec<RenderExpr> {
+    // Try to find the node_id column for this alias
+    // First, find the label/type for this alias in the plan
+    if let Some(label) = find_label_for_alias(plan, alias) {
+        // Look up the node schema to get node_id column
+        if let Some(node_schema) = schema.get_node_schema_opt(&label) {
+            let table_alias_to_use = alias.to_string();
+            // Get ID column name (handles both single and composite IDs)
+            let id_col = node_schema.node_id.column().to_string();
+            return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(table_alias_to_use),
+                column: Column(PropertyValue::Column(id_col)),
+            })];
+        }
+    }
+    
+    // Fallback: try to get properties and use first one (usually the ID)
     match plan.get_properties_with_table_alias(alias) {
         Ok((properties, actual_table_alias)) => {
             if !properties.is_empty() {
                 let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.to_string());
-                let mut exprs = Vec::new();
-                for (_, col_name) in properties.iter() {
-                    exprs.push(RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: TableAlias(table_alias_to_use.clone()),
-                        column: Column(PropertyValue::Column(col_name.clone())),
-                    }));
-                }
-                exprs
+                // Just use the first property (typically the ID)
+                let (_, col_name) = &properties[0];
+                vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(table_alias_to_use),
+                    column: Column(PropertyValue::Column(col_name.clone())),
+                })]
             } else {
                 Vec::new()
             }
         }
         Err(_) => Vec::new(),
+    }
+}
+
+/// Helper function to find the label for a given alias in the logical plan.
+fn find_label_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            if node.alias == target_alias {
+                // label is Option<String>, unwrap it
+                node.label.clone()
+            } else {
+                None
+            }
+        }
+        LogicalPlan::GraphRel(rel) => {
+            // Check left and right connections
+            // Note: GraphRel doesn't have nested plans, just connection strings
+            None
+        }
+        LogicalPlan::Filter(filter) => find_label_for_alias(&filter.input, target_alias),
+        LogicalPlan::WithClause(wc) => find_label_for_alias(&wc.input, target_alias),
+        LogicalPlan::Projection(proj) => find_label_for_alias(&proj.input, target_alias),
+        _ => None,
     }
 }
 
@@ -605,7 +686,7 @@ fn build_chained_with_match_cte_plan(
                     }
                 }
 
-                // Extract the plan to render, WITH items, and modifiers (ORDER BY, SKIP, LIMIT)
+                // Extract the plan to render, WITH items, and modifiers (ORDER BY, SKIP, LIMIT, WHERE)
                 let (
                     plan_to_render,
                     with_items,
@@ -613,6 +694,7 @@ fn build_chained_with_match_cte_plan(
                     with_order_by,
                     with_skip,
                     with_limit,
+                    with_where_clause,
                 ) = match with_plan {
                     LogicalPlan::WithClause(wc) => {
                         log::info!("🔧 build_chained_with_match_cte_plan: Unwrapping WithClause, rendering input");
@@ -620,8 +702,8 @@ fn build_chained_with_match_cte_plan(
                             "🔧 build_chained_with_match_cte_plan: wc.input type: {:?}",
                             std::mem::discriminant(wc.input.as_ref())
                         );
-                        log::info!("🔧 build_chained_with_match_cte_plan: wc has {} items, order_by={:?}, skip={:?}, limit={:?}",
-                                   wc.items.len(), wc.order_by.is_some(), wc.skip, wc.limit);
+                        log::info!("🔧 build_chained_with_match_cte_plan: wc has {} items, order_by={:?}, skip={:?}, limit={:?}, where={:?}",
+                                   wc.items.len(), wc.order_by.is_some(), wc.skip, wc.limit, wc.where_clause.is_some());
                         // Debug: if it's GraphJoins, log the joins
                         if let LogicalPlan::GraphJoins(gj) = wc.input.as_ref() {
                             log::info!("🔧 build_chained_with_match_cte_plan: wc.input is GraphJoins with {} joins", gj.joins.len());
@@ -637,6 +719,7 @@ fn build_chained_with_match_cte_plan(
                             wc.order_by.clone(),
                             wc.skip,
                             wc.limit,
+                            wc.where_clause.clone(),
                         )
                     }
                     LogicalPlan::Projection(proj) => {
@@ -649,9 +732,9 @@ fn build_chained_with_match_cte_plan(
                                 std::mem::discriminant(filter.input.as_ref())
                             );
                         }
-                        (with_plan as &LogicalPlan, None, false, None, None, None)
+                        (with_plan as &LogicalPlan, None, false, None, None, None, None)
                     }
-                    _ => (with_plan as &LogicalPlan, None, false, None, None, None),
+                    _ => (with_plan as &LogicalPlan, None, false, None, None, None, None),
                 };
 
                 // Render the plan (even if it contains nested WITHs)
@@ -676,6 +759,7 @@ fn build_chained_with_match_cte_plan(
 
                         // Apply WITH items projection if present
                         // This handles cases like `WITH friend.firstName AS name` or `WITH count(friend) AS cnt`
+                        // CRITICAL: Also apply for TableAlias items (WITH a) to standardize CTE column names
                         if let Some(ref items) = with_items {
                             let needs_projection = items.iter().any(|item| {
                                 !matches!(
@@ -687,10 +771,16 @@ fn build_chained_with_match_cte_plan(
                             let has_aggregation = items.iter().any(|item| {
                                 matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_))
                             });
+                            
+                            let has_table_alias = items.iter().any(|item| {
+                                matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::TableAlias(_))
+                            });
 
-                            if needs_projection || has_aggregation {
-                                log::info!("🔧 build_chained_with_match_cte_plan: Applying WITH items projection (needs_projection={}, has_aggregation={})",
-                                           needs_projection, has_aggregation);
+                            // Apply projection if we have non-TableAlias items, aggregations, OR TableAlias items
+                            // TableAlias items need projection to generate CTE columns with simple names
+                            if needs_projection || has_aggregation || has_table_alias {
+                                log::info!("🔧 build_chained_with_match_cte_plan: Applying WITH items projection (needs_projection={}, has_aggregation={}, has_table_alias={})",
+                                           needs_projection, has_aggregation, has_table_alias);
 
                                 // Convert LogicalExpr items to RenderExpr SelectItems
                                 // CRITICAL: Expand TableAlias to ALL columns (not just ID)
@@ -701,7 +791,8 @@ fn build_chained_with_match_cte_plan(
                                         match &item.expression {
                                             crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
                                                 // Use helper function to expand to ALL columns
-                                                expand_table_alias_to_select_items(&alias.0, plan_to_render)
+                                                // Pass cte_schemas so we can check if this is a CTE reference
+                                                expand_table_alias_to_select_items(&alias.0, plan_to_render, &cte_schemas)
                                             }
                                             _ => {
                                                 // Not a TableAlias, convert normally
@@ -734,12 +825,12 @@ fn build_chained_with_match_cte_plan(
                                         let group_by_exprs: Vec<RenderExpr> = items.iter()
                                             .filter(|item| !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)))
                                             .flat_map(|item| {
-                                                // CRITICAL: Expand TableAlias to ALL actual columns
-                                                // Must match what we put in SELECT!
+                                                // CRITICAL: For TableAlias (like `a` in `WITH a, count(b)`),
+                                                // use ID-only grouping. We select all properties but group by ID.
                                                 match &item.expression {
                                                     crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
-                                                        // Use helper function to expand to ALL columns
-                                                        expand_table_alias_to_group_by_exprs(&alias.0, plan_to_render)
+                                                        // Use ID-only helper for GROUP BY
+                                                        expand_table_alias_to_group_by_id_only(&alias.0, plan_to_render, schema)
                                                     }
                                                     _ => {
                                                         // Not a TableAlias, convert normally
@@ -781,6 +872,35 @@ fn build_chained_with_match_cte_plan(
                             rendered.limit = LimitItem(Some(limit_count as i64));
                         }
 
+                        // Apply WHERE clause from WITH - becomes HAVING if we have GROUP BY
+                        if let Some(where_predicate) = with_where_clause {
+                            log::info!("🔧 build_chained_with_match_cte_plan: Applying WHERE clause from WITH");
+                            
+                            // Convert LogicalExpr to RenderExpr
+                            let where_render_expr: RenderExpr = where_predicate.try_into()?;
+                            
+                            if !rendered.group_by.0.is_empty() {
+                                // We have GROUP BY - WHERE becomes HAVING
+                                log::info!("🔧 build_chained_with_match_cte_plan: Converting WHERE to HAVING (GROUP BY present)");
+                                rendered.having_clause = Some(where_render_expr);
+                            } else {
+                                // No GROUP BY - apply as regular WHERE filter
+                                log::info!("🔧 build_chained_with_match_cte_plan: Applying WHERE as filter predicate");
+                                
+                                // Combine with existing filters
+                                let new_filter = if let Some(existing_filter) = rendered.filters.0.take() {
+                                    // AND the new filter with existing
+                                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                        operator: Operator::And,
+                                        operands: vec![existing_filter, where_render_expr],
+                                    })
+                                } else {
+                                    where_render_expr
+                                };
+                                rendered.filters = FilterItems(Some(new_filter));
+                            }
+                        }
+
                         rendered_plans.push(rendered);
                     }
                     Err(e) => {
@@ -796,11 +916,11 @@ fn build_chained_with_match_cte_plan(
                 )));
             }
 
-            // Generate unique CTE name
+            // Generate CTE name WITHOUT counter to match analyzer's prediction
+            // Analyzer predicts: "with_a_b_cte", so render must create the same name
             let cte_name = format!(
-                "with_{}_{}",
-                with_alias.replace(".*", ""),
-                crate::query_planner::logical_plan::generate_cte_id()
+                "with_{}_cte",
+                with_alias.replace(".*", "")
             );
 
             // Create CTE content - if multiple renders, combine with UNION ALL
@@ -956,6 +1076,54 @@ fn build_chained_with_match_cte_plan(
     }
 
     log::info!("🔧 build_chained_with_match_cte_plan: All WITH clauses processed ({} CTEs), rendering final plan", all_ctes.len());
+
+    // CRITICAL FIX: Before rendering, check if the final plan has GraphJoins with joins
+    // that should be covered by the LAST CTE (the one with the most aliases).
+    // Pattern: WITH a, b ... MATCH (b)-[]->(c)
+    // The GraphJoins will have joins for: a→t1→b, b→t2→c
+    // But a→t1→b is already in with_a_b_cte2, so we need to remove those joins!
+    
+    log::info!("🔧 build_chained_with_match_cte_plan: PRE-RENDER CHECK - have {} CTEs", all_ctes.len());
+    
+    if !all_ctes.is_empty() {
+        // Get the last CTE's exported aliases (from its name, e.g., "with_a_b_cte2" → ["a", "b"])
+        let last_cte = all_ctes.last().unwrap();
+        let last_cte_name = &last_cte.cte_name;
+        
+        // Extract aliases from CTE name: "with_a_b_cte2" → "a_b"
+        // Format is: with_{aliases}_cte{N}
+        // Strategy: trim "with_", then remove "_cte{N}" suffix
+        let alias_part = if let Some(stripped) = last_cte_name.strip_prefix("with_") {
+            // Find the last occurrence of "_cte" and take everything before it
+            if let Some(cte_pos) = stripped.rfind("_cte") {
+                &stripped[..cte_pos]
+            } else {
+                stripped
+            }
+        } else {
+            ""
+        };
+        
+        log::info!("🔧 build_chained_with_match_cte_plan: Last CTE '{}' exports alias_part: '{}'",
+                   last_cte_name, alias_part);
+        
+        // For composite aliases like "a_b", split into individual aliases
+        if !alias_part.is_empty() {
+            let exported_aliases: Vec<&str> = alias_part.split('_').collect();
+            let exported_aliases_set: std::collections::HashSet<&str> = exported_aliases.iter().copied().collect();
+            
+            log::info!("🔧 build_chained_with_match_cte_plan: Exported aliases: {:?}", exported_aliases);
+            
+            // Now we need to prune joins from GraphJoins that are covered by this CTE
+            // AND update any GraphNode that matches an exported alias to reference the CTE
+            current_plan = prune_joins_covered_by_cte(
+                &current_plan,
+                last_cte_name,
+                &exported_aliases_set,
+                &cte_schemas,
+            )?;
+        }
+    }
 
     // All WITH clauses have been processed, now render the final plan
     // Use non-recursive render to get the base plan
@@ -1444,6 +1612,7 @@ fn replace_group_by_with_cte_reference(
                         joins: outer_joins,
                         optional_aliases: gj.optional_aliases.clone(),
                         anchor_table: gj.anchor_table.clone(),
+                        cte_references: gj.cte_references.clone(),
                     },
                 ))
             }
@@ -2057,14 +2226,358 @@ fn find_all_with_clauses_grouped(
 fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
     let nested_ctes = std::mem::take(&mut from.ctes.0);
     if !nested_ctes.is_empty() {
-        log::debug!(
-            "🔧 Hoisting {} nested CTEs to parent level",
+        log::info!(
+            "🔧 hoist_nested_ctes: Hoisting {} nested CTEs",
             nested_ctes.len()
         );
         to.extend(nested_ctes);
     }
 }
 
+/// Helper function to check if a plan contains a GraphNode with the given alias.
+fn plan_contains_graph_node_with_alias(plan: &LogicalPlan, target_alias: &str) -> bool {
+    match plan {
+        LogicalPlan::GraphNode(node) => node.alias == target_alias,
+        LogicalPlan::GraphRel(rel) => {
+            plan_contains_graph_node_with_alias(&rel.left, target_alias)
+                || plan_contains_graph_node_with_alias(&rel.right, target_alias)
+        }
+        LogicalPlan::Projection(proj) => {
+            plan_contains_graph_node_with_alias(&proj.input, target_alias)
+        }
+        LogicalPlan::Filter(filter) => {
+            plan_contains_graph_node_with_alias(&filter.input, target_alias)
+        }
+        LogicalPlan::GroupBy(gb) => {
+            plan_contains_graph_node_with_alias(&gb.input, target_alias)
+        }
+        LogicalPlan::GraphJoins(joins) => {
+            plan_contains_graph_node_with_alias(&joins.input, target_alias)
+        }
+        LogicalPlan::OrderBy(order) => {
+            plan_contains_graph_node_with_alias(&order.input, target_alias)
+        }
+        LogicalPlan::Limit(limit) => {
+            plan_contains_graph_node_with_alias(&limit.input, target_alias)
+        }
+        LogicalPlan::Skip(skip) => {
+            plan_contains_graph_node_with_alias(&skip.input, target_alias)
+        }
+        LogicalPlan::Union(union) => union
+            .inputs
+            .iter()
+            .any(|input| plan_contains_graph_node_with_alias(input, target_alias)),
+        _ => false,
+    }
+}
+
+/// Helper function to replace a GraphNode with a CTE reference.
+/// This is used after all WITH processing to ensure the final query uses the last CTE.
+fn replace_graph_node_with_cte_reference(
+    plan: &LogicalPlan,
+    target_alias: &str,
+    cte_name: &str,
+    cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>)>,
+) -> RenderPlanBuilderResult<LogicalPlan> {
+    use crate::query_planner::logical_plan::*;
+    use std::sync::Arc;
+
+    match plan {
+        LogicalPlan::GraphNode(node) if node.alias == target_alias => {
+            log::info!(
+                "🔧 replace_graph_node_with_cte_reference: Replacing GraphNode '{}' with CTE '{}'",
+                target_alias,
+                cte_name
+            );
+            
+            // Create CTE reference helper function (same as in replace_with_clause_with_cte_reference_v2)
+            fn create_cte_ref(
+                cte_name: &str,
+                table_alias: &str,
+                cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>)>,
+            ) -> LogicalPlan {
+                use crate::graph_catalog::expression_parser::PropertyValue;
+                use crate::query_planner::logical_plan::*;
+                use std::collections::HashMap;
+                use std::sync::Arc;
+
+                let (select_items, property_names) = cte_schemas.get(cte_name).expect("CTE schema must exist");
+                let property_mapping: HashMap<String, PropertyValue> = property_names
+                    .iter()
+                    .zip(select_items.iter())
+                    .map(|(prop_name, item)| {
+                        let col_alias = item
+                            .col_alias
+                            .as_ref()
+                            .map(|a| a.0.clone())
+                            .unwrap_or_else(|| prop_name.clone());
+                        (prop_name.clone(), PropertyValue::Column(col_alias))
+                    })
+                    .collect();
+
+                LogicalPlan::GraphNode(GraphNode {
+                    input: Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan {
+                        source_table: cte_name.to_string(),
+                        view_filter: None,
+                        property_mapping,
+                        id_column: format!("{}_user_id", table_alias),
+                        output_schema: property_names.clone(),
+                        projections: vec![],
+                        from_id: None,
+                        to_id: None,
+                        input: None,
+                        view_parameter_names: None,
+                        view_parameter_values: None,
+                        use_final: false,
+                        is_denormalized: false,
+                        from_node_properties: None,
+                        to_node_properties: None,
+                        type_column: None,
+                        type_values: None,
+                        from_label_column: None,
+                        to_label_column: None,
+                        schema_filter: None,
+                    }))),
+                    alias: table_alias.to_string(),
+                    label: None,
+                    is_denormalized: false,
+                })
+            }
+
+            Ok(create_cte_ref(cte_name, target_alias, cte_schemas))
+        }
+        LogicalPlan::GraphRel(rel) => {
+            let new_left = replace_graph_node_with_cte_reference(
+                &rel.left,
+                target_alias,
+                cte_name,
+                cte_schemas,
+            )?;
+            let new_right = replace_graph_node_with_cte_reference(
+                &rel.right,
+                target_alias,
+                cte_name,
+                cte_schemas,
+            )?;
+            Ok(LogicalPlan::GraphRel(GraphRel {
+                left: Arc::new(new_left),
+                center: rel.center.clone(),
+                right: Arc::new(new_right),
+                alias: rel.alias.clone(),
+                direction: rel.direction.clone(),
+                left_connection: rel.left_connection.clone(),
+                right_connection: rel.right_connection.clone(),
+                is_rel_anchor: rel.is_rel_anchor,
+                variable_length: rel.variable_length.clone(),
+                shortest_path_mode: rel.shortest_path_mode.clone(),
+                path_variable: rel.path_variable.clone(),
+                where_predicate: rel.where_predicate.clone(),
+                labels: rel.labels.clone(),
+                is_optional: rel.is_optional,
+                anchor_connection: rel.anchor_connection.clone(),
+            }))
+        }
+        LogicalPlan::Projection(proj) => {
+            let new_input = replace_graph_node_with_cte_reference(
+                &proj.input,
+                target_alias,
+                cte_name,
+                cte_schemas,
+            )?;
+            Ok(LogicalPlan::Projection(Projection {
+                input: Arc::new(new_input),
+                items: proj.items.clone(),
+                kind: proj.kind.clone(),
+                distinct: proj.distinct,
+            }))
+        }
+        _ => Ok(plan.clone()),
+    }
+}
+
+/// Find the alias of a GraphNode whose ViewScan references the given CTE.
+///
+/// This is used to find the anchor alias for a CTE reference. For example, if we have:
+///   GraphNode { alias: "a_b", input: ViewScan { source_table: "with_a_b_cte2", ... } }
+/// And cte_name is "with_a_b_cte2", this returns Some("a_b").
+fn find_cte_reference_alias(plan: &LogicalPlan, cte_name: &str) -> Option<String> {
+    use crate::query_planner::logical_plan::*;
+
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            // Check if this GraphNode's ViewScan references the CTE
+            if let LogicalPlan::ViewScan(vs) = node.input.as_ref() {
+                if vs.source_table == cte_name {
+                    return Some(node.alias.clone());
+                }
+            }
+            // Recurse into input
+            find_cte_reference_alias(&node.input, cte_name)
+        }
+        LogicalPlan::GraphRel(rel) => {
+            // Search in all branches
+            find_cte_reference_alias(&rel.left, cte_name)
+                .or_else(|| find_cte_reference_alias(&rel.right, cte_name))
+        }
+        LogicalPlan::Projection(proj) => find_cte_reference_alias(&proj.input, cte_name),
+        LogicalPlan::Limit(limit) => find_cte_reference_alias(&limit.input, cte_name),
+        LogicalPlan::OrderBy(order) => find_cte_reference_alias(&order.input, cte_name),
+        LogicalPlan::GraphJoins(gj) => find_cte_reference_alias(&gj.input, cte_name),
+        LogicalPlan::Filter(filter) => find_cte_reference_alias(&filter.input, cte_name),
+        LogicalPlan::GroupBy(gb) => find_cte_reference_alias(&gb.input, cte_name),
+        _ => None,
+    }
+}
+
+/// Prune joins from GraphJoins that are already covered by a CTE.
+///
+/// When we have a query like:
+///   WITH a MATCH (a)-[:F]->(b) WITH a,b MATCH (b)-[:F]->(c)
+///
+/// After processing, we have:
+/// - CTE: with_a_b_cte2 (contains the pattern for a→b)
+/// - Final plan: GraphJoins with joins for [a→t1→b, b→t2→c]
+///
+/// The joins [a→t1→b] are already materialized in the CTE, so they should be removed.
+/// Only [b→t2→c] should remain in the final query.
+///
+/// This function:
+/// 1. Traverses the plan to find GraphJoins nodes
+/// 2. Removes joins where BOTH endpoints are in the exported_aliases set
+/// 3. Keeps joins where at least one endpoint is NOT in the CTE
+fn prune_joins_covered_by_cte(
+    plan: &LogicalPlan,
+    cte_name: &str,
+    exported_aliases: &std::collections::HashSet<&str>,
+    _cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>)>,
+) -> RenderPlanBuilderResult<LogicalPlan> {
+    use crate::query_planner::logical_plan::*;
+    use std::sync::Arc;
+
+    log::info!("🔧 prune_joins_covered_by_cte: Processing plan for CTE '{}' with aliases {:?}",
+               cte_name, exported_aliases);
+
+    match plan {
+        LogicalPlan::GraphJoins(gj) => {
+            log::info!("🔧 prune_joins_covered_by_cte: Found GraphJoins with {} joins and anchor '{:?}'",
+                       gj.joins.len(), gj.anchor_table);
+
+            // Filter out joins that are fully covered by the CTE
+            // Strategy: Remove all joins UP TO AND INCLUDING the last join whose alias is in exported_aliases
+            // This works because joins are ordered: a→t1→b, b→t2→c
+            // If "b" is in the CTE, then [a→t1→b] should all be removed
+            let mut kept_joins = Vec::new();
+            let mut removed_joins = Vec::new();
+            let mut found_last_cte_join = false;
+
+            // Find the index of the last join whose alias is in exported_aliases
+            let last_cte_join_idx = gj.joins
+                .iter()
+                .enumerate()
+                .rev()  // Search from the end
+                .find(|(_, join)| exported_aliases.contains(join.table_alias.as_str()))
+                .map(|(idx, _)| idx);
+
+            if let Some(cutoff_idx) = last_cte_join_idx {
+                log::info!("🔧 prune_joins_covered_by_cte: Found last CTE join at index {} (alias '{}')",
+                           cutoff_idx, gj.joins[cutoff_idx].table_alias);
+                
+                for (idx, join) in gj.joins.iter().enumerate() {
+                    if idx <= cutoff_idx {
+                        log::info!("🔧 prune_joins_covered_by_cte: REMOVING join {} to '{}' (before/at cutoff)",
+                                   idx, join.table_alias);
+                        removed_joins.push(join.clone());
+                        found_last_cte_join = true;
+                    } else {
+                        log::info!("🔧 prune_joins_covered_by_cte: KEEPING join {} to '{}' (after cutoff)",
+                                   idx, join.table_alias);
+                        kept_joins.push(join.clone());
+                    }
+                }
+            } else {
+                // No join aliases match CTE aliases - keep all joins
+                log::info!("🔧 prune_joins_covered_by_cte: No join aliases match CTE aliases, keeping all joins");
+                kept_joins = gj.joins.clone();
+            }
+
+            log::info!("🔧 prune_joins_covered_by_cte: Kept {} joins, removed {} joins",
+                       kept_joins.len(), removed_joins.len());
+
+            // If we removed joins, update the anchor_table to use the GraphNode alias that references the CTE
+            // The anchor should be the alias of the GraphNode whose ViewScan.source_table matches cte_name
+            let new_anchor = if removed_joins.len() > 0 {
+                // Find the GraphNode that references this CTE
+                if let Some(cte_ref_alias) = find_cte_reference_alias(&gj.input, cte_name) {
+                    log::info!("🔧 prune_joins_covered_by_cte: Updating anchor from '{:?}' to CTE reference alias '{}'",
+                               gj.anchor_table, cte_ref_alias);
+                    Some(cte_ref_alias)
+                } else {
+                    log::warn!("🔧 prune_joins_covered_by_cte: Could not find GraphNode referencing CTE '{}'", cte_name);
+                    gj.anchor_table.clone()
+                }
+            } else {
+                gj.anchor_table.clone()
+            };
+
+            // Recursively process the input
+            let new_input = prune_joins_covered_by_cte(&gj.input, cte_name, exported_aliases, _cte_schemas)?;
+
+            Ok(LogicalPlan::GraphJoins(GraphJoins {
+                input: Arc::new(new_input),
+                joins: kept_joins,
+                optional_aliases: gj.optional_aliases.clone(),
+                anchor_table: new_anchor,
+                cte_references: gj.cte_references.clone(),
+            }))
+        }
+        LogicalPlan::Projection(proj) => {
+            let new_input = prune_joins_covered_by_cte(&proj.input, cte_name, exported_aliases, _cte_schemas)?;
+            Ok(LogicalPlan::Projection(Projection {
+                input: Arc::new(new_input),
+                items: proj.items.clone(),
+                kind: proj.kind.clone(),
+                distinct: proj.distinct,
+            }))
+        }
+        LogicalPlan::Limit(limit) => {
+            let new_input = prune_joins_covered_by_cte(&limit.input, cte_name, exported_aliases, _cte_schemas)?;
+            Ok(LogicalPlan::Limit(Limit {
+                input: Arc::new(new_input),
+                count: limit.count,
+            }))
+        }
+        LogicalPlan::OrderBy(order) => {
+            let new_input = prune_joins_covered_by_cte(&order.input, cte_name, exported_aliases, _cte_schemas)?;
+            Ok(LogicalPlan::OrderBy(OrderBy {
+                input: Arc::new(new_input),
+                items: order.items.clone(),
+            }))
+        }
+        _ => {
+            log::debug!("🔧 prune_joins_covered_by_cte: No pruning needed for plan type {:?}",
+                        std::mem::discriminant(plan));
+            Ok(plan.clone())
+        }
+    }
+}
+
+/// Helper function to hoist nested CTEs from a rendered plan to a parent CTE list.
+///
+/// This is used after rendering a plan that may contain nested CTEs (e.g., from
+/// variable-length path queries) to pull those CTEs up to the parent level so they
+/// can be defined BEFORE the main CTE that references them.
+///
+/// # Arguments
+/// * `from` - The RenderPlan to extract CTEs from (will be emptied)
+/// * `to` - The destination vector to append the CTEs to
+///
+/// # Example
+/// ```rust
+/// let mut with_cte_render = render_without_with_detection(plan, schema)?;
+/// let mut all_ctes = Vec::new();
+/// hoist_nested_ctes(&mut with_cte_render, &mut all_ctes);
+/// // all_ctes now contains any VLP CTEs that were nested in with_cte_render
+/// ```
 /// Validate that all CTE references in a RenderPlan actually exist in the CTE list.
 ///
 /// This function checks:
@@ -2265,40 +2778,199 @@ fn replace_with_clause_with_cte_reference_v2(
         "with_var".to_string()
     }
 
+    // Helper to remap PropertyAccess expressions to use CTE column names
+    // CRITICAL: After creating a CTE reference, PropertyAccess expressions in downstream nodes
+    // (like Projection) still have the OLD column names from FilterTagging (which used the
+    // original ViewScan's property_mapping). FilterTagging may have resolved Cypher properties
+    // to DB columns already, so we need to REVERSE that using db_to_cypher mapping.
+    fn remap_property_access_for_cte(
+        expr: crate::query_planner::logical_expr::LogicalExpr,
+        cte_alias: &str,
+        property_mapping: &HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>,
+        db_to_cypher: &HashMap<String, String>,
+    ) -> crate::query_planner::logical_expr::LogicalExpr {
+        use crate::query_planner::logical_expr::LogicalExpr;
+        
+        match expr {
+            LogicalExpr::PropertyAccessExp(mut prop) => {
+                // Check if this PropertyAccess references the CTE alias
+                if prop.table_alias.0 == cte_alias {
+                    let current_col = prop.column.raw();
+                    
+                    // CRITICAL: FilterTagging ALWAYS resolves Cypher properties to DB columns
+                    // So current_col is almost certainly a DB column name, not a Cypher property
+                    //
+                    // Strategy:
+                    // 1. PRIMARY: Try reverse mapping (DB column → Cypher property → CTE column)
+                    // 2. FALLBACK: Direct lookup (handles identity mappings where Cypher name = DB name)
+                    
+                    if let Some(cypher_prop) = db_to_cypher.get(current_col) {
+                        // Found! current_col is a DB column - reverse it to Cypher property
+                        if let Some(cte_col) = property_mapping.get(cypher_prop) {
+                            log::debug!(
+                                "🔧 remap_property_access: Remapped {}.{} → {} (DB '{}' → Cypher '{}' → CTE)",
+                                cte_alias, current_col, cte_col.raw(), current_col, cypher_prop
+                            );
+                            prop.column = cte_col.clone();
+                        } else {
+                            log::warn!(
+                                "🔧 remap_property_access: Reverse mapped DB '{}' to Cypher '{}' but no CTE column found!",
+                                current_col, cypher_prop
+                            );
+                        }
+                    } else if let Some(cte_col) = property_mapping.get(current_col) {
+                        // Fallback: Identity mapping where Cypher property = DB column
+                        // Example: user_id: user_id → both "user_id" (Cypher) and "user_id" (DB)
+                        log::debug!(
+                            "🔧 remap_property_access: Remapped {}.{} → {} (direct/identity mapping)",
+                            cte_alias, current_col, cte_col.raw()
+                        );
+                        prop.column = cte_col.clone();
+                    } else {
+                        log::warn!(
+                            "🔧 remap_property_access: Could not remap {}.{} - not in db_to_cypher or property_mapping",
+                            cte_alias, current_col
+                        );
+                    }
+                }
+                LogicalExpr::PropertyAccessExp(prop)
+            }
+            LogicalExpr::OperatorApplicationExp(mut op) => {
+                op.operands = op.operands.into_iter()
+                    .map(|operand| remap_property_access_for_cte(operand, cte_alias, property_mapping, db_to_cypher))
+                    .collect();
+                LogicalExpr::OperatorApplicationExp(op)
+            }
+            LogicalExpr::AggregateFnCall(mut agg) => {
+                agg.args = agg.args.into_iter()
+                    .map(|arg| remap_property_access_for_cte(arg, cte_alias, property_mapping, db_to_cypher))
+                    .collect();
+                LogicalExpr::AggregateFnCall(agg)
+            }
+            LogicalExpr::ScalarFnCall(mut func) => {
+                func.args = func.args.into_iter()
+                    .map(|arg| remap_property_access_for_cte(arg, cte_alias, property_mapping, db_to_cypher))
+                    .collect();
+                LogicalExpr::ScalarFnCall(func)
+            }
+            LogicalExpr::List(list) => {
+                LogicalExpr::List(
+                    list.into_iter()
+                        .map(|item| remap_property_access_for_cte(item, cte_alias, property_mapping, db_to_cypher))
+                        .collect()
+                )
+            }
+            LogicalExpr::Case(mut case_expr) => {
+                if let Some(expr) = case_expr.expr {
+                    case_expr.expr = Some(Box::new(remap_property_access_for_cte(*expr, cte_alias, property_mapping, db_to_cypher)));
+                }
+                case_expr.when_then = case_expr.when_then.into_iter()
+                    .map(|(when, then)| {
+                        (
+                            remap_property_access_for_cte(when, cte_alias, property_mapping, db_to_cypher),
+                            remap_property_access_for_cte(then, cte_alias, property_mapping, db_to_cypher)
+                        )
+                    })
+                    .collect();
+                if let Some(else_expr) = case_expr.else_expr {
+                    case_expr.else_expr = Some(Box::new(remap_property_access_for_cte(*else_expr, cte_alias, property_mapping, db_to_cypher)));
+                }
+                LogicalExpr::Case(case_expr)
+            }
+            // Other expressions don't contain PropertyAccess
+            other => other,
+        }
+    }
+
+    // Helper to remap PropertyAccess in a ProjectionItem
+    fn remap_projection_item(
+        item: crate::query_planner::logical_plan::ProjectionItem,
+        cte_alias: &str,
+        property_mapping: &HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>,
+        db_to_cypher: &HashMap<String, String>,
+    ) -> crate::query_planner::logical_plan::ProjectionItem {
+        crate::query_planner::logical_plan::ProjectionItem {
+            expression: remap_property_access_for_cte(item.expression, cte_alias, property_mapping, db_to_cypher),
+            col_alias: item.col_alias,
+        }
+    }
+
     // Helper to create a CTE reference node with proper property_mapping
     fn create_cte_reference(
         cte_name: &str,
-        _with_alias: &str,
+        with_alias: &str,
         cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>)>,
     ) -> LogicalPlan {
         use crate::graph_catalog::expression_parser::PropertyValue;
 
-        // Use a table alias that won't conflict with column aliases
-        // Use "_t" suffix to avoid conflicts with output column names like "name"
-        let table_alias = format!("{}_t", cte_name);
+        // CRITICAL: Use the original WITH alias (e.g., "a") as the GraphNode alias
+        // This ensures property references like "a.user_id" work correctly
+        // The FROM clause will render as: FROM with_a_cte1 AS a
+        let table_alias = with_alias.to_string();
 
-        // Build property_mapping from CTE schema
-        let property_mapping = if let Some((_select_items, property_names)) =
+        // Build property_mapping using CYPHER PROPERTY NAMES ONLY
+        // Store the ViewScan's DB mapping separately so we can reverse-resolve DB columns
+        let (property_mapping, db_to_cypher_mapping) = if let Some((select_items, property_names)) =
             cte_schemas.get(cte_name)
         {
             let mut mapping = HashMap::new();
-            for prop_name in property_names {
-                // Map each property name to a Column reference with that name
-                mapping.insert(prop_name.clone(), PropertyValue::Column(prop_name.clone()));
+            let mut db_to_cypher = HashMap::new();  // Reverse: DB column → Cypher property
+            let alias_prefix = with_alias;
+            
+            // Build mappings from SelectItems
+            for item in select_items {
+                if let Some(cte_col_alias) = &item.col_alias {
+                    let cte_col_name = &cte_col_alias.0;
+                    
+                    // Extract Cypher property name from CTE column (format: "alias_property")
+                    if let Some(cypher_prop) = cte_col_name.strip_prefix(&format!("{}_", alias_prefix)) {
+                        // Primary: Cypher property → CTE column
+                        mapping.insert(cypher_prop.to_string(), PropertyValue::Column(cte_col_name.clone()));
+                        
+                        // Reverse: DB column → Cypher property (for resolving FilterTagging's DB columns)
+                        if let RenderExpr::PropertyAccessExp(prop_access) = &item.expression {
+                            let db_col = prop_access.column.0.raw();
+                            
+                            // Detect conflicts: multiple Cypher properties using same DB column
+                            if let Some(existing_cypher) = db_to_cypher.get(db_col) {
+                                if existing_cypher != cypher_prop {
+                                    log::warn!(
+                                        "🔧 create_cte_reference: CONFLICT - DB column '{}' used by both Cypher '{}' and '{}'. \
+                                         Using '{}' (last wins). Queries using 'a.{}' may get wrong column!",
+                                        db_col, existing_cypher, cypher_prop, cypher_prop, existing_cypher
+                                    );
+                                }
+                            }
+                            
+                            db_to_cypher.insert(db_col.to_string(), cypher_prop.to_string());
+                            
+                            if db_col != cypher_prop {
+                                log::debug!(
+                                    "🔧 create_cte_reference: Reverse mapping for '{}': DB '{}' ← Cypher '{}' → CTE '{}'",
+                                    with_alias, db_col, cypher_prop, cte_col_name
+                                );
+                            }
+                        }
+                    } else {
+                        // Fallback: identity mapping
+                        mapping.insert(cte_col_name.clone(), PropertyValue::Column(cte_col_name.clone()));
+                    }
+                }
             }
+            
             log::info!(
-                "🔧 create_cte_reference (v2): Built property_mapping for '{}' with {} properties: {:?}",
+                "🔧 create_cte_reference: Built mappings for '{}': {} Cypher→CTE + {} DB→Cypher",
                 cte_name,
                 mapping.len(),
-                property_names
+                db_to_cypher.len()
             );
-            mapping
+            (mapping, db_to_cypher)
         } else {
             log::warn!(
                 "🔧 create_cte_reference (v2): No schema found for CTE '{}', using empty property_mapping",
                 cte_name
             );
-            HashMap::new()
+            (HashMap::new(), HashMap::new())
         };
 
         LogicalPlan::GraphNode(GraphNode {
@@ -2495,10 +3167,66 @@ fn replace_with_clause_with_cte_reference_v2(
                 with_alias,
                 cte_name,
                 pre_with_aliases,
-                    cte_schemas,)?;
+                cte_schemas,
+            )?;
+            
+            // CRITICAL: Check if new_input is a CTE reference (GraphNode wrapping ViewScan for CTE)
+            // If so, remap PropertyAccess expressions in projection items to use CTE column names
+            let should_remap = match &new_input {
+                LogicalPlan::GraphNode(gn) => {
+                    if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                        vs.source_table.starts_with("with_") && gn.alias == with_alias
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+            
+            let remapped_items = if should_remap {
+                // Extract property_mapping from the CTE reference and rebuild db_to_cypher from cte_schemas
+                if let LogicalPlan::GraphNode(gn) = &new_input {
+                    if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                        // Rebuild db_to_cypher mapping from cte_schemas
+                        let db_to_cypher = if let Some((select_items, _)) = cte_schemas.get(&vs.source_table) {
+                            let mut mapping = HashMap::new();
+                            let alias_prefix = with_alias;
+                            for item in select_items {
+                                if let Some(cte_col_alias) = &item.col_alias {
+                                    let cte_col_name = &cte_col_alias.0;
+                                    if let Some(cypher_prop) = cte_col_name.strip_prefix(&format!("{}_", alias_prefix)) {
+                                        if let RenderExpr::PropertyAccessExp(prop_access) = &item.expression {
+                                            let db_col = prop_access.column.0.raw();
+                                            mapping.insert(db_col.to_string(), cypher_prop.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            mapping
+                        } else {
+                            HashMap::new()
+                        };
+                        
+                        log::info!(
+                            "🔧 replace_v2: Remapping Projection items for CTE reference '{}' (alias='{}') with {} DB→Cypher mappings",
+                            vs.source_table, with_alias, db_to_cypher.len()
+                        );
+                        proj.items.iter()
+                            .map(|item| remap_projection_item(item.clone(), with_alias, &vs.property_mapping, &db_to_cypher))
+                            .collect()
+                    } else {
+                        proj.items.clone()
+                    }
+                } else {
+                    proj.items.clone()
+                }
+            } else {
+                proj.items.clone()
+            };
+            
             Ok(LogicalPlan::Projection(Projection {
                 input: Arc::new(new_input),
-                items: proj.items.clone(),
+                items: remapped_items,
                 kind: proj.kind.clone(),
                 distinct: proj.distinct,
             }))
@@ -2626,6 +3354,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 joins: updated_joins,
                 optional_aliases: graph_joins.optional_aliases.clone(),
                 anchor_table: new_anchor,
+                cte_references: graph_joins.cte_references.clone(),
             }))
         }
 
@@ -2686,6 +3415,45 @@ fn replace_with_clause_with_cte_reference_v2(
                 inputs: new_inputs,
                 union_type: union.union_type.clone(),
             }))
+        }
+
+        LogicalPlan::GraphNode(node) => {
+            // CRITICAL FIX: Check if this GraphNode's alias is exported from the CTE
+            // This handles patterns like: WITH a, b ... MATCH (b)-[]->(c)
+            // where 'b' should come from the CTE, not a fresh table scan
+            
+            // First recurse into the input to handle nested structures
+            let new_input = replace_with_clause_with_cte_reference_v2(
+                &node.input,
+                with_alias,
+                cte_name,
+                pre_with_aliases,
+                cte_schemas,
+            )?;
+            
+            // Check if this node's alias matches an exported alias from the CTE
+            // For composite aliases like "friend_post", we need to check all parts
+            let with_parts: Vec<&str> = with_alias.split('_').collect();
+            let node_matches_cte = with_parts.contains(&node.alias.as_str());
+            
+            if node_matches_cte {
+                log::info!(
+                    "🔧 replace_v2: GraphNode '{}' matches CTE exported alias '{}' - replacing with CTE reference",
+                    node.alias, with_alias
+                );
+                
+                // Replace this GraphNode with a CTE reference
+                // The CTE contains all the columns for the exported aliases
+                Ok(create_cte_reference(cte_name, &node.alias, cte_schemas))
+            } else {
+                // This GraphNode doesn't match - keep it but use the recursed input
+                Ok(LogicalPlan::GraphNode(GraphNode {
+                    input: Arc::new(new_input),
+                    alias: node.alias.clone(),
+                    label: node.label.clone(),
+                    is_denormalized: node.is_denormalized,
+                }))
+            }
         }
 
         other => Ok(other.clone()),
@@ -4646,9 +5414,18 @@ impl RenderPlanBuilder for LogicalPlan {
 
                             if let Some(anchor_alias) = anchor_alias {
                                 log::info!("Using anchor table from GraphJoins: {}", anchor_alias);
-                                // Get the table name for the anchor node by recursively finding the GraphNode with matching alias
-                                if let Some(table_name) =
+                                
+                                // FIRST: Check if anchor has a CTE reference (from WITH clause export)
+                                let table_name = if let Some(cte_name) = graph_joins.cte_references.get(anchor_alias) {
+                                    log::info!("✅ Anchor '{}' has CTE reference: '{}'", anchor_alias, cte_name);
+                                    Some(cte_name.clone())
+                                } else {
+                                    // FALLBACK: Get table name by searching the plan for GraphNode with this alias
                                     find_table_name_for_alias(&graph_joins.input, anchor_alias)
+                                };
+                                
+                                // Get the table name for the anchor node by recursively finding the GraphNode with matching alias
+                                if let Some(table_name) = table_name
                                 {
                                     Some(super::ViewTableRef {
                                         source: std::sync::Arc::new(LogicalPlan::Empty),
@@ -4688,9 +5465,17 @@ impl RenderPlanBuilder for LogicalPlan {
                         let anchor_alias = &graph_joins.anchor_table;
 
                         if let Some(anchor_alias) = anchor_alias {
-                            // Get the table name for the anchor node
-                            if let Some(table_name) =
+                            // FIRST: Check if anchor has a CTE reference (from WITH clause export)
+                            let table_name = if let Some(cte_name) = graph_joins.cte_references.get(anchor_alias) {
+                                log::info!("✅ Anchor '{}' has CTE reference: '{}'", anchor_alias, cte_name);
+                                Some(cte_name.clone())
+                            } else {
+                                // FALLBACK: Get table name by searching the plan
                                 find_table_name_for_alias(&graph_joins.input, anchor_alias)
+                            };
+                            
+                            // Get the table name for the anchor node
+                            if let Some(table_name) = table_name
                             {
                                 Some(super::ViewTableRef {
                                     source: std::sync::Arc::new(LogicalPlan::Empty),

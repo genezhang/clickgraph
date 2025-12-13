@@ -2,6 +2,24 @@
 
 ### 🚀 Features
 
+- **CTE-Aware Variable Resolution** - Major architectural improvement for WITH clause handling (December 13, 2025)
+  - **Problem**: Three-level WITH queries incorrectly used base tables instead of CTEs in final SELECT
+  - **Solution**: Move variable resolution from render phase to analyzer phase
+  - **Architecture**: 
+    - New `GraphJoins.cte_references: HashMap<String, String>` field maps alias → CTE name
+    - `register_with_cte_references()` pre-scans plan and updates `TableCtx.cte_reference`
+    - `graph_context.rs` checks CTE references before base table lookup during join creation
+    - Render phase uses `GraphJoins.cte_references` for anchor table resolution
+    - Deterministic CTE naming: `with_{aliases}_cte` (no counter)
+  - **Critical Fix**: Correct traversal order (inner WITH before outer) ensures latest definition wins
+  - **Testing**: All 642 tests passing (100%), validated edge cases:
+    - Three-level nesting: `WITH a → WITH a,b → WITH b,c`
+    - OPTIONAL MATCH within WITH clauses
+    - Variable scope changes: `WITH a → WITH b`
+    - Same alias redefinition: `WITH a → WITH a,b`
+  - **Files Modified**: 12 files across query_planner, render_plan modules
+  - **Documentation**: Comprehensive architecture doc with data flow diagrams
+
 - **Composite Node IDs** - Support multi-column `node_id` for nodes with composite primary keys
   - YAML syntax: `node_id: [bank_id, account_number]` for composite, `node_id: user_id` for single
   - Generates ClickHouse tuple equality in JOINs: `(a.c1, a.c2) = (b.c1, b.c2)`

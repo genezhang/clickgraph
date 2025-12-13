@@ -16,6 +16,7 @@ use crate::{
             graph_traversal_planning::GraphTRaversalPlanning, group_by_building::GroupByBuilding,
             plan_sanitization::PlanSanitization, projection_tagging::ProjectionTagging,
             query_validation::QueryValidation, schema_inference::SchemaInference,
+            with_scope_splitter::WithScopeSplitter,
         },
         logical_plan::LogicalPlan,
         optimizer::{
@@ -39,6 +40,7 @@ mod plan_sanitization;
 mod projection_tagging;
 mod query_validation;
 mod schema_inference;
+mod with_scope_splitter;
 
 pub fn initial_analyzing(
     plan: Arc<LogicalPlan>,
@@ -133,6 +135,13 @@ pub fn intermediate_analyzing(
         plan_ctx,
         current_graph_schema,
     )?;
+    let plan = transformed_plan.get_plan();
+
+    // CRITICAL: Split plan at WITH boundaries BEFORE join inference
+    // This prevents GraphJoinInference from computing joins across scope boundaries
+    // Each WITH creates a materialization point - joins should only be computed within each scope
+    let with_scope_splitter = WithScopeSplitter::new();
+    let transformed_plan = with_scope_splitter.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
 
     let graph_join_inference = GraphJoinInference::new();

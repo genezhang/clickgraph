@@ -1,10 +1,21 @@
 # ClickGraph Status
 
-*Updated: December 12, 2025*
+*Updated: December 13, 2025*
 
 ## 🎉 **v0.5.5 Released** - December 10, 2025
 
 **LDBC SNB Benchmark: 100% (8/8 Interactive queries passing)**
+
+### Recent Fixes (Dec 13, 2025)
+- **WITH + WHERE after aggregation → HAVING clause** - Critical bug fix ✅
+  - Problem: WHERE clause after WITH with aggregation was completely missing from SQL
+  - Should generate: `GROUP BY ... HAVING cnt > 2` but generated: `GROUP BY ...` (no HAVING)
+  - Solution: Extract `where_clause` from WithClause and emit as HAVING when GROUP BY present
+  - Files: `render_plan/plan_builder.rs` (WHERE→HAVING conversion logic added)
+  - Impact: Enables filtering aggregated results (TOP-N, threshold queries)
+  - OpenCypher compliance: WHERE-after-WITH-with-aggregation semantics
+  - Example: `WITH a, COUNT(b) as cnt WHERE cnt > 2 RETURN a, cnt` now works
+  - See: `notes/with-where-having-fix.md` for details
 
 ### Major Code Cleanup (Dec 12, 2025)
 - **Removed V1 Graph Pattern Handler** - Eliminated 1,568 lines of deprecated code ✅

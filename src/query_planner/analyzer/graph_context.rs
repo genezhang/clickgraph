@@ -188,23 +188,39 @@ pub fn get_graph_context<'a>(
     // This handles cases where node data is denormalized onto edge tables.
     let rel_cte_name = format!("{}.{}", rel_schema.database, rel_schema.table_name);
 
-    // Left node: check if edge has properties for this node position
-    let left_cte_name = if edge_has_node_properties(rel_schema, true) {
+    // Left node: check if this alias references a CTE (from WITH clause export)
+    let left_cte_name = if let Some(cte_name) = left_ctx.get_cte_name() {
+        // This alias was exported from a WITH clause - use CTE instead of base table
+        log::info!("🔍 graph_context: LEFT alias '{}' has CTE reference: '{}'", left_alias, cte_name);
+        cte_name.clone()
+    } else if edge_has_node_properties(rel_schema, true) {
         // Edge has from_node_properties - node data is on edge table
+        log::info!("🔍 graph_context: LEFT alias '{}' uses edge properties: '{}'", left_alias, rel_cte_name);
         rel_cte_name.clone()
     } else {
-        format!("{}.{}", left_schema.database, left_schema.table_name)
+        let base_table = format!("{}.{}", left_schema.database, left_schema.table_name);
+        log::info!("🔍 graph_context: LEFT alias '{}' uses base table: '{}'", left_alias, base_table);
+        base_table
     };
 
-    // Right node: check if edge has properties for this node position (skip for $any polymorphic nodes)
-    let right_cte_name = if right_label == "$any" {
+    // Right node: check CTE reference first, then edge properties, then base table
+    let right_cte_name = if let Some(cte_name) = right_ctx.get_cte_name() {
+        // This alias was exported from a WITH clause - use CTE instead of base table
+        log::info!("🔍 graph_context: RIGHT alias '{}' has CTE reference: '{}'", right_alias, cte_name);
+        cte_name.clone()
+    } else if right_label == "$any" {
         // Polymorphic node - doesn't matter, won't be JOINed directly
-        format!("{}.{}", right_schema.database, right_schema.table_name)
+        let base_table = format!("{}.{}", right_schema.database, right_schema.table_name);
+        log::info!("🔍 graph_context: RIGHT alias '{}' is polymorphic, using: '{}'", right_alias, base_table);
+        base_table
     } else if edge_has_node_properties(rel_schema, false) {
         // Edge has to_node_properties - node data is on edge table
+        log::info!("🔍 graph_context: RIGHT alias '{}' uses edge properties: '{}'", right_alias, rel_cte_name);
         rel_cte_name.clone()
     } else {
-        format!("{}.{}", right_schema.database, right_schema.table_name)
+        let base_table = format!("{}.{}", right_schema.database, right_schema.table_name);
+        log::info!("🔍 graph_context: RIGHT alias '{}' uses base table: '{}'", right_alias, base_table);
+        base_table
     };
 
     // Create the initial GraphContext with schema

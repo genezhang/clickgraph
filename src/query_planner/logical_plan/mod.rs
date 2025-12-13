@@ -569,6 +569,10 @@ pub struct GraphJoins {
     /// Computed during join reordering in graph_join_inference
     /// None = denormalized pattern (use relationship table directly)
     pub anchor_table: Option<String>,
+
+    /// CTE references: Maps alias → CTE name for aliases exported from WITH clauses
+    /// Used by render phase to resolve anchor table names correctly
+    pub cte_references: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Default)]
@@ -924,6 +928,7 @@ impl GraphJoins {
                     joins: self.joins.clone(),
                     optional_aliases: self.optional_aliases.clone(),
                     anchor_table: self.anchor_table.clone(),
+                    cte_references: self.cte_references.clone(),
                 });
                 Transformed::Yes(Arc::new(new_graph_joins))
             }

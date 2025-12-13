@@ -98,6 +98,10 @@ pub fn build_logical_plan(
 
 /// Process a chain of WITH clauses recursively
 /// Handles patterns like: WITH a MATCH ... WITH a, b MATCH ... WITH a, b, c ...
+/// 
+/// Key Implementation Detail: Creates a child scope after WITH clause evaluation.
+/// This child scope contains ONLY the exported aliases from WITH, ensuring proper
+/// scope isolation as per OpenCypher semantics.
 fn process_with_clause_chain<'a>(
     with_clause_ast: &crate::open_cypher_parser::ast::WithClause<'a>,
     mut logical_plan: Arc<LogicalPlan>,
@@ -111,18 +115,69 @@ fn process_with_clause_chain<'a>(
     // Process the WITH projection itself
     logical_plan = with_clause::evaluate_with_clause(with_clause_ast, logical_plan);
 
+    // Extract exported aliases from the WITH clause node
+    let exported_aliases = if let LogicalPlan::WithClause(ref with_node) = *logical_plan {
+        with_node.exported_aliases.clone()
+    } else {
+        vec![] // Should not happen, but handle gracefully
+    };
+
+    log::debug!(
+        "process_with_clause_chain: WITH exports {} aliases: {:?}",
+        exported_aliases.len(),
+        exported_aliases
+    );
+
+    // Create a child scope for processing subsequent clauses
+    // CRITICAL: is_with_scope=true makes this scope a BARRIER
+    // Variables not in exported_aliases cannot be accessed from parent scope
+    // This implements WITH's shielding semantics per OpenCypher spec
+    let mut child_ctx = PlanCtx::with_parent_scope(plan_ctx, true);
+
+    // Register each exported alias in the child scope
+    // These aliases reference the WITH output (will be CTE columns)
+    for alias in &exported_aliases {
+        // Check if we can get table context from parent scope
+        if let Ok(parent_table_ctx) = plan_ctx.get_table_ctx(alias) {
+            // Clone the table context into child scope
+            // This preserves labels, properties, etc. from parent scope
+            log::debug!(
+                "process_with_clause_chain: Copying alias '{}' from parent scope to child scope",
+                alias
+            );
+            child_ctx.insert_table_ctx(alias.clone(), parent_table_ctx.clone());
+        } else {
+            // Alias might be a new alias (e.g., COUNT(b) AS follows)
+            // Create a minimal TableCtx for it
+            log::debug!(
+                "process_with_clause_chain: Creating new TableCtx for computed alias '{}' in child scope",
+                alias
+            );
+            child_ctx.insert_table_ctx(
+                alias.clone(),
+                crate::query_planner::plan_ctx::TableCtx::build(
+                    alias.clone(),
+                    None,                // No label for computed expressions
+                    vec![],              // No properties yet
+                    false,               // Not a relationship
+                    true,                // This is an explicit alias from WITH
+                ),
+            );
+        }
+    }
+
     // Process subsequent UNWIND clause if present (e.g., WITH d, rip UNWIND rip.ips AS ip)
     if let Some(subsequent_unwind) = &with_clause_ast.subsequent_unwind {
         log::debug!("process_with_clause_chain: Processing subsequent UNWIND clause after WITH");
         logical_plan =
-            unwind_clause::evaluate_unwind_clause(subsequent_unwind, logical_plan, plan_ctx);
+            unwind_clause::evaluate_unwind_clause(subsequent_unwind, logical_plan, &mut child_ctx);
     }
 
     // Process subsequent MATCH clause if present (e.g., WITH u MATCH (u)-[:FOLLOWS]->(f))
     if let Some(subsequent_match) = &with_clause_ast.subsequent_match {
         log::debug!("process_with_clause_chain: Processing subsequent MATCH clause after WITH");
         logical_plan =
-            match_clause::evaluate_match_clause(subsequent_match, logical_plan, plan_ctx)?;
+            match_clause::evaluate_match_clause(subsequent_match, logical_plan, &mut child_ctx)?;
     }
 
     // Process subsequent OPTIONAL MATCH clauses if present
@@ -138,7 +193,7 @@ fn process_with_clause_chain<'a>(
         logical_plan = optional_match_clause::evaluate_optional_match_clause(
             optional_match,
             logical_plan,
-            plan_ctx,
+            &mut child_ctx,
         )?;
     }
 
@@ -147,7 +202,13 @@ fn process_with_clause_chain<'a>(
         log::debug!(
             "process_with_clause_chain: Processing subsequent WITH clause (chained pattern)"
         );
-        logical_plan = process_with_clause_chain(subsequent_with, logical_plan, plan_ctx)?;
+        logical_plan = process_with_clause_chain(subsequent_with, logical_plan, &mut child_ctx)?;
+    }
+
+    // Copy child scope back to parent so subsequent clauses can see new aliases
+    // Note: This includes aliases from both exported (from WITH) and newly created (from MATCH)
+    for (alias, table_ctx) in child_ctx.iter_aliases() {
+        plan_ctx.insert_table_ctx(alias.clone(), table_ctx.clone());
     }
 
     Ok(logical_plan)

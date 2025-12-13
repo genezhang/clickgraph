@@ -140,7 +140,7 @@ def run_tests():
     test_query(
         result,
         "WITH → MATCH pattern",
-        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, COUNT(b) as follows WHERE follows > 1 MATCH (a)-[:LIKED]->(p:Product) RETURN a.name, follows, p.name as product",
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, COUNT(b) as follows WHERE follows > 1 MATCH (a)-[:LIKED]->(p:Post) RETURN a.name, follows, p.name as post_name",
         check_has_results()
     )
     
@@ -222,6 +222,43 @@ def run_tests():
         "WITH → MATCH → aggregation in RETURN",
         "MATCH (a:User) WITH a WHERE a.age > 20 MATCH (a)-[:FOLLOWS]->(b:User) RETURN a.name, COUNT(b) as follows",
         check_has_results()
+    )
+    
+    # Test WITH + aggregation + WHERE (should generate HAVING clause)
+    test_query(
+        result,
+        "WITH + aggregation + WHERE → HAVING clause",
+        """MATCH (a:User)-[:FOLLOWS]->(b:User) 
+           WITH a, COUNT(b) as cnt 
+           WHERE cnt > 2 
+           RETURN a.name, cnt""",
+        check_sql_keywords(["HAVING", "GROUP BY"])
+    )
+    
+    # Test WITH + WHERE without aggregation (should stay WHERE)
+    test_query(
+        result,
+        "WITH + WHERE (no aggregation) → WHERE clause",
+        """MATCH (a:User) 
+           WITH a 
+           WHERE a.user_id > 100 
+           RETURN a.name""",
+        lambda data: (
+            True if "WHERE" in data.get("sql", "").upper() and 
+                    "HAVING" not in data.get("sql", "").upper() 
+            else "Expected WHERE but not HAVING in SQL"
+        )
+    )
+    
+    # Test WITH + aggregation + multiple WHERE conditions
+    test_query(
+        result,
+        "WITH + aggregation + complex WHERE → complex HAVING",
+        """MATCH (a:User)-[:FOLLOWS]->(b:User) 
+           WITH a, COUNT(b) as cnt 
+           WHERE cnt > 2 AND cnt < 100 
+           RETURN a.name, cnt""",
+        check_sql_keywords(["HAVING", "AND", "GROUP BY"])
     )
     
     return result.summary()
