@@ -21,7 +21,8 @@ Complete syntax reference for Cypher queries supported by ClickGraph.
 - [Functions](#functions)
   - [size() - Pattern Counting](#size---get-collection-size)
   - [List Functions](#other-list-functions)
-- [Lambda Expressions](#lambda-expressions) ⭐ **NEW**
+- [ClickHouse Function Passthrough](#clickhouse-function-passthrough) ⭐ **NEW**
+  - [Lambda Expressions](#lambda-expressions)
 - [Operators](#operators)
 - [Data Types](#data-types)
 - [Parameters](#parameters)
@@ -1382,13 +1383,39 @@ ORDER BY mutual_friends DESC
 
 ---
 
-## Lambda Expressions
+## ClickHouse Function Passthrough
 
-**Status**: ⭐ **NEW** (v0.5.5+) - Full support for inline anonymous functions in ClickHouse passthrough functions.
+**Status**: ⭐ **NEW** (v0.5.5+) - Direct access to ClickHouse functions with lambda support.
 
-Lambda expressions enable passing inline functions to ClickHouse higher-order functions, unlocking powerful array manipulation and data transformation capabilities.
+ClickGraph provides direct access to **any ClickHouse function** using the `ch.` and `chagg.` prefixes, enabling ClickHouse's powerful analytics capabilities directly from Cypher queries.
 
-### Syntax
+### Quick Reference
+
+| Prefix | Use Case | Examples |
+|--------|----------|----------|
+| `ch.` | Scalar functions + known aggregates | `ch.cityHash64()`, `ch.uniq()`, `ch.arrayFilter()` |
+| `chagg.` | Explicit aggregates | `chagg.myCustomAgg()` |
+
+```cypher
+-- Scalar function
+MATCH (u:User) RETURN ch.cityHash64(u.email) AS hash
+
+-- Array function with lambda
+RETURN ch.arrayFilter(x -> x > 5, [1,2,3,4,5,6,7,8,9,10])
+
+-- Known aggregate (auto GROUP BY)
+MATCH (u:User) RETURN u.country, ch.uniq(u.user_id) AS unique_users
+```
+
+📖 **Complete Reference**: See [ClickHouse Functions](ClickHouse-Functions.md) for full function catalog.
+
+---
+
+### Lambda Expressions
+
+Lambda expressions enable passing inline anonymous functions to ClickHouse higher-order functions, unlocking powerful array manipulation and data transformation capabilities.
+
+#### Syntax
 
 **Single Parameter**:
 ```cypher
@@ -1400,7 +1427,7 @@ parameter -> expression
 (param1, param2, ...) -> expression
 ```
 
-### Basic Examples
+#### Basic Examples
 
 ```cypher
 -- Filter array elements
@@ -1420,7 +1447,7 @@ RETURN ch.arrayAll(x -> x > 0, [1,2,3,4,5]) AS all_positive
 -- Result: true
 ```
 
-### Lambda with Multiple Parameters
+#### Lambda with Multiple Parameters
 
 ```cypher
 -- Combine two arrays element-wise
@@ -1432,7 +1459,7 @@ RETURN ch.arrayMap((x, y) -> x * y, [2,3,4], [5,6,7]) AS products
 -- Result: [10,18,28]
 ```
 
-### Lambda in Graph Queries
+#### Lambda in Graph Queries
 
 **Filter User Scores**:
 ```cypher
@@ -1458,7 +1485,7 @@ WHERE ch.arrayAll(score -> score >= 60, u.exam_scores)
 RETURN u.name, u.exam_scores AS passing_scores
 ```
 
-### Supported ClickHouse Functions
+#### Supported ClickHouse Functions
 
 **Array Transformation**:
 - `ch.arrayFilter(lambda, array)` - Filter elements matching condition
@@ -1477,7 +1504,7 @@ RETURN u.name, u.exam_scores AS passing_scores
 - `ch.arrayFold(lambda, array, initial)` - Reduce array to single value
 - `ch.arrayReduce('aggFunc', array)` - Apply aggregate to array elements
 
-### Real-World Examples
+#### Real-World Examples
 
 **Data Validation**:
 ```cypher
@@ -1519,7 +1546,7 @@ RETURN s.sensor_id,
        ) AS recent_events
 ```
 
-### Nested Lambda Expressions
+#### Nested Lambda Expressions
 
 Lambda expressions can reference outer variables and node properties:
 
@@ -1530,7 +1557,7 @@ RETURN u.name,
        ch.arrayFilter(score -> score >= passing_grade, u.scores) AS passed
 ```
 
-### Variable Scoping
+#### Variable Scoping
 
 - **Lambda parameters** are local variables (e.g., `x`, `score`, `tag`)
 - **Lambda body** can reference:
@@ -1546,7 +1573,7 @@ RETURN u.name,
        ch.arrayFilter(x -> x >= config.value, u.scores) AS qualified
 ```
 
-### Common Patterns
+#### Common Patterns
 
 **Chaining Array Operations**:
 ```cypher
@@ -1567,7 +1594,7 @@ RETURN p.name,
        ) AS adjusted_prices
 ```
 
-### Performance Tips
+#### Performance Tips
 
 1. **Use arrayExists for early termination** instead of arrayFilter + count:
    ```cypher
@@ -1596,7 +1623,7 @@ RETURN p.name,
    WHERE ch.length(values) = ch.length(ch.arrayFilter(x -> x >= 0, values))
    ```
 
-### Common Errors
+#### Common Errors
 
 **Error: Lambda parameter conflicts with alias**
 ```cypher
@@ -1627,14 +1654,14 @@ RETURN ch.arrayFilter(x -> x > 'abc', [1,2,3])
 RETURN ch.arrayFilter(s -> s > 'abc', ['aaa', 'bbb', 'ccc'])
 ```
 
-### Limitations
+#### Limitations
 
 - **No nested lambdas**: `x -> y -> x + y` not supported (use multiple calls)
 - **No destructuring**: Parameters must be simple identifiers
 - **No type checking**: All validation happens at ClickHouse query time
 - **No closure mutation**: Lambda parameters are read-only
 
-### See Also
+#### See Also
 
 - **[ClickHouse Functions](ClickHouse-Functions.md)** - Complete ClickHouse function reference
 - **[Cypher Functions](Cypher-Functions.md)** - Standard Cypher functions
