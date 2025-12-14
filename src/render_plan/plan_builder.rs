@@ -203,14 +203,6 @@ pub(crate) trait RenderPlanBuilder {
     /// Find the ID column for a given table alias by traversing the logical plan
     fn find_id_column_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<String>;
 
-    /// Get all properties for a table alias by traversing the logical plan
-    /// Returns a vector of (property_name, column_name) tuples
-    /// Reserved for future property introspection feature
-    #[allow(dead_code)]
-    fn get_all_properties_for_alias(
-        &self,
-        alias: &str,
-    ) -> RenderPlanBuilderResult<Vec<(String, String)>>;
 
     /// Get all properties for an alias along with the actual table alias to use for SQL generation.
     /// For denormalized nodes, this returns the relationship alias instead of the node alias.
@@ -220,14 +212,6 @@ pub(crate) trait RenderPlanBuilder {
         alias: &str,
     ) -> RenderPlanBuilderResult<(Vec<(String, String)>, Option<String>)>;
 
-    /// Find denormalized properties for a given alias
-    /// Returns a HashMap of logical property name -> physical column name
-    /// Reserved for future denormalized property optimization
-    #[allow(dead_code)]
-    fn find_denormalized_properties(
-        &self,
-        alias: &str,
-    ) -> Option<std::collections::HashMap<String, String>>;
 
     /// Normalize aggregate function arguments: convert TableAlias(a) to PropertyAccess(a.id_column)
     /// This is needed for queries like COUNT(b) where b is a node alias
@@ -503,18 +487,10 @@ fn expand_table_alias_to_group_by_id_only(
     }
 }
 
-/// Rewrite JOIN condition to use CTE column references instead of table aliases.
-/// When joining on b.id but b is actually in a CTE as "a_b.b_user_id", rewrite the reference.
-fn rewrite_join_condition_for_cte_v2(
-    join_cond: &mut OperatorApplication,
-    cte_info: &Option<(Option<String>, HashMap<String, PropertyValue>)>,
-    cte_schemas: &HashMap<String, (Vec<SelectItem>, Vec<String>)>,
-) {
-    // Recursively rewrite all operands
-    for operand in join_cond.operands.iter_mut() {
-        *operand = rewrite_expr_for_cte_columns_v2(operand, cte_info, cte_schemas);
-    }
-}
+// REMOVED: rewrite_join_condition_for_cte_v2 function (Phase 3D)
+// This function is obsolete. The analyzer (GraphJoinInference) now resolves all
+// column names during join creation, so JOIN conditions already contain concrete
+// column names (e.g., "p_firstName" for CTEs). This rewriting step is redundant.
 
 /// Recursively rewrite property access expressions to use CTE column names.
 /// Example: b.id → a_b.b_user_id when b is in with_a_b_cte
@@ -1529,34 +1505,10 @@ fn build_chained_with_match_cte_plan(
                             }
                         }
 
-                        // CRITICAL: Rewrite JOIN conditions to use CTE column references
-                        // When WITH b, c from with_a_b_cte, any JOINs that reference b.id
-                        // need to be rewritten to a_b.b_user_id (the CTE column name)
-                        // Extract FROM table info to determine CTE alias and property mappings
-                        let cte_alias_and_mapping = if let FromTableItem(Some(from_ref)) = &rendered.from {
-                            if from_ref.name.starts_with("with_") {
-                                // This is a CTE reference - extract ViewScan to get property_mapping
-                                if let LogicalPlan::ViewScan(vs) = from_ref.source.as_ref() {
-                                    Some((from_ref.alias.clone(), vs.property_mapping.clone()))
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                        
-                        for join in rendered.joins.0.iter_mut() {
-                            for join_cond in join.joining_on.iter_mut() {
-                                rewrite_join_condition_for_cte_v2(
-                                    join_cond,
-                                    &cte_alias_and_mapping,
-                                    &cte_schemas,
-                                );
-                            }
-                        }
+                        // REMOVED: JOIN condition rewriting (Phase 3D)
+                        // Previously, this code rewrote JOIN conditions to use CTE column names.
+                        // Now obsolete: the analyzer (GraphJoinInference) resolves column names
+                        // during join creation, so JOIN conditions already have correct names.
 
                         rendered_plans.push(rendered);
                     }
@@ -4014,189 +3966,10 @@ impl RenderPlanBuilder for LogicalPlan {
         )))
     }
 
-    /// Get all properties for a table alias by traversing the logical plan
-    /// Returns a vector of (property_name, column_name) tuples
-    fn get_all_properties_for_alias(
-        &self,
-        alias: &str,
-    ) -> RenderPlanBuilderResult<Vec<(String, String)>> {
-        // Traverse the plan tree to find a GraphNode or ViewScan with matching alias
-        match self {
-            LogicalPlan::GraphNode(node) if node.alias == alias => {
-                // Found the matching node - extract all properties from its ViewScan
-                if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
-                    // For denormalized nodes, properties are in from_node_properties or to_node_properties
-                    // not in property_mapping (which is empty for denormalized nodes)
-                    if scan.is_denormalized {
-                        // Try from_node_properties first, then to_node_properties
-                        let props = scan
-                            .from_node_properties
-                            .as_ref()
-                            .or(scan.to_node_properties.as_ref());
-
-                        if let Some(prop_map) = props {
-                            // Sort by property name to ensure consistent column order in UNION branches
-                            let mut properties: Vec<(String, String)> = prop_map
-                                .iter()
-                                .map(|(prop_name, prop_value)| {
-                                    (prop_name.clone(), prop_value.raw().to_string())
-                                })
-                                .collect();
-                            properties.sort_by(|a, b| a.0.cmp(&b.0));
-                            println!(
-                                "DEBUG: get_all_properties_for_alias - denormalized node '{}' has {} properties",
-                                alias,
-                                properties.len()
-                            );
-                            return Ok(properties);
-                        }
-                    }
-
-                    // Standard nodes: use property_mapping
-                    // Sort by property name to ensure consistent column order
-                    let mut properties: Vec<(String, String)> = scan
-                        .property_mapping
-                        .iter()
-                        .map(|(prop_name, prop_value)| {
-                            (prop_name.clone(), prop_value.raw().to_string())
-                        })
-                        .collect();
-                    properties.sort_by(|a, b| a.0.cmp(&b.0));
-                    return Ok(properties);
-                }
-            }
-            LogicalPlan::GraphRel(rel) => {
-                // Check if this relationship's alias matches
-                if rel.alias == alias {
-                    // Found the matching relationship - extract all properties from its ViewScan (center)
-                    if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                        // Convert property_mapping HashMap to Vec of tuples
-                        // Sort by property name to ensure consistent column order
-                        let mut properties: Vec<(String, String)> = scan
-                            .property_mapping
-                            .iter()
-                            .map(|(prop_name, prop_value)| {
-                                (prop_name.clone(), prop_value.raw().to_string())
-                            })
-                            .collect();
-                        properties.sort_by(|a, b| a.0.cmp(&b.0));
-                        return Ok(properties);
-                    }
-                }
-
-                // For denormalized nodes, properties are in the relationship center's ViewScan
-                // not in the GraphNode itself (which has Empty input)
-                // IMPORTANT: Direction affects which properties to use!
-                // - Outgoing: left_connection → from_node_properties, right_connection → to_node_properties
-                // - Incoming: left_connection → to_node_properties, right_connection → from_node_properties
-                if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                    let is_incoming = rel.direction == Direction::Incoming;
-
-                    // Check if alias matches left_connection
-                    if alias == rel.left_connection {
-                        // For Incoming direction, left node is on the TO side of the edge
-                        let props = if is_incoming {
-                            &scan.to_node_properties
-                        } else {
-                            &scan.from_node_properties
-                        };
-                        if let Some(node_props) = props {
-                            let mut properties: Vec<(String, String)> = node_props
-                                .iter()
-                                .map(|(prop_name, prop_value)| {
-                                    (prop_name.clone(), prop_value.raw().to_string())
-                                })
-                                .collect();
-                            properties.sort_by(|a, b| a.0.cmp(&b.0));
-                            if !properties.is_empty() {
-                                println!(
-                                    "DEBUG: get_all_properties_for_alias - denormalized node '{}' (direction={:?}) has {} properties from rel center",
-                                    alias,
-                                    rel.direction,
-                                    properties.len()
-                                );
-                                return Ok(properties);
-                            }
-                        }
-                    }
-                    // Check if alias matches right_connection
-                    if alias == rel.right_connection {
-                        // For Incoming direction, right node is on the FROM side of the edge
-                        let props = if is_incoming {
-                            &scan.from_node_properties
-                        } else {
-                            &scan.to_node_properties
-                        };
-                        if let Some(node_props) = props {
-                            let mut properties: Vec<(String, String)> = node_props
-                                .iter()
-                                .map(|(prop_name, prop_value)| {
-                                    (prop_name.clone(), prop_value.raw().to_string())
-                                })
-                                .collect();
-                            properties.sort_by(|a, b| a.0.cmp(&b.0));
-                            if !properties.is_empty() {
-                                println!(
-                                    "DEBUG: get_all_properties_for_alias - denormalized node '{}' (direction={:?}) has {} properties from rel center",
-                                    alias,
-                                    rel.direction,
-                                    properties.len()
-                                );
-                                return Ok(properties);
-                            }
-                        }
-                    }
-                }
-
-                // Check left and right branches for node aliases
-                if let Ok(props) = rel.left.get_all_properties_for_alias(alias) {
-                    return Ok(props);
-                }
-                if let Ok(props) = rel.right.get_all_properties_for_alias(alias) {
-                    return Ok(props);
-                }
-                // Also check center for nested cases
-                if let Ok(props) = rel.center.get_all_properties_for_alias(alias) {
-                    return Ok(props);
-                }
-            }
-            LogicalPlan::Projection(proj) => {
-                return proj.input.get_all_properties_for_alias(alias);
-            }
-            LogicalPlan::Filter(filter) => {
-                return filter.input.get_all_properties_for_alias(alias);
-            }
-            LogicalPlan::GroupBy(gb) => {
-                return gb.input.get_all_properties_for_alias(alias);
-            }
-            LogicalPlan::GraphJoins(joins) => {
-                return joins.input.get_all_properties_for_alias(alias);
-            }
-            LogicalPlan::OrderBy(order) => {
-                return order.input.get_all_properties_for_alias(alias);
-            }
-            LogicalPlan::Skip(skip) => {
-                return skip.input.get_all_properties_for_alias(alias);
-            }
-            LogicalPlan::Limit(limit) => {
-                return limit.input.get_all_properties_for_alias(alias);
-            }
-            LogicalPlan::Union(union) => {
-                // For Union (used for denormalized nodes with both from/to properties),
-                // try to get properties from the first branch
-                if let Some(first_input) = union.inputs.first() {
-                    if let Ok(props) = first_input.get_all_properties_for_alias(alias) {
-                        return Ok(props);
-                    }
-                }
-            }
-            _ => {}
-        }
-        Err(RenderBuildError::InvalidRenderPlan(format!(
-            "Cannot find properties for alias '{}'",
-            alias
-        )))
-    }
+    // REMOVED: get_all_properties_for_alias function (Phase 3D)
+    // This function was marked as dead_code and never called externally.
+    // It traversed the plan tree to extract all properties for an alias.
+    // Removed as part of renderer simplification - ~180 lines.
 
     /// Get all properties for an alias, returning both properties and the actual table alias to use.
     /// For denormalized nodes, the table alias is the relationship alias (not the node alias).
@@ -4412,60 +4185,10 @@ impl RenderPlanBuilder for LogicalPlan {
             alias
         )))
     }
-
-    /// Find denormalized properties for a given alias
-    /// Returns a HashMap of logical property name -> physical column name
-    /// Only returns Some if the alias refers to a denormalized node
-    fn find_denormalized_properties(
-        &self,
-        alias: &str,
-    ) -> Option<std::collections::HashMap<String, String>> {
-        match self {
-            LogicalPlan::GraphNode(node) if node.alias == alias => {
-                if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
-                    if scan.is_denormalized {
-                        // Prefer from_node_properties, fall back to to_node_properties
-                        // For UNION ALL case, this will be handled separately
-                        let props = scan
-                            .from_node_properties
-                            .as_ref()
-                            .or(scan.to_node_properties.as_ref());
-
-                        if let Some(prop_map) = props {
-                            return Some(
-                                prop_map
-                                    .iter()
-                                    .map(|(k, v)| (k.clone(), v.raw().to_string()))
-                                    .collect(),
-                            );
-                        }
-                    }
-                }
-                None
-            }
-            LogicalPlan::GraphRel(rel) => {
-                if let Some(props) = rel.left.find_denormalized_properties(alias) {
-                    return Some(props);
-                }
-                rel.right.find_denormalized_properties(alias)
-            }
-            LogicalPlan::Projection(proj) => proj.input.find_denormalized_properties(alias),
-            LogicalPlan::Filter(filter) => filter.input.find_denormalized_properties(alias),
-            LogicalPlan::GroupBy(gb) => gb.input.find_denormalized_properties(alias),
-            LogicalPlan::GraphJoins(joins) => joins.input.find_denormalized_properties(alias),
-            LogicalPlan::OrderBy(order) => order.input.find_denormalized_properties(alias),
-            LogicalPlan::Skip(skip) => skip.input.find_denormalized_properties(alias),
-            LogicalPlan::Limit(limit) => limit.input.find_denormalized_properties(alias),
-            LogicalPlan::CartesianProduct(cp) => {
-                // Search both branches
-                if let Some(props) = cp.left.find_denormalized_properties(alias) {
-                    return Some(props);
-                }
-                cp.right.find_denormalized_properties(alias)
-            }
-            _ => None,
-        }
-    }
+    // REMOVED: find_denormalized_properties function (Phase 3D)
+    // This function was marked as dead_code and never called externally.
+    // It traversed the plan tree to find denormalized node properties.
+    // Removed as part of renderer simplification - ~54 lines.
 
     fn normalize_aggregate_args(&self, expr: RenderExpr) -> RenderPlanBuilderResult<RenderExpr> {
         match expr {
