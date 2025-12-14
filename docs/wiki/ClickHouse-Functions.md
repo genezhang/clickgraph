@@ -42,7 +42,7 @@ MATCH (u:User) RETURN u.country, chagg.myCustomAgg(u.score) AS result
   - [Funnel Analysis](#funnel-analysis)
   - [Statistics](#statistics)
   - [Map Aggregates](#map-aggregates)
-- [Lambda Expressions](#lambda-expressions) ⭐ **NEW**
+- [Lambda Expressions](#lambda-expressions)
 - [Explicit Aggregate Prefix: chagg.](#explicit-aggregate-prefix-chagg)
 - [Function Reference Tables](#function-reference-tables)
 - [Limitations](#limitations)
