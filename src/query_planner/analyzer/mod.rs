@@ -11,7 +11,7 @@ use crate::{
     query_planner::{
         analyzer::{
             analyzer_pass::AnalyzerPass, bidirectional_union::BidirectionalUnion,
-            cte_column_resolver::CteColumnResolver,
+            cte_column_resolver::CteColumnResolver, cte_schema_resolver::CteSchemaResolver,
             duplicate_scans_removing::DuplicateScansRemoving, filter_tagging::FilterTagging,
             graph_join_inference::GraphJoinInference,
             graph_traversal_planning::GraphTRaversalPlanning, group_by_building::GroupByBuilding,
@@ -32,6 +32,7 @@ use super::plan_ctx::PlanCtx;
 mod analyzer_pass;
 mod bidirectional_union;
 mod cte_column_resolver;
+mod cte_schema_resolver;
 mod duplicate_scans_removing;
 pub mod errors;
 mod filter_tagging;
@@ -62,7 +63,21 @@ pub fn initial_analyzing(
         plan
     };
 
-    // Step 1.5: Projected Columns Resolver - pre-compute projected columns for GraphNodes
+    // Step 1.5: CTE Schema Resolver - register CTE schemas in plan_ctx for analyzer/planner
+    // This runs after SchemaInference to ensure property mappings are available
+    // Registers WithClause CTE schemas, making column info available to downstream passes
+    let cte_schema_resolver = CteSchemaResolver::new();
+    let plan = if let Ok(transformed_plan) = cte_schema_resolver.analyze_with_graph_schema(
+        plan.clone(),
+        plan_ctx,
+        current_graph_schema,
+    ) {
+        transformed_plan.get_plan()
+    } else {
+        plan
+    };
+
+    // Step 1.6: Projected Columns Resolver - pre-compute projected columns for GraphNodes
     // This runs after SchemaInference to ensure we have property mappings available
     // Populates GraphNode.projected_columns, eliminating need for renderer to traverse plan
     let projected_columns_resolver = ProjectedColumnsResolver::new();
