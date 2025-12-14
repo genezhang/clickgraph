@@ -3733,6 +3733,28 @@ impl RenderPlanBuilder for LogicalPlan {
         );
         match self {
             LogicalPlan::GraphNode(node) if node.alias == alias => {
+                // FAST PATH: Use pre-computed projected_columns if available
+                // (populated by ProjectedColumnsResolver analyzer pass)
+                if let Some(projected_cols) = &node.projected_columns {
+                    // projected_columns format: Vec<(property_name, qualified_column)>
+                    // e.g., [("firstName", "p.first_name"), ("age", "p.age")]
+                    // We need to return unqualified column names: ("firstName", "first_name")
+                    let properties: Vec<(String, String)> = projected_cols
+                        .iter()
+                        .map(|(prop_name, qualified_col)| {
+                            // Extract unqualified column: "p.first_name" -> "first_name"
+                            let unqualified = qualified_col
+                                .split('.')
+                                .nth(1)
+                                .unwrap_or(qualified_col)
+                                .to_string();
+                            (prop_name.clone(), unqualified)
+                        })
+                        .collect();
+                    return Ok((properties, None));
+                }
+
+                // FALLBACK: Compute from ViewScan (for nodes without projected_columns)
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                     // For denormalized nodes with properties on the ViewScan (from standalone node query)
                     if scan.is_denormalized {
