@@ -263,6 +263,7 @@ fn transform_bidirectional(
                         alias: graph_node.alias.clone(),
                         label: graph_node.label.clone(),
                         is_denormalized: graph_node.is_denormalized,
+            projected_columns: None,
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(new_node))))
                 }
@@ -929,6 +930,7 @@ mod tests {
             alias: "a".to_string(),
             label: Some("User".to_string()),
             is_denormalized: false,
+            projected_columns: None,
         }));
 
         let right_node = Arc::new(LogicalPlan::GraphNode(GraphNode {
@@ -936,6 +938,7 @@ mod tests {
             alias: "b".to_string(),
             label: Some("User".to_string()),
             is_denormalized: false,
+            projected_columns: None,
         }));
 
         let graph_rel = GraphRel {

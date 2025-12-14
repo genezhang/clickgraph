@@ -206,6 +206,12 @@ pub struct PlanCtx {
     /// Counter for generating unique CTE names (ensures with_a_b_cte_0, with_a_b_cte_1, etc.)
     /// Incremented each time a WITH clause is processed to prevent duplicate CTE names
     pub(crate) cte_counter: usize,
+    /// Track exported columns for each CTE
+    /// Map: CTE name → (graph_property → cte_column_name)
+    /// Example: "with_p_cte_1" → {"firstName" → "p_firstName", "age" → "p_age"}
+    /// Note: CTE column names use underscore (variablename_alias),
+    /// while final SELECT uses dot notation (variablename.alias)
+    cte_columns: HashMap<String, HashMap<String, String>>,
 }
 
 impl PlanCtx {
@@ -427,6 +433,7 @@ impl PlanCtx {
             parent_scope: None,
             is_with_scope: false,
             cte_counter: 0,
+            cte_columns: HashMap::new(),
         }
     }
 
@@ -444,6 +451,7 @@ impl PlanCtx {
             parent_scope: None,
             is_with_scope: false,
             cte_counter: 0,
+            cte_columns: HashMap::new(),
         }
     }
 
@@ -465,6 +473,7 @@ impl PlanCtx {
             parent_scope: None,
             is_with_scope: false,
             cte_counter: 0,
+            cte_columns: HashMap::new(),
         }
     }
 
@@ -492,6 +501,7 @@ impl PlanCtx {
             parent_scope: Some(Box::new(parent.clone())),
             is_with_scope,
             cte_counter: 0,
+            cte_columns: HashMap::new(),
         }
     }
 
@@ -512,6 +522,7 @@ impl PlanCtx {
             parent_scope: None,
             is_with_scope: false,
             cte_counter: 0,
+            cte_columns: HashMap::new(),
         }
     }
 
@@ -555,6 +566,66 @@ impl PlanCtx {
                 self.denormalized_node_edges.insert(alias, info);
             }
         }
+    }
+
+    /// Register columns exported by a CTE
+    ///
+    /// # Arguments
+    /// * `cte_name` - The CTE name (e.g., "with_p_cte_1")
+    /// * `items` - The projection items from WITH clause
+    ///
+    /// This extracts property names from ProjectionItems and their aliases,
+    /// using the naming convention: variablename_propertyname (e.g., "p_firstName")
+    pub fn register_cte_columns(&mut self, cte_name: &str, items: &[ProjectionItem]) {
+        let mut columns = HashMap::new();
+
+        for item in items {
+            // Extract property name from the expression
+            if let LogicalExpr::PropertyAccessExp(prop_access) = &item.expression {
+                let table_alias = prop_access.table_alias.0.as_str();
+
+                // Extract property name from PropertyValue enum
+                let property_name = match &prop_access.column {
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(col) => col.clone(),
+                    crate::graph_catalog::expression_parser::PropertyValue::Expression(expr) => expr.clone(),
+                };
+
+                // CTE column name follows convention: variablename_propertyname
+                // e.g., p.firstName → p_firstName
+                let cte_column = if let Some(alias) = &item.col_alias {
+                    // If user provided alias, use it
+                    alias.0.clone()
+                } else {
+                    // Otherwise, generate: variablename_propertyname
+                    format!("{}_{}", table_alias, property_name)
+                };
+
+                columns.insert(property_name, cte_column);
+            }
+        }
+
+        log::info!("📊 Registered CTE '{}' with {} columns: {:?}", cte_name, columns.len(), columns);
+        self.cte_columns.insert(cte_name.to_string(), columns);
+    }
+
+    /// Get the CTE column name for a property
+    ///
+    /// # Arguments
+    /// * `cte_name` - The CTE name
+    /// * `property` - The graph property name (e.g., "firstName")
+    ///
+    /// # Returns
+    /// The CTE column name (e.g., "p_firstName") or None if not found
+    pub fn get_cte_column(&self, cte_name: &str, property: &str) -> Option<&str> {
+        self.cte_columns
+            .get(cte_name)?
+            .get(property)
+            .map(|s| s.as_str())
+    }
+
+    /// Check if a table name is a CTE reference
+    pub fn is_cte(&self, name: &str) -> bool {
+        self.cte_columns.contains_key(name)
     }
 }
 

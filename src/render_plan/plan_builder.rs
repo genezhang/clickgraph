@@ -2419,6 +2419,7 @@ fn replace_group_by_with_cte_reference(
                             alias: with_alias.to_string(),
                             label: None, // CTE doesn't have a label
                             is_denormalized: false,
+            projected_columns: None,
                         });
 
                         // Create new GraphRel with CTE reference as .left
@@ -2482,6 +2483,7 @@ fn replace_group_by_with_cte_reference(
                             alias: with_alias.to_string(),
                             label: None, // CTE doesn't have a label
                             is_denormalized: false,
+            projected_columns: None,
                         });
 
                         // Create new GraphRel with CTE reference as .right
@@ -3494,6 +3496,7 @@ fn replace_with_clause_with_cte_reference_v2(
             alias: table_alias,
             label: None,
             is_denormalized: false,
+            projected_columns: None,
         })
     }
 
@@ -3954,6 +3957,7 @@ fn replace_with_clause_with_cte_reference_v2(
                     alias: node.alias.clone(),
                     label: node.label.clone(),
                     is_denormalized: node.is_denormalized,
+            projected_columns: None,
                 }))
             }
         }

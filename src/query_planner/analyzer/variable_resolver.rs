@@ -470,6 +470,7 @@ impl VariableResolver {
                         alias: gn.alias.clone(),
                         label: gn.label.clone(),
                         is_denormalized: gn.is_denormalized,
+            projected_columns: None,
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(new_gn))))
                 } else {

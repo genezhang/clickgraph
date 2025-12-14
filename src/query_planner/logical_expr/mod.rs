@@ -565,6 +565,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                     alias: node.name.unwrap_or("").to_string(),
                     label: node.label.map(|s| s.to_string()),
                     is_denormalized: false,
+            projected_columns: None,
                 }))
             }
             AstPathPattern::ConnectedPattern(connected_patterns) => {
@@ -587,6 +588,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                         alias: start.name.unwrap_or("").to_string(),
                         label: start.label.map(|s| s.to_string()),
                         is_denormalized: false,
+            projected_columns: None,
                     });
 
                     let rel_scan = LogicalPlan::Scan(Scan {
@@ -607,6 +609,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                         alias: end.name.unwrap_or("").to_string(),
                         label: end.label.map(|s| s.to_string()),
                         is_denormalized: false,
+            projected_columns: None,
                     });
 
                     let direction = match rel.direction {

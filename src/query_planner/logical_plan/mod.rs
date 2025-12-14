@@ -403,6 +403,14 @@ pub struct GraphNode {
     /// When true, RenderPlan should skip creating CTEs/JOINs for this node
     #[serde(default)]
     pub is_denormalized: bool,
+    /// Pre-computed projected columns for this node (computed by GraphJoinInference analyzer)
+    /// Format: Vec<(graph_property_name, db_column_qualified)>
+    /// Examples:
+    /// - Base table: vec![("name", "person.firstName"), ("age", "person.age")]
+    /// - CTE reference: vec![("name", "with_p_cte_1.name")]
+    /// - Denormalized: vec![("code", "flights.Origin"), ("city", "flights.OriginCity")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub projected_columns: Option<Vec<(String, String)>>,
 }
 
 /// Represents a relationship pattern in a graph query.
@@ -863,6 +871,7 @@ impl GraphNode {
                     alias: self.alias.clone(),
                     label: self.label.clone(),
                     is_denormalized: self.is_denormalized,
+                    projected_columns: self.projected_columns.clone(),
                 });
                 Transformed::Yes(Arc::new(new_graph_node))
             }
@@ -1353,6 +1362,7 @@ mod tests {
             alias: "person".to_string(),
             label: None,
             is_denormalized: false,
+            projected_columns: None,
         };
 
         let old_plan = Arc::new(LogicalPlan::GraphNode(graph_node.clone()));
@@ -1501,6 +1511,7 @@ mod tests {
             alias: "user".to_string(),
             label: None,
             is_denormalized: false,
+            projected_columns: None,
         });
 
         let filter = LogicalPlan::Filter(Filter {

@@ -2416,6 +2416,7 @@ mod tests {
             alias: "user".to_string(),
             label: None,
             is_denormalized: false,
+            projected_columns: None,
         }));
 
         let result = analyzer

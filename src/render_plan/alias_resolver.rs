@@ -645,6 +645,7 @@ mod tests {
             alias: "u".to_string(),
             label: Some("User".to_string()),
             is_denormalized: false,
+            projected_columns: None,
         });
 
         let context = AliasResolverContext::from_logical_plan(&node);
@@ -662,6 +663,7 @@ mod tests {
             alias: "a".to_string(),
             label: Some("Airport".to_string()),
             is_denormalized: true,
+            projected_columns: None,
         });
 
         let right_node = LogicalPlan::GraphNode(GraphNode {
@@ -669,6 +671,7 @@ mod tests {
             alias: "b".to_string(),
             label: Some("Airport".to_string()),
             is_denormalized: true,
+            projected_columns: None,
         });
 
         let graph_rel = LogicalPlan::GraphRel(GraphRel {

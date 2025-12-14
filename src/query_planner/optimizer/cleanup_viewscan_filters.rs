@@ -144,6 +144,7 @@ impl CleanupViewScanFilters {
                             alias: graph_node.alias.clone(),
                             label: graph_node.label.clone(),
                             is_denormalized: graph_node.is_denormalized,
+            projected_columns: None,
                         }),
                     )),
                     Transformed::No(_) => Transformed::No(logical_plan),

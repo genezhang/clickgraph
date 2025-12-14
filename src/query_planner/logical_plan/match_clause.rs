@@ -1490,6 +1490,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                             alias: end_node_alias.clone(),
                             label: end_node_label.clone().map(|s| s.to_string()),
                             is_denormalized: is_denorm,
+            projected_columns: None,
                         })),
                     )
                 }
@@ -1519,6 +1520,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                             alias: end_node_alias.clone(),
                             label: end_node_label.clone().map(|s| s.to_string()),
                             is_denormalized: is_denorm,
+            projected_columns: None,
                         })),
                         plan.clone(),
                     )
@@ -1550,6 +1552,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                             alias: end_node_alias.clone(),
                             label: end_node_label.clone().map(|s| s.to_string()),
                             is_denormalized: is_denorm,
+            projected_columns: None,
                         })),
                     )
                 }
@@ -1661,6 +1664,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 alias: start_node_alias.clone(),
                 label: start_node_label.clone().map(|s| s.to_string()),
                 is_denormalized: start_is_denorm,
+            projected_columns: None,
             };
             plan_ctx.insert_table_ctx(
                 start_node_alias.clone(),
@@ -1804,6 +1808,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 alias: start_node_alias.clone(),
                 label: start_node_label.clone().map(|s| s.to_string()),
                 is_denormalized: start_is_denorm,
+            projected_columns: None,
             };
             crate::debug_print!(
                 "=== DISCONNECTED: start_graph_node created with is_denormalized={} ===",
@@ -1837,6 +1842,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 alias: end_node_alias.clone(),
                 label: end_node_label.clone().map(|s| s.to_string()),
                 is_denormalized: end_is_denorm,
+            projected_columns: None,
             };
             plan_ctx.insert_table_ctx(
                 end_node_alias.clone(),
@@ -2041,6 +2047,7 @@ fn traverse_node_pattern(
                         alias: node_alias.clone(),
                         label: node_label.clone().map(|s| s.to_string()),
                         is_denormalized: is_denorm,
+            projected_columns: None,
                     }))
                 })
                 .collect();
@@ -2059,6 +2066,7 @@ fn traverse_node_pattern(
             alias: node_alias,
             label: node_label.map(|s| s.to_string()),
             is_denormalized: is_denorm,
+            projected_columns: None,
         };
         Ok(Arc::new(LogicalPlan::GraphNode(graph_node)))
     }

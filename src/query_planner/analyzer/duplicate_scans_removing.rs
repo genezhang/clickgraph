@@ -234,6 +234,7 @@ mod tests {
             alias: alias.to_string(),
             label: None,
             is_denormalized: false,
+            projected_columns: None,
         }))
     }
 

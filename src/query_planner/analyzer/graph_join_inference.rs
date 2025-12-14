@@ -132,7 +132,12 @@ impl GraphJoinInference {
                     wc.exported_aliases,
                     cte_name
                 );
-                
+
+                // Register CTE columns for column resolution in join conditions
+                // This extracts the projection items and their aliases to track
+                // what columns this CTE exports
+                plan_ctx.register_cte_columns(&cte_name, &wc.items);
+
                 // Store captured refs for later use by build_graph_joins
                 captured_refs.push((cte_name.clone(), refs_for_this_with));
                 
@@ -221,6 +226,41 @@ impl GraphJoinInference {
         } else {
             JoinType::Inner
         }
+    }
+
+    /// Resolve a schema column name to the actual column name in the target table/CTE
+    ///
+    /// For base tables, returns the schema column unchanged.
+    /// For CTE references, looks up the exported column name.
+    ///
+    /// # Arguments
+    /// * `schema_column` - The column name from schema (e.g., "firstName")
+    /// * `table_name` - The table or CTE name (e.g., "with_p_cte_1" or "ldbc.Person")
+    /// * `plan_ctx` - The planning context with CTE column mappings
+    ///
+    /// # Returns
+    /// The resolved column name (e.g., "p_firstName" for CTE, "firstName" for base table)
+    fn resolve_column(
+        schema_column: &str,
+        table_name: &str,
+        plan_ctx: &PlanCtx,
+    ) -> String {
+        // Check if this is a CTE reference
+        if plan_ctx.is_cte(table_name) {
+            // Look up the exported column name
+            if let Some(cte_column) = plan_ctx.get_cte_column(table_name, schema_column) {
+                log::debug!(
+                    "  📍 Resolved CTE column: {} (schema) → {} (CTE '{}')",
+                    schema_column,
+                    cte_column,
+                    table_name
+                );
+                return cte_column.to_string();
+            }
+        }
+
+        // Base table or unmapped - use schema column as-is
+        schema_column.to_string()
     }
 
     /// Deduplicate joins by table_alias
@@ -2170,6 +2210,10 @@ impl GraphJoinInference {
 
                     // JOIN: Left node (if not yet joined)
                     if !joined_entities.contains(left_alias) {
+                        // Resolve columns for CTE references
+                        let resolved_left_id = Self::resolve_column(&left_id_col, left_cte_name, plan_ctx);
+                        let resolved_left_join_col = Self::resolve_column(left_join_col, rel_cte_name, plan_ctx);
+
                         let left_join = Join {
                             table_name: left_cte_name.to_string(),
                             table_alias: left_alias.to_string(),
@@ -2178,11 +2222,11 @@ impl GraphJoinInference {
                                 operands: vec![
                                     LogicalExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(left_alias.to_string()),
-                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_id_col.clone()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_left_id),
                                     }),
                                     LogicalExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(rel_alias.to_string()),
-                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_join_col.clone()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_left_join_col.clone()),
                                     }),
                                 ],
                             }],
@@ -2194,6 +2238,9 @@ impl GraphJoinInference {
                     }
 
                     // JOIN: Edge table (connects to left via from_id)
+                    // Note: resolved_left_join_col was already computed above for the left_join
+                    let resolved_left_id_for_rel = Self::resolve_column(&left_id_col, left_cte_name, plan_ctx);
+
                     let rel_join = Join {
                         table_name: rel_cte_name.to_string(),
                         table_alias: rel_alias.to_string(),
@@ -2202,11 +2249,13 @@ impl GraphJoinInference {
                             operands: vec![
                                 LogicalExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(rel_alias.to_string()),
-                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_join_col.clone()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        Self::resolve_column(left_join_col, rel_cte_name, plan_ctx)
+                                    ),
                                 }),
                                 LogicalExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(left_alias.to_string()),
-                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_id_col),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_left_id_for_rel),
                                 }),
                             ],
                         }],
@@ -2218,6 +2267,9 @@ impl GraphJoinInference {
 
                     // JOIN: Right node (connects to edge via to_id)
                     if !joined_entities.contains(right_alias) {
+                        let resolved_right_id = Self::resolve_column(&right_id_col, right_cte_name, plan_ctx);
+                        let resolved_right_join_col = Self::resolve_column(right_join_col, rel_cte_name, plan_ctx);
+
                         let right_join = Join {
                             table_name: right_cte_name.to_string(),
                             table_alias: right_alias.to_string(),
@@ -2226,11 +2278,11 @@ impl GraphJoinInference {
                                 operands: vec![
                                     LogicalExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(right_alias.to_string()),
-                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_id_col),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_right_id),
                                     }),
                                     LogicalExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(rel_alias.to_string()),
-                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_join_col.clone()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_right_join_col),
                                     }),
                                 ],
                             }],
@@ -2246,6 +2298,10 @@ impl GraphJoinInference {
                         "       Connect order: RIGHT → EDGE → LEFT (right already available)"
                     );
 
+                    // Resolve columns for CTE references
+                    let resolved_right_join_col = Self::resolve_column(right_join_col, rel_cte_name, plan_ctx);
+                    let resolved_right_id = Self::resolve_column(&right_id_col, right_cte_name, plan_ctx);
+
                     // JOIN: Edge table (connects to RIGHT via to_id)
                     let rel_join = Join {
                         table_name: rel_cte_name.to_string(),
@@ -2255,11 +2311,11 @@ impl GraphJoinInference {
                             operands: vec![
                                 LogicalExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(rel_alias.to_string()),
-                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_join_col.clone()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_right_join_col),
                                 }),
                                 LogicalExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(right_alias.to_string()),
-                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(right_id_col),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_right_id),
                                 }),
                             ],
                         }],
@@ -2271,6 +2327,10 @@ impl GraphJoinInference {
 
                     // JOIN: Left node (connects to edge via from_id)
                     if !joined_entities.contains(left_alias) {
+                        // Resolve columns for CTE references
+                        let resolved_left_id = Self::resolve_column(&left_id_col, left_cte_name, plan_ctx);
+                        let resolved_left_join_col = Self::resolve_column(left_join_col, rel_cte_name, plan_ctx);
+
                         let left_join = Join {
                             table_name: left_cte_name.to_string(),
                             table_alias: left_alias.to_string(),
@@ -2279,11 +2339,11 @@ impl GraphJoinInference {
                                 operands: vec![
                                     LogicalExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(left_alias.to_string()),
-                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_id_col),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_left_id),
                                     }),
                                     LogicalExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(rel_alias.to_string()),
-                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(left_join_col.clone()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_left_join_col),
                                     }),
                                 ],
                             }],
@@ -2392,6 +2452,10 @@ impl GraphJoinInference {
 
                 // JOIN: Relationship to non-embedded node
                 if !joined_entities.contains(join_node_alias) {
+                    // Resolve columns for CTE references
+                    let resolved_node_id = Self::resolve_column(&join_node_id_col, join_node_cte, plan_ctx);
+                    let resolved_join_col = Self::resolve_column(join_col, rel_cte_name, plan_ctx);
+
                     let node_join = Join {
                         table_name: join_node_cte.to_string(),
                         table_alias: join_node_alias.to_string(),
@@ -2400,11 +2464,11 @@ impl GraphJoinInference {
                             operands: vec![
                                 LogicalExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(join_node_alias.to_string()),
-                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(join_node_id_col.clone()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_node_id.clone()),
                                 }),
                                 LogicalExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(rel_alias.to_string()),
-                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(join_col.clone()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_join_col.clone()),
                                 }),
                             ],
                         }],
@@ -2416,6 +2480,10 @@ impl GraphJoinInference {
                 }
 
                 // JOIN: Relationship table itself
+                // Note: resolved_join_col and resolved_node_id already computed above
+                let resolved_node_id_for_rel = Self::resolve_column(&join_node_id_col, join_node_cte, plan_ctx);
+                let resolved_join_col_for_rel = Self::resolve_column(join_col, rel_cte_name, plan_ctx);
+
                 let rel_join = Join {
                     table_name: rel_cte_name.to_string(),
                     table_alias: rel_alias.to_string(),
@@ -2426,14 +2494,14 @@ impl GraphJoinInference {
                                 table_alias: TableAlias(rel_alias.to_string()),
                                 column:
                                     crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                        join_col.clone(),
+                                        resolved_join_col_for_rel,
                                     ),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(join_node_alias.to_string()),
                                 column:
                                     crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                        join_node_id_col,
+                                        resolved_node_id_for_rel,
                                     ),
                             }),
                         ],
@@ -2486,6 +2554,18 @@ impl GraphJoinInference {
                 }
 
                 // JOIN: Current edge to previous edge
+                // Resolve curr_edge_col with current edge's CTE name
+                let resolved_curr_edge_col = Self::resolve_column(curr_edge_col, rel_cte_name, plan_ctx);
+
+                // For prev_edge_col, try to get the previous edge's table name from plan_ctx
+                // If it's a CTE reference, resolve the column; otherwise use as-is
+                let prev_edge_table = plan_ctx
+                    .get_table_ctx_from_alias_opt(&Some(prev_edge_alias.clone()))
+                    .ok()
+                    .and_then(|ctx| ctx.get_cte_name().map(|s| s.as_str()))
+                    .unwrap_or(prev_edge_alias);  // Fallback to alias if not a CTE
+                let resolved_prev_edge_col = Self::resolve_column(prev_edge_col, prev_edge_table, plan_ctx);
+
                 let edge_join = Join {
                     table_name: rel_cte_name.to_string(),
                     table_alias: rel_alias.to_string(),
@@ -2496,14 +2576,14 @@ impl GraphJoinInference {
                                 table_alias: TableAlias(rel_alias.to_string()),
                                 column:
                                     crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                        curr_edge_col.clone(),
+                                        resolved_curr_edge_col,
                                     ),
                             }),
                             LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(prev_edge_alias.clone()),
                                 column:
                                     crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                        prev_edge_col.clone(),
+                                        resolved_prev_edge_col,
                                     ),
                             }),
                         ],
@@ -3283,6 +3363,7 @@ mod tests {
             alias: alias.to_string(),
             label: None,
             is_denormalized,
+            projected_columns: None,
         }))
     }
 

@@ -593,6 +593,7 @@ fn test_analyzer_denormalized_property_integration() {
             alias: "origin".to_string(),
             label: Some("Airport".to_string()),
             is_denormalized: true,
+            projected_columns: None,
         },
     ));
 
@@ -626,6 +627,7 @@ fn test_analyzer_denormalized_property_integration() {
             alias: "dest".to_string(),
             label: Some("Airport".to_string()),
             is_denormalized: true,
+            projected_columns: None,
         },
     ));
 
@@ -832,6 +834,7 @@ fn test_denormalized_standalone_node_return_all_properties() {
         alias: "a".to_string(),
         label: Some("Airport".to_string()),
         is_denormalized: true,
+        projected_columns: None,
     });
 
     // Create Projection with RETURN a (whole node return)
@@ -956,6 +959,7 @@ fn test_denormalized_standalone_node_both_positions() {
         alias: "a".to_string(),
         label: Some("Airport".to_string()),
         is_denormalized: true,
+        projected_columns: None,
     });
 
     let to_node = LogicalPlan::GraphNode(GraphNode {
@@ -963,6 +967,7 @@ fn test_denormalized_standalone_node_both_positions() {
         alias: "a".to_string(),
         label: Some("Airport".to_string()),
         is_denormalized: true,
+        projected_columns: None,
     });
 
     let union = LogicalPlan::Union(Union {
