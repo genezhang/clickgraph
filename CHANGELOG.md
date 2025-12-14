@@ -1,6 +1,21 @@
 ## [Unreleased]
 
-### 🚀 Features
+### � Bug Fixes
+
+- **Inline Property Parameters** - Fixed server crash on parameterized inline property patterns (December 14, 2025)
+  - **Problem**: `MATCH (n:Person {id: $personId})` caused panic "Property value must be a literal"
+  - **Root Cause**: `PropertyKVPair.value` was typed as `Literal`, rejecting parameter expressions
+  - **Solution**: Changed `PropertyKVPair.value` from `Literal` to `LogicalExpr` to support all expressions
+  - **Impact**: 
+    - Official LDBC queries can now use inline property syntax directly
+    - Previously required WHERE clause workaround: `MATCH (n) WHERE n.id = $param`
+    - No regression: All adapted queries still work, official queries now accessible
+  - **Files Modified**: 
+    - `src/query_planner/logical_expr/mod.rs` - Changed struct, updated conversion
+    - `src/query_planner/logical_plan/match_clause.rs` - Updated usage
+  - **Testing**: 647/647 unit tests passing (0 regressions)
+
+### �🚀 Features
 
 - **CTE-Aware Variable Resolution** - Major architectural improvement for WITH clause handling (December 13, 2025)
   - **Problem**: Three-level WITH queries incorrectly used base tables instead of CTEs in final SELECT

@@ -171,9 +171,13 @@ impl VariableResolver {
     }
 
     /// Generate unique CTE name for a WITH clause
-    fn generate_cte_name(&self, alias: &str) -> String {
+    /// Uses ALL exported aliases to match analyzer's CTE naming convention
+    fn generate_cte_name(&self, exported_aliases: &[String]) -> String {
         let mut counter = self.cte_counter.borrow_mut();
-        let name = format!("with_{}_cte_{}", alias, *counter);
+        let mut sorted_aliases = exported_aliases.to_vec();
+        sorted_aliases.sort();
+        let aliases_str = sorted_aliases.join("_");
+        let name = format!("with_{}_cte_{}", aliases_str, *counter);
         *counter += 1;
         name
     }
@@ -201,15 +205,11 @@ impl VariableResolver {
                 let new_input = input_resolved.get_plan();
 
                 // Step 2: Generate CTE name for this WITH
-                // Use first exported alias as base name
-                let alias_base = wc
-                    .exported_aliases
-                    .first()
-                    .map(|s| s.as_str())
-                    .unwrap_or("unknown");
-                let cte_name = self.generate_cte_name(alias_base);
+                // Use ALL exported aliases (sorted) to match analyzer + renderer convention
+                // Format: with_<alias1>_<alias2>_..._cte_<seq>
+                let cte_name = self.generate_cte_name(&wc.exported_aliases);
 
-                log::info!("🔍 VariableResolver: Generated CTE name '{}'", cte_name);
+                log::info!("🔍 VariableResolver: Generated CTE name '{}' from exported aliases {:?}", cte_name, wc.exported_aliases);
 
                 // Step 3: Create NEW scope for downstream
                 // Exported aliases from this WITH are visible downstream
@@ -911,10 +911,12 @@ mod tests {
     #[test]
     fn test_cte_name_generation() {
         let resolver = VariableResolver::new();
-        let name1 = resolver.generate_cte_name("cnt");
-        let name2 = resolver.generate_cte_name("cnt");
+        let name1 = resolver.generate_cte_name(&["cnt".to_string()]);
+        let name2 = resolver.generate_cte_name(&["cnt".to_string()]);
+        let name3 = resolver.generate_cte_name(&["a".to_string(), "age".to_string()]);
 
         assert_eq!(name1, "with_cnt_cte_1");
         assert_eq!(name2, "with_cnt_cte_2");
+        assert_eq!(name3, "with_a_age_cte_3"); // sorted: a, age
     }
 }

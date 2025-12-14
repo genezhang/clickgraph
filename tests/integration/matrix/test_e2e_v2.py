@@ -49,6 +49,29 @@ def check_server():
         pytest.skip(f"Server not available: {e}")
 
 
+@pytest.fixture(scope="session", autouse=True)
+def load_all_schemas():
+    """Load all required schemas before tests."""
+    import yaml
+    for schema_name, schema_config in SCHEMAS.items():
+        schema_file = schema_config["schema_file"]
+        try:
+            with open(schema_file, 'r') as f:
+                schema_yaml = f.read()
+            response = requests.post(
+                f"{SERVER_URL}/schemas/load",
+                json={
+                    "schema_name": schema_name,
+                    "config_content": schema_yaml
+                },
+                timeout=10
+            )
+            if response.status_code != 200:
+                print(f"Warning: Failed to load schema {schema_name}: {response.text}")
+        except Exception as e:
+            print(f"Warning: Error loading schema {schema_name}: {e}")
+
+
 # ============================================================================
 # TEST CLASSES BY CATEGORY
 # Each pattern x 3 schemas = tests

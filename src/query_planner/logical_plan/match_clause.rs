@@ -1210,7 +1210,7 @@ fn convert_properties(props: Vec<Property>) -> LogicalPlanResult<Vec<LogicalExpr
                     operator: Operator::Equal,
                     operands: vec![
                         LogicalExpr::Column(Column(property_kvpair.key)),
-                        LogicalExpr::Literal(property_kvpair.value),
+                        property_kvpair.value,
                     ],
                 });
                 extracted_props.push(op_app);
@@ -2183,7 +2183,7 @@ fn evaluate_single_path_pattern_with_mode<'a>(
 mod tests {
     use super::*;
     use crate::open_cypher_parser::ast;
-    use crate::query_planner::logical_expr::{Direction, Literal, PropertyKVPair};
+    use crate::query_planner::logical_expr::{Direction, Literal, LogicalExpr, PropertyKVPair};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -2192,11 +2192,11 @@ mod tests {
         let properties = vec![
             Property::PropertyKV(PropertyKVPair {
                 key: "name".to_string(),
-                value: Literal::String("John".to_string()),
+                value: LogicalExpr::Literal(Literal::String("John".to_string())),
             }),
             Property::PropertyKV(PropertyKVPair {
                 key: "age".to_string(),
-                value: Literal::Integer(30),
+                value: LogicalExpr::Literal(Literal::Integer(30)),
             }),
         ];
 
@@ -2238,7 +2238,7 @@ mod tests {
         let properties = vec![
             Property::PropertyKV(PropertyKVPair {
                 key: "name".to_string(),
-                value: Literal::String("Alice".to_string()),
+                value: LogicalExpr::Literal(Literal::String("Alice".to_string())),
             }),
             Property::Param("param1".to_string()),
         ];
@@ -2641,7 +2641,7 @@ mod tests {
         // Add table context with properties
         let properties = vec![Property::PropertyKV(PropertyKVPair {
             key: "status".to_string(),
-            value: Literal::String("active".to_string()),
+            value: LogicalExpr::Literal(Literal::String("active".to_string())),
         })];
 
         let table_ctx = TableCtx::build(

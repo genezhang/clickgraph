@@ -1,10 +1,49 @@
 # ClickGraph Status
 
-*Updated: December 13, 2025*
+*Updated: December 14, 2025*
 
 ## 🎉 **v0.5.5 Released** - December 10, 2025
 
-**LDBC SNB Benchmark: 100% (8/8 Interactive queries passing)**
+**LDBC SNB Benchmark: 29 queries work as-is, 5 with workarounds (34/36 non-blocked = 94%)**
+
+### Test Suite Solidification (Dec 14, 2025)
+
+- **Test Infrastructure Improvements** - Comprehensive fixes → 76.3% pass rate ✅
+  - **Before**: 1921/3467 passing (55.2%) - infrastructure broken
+  - **After**: 2643/3467 passing (76.3%) - infrastructure solid
+  - **Critical Bugs Fixed**:
+    - ✅ CLICKGRAPH_URL import missing in test_comprehensive.py (fixed ~400 matrix test failures)
+    - ✅ ontime_benchmark schema path incorrect (fixed path to `benchmarks/ontime_flights/schemas/`)
+    - ✅ Renamed 12 standalone scripts to `script_test_*.py` (excluded from pytest collection)
+    - ✅ Added autouse fixtures for schema loading
+  - **Test Data Loaded**:
+    - Ran official setup scripts: `setup_all_test_data.sh`, `load_test_schemas.py`
+    - Loaded security_graph data from `schemas/examples/security_graph_load.sql`
+  - Results by category:
+    - **Rust unit tests**: 647/647 (100%)
+    - **Security graph**: 91/98 (92.9%)
+    - **Core integration** (with data): 452/502 (90%)
+    - **Matrix tests**: High quality when data exists
+  - Remaining failures: ~95% missing test data, ~5% code bugs
+  - **Known Code Bugs** (affecting ~15-20 tests):
+    - Multiple independent recursive CTEs in single WITH RECURSIVE clause (affects bidirectional shortest path)
+    - Table prefix missing in JOINs within CTEs (affects aggregations with HAVING)
+      - Root cause: Join struct doesn't carry database context
+      - Workaround needed: Pass database through Join or infer from FROM clause
+  - **Key lesson: Always follow README setup instructions first!**
+  - See: `TEST_SUITE_STATUS_Dec14_2025.md` for detailed analysis
+
+### Recent Fixes (Dec 14, 2025)
+
+- **Inline Property Parameters** - Fixed server crash on parameterized property patterns ✅
+  - Problem: `MATCH (n:Person {id: $personId})` caused panic "Property value must be a literal"
+  - Root cause: PropertyKVPair.value typed as Literal (didn't support parameters)
+  - Solution: Changed PropertyKVPair.value from Literal to LogicalExpr
+  - Impact: Official LDBC queries can now use inline parameters (previously required WHERE clause workaround)
+  - Files: `query_planner/logical_expr/mod.rs`, `query_planner/logical_plan/match_clause.rs`
+  - Tests: 647/647 unit tests passing (no regressions)
+  - LDBC: All adapted queries still work, official queries now accessible
+  - See: Parameter substitution in server layer handles $param → value replacement
 
 ### Recent Fixes (Dec 13, 2025)
 

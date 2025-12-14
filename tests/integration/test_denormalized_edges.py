@@ -11,12 +11,14 @@ Key features tested:
 4. Query performance optimization (no unnecessary JOINs)
 """
 
+import os
 import pytest
 from conftest import (
     execute_cypher,
     assert_query_success,
     assert_row_count,
-    assert_column_exists
+    assert_column_exists,
+    CLICKGRAPH_URL
 )
 
 
@@ -36,11 +38,16 @@ def denormalized_flights_graph(clickhouse_client, test_database):
     all node properties directly in the edge table.
     """
     # Clean database first
-    tables = clickhouse_client.query(
-        f"SELECT name FROM system.tables WHERE database = '{test_database}'"
-    ).result_rows
-    for (table_name,) in tables:
-        clickhouse_client.command(f"DROP TABLE IF EXISTS {test_database}.{table_name}")
+    try:
+        result = clickhouse_client.command(
+            f"SELECT name FROM system.tables WHERE database = '{test_database}' FORMAT TabSeparated"
+        )
+        if result:
+            tables = [line.strip() for line in result.split('\n') if line.strip()]
+            for table_name in tables:
+                clickhouse_client.command(f"DROP TABLE IF EXISTS {test_database}.{table_name}")
+    except Exception:
+        pass  # Database might not exist yet
     
     # Read and execute setup SQL
     with open('scripts/test/setup_denormalized_test_data.sql', 'r') as f:
@@ -61,12 +68,13 @@ def denormalized_flights_graph(clickhouse_client, test_database):
     print(f"Executed {statement_count} SQL statements")
     
     # Verify tables were created
-    tables = clickhouse_client.query(
-        f"SELECT name FROM system.tables WHERE database = '{test_database}'"
-    ).result_rows
-    print(f"Tables after setup: {[t[0] for t in tables]}")
-    assert len(tables) == 1, f"Expected 1 table (flights), got {len(tables)}: {[t[0] for t in tables]}"
-    assert tables[0][0] == 'flights', f"Expected 'flights' table, got '{tables[0][0]}'"
+    result = clickhouse_client.command(
+        f"SELECT name FROM system.tables WHERE database = '{test_database}' FORMAT TabSeparated"
+    )
+    tables = [line.strip() for line in result.split('\n') if line.strip()]
+    print(f"Tables after setup: {tables}")
+    assert len(tables) == 1, f"Expected 1 table (flights), got {len(tables)}: {tables}"
+    assert tables[0] == 'flights', f"Expected 'flights' table, got '{tables[0]}'"
     
     # Load schema via API
     import requests
@@ -97,8 +105,9 @@ class TestDenormalizedPropertyAccess:
     def test_simple_flight_query(self, denormalized_flights_graph, clickhouse_client, test_database):
         """Test basic flight query returning edge properties."""
         # Debug: verify tables exist
-        tables = clickhouse_client.query(f"SELECT name FROM system.tables WHERE database = '{test_database}'").result_rows
-        print(f"Tables before query: {[t[0] for t in tables]}")
+        result = clickhouse_client.command(f"SELECT name FROM system.tables WHERE database = '{test_database}' FORMAT TabSeparated")
+        tables = [line.strip() for line in result.split('\n') if line.strip()]
+        print(f"Tables before query: {tables}")
         
         response = execute_cypher(
             """

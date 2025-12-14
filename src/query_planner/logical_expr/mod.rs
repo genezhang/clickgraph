@@ -308,7 +308,7 @@ pub enum Property {
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PropertyKVPair {
     pub key: String,
-    pub value: Literal,
+    pub value: LogicalExpr,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -496,10 +496,7 @@ impl<'a> From<open_cypher_parser::ast::PropertyKVPair<'a>> for PropertyKVPair {
     fn from(value: open_cypher_parser::ast::PropertyKVPair<'a>) -> Self {
         PropertyKVPair {
             key: value.key.to_string(),
-            value: match value.value {
-                open_cypher_parser::ast::Expression::Literal(lit) => Literal::from(lit),
-                _ => panic!("Property value must be a literal"),
-            },
+            value: LogicalExpr::from(value.value),
         }
     }
 }
@@ -882,7 +879,7 @@ mod tests {
         match &properties[0] {
             Property::PropertyKV(kv) => {
                 assert_eq!(kv.key, "department");
-                assert_eq!(kv.value, Literal::String("Engineering".to_string()));
+                assert_eq!(kv.value, LogicalExpr::Literal(Literal::String("Engineering".to_string())));
             }
             _ => panic!("Expected PropertyKV"),
         }
@@ -919,7 +916,7 @@ mod tests {
         match &properties[0] {
             Property::PropertyKV(kv) => {
                 assert_eq!(kv.key, "since");
-                assert_eq!(kv.value, Literal::Integer(2020));
+                assert_eq!(kv.value, LogicalExpr::Literal(Literal::Integer(2020)));
             }
             _ => panic!("Expected PropertyKV"),
         }

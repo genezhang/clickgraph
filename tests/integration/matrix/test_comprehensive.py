@@ -11,14 +11,14 @@ import pytest
 import random
 import os
 import sys
+import requests
 from typing import List, Tuple
 
-# Import from local conftest (not parent)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from conftest import (
+# Import from local matrix conftest (not parent)
+from .conftest import (
     SCHEMAS, SchemaConfig, SchemaType, QueryPattern,
     QueryGenerator, NegativeTestGenerator, ExpressionGenerator,
-    execute_query, check_server_health
+    execute_query, check_server_health, CLICKGRAPH_URL
 )
 
 
@@ -32,6 +32,29 @@ def server_running():
     if not check_server_health():
         pytest.skip("ClickGraph server not running")
     return True
+
+
+@pytest.fixture(scope="session", autouse=True)
+def load_all_schemas():
+    """Load all required schemas before tests."""
+    import yaml
+    for schema_name, schema_config in SCHEMAS.items():
+        yaml_path = schema_config.yaml_path
+        try:
+            with open(yaml_path, 'r') as f:
+                schema_yaml = f.read()
+            response = requests.post(
+                f"{CLICKGRAPH_URL}/schemas/load",
+                json={
+                    "schema_name": schema_name,
+                    "config_content": schema_yaml
+                },
+                timeout=10
+            )
+            if response.status_code != 200:
+                print(f"Warning: Failed to load schema {schema_name}: {response.text}")
+        except Exception as e:
+            print(f"Warning: Error loading schema {schema_name}: {e}")
 
 
 @pytest.fixture(params=list(SCHEMAS.keys()))
@@ -62,25 +85,25 @@ class TestBasicPatterns:
     def test_simple_node(self, server_running, schema_config, query_generator):
         """Test: MATCH (n:Label) RETURN n"""
         query = query_generator.simple_node()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_simple_edge(self, server_running, schema_config, query_generator):
         """Test: MATCH (a)-[r]->(b) RETURN ..."""
         query = query_generator.simple_edge()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_filtered_node(self, server_running, schema_config, query_generator):
         """Test: MATCH (n) WHERE ... RETURN n"""
         query = query_generator.filtered_node()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_filtered_edge(self, server_running, schema_config, query_generator):
         """Test: MATCH (a)-[r]->(b) WHERE ... RETURN ..."""
         query = query_generator.filtered_edge()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -90,19 +113,19 @@ class TestMultiHopPatterns:
     def test_two_hop(self, server_running, schema_config, query_generator):
         """Test: (a)-[]->(b)-[]->(c)"""
         query = query_generator.two_hop()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_two_hop_with_cross_filter(self, server_running, schema_config, query_generator):
         """Test: (a)-[r1]->(b)-[r2]->(c) WHERE r1.prop < r2.prop"""
         query = query_generator.two_hop_with_cross_filter()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_three_hop(self, server_running, schema_config, query_generator):
         """Test: (a)-[]->(b)-[]->(c)-[]->(d)"""
         query = query_generator.three_hop()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -112,28 +135,28 @@ class TestVariableLengthPaths:
     def test_vlp_star(self, server_running, schema_config, query_generator):
         """Test: (a)-[*]->(b)"""
         query = query_generator.vlp_star()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     @pytest.mark.parametrize("hops", [2, 3, 4])
     def test_vlp_exact(self, server_running, schema_config, query_generator, hops):
         """Test: (a)-[*N]->(b) for various N"""
         query = query_generator.vlp_exact(hops)
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     @pytest.mark.parametrize("min_hops,max_hops", [(1, 2), (1, 3), (2, 4), (1, 5)])
     def test_vlp_range(self, server_running, schema_config, query_generator, min_hops, max_hops):
         """Test: (a)-[*min..max]->(b)"""
         query = query_generator.vlp_range(min_hops, max_hops)
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     @pytest.mark.parametrize("min_hops", [1, 2, 3])
     def test_vlp_open_end(self, server_running, schema_config, query_generator, min_hops):
         """Test: (a)-[*min..]->(b)"""
         query = query_generator.vlp_open_end(min_hops)
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -143,13 +166,13 @@ class TestShortestPath:
     def test_shortest_path(self, server_running, schema_config, query_generator):
         """Test: shortestPath((a)-[*]->(b))"""
         query = query_generator.shortest_path()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_all_shortest_paths(self, server_running, schema_config, query_generator):
         """Test: allShortestPaths((a)-[*]->(b))"""
         query = query_generator.all_shortest_paths()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -159,13 +182,13 @@ class TestOptionalMatch:
     def test_optional_match_simple(self, server_running, schema_config, query_generator):
         """Test: MATCH (a) OPTIONAL MATCH (a)-[]->(b)"""
         query = query_generator.optional_match()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_optional_match_with_filter(self, server_running, schema_config, query_generator):
         """Test: MATCH (a) WHERE ... OPTIONAL MATCH ..."""
         query = query_generator.optional_with_filter()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -180,21 +203,21 @@ class TestWithChaining:
     def test_with_simple(self, server_running, schema_config, query_generator):
         """Test: MATCH ... WITH ... RETURN"""
         query = query_generator.with_simple()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     @pytest.mark.xfail(reason="Known bug: duplicate table alias in WITH clause")
     def test_with_aggregation(self, server_running, schema_config, query_generator):
         """Test: WITH ... count() ... WHERE cnt > X"""
         query = query_generator.with_aggregation()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     @pytest.mark.xfail(reason="Known bug: duplicate table alias in WITH clause")
     def test_with_cross_table(self, server_running, schema_config, query_generator):
         """Test: MATCH ... WITH ... MATCH ... WHERE correlation"""
         query = query_generator.with_cross_table()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -204,31 +227,31 @@ class TestAggregations:
     def test_count(self, server_running, schema_config, query_generator):
         """Test: count(n)"""
         query = query_generator.count_simple()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_count_distinct(self, server_running, schema_config, query_generator):
         """Test: count(DISTINCT n.prop)"""
         query = query_generator.count_distinct()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_sum_avg(self, server_running, schema_config, query_generator):
         """Test: sum(), avg()"""
         query = query_generator.sum_avg()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_collect(self, server_running, schema_config, query_generator):
         """Test: collect()"""
         query = query_generator.collect_agg()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_min_max(self, server_running, schema_config, query_generator):
         """Test: min(), max()"""
         query = query_generator.min_max()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -238,13 +261,13 @@ class TestGroupBy:
     def test_group_by(self, server_running, schema_config, query_generator):
         """Test: RETURN prop, count(*) ... ORDER BY"""
         query = query_generator.group_by()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_group_by_having(self, server_running, schema_config, query_generator):
         """Test: WITH ... count() as cnt WHERE cnt > X"""
         query = query_generator.group_by_having()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -254,13 +277,13 @@ class TestOrdering:
     def test_order_by(self, server_running, schema_config, query_generator):
         """Test: ORDER BY prop ASC/DESC"""
         query = query_generator.order_by()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_order_limit_skip(self, server_running, schema_config, query_generator):
         """Test: ORDER BY ... SKIP N LIMIT M"""
         query = query_generator.order_limit_skip()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -271,7 +294,7 @@ class TestMultiplePatterns:
     def test_multi_rel_type(self, server_running, schema_config, query_generator):
         """Test: -[:TYPE1|TYPE2|TYPE3]->"""
         query = query_generator.multi_rel_type()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -281,37 +304,37 @@ class TestExpressions:
     def test_arithmetic_in_where(self, server_running, schema_config, query_generator):
         """Test: WHERE r1.prop + N <= r2.prop"""
         query = query_generator.arithmetic_in_where()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_string_predicates(self, server_running, schema_config, query_generator):
         """Test: STARTS WITH, ENDS WITH, CONTAINS"""
         query = query_generator.string_predicates()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_null_handling(self, server_running, schema_config, query_generator):
         """Test: IS NULL, IS NOT NULL"""
         query = query_generator.null_handling()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_in_list(self, server_running, schema_config, query_generator):
         """Test: prop IN [1, 2, 3]"""
         query = query_generator.in_list()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_case_expression(self, server_running, schema_config, query_generator):
         """Test: CASE WHEN ... THEN ... ELSE ... END"""
         query = query_generator.case_expression()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_regex(self, server_running, schema_config, query_generator):
         """Test: prop =~ 'pattern'"""
         query = query_generator.regex_match()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -321,19 +344,19 @@ class TestFunctions:
     def test_id_function(self, server_running, schema_config, query_generator):
         """Test: id(n)"""
         query = query_generator.id_function()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_type_function(self, server_running, schema_config, query_generator):
         """Test: type(r)"""
         query = query_generator.type_function()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_labels_function(self, server_running, schema_config, query_generator):
         """Test: labels(n)"""
         query = query_generator.labels_function()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -343,20 +366,20 @@ class TestPathVariables:
     def test_path_variable(self, server_running, schema_config, query_generator):
         """Test: p = (a)-[*]->(b)"""
         query = query_generator.path_variable()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     @pytest.mark.xfail(reason="Known bug: length(p) not resolved in GROUP BY")
     def test_path_length(self, server_running, schema_config, query_generator):
         """Test: length(p)"""
         query = query_generator.path_length()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_path_nodes(self, server_running, schema_config, query_generator):
         """Test: nodes(p)"""
         query = query_generator.path_nodes()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -386,14 +409,14 @@ class TestUnwind:
     def test_unwind_simple(self, server_running, query_generator):
         """Test: UNWIND [1,2,3] AS x RETURN x"""
         query = query_generator.unwind_simple()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     @pytest.mark.xfail(reason="UNWIND with MATCH has complex execution requirements")
     def test_unwind_with_match(self, server_running, schema_config, query_generator):
         """Test: UNWIND ... MATCH ..."""
         query = query_generator.unwind_with_match()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -403,7 +426,7 @@ class TestExists:
     def test_exists_subquery(self, server_running, schema_config, query_generator):
         """Test: WHERE EXISTS { MATCH ... }"""
         query = query_generator.exists_subquery()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -416,14 +439,14 @@ class TestUndirected:
     def test_undirected_simple(self, server_running, schema_config, query_generator):
         """Test: (a)-[r]-(b)"""
         query = query_generator.undirected_simple()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     @pytest.mark.xfail(reason="Multi-hop undirected patterns may have issues")
     def test_undirected_multi_hop(self, server_running, schema_config, query_generator):
         """Test: (a)-[r1]-(b)-[r2]-(c)"""
         query = query_generator.undirected_multi_hop()
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -437,7 +460,7 @@ class TestNegativeInvalidSyntax:
     @pytest.mark.parametrize("query,error_type", NegativeTestGenerator.get_invalid_queries())
     def test_invalid_query_returns_error(self, server_running, query, error_type):
         """Invalid queries should return error responses, not crash"""
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         
         # Query should either:
         # 1. Return an error (success=False)
@@ -478,7 +501,7 @@ class TestRandomExpressions:
         where_clause = expr_gen.random_where_clause(aliases_with_props, complexity=1)
         
         query = f"MATCH (n:{label}) WHERE {where_clause} RETURN n LIMIT 10"
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     @pytest.mark.parametrize("seed", range(10))
@@ -494,7 +517,7 @@ class TestRandomExpressions:
         where_clause = expr_gen.random_where_clause(aliases_with_props, complexity=2)
         
         query = f"MATCH (n:{label}) WHERE {where_clause} RETURN n LIMIT 10"
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -520,7 +543,7 @@ MATCH (a:{label})-[r1:{edge}]->(b)-[r2:{edge}]->(c)
 WHERE r1.{prop} = r2.{prop} 
 RETURN a, c LIMIT 10
 """
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_inequality_across_relationships(self, server_running, schema_config, query_generator):
@@ -539,7 +562,7 @@ MATCH (a:{label})-[r1:{edge}]->(b)-[r2:{edge}]->(c)
 WHERE r1.{prop} < r2.{prop} 
 RETURN a, c LIMIT 10
 """
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_arithmetic_across_relationships(self, server_running, schema_config, query_generator):
@@ -560,7 +583,7 @@ MATCH (a:{label})-[r1:{edge}]->(b)-[r2:{edge}]->(c)
 WHERE r1.{prop1} + 100 <= r2.{prop2} 
 RETURN a, c LIMIT 10
 """
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_multiple_cross_conditions(self, server_running, schema_config, query_generator):
@@ -580,7 +603,7 @@ MATCH (a:{label})-[r1:{edge}]->(b)-[r2:{edge}]->(c)
 WHERE r1.{prop1} = r2.{prop1} AND r1.{prop2} < r2.{prop2}
 RETURN a, c LIMIT 10
 """
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -602,7 +625,7 @@ class TestDenormalizedSchema:
             pytest.skip("ontime_benchmark schema not configured")
         
         query = "MATCH (a:Airport)-[r:FLIGHT]->(b:Airport) RETURN a.code, b.code LIMIT 10"
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -616,7 +639,7 @@ class TestMultiTableLabel:
             pytest.skip("zeek_merged schema not configured")
         
         query = "MATCH (ip:IP) RETURN count(DISTINCT ip.ip) as unique_ips"
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_cross_table_correlation(self, server_running):
@@ -632,7 +655,7 @@ MATCH (ip2:IP)-[:CONNECTED_TO]->(dest:IP)
 WHERE ip1.ip = ip2.ip
 RETURN ip1.ip, d.name, dest.ip LIMIT 10
 """
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -646,7 +669,7 @@ class TestFKEdgeSchema:
             pytest.skip("filesystem schema not configured")
         
         query = "MATCH (parent:FSObject)-[:PARENT_OF]->(child:FSObject) RETURN parent.name, child.name LIMIT 10"
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_fk_edge_vlp(self, server_running):
@@ -656,7 +679,7 @@ class TestFKEdgeSchema:
             pytest.skip("filesystem schema not configured")
         
         query = "MATCH (root:FSObject)-[:PARENT_OF*1..3]->(descendant:FSObject) RETURN root.name, descendant.name LIMIT 10"
-        result = execute_query(query)
+        result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 

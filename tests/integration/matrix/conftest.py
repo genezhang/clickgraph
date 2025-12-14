@@ -82,7 +82,7 @@ SCHEMAS: Dict[str, SchemaConfig] = {
     "ontime_benchmark": SchemaConfig(
         name="ontime_benchmark",
         schema_type=SchemaType.DENORMALIZED,
-        yaml_path="benchmarks/schemas/ontime_benchmark.yaml",
+        yaml_path="benchmarks/ontime_flights/schemas/ontime_benchmark.yaml",
         database="default",
         node_labels=["Airport"],
         edge_types=["FLIGHT"],
@@ -873,7 +873,7 @@ class NegativeTestGenerator:
 # Test Runner Helpers
 # =============================================================================
 
-def execute_query(query: str, params: Dict = None, execution_mode: str = "sql_only") -> Dict:
+def execute_query(query: str, params: Dict = None, execution_mode: str = "sql_only", schema_name: str = None) -> Dict:
     """Execute a query against ClickGraph and return result"""
     payload = {
         "query": query,
@@ -881,6 +881,8 @@ def execute_query(query: str, params: Dict = None, execution_mode: str = "sql_on
     }
     if params:
         payload["parameters"] = params
+    if schema_name:
+        payload["schema_name"] = schema_name
     
     try:
         response = requests.post(

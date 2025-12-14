@@ -5,7 +5,7 @@ use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::{
     GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::cte_generation::{analyze_property_requirements, extract_var_len_properties};
@@ -15,8 +15,8 @@ use super::filter_pipeline::{
     rewrite_expr_for_var_len_cte,
 };
 use super::render_expr::{
-    Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
-    ScalarFnCall, TableAlias,
+    AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
+    RenderExpr, ScalarFnCall, TableAlias,
 };
 use super::{
     view_table_ref::{from_table_to_view_ref, view_ref_to_from_table},
@@ -1234,16 +1234,31 @@ fn build_chained_with_match_cte_plan(
                 )));
             }
 
-            // Generate unique CTE name using sequence number for this alias
-            // Simple scheme: with_a_cte_1, with_a_cte_2, with_a_cte_3
-            // Get or initialize sequence number for this alias
-            let seq_num = cte_sequence_numbers.entry(with_alias.clone()).or_insert(1);
+            // Extract ALL exported aliases from the first WITH clause plan
+            // Use them to generate the CTE name (not just the grouped alias)
+            // This matches what the analyzer expects: with_<all_aliases>_cte_<seq>
+            let exported_aliases: Vec<String> = with_plans
+                .first()
+                .and_then(|plan| match plan {
+                    LogicalPlan::WithClause(wc) => Some(wc.exported_aliases.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| vec![with_alias.clone()]);
+            
+            // Generate unique CTE name using ALL exported aliases + sequence number
+            // Format: with_<alias1>_<alias2>_..._cte_<seq>
+            // This matches analyzer's format in graph_join_inference.rs
+            let mut sorted_aliases = exported_aliases.clone();
+            sorted_aliases.sort(); // Ensure consistent ordering
+            let aliases_str = sorted_aliases.join("_");
+            
+            let seq_num = cte_sequence_numbers.entry(aliases_str.clone()).or_insert(1);
             let current_seq = *seq_num;
-            let cte_name = format!("with_{}_cte_{}", with_alias.replace(".*", ""), current_seq);
+            let cte_name = format!("with_{}_cte_{}", aliases_str, current_seq);
             *seq_num += 1; // Increment for next iteration
             
-            log::info!("🔧 build_chained_with_match_cte_plan: Generated unique CTE name '{}' for alias '{}' (sequence {})", 
-                       cte_name, with_alias, current_seq);
+            log::info!("🔧 build_chained_with_match_cte_plan: Generated unique CTE name '{}' from exported aliases {:?} (sequence {})", 
+                       cte_name, exported_aliases, current_seq);
 
             // Create CTE content - if multiple renders, combine with UNION ALL
             // Extract ORDER BY, SKIP, LIMIT from first rendered plan (they should all have the same modifiers)
@@ -1514,14 +1529,50 @@ fn build_chained_with_match_cte_plan(
                 };
             
             if let Some(mapping) = property_mapping {
-                let cte_alias_and_mapping = Some((from_ref.alias.clone(), mapping.clone()));
+                // Rewrite SELECT items to use FROM alias and CTE column names
+                // The FROM alias (e.g., "a_age") must be used, not the original aliases ("a") or CTE name
+                let from_alias = from_ref.alias.as_ref().map(|a| a.as_str()).unwrap_or(&from_ref.name);
+                log::info!("🔧 build_chained_with_match_cte_plan: Rewriting SELECT items to use FROM alias '{}'", from_alias);
                 
-                // REMOVED (Phase 3D-B): Rewrite SELECT items for CTE columns
-                // This is now obsolete because CteColumnResolver in the analyzer already
-                // resolves PropertyAccess expressions to use CTE column names.
-                // The logical plan already has correct column names (e.g., "p_firstName"),
-                // so rewriting at render time is redundant.
-                log::info!("🔧 build_chained_with_match_cte_plan: SELECT items already have CTE column names from analyzer");
+                // Extract all WITH aliases from CTE name for rewriting
+                // CTE name format: with_a_age_cte_1 → aliases are "a", "age"
+                let with_aliases: HashSet<String> = if let Some(stripped) = from_ref.name.strip_prefix("with_") {
+                    if let Some(cte_pos) = stripped.rfind("_cte") {
+                        stripped[..cte_pos].split('_').map(|s| s.to_string()).collect()
+                    } else {
+                        HashSet::new()
+                    }
+                } else {
+                    HashSet::new()
+                };
+                
+                log::info!("🔧 build_chained_with_match_cte_plan: WITH aliases from CTE: {:?}", with_aliases);
+                
+                // Build reverse mapping from CTE SELECT items: (table_alias, column) → cte_column_alias
+                // This maps e.g., ("a", "full_name") → "a_name"
+                let mut reverse_mapping: HashMap<(String, String), String> = HashMap::new();
+                if let Some((select_items, _)) = cte_schemas.get(&from_ref.name) {
+                    for item in select_items {
+                        if let Some(col_alias) = &item.col_alias {
+                            // Extract table alias and column from the expression
+                            if let RenderExpr::PropertyAccessExp(pa) = &item.expression {
+                                let table_alias = pa.table_alias.0.clone();
+                                if let Column(PropertyValue::Column(col)) = &pa.column {
+                                    reverse_mapping.insert((table_alias, col.clone()), col_alias.0.clone());
+                                }
+                            }
+                        }
+                    }
+                    log::info!("🔧 build_chained_with_match_cte_plan: Built reverse mapping with {} entries", reverse_mapping.len());
+                }
+                
+                // Rewrite SELECT items
+                render_plan.select.items = render_plan.select.items.into_iter().map(|mut item| {
+                    item.expression = rewrite_cte_expression(item.expression, &from_ref.name, from_alias, &with_aliases, &reverse_mapping);
+                    item
+                }).collect();
+                
+                log::info!("🔧 build_chained_with_match_cte_plan: SELECT items rewritten to use FROM alias");
             }
         }
     }
@@ -1541,6 +1592,95 @@ fn build_chained_with_match_cte_plan(
     );
 
     Ok(render_plan)
+}
+
+/// Rewrite expressions to use the FROM alias and CTE column names
+/// 
+/// Handles three cases:
+/// 1. PropertyAccess with WITH alias (e.g., "a.full_name") → rewrite to FROM alias + CTE column (e.g., "a_age.a_name")
+/// 2. PropertyAccess with CTE name (e.g., "with_a_age_cte_1.age") → rewrite to FROM alias (e.g., "a_age.age")
+/// 3. Other expressions → recursively rewrite nested expressions
+fn rewrite_cte_expression(
+    expr: RenderExpr,
+    cte_name: &str,
+    from_alias: &str,
+    with_aliases: &HashSet<String>,
+    reverse_mapping: &HashMap<(String, String), String>,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            let table_alias = &pa.table_alias.0;
+            
+            // Case 1: Table alias is a WITH alias (e.g., "a")
+            if with_aliases.contains(table_alias) {
+                // Look up the CTE column name from reverse mapping
+                let column_name = match &pa.column {
+                    Column(PropertyValue::Column(col)) => col.clone(),
+                    _ => return RenderExpr::PropertyAccessExp(pa), // Don't rewrite complex columns
+                };
+                
+                let key = (table_alias.clone(), column_name.clone());
+                if let Some(cte_column) = reverse_mapping.get(&key) {
+                    log::debug!("🔧 Rewriting {}.{} → {}.{}", table_alias, column_name, from_alias, cte_column);
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(from_alias.to_string()),
+                        column: Column(PropertyValue::Column(cte_column.clone())),
+                    })
+                } else {
+                    // No mapping found - might be an aggregate column, use as-is
+                    log::debug!("🔧 Rewriting {}.{} → {}.{} (no mapping)", table_alias, column_name, from_alias, column_name);
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(from_alias.to_string()),
+                        column: Column(PropertyValue::Column(column_name)),
+                    })
+                }
+            }
+            // Case 2: Table alias is the CTE name itself
+            else if table_alias == cte_name {
+                log::debug!("🔧 Rewriting CTE reference {}.{:?} → {}.{:?}", table_alias, pa.column, from_alias, pa.column);
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(from_alias.to_string()),
+                    column: pa.column,
+                })
+            }
+            // Case 3: Keep as-is
+            else {
+                RenderExpr::PropertyAccessExp(pa)
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            // Recursively rewrite arguments
+            let new_args = agg.args.into_iter()
+                .map(|arg| rewrite_cte_expression(arg, cte_name, from_alias, with_aliases, reverse_mapping))
+                .collect();
+            RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: agg.name,
+                args: new_args,
+            })
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            // Recursively rewrite arguments
+            let new_args = func.args.into_iter()
+                .map(|arg| rewrite_cte_expression(arg, cte_name, from_alias, with_aliases, reverse_mapping))
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: func.name,
+                args: new_args,
+            })
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            // Recursively rewrite operands
+            let new_operands = op.operands.into_iter()
+                .map(|operand| rewrite_cte_expression(operand, cte_name, from_alias, with_aliases, reverse_mapping))
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: new_operands,
+            })
+        }
+        // Other expression types don't need rewriting
+        other => other,
+    }
 }
 
 /// Render a logical plan without triggering WITH clause detection.
@@ -7361,7 +7501,20 @@ impl RenderPlanBuilder for LogicalPlan {
                     .collect();
 
                 // Create CTE for the inner (WITH) query
-                let cte_name = "with_result".to_string();
+                // Generate CTE name from all exported aliases (both table aliases and aggregates)
+                // Format: with_<alias1>_<alias2>_..._cte
+                // This matches the format used in analyzer (graph_join_inference.rs)
+                let mut all_with_aliases: Vec<String> = with_table_aliases
+                    .iter()
+                    .chain(with_aliases.iter())
+                    .cloned()
+                    .collect();
+                all_with_aliases.sort(); // Ensure consistent ordering
+                let cte_name = if all_with_aliases.len() == 1 {
+                    format!("with_{}_cte", all_with_aliases[0])
+                } else {
+                    format!("with_{}_cte", all_with_aliases.join("_"))
+                };
                 let inner_cte = Cte {
                     cte_name: cte_name.clone(),
                     content: super::CteContent::Structured(RenderPlan {

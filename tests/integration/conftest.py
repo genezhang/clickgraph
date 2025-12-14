@@ -63,23 +63,33 @@ def setup_test_database(clickhouse_client, test_database):
 @pytest.fixture
 def clean_database(clickhouse_client, test_database):
     """Clean all tables in test database before each test."""
-    # Get all tables in test database
-    tables = clickhouse_client.query(
-        f"SELECT name FROM system.tables WHERE database = '{test_database}'"
-    ).result_rows
-    
-    # Drop all tables
-    for (table_name,) in tables:
-        clickhouse_client.command(f"DROP TABLE IF EXISTS {test_database}.{table_name}")
+    # Get all tables in test database - use command() instead of query() to avoid zstandard issue
+    try:
+        result = clickhouse_client.command(
+            f"SELECT name FROM system.tables WHERE database = '{test_database}' FORMAT TabSeparated"
+        )
+        if result:
+            tables = [line.strip() for line in result.split('\n') if line.strip()]
+            # Drop all tables
+            for table_name in tables:
+                clickhouse_client.command(f"DROP TABLE IF EXISTS {test_database}.{table_name}")
+    except Exception as e:
+        # Database might not exist yet, that's ok
+        pass
     
     yield
     
     # Optional: Clean after test as well
-    tables = clickhouse_client.query(
-        f"SELECT name FROM system.tables WHERE database = '{test_database}'"
-    ).result_rows
-    for (table_name,) in tables:
-        clickhouse_client.command(f"DROP TABLE IF EXISTS {test_database}.{table_name}")
+    try:
+        result = clickhouse_client.command(
+            f"SELECT name FROM system.tables WHERE database = '{test_database}' FORMAT TabSeparated"
+        )
+        if result:
+            tables = [line.strip() for line in result.split('\n') if line.strip()]
+            for table_name in tables:
+                clickhouse_client.command(f"DROP TABLE IF EXISTS {test_database}.{table_name}")
+    except Exception:
+        pass
 
 
 def execute_cypher(query: str, schema_name: str = "default", raise_on_error: bool = True) -> Dict[str, Any]:

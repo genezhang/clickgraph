@@ -1,0 +1,83 @@
+name: social_benchmark
+
+graph_schema:
+  nodes:
+    - label: User
+      database: brahmand
+      table: users_bench
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        email: email_address
+        registration_date: registration_date
+        is_active: is_active
+        country: country
+        city: city
+
+    - label: Post
+      database: brahmand
+      table: posts_bench
+      node_id: post_id
+      property_mappings:
+        post_id: post_id
+        content: content
+        date: created_at
+
+    # Zeek log node for testing UNWIND on array columns
+    - label: ZeekLog
+      database: brahmand
+      table: zeek_logs
+      node_id: log_id
+      property_mappings:
+        log_id: log_id
+        timestamp: timestamp
+        source_ip: source_ip
+        dest_ips: dest_ips
+        protocols: protocols
+        bytes_sent: bytes_sent
+
+  relationships:
+    - type: FOLLOWS
+      database: brahmand
+      table: user_follows_bench
+      from_id: follower_id
+      to_id: followed_id
+      edge_id: follow_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        follow_date: follow_date
+    
+    - type: AUTHORED
+      database: brahmand
+      table: posts_bench
+      from_id: author_id
+      to_id: post_id
+      edge_id: post_id
+      from_node: User
+      to_node: Post
+      property_mappings:
+        post_date: post_date
+    
+    - type: LIKED
+      database: brahmand
+      table: post_likes_bench
+      from_id: user_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+      property_mappings:
+        like_date: like_date
+
+    - type: FRIENDS_WITH
+      database: brahmand
+      table: friendships
+      from_id: user1_id
+      to_id: user2_id
+      edge_id: friendship_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        since_date: since_date
+

@@ -1,0 +1,45 @@
+name: optional_match_test
+version: "1.0"
+description: "Schema for testing OPTIONAL MATCH LEFT JOIN semantics"
+
+graph_schema:
+  nodes:
+    - label: User
+      database: test_optional_match
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: name
+        age: age
+        city: city
+
+    - label: Post
+      database: test_optional_match
+      table: posts
+      node_id: post_id
+      property_mappings:
+        post_id: post_id
+        content: content
+        created_at: created_at
+
+  relationships:
+    - type: FOLLOWS
+      database: test_optional_match
+      table: follows
+      from_id: follower_id
+      to_id: followed_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        since: since
+
+    - type: AUTHORED
+      database: test_optional_match
+      table: posts
+      from_id: author_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+      property_mappings:
+        post_date: created_at
