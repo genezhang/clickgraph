@@ -16,6 +16,7 @@ use crate::{
             graph_join_inference::GraphJoinInference,
             graph_traversal_planning::GraphTRaversalPlanning, group_by_building::GroupByBuilding,
             plan_sanitization::PlanSanitization, projection_tagging::ProjectionTagging,
+            projected_columns_resolver::ProjectedColumnsResolver,
             query_validation::QueryValidation, schema_inference::SchemaInference,
             variable_resolver::VariableResolver, with_scope_splitter::WithScopeSplitter,
         },
@@ -40,6 +41,7 @@ mod graph_traversal_planning;
 mod group_by_building;
 mod plan_sanitization;
 mod projection_tagging;
+mod projected_columns_resolver;
 mod query_validation;
 mod schema_inference;
 mod variable_resolver;
@@ -55,6 +57,20 @@ pub fn initial_analyzing(
     let plan = if let Ok(transformed_plan) =
         schema_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)
     {
+        transformed_plan.get_plan()
+    } else {
+        plan
+    };
+
+    // Step 1.5: Projected Columns Resolver - pre-compute projected columns for GraphNodes
+    // This runs after SchemaInference to ensure we have property mappings available
+    // Populates GraphNode.projected_columns, eliminating need for renderer to traverse plan
+    let projected_columns_resolver = ProjectedColumnsResolver::new();
+    let plan = if let Ok(transformed_plan) = projected_columns_resolver.analyze_with_graph_schema(
+        plan.clone(),
+        plan_ctx,
+        current_graph_schema,
+    ) {
         transformed_plan.get_plan()
     } else {
         plan
