@@ -17,6 +17,7 @@ pub enum Pass {
     SchemaInference,
     // PlanSanitization,
     QueryValidation,
+    CteColumnResolver,
 }
 
 impl Display for Pass {
@@ -31,6 +32,7 @@ impl Display for Pass {
             Pass::SchemaInference => write!(f, "SchemaInference"),
             // Pass::PlanSanitization => write!(f, "PlanSanitization"),
             Pass::QueryValidation => write!(f, "QueryValidation"),
+            Pass::CteColumnResolver => write!(f, "CteColumnResolver"),
         }
     }
 }

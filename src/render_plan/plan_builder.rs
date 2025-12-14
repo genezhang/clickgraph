@@ -492,260 +492,19 @@ fn expand_table_alias_to_group_by_id_only(
 // column names during join creation, so JOIN conditions already contain concrete
 // column names (e.g., "p_firstName" for CTEs). This rewriting step is redundant.
 
-/// Recursively rewrite property access expressions to use CTE column names.
-/// Example: b.id → a_b.b_user_id when b is in with_a_b_cte
-/// Uses the FROM clause CTE info to determine correct column mappings.
-fn rewrite_expr_for_cte_columns_v2(
-    expr: &RenderExpr,
-    cte_info: &Option<(Option<String>, HashMap<String, PropertyValue>)>,
-    cte_schemas: &HashMap<String, (Vec<SelectItem>, Vec<String>)>,
-) -> RenderExpr {
-    match expr {
-        RenderExpr::PropertyAccessExp(prop) => {
-            let alias = &prop.table_alias.0;
-            let column_raw = prop.column.0.raw();
-            
-            log::debug!("🔍 rewrite_expr_for_cte_columns_v2: Checking {}.{}", alias, column_raw);
-            
-            // First, check if we have CTE info from FROM clause
-            if let Some((cte_alias_opt, property_mapping)) = cte_info {
-                if let Some(cte_alias) = cte_alias_opt {
-                    log::debug!("🔍   Have CTE alias '{}' with {} mappings", cte_alias, property_mapping.len());
-                    
-                    // Strategy: The property_mapping contains CTE columns like "b_name", "c_user_id"
-                    // When we see b.name, we need to check if "b_name" exists in the mapping
-                    // If it does, rewrite to {cte_alias}.b_name (e.g., c.b_name)
-                    
-                    // First, try exact match: look for "{alias}_{column_raw}"
-                    let expected_column = format!("{}_{}", alias, column_raw);
-                    log::debug!("🔍   Looking for exact match: '{}'", expected_column);
-                    
-                    // Check if this exact column exists in the property_mapping
-                    for prop_value in property_mapping.values() {
-                        let column_name = prop_value.raw();
-                        if column_name == expected_column {
-                            log::info!(
-                                "🔧 Rewriting SELECT/JOIN (FROM CTE): {}.{} → {}.{}",
-                                alias, column_raw, cte_alias, column_name
-                            );
-                            
-                            return RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(cte_alias.clone()),
-                                column: Column(PropertyValue::Column(column_name.to_string())),
-                            });
-                        }
-                    }
-                    
-                    log::debug!("🔍   Exact match not found, trying pattern match for '{}_*'", alias);
-                    
-                    // No exact match found. This can happen when:
-                    // - The SELECT uses ClickHouse column name (full_name) but CTE uses Cypher property (name)
-                    // - Example: b.full_name in SELECT, but CTE has b_name
-                    // Solution: Look for any column starting with "{alias}_" that matches semantically
-                    // For now, we can try looking up the property in the plan to find the Cypher name
-                    
-                    // Try to find a column that starts with "{alias}_" and might match
-                    // This is a heuristic: if we're looking for b.full_name and we have b_name in CTE,
-                    // we need to recognize these are the same property
-                    let alias_prefix = format!("{}_", alias);
-                    let mut candidates: Vec<String> = property_mapping.values()
-                        .map(|pv| pv.raw().to_string())
-                        .filter(|col| col.starts_with(&alias_prefix))
-                        .collect();
-                    
-                    log::debug!("🔍   Found {} candidates starting with '{}'", candidates.len(), alias_prefix);
-                    
-                    // If we have exactly one candidate or we can find a semantic match, use it
-                    // For properties like "id", "user_id", match with fuzzy logic
-                    if column_raw.ends_with("_id") || column_raw == "id" {
-                        for candidate in &candidates {
-                            if candidate.ends_with("_id") {
-                                log::info!(
-                                    "🔧 Rewriting SELECT/JOIN id (FROM CTE): {}.{} → {}.{}",
-                                    alias, column_raw, cte_alias, candidate
-                                );
-                                return RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(cte_alias.clone()),
-                                    column: Column(PropertyValue::Column(candidate.clone())),
-                                });
-                            }
-                        }
-                    }
-                    
-                    // For other properties, we need to handle the Cypher→ClickHouse mapping
-                    // The CTE column names use Cypher property names, but SELECT might use ClickHouse column names
-                    // Heuristic: If we have candidates starting with "{alias}_", try to match by suffix
-                    // Example: looking for b.full_name, found b_name - these likely refer to the same property
-                    if !candidates.is_empty() {
-                        // Try to match by property semantics:
-                        // If looking for "full_name" or "name", match any "*name" column
-                        // If looking for "email_address" or "email", match any "*email*" column
-                        let column_lower = column_raw.to_lowercase();
-                        for candidate in &candidates {
-                            let candidate_lower = candidate.to_lowercase();
-                            // Check if they share a common semantic root
-                            if (column_lower.contains("name") && candidate_lower.contains("name"))
-                                || (column_lower.contains("email") && candidate_lower.contains("email"))
-                                || (column_lower.contains("date") && candidate_lower.contains("date"))
-                                || (column_lower.contains("id") && candidate_lower.contains("id"))
-                                || (column_lower.contains("active") && candidate_lower.contains("active"))
-                                || (column_lower.contains("city") && candidate_lower.contains("city"))
-                                || (column_lower.contains("country") && candidate_lower.contains("country"))
-                            {
-                                log::info!(
-                                    "🔧 Rewriting SELECT/JOIN (FROM CTE, semantic match): {}.{} → {}.{} (matched by common term)",
-                                    alias, column_raw, cte_alias, candidate
-                                );
-                                return RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(cte_alias.clone()),
-                                    column: Column(PropertyValue::Column(candidate.clone())),
-                                });
-                            }
-                        }
-                        
-                        log::warn!(
-                            "🔧 Could not rewrite {}.{} - found {} candidates but no semantic match: {:?}",
-                            alias, column_raw, candidates.len(), candidates
-                        );
-                    }
-                    
-                    // Special case for "id": if column_raw is anything ending with "_id",
-                    // try to match with "{alias}_id" or any "{alias}_*_id"
-                    if column_raw.ends_with("_id") || column_raw == "id" {
-                        let id_pattern = format!("{}_", alias);
-                        for prop_value in property_mapping.values() {
-                            let column_name = prop_value.raw();
-                            if column_name.starts_with(&id_pattern) && column_name.ends_with("_id") {
-                                log::info!(
-                                    "🔧 Rewriting SELECT/JOIN id (FROM CTE): {}.{} → {}.{}",
-                                    alias, column_raw, cte_alias, column_name
-                                );
-                                
-                                return RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(cte_alias.clone()),
-                                    column: Column(PropertyValue::Column(column_name.to_string())),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Fallback: Try the old method using cte_schemas
-            rewrite_expr_for_cte_columns(expr, cte_schemas)
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            let rewritten_operands = op
-                .operands
-                .iter()
-                .map(|operand| rewrite_expr_for_cte_columns_v2(operand, cte_info, cte_schemas))
-                .collect();
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
-                operands: rewritten_operands,
-            })
-        }
-        _ => expr.clone(),
-    }
-}
-
-/// Recursively rewrite property access expressions to use CTE column names.
-/// Example: b.id → a_b.b_user_id when b is in with_a_b_cte
-fn rewrite_expr_for_cte_columns(
-    expr: &RenderExpr,
-    cte_schemas: &HashMap<String, (Vec<SelectItem>, Vec<String>)>,
-) -> RenderExpr {
-    match expr {
-        RenderExpr::PropertyAccessExp(prop) => {
-            // Check if this table alias references a CTE column
-            // Look for CTEs that have columns starting with "{alias}_"
-            let alias = &prop.table_alias.0;
-            let column_raw = prop.column.0.raw();
-            
-            // Try to find a CTE that has this alias's columns
-            for (cte_name, (select_items, _)) in cte_schemas.iter() {
-                // Check if any column in this CTE starts with "{alias}_"
-                // We need fuzzy matching because property names might differ from column names
-                // Example: Cypher "id" maps to ClickHouse "user_id"
-                let alias_prefix = format!("{}_", alias);
-                
-                // Find all columns that belong to this alias
-                let matching_columns: Vec<_> = select_items.iter()
-                    .filter_map(|item| {
-                        if let Some(col_alias) = &item.col_alias {
-                            if col_alias.0.starts_with(&alias_prefix) {
-                                // Extract the property part (after "{alias}_")
-                                let prop_part = col_alias.0.strip_prefix(&alias_prefix).unwrap();
-                                Some((col_alias.0.clone(), prop_part.to_string()))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                
-                if !matching_columns.is_empty() {
-                    // Try exact match first
-                    let expected_col = format!("{}_{}", alias, column_raw);
-                    if let Some((full_col, _)) = matching_columns.iter().find(|(col, _)| *col == expected_col) {
-                        let cte_alias = cte_name
-                            .strip_prefix("with_")
-                            .and_then(|s| s.strip_suffix("_cte"))
-                            .unwrap_or(cte_name);
-                        
-                        log::info!(
-                            "🔧 Rewriting JOIN condition: {}.{} → {}.{}",
-                            alias, column_raw, cte_alias, full_col
-                        );
-                        
-                        return RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(cte_alias.to_string()),
-                            column: Column(PropertyValue::Column(full_col.clone())),
-                        });
-                    }
-                    
-                    // No exact match - try fuzzy match for ID columns
-                    // If looking for "id", check for columns ending with "_id" (e.g., "user_id", "node_id")
-                    if column_raw == "id" {
-                        if let Some((full_col, _)) = matching_columns.iter().find(|(_, prop)| prop.ends_with("_id")) {
-                            let cte_alias = cte_name
-                                .strip_prefix("with_")
-                                .and_then(|s| s.strip_suffix("_cte"))
-                                .unwrap_or(cte_name);
-                            
-                            log::info!(
-                                "🔧 Rewriting JOIN condition (ID fuzzy match): {}.{} → {}.{}",
-                                alias, column_raw, cte_alias, full_col
-                            );
-                            
-                            return RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(cte_alias.to_string()),
-                                column: Column(PropertyValue::Column(full_col.clone())),
-                            });
-                        }
-                    }
-                }
-            }
-            
-            // No CTE found, return as-is
-            RenderExpr::PropertyAccessExp(prop.clone())
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            let rewritten_operands = op
-                .operands
-                .iter()
-                .map(|operand| rewrite_expr_for_cte_columns(operand, cte_schemas))
-                .collect();
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
-                operands: rewritten_operands,
-            })
-        }
-        _ => expr.clone(),
-    }
-}
+// REMOVED: rewrite_expr_for_cte_columns_v2 and rewrite_expr_for_cte_columns functions (Phase 3D-B)
+// These functions (254 lines total) are now obsolete. The analyzer's CteColumnResolver pass
+// resolves all PropertyAccess expressions to use CTE column names during the analysis phase.
+// The logical plan already contains correct column names (e.g., "p_firstName"), so runtime
+// rewriting in the renderer is redundant.
+//
+// Previous flow:
+//   Analyzer → LogicalExpr with PropertyAccess("p", "firstName")
+//   Renderer → Rewrite to PropertyAccess("p", "p_firstName")
+//
+// New flow (Phase 3D-B):
+//   Analyzer CteColumnResolver → LogicalExpr with PropertyAccess("p", "p_firstName")
+//   Renderer → Use as-is (no rewriting needed)
 
 /// Helper function to find the label for a given alias in the logical plan.
 fn find_label_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
@@ -1807,23 +1566,12 @@ fn build_chained_with_match_cte_plan(
             if let Some(mapping) = property_mapping {
                 let cte_alias_and_mapping = Some((from_ref.alias.clone(), mapping.clone()));
                 
-                log::info!("🔧 build_chained_with_match_cte_plan: About to rewrite {} SELECT items", render_plan.select.items.len());
-                
-                // Rewrite all SELECT items
-                for (i, select_item) in render_plan.select.items.iter_mut().enumerate() {
-                    let before = format!("{:?}", select_item.expression);
-                    select_item.expression = rewrite_expr_for_cte_columns_v2(
-                        &select_item.expression,
-                        &cte_alias_and_mapping,
-                        &cte_schemas,
-                    );
-                    let after = format!("{:?}", select_item.expression);
-                    if before != after {
-                        log::info!("🔧 SELECT item {}: {} → {}", i, before, after);
-                    }
-                }
-                
-                log::info!("🔧 build_chained_with_match_cte_plan: Rewrote SELECT items for CTE FROM clause");
+                // REMOVED (Phase 3D-B): Rewrite SELECT items for CTE columns
+                // This is now obsolete because CteColumnResolver in the analyzer already
+                // resolves PropertyAccess expressions to use CTE column names.
+                // The logical plan already has correct column names (e.g., "p_firstName"),
+                // so rewriting at render time is redundant.
+                log::info!("🔧 build_chained_with_match_cte_plan: SELECT items already have CTE column names from analyzer");
             }
         }
     }

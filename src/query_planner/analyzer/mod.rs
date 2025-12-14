@@ -11,6 +11,7 @@ use crate::{
     query_planner::{
         analyzer::{
             analyzer_pass::AnalyzerPass, bidirectional_union::BidirectionalUnion,
+            cte_column_resolver::CteColumnResolver,
             duplicate_scans_removing::DuplicateScansRemoving, filter_tagging::FilterTagging,
             graph_join_inference::GraphJoinInference,
             graph_traversal_planning::GraphTRaversalPlanning, group_by_building::GroupByBuilding,
@@ -29,6 +30,7 @@ use super::plan_ctx::PlanCtx;
 
 mod analyzer_pass;
 mod bidirectional_union;
+mod cte_column_resolver;
 mod duplicate_scans_removing;
 pub mod errors;
 mod filter_tagging;
@@ -154,6 +156,18 @@ pub fn intermediate_analyzing(
 
     let graph_join_inference = GraphJoinInference::new();
     let transformed_plan = graph_join_inference.analyze_with_graph_schema(
+        plan.clone(),
+        plan_ctx,
+        current_graph_schema,
+    )?;
+    let plan = transformed_plan.get_plan();
+
+    // CRITICAL: Resolve CTE column names AFTER join inference
+    // GraphJoinInference populates CTE column mappings in plan_ctx
+    // This pass resolves PropertyAccess expressions in SELECT/WHERE/HAVING to use CTE column names
+    // Example: PropertyAccess("p", "firstName") → PropertyAccess("p", "p_firstName")
+    let cte_column_resolver = CteColumnResolver;
+    let transformed_plan = cte_column_resolver.analyze_with_graph_schema(
         plan.clone(),
         plan_ctx,
         current_graph_schema,
