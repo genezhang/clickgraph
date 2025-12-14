@@ -16,7 +16,7 @@ use crate::{
             graph_traversal_planning::GraphTRaversalPlanning, group_by_building::GroupByBuilding,
             plan_sanitization::PlanSanitization, projection_tagging::ProjectionTagging,
             query_validation::QueryValidation, schema_inference::SchemaInference,
-            with_scope_splitter::WithScopeSplitter,
+            variable_resolver::VariableResolver, with_scope_splitter::WithScopeSplitter,
         },
         logical_plan::LogicalPlan,
         optimizer::{
@@ -40,6 +40,7 @@ mod plan_sanitization;
 mod projection_tagging;
 mod query_validation;
 mod schema_inference;
+mod variable_resolver;
 mod with_scope_splitter;
 
 pub fn initial_analyzing(
@@ -142,6 +143,13 @@ pub fn intermediate_analyzing(
     // Each WITH creates a materialization point - joins should only be computed within each scope
     let with_scope_splitter = WithScopeSplitter::new();
     let transformed_plan = with_scope_splitter.analyze(plan.clone(), plan_ctx)?;
+    let plan = transformed_plan.get_plan();
+
+    // CRITICAL: Resolve variables AFTER scope splitting, BEFORE join inference
+    // This transforms TableAlias("cnt") → PropertyAccessExp("cnt_cte", "cnt")
+    // Making the renderer "dumb" - it only needs to emit SQL for resolved expressions
+    let variable_resolver = VariableResolver::new();
+    let transformed_plan = variable_resolver.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
 
     let graph_join_inference = GraphJoinInference::new();

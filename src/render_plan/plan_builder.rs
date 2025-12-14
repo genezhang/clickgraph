@@ -309,10 +309,24 @@ fn expand_table_alias_to_select_items(
                 .unwrap_or(cte_name);
             
             let alias_prefix = format!("{}_", alias);
+            log::warn!("🔍 expand_table_alias_to_select_items: CTE '{}' has {} select items", cte_name, select_items.len());
+            for (i, item) in select_items.iter().enumerate() {
+                log::warn!("🔍   Item {}: col_alias={:?}, expr={:?}", i,
+                    item.col_alias.as_ref().map(|a| &a.0),
+                    std::mem::discriminant(&item.expression));
+            }
             let filtered_items: Vec<SelectItem> = select_items.iter()
                 .filter(|item| {
                     if let Some(col_alias) = &item.col_alias {
-                        col_alias.0.starts_with(&alias_prefix)
+                        // Match columns that:
+                        // 1. Start with alias_ (e.g., "friend_firstName" for alias "friend")
+                        // 2. OR exactly match the alias (e.g., "cnt" for alias "cnt" in WITH count() as cnt)
+                        let matches_prefix = col_alias.0.starts_with(&alias_prefix);
+                        let matches_exact = col_alias.0 == alias;
+                        let result = matches_prefix || matches_exact;
+                        log::warn!("🔍   Column '{}': prefix_match={}, exact_match={}, result={}",
+                            col_alias.0, matches_prefix, matches_exact, result);
+                        result
                     } else {
                         false
                     }
@@ -5507,21 +5521,24 @@ impl RenderPlanBuilder for LogicalPlan {
                             ref table_alias,
                         ) = item.expression
                         {
-                            crate::debug_println!("DEBUG: Checking TableAlias: {}", table_alias.0);
+                            log::warn!("🔍 RETURN processing: Found TableAlias '{}'", table_alias.0);
+                            log::warn!("🔍 with_aliases keys: {:?}", with_aliases.keys().collect::<Vec<_>>());
                             if let Some(with_expr) = with_aliases.get(&table_alias.0) {
                                 // Replace with the actual expression from WITH
-                                crate::debug_println!("DEBUG: Resolved {} to {:?}", table_alias.0, with_expr);
+                                log::warn!("🔍 Resolved '{}' to WITH expression: {:?}", table_alias.0, std::mem::discriminant(with_expr));
                                 with_expr.clone()
                             } else {
-                                crate::debug_println!("DEBUG: No WITH alias found for {}", table_alias.0);
+                                log::warn!("🔍 No WITH alias found for '{}' - keeping as TableAlias", table_alias.0);
                                 item.expression.clone()
                             }
                         } else {
+                            log::warn!("🔍 RETURN item expression is not TableAlias: {:?}", std::mem::discriminant(&item.expression));
                             item.expression.clone()
                         };
 
                     // Apply denormalized property mapping for denormalized nodes
                     let expr: RenderExpr = resolved_expr.try_into()?;
+                    log::warn!("🔍 After conversion to RenderExpr: {:?}", std::mem::discriminant(&expr));
 
                     // DENORMALIZED TABLE ALIAS RESOLUTION:
                     // For denormalized nodes on fully denormalized edges (like (ip1)-[]->(d) where both
@@ -5529,7 +5546,17 @@ impl RenderPlanBuilder for LogicalPlan {
                     // We need to resolve `d` to the actual table alias (e.g., `ip1`).
                     // Note: By this point, property names have already been converted to column names
                     // by the analyzer, so we just need to fix the table alias.
-                    let translated_expr = if let RenderExpr::PropertyAccessExp(ref prop_access) = expr {
+                    //
+                    // WORKAROUND FOR WITH CLAUSE BUG: Skip this resolution for TableAlias expressions
+                    // that were not resolved to WITH expressions. These are likely CTE column references
+                    // like "cnt" in "RETURN cnt" after "WITH count(friend) as cnt", and should be left
+                    // as simple TableAlias, not expanded to properties.
+                    let translated_expr = if let RenderExpr::TableAlias(ref ta) = expr {
+                        // This is a TableAlias that wasn't resolved to a WITH expression
+                        // Leave it as-is - it's likely a CTE column reference
+                        crate::debug_println!("DEBUG: Skipping property expansion for unresolved TableAlias '{}'", ta.0);
+                        None  // Don't translate
+                    } else if let RenderExpr::PropertyAccessExp(ref prop_access) = expr {
                         crate::debug_println!("DEBUG: Checking denormalized alias for {}.{}", prop_access.table_alias.0, prop_access.column.0.raw());
                         // Check if this alias is denormalized and needs to point to a different table
                         match self.get_properties_with_table_alias(&prop_access.table_alias.0) {
