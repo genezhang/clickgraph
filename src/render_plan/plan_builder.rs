@@ -3052,7 +3052,6 @@ fn prune_joins_covered_by_cte(
             // If "b" is in the CTE, then [a→t1→b] should all be removed
             let mut kept_joins = Vec::new();
             let mut removed_joins = Vec::new();
-            let mut found_last_cte_join = false;
 
             // Find the index of the last join whose alias is in exported_aliases
             let last_cte_join_idx = gj.joins
@@ -3071,7 +3070,6 @@ fn prune_joins_covered_by_cte(
                         log::info!("🔧 prune_joins_covered_by_cte: REMOVING join {} to '{}' (before/at cutoff)",
                                    idx, join.table_alias);
                         removed_joins.push(join.clone());
-                        found_last_cte_join = true;
                     } else {
                         log::info!("🔧 prune_joins_covered_by_cte: KEEPING join {} to '{}' (after cutoff)",
                                    idx, join.table_alias);

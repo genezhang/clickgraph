@@ -155,20 +155,6 @@ impl ScopeContext {
         None
     }
 
-    /// Get all visible variables (including parent scopes)
-    pub fn all_visible_vars(&self) -> HashMap<String, VarSource> {
-        let mut vars = HashMap::new();
-
-        // Collect from parent first (so current scope can override)
-        if let Some(ref parent) = self.parent {
-            vars.extend(parent.all_visible_vars());
-        }
-
-        // Add current scope variables (overrides parent if same name)
-        vars.extend(self.visible_vars.clone());
-
-        vars
-    }
 }
 
 /// Variable Resolution Analyzer Pass
