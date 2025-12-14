@@ -394,53 +394,6 @@ fn expand_table_alias_to_select_items(
     Vec::new()
 }
 
-/// Find the CTE name referenced in this plan (if any).
-/// Looks for ViewScan nodes with source_table starting with "with_".
-/// NOTE: This is now only used for debugging - the main resolution uses cte_references from analyzer.
-#[allow(dead_code)]
-fn find_cte_in_plan(plan: &LogicalPlan) -> Option<String> {
-    use crate::query_planner::logical_plan::*;
-    
-    let result = match plan {
-        LogicalPlan::ViewScan(vs) if vs.source_table.starts_with("with_") => {
-            Some(vs.source_table.clone())
-        }
-        LogicalPlan::GraphNode(node) => {
-            if let LogicalPlan::ViewScan(vs) = node.input.as_ref() {
-                if vs.source_table.starts_with("with_") {
-                    log::info!(
-                        "🔍 find_cte_in_plan: Found CTE '{}' in GraphNode(alias='{}')",
-                        vs.source_table, node.alias
-                    );
-                    return Some(vs.source_table.clone());
-                }
-            }
-            find_cte_in_plan(&node.input)
-        }
-        LogicalPlan::GraphRel(rel) => {
-            // Check left first (more likely to have the CTE reference)
-            find_cte_in_plan(&rel.left)
-                .or_else(|| find_cte_in_plan(&rel.right))
-                .or_else(|| find_cte_in_plan(&rel.center))
-        }
-        LogicalPlan::Projection(proj) => find_cte_in_plan(&proj.input),
-        LogicalPlan::Limit(limit) => find_cte_in_plan(&limit.input),
-        LogicalPlan::OrderBy(order) => find_cte_in_plan(&order.input),
-        LogicalPlan::GraphJoins(gj) => find_cte_in_plan(&gj.input),
-        LogicalPlan::Filter(filter) => find_cte_in_plan(&filter.input),
-        LogicalPlan::GroupBy(gb) => find_cte_in_plan(&gb.input),
-        _ => None,
-    };
-    
-    if let Some(ref cte_name) = result {
-        log::info!("🔍 find_cte_in_plan: Returning CTE '{}'", cte_name);
-    } else {
-        log::warn!("🔍 find_cte_in_plan: No CTE found in plan");
-    }
-    
-    result
-}
-
 /// Helper: Expand a TableAlias to ID column only for GROUP BY.
 ///
 /// CRITICAL: For aggregations like `WITH a, count(b)`, we group by a's ID only,
