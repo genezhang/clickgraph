@@ -3619,6 +3619,21 @@ fn replace_with_clause_with_cte_reference_v2(
     }
 }
 
+/// Helper: Extract and sort properties from a property mapping HashMap.
+/// This consolidates the repeated pattern of converting HashMap<String, PropertyValue> to Vec<(String, String)>.
+fn extract_sorted_properties(
+    property_map: &std::collections::HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>,
+) -> Vec<(String, String)> {
+    let mut properties: Vec<(String, String)> = property_map
+        .iter()
+        .map(|(prop_name, prop_value)| {
+            (prop_name.clone(), prop_value.raw().to_string())
+        })
+        .collect();
+    properties.sort_by(|a, b| a.0.cmp(&b.0));
+    properties
+}
+
 impl RenderPlanBuilder for LogicalPlan {
     fn find_id_column_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<String> {
         // Traverse the plan tree to find a GraphNode or ViewScan with matching alias
@@ -3712,39 +3727,20 @@ impl RenderPlanBuilder for LogicalPlan {
                     // For denormalized nodes with properties on the ViewScan (from standalone node query)
                     if scan.is_denormalized {
                         if let Some(from_props) = &scan.from_node_properties {
-                            let mut properties: Vec<(String, String)> = from_props
-                                .iter()
-                                .map(|(prop_name, prop_value)| {
-                                    (prop_name.clone(), prop_value.raw().to_string())
-                                })
-                                .collect();
-                            properties.sort_by(|a, b| a.0.cmp(&b.0));
+                            let properties = extract_sorted_properties(from_props);
                             if !properties.is_empty() {
                                 return Ok((properties, None)); // Use original alias
                             }
                         }
                         if let Some(to_props) = &scan.to_node_properties {
-                            let mut properties: Vec<(String, String)> = to_props
-                                .iter()
-                                .map(|(prop_name, prop_value)| {
-                                    (prop_name.clone(), prop_value.raw().to_string())
-                                })
-                                .collect();
-                            properties.sort_by(|a, b| a.0.cmp(&b.0));
+                            let properties = extract_sorted_properties(to_props);
                             if !properties.is_empty() {
                                 return Ok((properties, None));
                             }
                         }
                     }
                     // Standard nodes
-                    let mut properties: Vec<(String, String)> = scan
-                        .property_mapping
-                        .iter()
-                        .map(|(prop_name, prop_value)| {
-                            (prop_name.clone(), prop_value.raw().to_string())
-                        })
-                        .collect();
-                    properties.sort_by(|a, b| a.0.cmp(&b.0));
+                    let properties = extract_sorted_properties(&scan.property_mapping);
                     return Ok((properties, None));
                 }
             }
@@ -3752,14 +3748,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Check if this relationship's alias matches
                 if rel.alias == alias {
                     if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                        let mut properties: Vec<(String, String)> = scan
-                            .property_mapping
-                            .iter()
-                            .map(|(prop_name, prop_value)| {
-                                (prop_name.clone(), prop_value.raw().to_string())
-                            })
-                            .collect();
-                        properties.sort_by(|a, b| a.0.cmp(&b.0));
+                        let properties = extract_sorted_properties(&scan.property_mapping);
                         return Ok((properties, None));
                     }
                 }
@@ -3807,13 +3796,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             &scan.from_node_properties
                         };
                         if let Some(node_props) = props {
-                            let mut properties: Vec<(String, String)> = node_props
-                                .iter()
-                                .map(|(prop_name, prop_value)| {
-                                    (prop_name.clone(), prop_value.raw().to_string())
-                                })
-                                .collect();
-                            properties.sort_by(|a, b| a.0.cmp(&b.0));
+                            let properties = extract_sorted_properties(node_props);
                             if !properties.is_empty() {
                                 // Left connection uses its own alias as the FROM table
                                 // Return None to use the original alias (which IS the FROM)
@@ -3830,13 +3813,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             &scan.to_node_properties
                         };
                         if let Some(node_props) = props {
-                            let mut properties: Vec<(String, String)> = node_props
-                                .iter()
-                                .map(|(prop_name, prop_value)| {
-                                    (prop_name.clone(), prop_value.raw().to_string())
-                                })
-                                .collect();
-                            properties.sort_by(|a, b| a.0.cmp(&b.0));
+                            let properties = extract_sorted_properties(node_props);
                             if !properties.is_empty() {
                                 // For fully denormalized edges (both nodes on edge), use left_connection
                                 // alias because it's the FROM table and right node shares the same row
