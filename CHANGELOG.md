@@ -29,6 +29,19 @@
   - **Implementation**: Removed DisconnectedPatternFound error, rely on cross-branch JOIN detection
   - **Files**: `src/query_planner/logical_plan/match_clause.rs`
 
+- **Sequential MATCH Clauses** - Multiple MATCH statements in sequence (December 15, 2025)
+  - **Feature**: Support `MATCH ... MATCH ... MATCH ...` as per OpenCypher specification
+  - **Semantics**: No relationship uniqueness requirement across MATCH boundaries (unlike comma patterns)
+  - **Example**:
+    ```cypher
+    MATCH (srcip:IP)-[:REQUESTED]->(d:Domain)
+    MATCH (srcip)-[:ACCESSED]->(dest:IP)
+    RETURN srcip.ip, d.name, dest.ip
+    ```
+  - **Implementation**: Parser AST changed from `Option<MatchClause>` to `Vec<MatchClause>`
+  - **Impact**: Zeek tests 22→23 passing (95.8%)
+  - **Files**: `src/open_cypher_parser/ast.rs`, `src/open_cypher_parser/mod.rs`, `src/query_planner/logical_plan/plan_builder.rs`
+
 ### 🐛 Bug Fixes
 
 - **Coupled Edge Alias Resolution** - Fixed SQL generation for patterns with multiple edges in same table (December 14, 2025)

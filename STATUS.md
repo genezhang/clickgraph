@@ -34,12 +34,13 @@
   - **Key Insight**: Deduplication was dropping valid JOINs!
     - Old: HashMap key = table_alias only → dropped second JOIN to same table
     - New: HashMap key = (table_alias, join_condition) → allows multiple JOINs to same table with different conditions
-  - **Test Results**: 22/24 Zeek tests passing (91.7%), including 4/4 cross-table correlation tests ✅
+  - **Test Results**: 23/24 Zeek tests passing (95.8%), including 5/5 cross-table correlation tests ✅
     - ✅ `test_comma_pattern_cross_table`: Simple 2-hop branching
     - ✅ `test_comma_pattern_full_dns_path`: 3-hop branching with coupled edges
     - ✅ `test_dns_then_connect_to_resolved_ip`: Full DNS→connection correlation
     - ✅ `test_predicate_correlation`: Predicate-based correlation (srcip1.ip = srcip2.ip)
-    - ⏳ 2 skipped: Sequential MATCH, WITH...MATCH (future work)
+    - ✅ `test_sequential_match_same_node`: Multiple MATCH clauses
+    - ⏳ 1 skipped: WITH...MATCH (future work)
   - Generated SQL example:
     ```sql
     SELECT t1.orig_h AS "src.ip", t1.query AS "d.name", t3.resp_h AS "dest.ip"
@@ -59,6 +60,20 @@
     ```
   - **Generated SQL**: Same INNER JOIN as shared variable pattern
   - **Impact**: Enables flexible variable naming in cross-table queries
+
+- **Sequential MATCH Clauses** - Multiple MATCH statements in sequence ✅
+  - **Pattern**: `MATCH ... MATCH ... MATCH ...` (no WITH between them)
+  - **Semantics**: Each MATCH builds on previous context, no relationship uniqueness across MATCH boundaries
+  - **Example**:
+    ```cypher
+    MATCH (srcip:IP)-[:REQUESTED]->(d:Domain)
+    MATCH (srcip)-[:ACCESSED]->(dest:IP)
+    WHERE srcip.ip = '192.168.1.10'
+    RETURN srcip.ip, d.name, dest.ip
+    ```
+  - **Implementation**: Parser changed from `match_clause: Option` to `match_clauses: Vec`
+  - **Key Difference**: Comma patterns require relationship uniqueness within single MATCH, sequential MATCHes don't
+  - **Files**: `src/open_cypher_parser/ast.rs`, `src/open_cypher_parser/mod.rs`, `src/query_planner/logical_plan/plan_builder.rs`
 
 ## 🎉 **v0.5.5 Released** - December 10, 2025
 
