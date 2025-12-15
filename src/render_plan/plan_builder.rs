@@ -20,7 +20,7 @@ use super::render_expr::{
 };
 use super::{
     view_table_ref::{from_table_to_view_ref, view_ref_to_from_table},
-    ArrayJoinItem, Cte, CteItems, FilterItems, FromTable, FromTableItem, GroupByExpressions, Join,
+    ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTable, FromTableItem, GroupByExpressions, Join,
     JoinItems, JoinType, LimitItem, OrderByItem, OrderByItems, OrderByOrder, RenderPlan,
     SelectItem, SelectItems, SkipItem, Union, UnionItems, ViewTableRef,
 };
@@ -239,11 +239,12 @@ pub(crate) trait RenderPlanBuilder {
     /// Extract UNWIND clause as ARRAY JOIN item
     fn extract_array_join(&self) -> RenderPlanBuilderResult<Option<super::ArrayJoin>>;
 
-    fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan>;
+    fn try_build_join_based_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan>;
 
     fn build_simple_relationship_render_plan(
         &self,
         distinct_override: Option<bool>,
+        schema: &GraphSchema,
     ) -> RenderPlanBuilderResult<RenderPlan>;
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan>;
@@ -620,6 +621,231 @@ fn extract_cte_references(plan: &LogicalPlan) -> std::collections::HashMap<Strin
     refs
 }
 
+/// Extract correlation predicates from GraphJoins nodes in the logical plan.
+/// These are cross-table predicates extracted by CartesianJoinExtraction optimizer.
+/// Returns: Vec<LogicalExpr> - predicates ready to be converted to JOIN conditions
+fn extract_correlation_predicates(plan: &LogicalPlan) -> Vec<crate::query_planner::logical_expr::LogicalExpr> {
+    use crate::query_planner::logical_expr::LogicalExpr;
+    let mut predicates = vec![];
+    
+    match plan {
+        LogicalPlan::GraphJoins(gj) => {
+            log::info!("🔍 extract_correlation_predicates: Found GraphJoins with {} correlation predicates", 
+                       gj.correlation_predicates.len());
+            predicates.extend(gj.correlation_predicates.clone());
+            predicates.extend(extract_correlation_predicates(&gj.input));
+        }
+        LogicalPlan::GraphRel(gr) => {
+            predicates.extend(extract_correlation_predicates(&gr.left));
+            predicates.extend(extract_correlation_predicates(&gr.center));
+            predicates.extend(extract_correlation_predicates(&gr.right));
+        }
+        LogicalPlan::GraphNode(gn) => {
+            predicates.extend(extract_correlation_predicates(&gn.input));
+        }
+        LogicalPlan::WithClause(wc) => {
+            predicates.extend(extract_correlation_predicates(&wc.input));
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            predicates.extend(extract_correlation_predicates(&cp.left));
+            predicates.extend(extract_correlation_predicates(&cp.right));
+        }
+        LogicalPlan::Union(u) => {
+            for input in &u.inputs {
+                predicates.extend(extract_correlation_predicates(input));
+            }
+        }
+        _ => {}
+    }
+    
+    log::info!("🔍 extract_correlation_predicates: Returning {} predicates total", predicates.len());
+    predicates
+}
+
+/// Convert LogicalExpr correlation predicates to CTE join conditions.
+/// Extracts table/column references from equality comparisons.
+/// Returns: Vec<(cte_name, cte_column, main_table_alias, main_column)>
+fn convert_correlation_predicates_to_joins(
+    predicates: &[crate::query_planner::logical_expr::LogicalExpr],
+    cte_references: &std::collections::HashMap<String, String>,
+) -> Vec<(String, String, String, String)> {
+    use crate::query_planner::logical_expr::{LogicalExpr, Operator};
+    
+    let mut conditions = vec![];
+    
+    for pred in predicates {
+        if let LogicalExpr::OperatorApplicationExp(op_app) = pred {
+            if matches!(op_app.operator, Operator::Equal) && op_app.operands.len() == 2 {
+                let left = &op_app.operands[0];
+                let right = &op_app.operands[1];
+                
+                // Check if we have a CTE reference on one side and a table reference on the other
+                if let Some(cond) = extract_join_from_logical_equality(left, right, cte_references) {
+                    log::info!("🔧 Converted correlation predicate to join: CTE {}.{} = {}.{}",
+                               cond.0, cond.1, cond.2, cond.3);
+                    conditions.push(cond);
+                } else if let Some(cond) = extract_join_from_logical_equality(right, left, cte_references) {
+                    conditions.push(cond);
+                }
+            }
+        }
+    }
+    
+    log::info!("🔧 convert_correlation_predicates_to_joins: Converted {} predicates to join conditions", 
+               conditions.len());
+    conditions
+}
+
+/// Extract join condition from a LogicalExpr equality comparison.
+/// Handles patterns like: src2.ip = source_ip (where source_ip is a CTE column)
+fn extract_join_from_logical_equality(
+    left: &crate::query_planner::logical_expr::LogicalExpr,
+    right: &crate::query_planner::logical_expr::LogicalExpr,
+    cte_references: &std::collections::HashMap<String, String>,
+) -> Option<(String, String, String, String)> {
+    use crate::query_planner::logical_expr::LogicalExpr;
+    
+    // Pattern 1: Left is table.column (PropertyAccess), Right is CTE variable
+    // Example: src2.ip = source_ip
+    if let LogicalExpr::PropertyAccessExp(prop) = left {
+        if let LogicalExpr::ColumnAlias(var_name) = right {
+            // Check if variable references a CTE column
+            if let Some(cte_name) = cte_references.get(&var_name.0) {
+                return Some((
+                    cte_name.clone(),
+                    var_name.0.clone(),
+                    prop.table_alias.0.clone(),
+                    prop.column.raw().to_string(),
+                ));
+            }
+        }
+    }
+    
+    // Pattern 2: Left is CTE variable, Right is table.column
+    // Example: source_ip = src2.ip
+    if let LogicalExpr::ColumnAlias(var_name) = left {
+        if let LogicalExpr::PropertyAccessExp(prop) = right {
+            if let Some(cte_name) = cte_references.get(&var_name.0) {
+                return Some((
+                    cte_name.clone(),
+                    var_name.0.clone(),
+                    prop.table_alias.0.clone(),
+                    prop.column.raw().to_string(),
+                ));
+            }
+        }
+    }
+    
+    None
+}
+
+/// Extract join conditions for CTEs by analyzing WHERE clause filters.
+/// Looks for equality comparisons where one side references a CTE column.
+/// Returns: Vec<(cte_name, cte_column, main_table_alias, main_column)>
+fn extract_cte_join_conditions(
+    filters: &Option<RenderExpr>,
+    cte_references: &std::collections::HashMap<String, String>,
+) -> Vec<(String, String, String, String)> {
+    use crate::render_plan::render_expr::*;
+    
+    let mut conditions = vec![];
+    
+    if let Some(filter_expr) = filters {
+        extract_cte_conditions_recursive(filter_expr, cte_references, &mut conditions);
+    }
+    
+    log::info!("🔧 extract_cte_join_conditions: Found {} CTE join conditions: {:?}", 
+               conditions.len(), conditions);
+    conditions
+}
+
+/// Recursively search filter expressions for CTE equality comparisons
+fn extract_cte_conditions_recursive(
+    expr: &RenderExpr,
+    cte_references: &std::collections::HashMap<String, String>,
+    conditions: &mut Vec<(String, String, String, String)>,
+) {
+    use crate::render_plan::render_expr::*;
+    
+    match expr {
+        RenderExpr::OperatorApplicationExp(op_app) => {
+            // Look for Equal operator
+            if matches!(op_app.operator, Operator::Equal) && op_app.operands.len() == 2 {
+                let left = &op_app.operands[0];
+                let right = &op_app.operands[1];
+                
+                // Check if one side is a CTE column and the other is a table column
+                if let Some(cond) = extract_join_from_equality(left, right, cte_references) {
+                    log::info!("🔧 Found CTE join condition: CTE {}. {} = {}.{}", 
+                               cond.0, cond.1, cond.2, cond.3);
+                    conditions.push(cond);
+                } else if let Some(cond) = extract_join_from_equality(right, left, cte_references) {
+                    // Try reversed order
+                    conditions.push(cond);
+                }
+            }
+            
+            // Check for AND/OR - recurse into operands
+            if matches!(op_app.operator, Operator::And | Operator::Or) {
+                for operand in &op_app.operands {
+                    extract_cte_conditions_recursive(operand, cte_references, conditions);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Try to extract a CTE join condition from an equality comparison
+/// Returns: Some((cte_name, cte_column, main_table_alias, main_column)) if found
+fn extract_join_from_equality(
+    left: &RenderExpr,
+    right: &RenderExpr,
+    cte_references: &std::collections::HashMap<String, String>,
+) -> Option<(String, String, String, String)> {
+    use crate::render_plan::render_expr::*;
+    
+    // Pattern 1: left is CTE column, right is table column
+    // Example: source_ip = conn.orig_h
+    if let RenderExpr::ColumnAlias(col_alias) = left {
+        // Check if this column alias references a CTE
+        if let Some(cte_name) = cte_references.get(&col_alias.0) {
+            // Right side should be a property access (table.column)
+            if let RenderExpr::PropertyAccessExp(prop) = right {
+                return Some((
+                    cte_name.clone(),
+                    col_alias.0.clone(),
+                    prop.table_alias.0.clone(),
+                    match &prop.column.0 {
+                        PropertyValue::Column(col) => col.clone(),
+                        _ => return None,
+                    },
+                ));
+            }
+        }
+    }
+    
+    // Pattern 2: left is table column, right is CTE column
+    // Example: conn.orig_h = source_ip
+    if let RenderExpr::PropertyAccessExp(prop) = left {
+        if let RenderExpr::ColumnAlias(col_alias) = right {
+            if let Some(cte_name) = cte_references.get(&col_alias.0) {
+                return Some((
+                    cte_name.clone(),
+                    col_alias.0.clone(),
+                    prop.table_alias.0.clone(),
+                    match &prop.column.0 {
+                        PropertyValue::Column(col) => col.clone(),
+                        _ => return None,
+                    },
+                ));
+            }
+        }
+    }
+    
+    None
+}
+
 /// Update all GraphJoins.cte_references in the plan tree with the latest mapping.
 /// This is needed after CTE processing updates the cte_references map, so SQL rendering
 /// uses the correct CTE names (e.g., 'with_a_cte_0_0' instead of 'with_a_cte').
@@ -646,6 +872,7 @@ fn update_graph_joins_cte_refs(
                 optional_aliases: gj.optional_aliases.clone(),
                 anchor_table: gj.anchor_table.clone(),
                 cte_references: cte_references.clone(), // UPDATE HERE!
+                correlation_predicates: gj.correlation_predicates.clone(),
             }))
         }
         LogicalPlan::Projection(proj) => {
@@ -1781,7 +2008,7 @@ fn render_without_with_detection(
             log::error!("🔧 Plan structure: {:?}", plan);
 
             // Try join-based plan as fallback
-            match plan.try_build_join_based_plan() {
+            match plan.try_build_join_based_plan(schema) {
                 Ok(render_plan) => {
                     log::info!(
                         "🔧 render_without_with_detection: Join-based plan fallback succeeded"
@@ -2207,6 +2434,7 @@ fn replace_group_by_with_cte_reference(
                         optional_aliases: gj.optional_aliases.clone(),
                         anchor_table: gj.anchor_table.clone(),
                         cte_references: gj.cte_references.clone(),
+                        correlation_predicates: gj.correlation_predicates.clone(),
                     },
                 ))
             }
@@ -2959,6 +3187,7 @@ fn prune_joins_covered_by_cte(
                 optional_aliases: gj.optional_aliases.clone(),
                 anchor_table: new_anchor,
                 cte_references: gj.cte_references.clone(),
+                    correlation_predicates: vec![],
             }))
         }
         LogicalPlan::Projection(proj) => {
@@ -3703,6 +3932,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 optional_aliases: graph_joins.optional_aliases.clone(),
                 anchor_table: new_anchor,
                 cte_references: graph_joins.cte_references.clone(),
+                    correlation_predicates: vec![],
             }))
         }
 
@@ -5124,6 +5354,24 @@ impl RenderPlanBuilder for LogicalPlan {
                         }
                     }
 
+                    // WITH...MATCH PATTERN: Check for CartesianProduct (disconnected pattern after WITH clause)
+                    // The CartesianProduct combines WITH CTE with new MATCH pattern
+                    // Need to extract FROM from the right side (new MATCH) since left side is CTE
+                    fn find_cartesian_product(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::CartesianProduct> {
+                        match plan {
+                            LogicalPlan::CartesianProduct(cp) => Some(cp),
+                            LogicalPlan::Filter(f) => find_cartesian_product(&f.input),
+                            LogicalPlan::Projection(p) => find_cartesian_product(&p.input),
+                            _ => None,
+                        }
+                    }
+
+                    if let Some(cp) = find_cartesian_product(&graph_joins.input) {
+                        log::info!("🎯 WITH...MATCH: Found CartesianProduct, extracting FROM from right side (new MATCH after WITH)");
+                        // Right side should be the new MATCH pattern with actual table
+                        return cp.right.extract_from();
+                    }
+
                     return Ok(from_table_to_view_ref(None).map(|vr| FromTable::new(Some(vr))));
                 }
 
@@ -5298,8 +5546,17 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::PageRank(_) => None,
             LogicalPlan::Unwind(u) => from_table_to_view_ref(u.input.extract_from()?),
             LogicalPlan::CartesianProduct(cp) => {
-                // Use left side as primary FROM source
-                from_table_to_view_ref(cp.left.extract_from()?)
+                // Try left side first (for most queries)
+                let left_from = cp.left.extract_from()?;
+                if left_from.is_some() {
+                    // Left has a table, use it (normal case)
+                    from_table_to_view_ref(left_from)
+                } else {
+                    // Left has no FROM (e.g., WITH clause creating a CTE)
+                    // Use right side as FROM source (e.g., new MATCH after WITH)
+                    log::info!("CartesianProduct: Left side has no FROM (likely CTE), using right side");
+                    from_table_to_view_ref(cp.right.extract_from()?)
+                }
             }
             LogicalPlan::WithClause(wc) => from_table_to_view_ref(wc.input.extract_from()?),
         };
@@ -6743,7 +7000,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
     /// Try to build a JOIN-based render plan for simple queries
     /// Returns Ok(plan) if successful, Err(_) if this query needs CTE-based processing
-    fn try_build_join_based_plan(&self) -> RenderPlanBuilderResult<RenderPlan> {
+    fn try_build_join_based_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
         crate::debug_println!("DEBUG: try_build_join_based_plan called");
         crate::debug_println!("DEBUG: self plan type = {:?}", std::mem::discriminant(self));
 
@@ -7236,7 +7493,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 "DEBUG: GraphJoins wrapping Projection(Return)->GroupBy detected, delegating to child"
                             );
                             // Delegate to the inner Projection -> GroupBy for CTE-based processing
-                            let mut plan = graph_joins.input.try_build_join_based_plan()?;
+                            let mut plan = graph_joins.input.to_render_plan(schema)?;
 
                             // Add ORDER BY/LIMIT/SKIP if they were present in the original query
                             if let Some(items) = order_by_items {
@@ -7380,13 +7637,14 @@ impl RenderPlanBuilder for LogicalPlan {
             "DEBUG: Calling build_simple_relationship_render_plan with distinct: {}",
             distinct
         );
-        self.build_simple_relationship_render_plan(Some(distinct))
+        self.build_simple_relationship_render_plan(Some(distinct), schema)
     }
 
     /// Build render plan for simple relationship queries using direct JOINs
     fn build_simple_relationship_render_plan(
         &self,
         distinct_override: Option<bool>,
+        schema: &GraphSchema,
     ) -> RenderPlanBuilderResult<RenderPlan> {
         println!(
             "DEBUG: build_simple_relationship_render_plan START - plan type: {:?}",
@@ -8696,14 +8954,201 @@ impl RenderPlanBuilder for LogicalPlan {
             distinct
         );
 
+        //  🔧 WITH CLAUSE CTE EXTRACTION
+        // Extract CTEs from WITH clauses in the logical plan
+        // This is needed for WITH...MATCH patterns where first MATCH is in CTE
+        println!("DEBUG CTE EXTRACTION SHORT: About to extract CTEs from plan type {:?}", std::mem::discriminant(self));
+        let mut context = analyze_property_requirements(self, schema);
+        let extracted_ctes = match self.extract_ctes_with_context("_", &mut context) {
+            Ok(ctes) => {
+                println!("DEBUG CTE EXTRACTION SHORT: Successfully extracted {} CTEs", ctes.len());
+                for (i, cte) in ctes.iter().enumerate() {
+                    println!("DEBUG CTE EXTRACTION SHORT: CTE {}: {}", i, cte.cte_name);
+                }
+                if !ctes.is_empty() {
+                    log::info!("🔧 Extracted {} CTEs in simple relationship render", ctes.len());
+                }
+                ctes
+            }
+            Err(e) => {
+                println!("DEBUG CTE EXTRACTION SHORT: Failed with error: {:?}", e);
+                log::debug!("CTE extraction returned error (may be expected): {:?}", e);
+                vec![]
+            }
+        };
+
+        // 🔧 CTE JOIN GENERATION
+        // If we extracted CTEs, check if they need to be joined to the main query
+        // This handles WITH...MATCH patterns where WITH exports variables used in subsequent MATCH
+        let mut cte_joins = vec![];
+        if !extracted_ctes.is_empty() {
+            // Extract CTE references to see which aliases map to which CTEs
+            let cte_references = extract_cte_references(self);
+            log::info!("🔧 CTE JOIN: Found {} CTE references: {:?}", cte_references.len(), cte_references);
+            log::info!("🔧 CTE JOIN: final_filters = {:?}", final_filters);
+            
+            // Extract correlation predicates from logical plan (from CartesianJoinExtraction optimizer)
+            let correlation_predicates = extract_correlation_predicates(self);
+            log::info!("🔧 CTE JOIN: Found {} correlation predicates from optimizer", 
+                       correlation_predicates.len());
+            
+            // Convert correlation predicates to join conditions
+            let mut join_conditions = convert_correlation_predicates_to_joins(
+                &correlation_predicates, 
+                &cte_references
+            );
+            
+            // Also extract join conditions from WHERE clause filters as fallback
+            // This finds equality comparisons like: WHERE src2.ip = source_ip
+            let filter_conditions = extract_cte_join_conditions(&final_filters, &cte_references);
+            join_conditions.extend(filter_conditions);
+            
+            // Build map of CTE name → join conditions
+            let mut cte_join_map: std::collections::HashMap<String, Vec<(String, String, String)>> = 
+                std::collections::HashMap::new();
+            
+            for (cte_name, cte_column, main_table_alias, main_column) in join_conditions {
+                cte_join_map.entry(cte_name)
+                    .or_insert_with(Vec::new)
+                    .push((cte_column, main_table_alias, main_column));
+            }
+            
+            // Only use heuristic inference if no join conditions found at all
+            if cte_join_map.is_empty() && !extracted_ctes.is_empty() {
+                log::warn!("⚠️ CTE JOIN: No join conditions from optimizer or filters - falling back to heuristic (should not happen in production)");
+                
+                // Collect CTE column names from the CTE's SELECT items
+                for cte in &extracted_ctes {
+                    if let CteContent::Structured(ref cte_plan) = cte.content {
+                        let cte_columns: Vec<String> = cte_plan.select.items.iter()
+                            .filter_map(|item| item.col_alias.clone().map(|a| a.0))
+                            .collect();
+                        
+                        log::info!("🔧 CTE JOIN: CTE '{}' exports columns: {:?}", cte.cte_name, cte_columns);
+                        log::info!("🔧 CTE JOIN: Main SELECT items: {:?}", 
+                                   final_select_items.iter()
+                                       .map(|item| format!("{:?}: {:?}", item.col_alias, item.expression))
+                                       .collect::<Vec<_>>());
+                        
+                        // Check which CTE columns are referenced in main SELECT items
+                        // CTE columns can appear as either ColumnAlias or TableAlias in SELECT
+                        let mut used_cte_cols = vec![];
+                        for select_item in &final_select_items {
+                            match &select_item.expression {
+                                RenderExpr::ColumnAlias(col) if cte_columns.contains(&col.0) => {
+                                    used_cte_cols.push(col.0.clone());
+                                    log::info!("🔧 CTE JOIN: SELECT references CTE column (ColumnAlias): {}", col.0);
+                                },
+                                RenderExpr::TableAlias(tbl_alias) if cte_columns.contains(&tbl_alias.0) => {
+                                    used_cte_cols.push(tbl_alias.0.clone());
+                                    log::info!("🔧 CTE JOIN: SELECT references CTE column (TableAlias): {}", tbl_alias.0);
+                                },
+                                _ => {}
+                            }
+                        }
+                        
+                        if !used_cte_cols.is_empty() {
+                            log::info!("🔧 CTE JOIN: Found {} CTE columns used in SELECT: {:?}", 
+                                       used_cte_cols.len(), used_cte_cols);
+                            
+                            // Try to infer join column from CTE's internal query
+                            // Look at the CTE's FROM table and its first ID-like column
+                            if let Some(ref cte_from_table) = cte_plan.from.0 {
+                                // Get the main query's FROM table
+                                if let Some(ref main_from) = final_from {
+                                    if let Some(ref main_table) = main_from.table {
+                                        let main_alias = main_table.alias.clone()
+                                            .unwrap_or_else(|| main_table.name.clone());
+                                        
+                                        // Infer: Both queries reference IP nodes, likely joining on IP column
+                                        // Use the first used CTE column as the join column
+                                        if let Some(cte_col) = used_cte_cols.first() {
+                                            // Heuristic: If column name contains "ip" or "id", use it for join
+                                            // Otherwise, assume it correlates with a matching column in main table
+                                            let main_col = if cte_col.contains("ip") {
+                                                // Try to get node schema and extract ID column
+                                                let _table_name = cte_from_table.name.split('.').last()
+                                                    .unwrap_or("unknown");
+                                                
+                                                // For Zeek IP nodes, the ID column is the IP address column itself
+                                                // In this schema, dns_log uses orig_h, conn_log also uses orig_h
+                                                "orig_h".to_string()
+                                            } else {
+                                                cte_col.clone()
+                                            };
+                                            
+                                            log::info!("🔧 CTE JOIN: Inferred join condition: {}.{} = {}.{}",
+                                                       main_alias, main_col, cte.cte_name, cte_col);
+                                            
+                                            cte_join_map.entry(cte.cte_name.clone())
+                                                .or_insert_with(Vec::new)
+                                                .push((cte_col.clone(), main_alias.clone(), main_col));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // For each CTE, generate a JOIN with the extracted or inferred conditions
+            for cte in &extracted_ctes {
+                let cte_alias = cte.cte_name.clone();
+                
+                // Get join conditions for this CTE
+                let join_condition = if let Some(conditions) = cte_join_map.get(&cte.cte_name) {
+                    // Generate ON clause from extracted conditions
+                    let mut join_ops = vec![];
+                    for (cte_col, main_alias, main_col) in conditions {
+                        join_ops.push(OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(main_alias.clone()),
+                                    column: Column(PropertyValue::Column(main_col.clone())),
+                                }),
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(cte_alias.clone()),
+                                    column: Column(PropertyValue::Column(cte_col.clone())),
+                                }),
+                            ],
+                        });
+                    }
+                    
+                    log::info!("🔧 CTE JOIN: Generated {} join conditions for CTE '{}'", 
+                               join_ops.len(), cte.cte_name);
+                    join_ops
+                } else {
+                    log::warn!("⚠️ CTE JOIN: No join conditions found for CTE '{}' - CTE may be unreferenced", 
+                               cte.cte_name);
+                    vec![]
+                };
+                
+                if !join_condition.is_empty() {
+                    cte_joins.push(Join {
+                        table_name: cte.cte_name.clone(),
+                        table_alias: cte_alias,
+                        joining_on: join_condition,
+                        join_type: JoinType::Inner,
+                        pre_filter: None,
+                    });
+                }
+            }
+        }
+
         Ok(RenderPlan {
-            ctes: CteItems(vec![]),
+            ctes: CteItems(extracted_ctes),
             select: SelectItems {
                 items: final_select_items,
                 distinct,
             },
             from: FromTableItem(from_table_to_view_ref(final_from)),
-            joins: JoinItems(filtered_joins), // GraphJoinInference already ordered these correctly
+            joins: JoinItems({
+                let mut all_joins = filtered_joins;
+                all_joins.extend(cte_joins);
+                all_joins
+            }),
             array_join: ArrayJoinItem(self.extract_array_join()?),
             filters: FilterItems(final_filters),
             group_by: GroupByExpressions(self.extract_group_by()?),
@@ -8756,7 +9201,7 @@ impl RenderPlanBuilder for LogicalPlan {
         // Only use CTEs for variable-length paths and complex cases
         // Try to build a simple JOIN-based plan first
         crate::debug_println!("DEBUG: Trying try_build_join_based_plan");
-        match transformed_plan.try_build_join_based_plan() {
+        match transformed_plan.try_build_join_based_plan(schema) {
             Ok(plan) => {
                 crate::debug_println!("DEBUG: try_build_join_based_plan succeeded");
                 return Ok(plan);
@@ -8831,16 +9276,20 @@ impl RenderPlanBuilder for LogicalPlan {
         let final_filters: Option<RenderExpr>;
 
         let last_node_cte_opt = transformed_plan.extract_last_node_cte()?;
+        println!("DEBUG: last_node_cte_opt = {:?}", last_node_cte_opt.as_ref().map(|c| &c.cte_name));
 
         if let Some(last_node_cte) = last_node_cte_opt {
+            println!("DEBUG: Has last_node_cte: {}", last_node_cte.cte_name);
             // Extract the last part after splitting by '_'
             // This handles both "prefix_alias" and "rel_left_right" formats
             let parts: Vec<&str> = last_node_cte.cte_name.split('_').collect();
             let last_node_alias = parts.last().ok_or(RenderBuildError::MalformedCTEName)?;
 
             // Second pass: generate CTEs with full context
+            println!("DEBUG: About to call extract_ctes_with_context with last_node_alias={}", last_node_alias);
             extracted_ctes =
                 transformed_plan.extract_ctes_with_context(last_node_alias, &mut context)?;
+            println!("DEBUG: Extracted {} CTEs", extracted_ctes.len());
 
             // Check if we have a variable-length CTE (it will be a recursive RawSql CTE)
             let has_variable_length_cte = extracted_ctes.iter().any(|cte| {
@@ -8974,9 +9423,12 @@ impl RenderPlanBuilder for LogicalPlan {
                 final_filters = final_combined_filters;
             }
         } else {
+            println!("DEBUG: No last_node_cte, taking else branch");
             // No CTE wrapper, but check for variable-length paths which generate CTEs directly
             // Extract CTEs with a dummy alias and context (variable-length doesn't use the alias)
+            println!("DEBUG: About to call extract_ctes_with_context in else branch");
             extracted_ctes = transformed_plan.extract_ctes_with_context("_", &mut context)?;
+            println!("DEBUG: else branch extracted {} CTEs", extracted_ctes.len());
 
             // Check if we have a variable-length CTE (recursive or chained join)
             // Both types use RawSql content and need special FROM clause handling

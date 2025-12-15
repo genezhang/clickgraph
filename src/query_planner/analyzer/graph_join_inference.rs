@@ -95,9 +95,11 @@ impl AnalyzerPass for GraphJoinInference {
         // Empty joins vector = fully denormalized pattern (no JOINs needed)
         // Without this wrapper, RenderPlan will try to generate JOINs from raw GraphRel
         let optional_aliases = plan_ctx.get_optional_aliases().clone();
+        let mut correlation_predicates: Vec<LogicalExpr> = vec![];
         Self::build_graph_joins(
             logical_plan,
             &mut collected_graph_joins,
+            &mut correlation_predicates,
             optional_aliases,
             plan_ctx,
             graph_schema,
@@ -1066,6 +1068,7 @@ impl GraphJoinInference {
     fn build_graph_joins(
         logical_plan: Arc<LogicalPlan>,
         collected_graph_joins: &mut Vec<Join>,
+        correlation_predicates: &mut Vec<LogicalExpr>,
         optional_aliases: std::collections::HashSet<String>,
         plan_ctx: &PlanCtx,
         graph_schema: &GraphSchema,
@@ -1117,6 +1120,7 @@ impl GraphJoinInference {
                         let result = Self::build_graph_joins(
                             branch.clone(),
                             &mut branch_joins,
+                            &mut Vec::new(),
                             optional_aliases.clone(),
                             plan_ctx,
                             graph_schema,
@@ -1148,6 +1152,7 @@ impl GraphJoinInference {
                 let child_tf = Self::build_graph_joins(
                     projection.input.clone(),
                     collected_graph_joins,
+                    correlation_predicates,
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
@@ -1206,12 +1211,14 @@ impl GraphJoinInference {
                     optional_aliases,
                     anchor_table,
                     cte_references,
+                    correlation_predicates: correlation_predicates.clone(),
                 })))
             }
             LogicalPlan::GraphNode(graph_node) => {
                 let child_tf = Self::build_graph_joins(
                     graph_node.input.clone(),
                     collected_graph_joins,
+                    correlation_predicates,
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
@@ -1225,6 +1232,7 @@ impl GraphJoinInference {
                 let left_tf = Self::build_graph_joins(
                     graph_rel.left.clone(),
                     collected_graph_joins,
+                    correlation_predicates,
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
@@ -1233,6 +1241,7 @@ impl GraphJoinInference {
                 let center_tf = Self::build_graph_joins(
                     graph_rel.center.clone(),
                     collected_graph_joins,
+                    correlation_predicates,
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
@@ -1241,6 +1250,7 @@ impl GraphJoinInference {
                 let right_tf = Self::build_graph_joins(
                     graph_rel.right.clone(),
                     collected_graph_joins,
+                    correlation_predicates,
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
@@ -1253,6 +1263,7 @@ impl GraphJoinInference {
                 let child_tf = Self::build_graph_joins(
                     cte.input.clone(),
                     collected_graph_joins,
+                    correlation_predicates,
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
@@ -1266,6 +1277,7 @@ impl GraphJoinInference {
                 let child_tf = Self::build_graph_joins(
                     graph_joins.input.clone(),
                     collected_graph_joins,
+                    correlation_predicates,
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
@@ -1277,6 +1289,7 @@ impl GraphJoinInference {
                 let child_tf = Self::build_graph_joins(
                     filter.input.clone(),
                     collected_graph_joins,
+                    correlation_predicates,
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
@@ -1318,6 +1331,7 @@ impl GraphJoinInference {
                     let child_tf = Self::build_graph_joins(
                         group_by.input.clone(),
                         &mut inner_joins, // Use the inner joins we just collected
+                        &mut Vec::new(),
                         inner_optional_aliases,
                         plan_ctx,
                         graph_schema,
@@ -1328,6 +1342,7 @@ impl GraphJoinInference {
                     let child_tf = Self::build_graph_joins(
                         group_by.input.clone(),
                         collected_graph_joins,
+                        correlation_predicates,
                         optional_aliases,
                         plan_ctx,
                         graph_schema,
@@ -1340,6 +1355,7 @@ impl GraphJoinInference {
                 let child_tf = Self::build_graph_joins(
                     order_by.input.clone(),
                     collected_graph_joins,
+                    correlation_predicates,
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
@@ -1351,6 +1367,7 @@ impl GraphJoinInference {
                 let child_tf = Self::build_graph_joins(
                     skip.input.clone(),
                     collected_graph_joins,
+                    correlation_predicates,
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
@@ -1362,6 +1379,7 @@ impl GraphJoinInference {
                 let child_tf = Self::build_graph_joins(
                     limit.input.clone(),
                     collected_graph_joins,
+                    correlation_predicates,
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
@@ -1376,6 +1394,7 @@ impl GraphJoinInference {
                 let child_tf = Self::build_graph_joins(
                     u.input.clone(),
                     collected_graph_joins,
+                    correlation_predicates,
                     optional_aliases,
                     plan_ctx,
                     graph_schema,
@@ -1411,6 +1430,7 @@ impl GraphJoinInference {
                 let left_tf = Self::build_graph_joins(
                     cp.left.clone(),
                     &mut left_joins,
+                    &mut Vec::new(),
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
@@ -1419,6 +1439,7 @@ impl GraphJoinInference {
                 let right_tf = Self::build_graph_joins(
                     cp.right.clone(),
                     &mut right_joins,
+                    &mut Vec::new(),
                     optional_aliases.clone(),
                     plan_ctx,
                     graph_schema,
@@ -1435,6 +1456,13 @@ impl GraphJoinInference {
                 // The left side joins need to come first
                 collected_graph_joins.extend(left_joins.clone());
                 collected_graph_joins.extend(right_joins.clone());
+
+                // Extract correlation predicate for WITH...MATCH cross-table patterns
+                // This will be used by the renderer to generate proper JOIN conditions
+                if let Some(join_cond) = &cp.join_condition {
+                    log::info!("📦 CartesianProduct: Extracting correlation predicate for GraphJoins");
+                    correlation_predicates.push(join_cond.clone());
+                }
 
                 // CROSS-TABLE DENORMALIZED FIX: If both sides have 0 joins (fully denormalized)
                 // AND there's a join_condition, we need to create a JOIN for the right-side table.

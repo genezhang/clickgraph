@@ -545,6 +545,7 @@ impl VariableResolver {
                         optional_aliases: gj.optional_aliases.clone(),
                         anchor_table: gj.anchor_table.clone(),
                         cte_references: gj.cte_references.clone(),
+                        correlation_predicates: gj.correlation_predicates.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphJoins(new_gj))))
                 } else {

@@ -224,6 +224,7 @@ impl CleanupViewScanFilters {
                             optional_aliases: graph_joins.optional_aliases.clone(),
                             anchor_table: graph_joins.anchor_table.clone(),
                             cte_references: graph_joins.cte_references.clone(),
+                    correlation_predicates: vec![],
                         }),
                     )),
                     Transformed::No(_) => Transformed::No(logical_plan),

@@ -610,6 +610,12 @@ pub struct GraphJoins {
     /// CTE references: Maps alias → CTE name for aliases exported from WITH clauses
     /// Used by render phase to resolve anchor table names correctly
     pub cte_references: std::collections::HashMap<String, String>,
+
+    /// Cross-table correlation predicates from CartesianProduct.join_condition
+    /// These predicates reference aliases from different graph patterns (e.g., WITH...MATCH)
+    /// Used by renderer to generate proper JOIN conditions for CTEs
+    /// Example: WHERE src2.ip = source_ip becomes JOIN ON condition
+    pub correlation_predicates: Vec<LogicalExpr>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Default)]
@@ -956,6 +962,7 @@ impl GraphJoins {
                     optional_aliases: self.optional_aliases.clone(),
                     anchor_table: self.anchor_table.clone(),
                     cte_references: self.cte_references.clone(),
+                    correlation_predicates: vec![],
                 });
                 Transformed::Yes(Arc::new(new_graph_joins))
             }

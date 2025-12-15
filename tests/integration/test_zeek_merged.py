@@ -482,7 +482,6 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 4: WITH...MATCH correlation
     # -------------------------------------------------------------------------
     
-    @pytest.mark.skip(reason="WITH...MATCH cross-table correlation needs CTE + JOIN logic - requires additional work")
     def test_with_match_correlation(self, setup_zeek_merged):
         """
         WITH...MATCH pattern for cross-table correlation.
