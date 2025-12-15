@@ -34,11 +34,12 @@
   - **Key Insight**: Deduplication was dropping valid JOINs!
     - Old: HashMap key = table_alias only → dropped second JOIN to same table
     - New: HashMap key = (table_alias, join_condition) → allows multiple JOINs to same table with different conditions
-  - **Test Results**: 21/24 Zeek tests passing (87.5%), including 3/3 cross-table correlation tests ✅
+  - **Test Results**: 22/24 Zeek tests passing (91.7%), including 4/4 cross-table correlation tests ✅
     - ✅ `test_comma_pattern_cross_table`: Simple 2-hop branching
     - ✅ `test_comma_pattern_full_dns_path`: 3-hop branching with coupled edges
     - ✅ `test_dns_then_connect_to_resolved_ip`: Full DNS→connection correlation
-    - ⏳ 3 skipped: Sequential MATCH, WITH...MATCH, and different variable names (future work)
+    - ✅ `test_predicate_correlation`: Predicate-based correlation (srcip1.ip = srcip2.ip)
+    - ⏳ 2 skipped: Sequential MATCH, WITH...MATCH (future work)
   - Generated SQL example:
     ```sql
     SELECT t1.orig_h AS "src.ip", t1.query AS "d.name", t3.resp_h AS "dest.ip"
@@ -46,6 +47,18 @@
     INNER JOIN test_zeek.dns_log AS t1 ON t3.orig_h = t1.orig_h
     WHERE t1.orig_h = '192.168.1.10'
     ```
+
+- **Predicate-Based Correlation** - Allow disconnected patterns with WHERE clause predicates ✅
+  - **Pattern**: `MATCH (n1)-[:R1]->(a), (n2)-[:R2]->(b) WHERE n1.prop = n2.prop` (different variable names)
+  - **Solution**: Removed DisconnectedPatternFound error, allow CartesianProduct creation
+  - **Example**:
+    ```cypher
+    MATCH (srcip1:IP)-[:REQUESTED]->(d:Domain), (srcip2:IP)-[:ACCESSED]->(dest:IP)
+    WHERE srcip1.ip = srcip2.ip
+    RETURN srcip1.ip, d.name, dest.ip
+    ```
+  - **Generated SQL**: Same INNER JOIN as shared variable pattern
+  - **Impact**: Enables flexible variable naming in cross-table queries
 
 ## 🎉 **v0.5.5 Released** - December 10, 2025
 

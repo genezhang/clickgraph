@@ -15,8 +15,19 @@
     FROM test_zeek.conn_log AS t3
     INNER JOIN test_zeek.dns_log AS t1 ON t3.orig_h = t1.orig_h
     ```
-  - **Impact**: Zeek tests 18→21 passing (87.5%), all 3 comma-pattern cross-table tests pass
+  - **Impact**: Zeek tests 18→22 passing (91.7%), all 4 comma-pattern cross-table tests pass
   - **Files**: `src/query_planner/analyzer/graph_join_inference.rs`, `tests/integration/test_zeek_merged.py`
+
+- **Predicate-Based Correlation** - Allow disconnected patterns with WHERE clause predicates (December 15, 2025)
+  - **Feature**: Support different variable names for same logical node, connected via WHERE clause
+  - **Example**:
+    ```cypher
+    MATCH (srcip1:IP)-[:REQUESTED]->(d:Domain), (srcip2:IP)-[:ACCESSED]->(dest:IP)
+    WHERE srcip1.ip = srcip2.ip
+    RETURN srcip1.ip, d.name, dest.ip
+    ```
+  - **Implementation**: Removed DisconnectedPatternFound error, rely on cross-branch JOIN detection
+  - **Files**: `src/query_planner/logical_plan/match_clause.rs`
 
 ### 🐛 Bug Fixes
 
