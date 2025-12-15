@@ -85,6 +85,8 @@ impl ToSql for LogicalExpr {
                 let args_sql = args_sql?;
 
                 // Use function registry to translate Neo4j -> ClickHouse function names
+                // Note: We use ClickHouse-specific aggregate names (like "anyLast") to avoid
+                // conflicts with Cypher functions (like "any" for array predicates)
                 let fn_name_lower = fn_call.name.to_lowercase();
                 if let Some(mapping) = get_function_mapping(&fn_name_lower) {
                     // Apply argument transformation if provided

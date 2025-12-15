@@ -35,6 +35,37 @@
 
 ### Recent Fixes (Dec 14, 2025)
 
+- **Coupled Edge Alias Resolution** - Fixed SQL generation for patterns with multiple edges in same table ✅
+  - Problem: `MATCH (src:IP)-[:REQUESTED]->(d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)` failed with "Unknown expression identifier"
+  - Both REQUESTED and RESOLVED_TO edges use same dns_log table (coupled edges)
+  - SQL generated: SELECT used unified alias `t1` but FROM used original alias `t2`
+  - Error: "Unknown expression identifier 't1.orig_h' ... Maybe you meant: ['t2.orig_h']"
+  - Root cause: `AliasResolverContext.transform_plan()` transformed property access expressions to use unified alias, but didn't transform the GraphRel alias itself
+  - Solution: Updated `transform_plan()` to also rewrite GraphRel alias when it appears in `coupled_edge_aliases` HashMap
+  - Files: `src/render_plan/alias_resolver.rs` (transform_plan GraphRel case, lines ~150-172)
+  - Impact: Zeek tests: 16→18 passing (fixed both coupled DNS path tests)
+  - SQL before: `SELECT t1.orig_h FROM test_zeek.dns_log AS t2 WHERE t1.orig_h = ...` ❌
+  - SQL after: `SELECT t1.orig_h FROM test_zeek.dns_log AS t1 WHERE t1.orig_h = ...` ✅
+
+- **Multi-Table Node Schema Resolution** - Fixed composite key lookup for same label across tables ✅
+  - Problem: `MATCH (s:IP)-[:REQUESTED]->(d:Domain)` used wrong IP schema (conn_log instead of dns_log)
+  - Root cause: Schema has TWO `IP` definitions (dns_log and conn_log tables), but `get_node_schema_opt` only used label
+  - Solution: Use composite key `"database::table::label"` for table-specific lookup, fallback to label-only
+  - Impact: Zeek tests: 17 → 18 passing (fully denormalized patterns now work without unnecessary JOINs)
+  - Files: `src/query_planner/analyzer/graph_join_inference.rs` (compute_pattern_context)
+  - Schema loader already stored with composite keys, just needed to use them!
+
+- **Denormalized Node ID Property Mapping** - Fixed JOIN conditions for composite node IDs ✅
+  - Problem: `MATCH (src:IP)-[:REQUESTED]->(d:Domain)` generated invalid SQL `ON src.ip = r.orig_h`
+  - Error: "Identifier 'src.ip' cannot be resolved from table src"
+  - Root cause: For denormalized edges, node_id uses Cypher property names ("ip") but JOIN needs DB columns ("orig_h")
+  - Property mapping in `from_properties`/`to_properties`, not `property_mappings`
+  - Solution: Updated `resolve_id_column()` to check from_properties/to_properties first (with is_from_node flag)
+  - Files: `graph_catalog/pattern_schema.rs` (resolve_id_column method + 4 call sites)
+  - Impact: Zeek merged schema tests: 15→17 passing (fixed 2 composite ID test failures)
+  - Generated SQL: Now correctly uses `ON src.orig_h = r.orig_h`
+  - See: Zeek schema uses node_id: ip with from_node_properties: {ip: "id.orig_h"}
+
 - **Inline Property Parameters** - Fixed server crash on parameterized property patterns ✅
   - Problem: `MATCH (n:Person {id: $personId})` caused panic "Property value must be a literal"
   - Root cause: PropertyKVPair.value typed as Literal (didn't support parameters)

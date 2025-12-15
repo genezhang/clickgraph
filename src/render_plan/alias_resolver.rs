@@ -157,6 +157,17 @@ impl AliasResolverContext {
                     rel.where_predicate = Some(self.transform_expr(predicate));
                 }
 
+                // FIX: Transform the GraphRel alias itself if it's a coupled edge
+                // This ensures the FROM clause uses the unified alias (t1) not the original (t2)
+                if let Some(unified_alias) = self.coupled_edge_aliases.get(&rel.alias) {
+                    log::debug!(
+                        "Coupled edge: Transforming GraphRel alias from '{}' to '{}'",
+                        rel.alias,
+                        unified_alias
+                    );
+                    rel.alias = unified_alias.clone();
+                }
+
                 LogicalPlan::GraphRel(rel)
             }
 

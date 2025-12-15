@@ -403,28 +403,44 @@ fn expand_table_alias_to_group_by_id_only(
     plan: &LogicalPlan,
     schema: &GraphSchema,
 ) -> Vec<RenderExpr> {
-    // Try to find the node_id column for this alias
-    // First, find the label/type for this alias in the plan
-    if let Some(label) = find_label_for_alias(plan, alias) {
-        // Look up the node schema to get node_id column
-        if let Some(node_schema) = schema.get_node_schema_opt(&label) {
-            let table_alias_to_use = alias.to_string();
-            // Get ID column name (handles both single and composite IDs)
-            let id_col = node_schema.node_id.column().to_string();
-            return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
-                table_alias: TableAlias(table_alias_to_use),
-                column: Column(PropertyValue::Column(id_col)),
-            })];
-        }
+    log::info!("🔧 expand_table_alias_to_group_by_id_only: Looking for ID column for alias '{}'", alias);
+    
+    // BEST APPROACH: Use find_id_column_for_alias which traverses the plan to find ViewScan.id_column
+    // This is more reliable than find_label_for_alias because it directly gets the ID from the schema
+    if let Ok(id_col) = plan.find_id_column_for_alias(alias) {
+        log::info!("🔧 expand_table_alias_to_group_by_id_only: Using ID column '{}' from ViewScan for alias '{}'", id_col, alias);
+        return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(alias.to_string()),
+            column: Column(PropertyValue::Column(id_col)),
+        })];
     }
     
-    // Fallback: try to get properties and use first one (usually the ID)
+    // Fallback 1: Try to find label and look up in schema
+    if let Some(label) = find_label_for_alias(plan, alias) {
+        log::info!("🔧 expand_table_alias_to_group_by_id_only: Found label '{}' for alias '{}'", label, alias);
+        if let Some(node_schema) = schema.get_node_schema_opt(&label) {
+            let id_col = node_schema.node_id.column().to_string();
+            log::info!("🔧 expand_table_alias_to_group_by_id_only: Using schema node_id column '{}' for alias '{}'", id_col, alias);
+            return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(alias.to_string()),
+                column: Column(PropertyValue::Column(id_col)),
+            })];
+        } else {
+            log::warn!("⚠️ expand_table_alias_to_group_by_id_only: Label '{}' not found in schema", label);
+        }
+    } else {
+        log::warn!("⚠️ expand_table_alias_to_group_by_id_only: Could not find label for alias '{}'", alias);
+    }
+    
+    // Fallback 2: try to get properties and use first one (usually the ID)
+    log::warn!("⚠️ expand_table_alias_to_group_by_id_only: Using fallback for alias '{}'", alias);
     match plan.get_properties_with_table_alias(alias) {
         Ok((properties, actual_table_alias)) => {
             if !properties.is_empty() {
                 let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.to_string());
                 // Just use the first property (typically the ID)
                 let (_, col_name) = &properties[0];
+                log::warn!("⚠️ expand_table_alias_to_group_by_id_only: Fallback using first property '{}' for alias '{}'", col_name, alias);
                 vec![RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(table_alias_to_use),
                     column: Column(PropertyValue::Column(col_name.clone())),
@@ -1094,6 +1110,9 @@ fn build_chained_with_match_cte_plan(
                                 // Convert LogicalExpr items to RenderExpr SelectItems
                                 // CRITICAL: Expand TableAlias to ALL columns (not just ID)
                                 // When WITH friend appears, it means "all properties of friend"
+                                //
+                                // Performance optimization: Wrap non-ID columns with ANY() when aggregating
+                                // This allows GROUP BY to only include ID column (more efficient)
                                 let select_items: Vec<SelectItem> = items.iter()
                                     .flat_map(|item| {
                                         // Check if this is a TableAlias that needs expansion to ALL columns
@@ -1101,8 +1120,38 @@ fn build_chained_with_match_cte_plan(
                                             crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
                                                 // Use helper function to expand to ALL columns
                                                 // Pass with_cte_refs from THIS WITH's input scope
-                                                let expanded = expand_table_alias_to_select_items(&alias.0, plan_to_render, &cte_schemas, &with_cte_refs);
+                                                let mut expanded = expand_table_alias_to_select_items(&alias.0, plan_to_render, &cte_schemas, &with_cte_refs);
                                                 log::info!("🔧 build_chained_with_match_cte_plan: Expanded alias '{}' to {} items", alias.0, expanded.len());
+                                                
+                                                // If there's aggregation, wrap non-ID columns with ANY()
+                                                // This allows efficient GROUP BY (only ID column)
+                                                if has_aggregation {
+                                                    // Find the ID column for this alias
+                                                    if let Ok(id_col) = plan_to_render.find_id_column_for_alias(&alias.0) {
+                                                        log::info!("🔧 build_chained_with_match_cte_plan: Wrapping non-ID columns with ANY() for alias '{}' (id_col='{}')", alias.0, id_col);
+                                                        expanded = expanded.into_iter().map(|mut si| {
+                                                            // Check if this is the ID column
+                                                            let is_id_column = if let RenderExpr::PropertyAccessExp(ref prop_access) = si.expression {
+                                                                prop_access.column.0.raw() == id_col
+                                                            } else {
+                                                                false
+                                                            };
+                                                            
+                                                            // Wrap non-ID columns with anyLast() to avoid GROUP BY bloat
+                                                            // Use "anyLast" instead of "any" to avoid conflict with Cypher's any() array function
+                                                            if !is_id_column {
+                                                                log::info!("🔧 Wrapping column {:?} with anyLast()", si.expression);
+                                                                si.expression = RenderExpr::AggregateFnCall(crate::render_plan::render_expr::AggregateFnCall {
+                                                                    name: "anyLast".to_string(),
+                                                                    args: vec![si.expression.clone()],
+                                                                });
+                                                                log::info!("🔧 Wrapped result: {:?}", si.expression);
+                                                            }
+                                                            si
+                                                        }).collect();
+                                                    }
+                                                }
+                                                
                                                 expanded
                                             }
                                             _ => {
@@ -1134,20 +1183,28 @@ fn build_chained_with_match_cte_plan(
                                     };
 
                                     // If there's aggregation, add GROUP BY for non-aggregate expressions
+                                    // PERFORMANCE: Only GROUP BY the ID column(s) for TableAlias items
+                                    // (non-ID columns are wrapped with ANY() above, so they don't need to be grouped)
+                                    //
+                                    // This is efficient because:
+                                    // 1. node_id is the primary key (unique identifier)
+                                    // 2. ANY() picks the single value in each group (safe for PK)
+                                    // 3. GROUP BY 1 column is much faster than GROUP BY 7 columns
                                     if has_aggregation {
                                         let group_by_exprs: Vec<RenderExpr> = items.iter()
                                             .filter(|item| !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)))
                                             .flat_map(|item| {
-                                                // CRITICAL: For TableAlias (like `a` in `WITH a, count(b)`),
-                                                // use ID-only grouping. We select all properties but group by ID.
+                                                // For TableAlias, only GROUP BY the ID column
+                                                // (other columns are wrapped with ANY() in SELECT)
                                                 match &item.expression {
                                                     crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
-                                                        // Use ID-only helper for GROUP BY
+                                                        // Use ID-only helper for efficient GROUP BY
                                                         expand_table_alias_to_group_by_id_only(&alias.0, plan_to_render, schema)
                                                     }
                                                     _ => {
                                                         // Not a TableAlias, convert normally
-                                                        item.expression.clone().try_into().ok().into_iter().collect()
+                                                        let expr_vec: Vec<RenderExpr> = item.expression.clone().try_into().ok().into_iter().collect();
+                                                        expr_vec
                                                     }
                                                 }
                                             })
@@ -6362,6 +6419,8 @@ impl RenderPlanBuilder for LogicalPlan {
     fn extract_group_by(&self) -> RenderPlanBuilderResult<Vec<RenderExpr>> {
         use crate::graph_catalog::expression_parser::PropertyValue;
 
+        log::info!("🔧 GROUP BY: extract_group_by() called for plan type {:?}", std::mem::discriminant(self));
+
         /// Helper to find node properties when the alias is a relationship alias with "*" column.
         /// For denormalized schemas, the node alias gets remapped to the relationship alias,
         /// so we need to look up which node this represents and get its properties.
@@ -6440,7 +6499,15 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Projection(projection) => projection.input.extract_group_by()?,
             LogicalPlan::Filter(filter) => filter.input.extract_group_by()?,
             LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_group_by()?,
+            LogicalPlan::GraphNode(node) => node.input.extract_group_by()?,
+            LogicalPlan::GraphRel(rel) => {
+                // For relationships, try left first, then center, then right
+                rel.left.extract_group_by()
+                    .or_else(|_| rel.center.extract_group_by())
+                    .or_else(|_| rel.right.extract_group_by())?
+            }
             LogicalPlan::GroupBy(group_by) => {
+                log::info!("🔧 GROUP BY: Found GroupBy plan, processing {} expressions", group_by.expressions.len());
                 let mut result: Vec<RenderExpr> = vec![];
 
                 // Track which aliases we've already added to GROUP BY
@@ -6468,16 +6535,15 @@ impl RenderPlanBuilder for LogicalPlan {
                                 }
                                 seen_group_by_aliases.insert(table_alias_to_use.clone());
 
-                                // Find the ID column (usually "id") - prefer it over all columns
-                                let id_col = properties
-                                    .iter()
-                                    .find(|(prop_name, _col_name)| {
-                                        prop_name == "id" || prop_name.ends_with("_id")
-                                    })
-                                    .map(|(_prop_name, col_name)| col_name.clone())
-                                    .unwrap_or_else(|| "id".to_string());
+                                // Get the ID column from the schema (via ViewScan.id_column)
+                                // This is the proper way - use schema definition, not pattern matching
+                                let id_col = group_by.input.find_id_column_for_alias(&alias.0)
+                                    .unwrap_or_else(|_| {
+                                        log::warn!("⚠️ Could not find ID column for alias '{}', using fallback", alias.0);
+                                        "id".to_string()
+                                    });
 
-                                log::debug!("🔧 GROUP BY optimization: Using ID column '{}' instead of {} properties for alias '{}'",
+                                log::debug!("🔧 GROUP BY optimization: Using ID column '{}' from schema instead of {} properties for alias '{}'",
                                     id_col, properties.len(), table_alias_to_use);
 
                                 result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -6518,16 +6584,14 @@ impl RenderPlanBuilder for LogicalPlan {
                                         &prop_access.table_alias.0,
                                     )
                                 {
-                                    // Found denormalized node properties - use only ID
-                                    let id_col = node_props
-                                        .iter()
-                                        .find(|(prop_name, _col_name)| {
-                                            prop_name == "id" || prop_name.ends_with("_id")
-                                        })
-                                        .map(|(_prop_name, col_name)| col_name.clone())
-                                        .unwrap_or_else(|| "id".to_string());
+                                    // Found denormalized node properties - get ID from schema
+                                    let id_col = group_by.input.find_id_column_for_alias(&prop_access.table_alias.0)
+                                        .unwrap_or_else(|_| {
+                                            log::warn!("⚠️ Could not find ID column for denormalized alias '{}', using fallback", prop_access.table_alias.0);
+                                            "id".to_string()
+                                        });
 
-                                    log::debug!("🔧 GROUP BY optimization: Using ID column '{}' for denormalized alias '{}'",
+                                    log::debug!("🔧 GROUP BY optimization: Using ID column '{}' from schema for denormalized alias '{}'",
                                         id_col, table_alias);
 
                                     result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -6537,15 +6601,13 @@ impl RenderPlanBuilder for LogicalPlan {
                                     continue;
                                 }
 
-                                // Fallback: use just the ID column from properties
+                                // Fallback: use ID column from schema
                                 if !properties.is_empty() {
-                                    let id_col = properties
-                                        .iter()
-                                        .find(|(prop_name, _col_name)| {
-                                            prop_name == "id" || prop_name.ends_with("_id")
-                                        })
-                                        .map(|(_prop_name, col_name)| col_name.clone())
-                                        .unwrap_or_else(|| "id".to_string());
+                                    let id_col = group_by.input.find_id_column_for_alias(&prop_access.table_alias.0)
+                                        .unwrap_or_else(|_| {
+                                            log::warn!("⚠️ Could not find ID column for alias '{}', using fallback", prop_access.table_alias.0);
+                                            "id".to_string()
+                                        });
 
                                     log::debug!("🔧 GROUP BY optimization: Using ID column '{}' instead of {} properties for alias '{}'",
                                         id_col, properties.len(), table_alias_to_use);
@@ -7491,14 +7553,45 @@ impl RenderPlanBuilder for LogicalPlan {
                 let inner_render_plan = inner_group_by.input.to_render_plan(&empty_schema)?;
 
                 // Extract GROUP BY expressions from SELECT items (non-aggregates)
-                // This properly handles wildcard expansion since SELECT items are already expanded
+                // For node variables (WITH a where a is a table alias), only GROUP BY ID columns
+                // For other expressions, include them in GROUP BY as normal
+                log::info!("🔧 Extracting GROUP BY from {} SELECT items, with_table_aliases: {:?}", 
+                          inner_render_plan.select.items.len(), with_table_aliases);
                 let inner_group_by_exprs: Vec<RenderExpr> = inner_render_plan
                     .select
                     .items
                     .iter()
                     .filter(|item| !matches!(&item.expression, RenderExpr::AggregateFnCall(_)))
-                    .map(|item| item.expression.clone())
+                    .filter_map(|item| {
+                        // Check if this is a property of a node variable (table alias)
+                        if let RenderExpr::PropertyAccessExp(pa) = &item.expression {
+                            let table_alias = &pa.table_alias.0;
+                            log::info!("🔧   Checking item: table_alias={}, col_alias={:?}", table_alias, item.col_alias);
+                            // If this is a WITH table alias (node variable), only include ID columns
+                            if with_table_aliases.contains(table_alias) {
+                                log::info!("🔧     Is WITH table alias");
+                                // Only include if it's an ID column
+                                // ID columns have aliases like "a_user_id", "a_id", etc.
+                                if let Some(col_alias) = &item.col_alias {
+                                    let alias = &col_alias.0;
+                                    // Pattern: <table>_*_id or <table>_id
+                                    if alias.ends_with("_id") || alias.ends_with("_user_id") {
+                                        log::info!("🔧       ID column, including: {}", alias);
+                                        return Some(item.expression.clone());
+                                    } else {
+                                        log::info!("🔧       Non-ID column, skipping: {}", alias);
+                                    }
+                                }
+                                // Not an ID column, skip it for GROUP BY
+                                return None;
+                            }
+                        }
+                        // For non-node variables, include in GROUP BY
+                        log::info!("🔧   Including non-node expression");
+                        Some(item.expression.clone())
+                    })
                     .collect();
+                log::info!("🔧 GROUP BY will have {} expressions", inner_group_by_exprs.len());
 
                 // Create CTE for the inner (WITH) query
                 // Generate CTE name from all exported aliases (both table aliases and aggregates)

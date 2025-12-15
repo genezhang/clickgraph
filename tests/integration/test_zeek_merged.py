@@ -87,12 +87,13 @@ def setup_zeek_merged(clickhouse_conn):
     # - 192.168.1.10 looks up malware.bad → resolves to ['10.0.0.99']
     # - 192.168.1.20 looks up google.com → resolves to ['142.250.80.46']
     # - 192.168.1.10 looks up cdn.example.com → resolves to ['93.184.216.34', '93.184.216.35'] (multiple IPs)
+    # Use JSONEachRow format to handle arrays properly
     clickhouse_conn.command("""
-        INSERT INTO test_zeek.dns_log VALUES
-        (1700000001.0, 'DNS001', '192.168.1.10', 54321, '8.8.8.8', 53, 'udp', 'example.com', 'A', 'NOERROR', ['93.184.216.34'], [3600]),
-        (1700000002.0, 'DNS002', '192.168.1.10', 54322, '8.8.8.8', 53, 'udp', 'malware.bad', 'A', 'NOERROR', ['10.0.0.99'], [3600]),
-        (1700000003.0, 'DNS003', '192.168.1.20', 54323, '8.8.8.8', 53, 'udp', 'google.com', 'A', 'NOERROR', ['142.250.80.46'], [300]),
-        (1700000004.0, 'DNS004', '192.168.1.10', 54324, '8.8.8.8', 53, 'udp', 'cdn.example.com', 'A', 'NOERROR', ['93.184.216.34', '93.184.216.35'], [60, 60])
+        INSERT INTO test_zeek.dns_log FORMAT JSONEachRow
+        {"ts":1700000001.0,"uid":"DNS001","orig_h":"192.168.1.10","orig_p":54321,"resp_h":"8.8.8.8","resp_p":53,"proto":"udp","query":"example.com","qtype_name":"A","rcode_name":"NOERROR","answers":["93.184.216.34"],"TTLs":[3600]}
+        {"ts":1700000002.0,"uid":"DNS002","orig_h":"192.168.1.10","orig_p":54322,"resp_h":"8.8.8.8","resp_p":53,"proto":"udp","query":"malware.bad","qtype_name":"A","rcode_name":"NOERROR","answers":["10.0.0.99"],"TTLs":[3600]}
+        {"ts":1700000003.0,"uid":"DNS003","orig_h":"192.168.1.20","orig_p":54323,"resp_h":"8.8.8.8","resp_p":53,"proto":"udp","query":"google.com","qtype_name":"A","rcode_name":"NOERROR","answers":["142.250.80.46"],"TTLs":[300]}
+        {"ts":1700000004.0,"uid":"DNS004","orig_h":"192.168.1.10","orig_p":54324,"resp_h":"8.8.8.8","resp_p":53,"proto":"udp","query":"cdn.example.com","qtype_name":"A","rcode_name":"NOERROR","answers":["93.184.216.34","93.184.216.35"],"TTLs":[60,60]}
     """)
     
     # Insert connection log data
@@ -102,13 +103,14 @@ def setup_zeek_merged(clickhouse_conn):
     # - 192.168.1.20 -> 142.250.80.46:443 (matches DNS lookup for google.com)
     # - 93.184.216.34 -> 192.168.1.10:49001 (reverse connection, no DNS correlation)
     # - 192.168.1.10 -> 192.168.1.20:22 (lateral movement, no DNS)
+    # Use JSONEachRow format to handle column order correctly
     clickhouse_conn.command("""
-        INSERT INTO test_zeek.conn_log VALUES
-        (1700000010.0, 'CONN001', '192.168.1.10', 49001, '93.184.216.34', 443, 'tcp', 'ssl', 2.5, 1024, 4096, 'SF'),
-        (1700000011.0, 'CONN002', '192.168.1.10', 49002, '10.0.0.99', 80, 'tcp', 'http', 0.5, 512, 256, 'SF'),
-        (1700000012.0, 'CONN003', '192.168.1.20', 49003, '142.250.80.46', 443, 'tcp', 'ssl', 3.0, 2048, 8192, 'SF'),
-        (1700000013.0, 'CONN004', '93.184.216.34', 443, '192.168.1.10', 49001, 'tcp', 'ssl', 0.1, 100, 200, 'SF'),
-        (1700000014.0, 'CONN005', '192.168.1.10', 49004, '192.168.1.20', 22, 'tcp', 'ssh', 60.0, 10000, 20000, 'SF')
+        INSERT INTO test_zeek.conn_log FORMAT JSONEachRow
+        {"uid":"CONN001","ts":1700000010.0,"orig_h":"192.168.1.10","orig_p":49001,"resp_h":"93.184.216.34","resp_p":443,"proto":"tcp","service":"ssl","duration":2.5,"orig_bytes":1024,"resp_bytes":4096,"conn_state":"SF"}
+        {"uid":"CONN002","ts":1700000011.0,"orig_h":"192.168.1.10","orig_p":49002,"resp_h":"10.0.0.99","resp_p":80,"proto":"tcp","service":"http","duration":0.5,"orig_bytes":512,"resp_bytes":256,"conn_state":"SF"}
+        {"uid":"CONN003","ts":1700000012.0,"orig_h":"192.168.1.20","orig_p":49003,"resp_h":"142.250.80.46","resp_p":443,"proto":"tcp","service":"ssl","duration":3.0,"orig_bytes":2048,"resp_bytes":8192,"conn_state":"SF"}
+        {"uid":"CONN004","ts":1700000013.0,"orig_h":"93.184.216.34","orig_p":443,"resp_h":"192.168.1.10","resp_p":49001,"proto":"tcp","service":"ssl","duration":0.1,"orig_bytes":100,"resp_bytes":200,"conn_state":"SF"}
+        {"uid":"CONN005","ts":1700000014.0,"orig_h":"192.168.1.10","orig_p":49004,"resp_h":"192.168.1.20","resp_p":22,"proto":"tcp","service":"ssh","duration":60.0,"orig_bytes":10000,"resp_bytes":20000,"conn_state":"SF"}
     """)
     
     # Load schema into ClickGraph
@@ -139,6 +141,8 @@ class TestZeekMergedHelpers:
             f"{CLICKGRAPH_URL}/query",
             json={"query": cypher, "schema_name": schema_name}
         )
+        if response.status_code != 200:
+            print(f"ERROR {response.status_code}: {response.text}")
         return response.json()
     
     @staticmethod

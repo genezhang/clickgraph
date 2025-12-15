@@ -766,6 +766,11 @@ pub fn is_node_denormalized_on_edge(
 ) -> bool {
     // Must use same physical table (including database prefix)
     if node.full_table_name() != edge.full_table_name() {
+        log::debug!(
+            "  ❌ Not denormalized: different tables (node={}, edge={})",
+            node.full_table_name(),
+            edge.full_table_name()
+        );
         return false;
     }
 
@@ -778,16 +783,33 @@ pub fn is_node_denormalized_on_edge(
     };
 
     if !has_denormalized_props {
+        log::debug!(
+            "  ❌ Not denormalized: no {} properties for node label (table={}, is_denorm={})",
+            if is_from_node { "from" } else { "to" },
+            node.full_table_name(),
+            node.is_denormalized
+        );
         return false;
     }
 
     // Check if node is marked as denormalized and has the right source table
-    node.is_denormalized
+    let result = node.is_denormalized
         && node
             .denormalized_source_table
             .as_ref()
             .map(|t| t == &edge.full_table_name())
-            .unwrap_or(false)
+            .unwrap_or(false);
+
+    log::debug!(
+        "  {} Node denormalization check: table={}, is_denorm={}, source_table={:?}, result={}",
+        if result { "✅" } else { "❌" },
+        node.full_table_name(),
+        node.is_denormalized,
+        node.denormalized_source_table,
+        result
+    );
+
+    result
 }
 
 /// Check if the edge has denormalized properties for a node position
@@ -827,14 +849,24 @@ pub fn classify_edge_table_pattern(
     let from_denorm = is_node_denormalized_on_edge(left_node, edge, true);
     let to_denorm = is_node_denormalized_on_edge(right_node, edge, false);
 
-    match (from_denorm, to_denorm) {
+    let pattern = match (from_denorm, to_denorm) {
         (true, true) => EdgeTablePattern::FullyDenormalized,
         (false, false) => EdgeTablePattern::Traditional,
         (from_d, to_d) => EdgeTablePattern::Mixed {
             from_denormalized: from_d,
             to_denormalized: to_d,
         },
-    }
+    };
+
+    log::info!(
+        "🔍 Edge pattern classification: {:?} for table {} (from_denorm={}, to_denorm={})",
+        pattern,
+        edge.full_table_name(),
+        from_denorm,
+        to_denorm
+    );
+
+    pattern
 }
 
 #[cfg(test)]

@@ -1977,9 +1977,23 @@ impl GraphJoinInference {
         }
 
         // 3. Look up schemas
-        let left_node_schema = graph_schema.get_node_schema_opt(&left_label)?;
-        let right_node_schema = graph_schema.get_node_schema_opt(&right_label)?;
+        // First get relationship schema to know which table to use
         let rel_schema = graph_schema.get_relationships_schema_opt(&rel_types[0])?;
+        
+        // For denormalized edges, use composite key (database::table::label) to get the correct node schema
+        // Format: "database::table::label" (matching config.rs format)
+        let composite_left_key = format!("{}::{}::{}", rel_schema.database, rel_schema.table_name, left_label);
+        let composite_right_key = format!("{}::{}::{}", rel_schema.database, rel_schema.table_name, right_label);
+        
+        // Try composite key first, fallback to label-only
+        let left_node_schema = graph_schema.get_node_schema_opt(&composite_left_key)
+            .or_else(|| graph_schema.get_node_schema_opt(&left_label))?;
+        let right_node_schema = graph_schema.get_node_schema_opt(&composite_right_key)
+            .or_else(|| graph_schema.get_node_schema_opt(&right_label))?;
+
+        crate::debug_print!("    🔍 Node schema lookup: left='{}' → '{}', right='{}' → '{}'",
+            composite_left_key, left_node_schema.full_table_name(),
+            composite_right_key, right_node_schema.full_table_name());
 
         // 4. Compute PatternSchemaContext
         let ctx = PatternSchemaContext::analyze(

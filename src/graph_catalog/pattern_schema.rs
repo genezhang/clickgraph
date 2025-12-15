@@ -569,6 +569,55 @@ impl PatternSchemaContext {
         }
     }
 
+    /// Resolve node ID column through property mappings.
+    ///
+    /// The `node_id` in the schema is a Cypher property name (e.g., "ip"),
+    /// but JOIN conditions need the actual database column name (e.g., "orig_h").
+    /// 
+    /// For denormalized edge schemas, the mapping is in from_properties/to_properties
+    /// of the node schema (which correspond to the edge's table). For standalone nodes,
+    /// the mapping is in property_mappings.
+    fn resolve_id_column(node_schema: &NodeSchema, is_from_node: bool) -> String {
+        // Get the node ID property name from schema (Cypher name)
+        let id_property = node_schema
+            .node_id
+            .columns()
+            .first()
+            .unwrap_or(&"id")
+            .to_string();
+
+        // Try to resolve through from_properties or to_properties (for denormalized edges)
+        let node_props_opt = if is_from_node {
+            &node_schema.from_properties
+        } else {
+            &node_schema.to_properties
+        };
+        
+        if let Some(node_props) = node_props_opt {
+            if let Some(column_name) = node_props.get(&id_property) {
+                log::info!("🔧 resolve_id_column: '{}' (Cypher) → '{}' (DB column) via {} for table {}", 
+                    id_property, column_name,
+                    if is_from_node { "from_properties" } else { "to_properties" },
+                    node_schema.table_name);
+                return column_name.clone();
+            }
+        }
+
+        // Fallback: Try property_mappings (for standalone node tables)
+        if let Some(property_value) = node_schema.property_mappings.get(&id_property) {
+            let resolved = property_value.to_sql_column_only();
+            log::info!("🔧 resolve_id_column: '{}' (Cypher) → '{}' (DB column) via property_mappings for table {}", 
+                id_property, resolved, node_schema.table_name);
+            return resolved;
+        }
+
+        // No mapping found - use the property name directly
+        // (this is OK for simple schemas where Cypher name = DB column name)
+        log::info!("🔧 resolve_id_column: '{}' used as-is (no mapping) for table {}", 
+            id_property, node_schema.table_name);
+        id_property
+    }
+
     /// Build edge access strategy from relationship schema
     fn build_edge_strategy(
         rel_schema: &RelationshipSchema,
@@ -651,12 +700,7 @@ impl PatternSchemaContext {
             EdgeTablePattern::Traditional => {
                 let left = NodeAccessStrategy::OwnTable {
                     table: left_node_schema.full_table_name(),
-                    id_column: left_node_schema
-                        .node_id
-                        .columns()
-                        .first()
-                        .unwrap_or(&"id")
-                        .to_string(),
+                    id_column: Self::resolve_id_column(left_node_schema, true),
                     properties: left_node_schema
                         .property_mappings
                         .iter()
@@ -665,12 +709,7 @@ impl PatternSchemaContext {
                 };
                 let right = NodeAccessStrategy::OwnTable {
                     table: right_node_schema.full_table_name(),
-                    id_column: right_node_schema
-                        .node_id
-                        .columns()
-                        .first()
-                        .unwrap_or(&"id")
-                        .to_string(),
+                    id_column: Self::resolve_id_column(right_node_schema, false),
                     properties: right_node_schema
                         .property_mappings
                         .iter()
@@ -692,12 +731,7 @@ impl PatternSchemaContext {
                 } else {
                     NodeAccessStrategy::OwnTable {
                         table: left_node_schema.full_table_name(),
-                        id_column: left_node_schema
-                            .node_id
-                            .columns()
-                            .first()
-                            .unwrap_or(&"id")
-                            .to_string(),
+                        id_column: Self::resolve_id_column(left_node_schema, true),
                         properties: left_node_schema
                             .property_mappings
                             .iter()
@@ -714,12 +748,7 @@ impl PatternSchemaContext {
                 } else {
                     NodeAccessStrategy::OwnTable {
                         table: right_node_schema.full_table_name(),
-                        id_column: right_node_schema
-                            .node_id
-                            .columns()
-                            .first()
-                            .unwrap_or(&"id")
-                            .to_string(),
+                        id_column: Self::resolve_id_column(right_node_schema, false),
                         properties: right_node_schema
                             .property_mappings
                             .iter()

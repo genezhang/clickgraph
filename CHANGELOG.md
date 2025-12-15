@@ -1,7 +1,81 @@
 ## [Unreleased]
 
-### � Bug Fixes
-
+### � Bug Fixes- **Coupled Edge Alias Resolution** - Fixed SQL generation for patterns with multiple edges in same table (December 14, 2025)
+  - **Problem**: `MATCH (src:IP)-[:REQUESTED]->(d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)` failed with SQL error
+  - **Error**: "Unknown expression identifier 't1.orig_h' in scope SELECT ... FROM test_zeek.dns_log AS t2. Maybe you meant: ['t2.orig_h']"
+  - **Root Cause**:
+    - Query has 2 edges (REQUESTED, RESOLVED_TO) using same dns_log table - **coupled edges**
+    - Coupled edge detector correctly unified aliases to `t1` and stored in `coupled_edge_aliases` HashMap
+    - `AliasResolverContext.transform_plan()` transformed property access expressions in SELECT/WHERE to use `t1`
+    - BUT: GraphRel alias itself remained `t2`, so FROM clause generated `AS t2`
+    - Result: SELECT/WHERE used `t1`, FROM used `t2` - alias mismatch!
+  - **Solution**:
+    - Enhanced `transform_plan()` to also transform GraphRel alias when it appears in `coupled_edge_aliases`
+    - Now both property expressions AND table alias use unified alias consistently
+  - **Impact**:
+    - Zeek tests: 16→18 passing (fixed both coupled DNS path tests)
+    - All coupled edge patterns now work correctly (multiple edges in same table)
+    - Ensures consistent alias usage throughout generated SQL
+  - **Files Modified**: `src/render_plan/alias_resolver.rs` (transform_plan GraphRel case, ~lines 150-172)
+  - **Before/After SQL**:
+    ```sql
+    -- Before (❌ broken - t1 vs t2 mismatch):
+    SELECT t1.orig_h AS "src.ip", t1.query AS "d.name", t1.answers AS "rip.ip"
+    FROM test_zeek.dns_log AS t2
+    WHERE t1.orig_h = '192.168.1.10'
+    
+    -- After (✅ fixed - consistent t1):
+    SELECT t1.orig_h AS "src.ip", t1.query AS "d.name", t1.answers AS "rip.ip"
+    FROM test_zeek.dns_log AS t1
+    WHERE t1.orig_h = '192.168.1.10'
+    ```
+- **Multi-Table Node Schema Resolution** - Fixed composite key lookup for same label across tables (December 14, 2025)
+  - **Problem**: `MATCH (s:IP)-[:REQUESTED]->(d:Domain)` used wrong IP schema (conn_log instead of dns_log)
+  - **Symptom**: Unnecessary self-JOINs generated for fully denormalized patterns, or "different tables" errors
+  - **Root Cause**: 
+    - Zeek schema has TWO `IP` definitions (dns_log table and conn_log table)
+    - Schema loader stores with composite keys: `"database::table::label"` (e.g., `"test_zeek::dns_log::IP"`)
+    - But `get_node_schema_opt` only used label key (`"IP"`), returned wrong table's schema
+    - Pattern classification failed: detected as Mixed instead of FullyDenormalized
+  - **Solution**: 
+    - In `compute_pattern_context`, construct composite key from edge table: `"database::table::label"`
+    - Try composite key first, fallback to label-only for backward compatibility
+    - Ensures correct node schema is selected when same label appears in multiple tables
+  - **Impact**: 
+    - Zeek tests: 17 → 18 passing (eliminated unnecessary self-JOINs)
+    - Fully denormalized edge patterns now generate single table scans (no JOINs)
+    - **Critical for denormalized schemas**: Same label can appear in multiple edge tables correctly
+  - **Files Modified**: `src/query_planner/analyzer/graph_join_inference.rs` (compute_pattern_context)
+  - **Example**:
+    ```cypher
+    -- Before: Generated unnecessary JOIN
+    FROM dns_log AS r INNER JOIN dns_log AS s ON s.orig_h = r.orig_h
+    
+    -- After: Single table scan (no JOIN)
+    FROM dns_log AS r
+    ```
+- **Denormalized Node ID Property Mapping** - Fixed JOIN conditions for composite node IDs in denormalized edges (December 14, 2025)
+  - **Problem**: `MATCH (src:IP)-[:REQUESTED]->(d:Domain)` generated invalid SQL: `ON src.ip = r.orig_h`
+  - **Error**: "Identifier 'src.ip' cannot be resolved from table src"
+  - **Root Cause**: 
+    - For denormalized edges, `node_id` uses Cypher property names (e.g., "ip")
+    - JOIN conditions need actual DB column names (e.g., "orig_h")
+    - Property mappings are in `from_properties`/`to_properties`, not `property_mappings`
+    - `resolve_id_column()` only checked `property_mappings`
+  - **Solution**: 
+    - Updated `resolve_id_column()` to check `from_properties`/`to_properties` first
+    - Added `is_from_node` parameter to know which side (from/to) to check
+    - Fallback to `property_mappings` for standalone node tables
+  - **Impact**: 
+    - Zeek merged schema tests: 15 → 17 passing (2 composite ID failures fixed)
+    - Generated SQL now correct: `ON src.orig_h = r.orig_h`
+  - **Files Modified**: `src/graph_catalog/pattern_schema.rs` (resolve_id_column + 4 call sites)
+  - **Example Schema**: 
+    ```yaml
+    node_id: ip  # Cypher property name
+    from_node_properties:
+      ip: "id.orig_h"  # DB column mapping
+    ```
 - **Inline Property Parameters** - Fixed server crash on parameterized inline property patterns (December 14, 2025)
   - **Problem**: `MATCH (n:Person {id: $personId})` caused panic "Property value must be a literal"
   - **Root Cause**: `PropertyKVPair.value` was typed as `Literal`, rejecting parameter expressions
