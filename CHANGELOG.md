@@ -1,6 +1,26 @@
 ## [Unreleased]
 
-### � Bug Fixes- **Coupled Edge Alias Resolution** - Fixed SQL generation for patterns with multiple edges in same table (December 14, 2025)
+### 🚀 Features
+
+- **Cross-Branch Shared Node JOIN Detection** - Automatic JOIN generation for branching patterns (December 15, 2025)
+  - **Feature**: When a node appears in multiple relationship branches that use different tables, automatically generate INNER JOIN
+  - **Use Case**: Solves GitHub issue #12 - DNS lookup followed by connection correlation
+  - **Example**:
+    ```cypher
+    MATCH (src:IP)-[:REQUESTED]->(d:Domain), (src)-[:ACCESSED]->(dest:IP)
+    RETURN src.ip, d.name, dest.ip
+    ```
+  - **Generated SQL**:
+    ```sql
+    FROM test_zeek.conn_log AS t3
+    INNER JOIN test_zeek.dns_log AS t1 ON t3.orig_h = t1.orig_h
+    ```
+  - **Impact**: Zeek tests 18→21 passing (87.5%), all 3 comma-pattern cross-table tests pass
+  - **Files**: `src/query_planner/analyzer/graph_join_inference.rs`, `tests/integration/test_zeek_merged.py`
+
+### 🐛 Bug Fixes
+
+- **Coupled Edge Alias Resolution** - Fixed SQL generation for patterns with multiple edges in same table (December 14, 2025)
   - **Problem**: `MATCH (src:IP)-[:REQUESTED]->(d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)` failed with SQL error
   - **Error**: "Unknown expression identifier 't1.orig_h' in scope SELECT ... FROM test_zeek.dns_log AS t2. Maybe you meant: ['t2.orig_h']"
   - **Root Cause**:

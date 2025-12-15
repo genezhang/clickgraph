@@ -1,6 +1,51 @@
 # ClickGraph Status
 
-*Updated: December 14, 2025*
+*Updated: December 15, 2025*
+
+## 🎉 **Cross-Branch JOIN Detection Complete** - December 15, 2025
+
+**Cross-table correlation queries now work! Solves GitHub issue #12**
+
+### Cross-Branch Shared Node JOIN Detection (Dec 15, 2025)
+
+- **Comma-Pattern Cross-Table Queries** - Automatic JOIN generation for branching patterns ✅
+  - **Pattern**: `MATCH (n)-[:REL1]->(a), (n)-[:REL2]->(b)` where REL1 and REL2 are in different tables
+  - **Problem**: When shared node `n` appears in branches that reference different tables, no JOIN was generated
+  - **Example**: DNS lookup followed by connection (GitHub issue #12)
+    ```cypher
+    MATCH (src:IP)-[:REQUESTED]->(d:Domain), (src)-[:ACCESSED]->(dest:IP)
+    RETURN src.ip, d.name, dest.ip
+    ```
+    - [:REQUESTED] uses `dns_log` table
+    - [:ACCESSED] uses `conn_log` table
+    - Shared node `src` should trigger JOIN: `FROM conn_log JOIN dns_log ON conn_log.orig_h = dns_log.orig_h`
+  
+  - **Solution**: Implemented cross-branch shared node detection
+    - Track node appearances across GraphRel branches using `HashMap<String, Vec<NodeAppearance>>`
+    - When node appears in multiple GraphRels with different tables, generate INNER JOIN
+    - Skip JOIN when both GraphRels use same table (coupled edges)
+  - **Implementation**:
+    - `src/query_planner/analyzer/graph_join_inference.rs`:
+      - Added `NodeAppearance` struct: tracks rel_alias, node_label, table_name, database, column_name
+      - Added `check_and_generate_cross_branch_joins()`: checks left_connection and right_connection nodes
+      - Added `extract_node_appearance()`: extracts node info from GraphRel
+      - Added `generate_cross_branch_join()`: creates JOIN with same-table check
+    - Updated `deduplicate_joins()`: use (alias, condition) as key instead of just alias
+  - **Key Insight**: Deduplication was dropping valid JOINs!
+    - Old: HashMap key = table_alias only → dropped second JOIN to same table
+    - New: HashMap key = (table_alias, join_condition) → allows multiple JOINs to same table with different conditions
+  - **Test Results**: 21/24 Zeek tests passing (87.5%), including 3/3 cross-table correlation tests ✅
+    - ✅ `test_comma_pattern_cross_table`: Simple 2-hop branching
+    - ✅ `test_comma_pattern_full_dns_path`: 3-hop branching with coupled edges
+    - ✅ `test_dns_then_connect_to_resolved_ip`: Full DNS→connection correlation
+    - ⏳ 3 skipped: Sequential MATCH, WITH...MATCH, and different variable names (future work)
+  - Generated SQL example:
+    ```sql
+    SELECT t1.orig_h AS "src.ip", t1.query AS "d.name", t3.resp_h AS "dest.ip"
+    FROM test_zeek.conn_log AS t3
+    INNER JOIN test_zeek.dns_log AS t1 ON t3.orig_h = t1.orig_h
+    WHERE t1.orig_h = '192.168.1.10'
+    ```
 
 ## 🎉 **v0.5.5 Released** - December 10, 2025
 
