@@ -27,11 +27,14 @@ pub fn build_logical_plan(
         PlanCtx::with_parameters(Arc::new(schema.clone()), tenant_id, view_parameter_values);
 
     log::debug!(
-        "build_logical_plan: Processing query with {} optional_match_clauses",
+        "build_logical_plan: Processing query with {} MATCH clauses, {} optional_match_clauses",
+        query_ast.match_clauses.len(),
         query_ast.optional_match_clauses.len()
     );
 
-    if let Some(match_clause) = &query_ast.match_clause {
+    // Process all MATCH clauses in sequence
+    for (idx, match_clause) in query_ast.match_clauses.iter().enumerate() {
+        log::debug!("build_logical_plan: Processing MATCH clause {}", idx);
         logical_plan =
             match_clause::evaluate_match_clause(match_clause, logical_plan, &mut plan_ctx)?;
     }

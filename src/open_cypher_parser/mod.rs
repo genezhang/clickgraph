@@ -104,8 +104,9 @@ pub fn parse_query_with_nom(
     let (input, use_clause): (&str, Option<UseClause>) =
         opt(use_clause::parse_use_clause).parse(input)?;
 
-    let (input, match_clause): (&str, Option<MatchClause>) =
-        opt(match_clause::parse_match_clause).parse(input)?;
+    // Parse zero or more MATCH clauses (supports: MATCH ... MATCH ... MATCH ...)
+    let (input, match_clauses): (&str, Vec<MatchClause>) =
+        many0(match_clause::parse_match_clause).parse(input)?;
 
     // Parse WHERE clause (can come before OPTIONAL MATCH in queries like:
     // MATCH (a) WHERE a.name='Alice' OPTIONAL MATCH (a)-[:FOLLOWS]->(b))
@@ -156,7 +157,7 @@ pub fn parse_query_with_nom(
 
     let cypher_query = OpenCypherQueryAst {
         use_clause,
-        match_clause,
+        match_clauses,
         optional_match_clauses,
         call_clause,
         unwind_clause,
@@ -409,8 +410,8 @@ mod tests {
 
         let query_ast = parse_query(input).expect("Query parsing failed");
 
-        assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
-        let match_clause = query_ast.match_clause.unwrap();
+        assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
+        let match_clause = &query_ast.match_clauses[0];
 
         let expected_match_clause = MatchClause {
             path_variable: None,
@@ -594,8 +595,8 @@ mod tests {
 
         let query_ast = parse_query(input).expect("Query parsing failed");
 
-        assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
-        let match_clause = query_ast.match_clause.unwrap();
+        assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
+        let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
             path_variable: None,
             path_patterns: vec![PathPattern::ConnectedPattern(vec![
@@ -765,8 +766,8 @@ mod tests {
 
         let query_ast = parse_query(input).expect("Query parsing failed");
 
-        assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
-        let match_clause = query_ast.match_clause.unwrap();
+        assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
+        let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
             path_variable: None,
             path_patterns: vec![
@@ -897,8 +898,8 @@ mod tests {
 
         let query_ast = parse_query(input).expect("Query parsing failed");
 
-        assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
-        let match_clause = query_ast.match_clause.unwrap();
+        assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
+        let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
             path_variable: None,
             path_patterns: vec![PathPattern::Node(NodePattern {
@@ -988,8 +989,8 @@ mod tests {
 
         let query_ast = parse_query(input).expect("Query parsing failed");
 
-        assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
-        let match_clause = query_ast.match_clause.unwrap();
+        assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
+        let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
             path_variable: None,
             path_patterns: vec![PathPattern::Node(NodePattern {
@@ -1059,8 +1060,8 @@ mod tests {
 
         let query_ast = parse_query(input).expect("Query parsing failed");
 
-        assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
-        let match_clause = query_ast.match_clause.unwrap();
+        assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
+        let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
             path_variable: None,
             path_patterns: vec![PathPattern::Node(NodePattern {
@@ -1145,8 +1146,8 @@ mod tests {
 
         let query_ast = parse_query(input).expect("Query parsing failed");
 
-        assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
-        let match_clause = query_ast.match_clause.unwrap();
+        assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
+        let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
             path_variable: None,
             path_patterns: vec![PathPattern::Node(NodePattern {
@@ -1268,8 +1269,8 @@ mod tests {
         let query_ast = parse_query(input).expect("Query parsing failed");
 
         // --- MATCH clause ---
-        assert!(query_ast.match_clause.is_some(), "Expected MATCH clause");
-        let match_clause = query_ast.match_clause.unwrap();
+        assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
+        let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
             path_variable: None,
             path_patterns: vec![PathPattern::Node(NodePattern {

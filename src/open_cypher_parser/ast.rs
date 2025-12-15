@@ -30,7 +30,7 @@ pub struct UnionClause<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct OpenCypherQueryAst<'a> {
     pub use_clause: Option<UseClause<'a>>,
-    pub match_clause: Option<MatchClause<'a>>,
+    pub match_clauses: Vec<MatchClause<'a>>, // Support multiple MATCH clauses in sequence
     pub optional_match_clauses: Vec<OptionalMatchClause<'a>>,
     pub call_clause: Option<CallClause<'a>>,
     pub unwind_clause: Option<UnwindClause<'a>>,
@@ -580,8 +580,10 @@ impl fmt::Display for OpenCypherQueryAst<'_> {
         if let Some(ref u) = self.use_clause {
             writeln!(f, "├── UseClause: {:#?}", u)?;
         }
-        if let Some(ref m) = self.match_clause {
-            writeln!(f, "├── MatchClause: {:#?}", m)?;
+        if !self.match_clauses.is_empty() {
+            for (i, m) in self.match_clauses.iter().enumerate() {
+                writeln!(f, "├── MatchClause[{}]: {:#?}", i, m)?;
+            }
         }
         if !self.optional_match_clauses.is_empty() {
             for (i, opt_match) in self.optional_match_clauses.iter().enumerate() {

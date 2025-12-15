@@ -457,7 +457,6 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 3: Sequential MATCH (same node reused)
     # -------------------------------------------------------------------------
     
-    @pytest.mark.skip(reason="Sequential MATCH patterns need additional implementation - cross-branch JOIN detection works but sequential MATCH semantics differ")
     def test_sequential_match_same_node(self, setup_zeek_merged):
         """
         Sequential MATCH with same node variable reused.
