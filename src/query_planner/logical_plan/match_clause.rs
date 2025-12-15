@@ -1751,10 +1751,15 @@ fn traverse_connected_pattern_with_mode<'a>(
         }
         // not connected with existing nodes
         else {
-            // if two comma separated patterns found and they are not connected to each other i.e. there is no common node alias between them then throw error.
+            // if two comma separated patterns found and they are not connected to each other i.e. there is no common node alias between them
+            // Allow this - it will create a CartesianProduct.
+            // If WHERE clause has predicates connecting them (e.g., srcip1.ip = srcip2.ip), those will be processed later
+            // and can be converted to proper JOINs by optimizer passes.
             if pathpattern_idx > 0 {
-                // throw error
-                return Err(LogicalPlanError::DisconnectedPatternFound);
+                log::info!(
+                    "Disconnected comma pattern detected at index {}. Creating CartesianProduct. WHERE clause may contain connecting predicates.",
+                    pathpattern_idx
+                );
             }
 
             crate::debug_print!("=== CHECKING EXISTING PLAN ===");

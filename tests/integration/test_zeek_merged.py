@@ -511,7 +511,6 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 5: Predicate-based correlation
     # -------------------------------------------------------------------------
     
-    @pytest.mark.skip(reason="Different variable names for same node (srcip1/srcip2) treated as disconnected pattern - needs variable aliasing support")
     def test_predicate_correlation(self, setup_zeek_merged):
         """
         Predicate-based correlation using WHERE clause.
