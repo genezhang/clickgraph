@@ -102,8 +102,6 @@ graph_schema:
         id: id
         name: name
         url: url
-        name: name
-        url: url
 
     # -------------------------------------------------------------------------
     # TagClass - hierarchical classification of Tags
@@ -116,8 +114,6 @@ graph_schema:
         id: id
         name: name
         url: url
-        name: name
-        url: url
 
     # -------------------------------------------------------------------------
     # Place - geographic location (City, Country, Continent)
@@ -128,9 +124,6 @@ graph_schema:
       node_id: id
       property_mappings:
         id: id
-        name: name
-        url: url
-        type: type
         name: name
         url: url
         type: type
@@ -147,8 +140,6 @@ graph_schema:
         id: id
         name: name
         url: url
-        name: name
-        url: url
 
     - label: Country
       database: ldbc
@@ -158,8 +149,6 @@ graph_schema:
         id: id
         name: name
         url: url
-        name: name
-        url: url
 
     - label: Continent
       database: ldbc
@@ -167,8 +156,6 @@ graph_schema:
       node_id: id
       property_mappings:
         id: id
-        name: name
-        url: url
         name: name
         url: url
 
@@ -184,9 +171,6 @@ graph_schema:
         name: name
         url: url
         type: type
-        name: name
-        url: url
-        type: type
 
     - label: University
       database: ldbc
@@ -196,8 +180,6 @@ graph_schema:
         id: id
         name: name
         url: url
-        name: name
-        url: url
 
     - label: Company
       database: ldbc
@@ -205,8 +187,6 @@ graph_schema:
       node_id: id
       property_mappings:
         id: id
-        name: name
-        url: url
         name: name
         url: url
 
@@ -232,7 +212,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
       database: ldbc
-      table: Person_isLocatedIn_Place
+      table: Person_isLocatedIn_City
       from_id: PersonId
       to_id: CityId
       from_node: Person
@@ -258,7 +238,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: STUDY_AT
       database: ldbc
-      table: Person_studyAt_Organisation
+      table: Person_studyAt_University
       from_id: PersonId
       to_id: UniversityId
       from_node: Person
@@ -272,7 +252,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: WORK_AT
       database: ldbc
-      table: Person_workAt_Organisation
+      table: Person_workAt_Company
       from_id: PersonId
       to_id: CompanyId
       from_node: Person
@@ -321,22 +301,9 @@ graph_schema:
         creationDate: creationDate
 
     # -------------------------------------------------------------------------
-    # Message HAS_CREATOR Person (unified view for polymorphic Message node)
+    # Post HAS_CREATOR Person
     # -------------------------------------------------------------------------
     - type: HAS_CREATOR
-      database: ldbc
-      table: Message_hasCreator_Person
-      from_id: MessageId
-      to_id: PersonId
-      from_node: Message
-      to_node: Person
-      property_mappings:
-        creationDate: creationDate
-
-    # -------------------------------------------------------------------------
-    # Post HAS_CREATOR Person (specific - use HAS_CREATOR for Message queries)
-    # -------------------------------------------------------------------------
-    - type: POST_HAS_CREATOR
       database: ldbc
       table: Post_hasCreator_Person
       from_id: PostId
@@ -437,21 +404,6 @@ graph_schema:
       property_mappings:
         creationDate: creationDate
         joinDate: joinDate
-
-    # -------------------------------------------------------------------------
-    # Message HAS_TAG Tag (unified view for polymorphic Message node)
-    # This is the proper relationship for (Message)-[:HAS_TAG]->(Tag) queries
-    # Uses Message_hasTag_Tag view which unions Post and Comment edges
-    # -------------------------------------------------------------------------
-    - type: HAS_TAG
-      database: ldbc
-      table: Message_hasTag_Tag
-      from_id: MessageId
-      to_id: TagId
-      from_node: Message
-      to_node: Tag
-      property_mappings:
-        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Forum HAS_TAG Tag

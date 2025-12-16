@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     open_cypher_parser::ast,
     query_planner::{
-        logical_expr::{Column, LogicalExpr, Operator, OperatorApplication, Property},
+        logical_expr::{Column, LogicalExpr, Operator, OperatorApplication, Property, PropertyAccess, TableAlias},
         logical_plan::{
             errors::LogicalPlanError,
             plan_builder::LogicalPlanResult,
@@ -12,6 +12,7 @@ use crate::{
         plan_ctx::{PlanCtx, TableCtx},
     },
 };
+use crate::graph_catalog::expression_parser::PropertyValue;
 
 use super::{generate_id, ViewScan};
 use crate::graph_catalog::graph_schema::GraphSchema;
@@ -1200,7 +1201,7 @@ fn generate_relationship_center(
     }
 }
 
-fn convert_properties(props: Vec<Property>) -> LogicalPlanResult<Vec<LogicalExpr>> {
+fn convert_properties(props: Vec<Property>, node_alias: &str) -> LogicalPlanResult<Vec<LogicalExpr>> {
     let mut extracted_props: Vec<LogicalExpr> = vec![];
 
     for prop in props {
@@ -1209,7 +1210,10 @@ fn convert_properties(props: Vec<Property>) -> LogicalPlanResult<Vec<LogicalExpr
                 let op_app = LogicalExpr::OperatorApplicationExp(OperatorApplication {
                     operator: Operator::Equal,
                     operands: vec![
-                        LogicalExpr::Column(Column(property_kvpair.key)),
+                        LogicalExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(node_alias.to_string()),
+                            column: PropertyValue::Column(property_kvpair.key.to_string()),
+                        }),
                         property_kvpair.value,
                     ],
                 });
@@ -1223,8 +1227,8 @@ fn convert_properties(props: Vec<Property>) -> LogicalPlanResult<Vec<LogicalExpr
 }
 
 fn convert_properties_to_operator_application(plan_ctx: &mut PlanCtx) -> LogicalPlanResult<()> {
-    for (_, table_ctx) in plan_ctx.get_mut_alias_table_ctx_map().iter_mut() {
-        let mut extracted_props = convert_properties(table_ctx.get_and_clear_properties())?;
+    for (alias, table_ctx) in plan_ctx.get_mut_alias_table_ctx_map().iter_mut() {
+        let mut extracted_props = convert_properties(table_ctx.get_and_clear_properties(), alias)?;
         table_ctx.append_filters(&mut extracted_props);
     }
     Ok(())
@@ -1352,7 +1356,37 @@ fn traverse_connected_pattern_with_mode<'a>(
         let rel_labels = match rel.labels.as_ref() {
             Some(labels) => {
                 // Explicit labels provided: [:TYPE1|TYPE2]
-                Some(labels.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                // Auto-expand generic relationship names (e.g., HAS_TAG → POST_HAS_TAG|COMMENT_HAS_TAG)
+                // with semantic filtering based on node types
+                let graph_schema = plan_ctx.schema();
+                let mut expanded_labels = Vec::new();
+                
+                // Get node labels for semantic expansion
+                let from_label = start_node_label.as_deref();
+                let to_label = end_node_label.as_deref();
+                
+                for label in labels.iter() {
+                    let variants = graph_schema.expand_generic_relationship_type(
+                        label,
+                        from_label,
+                        to_label,
+                    );
+                    if variants.is_empty() {
+                        // No expansion found, use original label (will fail later if truly missing)
+                        expanded_labels.push(label.to_string());
+                    } else {
+                        // Add all expanded variants
+                        expanded_labels.extend(variants);
+                    }
+                }
+                
+                // Deduplicate in case of overlapping expansions
+                let unique_labels: Vec<String> = {
+                    let mut seen = std::collections::HashSet::new();
+                    expanded_labels.into_iter().filter(|l| seen.insert(l.clone())).collect()
+                };
+                
+                Some(unique_labels)
             }
             None => {
                 // Anonymous edge pattern: [] (no type specified)

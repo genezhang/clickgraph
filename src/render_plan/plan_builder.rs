@@ -6361,11 +6361,40 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
 
                 // Convert from logical_plan::Join to render_plan::Join
-                graph_joins
-                    .joins
-                    .iter()
-                    .map(|j| j.clone().try_into())
-                    .collect::<Result<Vec<Join>, RenderBuildError>>()?
+                // CRITICAL FIX: Ensure unique table aliases when same table appears multiple times
+                // This fixes bidirectional patterns where t37 appears twice causing ClickHouse error:
+                // "Multiple table expressions with same alias"
+                let mut joins: Vec<Join> = Vec::new();
+                let mut used_aliases: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+                
+                for logical_join in &graph_joins.joins {
+                    let mut render_join: Join = logical_join.clone().try_into()?;
+                    
+                    // Check if this alias has been used before
+                    let count = used_aliases.entry(render_join.table_alias.clone()).or_insert(0);
+                    *count += 1;
+                    
+                    // If this is a duplicate (count > 1), append a unique suffix
+                    if *count > 1 {
+                        let original_alias = render_join.table_alias.clone();
+                        render_join.table_alias = format!("{}_{}", original_alias, *count - 1);
+                        
+                        // Also update references to this alias in the join conditions
+                        for join_cond in &mut render_join.joining_on {
+                            for operand in &mut join_cond.operands {
+                                if let RenderExpr::PropertyAccessExp(ref mut prop) = operand {
+                                    if prop.table_alias.0 == original_alias {
+                                        prop.table_alias = TableAlias(render_join.table_alias.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    joins.push(render_join);
+                }
+                
+                joins
             }
             LogicalPlan::GraphRel(graph_rel) => {
                 // FIX: GraphRel must generate JOINs for the relationship traversal

@@ -106,7 +106,7 @@ QUERIES = {
     
     "IC2": """
         MATCH (:Person {id:$personId})-[:KNOWS]-(friend:Person)<-[:HAS_CREATOR]-(message:Message)
-        WHERE message.creationDate <= $maxDate
+        WHERE message.creationDate <= toUnixTimestamp64Milli(parseDateTime64BestEffort($maxDate, 3))
         RETURN friend.id AS personId, friend.firstName AS personFirstName,
                friend.lastName AS personLastName,
                message.id AS messageId, coalesce(message.content, message.imageFile) AS messageContent,
@@ -131,7 +131,7 @@ QUERIES = {
     # === BUSINESS INTELLIGENCE (12 work directly) ===
     "BI1": """
         MATCH (message:Message)
-        WHERE message.creationDate < $date
+        WHERE message.creationDate < toUnixTimestamp64Milli(parseDateTime64BestEffort($date, 3))
         WITH message, message:Comment AS isComment
         RETURN count(message) AS messageCount
     """,
@@ -139,9 +139,9 @@ QUERIES = {
     "BI2": """
         MATCH (tag:Tag {name:$tag})
         OPTIONAL MATCH (message1:Message)-[:HAS_TAG]->(tag)
-        WHERE message1.creationDate > $date1 AND message1.creationDate < $date2
+        WHERE message1.creationDate > toUnixTimestamp64Milli(parseDateTime64BestEffort($date1, 3)) AND message1.creationDate < toUnixTimestamp64Milli(parseDateTime64BestEffort($date2, 3))
         OPTIONAL MATCH (message2:Message)-[:HAS_TAG]->(tag)
-        WHERE message2.creationDate > $date2 AND message2.creationDate < $date3
+        WHERE message2.creationDate > toUnixTimestamp64Milli(parseDateTime64BestEffort($date2, 3)) AND message2.creationDate < toUnixTimestamp64Milli(parseDateTime64BestEffort($date3, 3))
         RETURN count(DISTINCT message1) AS countMonth1,
                count(DISTINCT message2) AS countMonth2,
                abs(count(DISTINCT message1) - count(DISTINCT message2)) AS diff
@@ -150,13 +150,13 @@ QUERIES = {
     "BI3": """
         MATCH (country:Country {name:$country})<-[:IS_PART_OF]-(:City)<-[:IS_LOCATED_IN]-(person:Person)
         MATCH (person)<-[:HAS_CREATOR]-(message:Message)-[:HAS_TAG]->(tag:Tag)-[:HAS_TYPE]->(tagClass:TagClass {name:$tagClass})
-        WHERE message.creationDate >= $startDate AND message.creationDate < $endDate
+        WHERE message.creationDate >= toUnixTimestamp64Milli(parseDateTime64BestEffort($startDate, 3)) AND message.creationDate < toUnixTimestamp64Milli(parseDateTime64BestEffort($endDate, 3))
         RETURN count(DISTINCT message) AS messageCount, count(DISTINCT person) AS personCount
     """,
     
     "BI5": """
         MATCH (person:Person)<-[:HAS_CREATOR]-(message:Message)-[:HAS_TAG]->(tag:Tag)
-        WHERE message.creationDate >= $startDate AND message.creationDate < $endDate
+        WHERE message.creationDate >= toUnixTimestamp64Milli(parseDateTime64BestEffort($startDate, 3)) AND message.creationDate < toUnixTimestamp64Milli(parseDateTime64BestEffort($endDate, 3))
         RETURN person.id AS personId, count(DISTINCT message) AS messageCount, count(DISTINCT tag) AS tagCount
         ORDER BY messageCount DESC, personId ASC
         LIMIT 100
