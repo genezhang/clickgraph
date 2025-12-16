@@ -22,7 +22,12 @@ pub fn try_get_client() -> Option<Client> {
             .with_option("join_use_nulls", "1") // Return NULL for unmatched LEFT JOIN columns
             .with_option("allow_experimental_json_type", "1")
             .with_option("input_format_binary_read_json_as_string", "1")
-            .with_option("output_format_binary_write_json_as_string", "1"),
+            .with_option("output_format_binary_write_json_as_string", "1")
+            // Query safety limits to prevent hanging/OOM on large result sets
+            .with_option("max_execution_time", "60") // 60 second query timeout
+            .with_option("max_result_rows", "1000000") // Max 1M rows per query
+            .with_option("max_result_bytes", "1073741824") // Max 1GB result size
+            .with_option("result_overflow_mode", "throw"), // Throw error instead of truncating
     )
 }
 

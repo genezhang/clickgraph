@@ -20,6 +20,15 @@ use crate::{
 
 use super::view_resolver::ViewResolver;
 
+/// Strip database prefix from table name for CTE names
+/// CTEs cannot have database prefixes in ClickHouse
+fn strip_database_prefix(table_name: &str) -> String {
+    table_name
+        .rsplit_once('.')
+        .map(|(_, table)| table.to_string())
+        .unwrap_or_else(|| table_name.to_string())
+}
+
 #[derive(Debug, Clone)]
 pub struct GraphContext<'a> {
     pub left: GraphNodeContext<'a>,
@@ -186,7 +195,9 @@ pub fn get_graph_context<'a>(
     // For nodes whose properties are available from the edge table (via from_node_properties/to_node_properties),
     // use the edge table instead of the node's "primary" table.
     // This handles cases where node data is denormalized onto edge tables.
-    let rel_cte_name = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+    // Note: CTE names must NOT have database prefix for ClickHouse compatibility
+    let rel_table_full = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+    let rel_cte_name = strip_database_prefix(&rel_table_full);
 
     // Left node: check if this alias references a CTE (from WITH clause export)
     let left_cte_name = if let Some(cte_name) = left_ctx.get_cte_name() {
@@ -198,7 +209,9 @@ pub fn get_graph_context<'a>(
         log::info!("🔍 graph_context: LEFT alias '{}' uses edge properties: '{}'", left_alias, rel_cte_name);
         rel_cte_name.clone()
     } else {
-        let base_table = format!("{}.{}", left_schema.database, left_schema.table_name);
+        // Base table name - strip database prefix for CTE compatibility
+        let base_table_full = format!("{}.{}", left_schema.database, left_schema.table_name);
+        let base_table = strip_database_prefix(&base_table_full);
         log::info!("🔍 graph_context: LEFT alias '{}' uses base table: '{}'", left_alias, base_table);
         base_table
     };
@@ -210,7 +223,9 @@ pub fn get_graph_context<'a>(
         cte_name.clone()
     } else if right_label == "$any" {
         // Polymorphic node - doesn't matter, won't be JOINed directly
-        let base_table = format!("{}.{}", right_schema.database, right_schema.table_name);
+        // But strip database prefix for consistency
+        let base_table_full = format!("{}.{}", right_schema.database, right_schema.table_name);
+        let base_table = strip_database_prefix(&base_table_full);
         log::info!("🔍 graph_context: RIGHT alias '{}' is polymorphic, using: '{}'", right_alias, base_table);
         base_table
     } else if edge_has_node_properties(rel_schema, false) {
@@ -218,7 +233,9 @@ pub fn get_graph_context<'a>(
         log::info!("🔍 graph_context: RIGHT alias '{}' uses edge properties: '{}'", right_alias, rel_cte_name);
         rel_cte_name.clone()
     } else {
-        let base_table = format!("{}.{}", right_schema.database, right_schema.table_name);
+        // Base table name - strip database prefix for CTE compatibility
+        let base_table_full = format!("{}.{}", right_schema.database, right_schema.table_name);
+        let base_table = strip_database_prefix(&base_table_full);
         log::info!("🔍 graph_context: RIGHT alias '{}' uses base table: '{}'", right_alias, base_table);
         base_table
     };

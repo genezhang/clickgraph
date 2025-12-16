@@ -38,6 +38,7 @@ DEFAULT_PARAMS = {
     "maxPathDistance": 4,
     "limit": 20,
     "date": iso_to_epoch("2012-01-01T00:00:00.000"),
+    "datetime": iso_to_epoch("2011-12-01T00:00:00.000"),  # Used by BI-1
     "date1": iso_to_epoch("2011-11-01T00:00:00.000"),
     "date2": iso_to_epoch("2011-12-01T00:00:00.000"),
     "date3": iso_to_epoch("2012-01-01T00:00:00.000"),

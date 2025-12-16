@@ -43,6 +43,15 @@ use super::CteGenerationContext;
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
 
+/// Strip database prefix from table name for use in CTE names.
+/// Converts "ldbc.Comment" -> "Comment", "Message" -> "Message"
+fn strip_database_prefix(table_name: &str) -> String {
+    table_name
+        .rsplit_once('.')
+        .map(|(_, table)| table.to_string())
+        .unwrap_or_else(|| table_name.to_string())
+}
+
 /// Get the anchor alias from a logical plan (for OPTIONAL MATCH join ordering).
 /// The anchor is the node that's in the FROM clause of the outer query.
 fn get_anchor_alias_from_plan(plan: &Arc<LogicalPlan>) -> Option<String> {
@@ -4783,7 +4792,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 let empty_schema =
                     GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
                 let render_cte = Cte {
-                    cte_name: logical_cte.name.clone(),
+                    cte_name: strip_database_prefix(&logical_cte.name),
                     content: super::CteContent::Structured(
                         logical_cte.input.to_render_plan(&empty_schema)?,
                     ),
@@ -5461,7 +5470,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         );
                         return Ok(Some(FromTable::new(Some(ViewTableRef {
                             source: first_graph_rel.center.clone(),
-                            name: scan.source_table.clone(),
+                            name: strip_database_prefix(&scan.source_table),
                             alias: Some(first_graph_rel.alias.clone()),
                             use_final: scan.use_final,
                         }))));
@@ -5668,7 +5677,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                         source: std::sync::Arc::new(LogicalPlan::GraphNode(
                                             left_node.clone(),
                                         )),
-                                        name: scan.source_table.clone(),
+                                        name: strip_database_prefix(&scan.source_table),
                                         alias: Some(left_node.alias.clone()),
                                         use_final: scan.use_final,
                                     }))));
@@ -5688,7 +5697,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                         source: std::sync::Arc::new(LogicalPlan::GraphNode(
                                             right_node.clone(),
                                         )),
-                                        name: scan.source_table.clone(),
+                                        name: strip_database_prefix(&scan.source_table),
                                         alias: Some(right_node.alias.clone()),
                                         use_final: scan.use_final,
                                     }))));
@@ -5729,7 +5738,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 source: std::sync::Arc::new(LogicalPlan::GraphNode(
                                     graph_node.clone(),
                                 )),
-                                name: scan.source_table.clone(),
+                                name: strip_database_prefix(&scan.source_table),
                                 alias: Some(graph_node.alias.clone()),
                                 use_final: scan.use_final,
                             };
@@ -10333,7 +10342,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             );
                             final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
                                 source: graph_node.input.clone(),
-                                name: vs.source_table.clone(),
+                                name: strip_database_prefix(&vs.source_table),
                                 alias: Some(graph_node.alias.clone()),
                                 use_final: vs.use_final,
                             })));
