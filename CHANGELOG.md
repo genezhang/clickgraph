@@ -44,6 +44,13 @@
 
 ### 🐛 Bug Fixes
 
+- **GROUP BY and ORDER BY Expression Rewriting** - Fixed WITH+MATCH queries with GROUP BY using wrong column names (December 15, 2025)
+  - **Problem**: `MATCH ... WITH b MATCH (b)-[:FOLLOWS]->(c) RETURN b.name, count(c) GROUP BY b.name` failed with "Identifier 'b.full_name' cannot be resolved"
+  - **Root Cause**: GROUP BY used DB column names (full_name) instead of CTE column names (b_name)
+  - **Solution**: Extended expression rewriting to cover GROUP BY and ORDER BY in both intermediate CTEs and final queries
+  - **Impact**: WITH+MATCH aggregation queries now work correctly
+  - **Files**: `src/render_plan/plan_builder.rs`
+
 - **Multi-Level WITH CTE Expression Rewriting** - Fixed 4+ level WITH queries generating invalid SQL (December 15, 2025)
   - **Problem**: `WITH a ... WITH a, b ... WITH b, c ... WITH c, d` generated invalid JOIN conditions like `a.a_id` instead of `a.a_user_id`
   - **Error**: "Identifier 'a.a_id' cannot be resolved from subquery with name a"

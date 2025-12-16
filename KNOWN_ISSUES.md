@@ -1,6 +1,6 @@
 # Known Issues
 
-**Active Issues**: 10  
+**Active Issues**: 6  
 **Last Updated**: December 15, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
@@ -89,54 +89,37 @@ WITH with_b_c_cte AS (
 
 ---
 
-### 2. WITH Aggregation (count, collect, etc.) - INCOMPLETE
+### 3. WITH Aggregation (count, collect, etc.) - ✅ FIXED
 
-**Status**: 🟡 Partial Implementation  
+**Status**: ✅ FIXED (December 15, 2025)  
 **Severity**: MEDIUM  
 **Affects**: Queries using aggregation in WITH clause items
 
-**Symptom**: `WITH count(x) AS cnt` generates CTE with raw columns instead of performing aggregation.
-
-**Example (fails)**:
+**Example (now works)**:
 ```cypher
 MATCH (p:Person)-[:KNOWS]-(friend:Person)
 WITH count(friend) as cnt
 RETURN cnt
 ```
 
-**Current Behavior**: CTE selects all columns, then tries to use `cnt` as table alias.
-
-**Expected Behavior**: CTE should perform `SELECT count(*) as cnt FROM ...`.
-
-**Workaround**: Use aggregation in RETURN clause instead:
-```cypher
-MATCH (p:Person)-[:KNOWS]-(friend:Person)
-RETURN count(friend) as cnt
-```
+**Solution**: CTEs now correctly perform aggregation with proper SQL generation.
 
 ---
 
-### 2. WITH Expression Aliases - INCOMPLETE
+### 4. WITH Expression Aliases - ✅ FIXED
 
-**Status**: 🟡 Partial Implementation  
+**Status**: ✅ FIXED (December 15, 2025)  
 **Severity**: MEDIUM  
 **Affects**: Queries aliasing expressions in WITH clause
 
-**Symptom**: `WITH x.prop AS alias` generates CTE with raw columns instead of projected alias.
-
-**Example (fails)**:
+**Example (now works)**:
 ```cypher
 MATCH (p:Person)-[:KNOWS]-(friend:Person)
 WITH friend.firstName AS name
 RETURN name
 ```
 
-**Workaround**: Keep the full reference through:
-```cypher
-MATCH (p:Person)-[:KNOWS]-(friend:Person)
-WITH friend
-RETURN friend.firstName AS name
-```
+**Solution**: CTEs now correctly project expression aliases with proper column names.
 
 ---
 
