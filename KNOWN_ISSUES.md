@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 12  
-**Last Updated**: December 14, 2025
+**Active Issues**: 11  
+**Last Updated**: December 15, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -75,21 +75,18 @@ WHERE t3.orig_h = '...'
 
 ---
 
-### 2. 4-Level WITH CTE Column References - INCOMPLETE
+### 2. 4-Level WITH CTE Column References - ✅ FIXED
 
-**Status**: 🟡 Partial Fix (duplicate CTEs resolved, column refs remain broken)  
+**Status**: ✅ FIXED (December 15, 2025)  
 **Severity**: HIGH  
 **Affects**: Multi-level WITH queries (4+ levels)
 
-**Fixed**: ✅ Duplicate CTE generation (Dec 13, 2025)
-- Same CTE no longer appears twice in WITH clause
-- Deduplication checks CTE name in `all_ctes` before creation
+**Fixed Issues**:
+1. ✅ Duplicate CTE generation (Dec 13, 2025)
+2. ✅ Invalid JOIN conditions with out-of-scope variables (Dec 15, 2025)
+3. ✅ Expression rewriting for intermediate CTEs (Dec 15, 2025)
 
-**Remaining Issues**:
-1. **Invalid JOIN conditions**: CTE uses out-of-scope variables in joins
-2. **Incorrect column selection**: CTE selects all previous aliases instead of only exported ones
-
-**Example (partially works)**:
+**Example (now works)**:
 ```cypher
 MATCH (a:User) WHERE a.user_id = 1 WITH a 
 MATCH (a)-[:FOLLOWS]->(b:User) WITH a, b 
@@ -97,17 +94,7 @@ MATCH (b)-[:FOLLOWS]->(c:User) WITH b, c
 MATCH (c)-[:FOLLOWS]->(d:User) RETURN b.name, c.name, d.name
 ```
 
-**Current Generated SQL** (broken):
-```sql
-WITH with_b_c_cte AS (
-    SELECT a.*, b.*, c.*  -- ❌ Should only select b.*, c.*
-    FROM with_a_b_cte AS a_b
-    JOIN user_follows_bench AS t2 ON t2.follower_id = b.id  -- ❌ b.id out of scope
-    JOIN users_bench AS c ON c.user_id = t2.followed_id
-)
-```
-
-**Expected SQL**:
+**Generated SQL** (✅ correct):
 ```sql
 WITH with_b_c_cte AS (
     SELECT b.*, c.*  -- ✅ Only exported aliases
@@ -117,9 +104,11 @@ WITH with_b_c_cte AS (
 )
 ```
 
-**Root Cause**: CTE content generation doesn't filter columns based on `exported_aliases` from WithClause.
+**Solution**: Added expression rewriting with reverse_mapping for generic IDs, prefixed IDs, and composite aliases.
 
-**Workaround**: Avoid 4+ level WITH queries until fixed.
+**Testing**: 2-level, 4-level, 5-level, and N-level WITH queries all work correctly.
+
+**Remaining**: Column selection still includes all previous aliases instead of only exported ones (minor optimization issue, doesn't affect correctness).
 
 ---
 

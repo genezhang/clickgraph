@@ -44,6 +44,19 @@
 
 ### 🐛 Bug Fixes
 
+- **Multi-Level WITH CTE Expression Rewriting** - Fixed 4+ level WITH queries generating invalid SQL (December 15, 2025)
+  - **Problem**: `WITH a ... WITH a, b ... WITH b, c ... WITH c, d` generated invalid JOIN conditions like `a.a_id` instead of `a.a_user_id`
+  - **Error**: "Identifier 'a.a_id' cannot be resolved from subquery with name a"
+  - **Root Cause**: Expressions in intermediate CTEs weren't rewritten to use CTE column names
+  - **Solution**: 
+    - Added expression rewriting for each intermediate CTE as it's built
+    - Build reverse_mapping with generic ID (`(a, 'id')` → `'a_user_id'`), prefixed ID (`(a, 'a_id')` → `'a_user_id'`), and composite alias mappings (`(a_b, 'b_id')` → `'b_user_id'`)
+    - Rewrite SELECT, JOIN, WHERE, HAVING, ORDER BY expressions before adding CTE
+  - **Impact**: 2-level, 4-level, 5-level, and N-level WITH queries now work correctly
+  - **Test**: `test_4level_with.sh` passes
+  - **Fixes**: GitHub Issue #2
+  - **Files**: `src/render_plan/plan_builder.rs`
+
 - **Coupled Edge Alias Resolution** - Fixed SQL generation for patterns with multiple edges in same table (December 14, 2025)
   - **Problem**: `MATCH (src:IP)-[:REQUESTED]->(d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)` failed with SQL error
   - **Error**: "Unknown expression identifier 't1.orig_h' in scope SELECT ... FROM test_zeek.dns_log AS t2. Maybe you meant: ['t2.orig_h']"
