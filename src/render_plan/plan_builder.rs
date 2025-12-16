@@ -5739,6 +5739,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     // WITH...MATCH PATTERN: Check for CartesianProduct (disconnected pattern after WITH clause)
                     // The CartesianProduct combines WITH CTE with new MATCH pattern
                     // Need to extract FROM from the right side (new MATCH) since left side is CTE
+                    //
+                    // IMPORTANT: Only treat as WITH...MATCH if left side is actually a CTE reference!
+                    // Comma patterns like (a:User), (b:User) also create CartesianProduct but both sides are regular nodes
                     fn find_cartesian_product(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::CartesianProduct> {
                         match plan {
                             LogicalPlan::CartesianProduct(cp) => Some(cp),
@@ -5747,11 +5750,35 @@ impl RenderPlanBuilder for LogicalPlan {
                             _ => None,
                         }
                     }
+                    
+                    fn is_cte_reference(plan: &LogicalPlan) -> bool {
+                        match plan {
+                            LogicalPlan::ViewScan(vs) => vs.source_table.starts_with("with_"),
+                            LogicalPlan::GraphNode(gn) => is_cte_reference(&gn.input),
+                            LogicalPlan::Projection(p) => is_cte_reference(&p.input),
+                            LogicalPlan::Filter(f) => is_cte_reference(&f.input),
+                            _ => false,
+                        }
+                    }
 
                     if let Some(cp) = find_cartesian_product(&graph_joins.input) {
-                        log::info!("🎯 WITH...MATCH: Found CartesianProduct, extracting FROM from right side (new MATCH after WITH)");
-                        // Right side should be the new MATCH pattern with actual table
-                        return cp.right.extract_from();
+                        // Check if this is a WITH...MATCH pattern (left side is CTE) or a comma pattern (both sides are regular nodes)
+                        if is_cte_reference(&cp.left) {
+                            log::info!("🎯 WITH...MATCH: Found CartesianProduct with CTE on left, extracting FROM from right side");
+                            // Right side should be the new MATCH pattern with actual table
+                            return cp.right.extract_from();
+                        } else {
+                            log::info!("🎯 COMMA PATTERN: Found CartesianProduct with regular nodes, using left as FROM");
+                            // Comma pattern: Both sides are regular nodes
+                            // Use CartesianProduct's logic: left side becomes FROM, right becomes JOIN
+                            let left_from = cp.left.extract_from()?;
+                            if left_from.is_some() {
+                                return Ok(from_table_to_view_ref(left_from).map(|vr| FromTable::new(Some(vr))));
+                            } else {
+                                println!("CartesianProduct: Left side has no FROM, using right side");
+                                return Ok(from_table_to_view_ref(cp.right.extract_from()?).map(|vr| FromTable::new(Some(vr))));
+                            }
+                        }
                     }
 
                     return Ok(from_table_to_view_ref(None).map(|vr| FromTable::new(Some(vr))));
@@ -6320,6 +6347,18 @@ impl RenderPlanBuilder for LogicalPlan {
                     "DEBUG: graph_joins.joins.len() = {}",
                     graph_joins.joins.len()
                 );
+
+                // COMMA PATTERN FIX: If joins is empty, check if input is CartesianProduct
+                // For comma patterns like (a:User), (b:User), the analyzer doesn't generate joins
+                // but the CartesianProduct needs to generate the JOIN for the right side
+                if graph_joins.joins.is_empty() {
+                    if let LogicalPlan::Projection(proj) = graph_joins.input.as_ref() {
+                        if let LogicalPlan::CartesianProduct(_cp) = proj.input.as_ref() {
+                            println!("🎯 COMMA PATTERN: Empty joins with CartesianProduct input, delegating to input");
+                            return graph_joins.input.extract_joins();
+                        }
+                    }
+                }
 
                 // Convert from logical_plan::Join to render_plan::Join
                 graph_joins

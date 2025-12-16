@@ -2069,6 +2069,7 @@ fn traverse_node_pattern(
 
         // Normal case: single ViewScan wrapped in GraphNode
         let is_denorm = is_denormalized_scan(&scan);
+        let new_node_alias = node_alias.clone(); // Clone for logging
         let graph_node = GraphNode {
             input: scan,
             alias: node_alias,
@@ -2076,7 +2077,31 @@ fn traverse_node_pattern(
             is_denormalized: is_denorm,
             projected_columns: None,
         };
-        Ok(Arc::new(LogicalPlan::GraphNode(graph_node)))
+        let new_node_plan = Arc::new(LogicalPlan::GraphNode(graph_node));
+        
+        // Check if we need to create a CartesianProduct
+        // For comma patterns like (a:User), (b:User), we need CROSS JOIN
+        let has_existing_plan = match plan.as_ref() {
+            LogicalPlan::Empty => false,
+            _ => true,
+        };
+        
+        if has_existing_plan {
+            // Create CartesianProduct to combine existing plan with new node
+            // This generates: FROM existing_table CROSS JOIN new_node_table
+            log::info!(
+                "Creating CartesianProduct for comma pattern: existing plan + node '{}'",
+                new_node_alias
+            );
+            Ok(Arc::new(LogicalPlan::CartesianProduct(CartesianProduct {
+                left: plan.clone(),
+                right: new_node_plan,
+                is_optional: false,
+                join_condition: None,
+            })))
+        } else {
+            Ok(new_node_plan)
+        }
     }
 }
 
