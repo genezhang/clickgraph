@@ -112,11 +112,36 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
             format!("{}.{}", table_alias, prop.column.0.raw())
         }
         RenderExpr::OperatorApplicationExp(op) => {
-            let operands: Vec<String> = op
-                .operands
-                .iter()
-                .map(|operand| render_expr_to_sql_string(operand, alias_mapping))
-                .collect();
+            // Special handling for IS NULL / IS NOT NULL with wildcard property access (e.g., r.*)
+            // Convert r.* to r.from_id for null checks (LEFT JOIN produces NULL for all columns)
+            let operands: Vec<String> = if matches!(op.operator, Operator::IsNull | Operator::IsNotNull) 
+                && op.operands.len() == 1 
+                && matches!(&op.operands[0], RenderExpr::PropertyAccessExp(prop) if prop.column.0.raw() == "*")
+            {
+                // Extract the relationship alias and use from_id column instead of wildcard
+                if let RenderExpr::PropertyAccessExp(prop) = &op.operands[0] {
+                    let table_alias = alias_mapping
+                        .iter()
+                        .find(|(cypher, _)| *cypher == prop.table_alias.0)
+                        .map(|(_, cte)| cte.clone())
+                        .unwrap_or_else(|| prop.table_alias.0.clone());
+                    
+                    // Use from_id as the representative column for null check
+                    // (LEFT JOIN makes all columns NULL together, so checking one is sufficient)
+                    vec![format!("{}.from_id", table_alias)]
+                } else {
+                    op.operands
+                        .iter()
+                        .map(|operand| render_expr_to_sql_string(operand, alias_mapping))
+                        .collect()
+                }
+            } else {
+                op.operands
+                    .iter()
+                    .map(|operand| render_expr_to_sql_string(operand, alias_mapping))
+                    .collect()
+            };
+            
             match op.operator {
                 Operator::Equal => format!("{} = {}", operands[0], operands[1]),
                 Operator::NotEqual => format!("{} != {}", operands[0], operands[1]),
