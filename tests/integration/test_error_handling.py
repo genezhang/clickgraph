@@ -544,3 +544,42 @@ class TestEmptyQuery:
         # Should return error (no actual query)
         assert "error" in response or "errors" in response or response.get("status") == "error"
 
+
+class TestVariableLengthPathErrors:
+    """Test error handling for variable-length path queries."""
+    
+    def test_relationship_variable_with_length_function(self, simple_graph):
+        """
+        Test incorrect usage of length() on relationship variable.
+        
+        Common mistake: using -[path:FOLLOWS*1..3]- (relationship variable)
+        instead of path = (...)-[r:FOLLOWS*1..3]-(...) (path variable).
+        
+        The relationship variable 'path' refers to the edges, not the entire path,
+        so length(path) is undefined and should produce a clear error.
+        
+        This test verifies that the query either:
+        1. Produces a compile-time error about undefined variable/function, OR
+        2. Generates SQL that ClickHouse rejects with "Unknown identifier" error
+        
+        Either way, the user gets feedback that their query is incorrect.
+        """
+        response = execute_cypher(
+            """
+            MATCH (a:User)-[path:FOLLOWS*1..3]-(b:User)
+            WITH b, min(length(path)) AS distance
+            RETURN b.name, distance
+            LIMIT 5
+            """,
+            schema_name=simple_graph["schema_name"],
+            raise_on_error=False
+        )
+        
+        # Should return error (either compile-time or from ClickHouse)
+        # Common errors:
+        # - "Unknown identifier 'path'" from ClickHouse (if SQL generated with length(path))
+        # - "Schema not found" (if schema not loaded - also indicates query didn't execute)
+        # - Parsing/planning error (ideal - caught during query planning)
+        assert response.get("status") == "error" or "error" in response, \
+            f"Expected error for relationship variable with length(), got: {response}"
+

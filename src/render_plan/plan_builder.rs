@@ -1422,7 +1422,16 @@ fn build_chained_with_match_cte_plan(
                                             }
                                             _ => {
                                                 // Not a TableAlias, convert normally
-                                                let expr_result: Result<RenderExpr, _> = item.expression.clone().try_into();
+                                                // First, check if we need to rewrite path functions
+                                                // For variable-length paths, convert length(path) → hop_count, etc.
+                                                let logical_expr = if let Some(ref path_var_name) = get_path_variable(plan_to_render) {
+                                                    // Rewrite path functions in the logical expression BEFORE converting to RenderExpr
+                                                    rewrite_logical_path_functions(&item.expression, path_var_name)
+                                                } else {
+                                                    item.expression.clone()
+                                                };
+                                                
+                                                let expr_result: Result<RenderExpr, _> = logical_expr.try_into();
                                                 expr_result.ok().map(|expr| {
                                                     SelectItem {
                                                         expression: expr,

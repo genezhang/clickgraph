@@ -1116,6 +1116,84 @@ pub(super) fn rewrite_path_functions_with_table(
     }
 }
 
+/// Rewrite path function calls on LogicalExpr (before conversion to RenderExpr)
+/// This is used for WITH clause expressions that need path function rewriting
+/// Converts: length(p) → PropertyAccess(t, hop_count), nodes(p) → PropertyAccess(t, path_nodes)
+pub(super) fn rewrite_logical_path_functions(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    path_var_name: &str,
+) -> crate::query_planner::logical_expr::LogicalExpr {
+    use crate::query_planner::logical_expr::{LogicalExpr, ScalarFnCall, TableAlias, PropertyAccess};
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    
+    match expr {
+        LogicalExpr::ScalarFnCall(fn_call) => {
+            // Check if this is a path function call with the path variable as argument
+            if fn_call.args.len() == 1 {
+                if let LogicalExpr::TableAlias(TableAlias(alias)) = &fn_call.args[0] {
+                    if alias == path_var_name {
+                        // Convert path functions to CTE column references
+                        let column_name = match fn_call.name.as_str() {
+                            "length" => Some("hop_count"),
+                            "nodes" => Some("path_nodes"),
+                            "relationships" => Some("path_relationships"),
+                            _ => None,
+                        };
+
+                        if let Some(col_name) = column_name {
+                            // Generate PropertyAccess for the CTE column
+                            // Use "t" as the table alias (VLP CTE alias)
+                            return LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias("t".to_string()),
+                                column: PropertyValue::Column(col_name.to_string()),
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Recursively rewrite function arguments
+            let rewritten_args: Vec<LogicalExpr> = fn_call
+                .args
+                .iter()
+                .map(|arg| rewrite_logical_path_functions(arg, path_var_name))
+                .collect();
+
+            LogicalExpr::ScalarFnCall(ScalarFnCall {
+                name: fn_call.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        LogicalExpr::AggregateFnCall(agg) => {
+            // Recursively rewrite arguments for aggregate functions
+            let rewritten_args: Vec<LogicalExpr> = agg
+                .args
+                .iter()
+                .map(|arg| rewrite_logical_path_functions(arg, path_var_name))
+                .collect();
+
+            LogicalExpr::AggregateFnCall(crate::query_planner::logical_expr::AggregateFnCall {
+                name: agg.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        LogicalExpr::OperatorApplicationExp(op) => {
+            // Recursively rewrite operands
+            let rewritten_operands: Vec<LogicalExpr> = op
+                .operands
+                .iter()
+                .map(|operand| rewrite_logical_path_functions(operand, path_var_name))
+                .collect();
+
+            LogicalExpr::OperatorApplicationExp(crate::query_planner::logical_expr::OperatorApplication {
+                operator: op.operator.clone(),
+                operands: rewritten_operands,
+            })
+        }
+        _ => expr.clone(), // For other expression types, return as-is
+    }
+}
+
 /// Helper function to get node table name for a given alias
 pub(super) fn get_node_table_for_alias(alias: &str) -> String {
     // Try to get from global schema first (for production/benchmark)

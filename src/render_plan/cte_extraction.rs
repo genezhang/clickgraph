@@ -1603,6 +1603,16 @@ pub fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::Limit(limit) => get_path_variable(&limit.input),
         LogicalPlan::Cte(cte) => get_path_variable(&cte.input),
         LogicalPlan::Unwind(u) => get_path_variable(&u.input),
+        LogicalPlan::WithClause(wc) => get_path_variable(&wc.input),
+        LogicalPlan::Union(union_plan) => {
+            // Check first branch for path variable
+            // All branches should have the same path variable if any
+            if !union_plan.inputs.is_empty() {
+                get_path_variable(&union_plan.inputs[0])
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
