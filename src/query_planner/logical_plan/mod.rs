@@ -456,6 +456,12 @@ pub struct GraphRel {
     pub labels: Option<Vec<String>>, // Relationship type labels for [:TYPE1|TYPE2] patterns
     pub is_optional: Option<bool>, // For OPTIONAL MATCH: marks this relationship as optional (LEFT JOIN)
     pub anchor_connection: Option<String>, // For OPTIONAL MATCH: the connection from base MATCH (keeps WHERE filters)
+    
+    /// CTE references for node connections
+    /// Maps node alias → CTE name for left_connection and right_connection
+    /// Example: {"b": "with_a_b_cte_1"} means left_connection="b" comes from CTE
+    /// Allows renderer to generate: a_b.b_user_id instead of b.user_id in JOINs
+    pub cte_references: std::collections::HashMap<String, String>,
 }
 
 /// Mode for shortest path queries
@@ -916,6 +922,7 @@ impl GraphRel {
                 labels: self.labels.clone(),
                 is_optional: self.is_optional,
                 anchor_connection: self.anchor_connection.clone(),
+            cte_references: std::collections::HashMap::new(),
             });
             Transformed::Yes(Arc::new(new_graph_rel))
         } else {

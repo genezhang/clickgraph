@@ -3789,6 +3789,7 @@ mod tests {
             labels,
             is_optional: None,
             anchor_connection: None,
+            cte_references: std::collections::HashMap::new(),
         }))
     }
 

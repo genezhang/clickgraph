@@ -19,6 +19,7 @@ use crate::{
             projected_columns_resolver::ProjectedColumnsResolver,
             query_validation::QueryValidation, schema_inference::SchemaInference,
             variable_resolver::VariableResolver, with_scope_splitter::WithScopeSplitter,
+            cte_reference_populator::CteReferencePopulator,
         },
         logical_plan::LogicalPlan,
         optimizer::{
@@ -32,6 +33,7 @@ use super::plan_ctx::PlanCtx;
 mod analyzer_pass;
 mod bidirectional_union;
 mod cte_column_resolver;
+mod cte_reference_populator;
 mod cte_schema_resolver;
 mod duplicate_scans_removing;
 pub mod errors;
@@ -181,9 +183,19 @@ pub fn intermediate_analyzing(
     // CRITICAL: Resolve variables AFTER scope splitting, BEFORE join inference
     // This transforms TableAlias("cnt") → PropertyAccessExp("cnt_cte", "cnt")
     // Making the renderer "dumb" - it only needs to emit SQL for resolved expressions
+    log::info!("🔍 ANALYZER: About to call VariableResolver.analyze()");
     let variable_resolver = VariableResolver::new();
     let transformed_plan = variable_resolver.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
+    log::info!("🔍 ANALYZER: VariableResolver.analyze() completed");
+
+    // CRITICAL: Populate GraphRel.cte_references AFTER VariableResolver
+    // This tells the renderer which node connections come from CTEs
+    log::info!("🔍 ANALYZER: About to call CteReferencePopulator.analyze()");
+    let cte_ref_populator = CteReferencePopulator::new();
+    let transformed_plan = cte_ref_populator.analyze(plan.clone(), plan_ctx)?;
+    let plan = transformed_plan.get_plan();
+    log::info!("🔍 ANALYZER: CteReferencePopulator.analyze() completed");
 
     let graph_join_inference = GraphJoinInference::new();
     let transformed_plan = graph_join_inference.analyze_with_graph_schema(

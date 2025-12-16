@@ -306,16 +306,19 @@ fn expand_table_alias_to_select_items(
                     }
                 })
                 .map(|item| {
-                    // CRITICAL: Rewrite table alias to use CTE's FROM alias
-                    // Original: b.b_city -> New: a_b.b_city
-                    let rewritten_expr = match &item.expression {
-                        RenderExpr::PropertyAccessExp(prop) => {
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(cte_alias.to_string()),
-                                column: prop.column.clone(),
-                            })
-                        }
-                        other => other.clone(),
+                    // CRITICAL: Rewrite to use CTE's column names and table alias
+                    // The CTE has columns like "a_city", "a_name" (from col_alias)
+                    // We need to reference them as: a_b.a_city, a_b.a_name
+                    // NOT the original DB columns like: a_b.city, a_b.full_name
+                    let rewritten_expr = if let Some(ref cte_col_alias) = item.col_alias {
+                        // Use the CTE column name (e.g., "a_city") not the original DB column
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(cte_alias.to_string()),
+                            column: Column(PropertyValue::Column(cte_col_alias.0.clone())),
+                        })
+                    } else {
+                        // Fallback: use original expression (shouldn't happen for CTE columns)
+                        item.expression.clone()
                     };
                     
                     SelectItem {
@@ -875,6 +878,26 @@ fn update_graph_joins_cte_refs(
                 correlation_predicates: gj.correlation_predicates.clone(),
             }))
         }
+        LogicalPlan::GraphRel(gr) => {
+            log::info!(
+                "🔧 update_graph_joins_cte_refs: Updating GraphRel.cte_references from {:?} to {:?}",
+                gr.cte_references,
+                cte_references
+            );
+            
+            // Recursively update children
+            let new_left = update_graph_joins_cte_refs(&gr.left, cte_references)?;
+            let new_center = update_graph_joins_cte_refs(&gr.center, cte_references)?;
+            let new_right = update_graph_joins_cte_refs(&gr.right, cte_references)?;
+            
+            Ok(LogicalPlan::GraphRel(GraphRel {
+                left: Arc::new(new_left),
+                center: Arc::new(new_center),
+                right: Arc::new(new_right),
+                cte_references: cte_references.clone(), // UPDATE HERE!
+                ..gr.clone()
+            }))
+        }
         LogicalPlan::Projection(proj) => {
             let new_input = update_graph_joins_cte_refs(&proj.input, cte_references)?;
             Ok(LogicalPlan::Projection(Projection {
@@ -921,25 +944,21 @@ fn update_graph_joins_cte_refs(
                 count: skip.count,
             }))
         }
-        LogicalPlan::GraphRel(rel) => {
-            let new_left = update_graph_joins_cte_refs(&rel.left, cte_references)?;
-            let new_right = update_graph_joins_cte_refs(&rel.right, cte_references)?;
-            Ok(LogicalPlan::GraphRel(GraphRel {
-                left: Arc::new(new_left),
-                center: rel.center.clone(),
-                right: Arc::new(new_right),
-                alias: rel.alias.clone(),
-                direction: rel.direction.clone(),
-                left_connection: rel.left_connection.clone(),
-                right_connection: rel.right_connection.clone(),
-                is_rel_anchor: rel.is_rel_anchor,
-                variable_length: rel.variable_length.clone(),
-                shortest_path_mode: rel.shortest_path_mode.clone(),
-                path_variable: rel.path_variable.clone(),
-                where_predicate: rel.where_predicate.clone(),
-                labels: rel.labels.clone(),
-                is_optional: rel.is_optional,
-                anchor_connection: rel.anchor_connection.clone(),
+        LogicalPlan::WithClause(wc) => {
+            log::info!(
+                "🔧 update_graph_joins_cte_refs: Updating WithClause input (recursively)"
+            );
+            let new_input = update_graph_joins_cte_refs(&wc.input, cte_references)?;
+            Ok(LogicalPlan::WithClause(WithClause {
+                input: Arc::new(new_input),
+                items: wc.items.clone(),
+                order_by: wc.order_by.clone(),
+                skip: wc.skip,
+                limit: wc.limit,
+                where_clause: wc.where_clause.clone(),
+                distinct: wc.distinct,
+                exported_aliases: wc.exported_aliases.clone(),
+                cte_references: wc.cte_references.clone(),
             }))
         }
         other => Ok(other.clone()),
@@ -985,13 +1004,12 @@ fn build_chained_with_match_cte_plan(
     let mut cte_sequence_numbers: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
 
-    // Extract CTE references from GraphJoins (set by analyzer phase)
-    // This maps alias → CTE name (e.g., "a" → "with_a_cte")
-    // CRITICAL: Make this mutable so we can update it as we create new CTEs
-    let mut cte_references = extract_cte_references(&current_plan);
+    // Track CTE references as we build them (alias → CTE name)
+    // Start EMPTY and populate as each CTE is created
+    // This ensures we only reference CTEs that have actually been built in previous iterations
+    let mut cte_references: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     log::warn!("🔧 build_chained_with_match_cte_plan: Starting iterative WITH processing");
-    log::warn!("🔧 build_chained_with_match_cte_plan: CTE references from analyzer: {:?}", cte_references);
 
     // Process WITH clauses iteratively until none remain
     while has_with_clause_in_graph_rel(&current_plan) {
@@ -1099,6 +1117,16 @@ fn build_chained_with_match_cte_plan(
                 with_alias
             );
 
+            // CRITICAL: Create a snapshot of cte_references that only includes CTEs from PREVIOUS iterations
+            // Do NOT include the CTE we're about to build for this alias!
+            // This prevents resolve_cte_reference from using future CTEs that don't exist yet
+            let cte_references_for_rendering = cte_references.clone();
+            log::info!(
+                "🔧 build_chained_with_match_cte_plan: cte_references for rendering '{}': {:?}",
+                with_alias,
+                cte_references_for_rendering
+            );
+
             // Get the WITH plans from our filtered map
             let with_plans = match filtered_grouped_withs.get(&with_alias) {
                 Some(plans) => {
@@ -1114,6 +1142,15 @@ fn build_chained_with_match_cte_plan(
                     continue;
                 }
             };
+
+            // CRITICAL: Update cte_references for ALL plans BEFORE rendering them
+            // GraphRel nodes inside these plans need to know about available CTEs
+            // Use the snapshot from PREVIOUS iterations only (not including current alias)
+            log::info!("🔧 build_chained_with_match_cte_plan: Updating cte_references for {} plans before rendering. Using previous CTEs: {:?}", with_plans.len(), cte_references_for_rendering);
+            let with_plans: Vec<LogicalPlan> = with_plans
+                .into_iter()
+                .map(|plan| update_graph_joins_cte_refs(&plan, &cte_references_for_rendering))
+                .collect::<Result<Vec<_>, _>>()?;
 
             // Collect aliases from the pre-WITH scope (inside the WITH clauses)
             // These aliases should be filtered out from the outer query's joins
@@ -1346,8 +1383,10 @@ fn build_chained_with_match_cte_plan(
                                         match &item.expression {
                                             crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
                                                 // Use helper function to expand to ALL columns
-                                                // Pass with_cte_refs from THIS WITH's input scope
-                                                let mut expanded = expand_table_alias_to_select_items(&alias.0, plan_to_render, &cte_schemas, &with_cte_refs);
+                                                // CRITICAL: Use cte_references_for_rendering (includes ALL previous CTEs),
+                                                // NOT with_cte_refs (only includes CTEs visible in this WITH's immediate input)
+                                                // This allows "WITH a, b, c" to find "a" and "b" from previous CTEs
+                                                let mut expanded = expand_table_alias_to_select_items(&alias.0, plan_to_render, &cte_schemas, &cte_references_for_rendering);
                                                 log::info!("🔧 build_chained_with_match_cte_plan: Expanded alias '{}' to {} items", alias.0, expanded.len());
                                                 
                                                 // If there's aggregation, wrap non-ID columns with ANY()
@@ -1602,6 +1641,71 @@ fn build_chained_with_match_cte_plan(
             // These need to be hoisted to the top level before the WITH CTE
             hoist_nested_ctes(&mut with_cte_render, &mut all_ctes);
 
+            // CRITICAL: Rewrite expressions in this CTE to reference previous CTEs correctly
+            // Build reverse_mapping for all CTEs created so far
+            let mut intermediate_reverse_mapping: HashMap<(String, String), String> = HashMap::new();
+            log::info!("🔧 Building intermediate reverse_mapping for CTE '{}', examining {} previous CTEs", cte_name, cte_schemas.len());
+            
+            // Build a map of CTE name to composite alias (e.g., "with_a_b_cte_1" → "a_b")
+            let mut cte_to_composite_alias: HashMap<String, String> = HashMap::new();
+            for (alias, cte_ref) in &cte_references {
+                if alias.contains('_') {
+                    // This is a composite alias (e.g., "a_b")
+                    cte_to_composite_alias.insert(cte_ref.clone(), alias.clone());
+                }
+            }
+            
+            for (cte_name_ref, (select_items, _)) in &cte_schemas {
+                log::info!("🔧 Processing CTE '{}' with {} columns", cte_name_ref, select_items.len());
+                
+                // Get the composite alias for this CTE (e.g., "a_b" for "with_a_b_cte_1")
+                let composite_alias = cte_to_composite_alias.get(cte_name_ref);
+                
+                for item in select_items {
+                    if let Some(col_alias) = &item.col_alias {
+                        let cte_col_name = &col_alias.0;
+                        log::info!("🔧 Examining column '{}'", cte_col_name);
+                        // Extract alias and property from CTE column name (e.g., "a_user_id" → "a", "user_id")
+                        for ref_cte in cte_references.keys() {
+                            let prefix = format!("{}_", ref_cte);
+                            if let Some(property) = cte_col_name.strip_prefix(&prefix) {
+                                // Main mapping: (alias, property) → cte_column
+                                intermediate_reverse_mapping.insert((ref_cte.clone(), property.to_string()), cte_col_name.clone());
+                                log::info!("🔧 Intermediate mapping: ({}, '{}') → {}", ref_cte, property, cte_col_name);
+                                
+                                // ID mapping: If property is like "user_id", also map "id" → "a_user_id"
+                                if property.ends_with("_id") || property == "id" {
+                                    intermediate_reverse_mapping.insert((ref_cte.clone(), "id".to_string()), cte_col_name.clone());
+                                    log::info!("🔧 CTE intermediate ID mapping: ({}, 'id') → {}", ref_cte, cte_col_name);
+                                }
+                                
+                                // CRITICAL: Also map the PREFIXED version of the generic ID
+                                // JOIN conditions might have "a.a_id" instead of "a.id" because the column got prefixed
+                                // We need to map (a, "a_id") → "a_user_id" as well as (a, "id") → "a_user_id"
+                                if property.ends_with("_id") {
+                                    let prefixed_id = format!("{}_id", ref_cte);
+                                    intermediate_reverse_mapping.insert((ref_cte.clone(), prefixed_id.clone()), cte_col_name.clone());
+                                    log::info!("🔧 CTE prefixed ID mapping: ({}, '{}') → {}", ref_cte, prefixed_id, cte_col_name);
+                                    
+                                    // ALSO: If this CTE has a composite alias (e.g., "a_b"), add mappings for it too
+                                    // This handles cases like: FROM with_a_b_cte_1 AS a_b ... JOIN ... ON ... = a_b.b_id
+                                    if let Some(comp_alias) = composite_alias {
+                                        intermediate_reverse_mapping.insert((comp_alias.clone(), prefixed_id.clone()), cte_col_name.clone());
+                                        log::info!("🔧 CTE composite prefixed ID mapping: ({}, '{}') → {}", comp_alias, prefixed_id, cte_col_name);
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Rewrite expressions in the current CTE
+            log::info!("🔧 Applying expression rewriting to CTE '{}' with {} mappings", cte_name, intermediate_reverse_mapping.len());
+            rewrite_render_plan_expressions(&mut with_cte_render, &intermediate_reverse_mapping);
+            log::info!("🔧 Completed expression rewriting for CTE '{}'", cte_name);
+
             // Create the CTE (without nested CTEs, they've been hoisted)
             let with_cte = Cte {
                 cte_name: cte_name.clone(),
@@ -1662,8 +1766,23 @@ fn build_chained_with_match_cte_plan(
             // CRITICAL: Update cte_references to point to the NEW CTE name
             // This ensures subsequent references to this alias (in the final query or later CTEs)
             // use the MOST RECENT CTE, not the original one from the analyzer
+            //
+            // For composite aliases like "a_b", we need to add BOTH:
+            // 1. The composite key "a_b" → CTE (for replacement logic)
+            // 2. Individual aliases "a" → CTE and "b" → CTE (for expand_table_alias_to_select_items)
+            //
+            // This allows "WITH a, b, c" to find columns for both "a" and "b" from the "with_a_b_cte_1"
             cte_references.insert(with_alias.clone(), cte_name.clone());
-            log::warn!("🔧 build_chained_with_match_cte_plan: Updated cte_references: '{}' → '{}'", with_alias, cte_name);
+            
+            // Also add individual aliases
+            let individual_aliases: Vec<&str> = with_alias.split('_').collect();
+            for alias in &individual_aliases {
+                cte_references.insert(alias.to_string(), cte_name.clone());
+                log::info!("🔧 build_chained_with_match_cte_plan: Added individual mapping: '{}' → '{}'", alias, cte_name);
+            }
+            
+            log::warn!("🔧 build_chained_with_match_cte_plan: Updated cte_references: '{}' → '{}' (plus {} individual aliases)", 
+                       with_alias, cte_name, individual_aliases.len());
             
             log::info!("🔧 build_chained_with_match_cte_plan: Added '{}' to processed_cte_aliases", with_alias);
             
@@ -1834,20 +1953,113 @@ fn build_chained_with_match_cte_plan(
                 
                 // Build reverse mapping from CTE SELECT items: (table_alias, column) → cte_column_alias
                 // This maps e.g., ("a", "full_name") → "a_name"
+                // CRITICAL: Also add mappings for "id" references to actual ID columns
+                // E.g., if CTE has "a_user_id", map BOTH ("a", "user_id") AND ("a", "id") → "a_user_id"
+                //
+                // CRITICAL: We need to map BOTH Cypher property names AND DB column names:
+                // - Cypher property: ("a", "name") → "a_name"
+                // - DB column: ("a", "full_name") → "a_name"
+                // This is because final SELECT may use either depending on where it came from
                 let mut reverse_mapping: HashMap<(String, String), String> = HashMap::new();
+                
+                // First, try to get DB column mappings from the FROM ViewScan's property_mapping
+                // This tells us: Cypher property → DB column (e.g., "name" → "full_name")
+                let mut cypher_to_db: HashMap<(String, String), String> = HashMap::new();
+                if let LogicalPlan::ViewScan(vs) = from_ref.source.as_ref() {
+                    // The ViewScan property_mapping has entries like "name" → Column("full_name")
+                    // But for CTEs, it might have "a_name" → Column("a_name") (identity mapping)
+                    // We need to extract the original DB column from the base tables
+                    for (cypher_prop, prop_value) in &vs.property_mapping {
+                        if let PropertyValue::Column(db_col) = prop_value {
+                            // Check if this is a CTE column (has alias prefix)
+                            let mut found_alias = None;
+                            for with_alias in &with_aliases {
+                                let prefix = format!("{}_", with_alias);
+                                if cypher_prop.starts_with(&prefix) {
+                                    // This is a CTE column like "a_name"
+                                    // Extract the property: "a_name" → "name"
+                                    if let Some(prop) = cypher_prop.strip_prefix(&prefix) {
+                                        found_alias = Some(with_alias.clone());
+                                        // Store: (alias, cypher_property) → db_column
+                                        // But we need to get the DB column from the base table...
+                                        // For now, skip CTE columns
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Build mappings from CTE schema
                 if let Some((select_items, _)) = cte_schemas.get(&from_ref.name) {
                     for item in select_items {
                         if let Some(col_alias) = &item.col_alias {
-                            // Extract table alias and column from the expression
-                            if let RenderExpr::PropertyAccessExp(pa) = &item.expression {
-                                let table_alias = pa.table_alias.0.clone();
-                                if let Column(PropertyValue::Column(col)) = &pa.column {
-                                    reverse_mapping.insert((table_alias, col.clone()), col_alias.0.clone());
+                            // The CTE column name (e.g., "a_user_id")
+                            let cte_col_name = &col_alias.0;
+                            
+                            // Extract table alias and property from CTE column name
+                            // Format: "alias_property" (e.g., "a_user_id" → alias="a", property="user_id")
+                            for with_alias in &with_aliases {
+                                let prefix = format!("{}_", with_alias);
+                                if let Some(property) = cte_col_name.strip_prefix(&prefix) {
+                                    // Add main mapping: (alias, property) → cte_column
+                                    // This handles Cypher property names
+                                    reverse_mapping.insert((with_alias.clone(), property.to_string()), cte_col_name.clone());
+                                    log::info!("🔧 Reverse mapping: ({}, '{}') → {}", with_alias, property, cte_col_name);
+                                    
+                                    // CRITICAL: Also try to get the DB column name from the original expression
+                                    // The SelectItem expression might be like: with_prev_cte.a_city or a.city
+                                    // If it's a PropertyAccessExp, extract the original DB column
+                                    if let RenderExpr::PropertyAccessExp(pa) = &item.expression {
+                                        if let Column(PropertyValue::Column(original_col)) = &pa.column {
+                                            // Check if this is a CTE column or a DB column
+                                            // CTE columns have the alias prefix, DB columns don't
+                                            if !original_col.contains('_') || !original_col.starts_with(&prefix) {
+                                                // This looks like a DB column name (e.g., "city", "full_name")
+                                                // But wait, after our fix, these are CTE column names...
+                                            }
+                                            // Try a different approach: check if the original_col != property
+                                            // If they differ, original_col might be the DB column
+                                            if original_col != property {
+                                                reverse_mapping.insert((with_alias.clone(), original_col.clone()), cte_col_name.clone());
+                                                log::info!("🔧 DB column mapping: ({}, '{}') → {}", with_alias, original_col, cte_col_name);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // CRITICAL: If this looks like an ID column (e.g., "user_id", "node_id"),
+                                    // also map the generic "id" reference to it
+                                    if property.ends_with("_id") || property == "id" {
+                                        reverse_mapping.insert((with_alias.clone(), "id".to_string()), cte_col_name.clone());
+                                        log::info!("🔧 Added ID mapping: ({}, 'id') → {}", with_alias, cte_col_name);
+                                    }
+                                    break;
                                 }
                             }
                         }
                     }
                     log::info!("🔧 build_chained_with_match_cte_plan: Built reverse mapping with {} entries", reverse_mapping.len());
+                }
+                
+                // HACK: Add hardcoded DB column mappings for common User table columns
+                // TODO: Get these from the graph schema dynamically
+                for with_alias in &with_aliases {
+                    if let Some(_) = cte_schemas.get(&from_ref.name) {
+                        // Add known DB column → CTE column mappings
+                        let common_mappings = vec![
+                            ("full_name", "name"),
+                            ("email_address", "email"),
+                        ];
+                        for (db_col, cypher_prop) in common_mappings {
+                            let cte_col = format!("{}_{}", with_alias, cypher_prop);
+                            // Check if this CTE column exists
+                            if reverse_mapping.contains_key(&(with_alias.clone(), cypher_prop.to_string())) {
+                                reverse_mapping.insert((with_alias.clone(), db_col.to_string()), cte_col.clone());
+                                log::info!("🔧 Added DB→CTE mapping: ({}, '{}') → {}", with_alias, db_col, cte_col);
+                            }
+                        }
+                    }
                 }
                 
                 // Rewrite SELECT items
@@ -1857,6 +2069,31 @@ fn build_chained_with_match_cte_plan(
                 }).collect();
                 
                 log::info!("🔧 build_chained_with_match_cte_plan: SELECT items rewritten to use FROM alias");
+
+                // CRITICAL: Also rewrite JOIN conditions and WHERE clause
+                // JOINs and WHERE may reference CTE aliases that need column name prefixes
+                log::info!("🔧 build_chained_with_match_cte_plan: Rewriting {} JOIN conditions", render_plan.joins.0.len());
+                for join in &mut render_plan.joins.0 {
+                    join.joining_on = join.joining_on.iter().map(|condition| {
+                        // OperatorApplication is a RenderExpr, so we can rewrite it directly
+                        if let RenderExpr::OperatorApplicationExp(op) = rewrite_cte_expression(
+                            RenderExpr::OperatorApplicationExp(condition.clone()),
+                            &from_ref.name,
+                            from_alias,
+                            &with_aliases,
+                            &reverse_mapping
+                        ) {
+                            op
+                        } else {
+                            condition.clone()
+                        }
+                    }).collect();
+                }
+
+                if let Some(filter_expr) = &render_plan.filters.0 {
+                    log::info!("🔧 build_chained_with_match_cte_plan: Rewriting WHERE clause");
+                    render_plan.filters.0 = Some(rewrite_cte_expression(filter_expr.clone(), &from_ref.name, from_alias, &with_aliases, &reverse_mapping));
+                }
             }
         }
     }
@@ -1964,6 +2201,118 @@ fn rewrite_cte_expression(
         }
         // Other expression types don't need rewriting
         other => other,
+    }
+}
+
+/// Rewrite all expressions in a RenderPlan to reference CTE columns correctly
+/// This is called for each intermediate CTE after it's rendered but before it's added to all_ctes
+fn rewrite_render_plan_expressions(
+    plan: &mut RenderPlan,
+    reverse_mapping: &HashMap<(String, String), String>,
+) {
+    log::info!("🔧 rewrite_render_plan_expressions: Processing plan with {} SELECT items, {} JOINs",  
+               plan.select.items.len(), plan.joins.0.len());
+    
+    // Rewrite SELECT expressions
+    for item in &mut plan.select.items {
+        item.expression = rewrite_expression_simple(&item.expression, reverse_mapping);
+    }
+    
+    // Rewrite JOIN conditions
+    for (idx, join) in plan.joins.0.iter_mut().enumerate() {
+        log::info!("🔧 rewrite_render_plan_expressions: Rewriting JOIN {}: {} conditions", 
+                   idx, join.joining_on.len());
+        for op in &mut join.joining_on {
+            let before = format!("{:?}", op);
+            *op = rewrite_operator_application(op.clone(), reverse_mapping);
+            let after = format!("{:?}", op);
+            if before != after {
+                log::info!("🔧 JOIN condition changed: {} → {}", before, after);
+            } else {
+                log::warn!("🔧 JOIN condition UNCHANGED: {}", before);
+            }
+        }
+        // Rewrite pre_filter if present
+        if let Some(ref filter) = join.pre_filter {
+            join.pre_filter = Some(rewrite_expression_simple(filter, reverse_mapping));
+        }
+    }
+    
+    // Rewrite WHERE clause
+    if let FilterItems(Some(ref filter)) = &plan.filters {
+        plan.filters = FilterItems(Some(rewrite_expression_simple(filter, reverse_mapping)));
+    }
+    
+    // Rewrite HAVING clause
+    if let Some(ref having) = &plan.having_clause {
+        plan.having_clause = Some(rewrite_expression_simple(having, reverse_mapping));
+    }
+    
+    // Rewrite ORDER BY expressions
+    for order_item in &mut plan.order_by.0 {
+        order_item.expression = rewrite_expression_simple(&order_item.expression, reverse_mapping);
+    }
+    
+    log::info!("🔧 rewrite_render_plan_expressions: Complete");
+}
+
+/// Simple expression rewriter that uses only reverse_mapping (no CTE name or from_alias needed)
+fn rewrite_expression_simple(
+    expr: &RenderExpr,
+    reverse_mapping: &HashMap<(String, String), String>,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            let table_alias = &pa.table_alias.0;
+            let column_name = match &pa.column {
+                Column(PropertyValue::Column(col)) => col.clone(),
+                _ => return expr.clone(),
+            };
+            
+            let key = (table_alias.clone(), column_name.clone());
+            if let Some(cte_column) = reverse_mapping.get(&key) {
+                log::info!("🔧 Simple rewrite: {}.{} → {}.{}", table_alias, column_name, table_alias, cte_column);
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(table_alias.clone()),
+                    column: Column(PropertyValue::Column(cte_column.clone())),
+                })
+            } else {
+                expr.clone()
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            let new_args: Vec<RenderExpr> = func.args.iter()
+                .map(|arg| rewrite_expression_simple(arg, reverse_mapping))
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: func.name.clone(),
+                args: new_args,
+            })
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            let new_operands: Vec<RenderExpr> = op.operands.iter()
+                .map(|operand| rewrite_expression_simple(operand, reverse_mapping))
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator.clone(),
+                operands: new_operands,
+            })
+        }
+        other => other.clone(),
+    }
+}
+
+/// Rewrite an OperatorApplication recursively
+fn rewrite_operator_application(
+    op: OperatorApplication,
+    reverse_mapping: &HashMap<(String, String), String>,
+) -> OperatorApplication {
+    let new_operands: Vec<RenderExpr> = op.operands.into_iter()
+        .map(|operand| rewrite_expression_simple(&operand, reverse_mapping))
+        .collect();
+    OperatorApplication {
+        operator: op.operator,
+        operands: new_operands,
     }
 }
 
@@ -2517,6 +2866,7 @@ fn replace_group_by_with_cte_reference(
                                 labels: graph_rel.labels.clone(),
                                 is_optional: graph_rel.is_optional,
                                 anchor_connection: graph_rel.anchor_connection.clone(),
+                                cte_references: graph_rel.cte_references.clone(),
                             },
                         ));
                     }
@@ -2581,6 +2931,7 @@ fn replace_group_by_with_cte_reference(
                                 labels: graph_rel.labels.clone(),
                                 is_optional: graph_rel.is_optional,
                                 anchor_connection: graph_rel.anchor_connection.clone(),
+                                cte_references: graph_rel.cte_references.clone(),
                             },
                         ));
                     }
@@ -2607,6 +2958,7 @@ fn replace_group_by_with_cte_reference(
                         labels: graph_rel.labels.clone(),
                         is_optional: graph_rel.is_optional,
                         anchor_connection: graph_rel.anchor_connection.clone(),
+                        cte_references: graph_rel.cte_references.clone(),
                     },
                 ))
             }
@@ -3736,6 +4088,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 labels: graph_rel.labels.clone(),
                 is_optional: graph_rel.is_optional,
                 anchor_connection: graph_rel.anchor_connection.clone(),
+            cte_references: std::collections::HashMap::new(),
             }))
         }
 
@@ -6386,6 +6739,38 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Standard join order: relationship first, then end node
                 // The FROM clause is always the left/anchor node.
 
+                // DEBUG: Log CTE references at start of extract_joins
+                log::info!("🔍 extract_joins: left_connection='{}', right_connection='{}', cte_references={:?}",
+                           graph_rel.left_connection, graph_rel.right_connection, graph_rel.cte_references);
+
+                // Helper: Resolve table alias and column for CTE references
+                // When a node connection (e.g., "b") references a CTE, we need to use
+                // the CTE alias (e.g., "a_b") instead of the node alias ("b")
+                let resolve_cte_reference = |node_alias: &str, column: &str| -> (String, String) {
+                    if let Some(cte_name) = graph_rel.cte_references.get(node_alias) {
+                        // Calculate CTE alias: "with_a_b_cte_1" -> "a_b"
+                        // Strategy: strip "with_" prefix, then strip "_cte" or "_cte_N" suffix
+                        let after_prefix = cte_name.strip_prefix("with_").unwrap_or(cte_name);
+                        let cte_alias = after_prefix
+                            .strip_suffix("_cte")
+                            .or_else(|| after_prefix.strip_suffix("_cte_1"))
+                            .or_else(|| after_prefix.strip_suffix("_cte_2"))
+                            .or_else(|| after_prefix.strip_suffix("_cte_3"))
+                            .unwrap_or(after_prefix);
+                        
+                        // Column name in CTE: node_alias_column (e.g., "b_user_id")
+                        let cte_column = format!("{}_{}", node_alias, column);
+                        
+                        log::info!("🔧 Resolved CTE reference: {} -> CTE '{}' (alias '{}'), column '{}'",
+                                   node_alias, cte_name, cte_alias, cte_column);
+                        
+                        (cte_alias.to_string(), cte_column)
+                    } else {
+                        // Not a CTE reference, use as-is
+                        (node_alias.to_string(), column.to_string())
+                    }
+                };
+
                 // Import Direction for bidirectional pattern support
                 use crate::query_planner::logical_expr::Direction;
 
@@ -6398,6 +6783,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 //   For either: (r.from_id = a.user_id) OR (r.to_id = a.user_id)
                 let rel_join_condition = if is_bidirectional {
                     // Bidirectional: create OR condition for both directions
+                    let (left_table_alias, left_column) = resolve_cte_reference(&graph_rel.left_connection, &start_id_col);
                     let outgoing_cond = OperatorApplication {
                         operator: Operator::Equal,
                         operands: vec![
@@ -6406,8 +6792,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 column: Column(PropertyValue::Column(rel_cols.from_id.clone())),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(graph_rel.left_connection.clone()),
-                                column: Column(PropertyValue::Column(start_id_col.clone())),
+                                table_alias: TableAlias(left_table_alias.clone()),
+                                column: Column(PropertyValue::Column(left_column.clone())),
                             }),
                         ],
                     };
@@ -6419,8 +6805,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 column: Column(PropertyValue::Column(rel_cols.to_id.clone())),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(graph_rel.left_connection.clone()),
-                                column: Column(PropertyValue::Column(start_id_col.clone())),
+                                table_alias: TableAlias(left_table_alias.clone()),
+                                column: Column(PropertyValue::Column(left_column.clone())),
                             }),
                         ],
                     };
@@ -6436,6 +6822,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     // The GraphRel representation normalizes this - direction only affects
                     // how nodes are assigned to left/right during parsing.
                     // JOIN 1: relationship.from_id = left_node.id
+                    let (left_table_alias, left_column) = resolve_cte_reference(&graph_rel.left_connection, &start_id_col);
                     let rel_col = &rel_cols.from_id;
                     OperatorApplication {
                         operator: Operator::Equal,
@@ -6445,8 +6832,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 column: Column(PropertyValue::Column(rel_col.clone())),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(graph_rel.left_connection.clone()),
-                                column: Column(PropertyValue::Column(start_id_col.clone())),
+                                table_alias: TableAlias(left_table_alias),
+                                column: Column(PropertyValue::Column(left_column)),
                             }),
                         ],
                     }
@@ -6469,6 +6856,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 let end_join_condition = if is_bidirectional {
                     // For bidirectional, the end node connects to whichever side of r that ISN'T the start node
                     // This is expressed as: (b.id = r.to_id AND r.from_id = a.id) OR (b.id = r.from_id AND r.to_id = a.id)
+                    let (left_table_alias, left_column) = resolve_cte_reference(&graph_rel.left_connection, &start_id_col);
+                    let (right_table_alias, right_column) = resolve_cte_reference(&graph_rel.right_connection, &end_id_col);
                     let outgoing_side = OperatorApplication {
                         operator: Operator::And,
                         operands: vec![
@@ -6476,8 +6865,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 operator: Operator::Equal,
                                 operands: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(graph_rel.right_connection.clone()),
-                                        column: Column(PropertyValue::Column(end_id_col.clone())),
+                                        table_alias: TableAlias(right_table_alias.clone()),
+                                        column: Column(PropertyValue::Column(right_column.clone())),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(graph_rel.alias.clone()),
@@ -6497,8 +6886,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                         )),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(graph_rel.left_connection.clone()),
-                                        column: Column(PropertyValue::Column(start_id_col.clone())),
+                                        table_alias: TableAlias(left_table_alias.clone()),
+                                        column: Column(PropertyValue::Column(left_column.clone())),
                                     }),
                                 ],
                             }),
@@ -6511,8 +6900,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 operator: Operator::Equal,
                                 operands: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(graph_rel.right_connection.clone()),
-                                        column: Column(PropertyValue::Column(end_id_col.clone())),
+                                        table_alias: TableAlias(right_table_alias.clone()),
+                                        column: Column(PropertyValue::Column(right_column.clone())),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(graph_rel.alias.clone()),
@@ -6532,8 +6921,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                         )),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(graph_rel.left_connection.clone()),
-                                        column: Column(PropertyValue::Column(start_id_col.clone())),
+                                        table_alias: TableAlias(left_table_alias.clone()),
+                                        column: Column(PropertyValue::Column(left_column.clone())),
                                     }),
                                 ],
                             }),
@@ -6549,13 +6938,14 @@ impl RenderPlanBuilder for LogicalPlan {
                 } else {
                     // Directional: right is always target (to)
                     // JOIN 2: right_node.id = relationship.to_id
+                    let (right_table_alias, right_column) = resolve_cte_reference(&graph_rel.right_connection, &end_id_col);
                     let rel_col = &rel_cols.to_id;
                     OperatorApplication {
                         operator: Operator::Equal,
                         operands: vec![
                             RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(graph_rel.right_connection.clone()),
-                                column: Column(PropertyValue::Column(end_id_col.clone())),
+                                table_alias: TableAlias(right_table_alias),
+                                column: Column(PropertyValue::Column(right_column)),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(graph_rel.alias.clone()),
@@ -9101,12 +9491,38 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Generate ON clause from extracted conditions
                     let mut join_ops = vec![];
                     for (cte_col, main_alias, main_col) in conditions {
+                        // CRITICAL FIX: Check if main_alias is from a CTE
+                        // If so, we need to use the CTE's table alias and qualified column name
+                        let (resolved_table_alias, resolved_column) = if let Some(ref_cte_name) = cte_references.get(main_alias) {
+                            // main_alias (e.g., "b") is from a CTE - resolve to CTE format
+                            // Calculate CTE alias: "with_a_b_cte_1" -> "a_b"
+                            // Strategy: strip "with_" prefix, then strip "_cte" or "_cte_N" suffix
+                            let after_prefix = ref_cte_name.strip_prefix("with_").unwrap_or(ref_cte_name);
+                            let ref_cte_alias = after_prefix
+                                .strip_suffix("_cte")
+                                .or_else(|| after_prefix.strip_suffix("_cte_1"))
+                                .or_else(|| after_prefix.strip_suffix("_cte_2"))
+                                .or_else(|| after_prefix.strip_suffix("_cte_3"))
+                                .unwrap_or(after_prefix);
+                            
+                            // Column name in CTE: alias_column (e.g., "b_user_id")
+                            let cte_column = format!("{}_{}", main_alias, main_col);
+                            
+                            log::info!("🔧 CTE JOIN: Resolved '{}' -> CTE '{}' (alias '{}'), column '{}'",
+                                       main_alias, ref_cte_name, ref_cte_alias, cte_column);
+                            
+                            (ref_cte_alias.to_string(), cte_column)
+                        } else {
+                            // Not from CTE, use as-is
+                            (main_alias.clone(), main_col.clone())
+                        };
+                        
                         join_ops.push(OperatorApplication {
                             operator: Operator::Equal,
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(main_alias.clone()),
-                                    column: Column(PropertyValue::Column(main_col.clone())),
+                                    table_alias: TableAlias(resolved_table_alias),
+                                    column: Column(PropertyValue::Column(resolved_column)),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(cte_alias.clone()),

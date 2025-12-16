@@ -1601,6 +1601,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 labels: rel_labels.clone(),
                 is_optional: if is_optional { Some(true) } else { None },
                 anchor_connection,
+                cte_references: std::collections::HashMap::new(),
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -1717,6 +1718,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 } else {
                     None
                 },
+                cte_references: std::collections::HashMap::new(),
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
@@ -1919,6 +1921,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 labels: rel_labels.clone(),
                 is_optional: if is_optional { Some(true) } else { None },
                 anchor_connection,
+                cte_references: std::collections::HashMap::new(),
             };
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),

@@ -132,6 +132,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             labels: graph_rel.labels.clone(),
                             is_optional: graph_rel.is_optional, // Preserve optional flag
                             anchor_connection: graph_rel.anchor_connection.clone(),
+            cte_references: std::collections::HashMap::new(),
                         }));
 
                         // Rebuild projection with new GraphRel, and return without Filter wrapper
@@ -178,6 +179,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                         labels: graph_rel.labels.clone(),
                         is_optional: graph_rel.is_optional, // Preserve optional flag
                         anchor_connection: graph_rel.anchor_connection.clone(),
+            cte_references: std::collections::HashMap::new(),
                     }));
 
                     // Return the GraphRel directly, removing the Filter wrapper
@@ -787,6 +789,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             labels: graph_rel.labels.clone(),
                             is_optional: graph_rel.is_optional,
                             anchor_connection: graph_rel.anchor_connection.clone(),
+            cte_references: std::collections::HashMap::new(),
                         }));
 
                         return Ok(Transformed::Yes(new_graph_rel));

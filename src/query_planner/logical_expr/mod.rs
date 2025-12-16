@@ -634,6 +634,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                             .map(|l| l.iter().map(|s| s.to_string()).collect()),
                         is_optional: None,
                         anchor_connection: None,
+            cte_references: std::collections::HashMap::new(),
                     }))
                 }
             }

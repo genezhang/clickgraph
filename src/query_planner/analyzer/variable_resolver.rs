@@ -479,7 +479,8 @@ impl VariableResolver {
             }
 
             LogicalPlan::GraphRel(rel) => {
-                log::debug!("🔍 VariableResolver: Found GraphRel with alias '{}'", rel.alias);
+                log::debug!("🔍 VariableResolver: Found GraphRel with alias '{}', left_connection='{}', right_connection='{}'", 
+                           rel.alias, rel.left_connection, rel.right_connection);
 
                 // Add relationship to scope
                 let mut new_scope = scope.clone();
@@ -491,12 +492,70 @@ impl VariableResolver {
                     },
                 );
 
+                // Check if left_connection or right_connection refer to CTE variables
+                // If so, we need to track them in cte_references
+                let mut cte_refs = rel.cte_references.clone();
+                
+                // DEBUG: Log what's in scope
+                log::info!("🔍 VariableResolver [GraphRel alias='{}']: left_connection='{}', right_connection='{}'", 
+                           rel.alias, rel.left_connection, rel.right_connection);
+                log::info!("🔍 VariableResolver [GraphRel alias='{}']: Scope has {} variables", 
+                           rel.alias, scope.visible_vars.len());
+                for (var_name, var_source) in scope.visible_vars.iter() {
+                    log::info!("🔍   Scope variable: '{}' = {:?}", var_name, var_source);
+                }
+                
+                // Check left_connection
+                if let Some(VarSource::CteColumn { cte_name, .. }) = scope.lookup(&rel.left_connection) {
+                    log::info!("🔍 VariableResolver: left_connection '{}' is from CTE '{}'", 
+                               rel.left_connection, cte_name);
+                    cte_refs.insert(rel.left_connection.clone(), cte_name.clone());
+                }
+                
+                // Check right_connection  
+                if let Some(VarSource::CteColumn { cte_name, .. }) = scope.lookup(&rel.right_connection) {
+                    log::info!("🔍 VariableResolver: right_connection '{}' is from CTE '{}'", 
+                               rel.right_connection, cte_name);
+                    cte_refs.insert(rel.right_connection.clone(), cte_name.clone());
+                }
+
                 // Recurse into left, center, right
                 let left_resolved = self.resolve(rel.left.clone(), &new_scope)?;
-                let center_resolved = self.resolve(rel.center.clone(), &new_scope)?;
-                let right_resolved = self.resolve(rel.right.clone(), &new_scope)?;
+                
+                // CRITICAL FIX: If left is a WithClause, extract its exported scope for center/right
+                // This handles chained WITHs like: WITH a MATCH (a)-[:FOLLOWS]->(b) WITH a,b MATCH ...
+                // The second GraphRel needs "a" from the first WITH in its scope
+                let center_right_scope = match left_resolved {
+                    Transformed::Yes(ref plan) | Transformed::No(ref plan) => {
+                        if let LogicalPlan::WithClause(wc) = plan.as_ref() {
+                            log::info!("🔍 VariableResolver [GraphRel]: left is WithClause, extracting exported scope");
+                            let mut with_scope = new_scope;
+                            for alias in &wc.exported_aliases {
+                                if let Some(cte_name) = wc.cte_references.get(alias) {
+                                    log::info!("🔍 VariableResolver [GraphRel]: Adding '{}' from WITH to scope for center/right", alias);
+                                    with_scope.add_variable(
+                                        alias.clone(),
+                                        VarSource::CteColumn {
+                                            cte_name: cte_name.clone(),
+                                            column_name: alias.clone(),
+                                        },
+                                    );
+                                }
+                            }
+                            with_scope
+                        } else {
+                            new_scope
+                        }
+                    }
+                };
+                
+                let center_resolved = self.resolve(rel.center.clone(), &center_right_scope)?;
+                let right_resolved = self.resolve(rel.right.clone(), &center_right_scope)?;
 
-                if left_resolved.is_yes() || center_resolved.is_yes() || right_resolved.is_yes() {
+                // Always create new GraphRel if we found CTE references, even if children didn't change
+                let has_cte_refs = !cte_refs.is_empty() && cte_refs != rel.cte_references;
+                
+                if left_resolved.is_yes() || center_resolved.is_yes() || right_resolved.is_yes() || has_cte_refs {
                     let new_rel = crate::query_planner::logical_plan::GraphRel {
                         left: left_resolved.get_plan(),
                         center: center_resolved.get_plan(),
@@ -513,6 +572,7 @@ impl VariableResolver {
                         labels: rel.labels.clone(),
                         is_optional: rel.is_optional,
                         anchor_connection: rel.anchor_connection.clone(),
+                        cte_references: cte_refs,
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphRel(new_rel))))
                 } else {

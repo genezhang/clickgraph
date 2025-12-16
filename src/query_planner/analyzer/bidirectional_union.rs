@@ -762,6 +762,7 @@ fn apply_direction_combination_inner(
                 labels: graph_rel.labels.clone(),
                 is_optional: graph_rel.is_optional,
                 anchor_connection: graph_rel.anchor_connection.clone(),
+            cte_references: std::collections::HashMap::new(),
             }))
         }
         LogicalPlan::Projection(proj) => {

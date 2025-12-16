@@ -13,7 +13,7 @@ use super::errors::RenderBuildError;
 use super::filter_pipeline::categorize_filters;
 use super::plan_builder::RenderPlanBuilder;
 use super::render_expr::{Literal, Operator, PropertyAccess, RenderExpr};
-use super::{Cte, Join, JoinType};
+use super::{Cte, CteContent, Join, JoinType};
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
 
@@ -666,6 +666,22 @@ pub fn extract_ctes_with_context(
     last_node_alias: &str,
     context: &mut super::cte_generation::CteGenerationContext,
 ) -> RenderPlanBuilderResult<Vec<Cte>> {
+    // Debug: Log the plan type being processed
+    let plan_type = match plan {
+        LogicalPlan::Empty => "Empty",
+        LogicalPlan::Scan(_) => "Scan",
+        LogicalPlan::ViewScan(_) => "ViewScan",
+        LogicalPlan::GraphNode(_) => "GraphNode",
+        LogicalPlan::GraphRel(_) => "GraphRel",
+        LogicalPlan::Filter(_) => "Filter",
+        LogicalPlan::Projection(_) => "Projection",
+        LogicalPlan::GraphJoins(_) => "GraphJoins",
+        LogicalPlan::CartesianProduct(_) => "CartesianProduct",
+        LogicalPlan::WithClause(_) => "WithClause",
+        _ => "Other",
+    };
+    println!("DEBUG extract_ctes_with_context: Processing {} node", plan_type);
+    
     match plan {
         LogicalPlan::Empty => Ok(vec![]),
         LogicalPlan::Scan(_) => Ok(vec![]),
@@ -1304,16 +1320,67 @@ pub fn extract_ctes_with_context(
         LogicalPlan::PageRank(_) => Ok(vec![]),
         LogicalPlan::Unwind(u) => extract_ctes_with_context(&u.input, last_node_alias, context),
         LogicalPlan::CartesianProduct(cp) => {
+            println!("DEBUG CTE Extraction: Processing CartesianProduct");
             let mut ctes = extract_ctes_with_context(&cp.left, last_node_alias, context)?;
+            println!("DEBUG CTE Extraction: CartesianProduct left side returned {} CTEs", ctes.len());
             ctes.append(&mut extract_ctes_with_context(
                 &cp.right,
                 last_node_alias,
                 context,
             )?);
+            println!("DEBUG CTE Extraction: CartesianProduct total {} CTEs", ctes.len());
             Ok(ctes)
         }
         LogicalPlan::WithClause(wc) => {
-            extract_ctes_with_context(&wc.input, last_node_alias, context)
+            println!("DEBUG CTE Extraction: Processing WithClause with {} exported aliases", wc.exported_aliases.len());
+            // WITH clause should generate a CTE!
+            // The CTE contains the SQL from the input plan with the WITH projection
+            
+            // First, extract any CTEs from the input
+            let mut ctes = extract_ctes_with_context(&wc.input, last_node_alias, context)?;
+            
+            // Generate CTE name from exported aliases (matches naming in variable_resolver.rs)
+            let cte_name = if !wc.exported_aliases.is_empty() {
+                // Sort aliases for consistent naming
+                let mut sorted_aliases = wc.exported_aliases.clone();
+                sorted_aliases.sort();
+                format!("with_{}_cte", sorted_aliases.join("_"))
+            } else {
+                "with_cte".to_string()
+            };
+            
+            log::info!("🔧 CTE Extraction: Generating CTE '{}' for WITH clause with {} exported aliases", 
+                cte_name, wc.exported_aliases.len());
+            
+            // Build the CTE content by rendering the input plan as a RenderPlan
+            // Get schema from context
+            let schema = context.schema().ok_or(RenderBuildError::InvalidRenderPlan(
+                "Cannot generate WITH CTE: No schema found in context".to_string()
+            ))?;
+            
+            // Create a Projection wrapping the input with the WITH items
+            // This ensures the rendered SQL has proper SELECT items
+            use crate::query_planner::logical_plan::Projection;
+            
+            let projection_with_with_items = Projection {
+                input: wc.input.clone(),
+                items: wc.items.clone(),
+                distinct: wc.distinct,
+            };
+            
+            let cte_render_plan = LogicalPlan::Projection(projection_with_with_items).to_render_plan(schema)?;
+            
+            // Create the CTE
+            let with_cte = Cte {
+                cte_name: cte_name.clone(),
+                content: CteContent::Structured(cte_render_plan),
+                is_recursive: false,
+            };
+            
+            ctes.push(with_cte);
+            
+            log::info!("🔧 CTE Extraction: Added WITH CTE '{}'", cte_name);
+            Ok(ctes)
         }
     }
 }

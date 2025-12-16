@@ -78,6 +78,17 @@ impl WithScopeSplitter {
                     wc.exported_aliases
                 );
 
+                // VALIDATION: WITH clause must have a preceding query (non-Empty input)
+                // Invalid: WITH a MATCH (a:User)... (no preceding query defines 'a')
+                // Valid: MATCH (a:User) WITH a... (preceding MATCH defines 'a')
+                if matches!(wc.input.as_ref(), LogicalPlan::Empty) {
+                    return Err(AnalyzerError::InvalidPlan(format!(
+                        "WITH clause with aliases {:?} has no preceding query. \
+                        WITH passes variables from a previous query segment - there must be a MATCH or other query before WITH.",
+                        wc.exported_aliases
+                    )));
+                }
+
                 // Recursively process the input (the pattern BEFORE the WITH)
                 let input_transformed = self.split_scopes(wc.input.clone(), _plan_ctx)?;
                 let new_input = input_transformed.get_plan();
@@ -127,6 +138,7 @@ impl WithScopeSplitter {
                         labels: rel.labels.clone(),
                         is_optional: rel.is_optional,
                         anchor_connection: rel.anchor_connection.clone(),
+                        cte_references: rel.cte_references.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphRel(new_rel))))
                 } else {

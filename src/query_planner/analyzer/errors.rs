@@ -90,6 +90,9 @@ pub enum AnalyzerError {
     #[error("Invalid relation query - {rel}")]
     InvalidRelationInQuery { rel: String },
 
+    #[error("Invalid query plan: {0}")]
+    InvalidPlan(String),
+
     #[error("Table '{0}' not found in schema")]
     TableNotFound(String),
 
