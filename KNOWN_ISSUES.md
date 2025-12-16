@@ -1,6 +1,6 @@
 # Known Issues
 
-**Active Issues**: 11  
+**Active Issues**: 10  
 **Last Updated**: December 15, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
@@ -10,68 +10,45 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Active Issues
 
-### 1. Cross-Table Branching Patterns - JOIN Generation Broken
+### 1. Cross-Table Branching Patterns - ✅ FIXED
 
-**Status**: 🔴 BROKEN (regression from refactor)  
+**Status**: ✅ FIXED (December 15, 2025)  
 **Severity**: HIGH  
 **Affects**: Comma patterns with shared nodes across different tables  
-**Introduced**: Recent refactor  
-**Tests**: 6 skipped tests in `TestCrossTableCorrelation`
+**Fixed By**: Commits `8e4482c` (cross-branch JOIN detection) and `b015cf0` (predicate correlation)
 
-**Problem**:
-Branching patterns with shared nodes in different tables don't generate JOINs:
+**Problem** (resolved):
+Branching patterns with shared nodes in different tables now correctly generate JOINs:
 ```cypher
 MATCH (srcip:IP)-[:REQUESTED]->(d:Domain), (srcip)-[:ACCESSED]->(dest:IP)
 WHERE srcip.ip = '192.168.1.10'
 RETURN srcip.ip, d.name, dest.ip
 ```
 
-**Expected**: JOIN dns_log and conn_log on shared `srcip` node (orig_h column)
-**Actual**: Only one table in FROM clause, missing JOIN, alias mismatch errors
+**Solution**:
+- Implemented cross-branch shared node detection in `GraphJoinInference::infer_graph_join()`
+- Detects when `left_connection` appears in sibling branches
+- Generates INNER JOIN between branches on shared node ID columns
 
-**Generated SQL** (❌ broken):
-```sql
-SELECT t3.orig_h AS "srcip.ip", t3.query AS "d.name", t4.resp_h AS "dest.ip"
-FROM test_zeek.conn_log AS t4  -- Missing dns_log!
-WHERE t3.orig_h = '...'         -- t3 not defined!
-```
-
-**Needed SQL** (✅ correct):
+**Generated SQL** (✅ correct):
 ```sql
 SELECT t3.orig_h, t3.query, t4.resp_h
-FROM test_zeek.dns_log AS t3
-JOIN test_zeek.conn_log AS t4 ON t3.orig_h = t4.orig_h
+FROM test_zeek.conn_log AS t4
+INNER JOIN test_zeek.dns_log AS t3 ON t4.orig_h = t3.orig_h
 WHERE t3.orig_h = '...'
 ```
 
-**Root Cause**:
-- `GraphJoinInference::infer_graph_join()` designed for linear patterns (node-edge-node)
-- Doesn't detect cross-branch node sharing (srcip in both branches)
-- Nested GraphRel structure: outer GraphRel has LEFT=inner GraphRel, both share `srcip`
-- Need to detect shared nodes between sibling branches and generate appropriate JOINs
+**Testing**: All 6 tests now passing (100%)
+- ✅ test_comma_pattern_cross_table
+- ✅ test_comma_pattern_full_dns_path
+- ✅ test_sequential_match_same_node
+- ✅ test_with_match_correlation
+- ✅ test_predicate_correlation
+- ✅ test_dns_then_connect_to_resolved_ip
 
-**Analysis**:
-- Both GraphRels have `left_connection: "srcip"`
-- Both are denormalized (no node tables, properties in edge tables)
-- Should JOIN on srcip.ip (orig_h column) between dns_log (t3) and conn_log (t4)
-- `collect_graph_joins` processes both branches but doesn't recognize shared anchor
-
-**Impact**: 6/24 Zeek tests failing (all cross-table correlation patterns)
-
-**Skipped Tests**:
-- test_comma_pattern_cross_table
-- test_comma_pattern_full_dns_path
-- test_sequential_match_same_node
-- test_with_match_correlation
-- test_predicate_correlation
-- test_dns_then_connect_to_resolved_ip
-
-**Files to Fix**:
-- `src/query_planner/analyzer/graph_join_inference.rs` - `infer_graph_join()` method
-- Need to detect when left_connection appears in sibling branches
-- Generate JOIN between branches on shared node ID columns
-
-**Related**: This was working before - likely regression from major refactor
+**Files Changed**:
+- `src/query_planner/analyzer/graph_join_inference.rs` - Cross-branch JOIN detection
+- `src/query_planner/logical_plan/match_clause.rs` - Predicate-based correlation support
 
 ---
 

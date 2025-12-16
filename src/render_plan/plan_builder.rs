@@ -2094,6 +2094,22 @@ fn build_chained_with_match_cte_plan(
                     log::info!("🔧 build_chained_with_match_cte_plan: Rewriting WHERE clause");
                     render_plan.filters.0 = Some(rewrite_cte_expression(filter_expr.clone(), &from_ref.name, from_alias, &with_aliases, &reverse_mapping));
                 }
+                
+                // CRITICAL: Also rewrite GROUP BY expressions
+                if !render_plan.group_by.0.is_empty() {
+                    log::info!("🔧 build_chained_with_match_cte_plan: Rewriting {} GROUP BY expressions", render_plan.group_by.0.len());
+                    render_plan.group_by.0 = render_plan.group_by.0.iter().map(|expr| {
+                        rewrite_cte_expression(expr.clone(), &from_ref.name, from_alias, &with_aliases, &reverse_mapping)
+                    }).collect();
+                }
+                
+                // Also rewrite ORDER BY expressions
+                if !render_plan.order_by.0.is_empty() {
+                    log::info!("🔧 build_chained_with_match_cte_plan: Rewriting {} ORDER BY expressions", render_plan.order_by.0.len());
+                    for order_item in &mut render_plan.order_by.0 {
+                        order_item.expression = rewrite_cte_expression(order_item.expression.clone(), &from_ref.name, from_alias, &with_aliases, &reverse_mapping);
+                    }
+                }
             }
         }
     }
@@ -2241,6 +2257,19 @@ fn rewrite_render_plan_expressions(
     // Rewrite WHERE clause
     if let FilterItems(Some(ref filter)) = &plan.filters {
         plan.filters = FilterItems(Some(rewrite_expression_simple(filter, reverse_mapping)));
+    }
+    
+    // Rewrite GROUP BY expressions
+    log::info!("🔧 rewrite_render_plan_expressions: Rewriting {} GROUP BY expressions", plan.group_by.0.len());
+    for (idx, group_expr) in plan.group_by.0.iter_mut().enumerate() {
+        let before = format!("{:?}", group_expr);
+        *group_expr = rewrite_expression_simple(group_expr, reverse_mapping);
+        let after = format!("{:?}", group_expr);
+        if before != after {
+            log::info!("🔧 GROUP BY {} changed: {} → {}", idx, before, after);
+        } else {
+            log::warn!("🔧 GROUP BY {} UNCHANGED: {}", idx, before);
+        }
     }
     
     // Rewrite HAVING clause
