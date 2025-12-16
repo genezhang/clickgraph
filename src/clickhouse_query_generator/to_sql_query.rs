@@ -321,22 +321,102 @@ impl ToSql for CteItems {
             return sql;
         }
 
-        // Check if any CTE is recursive
-        let has_recursive_cte = self.0.iter().any(|cte| cte.is_recursive);
-
-        if has_recursive_cte {
-            sql.push_str("WITH RECURSIVE ");
-        } else {
-            sql.push_str("WITH ");
+        // ClickHouse limitation: WITH RECURSIVE can only contain ONE recursive CTE
+        // Solution: Keep first recursive CTE group in WITH RECURSIVE block,
+        // wrap each additional recursive CTE group in a nested WITH RECURSIVE subquery
+        
+        // Group CTEs: each recursive CTE with all following non-recursive CTEs (until next recursive or end)
+        let mut cte_groups: Vec<Vec<&Cte>> = Vec::new();
+        let mut current_group: Vec<&Cte> = Vec::new();
+        
+        for cte in &self.0 {
+            if cte.is_recursive {
+                // Start new group with this recursive CTE
+                if !current_group.is_empty() {
+                    cte_groups.push(current_group);
+                }
+                current_group = vec![cte];
+            } else {
+                // Add non-recursive CTE to current group
+                current_group.push(cte);
+            }
         }
-
-        for (i, cte) in self.0.iter().enumerate() {
+        
+        // Add final group
+        if !current_group.is_empty() {
+            cte_groups.push(current_group);
+        }
+        
+        // If no recursive CTEs at all
+        if cte_groups.is_empty() || !cte_groups.iter().any(|g| g[0].is_recursive) {
+            sql.push_str("WITH ");
+            for (i, cte) in self.0.iter().enumerate() {
+                sql.push_str(&cte.to_sql());
+                if i + 1 < self.0.len() {
+                    sql.push_str(", ");
+                }
+                sql.push('\n');
+            }
+            return sql;
+        }
+        
+        // Emit first group (WITH RECURSIVE block with first recursive CTE and its helpers)
+        sql.push_str("WITH RECURSIVE ");
+        let first_group = &cte_groups[0];
+        for (i, cte) in first_group.iter().enumerate() {
             sql.push_str(&cte.to_sql());
-            if i + 1 < self.0.len() {
+            if i + 1 < first_group.len() || cte_groups.len() > 1 {
                 sql.push_str(", ");
             }
             sql.push('\n');
         }
+        
+        // For additional groups (2nd recursive CTE onwards), wrap in subquery
+        for group_idx in 1..cte_groups.len() {
+            let group = &cte_groups[group_idx];
+            let first_cte_in_group = group[0];
+            
+            // Only wrap if this group has a recursive CTE
+            if first_cte_in_group.is_recursive {
+                // Get the last CTE name in this group - that's what we'll expose
+                let last_cte_name = &group[group.len() - 1].cte_name;
+                
+                // Create wrapper: lastCte AS (SELECT * FROM (WITH RECURSIVE ...))
+                sql.push_str(&format!("{} AS (\n", last_cte_name));
+                sql.push_str("  SELECT * FROM (\n");
+                sql.push_str("    WITH RECURSIVE ");
+                
+                // Emit all CTEs in this group
+                for (i, cte) in group.iter().enumerate() {
+                    sql.push_str(&cte.to_sql());
+                    if i + 1 < group.len() {
+                        sql.push_str(", ");
+                    }
+                    sql.push('\n');
+                }
+                
+                // Close the nested WITH and select the final CTE
+                sql.push_str("    SELECT * FROM ");
+                sql.push_str(last_cte_name);
+                sql.push_str("\n  )\n)");
+                
+                if group_idx + 1 < cte_groups.len() {
+                    sql.push_str(",\n");
+                } else {
+                    sql.push('\n');
+                }
+            } else {
+                // Non-recursive group: emit normally
+                for (i, cte) in group.iter().enumerate() {
+                    sql.push_str(&cte.to_sql());
+                    if i + 1 < group.len() || group_idx + 1 < cte_groups.len() {
+                        sql.push_str(", ");
+                    }
+                    sql.push('\n');
+                }
+            }
+        }
+        
         sql
     }
 }

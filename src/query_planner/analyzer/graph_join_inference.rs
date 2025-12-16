@@ -181,11 +181,12 @@ impl GraphJoinInference {
                         plan_ctx.insert_table_ctx(alias.clone(), updated_ctx);
                         log::info!("   ✓ Updated '{}' to reference CTE '{}'", alias, cte_name);
                     } else {
-                        // No existing context - create a minimal one
+                        // No existing context - create a minimal one with entity type lookup
                         // This shouldn't happen in normal queries, but handle it gracefully
                         let table_ctx = TableCtx::new_with_cte_reference(
                             alias.clone(),
                             cte_name.clone(),
+                            plan_ctx, // Pass plan_ctx for entity type lookup
                         );
                         plan_ctx.insert_table_ctx(alias.clone(), table_ctx);
                         log::info!("   ✓ Created '{}' → CTE '{}'", alias, cte_name);

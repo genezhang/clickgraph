@@ -70,6 +70,10 @@ impl CteSchemaResolver {
         // Register the columns from projection items
         plan_ctx.register_cte_columns(&cte_name, &with_clause.items);
 
+        // NEW: Register entity types for exported aliases
+        // This preserves node/relationship type information across WITH boundaries
+        plan_ctx.register_cte_entity_types(&cte_name, &with_clause.exported_aliases);
+
         log::info!(
             "✅ CteSchemaResolver: Registered CTE '{}' with {} columns",
             cte_name,

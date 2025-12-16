@@ -59,14 +59,31 @@ impl TableCtx {
 
     /// Create a TableCtx that references a CTE instead of a base table.
     /// Used when an alias was exported from a WITH clause.
-    pub fn new_with_cte_reference(alias: String, cte_name: String) -> Self {
+    ///
+    /// **NEW (Dec 2025)**: Looks up entity type from CTE registry to preserve node/relationship types.
+    /// This fixes the bug where `WITH tag ... RETURN tag.name` fails because tag loses its Tag label.
+    pub fn new_with_cte_reference(alias: String, cte_name: String, plan_ctx: &PlanCtx) -> Self {
+        // Look up entity type information for this alias
+        let (is_rel, labels) = plan_ctx
+            .get_cte_entity_type(&cte_name, &alias)
+            .map(|(r, l)| (*r, l.clone()))
+            .unwrap_or((false, None)); // Default: not a rel, no labels
+
+        log::info!(
+            "🔧 Creating TableCtx for CTE reference '{}' → '{}': is_rel={}, labels={:?}",
+            alias,
+            cte_name,
+            is_rel,
+            labels
+        );
+
         TableCtx {
             alias,
-            labels: None, // Label will be resolved from CTE schema later
+            labels, // ✅ NOW PRESERVED FROM CTE!
             properties: vec![],
             filter_predicates: vec![],
             projection_items: vec![],
-            is_rel: false,
+            is_rel,
             explicit_alias: true,
             cte_reference: Some(cte_name),
         }
@@ -212,6 +229,12 @@ pub struct PlanCtx {
     /// Note: CTE column names use underscore (variablename_alias),
     /// while final SELECT uses dot notation (variablename.alias)
     cte_columns: HashMap<String, HashMap<String, String>>,
+    /// Track entity types (node/relationship labels) for each CTE alias
+    /// Map: CTE name → (alias → (is_rel, labels))
+    /// Example: "with_tag_cte_1" → {"tag" → (false, ["Tag"])}
+    /// This preserves node/relationship type information across WITH boundaries,
+    /// enabling property resolution after WITH (e.g., `WITH tag ... RETURN tag.name`)
+    cte_entity_types: HashMap<String, HashMap<String, (bool, Option<Vec<String>>)>>,
 }
 
 impl PlanCtx {
@@ -434,6 +457,7 @@ impl PlanCtx {
             is_with_scope: false,
             cte_counter: 0,
             cte_columns: HashMap::new(),
+            cte_entity_types: HashMap::new(),
         }
     }
 
@@ -452,6 +476,7 @@ impl PlanCtx {
             is_with_scope: false,
             cte_counter: 0,
             cte_columns: HashMap::new(),
+            cte_entity_types: HashMap::new(),
         }
     }
 
@@ -474,6 +499,7 @@ impl PlanCtx {
             is_with_scope: false,
             cte_counter: 0,
             cte_columns: HashMap::new(),
+            cte_entity_types: HashMap::new(),
         }
     }
 
@@ -502,6 +528,7 @@ impl PlanCtx {
             is_with_scope,
             cte_counter: 0,
             cte_columns: HashMap::new(),
+            cte_entity_types: HashMap::new(),
         }
     }
 
@@ -523,6 +550,7 @@ impl PlanCtx {
             is_with_scope: false,
             cte_counter: 0,
             cte_columns: HashMap::new(),
+            cte_entity_types: HashMap::new(),
         }
     }
 
@@ -626,6 +654,65 @@ impl PlanCtx {
     /// Check if a table name is a CTE reference
     pub fn is_cte(&self, name: &str) -> bool {
         self.cte_columns.contains_key(name)
+    }
+
+    /// Register entity types for aliases exported by a CTE
+    ///
+    /// # Arguments
+    /// * `cte_name` - The CTE name (e.g., "with_tag_cte_1")
+    /// * `exported_aliases` - The aliases exported by WITH (e.g., ["tag", "post"])
+    ///
+    /// This preserves node/relationship type information across WITH boundaries.
+    /// Example: WITH tag, post → stores tag: (false, ["Tag"]), post: (false, ["Post"])
+    ///
+    /// This enables property resolution after WITH: `WITH tag ... RETURN tag.name`
+    pub fn register_cte_entity_types(
+        &mut self,
+        cte_name: &str,
+        exported_aliases: &[String],
+    ) {
+        let mut entity_types = HashMap::new();
+
+        for alias in exported_aliases {
+            // Look up the TableCtx for this alias in current scope
+            if let Ok(table_ctx) = self.get_table_ctx(alias) {
+                let is_rel = table_ctx.is_relation();
+                let labels = table_ctx.get_labels().cloned();
+
+                log::info!(
+                    "📊 Registering entity type for CTE '{}' alias '{}': is_rel={}, labels={:?}",
+                    cte_name,
+                    alias,
+                    is_rel,
+                    labels
+                );
+
+                entity_types.insert(alias.clone(), (is_rel, labels));
+            } else {
+                // Alias not found in current scope - might be from parent scope or error
+                log::warn!(
+                    "⚠️  CTE '{}' exports alias '{}' but no TableCtx found in scope",
+                    cte_name,
+                    alias
+                );
+            }
+        }
+
+        self.cte_entity_types.insert(cte_name.to_string(), entity_types);
+    }
+
+    /// Get entity type information for a CTE alias
+    ///
+    /// # Arguments
+    /// * `cte_name` - The CTE name
+    /// * `alias` - The exported alias
+    ///
+    /// # Returns
+    /// Some((is_rel, labels)) if found, None otherwise
+    pub fn get_cte_entity_type(&self, cte_name: &str, alias: &str) -> Option<&(bool, Option<Vec<String>>)> {
+        self.cte_entity_types
+            .get(cte_name)?
+            .get(alias)
     }
 }
 

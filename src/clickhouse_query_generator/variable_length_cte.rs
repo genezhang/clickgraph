@@ -1059,6 +1059,10 @@ impl VariableLengthCteGenerator {
         // Add properties for start node (which is also the end node)
         for prop in &self.properties {
             if prop.cypher_alias == self.start_cypher_alias {
+                // Skip ID column - already added as start_id above (line 1039-1042)
+                if prop.column_name == self.start_node_id_column {
+                    continue;
+                }
                 select_items.push(format!(
                     "{}.{} as start_{}",
                     self.start_node_alias, prop.column_name, prop.alias
@@ -1066,6 +1070,10 @@ impl VariableLengthCteGenerator {
             }
             // For zero-hop, end properties are same as start properties
             if prop.cypher_alias == self.end_cypher_alias {
+                // Skip ID column - already added as end_id above (line 1044-1048)
+                if prop.column_name == self.end_node_id_column {
+                    continue;
+                }
                 select_items.push(format!(
                     "{}.{} as end_{}",
                     self.start_node_alias, prop.column_name, prop.alias
@@ -1165,6 +1173,10 @@ impl VariableLengthCteGenerator {
             for prop in &self.properties {
                 if prop.cypher_alias == self.start_cypher_alias {
                     // Property belongs to start node
+                    // Skip ID column - already added as start_id above (line 1141-1143)
+                    if prop.column_name == self.start_node_id_column {
+                        continue;
+                    }
                     select_items.push(format!(
                         "{}.{} as start_{}",
                         self.start_node_alias, prop.column_name, prop.alias
@@ -1172,6 +1184,10 @@ impl VariableLengthCteGenerator {
                 }
                 if prop.cypher_alias == self.end_cypher_alias {
                     // Property belongs to end node
+                    // Skip ID column - already added as end_id above (line 1145-1147)
+                    if prop.column_name == self.end_node_id_column {
+                        continue;
+                    }
                     select_items.push(format!(
                         "{}.{} as end_{}",
                         self.end_node_alias, prop.column_name, prop.alias
@@ -1301,10 +1317,18 @@ impl VariableLengthCteGenerator {
         for prop in &self.properties {
             if prop.cypher_alias == self.start_cypher_alias {
                 // Start node properties pass through from CTE
+                // Skip ID column - already passed through as vp.start_id above (line 1285)
+                if prop.column_name == self.start_node_id_column {
+                    continue;
+                }
                 select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
             }
             if prop.cypher_alias == self.end_cypher_alias {
                 // End node properties come from the newly joined node
+                // Skip ID column - already added as end_id above (line 1287-1289)
+                if prop.column_name == self.end_node_id_column {
+                    continue;
+                }
                 select_items.push(format!(
                     "{}.{} as end_{}",
                     self.end_node_alias, prop.column_name, prop.alias
