@@ -948,20 +948,18 @@ impl RenderExpr {
 
                 // Special handling for IS NULL / IS NOT NULL with wildcard property access (e.g., r.*)
                 // Convert r.* to r.from_id for null checks (LEFT JOIN produces NULL for all columns)
-                log::debug!("OperatorApplicationExp: operator={:?}, operands.len()={}", op.operator, op.operands.len());
+                // Since base tables have no NULLABLE columns, LEFT JOIN makes ALL columns NULL together,
+                // so checking just from_id is sufficient (even for composite keys).
                 if matches!(op.operator, Operator::IsNull | Operator::IsNotNull) 
                     && op.operands.len() == 1
                 {
-                    log::debug!("IS NULL check with operand: {:?}", &op.operands[0]);
                     if let RenderExpr::PropertyAccessExp(prop) = &op.operands[0] {
                         let col_name = prop.column.0.raw();
-                        log::debug!("  Property column: '{}'", col_name);
                         if col_name == "*" {
                             // Extract the relationship alias and use from_id column instead of wildcard
                             let table_alias = &prop.table_alias.0;
                             let id_sql = format!("{}.from_id", table_alias);
                             let op_str = if op.operator == Operator::IsNull { "IS NULL" } else { "IS NOT NULL" };
-                            log::debug!("  Converting {} to {}", format!("{}.*", table_alias), id_sql);
                             return format!("{} {}", id_sql, op_str);
                         }
                     }

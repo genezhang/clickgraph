@@ -8,7 +8,7 @@ use crate::query_planner::logical_expr::LogicalExpr;
 
 use crate::query_planner::logical_expr::{
     AggregateFnCall as LogicalAggregateFnCall, Column as LogicalColumn,
-    ColumnAlias as LogicalColumnAlias, Direction, ExistsSubquery as LogicalExistsSubquery,
+    ColumnAlias as LogicalColumnAlias, ConnectedPattern, Direction, ExistsSubquery as LogicalExistsSubquery,
     InSubquery as LogicalInSubquery, Literal as LogicalLiteral, LogicalCase,
     Operator as LogicalOperator, OperatorApplication as LogicalOperatorApplication, PathPattern, PropertyAccess as LogicalPropertyAccess, ScalarFnCall as LogicalScalarFnCall,
     TableAlias as LogicalTableAlias,
@@ -126,6 +126,154 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
     }
 }
 
+/// Generate SQL for multi-hop pattern count (size() with multiple relationships)
+///
+/// For `size((tag)<-[:HAS_TAG]-(message:Message)-[:HAS_CREATOR]->(person))` generates:
+/// ```sql
+/// (SELECT COUNT(*) 
+///  FROM Message_hasTag_Tag AS r1
+///  INNER JOIN Message_hasCreator_Person AS r2 ON r1.MessageId = r2.MessageId
+///  WHERE r1.TagId = tag.id)
+/// ```
+fn generate_multi_hop_pattern_count_sql(
+    connected_patterns: &[ConnectedPattern],
+    start_alias: &str,
+) -> Result<String, RenderBuildError> {
+    use crate::server::GLOBAL_SCHEMAS;
+
+    let schemas_lock = GLOBAL_SCHEMAS.get();
+    let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
+    let schema = schemas_guard
+        .as_ref()
+        .and_then(|guard| guard.get("default"))
+        .ok_or_else(|| {
+            RenderBuildError::InvalidRenderPlan("Schema not found for multi-hop pattern".to_string())
+        })?;
+
+    // First relationship connects to start node (correlated)
+    let first_conn = &connected_patterns[0];
+    let first_rel_type = first_conn
+        .relationship
+        .labels
+        .as_ref()
+        .and_then(|l| l.first())
+        .ok_or_else(|| {
+            RenderBuildError::InvalidRenderPlan("Multi-hop pattern missing relationship type".to_string())
+        })?;
+
+    let first_rel_schema = schema.get_relationships_schema_opt(first_rel_type).ok_or_else(|| {
+        RenderBuildError::InvalidRenderPlan(format!(
+            "Relationship schema '{}' not found for multi-hop pattern",
+            first_rel_type
+        ))
+    })?;
+
+    // Get start node ID for correlation
+    // Try explicit label first, then infer from relationship schema
+    let start_node_label = if let Some(label) = first_conn.start_node.label.as_ref() {
+        label.clone()
+    } else {
+        // Infer from relationship schema based on direction
+        match first_conn.relationship.direction {
+            Direction::Outgoing => first_rel_schema.from_node.clone(),
+            Direction::Incoming => first_rel_schema.to_node.clone(),
+            _ => first_rel_schema.from_node.clone(), // default
+        }
+    };
+    
+    let start_node_schema = schema.get_node_schema_opt(&start_node_label).ok_or_else(|| {
+        RenderBuildError::NodeSchemaNotFound(start_node_label.clone())
+    })?;
+    let start_id_sql = start_node_schema.node_id.sql_tuple(start_alias);
+
+    // Build FROM clause with JOINs
+    let first_table = if !first_rel_schema.database.is_empty() {
+        format!("{}.{}", first_rel_schema.database, first_rel_schema.table_name)
+    } else {
+        first_rel_schema.table_name.clone()
+    };
+
+    let mut from_clause = format!("{} AS r1", first_table);
+    let mut where_conditions = Vec::new();
+
+    // Add correlation condition for first relationship
+    let first_col = match first_conn.relationship.direction {
+        Direction::Outgoing => &first_rel_schema.from_id,
+        Direction::Incoming => &first_rel_schema.to_id,
+        _ => &first_rel_schema.from_id, // default
+    };
+    where_conditions.push(format!("r1.{} = {}", first_col, start_id_sql));
+
+    // Add subsequent relationships as JOINs
+    for (idx, conn) in connected_patterns.iter().enumerate().skip(1) {
+        let rel_type = conn
+            .relationship
+            .labels
+            .as_ref()
+            .and_then(|l| l.first())
+            .ok_or_else(|| {
+                RenderBuildError::InvalidRenderPlan("Multi-hop pattern missing relationship type".to_string())
+            })?;
+
+        let rel_schema = schema.get_relationships_schema_opt(rel_type).ok_or_else(|| {
+            RenderBuildError::InvalidRenderPlan(format!(
+                "Relationship schema '{}' not found for multi-hop pattern",
+                rel_type
+            ))
+        })?;
+
+        let table = if !rel_schema.database.is_empty() {
+            format!("{}.{}", rel_schema.database, rel_schema.table_name)
+        } else {
+            rel_schema.table_name.clone()
+        };
+
+        let curr_alias = format!("r{}", idx + 1);
+        let prev_alias = format!("r{}", idx);
+
+        // Determine join condition based on how patterns connect
+        // The end of previous pattern should match start of current pattern
+        let prev_conn = &connected_patterns[idx - 1];
+        
+        // Previous pattern's end column (where it points TO)
+        let prev_end_col = match prev_conn.relationship.direction {
+            Direction::Outgoing => &schema.get_relationships_schema_opt(
+                prev_conn.relationship.labels.as_ref().unwrap().first().unwrap()
+            ).unwrap().to_id,
+            Direction::Incoming => &schema.get_relationships_schema_opt(
+                prev_conn.relationship.labels.as_ref().unwrap().first().unwrap()
+            ).unwrap().from_id,
+            _ => &schema.get_relationships_schema_opt(
+                prev_conn.relationship.labels.as_ref().unwrap().first().unwrap()
+            ).unwrap().to_id,
+        };
+
+        // Current pattern's start column (where it points FROM)
+        let curr_start_col = match conn.relationship.direction {
+            Direction::Outgoing => &rel_schema.from_id,
+            Direction::Incoming => &rel_schema.to_id,
+            _ => &rel_schema.from_id,
+        };
+
+        from_clause.push_str(&format!(
+            " INNER JOIN {} AS {} ON {}.{} = {}.{}",
+            table, curr_alias, prev_alias, prev_end_col, curr_alias, curr_start_col
+        ));
+    }
+
+    // Build final SQL
+    let where_clause = if where_conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", where_conditions.join(" AND "))
+    };
+
+    Ok(format!(
+        "(SELECT COUNT(*) FROM {}{})",
+        from_clause, where_clause
+    ))
+}
+
 /// Generate SQL for a pattern count (size() on patterns)
 ///
 /// For `size((n)-[:REL]->())` pattern, generates:
@@ -143,16 +291,23 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                 ));
             }
 
-            // Handle single-hop pattern (most common case)
+            // Get the first connection for start node correlation
             let conn = &connected_patterns[0];
 
-            // Get the start node alias (the correlated variable)
+            // Get the start node alias (the correlated variable - connects to outer scope)
             let start_alias = conn.start_node.name.as_ref().ok_or_else(|| {
                 RenderBuildError::InvalidRenderPlan(
                     "size() pattern requires named start node".to_string(),
                 )
             })?;
 
+            // For multi-hop patterns, we need to join multiple relationships
+            if connected_patterns.len() > 1 {
+                // Handle multi-hop pattern by generating JOINs
+                return generate_multi_hop_pattern_count_sql(connected_patterns, start_alias);
+            }
+
+            // Single-hop pattern from here on
             // Get the end node alias (can be anonymous/None)
             let end_alias = conn.end_node.name.as_ref().map(|s| s.to_string());
 
@@ -226,33 +381,31 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                             .unwrap_or_default()
                     };
 
-                    // Generate COUNT SQL based on end node and direction
-                    let count_sql = match (end_alias.as_ref(), is_undirected) {
-                        (None, false) => {
-                            // Anonymous end node, directed: just count from_id matches
-                            match conn.relationship.direction {
-                                Direction::Outgoing => format!(
-                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {})",
-                                    full_table, table_name, from_col, start_id_sql
-                                ),
-                                Direction::Incoming => format!(
-                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {})",
-                                    full_table, table_name, to_col, start_id_sql
-                                ),
-                                _ => format!(
-                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {} OR {}.{} = {})",
-                                    full_table,
-                                    table_name,
-                                    from_col,
-                                    start_id_sql,
-                                    table_name,
-                                    to_col,
-                                    start_id_sql
-                                ),
-                            }
+                    // Generate COUNT SQL based on direction
+                    // NOTE: For size() patterns, named end nodes are INTERNAL to the pattern,
+                    // not correlated with outer scope. We only correlate on the start node.
+                    // Examples:
+                    //   size((tag)<-[:HAS_INTEREST]-(person:Person))
+                    //     => COUNT all Person nodes connected to tag, regardless of which persons
+                    //   size((tag)<-[:HAS_TAG]-(message:Message))
+                    //     => COUNT all Message nodes connected to tag, not correlating on specific message
+                    let count_sql = match (is_undirected, &conn.relationship.direction) {
+                        (false, Direction::Outgoing) => {
+                            // Directed outgoing: start_node -> end_node
+                            format!(
+                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {})",
+                                full_table, table_name, from_col, start_id_sql
+                            )
                         }
-                        (None, true) => {
-                            // Anonymous end node, undirected: count both directions
+                        (false, Direction::Incoming) => {
+                            // Directed incoming: start_node <- end_node
+                            format!(
+                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {})",
+                                full_table, table_name, to_col, start_id_sql
+                            )
+                        }
+                        (true, _) | (false, Direction::Either) => {
+                            // Undirected: count both directions from start node
                             format!(
                                 "(SELECT COUNT(*) FROM {} WHERE {}.{} = {} OR {}.{} = {})",
                                 full_table,
@@ -262,35 +415,6 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                                 table_name,
                                 to_col,
                                 start_id_sql
-                            )
-                        }
-                        (Some(end), true) => {
-                            // Named end node, undirected: check both directions
-                            format!(
-                                "(SELECT COUNT(*) FROM {} WHERE ({}.{} = {} AND {}.{} = {}) OR ({}.{} = {} AND {}.{} = {}))",
-                                full_table,
-                                table_name, from_col, start_id_sql,
-                                table_name, to_col, end_id_sql,
-                                table_name, from_col, end_id_sql,
-                                table_name, to_col, start_id_sql
-                            )
-                        }
-                        (Some(end), false) => {
-                            // Named end node, directed: check single direction
-                            let (from_match_sql, to_match_sql) = match conn.relationship.direction {
-                                Direction::Outgoing => (start_id_sql.clone(), end_id_sql.clone()),
-                                Direction::Incoming => (end_id_sql.clone(), start_id_sql.clone()),
-                                _ => (start_id_sql.clone(), end_id_sql.clone()),
-                            };
-                            format!(
-                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {} AND {}.{} = {})",
-                                full_table,
-                                table_name,
-                                from_col,
-                                from_match_sql,
-                                table_name,
-                                to_col,
-                                to_match_sql
                             )
                         }
                     };
