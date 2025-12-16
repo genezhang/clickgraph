@@ -302,7 +302,7 @@ pub async fn query_handler(
                 } else {
                     return Err((
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Brahmand Error: {}", e),
+                        format!("ClickGraph Error: {}", e),
                     ));
                 }
             }
@@ -338,7 +338,7 @@ pub async fn query_handler(
                         } else {
                             return Err((
                                 StatusCode::INTERNAL_SERVER_ERROR,
-                                format!("Brahmand Error: {}", e),
+                                format!("ClickGraph Error: {}", e),
                             ));
                         }
                     }
@@ -378,7 +378,7 @@ pub async fn query_handler(
                             } else {
                                 return Err((
                                     StatusCode::INTERNAL_SERVER_ERROR,
-                                    format!("Brahmand Error: {}", e),
+                                    format!("ClickGraph Error: {}", e),
                                 ));
                             }
                         }
@@ -452,7 +452,7 @@ pub async fn query_handler(
                     } else {
                         return Err((
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("Brahmand Error: {}", e),
+                            format!("ClickGraph Error: {}", e),
                         ));
                     }
                 }
@@ -475,7 +475,7 @@ pub async fn query_handler(
                     } else {
                         return Err((
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("Brahmand Error: {}", e),
+                            format!("ClickGraph Error: {}", e),
                         ));
                     }
                 }
@@ -868,7 +868,7 @@ pub async fn ddl_handler(
         .map_err(|e| {
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Brahmand Error: {}", e),
+                format!("ClickGraph Error: {}", e),
             )
         })?;
 

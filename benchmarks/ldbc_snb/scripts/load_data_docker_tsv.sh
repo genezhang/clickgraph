@@ -19,6 +19,29 @@ echo "=========================================="
 echo "Scale Factor: $SCALE_FACTOR"
 echo "=========================================="
 
+# Special handler for Person table (has Array columns)
+load_person_table() {
+    local dir_path="${DATA_BASE}/dynamic/Person"
+    
+    csv_files=$(ls "${dir_path}"/*.csv 2>/dev/null | grep -v '_SUCCESS' | sort)
+    if [ -z "$csv_files" ]; then
+        echo "  SKIP Person: No CSV files"
+        return
+    fi
+    
+    $CH_CLIENT --query="TRUNCATE TABLE IF EXISTS Person" 2>/dev/null || true
+    
+    # Load with transformation: split semicolon-separated strings into arrays
+    # Concatenate all files, skip headers, and load in one command
+    cd "${dir_path}"
+    for csv_file in *.csv; do
+        tail -n +2 "$csv_file" | sed 's/|/\t/g'
+    done | $CH_CLIENT --query="INSERT INTO Person SELECT creationDate, id, firstName, lastName, gender, birthday, locationIP, browserUsed, splitByChar(';', language) AS speaks, splitByChar(';', email) AS email FROM input('creationDate Int64, id UInt64, firstName String, lastName String, gender String, birthday Int64, locationIP String, browserUsed String, language String, email String') FORMAT TabSeparated" 2>/dev/null || true
+    
+    count=$($CH_CLIENT --query="SELECT count() FROM Person" 2>/dev/null || echo "0")
+    echo "  Person: ${count:-0} rows"
+}
+
 # Helper function to load CSV by converting to TSV
 load_table() {
     local table=$1
@@ -59,7 +82,7 @@ load_table "TagClass_isSubclassOf_TagClass" "static/TagClass_isSubclassOf_TagCla
 
 echo ""
 echo "Loading dynamic tables..."
-load_table "Person" "dynamic/Person"
+load_person_table  # Use special handler for Person (Array columns)
 load_table "Forum" "dynamic/Forum"
 load_table "Post" "dynamic/Post"
 load_table "Comment" "dynamic/Comment"
