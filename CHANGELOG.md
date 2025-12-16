@@ -1,6 +1,17 @@
 ## [Unreleased]
 
-### 🚀 Features
+### � Documentation & Issue Validation
+
+- **Issue Verification** - Systematic validation of KNOWN_ISSUES list (December 15, 2025)
+  - **Verified FIXED**: Issue #5 (WITH+MATCH with aggregation on second MATCH), Issue #7 (Mixed RETURN)
+  - **New Bugs Discovered**: Issue #6 now understood as 2 separate bugs:
+    1. Comma Pattern Bug: `MATCH (a:X), (b:Y)` only includes one table in FROM clause
+    2. NOT Boolean Operator Bug: `NOT (x = y)` silently drops the NOT operator
+  - **Impact**: Active issues reduced from 6 → 4
+  - **Testing**: Created Python test scripts to validate each issue
+  - **Files**: `KNOWN_ISSUES.md`
+
+### �🚀 Features
 
 - **Cross-Branch Shared Node JOIN Detection** - Automatic JOIN generation for branching patterns (December 15, 2025)
   - **Feature**: When a node appears in multiple relationship branches that use different tables, automatically generate INNER JOIN

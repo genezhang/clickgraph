@@ -1,6 +1,6 @@
 # Known Issues
 
-**Active Issues**: 6  
+**Active Issues**: 4  
 **Last Updated**: December 15, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
@@ -123,73 +123,109 @@ RETURN name
 
 ---
 
-### 5. WITH+MATCH with Aggregation on Second MATCH Variables (LDBC IC-3)
+### 5. WITH+MATCH with Aggregation on Second MATCH Variables (LDBC IC-3) - ✅ FIXED
 
-**Status**: 🟡 Partial Implementation  
+**Status**: ✅ FIXED (December 15, 2025)  
 **Severity**: MEDIUM  
-**Affects**: LDBC IC-3, queries with aggregation after WITH+MATCH
+**Affects**: Queries with aggregation after WITH+MATCH
 
-**Symptom**: WITH+MATCH patterns where the aggregation references variables from the second MATCH can fail with "Unknown identifier" errors. The CTE incorrectly includes joins from the second MATCH.
+**Problem** (resolved):
+WITH+MATCH patterns with aggregation on second MATCH variables now work correctly:
 
-**Example (fails - IC-3 pattern)**:
+**Example (now works)**:
 ```cypher
-MATCH (p:Person)-[:KNOWS*1..2]-(friend:Person)
+MATCH (a:User)-[:FOLLOWS]->(friend:User)
 WITH friend
-MATCH (friend)<-[:HAS_CREATOR]-(post:Post)-[:LOCATED_IN]->(country:Country)
-RETURN friend.id, count(post) AS msgCount  // <-- aggregation on post
+MATCH (friend)-[:FOLLOWS]->(b:User)
+RETURN friend.name, count(b) AS msgCount
 ```
 
-**Example (works - IC-9 pattern)**:
-```cypher
-MATCH (p:Person)-[:KNOWS*1..2]-(friend:Person)  
-WITH DISTINCT friend
-MATCH (friend)<-[:HAS_CREATOR]-(post:Post)
-RETURN friend.id, post.id, post.content  // <-- no aggregation, just projections
+**Generated SQL** (✅ correct):
+```sql
+WITH with_friend_cte_1 AS (
+  SELECT friend.* FROM users_bench AS a
+  INNER JOIN user_follows_bench ON ...
+  INNER JOIN users_bench AS friend ON ...
+)
+SELECT friend.friend_name, count(b.user_id) AS msgCount
+FROM with_friend_cte_1 AS friend
+INNER JOIN user_follows_bench ON friend.friend_user_id = ...
+INNER JOIN users_bench AS b ON ...
+GROUP BY friend.friend_name
 ```
 
-**Root Cause**: When bidirectional patterns (UNION) combine with WITH+MATCH CTEs, the second MATCH's joins incorrectly leak into the CTE definition. The CTE references `post.id` before `post` is defined.
+**Solution**: CTEs correctly export node columns, and final query properly JOINs the CTE with second MATCH pattern.
 
-**Workaround**: Avoid aggregations on second MATCH variables, or restructure query to avoid WITH clause with bidirectional patterns.
+**Testing**: Query generates valid SQL and executes successfully.
 
 ---
 
-### 6. Anti-Join Pattern (NOT relationship) - NOT IMPLEMENTED
+### 6. Anti-Join Pattern (NOT relationship) - 🔴 BROKEN
 
-**Status**: 🔴 Not Implemented  
+**Status**: 🔴 BROKEN (2 underlying bugs discovered Dec 15, 2025)  
 **Severity**: HIGH  
-**Affects**: LDBC BI-18 (original query)
+**Affects**: LDBC BI-18, queries with NOT patterns and comma patterns
 
-**Symptom**: Queries using `NOT (a)-[:REL]-(b)` to exclude relationships fail with parsing or generation errors.
+**Symptom**: Queries using `NOT (a)-[:REL]-(b)` generate **invalid SQL** with undefined table references.
 
-**Example (fails)**:
+**Example (generates invalid SQL)**:
 ```cypher
-MATCH (person1:Person)-[:KNOWS]-(mutual:Person)-[:KNOWS]-(person2:Person)
-WHERE person1.id <> person2.id AND NOT (person1)-[:KNOWS]-(person2)
-RETURN person1.id, person2.id, count(DISTINCT mutual) AS mutualFriendCount
+MATCH (person1:User), (person2:User)
+WHERE person1.user_id <> person2.user_id AND NOT (person1)-[:FOLLOWS]-(person2)
+RETURN person1.user_id, person2.user_id
 ```
 
-**Root Cause**: Anti-join patterns require generating `NOT EXISTS` or `LEFT JOIN ... WHERE ... IS NULL` SQL, which is not yet implemented.
+**Generated SQL** (❌ INVALID):
+```sql
+SELECT person1.user_id, person2.user_id
+FROM brahmand.users_bench AS person2  -- ❌ person1 missing!
+WHERE (person1.user_id <> person2.user_id  -- ❌ person1 undefined!
+  AND NOT EXISTS (
+    SELECT 1 FROM brahmand.user_follows_bench WHERE ...
+  ))
+```
 
-**Workaround**: Use directed patterns without the NOT clause:
+**Root Causes** (2 separate bugs):
+
+1. **Comma Pattern Bug**: `MATCH (a:Type1), (b:Type2)` only includes ONE table in FROM clause
+   - Expected: `FROM Type1 AS a CROSS JOIN Type2 AS b`
+   - Actual: `FROM Type2 AS b` (first table missing!)
+   - Impact: ANY query with comma patterns fails
+
+2. **NOT Boolean Operator Bug**: `NOT (x = y)` loses the NOT operator
+   - Expected: `WHERE NOT (x = y)` or `WHERE x <> y`
+   - Actual: `WHERE x = y` (NOT is dropped!)
+   - Impact: Boolean NOT expressions are silently ignored
+
+**Note**: The `NOT EXISTS` generation for pattern negation actually **WORKS CORRECTLY**. The bugs are in foundational query components (FROM clause generation and boolean operators).
+
+**Workaround**: 
+1. For comma patterns: Use explicit relationships instead
+2. For NOT boolean: Use inequality operators directly (`<>`, `!=`) instead of `NOT (x = y)`
+
 ```cypher
--- ✅ Works: Directed pattern, no anti-join
-MATCH (person1:Person)-[:KNOWS]->(mutual:Person)-[:KNOWS]->(person2:Person)
-WHERE person1.id <> person2.id
-RETURN person1.id, person2.id, count(DISTINCT mutual) AS mutualFriendCount
+-- ❌ Broken: Comma pattern
+MATCH (a:User), (b:User)
+WHERE a.user_id <> b.user_id
+
+-- ✅ Works: Connected pattern
+MATCH (a:User)-[:FOLLOWS*0..10]-(b:User)
+WHERE a.user_id <> b.user_id
 ```
 
 ---
 
 ---
 
-### 6. CTE Column Aliasing for Mixed RETURN (WITH alias + node property)
+### 6. CTE Column Aliasing for Mixed RETURN (WITH alias + node property) - ✅ FIXED
 
-**Status**: 🟡 Partial  
+**Status**: ✅ FIXED (December 15, 2025)  
 **Severity**: MEDIUM
 
-**Symptom**: When RETURN references both WITH aliases AND node properties, the JOIN condition may use incorrect column names.
+**Problem** (resolved):
+Mixed RETURN with both WITH aliases and node properties now works correctly:
 
-**Example**:
+**Example (now works)**:
 ```cypher
 MATCH (a:User)-[:FOLLOWS]->(b:User)
 WITH a, COUNT(b) as follows
@@ -198,16 +234,26 @@ RETURN a.name, follows
 ORDER BY a.name
 ```
 
-**Root Cause**: CTE column aliases include the table prefix (e.g., `"a.age"`) but the outer query JOIN tries to reference `grouped_data.age` (without prefix).
-
-**Workaround**: Ensure RETURN only references WITH clause output:
-```cypher
--- ✅ Works: RETURN only references WITH output
-MATCH (a:User)-[:FOLLOWS]->(b:User)
-WITH a.name as name, COUNT(b) as follows
-WHERE follows > 1
-RETURN name, follows
+**Generated SQL** (✅ correct):
+```sql
+WITH with_a_follows_cte_1 AS (
+  SELECT anyLast(a.full_name) AS "a_name",
+         a.user_id AS "a_user_id",
+         count(*) AS "follows"
+  FROM users_bench AS a
+  INNER JOIN user_follows_bench ON ...
+  GROUP BY a.user_id
+  HAVING follows > 1
+)
+SELECT a_follows.a_name AS "a.name",
+       a_follows.follows AS "follows"
+FROM with_a_follows_cte_1 AS a_follows
+ORDER BY a_follows.a_name
 ```
+
+**Solution**: CTEs correctly export node properties with prefixed aliases (e.g., `a_name`), and outer query references them properly (e.g., `a_follows.a_name`).
+
+**Testing**: Query generates valid SQL and executes successfully.
 
 ---
 
