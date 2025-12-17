@@ -1,11 +1,26 @@
 # LDBC Query Fix Tracker
 
-## Current Status: 3/33 queries working (9%)
+**Last Updated**: December 16, 2025
 
-### ✅ Working Queries (3)
+## Current Status: 5/33 queries working (15%)
+
+### ✅ Working Queries (5)
 - **IS1**: Profile of a person - 8-10ms
 - **IS3**: Friends of a person - 25-28ms  
 - **BI1**: Posting summary - 12.4s (needs optimization but works)
+- **BI8**: Central person for tag - ✅ (Dec 16: Verified working)
+- **BI13**: Zombies in a country - ✅ (Dec 16: WITH literal alias works)
+
+### 🎯 Recent Fixes (Dec 16, 2025)
+- **BI-18**: ✅ FIXED - Correlated subquery in JOIN ON issue resolved
+  - `NOT (pattern)`, `EXISTS()`, `size()` now stay in WHERE clause
+  - CartesianProduct JOIN rendering fixed
+  - See CHANGELOG.md for details
+
+- **Comma Pattern WITH Bug**: ✅ FIXED - Missing JOIN ON in CartesianProduct inside WITH
+  - Pattern: `MATCH (a), (b) WHERE a.id < b.id WITH a, b, 0 AS score`
+  - Now generates proper `INNER JOIN b ON a.id < b.id`
+  - Computed columns now properly prefixed with table alias
 
 ### 🔧 Priority 1: Quick Fixes (Target: +6 queries = 27% total)
 
@@ -13,10 +28,14 @@
 - [ ] **IC13**: `path = shortestPath(...)` - Assignment in MATCH not supported
 - [ ] **BI17**: Missing `$delta` parameter (already added, needs testing)
 
-#### B. WITH Clause Fixes (3 queries)  
-- [ ] **BI13**: `WITH country, 12 AS monthNum` - literal needs alias
-- [ ] **BI14**: `WITH person1, person2, city1, 0 AS score` - needs proper WITH handling
-- [ ] **BI8**: `100 * size` - arithmetic expression needs alias
+#### B. WITH Clause Fixes (STATUS: ALL PATTERNS WORK!)  
+- [x] **BI13**: ✅ WORKS - `WITH country, 12 AS monthNum` (Dec 16)
+- [x] **BI14 BASE**: ✅ FIXED - Cartesian WITH pattern now works (Dec 16)
+  - Pattern: `MATCH (a), (b) WHERE a.id < b.id WITH a, b, 0 AS score`
+  - Fix: Added Filter(WithClause(CartesianProduct)) handling
+  - JOIN ON now properly generated in CTE
+  - Full BI-14 query may need additional work for OPTIONAL MATCH chains
+- [x] **BI8**: ✅ WORKS - `100 * size` arithmetic expression (Dec 16)
 
 #### C. Schema Fixes (1 query)
 - [ ] **IC4**: Tag.name property (already added to schema, needs verification)

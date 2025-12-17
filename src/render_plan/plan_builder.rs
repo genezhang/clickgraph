@@ -93,7 +93,11 @@ fn generate_swapped_joins_for_optional_match(
     let end_id_col = table_to_id_column(&end_table);
 
     // Get relationship table
-    let rel_table = if let Some(labels) = &graph_rel.labels {
+    // If center is wrapped in a CTE (for alternate relationships), use the CTE name
+    // Otherwise, derive from labels or extract from plan
+    let rel_table = if matches!(&*graph_rel.center, LogicalPlan::Cte(_)) {
+        extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
+    } else if let Some(labels) = &graph_rel.labels {
         if !labels.is_empty() {
             rel_type_to_table_name(&labels[0])
         } else {
@@ -2058,26 +2062,6 @@ fn build_chained_with_match_cte_plan(
                         }
                     }
                     log::info!("🔧 build_chained_with_match_cte_plan: Built reverse mapping with {} entries", reverse_mapping.len());
-                }
-                
-                // HACK: Add hardcoded DB column mappings for common User table columns
-                // TODO: Get these from the graph schema dynamically
-                for with_alias in &with_aliases {
-                    if let Some(_) = cte_schemas.get(&from_ref.name) {
-                        // Add known DB column → CTE column mappings
-                        let common_mappings = vec![
-                            ("full_name", "name"),
-                            ("email_address", "email"),
-                        ];
-                        for (db_col, cypher_prop) in common_mappings {
-                            let cte_col = format!("{}_{}", with_alias, cypher_prop);
-                            // Check if this CTE column exists
-                            if reverse_mapping.contains_key(&(with_alias.clone(), cypher_prop.to_string())) {
-                                reverse_mapping.insert((with_alias.clone(), db_col.to_string()), cte_col.clone());
-                                log::info!("🔧 Added DB→CTE mapping: ({}, '{}') → {}", with_alias, db_col, cte_col);
-                            }
-                        }
-                    }
                 }
                 
                 // Rewrite SELECT items
@@ -6370,11 +6354,19 @@ impl RenderPlanBuilder for LogicalPlan {
                 // For comma patterns like (a:User), (b:User), the analyzer doesn't generate joins
                 // but the CartesianProduct needs to generate the JOIN for the right side
                 if graph_joins.joins.is_empty() {
-                    if let LogicalPlan::Projection(proj) = graph_joins.input.as_ref() {
-                        if let LogicalPlan::CartesianProduct(_cp) = proj.input.as_ref() {
-                            println!("🎯 COMMA PATTERN: Empty joins with CartesianProduct input, delegating to input");
-                            return graph_joins.input.extract_joins();
+                    // Check through Projection/Filter wrappers to find CartesianProduct
+                    fn find_cartesian(plan: &LogicalPlan) -> Option<&LogicalPlan> {
+                        match plan {
+                            LogicalPlan::CartesianProduct(_) => Some(plan),
+                            LogicalPlan::Projection(proj) => find_cartesian(&proj.input),
+                            LogicalPlan::Filter(f) => find_cartesian(&f.input),
+                            _ => None,
                         }
+                    }
+                    
+                    if let Some(cp_plan) = find_cartesian(graph_joins.input.as_ref()) {
+                        println!("🎯 COMMA PATTERN: Empty joins with CartesianProduct, extracting joins from CartesianProduct");
+                        return cp_plan.extract_joins();
                     }
                 }
 
@@ -6728,7 +6720,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     .unwrap_or_else(|| "User".to_string());
 
                 // Get relationship table
-                let rel_table = if let Some(labels) = &graph_rel.labels {
+                // NOTE: GraphJoinInference should have set rel_cte_name correctly for alternate relationships
+                // This fallback code is for edge cases where extract_joins is called directly
+                let rel_table = if matches!(&*graph_rel.center, LogicalPlan::Cte(_)) {
+                    extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
+                } else if let Some(labels) = &graph_rel.labels {
                     if !labels.is_empty() {
                         rel_type_to_table_name(&labels[0])
                     } else {

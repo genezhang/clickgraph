@@ -366,6 +366,8 @@ pub(super) fn is_node_denormalized(plan: &LogicalPlan) -> bool {
 /// Recursively traverses the plan tree to find the Scan or ViewScan node
 pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
     match plan {
+        // For CTEs, return the CTE name directly (don't recurse into input)
+        LogicalPlan::Cte(cte) => Some(cte.name.clone()),
         LogicalPlan::Scan(scan) => scan.table_name.clone(),
         LogicalPlan::ViewScan(view_scan) => Some(view_scan.source_table.clone()),
         LogicalPlan::GraphNode(node) => extract_table_name(&node.input),

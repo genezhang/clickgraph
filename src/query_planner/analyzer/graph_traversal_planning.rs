@@ -470,20 +470,19 @@ impl GraphTRaversalPlanning {
             };
             ctxs_to_update.push(left_ctx_to_update);
 
+            // For alternate relationship types, we DON'T need node CTEs
+            // The relationship UNION CTE is created in cte_extraction.rs
+            // Nodes should just be regular scans/joins to base tables
+            // Only wrap the relationship UNION in a CTE reference
+            
             let new_graph_rel = GraphRel {
-                left: Arc::new(LogicalPlan::Cte(Cte {
-                    input: graph_rel.left.clone(),
-                    name: graph_context.left.cte_name,
-                })),
+                left: graph_rel.left.clone(),  // Keep original node plan
                 center: Arc::new(LogicalPlan::Cte(Cte {
-                    input: graph_rel.right.clone(),
-                    name: graph_context.right.cte_name,
-                })),
-                right: Arc::new(LogicalPlan::Cte(Cte {
                     input: rel_plan.clone(),
                     name: rel_cte_name,
                 })),
-                ..graph_rel.clone()
+                right: graph_rel.right.clone(),  // Keep original node plan
+                ..graph_rel.clone()  // Keep labels for schema lookups
             };
 
             Ok((new_graph_rel, ctxs_to_update))
@@ -511,34 +510,30 @@ impl GraphTRaversalPlanning {
                 };
                 ctxs_to_update.push(right_ctx_to_update);
 
+                // For alternate relationship types, only wrap the relationship in CTE
+                // Nodes remain as regular scans
+                
                 let new_graph_rel = GraphRel {
-                    left: Arc::new(LogicalPlan::Cte(Cte {
-                        input: graph_rel.left.clone(),
-                        name: graph_context.left.cte_name,
-                    })),
+                    left: graph_rel.left.clone(),  // Keep original node plan
                     center: Arc::new(LogicalPlan::Cte(Cte {
                         input: rel_plan.clone(),
                         name: rel_cte_name,
                     })),
-                    right: Arc::new(LogicalPlan::Cte(Cte {
-                        input: graph_rel.right.clone(),
-                        name: graph_context.right.cte_name,
-                    })),
-                    ..graph_rel.clone()
+                    right: graph_rel.right.clone(),  // Keep original node plan
+                    ..graph_rel.clone()  // Keep labels for schema lookups
                 };
                 Ok((new_graph_rel, ctxs_to_update))
             } else {
+                // For alternate relationship types, only wrap the relationship in CTE
+                
                 let new_graph_rel = GraphRel {
-                    left: Arc::new(LogicalPlan::Cte(Cte {
-                        input: graph_rel.left.clone(),
-                        name: graph_context.left.cte_name,
-                    })),
+                    left: graph_rel.left.clone(),  // Keep original node plan
                     center: Arc::new(LogicalPlan::Cte(Cte {
                         input: rel_plan.clone(),
                         name: rel_cte_name,
                     })),
-                    right: graph_rel.right.clone(),
-                    ..graph_rel.clone()
+                    right: graph_rel.right.clone(),  // Keep original node plan
+                    ..graph_rel.clone()  // Keep labels for schema lookups
                 };
 
                 Ok((new_graph_rel, ctxs_to_update))
@@ -580,9 +575,12 @@ impl GraphTRaversalPlanning {
             && graph_context.left.label == graph_context.right.label
             && !is_rel_anchor
         {
-            // let new_rel_label = format!("{}_{}", graph_context.rel.label, Direction::Either); //"Direction::Either);
-
-            let rel_cte_name = format!("{}_{}", graph_context.rel.label, graph_context.rel.alias);
+            // CRITICAL: Use same CTE naming convention as cte_extraction.rs
+            // Format: rel_{left_connection}_{right_connection}
+            let rel_cte_name = format!(
+                "rel_{}_{}",
+                graph_rel.left_connection, graph_rel.right_connection
+            );
 
             let outgoing_alias = logical_plan::generate_id();
             let incoming_alias = logical_plan::generate_id();

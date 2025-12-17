@@ -16,7 +16,7 @@ use crate::{
         logical_expr::{
             Direction, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
         },
-        logical_plan::{GraphJoins, GraphRel, Join, JoinType, LogicalPlan},
+        logical_plan::{GraphJoins, GraphRel, Join, JoinType, LogicalPlan, Filter},
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
@@ -1205,15 +1205,45 @@ impl GraphJoinInference {
                     println!("  JOIN #{}: {} AS {}", i, join.table_name, join.table_alias);
                 }
 
+                // Separate correlation_predicates into JOIN conditions and WHERE predicates
+                // NOT PathPattern predicates must go in WHERE clause (ClickHouse limitation)
+                let (where_predicates, join_predicates): (Vec<_>, Vec<_>) = correlation_predicates
+                    .iter()
+                    .partition(|pred| pred.contains_not_path_pattern());
+                
+                if !where_predicates.is_empty() {
+                    log::info!("🔍 GraphJoinInference: Separated {} NOT PathPattern predicates to WHERE", where_predicates.len());
+                }
+
                 // wrap the outer projection i.e. first occurance in the tree walk with Graph joins
-                Transformed::Yes(Arc::new(LogicalPlan::GraphJoins(GraphJoins {
+                let graph_joins = Arc::new(LogicalPlan::GraphJoins(GraphJoins {
                     input: new_projection,
                     joins: joins_with_pre_filter,
                     optional_aliases,
                     anchor_table,
                     cte_references,
-                    correlation_predicates: correlation_predicates.clone(),
-                })))
+                    correlation_predicates: join_predicates.into_iter().cloned().collect(),
+                }));
+                
+                // If we have WHERE predicates (e.g., NOT PathPattern), wrap in Filter
+                if !where_predicates.is_empty() {
+                    log::info!("🔍 GraphJoinInference: Adding {} WHERE predicates to Filter", where_predicates.len());
+                    // Combine multiple predicates with AND
+                    let combined_predicate = if where_predicates.len() == 1 {
+                        where_predicates[0].clone()
+                    } else {
+                        LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: where_predicates.into_iter().cloned().collect(),
+                        })
+                    };
+                    Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
+                        input: graph_joins,
+                        predicate: combined_predicate,
+                    })))
+                } else {
+                    Transformed::Yes(graph_joins)
+                }
             }
             LogicalPlan::GraphNode(graph_node) => {
                 let child_tf = Self::build_graph_joins(
@@ -1460,8 +1490,11 @@ impl GraphJoinInference {
 
                 // Extract correlation predicate for WITH...MATCH cross-table patterns
                 // This will be used by the renderer to generate proper JOIN conditions
+                // CRITICAL: Check if the join_condition contains NOT PathPattern
+                // If so, it MUST go in WHERE clause, not JOIN ON (ClickHouse limitation)
+                // We'll add it to correlation_predicates but the renderer will separate it
                 if let Some(join_cond) = &cp.join_condition {
-                    log::info!("📦 CartesianProduct: Extracting correlation predicate for GraphJoins");
+                    log::info!("📦 CartesianProduct: Extracting predicate: NOT PathPattern={}", join_cond.contains_not_path_pattern());
                     correlation_predicates.push(join_cond.clone());
                 }
 
@@ -1470,13 +1503,20 @@ impl GraphJoinInference {
                 // This connects the two fully denormalized patterns.
                 if left_joins.is_empty() && right_joins.is_empty() {
                     if let Some(join_cond) = &cp.join_condition {
-                        crate::debug_print!("📦 CartesianProduct: Creating cross-table JOIN for fully denormalized patterns");
+                        // CRITICAL: Check if join_condition contains correlated subquery
+                        // If so, it MUST stay in WHERE clause - ClickHouse limitation
+                        if join_cond.contains_not_path_pattern() {
+                            log::info!("⚠️ CartesianProduct join_condition contains correlated subquery - keeping in correlation_predicates for WHERE clause");
+                            crate::debug_print!("⚠️ CartesianProduct join_condition contains correlated subquery - will NOT create JOIN, must stay in WHERE");
+                            // Don't create JOIN - let it stay in correlation_predicates for WHERE clause
+                        } else {
+                            crate::debug_print!("📦 CartesianProduct: Creating cross-table JOIN for fully denormalized patterns");
 
-                        // CRITICAL: First, extract the LEFT-side table to use as FROM clause
-                        // This is the anchor table that other tables join TO
-                        if let Some((left_table, left_alias)) =
-                            Self::extract_right_table_from_plan(&cp.left, graph_schema)
-                        {
+                            // CRITICAL: First, extract the LEFT-side table to use as FROM clause
+                            // This is the anchor table that other tables join TO
+                            if let Some((left_table, left_alias)) =
+                                Self::extract_right_table_from_plan(&cp.left, graph_schema)
+                            {
                             crate::debug_print!(
                                 "📦 CartesianProduct: Left (anchor) table='{}', alias='{}'",
                                 left_table,
@@ -1545,6 +1585,7 @@ impl GraphJoinInference {
                                 }
                             }
                         }
+                        } // End else (not correlated subquery)
                     }
                 }
 

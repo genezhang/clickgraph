@@ -1,6 +1,55 @@
 # ClickGraph Status
 
-*Updated: December 15, 2025*
+*Updated: December 16, 2025*
+
+## 🎉 Recent Fixes (December 16, 2025)
+
+### ✅ WITH Clause CartesianProduct JOIN Fix
+
+**Pattern**: `MATCH (a), (b) WHERE a.id < b.id WITH a, b, computed_value AS alias RETURN ...`
+
+**Issue**: Missing JOIN ON clause when CartesianProduct is inside WithClause
+- Generated: `FROM a INNER JOIN b` (no ON clause)
+- Also: Computed columns missing table prefix in SELECT
+
+**Fix**: Special handling in `CartesianJoinExtraction` for `Filter(WithClause(CartesianProduct))`
+- Now generates: `FROM a INNER JOIN b ON a.id < b.id`
+- Computed columns properly referenced: `cte_alias.computed_value`
+
+**Impact**: LDBC BI-14 base pattern now works, enables comma patterns with WITH clauses
+
+## 🐛 **Correlated Subquery Fix Complete** - December 16, 2025
+
+**ClickHouse correlated subquery compatibility fixed! Anti-join patterns now work.**
+
+### Correlated Subquery Handling (Dec 16, 2025)
+
+- **Anti-Join & Existence Patterns** - Automatic detection and correct placement ✅
+  - **Pattern**: `MATCH (a), (b) WHERE a.id < b.id AND NOT (a)-[:REL]-(b)`
+  - **Problem**: Correlated subqueries (`NOT EXISTS`, `EXISTS`, `size()`) were placed in JOIN ON clauses
+  - **Error**: "Code: 48. DB::Exception: Correlated subqueries in join expression are not supported (NOT_IMPLEMENTED)"
+  - **Solution**: 
+    - Detect correlated subquery predicates: `NOT (pattern)`, `EXISTS((pattern))`, `size((pattern))`
+    - Keep correlated subqueries in WHERE clause
+    - Move simple join conditions to JOIN ON clause
+  - **Use Case**: LDBC BI-18 Friend Recommendation (mutual friend anti-join)
+  - **Example**:
+    ```cypher
+    MATCH (p1:Person), (p2:Person) 
+    WHERE p1.id < p2.id AND NOT (p1)-[:KNOWS]-(p2)
+    RETURN p1.id, p2.id
+    ```
+    Generates correct SQL:
+    ```sql
+    FROM Person AS p1
+    INNER JOIN Person AS p2 ON p1.id < p2.id  -- ✅ Simple condition in JOIN
+    WHERE NOT EXISTS (...)                     -- ✅ Correlated subquery in WHERE
+    ```
+  - **Files Modified**:
+    - `src/query_planner/logical_expr/mod.rs`: Added `contains_not_path_pattern()` helper
+    - `src/query_planner/optimizer/cartesian_join_extraction.rs`: AND-splitting logic
+    - `src/query_planner/analyzer/graph_join_inference.rs`: Skip JOIN creation for correlated predicates
+    - `src/render_plan/plan_builder.rs`: Fixed CartesianProduct JOIN rendering
 
 ## 🎉 **Cross-Branch JOIN Detection Complete** - December 15, 2025
 

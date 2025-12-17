@@ -13,7 +13,7 @@ use crate::{
             errors::{AnalyzerError, Pass},
         },
         logical_expr::Direction,
-        logical_plan::GraphRel,
+        logical_plan::{GraphRel, LogicalPlan},
         plan_ctx::{PlanCtx, TableCtx},
     },
 };
@@ -196,8 +196,20 @@ pub fn get_graph_context<'a>(
     // use the edge table instead of the node's "primary" table.
     // This handles cases where node data is denormalized onto edge tables.
     // Note: CTE names must NOT have database prefix for ClickHouse compatibility
-    let rel_table_full = format!("{}.{}", rel_schema.database, rel_schema.table_name);
-    let rel_cte_name = strip_database_prefix(&rel_table_full);
+    
+    // CRITICAL: Check if relationship center is wrapped in LogicalCte (for alternate relationships)
+    // If so, extract the CTE name instead of using schema table name
+    let rel_cte_name = if let LogicalPlan::Cte(cte) = graph_rel.center.as_ref() {
+        // Alternate relationship types - center wrapped in CTE by GraphTraversalPlanning
+        log::info!("🔍 graph_context: REL alias '{}' uses CTE: '{}' (alternate relationships)", rel_alias, cte.name);
+        cte.name.clone()
+    } else {
+        // Standard single relationship - use schema table name
+        let rel_table_full = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+        let base_name = strip_database_prefix(&rel_table_full);
+        log::info!("🔍 graph_context: REL alias '{}' uses base table: '{}'", rel_alias, base_name);
+        base_name
+    };
 
     // Left node: check if this alias references a CTE (from WITH clause export)
     let left_cte_name = if let Some(cte_name) = left_ctx.get_cte_name() {

@@ -1155,3 +1155,36 @@ mod tests {
         }
     }
 }
+
+impl LogicalExpr {
+    /// Check if this expression contains correlated subqueries (NOT PathPattern or EXISTS)
+    /// Such expressions must go in WHERE clause, not JOIN ON (ClickHouse limitation)
+    /// Returns true for patterns like: NOT (a)-[:REL]-(b) or EXISTS((a)-[:REL]-(b))
+    pub fn contains_not_path_pattern(&self) -> bool {
+        match self {
+            LogicalExpr::OperatorApplicationExp(op_app) => {
+                // Check if this is a NOT operator
+                if op_app.operator == Operator::Not {
+                    // Check if any operand is a PathPattern
+                    for operand in &op_app.operands {
+                        if matches!(operand, LogicalExpr::PathPattern(_)) {
+                            return true;
+                        }
+                    }
+                }
+                // Recursively check operands for nested NOT PathPattern or EXISTS
+                for operand in &op_app.operands {
+                    if operand.contains_not_path_pattern() {
+                        return true;
+                    }
+                }
+                false
+            }
+            // EXISTS subquery also generates correlated subquery
+            LogicalExpr::ExistsSubquery(_) => true,
+            // Pattern count like size((n)-[:REL]->()) also generates correlated subquery
+            LogicalExpr::PatternCount(_) => true,
+            _ => false,
+        }
+    }
+}

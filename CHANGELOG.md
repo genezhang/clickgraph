@@ -1,6 +1,41 @@
 ## [Unreleased]
 
-### � Documentation & Issue Validation
+### 🐛 Bug Fixes
+
+- **Correlated Subquery Handling** - Fixed ClickHouse compatibility (December 16, 2025)
+  - **Issue**: `NOT (pattern)`, `EXISTS((pattern))`, and `size((pattern))` predicates were placed in JOIN ON clauses
+  - **Error**: "Code: 48. DB::Exception: Correlated subqueries in join expression are not supported"
+  - **Fix**: Detect correlated subqueries and keep them in WHERE clause while moving simple conditions to JOIN ON
+  - **Example**: `MATCH (a), (b) WHERE a.id < b.id AND NOT (a)-[:REL]-(b)` now generates:
+    ```sql
+    FROM table AS a
+    INNER JOIN table AS b ON a.id < b.id    -- Simple condition in JOIN
+    WHERE NOT EXISTS (...)                   -- Correlated subquery in WHERE
+    ```
+  - **Files**: `src/query_planner/logical_expr/mod.rs`, `src/query_planner/optimizer/cartesian_join_extraction.rs`, `src/query_planner/analyzer/graph_join_inference.rs`
+
+- **CartesianProduct JOIN Rendering** - Fixed missing second table in comma patterns (December 16, 2025)
+  - **Issue**: Comma patterns like `MATCH (a), (b) WHERE ...` only rendered first table
+  - **Fix**: CartesianProduct now correctly extracts and generates INNER JOIN for right side
+  - **Files**: `src/render_plan/plan_builder.rs`
+
+- **WITH Clause CartesianProduct JOIN** - Fixed missing JOIN ON in WITH CTEs (December 16, 2025)
+  - **Issue**: `MATCH (a), (b) WHERE a.id < b.id WITH a, b, ... RETURN ...` missing JOIN ON clause
+  - **Root Cause**: Filter above WithClause(CartesianProduct) wasn't being optimized
+  - **Fix**: Added special handling in CartesianJoinExtraction to push join conditions into CartesianProduct inside WITH
+  - **Example**: Now generates:
+    ```sql
+    WITH cte AS (
+      SELECT ...
+      FROM table AS a
+      INNER JOIN table AS b ON a.id < b.id  -- ✅ JOIN ON now present
+    )
+    SELECT ... FROM cte
+    ```
+  - **Impact**: LDBC BI-14 pattern now works, computed columns properly prefixed with table alias
+  - **Files**: `src/query_planner/optimizer/cartesian_join_extraction.rs`
+
+### 📚 Documentation & Issue Validation
 
 - **Issue Verification** - Systematic validation of KNOWN_ISSUES list (December 15, 2025)
   - **Verified FIXED**: Issue #5 (WITH+MATCH with aggregation on second MATCH), Issue #7 (Mixed RETURN)
