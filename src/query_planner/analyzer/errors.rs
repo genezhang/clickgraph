@@ -87,8 +87,14 @@ pub enum AnalyzerError {
     #[error("Optimizer error during analysis: {message}")]
     OptimizerError { message: String },
 
-    #[error("Invalid relation query - {rel}")]
-    InvalidRelationInQuery { rel: String },
+    #[error("Invalid relationship pattern: ({from})-[:{rel_type}]->({to}). Schema defines {rel_type} as ({schema_from})-[:{rel_type}]->({schema_to}). Please add the missing relationship definition to your schema YAML.")]
+    InvalidRelationInQuery { 
+        rel_type: String,
+        from: String,
+        to: String,
+        schema_from: String,
+        schema_to: String,
+    },
 
     #[error("Invalid query plan: {0}")]
     InvalidPlan(String),

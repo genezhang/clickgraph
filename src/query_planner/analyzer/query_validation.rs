@@ -168,9 +168,13 @@ impl AnalyzerPass for QueryValidation {
                     // valid graph - ClickGraph only supports edge list (relationships as explicit tables)
                     Transformed::No(logical_plan.clone())
                 } else {
-                    // return error
+                    // return error with specific details about what's wrong
                     Err(AnalyzerError::InvalidRelationInQuery {
-                        rel: graph_rel.alias.clone(),
+                        rel_type: rel_lable,
+                        from: from.to_string(),
+                        to: to.to_string(),
+                        schema_from: rel_schema.from_node.clone(),
+                        schema_to: rel_schema.to_node.clone(),
                     })?
                 }
             }
