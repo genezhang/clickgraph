@@ -1,15 +1,34 @@
 # LDBC Query Fix Tracker
 
-**Last Updated**: December 16, 2025
+**Last Updated**: December 17, 2025
 
-## Current Status: 5/33 queries working (15%)
+## Current Status: 18/41 queries generating valid SQL (44%)
 
-### ✅ Working Queries (5)
-- **IS1**: Profile of a person - 8-10ms
-- **IS3**: Friends of a person - 25-28ms  
-- **BI1**: Posting summary - 12.4s (needs optimization but works)
-- **BI8**: Central person for tag - ✅ (Dec 16: Verified working)
-- **BI13**: Zombies in a country - ✅ (Dec 16: WITH literal alias works)
+### ✅ Working Queries (18 total)
+
+**Interactive Short (7/7 = 100%)**
+- **IS1**: Profile of a person
+- **IS2**: Recent messages by person
+- **IS3**: Friends of a person
+- **IS4**: Content of a message
+- **IS5**: Creator of a message
+- **IS6**: Forum of a message
+- **IS7**: Replies to a message
+
+**Interactive Complex (5/14 = 36%)**
+- **IC2**: Recent messages by friends
+- **IC5**: New groups of a person's friends
+- **IC6**: Tag co-occurrence
+- **IC9**: Recent messages by friends or friends of friends
+- **IC14**: Weighted paths
+
+**Business Intelligence (6/20 = 30%)**
+- **BI1**: Posting summary
+- **BI2**: Tag evolution
+- **BI3**: Popular topics in a country
+- **BI6**: Active posters in a month
+- **BI12**: Trending posts
+- **BI18**: Friend recommendation
 
 ### 🎯 Recent Fixes (Dec 16, 2025)
 - **BI-18**: ✅ FIXED - Correlated subquery in JOIN ON issue resolved
@@ -51,76 +70,106 @@
   - Query: `MATCH (tag:Tag {name: "Che_Guevara"}) RETURN tag.name, tag.url`
   - Returns: `{"tag.name": "Che_Guevara", "tag.url": "http://dbpedia.org/resource/..."}`
 
-### 🔨 Priority 2: Feature Gaps (11 queries)
+### 🔨 Priority 2: Planning/Rendering Failures (23 queries)
 
-#### ANALYZER_RELATION Errors (needs investigation)
-- [ ] **BI11**: Invalid relation query - t117
-- [ ] **BI5**: Invalid relation query - t155  
-- [ ] **BI6**: Invalid relation query - t159
-- [ ] **IC1**: Invalid relation query - t170
-- [ ] **IC11**: Invalid relation query - t173
-- [ ] **IC2**: Invalid relation query - t183
-- [ ] **IC3**: Invalid relation query - t184
-- [ ] **IC7**: Invalid relation query - t188
-- [ ] **IC8**: Invalid relation query - t192
-- [ ] **IC9**: Invalid relation query - t194
-- [ ] **IS5**: Invalid relation query - t195
+**These queries fail to generate SQL and return "SQL doesn't contain SELECT" errors.**
 
-**Common Pattern**: These likely involve complex patterns like:
-- Variable-length paths with filters
-- OPTIONAL MATCH with multiple hops
-- Subqueries or complex WITH clauses
-- Need to analyze one by one
+#### Interactive Complex (9/14 failed)
+- [ ] **IC1**: Friends with a given name (planning failure)
+- [ ] **IC3**: Friends within N hops from 2 countries (planning failure)
+- [ ] **IC4**: Tag co-occurrence (planning failure)
+- [ ] **IC7**: Recent likers (planning failure)
+- [ ] **IC8**: Recent replies (planning failure)
+- [ ] **IC10**: Friend recommendation (planning failure)
+- [ ] **IC11**: Job referral (planning failure)
+- [ ] **IC12**: Expert search (planning failure)
+- [ ] **IC13**: Shortest path between people - ❌ Parser doesn't support `path = shortestPath(...)`
 
-### 🏗️ Priority 3: SQL Generation Issues (8 queries)
+#### Business Intelligence (14/20 failed)
+- [ ] **BI4**: Popular topics in a country (planning failure)
+- [ ] **BI5**: Active posters (planning failure)
+- [ ] **BI7**: Related topics (planning failure)
+- [ ] **BI8**: Central person for tag (planning failure)
+- [ ] **BI9**: Forum with related tags (planning failure)
+- [ ] **BI10**: Experts in social circle (planning failure)
+- [ ] **BI11**: Friend triangles (planning failure)
+- [ ] **BI13**: Zombies (planning failure)
+- [ ] **BI14**: International dialog (planning failure)
+- [ ] **BI15**: Weighted paths (planning failure)
+- [ ] **BI16**: Fake news pattern (planning failure)
+- [ ] **BI17**: Information propagation - ✅ FIXED (Dec 17) but needs retest
+- [ ] **BI19**: Interaction path between cities (planning failure)
+- [ ] **BI20**: Recruitment recommendation (planning failure)
 
-#### Duplicate Alias Errors (3 queries)
-- [ ] **BI12**: Multiple table expression with same alias
-- [ ] **BI18**: Multiple table expression with same alias
-- [ ] **IS6**: Multiple table expression with same alias
+**Root Cause Analysis Needed**: These queries likely involve:
+- Complex OPTIONAL MATCH chains
+- Multiple aggregations
+- Subqueries in WHERE/WITH clauses
+- Variable-length paths with complex filters
+- Missing analyzer logic for specific patterns
 
-**Root Cause**: Variable-length path `[:REPLY_OF*0..]` generates CTEs with duplicate aliases
+### 📊 Audit Results Summary
 
-#### Unknown Identifier Errors (5 queries)
-- [ ] **BI9**: Unknown table expression identifier
-- [ ] **IS2**: Unknown table expression identifier  
-- [ ] **IS4**: Unknown expression `t.id`
-- [ ] **IC5**: Unknown identifier `otherPerson.person_id`
-- [ ] **IC6**: Unknown expression `friend.id`
-- [ ] **IC12**: Unknown identifier `rel.from_id`
+**Audit Run**: December 17, 2025 using `audit_sql_generation.py`
 
-**Root Cause**: CTE column aliasing or join predicate issues
+**Results**:
+- Total queries tested: 41
+- ✅ Valid SQL generated: 18 (44%)
+- ❌ Planning failures: 23 (56%)
 
-### 📋 Priority 4: Missing Relationships (4 queries)
+**By Category**:
+- Interactive Short: 7/7 (100%) ✅ Perfect!
+- Interactive Complex: 5/14 (36%)
+- Business Intelligence: 6/20 (30%)
 
-- [ ] **BI2**: No HAS_TYPE relationship from Tag to TagClass
-- [ ] **BI3**: Missing relationship (analyze query)  
-- [ ] **BI7**: No HAS_TAG relationship (analyze query)
-- [ ] **IS7**: No REPLY_OF relationship (need generic type)
-
-**Action**: Need to add these to ldbc_snb_complete.yaml or use alternate types
+**Key Finding**: The old tracker showed 5/33 working (15%) but actual audit shows 18/41 generating valid SQL (44%). The discrepancy was due to:
+1. Using interactive audit script that waited for user input (appeared to hang)
+2. Not all queries were being tested
+3. Recent fixes (BI17, IC4, BI13, BI14, BI18) improved coverage
 
 ---
 
 ## Next Steps
 
-1. **Test IC4** - verify Tag.name fix works
-2. **Fix WITH clause aliases** - BI13, BI14, BI8
-3. **Investigate ANALYZER_RELATION** - pick one query (IC1) and debug thoroughly
-4. **Fix duplicate alias in variable paths** - Critical SQL generation bug
-5. **Add missing relationship types** - Schema configuration
+1. **Investigate Planning Failures** - Pick 2-3 failed queries and identify root causes
+   - Start with IC1 (friends with given name) - simpler pattern
+   - Then IC3 (multi-hop with filters) - more complex
+   - Analyze error messages with DEBUG logging
+
+2. **Verify BI17 Fix** - Was recently fixed, should now pass audit
+
+3. **Test Query Execution** - Run working queries against actual data
+   - Check if SQL generation ✓ means actual results ✓
+   - Identify queries that generate SQL but fail at execution
+
+4. **Performance Testing** - Benchmark the 18 working queries
+   - Identify slow queries needing optimization
+   - Create execution time baseline
 
 ---
 
-## Test Command
+## Test Commands
 
+**Batch SQL Generation Audit** (non-interactive, recommended):
+```bash
+cd /home/gz/clickgraph/benchmarks/ldbc_snb/scripts
+python3 audit_sql_generation.py
+```
+
+**Individual Query Testing** (interactive, waits for input):
 ```bash
 cd /home/gz/clickgraph/benchmarks/ldbc_snb/scripts
 python3 audit_queries_individual.py
 ```
 
-Or for specific query:
+**Manual Query Test**:
 ```bash
 curl -s http://localhost:8080/query -H "Content-Type: application/json" \
-  -d '{"query":"..."}' | jq .
+  -d '{"query":"MATCH (n:Person {id: 933}) RETURN n.firstName","database":"ldbc"}' | jq .
+```
+
+**Debug Specific Query**:
+```bash
+export RUST_LOG=debug
+# Restart server, then test query and check /tmp/server.log
 ```

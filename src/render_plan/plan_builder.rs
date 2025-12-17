@@ -83,12 +83,11 @@ fn generate_swapped_joins_for_optional_match(
     let mut joins = Vec::new();
 
     // Extract table names and columns
-    let start_label =
-        extract_node_label_from_viewscan(&graph_rel.left).unwrap_or_else(|| "User".to_string());
-    let end_label =
-        extract_node_label_from_viewscan(&graph_rel.right).unwrap_or_else(|| "User".to_string());
-    let start_table = label_to_table_name(&start_label);
-    let end_table = label_to_table_name(&end_label);
+    // CRITICAL FIX: Use extract_table_name directly instead of label lookup to avoid wrong fallbacks
+    let start_table = extract_table_name(&graph_rel.left)
+        .ok_or_else(|| RenderBuildError::MissingTableInfo("left node".to_string()))?;
+    let end_table = extract_table_name(&graph_rel.right)
+        .ok_or_else(|| RenderBuildError::MissingTableInfo("right node".to_string()))?;
 
     let start_id_col = table_to_id_column(&start_table);
     let end_id_col = table_to_id_column(&end_table);
@@ -6113,12 +6112,11 @@ impl RenderPlanBuilder for LogicalPlan {
                                 && is_node_denormalized(&graph_rel.right);
 
                             // Extract table/column info for cycle prevention
-                            let start_label = extract_node_label_from_viewscan(&graph_rel.left)
-                                .unwrap_or_else(|| "User".to_string());
-                            let end_label = extract_node_label_from_viewscan(&graph_rel.right)
-                                .unwrap_or_else(|| "User".to_string());
-                            let start_table = label_to_table_name(&start_label);
-                            let end_table = label_to_table_name(&end_label);
+                            // Use extract_table_name directly to avoid wrong fallbacks
+                            let start_table = extract_table_name(&graph_rel.left)
+                                .ok_or_else(|| RenderBuildError::MissingTableInfo("start node in cycle prevention".to_string()))?;
+                            let end_table = extract_table_name(&graph_rel.right)
+                                .ok_or_else(|| RenderBuildError::MissingTableInfo("end node in cycle prevention".to_string()))?;
 
                             let rel_cols = extract_relationship_columns(&graph_rel.center)
                                 .unwrap_or(RelationshipColumns {
@@ -6699,28 +6697,25 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Extract table names and columns
                 // IMPORTANT: For CTE references, use the source_table directly from ViewScan
                 // because CTEs don't have labels in the schema
-                fn get_table_name_or_cte(plan: &LogicalPlan) -> String {
+                fn get_table_name_or_cte(plan: &LogicalPlan) -> Result<String, RenderBuildError> {
                     // First, try to get source_table directly from ViewScan (handles CTE references)
                     if let Some(table_name) = extract_table_name(plan) {
                         // Check if this looks like a CTE (starts with "with_")
                         if table_name.starts_with("with_") {
-                            return table_name;
+                            return Ok(table_name);
                         }
                     }
-                    // Fall back to label-based table name
-                    let label = extract_node_label_from_viewscan(plan)
-                        .unwrap_or_else(|| "User".to_string());
-                    label_to_table_name(&label)
+                    // Extract table name from ViewScan - no fallback
+                    extract_table_name(plan)
+                        .ok_or_else(|| RenderBuildError::MissingTableInfo("node table in extract_joins".to_string()))
                 }
 
-                let start_table = get_table_name_or_cte(&graph_rel.left);
-                let end_table = get_table_name_or_cte(&graph_rel.right);
+                let start_table = get_table_name_or_cte(&graph_rel.left)?;
+                let end_table = get_table_name_or_cte(&graph_rel.right)?;
 
-                // Also extract labels for schema filter generation (can be None for CTEs)
-                let start_label = extract_node_label_from_viewscan(&graph_rel.left)
-                    .unwrap_or_else(|| "User".to_string());
-                let end_label = extract_node_label_from_viewscan(&graph_rel.right)
-                    .unwrap_or_else(|| "User".to_string());
+                // Also extract labels for schema filter generation (optional for CTEs)
+                let start_label = extract_node_label_from_viewscan(&graph_rel.left);
+                let end_label = extract_node_label_from_viewscan(&graph_rel.right);
 
                 // Get relationship table
                 // NOTE: GraphJoinInference should have set rel_cte_name correctly for alternate relationships

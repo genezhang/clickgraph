@@ -3034,8 +3034,8 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
     center: &LogicalPlan,
     alias: &str,
     rel_types: &[String],
-    from_label: &str,
-    to_label: &str,
+    from_label: &Option<String>,
+    to_label: &Option<String>,
 ) -> Option<RenderExpr> {
     // Extract ViewScan from center (might be wrapped in GraphNode)
     let view_scan = match center {
@@ -3097,35 +3097,39 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
         }
     }
 
-    // Filter 2: from_label_column = 'FromNodeType' (if present and not $any)
+    // Filter 2: from_label_column = 'FromNodeType' (if label provided and not $any)
     if let Some(from_label_col) = &view_scan.from_label_column {
-        if !from_label.is_empty() && from_label != "$any" {
-            filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::Equal,
-                operands: vec![
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: TableAlias(alias.to_string()),
-                        column: Column(PropertyValue::Column(from_label_col.clone())),
-                    }),
-                    RenderExpr::Literal(Literal::String(from_label.to_string())),
-                ],
-            }));
+        if let Some(from_label_str) = from_label {
+            if !from_label_str.is_empty() && from_label_str != "$any" {
+                filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(alias.to_string()),
+                            column: Column(PropertyValue::Column(from_label_col.clone())),
+                        }),
+                        RenderExpr::Literal(Literal::String(from_label_str.clone())),
+                    ],
+                }));
+            }
         }
     }
 
-    // Filter 3: to_label_column = 'ToNodeType' (if present and not $any)
+    // Filter 3: to_label_column = 'ToNodeType' (if label provided and not $any)
     if let Some(to_label_col) = &view_scan.to_label_column {
-        if !to_label.is_empty() && to_label != "$any" {
-            filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::Equal,
-                operands: vec![
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: TableAlias(alias.to_string()),
-                        column: Column(PropertyValue::Column(to_label_col.clone())),
-                    }),
-                    RenderExpr::Literal(Literal::String(to_label.to_string())),
-                ],
-            }));
+        if let Some(to_label_str) = to_label {
+            if !to_label_str.is_empty() && to_label_str != "$any" {
+                filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(alias.to_string()),
+                            column: Column(PropertyValue::Column(to_label_col.clone())),
+                        }),
+                        RenderExpr::Literal(Literal::String(to_label_str.clone())),
+                    ],
+                }));
+            }
         }
     }
 

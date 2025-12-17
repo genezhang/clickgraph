@@ -1138,6 +1138,50 @@ impl FilterTagging {
         }
     }
 
+    /// Recursively collect all PropertyAccess expressions from an expression tree
+    /// Used to extract property projections without modifying the expression structure
+    fn collect_property_accesses(expr: &LogicalExpr, props: &mut Vec<PropertyAccess>) {
+        match expr {
+            LogicalExpr::PropertyAccessExp(prop) => {
+                props.push(prop.clone());
+            }
+            LogicalExpr::OperatorApplicationExp(op) => {
+                for operand in &op.operands {
+                    Self::collect_property_accesses(operand, props);
+                }
+            }
+            LogicalExpr::ScalarFnCall(fc) => {
+                for arg in &fc.args {
+                    Self::collect_property_accesses(arg, props);
+                }
+            }
+            LogicalExpr::AggregateFnCall(fc) => {
+                for arg in &fc.args {
+                    Self::collect_property_accesses(arg, props);
+                }
+            }
+            LogicalExpr::Case(case) => {
+                if let Some(expr) = &case.expr {
+                    Self::collect_property_accesses(expr, props);
+                }
+                for (cond, result) in &case.when_then {
+                    Self::collect_property_accesses(cond, props);
+                    Self::collect_property_accesses(result, props);
+                }
+                if let Some(else_expr) = &case.else_expr {
+                    Self::collect_property_accesses(else_expr, props);
+                }
+            }
+            LogicalExpr::List(items) => {
+                for item in items {
+                    Self::collect_property_accesses(item, props);
+                }
+            }
+            // Other expression types don't contain property accesses
+            _ => {}
+        }
+    }
+
     fn process_expr(
         expr: LogicalExpr,
         extracted_filters: &mut Vec<OperatorApplication>,
@@ -1147,6 +1191,37 @@ impl FilterTagging {
         match expr {
             // When we have an operator application, process it separately.
             LogicalExpr::OperatorApplicationExp(mut op_app) => {
+                
+                // CRITICAL: Handle NOT operator BEFORE recursing into operands
+                // Otherwise the operand (e.g., Equal(p.id, friend.id)) gets processed and extracted first
+                if op_app.operator == Operator::Not && op_app.operands.len() == 1 {
+                    // Check if the operand (the expression under NOT) is single-table or cross-table
+                    let single_table = Self::get_table_alias_if_single_table_condition(&op_app.operands[0], false);
+                    
+                    if single_table.is_none() {
+                        // Cross-table condition under NOT (e.g., NOT (p.id = friend.id))
+                        // Keep it intact - don't recurse into operands
+                        // Just extract property projections for column selection
+                        let mut temp_props = Vec::new();
+                        Self::collect_property_accesses(&op_app.operands[0], &mut temp_props);
+                        extracted_projections.extend(temp_props);
+                        
+                        // Return the entire NOT expression as-is for global WHERE clause
+                        return Some(LogicalExpr::OperatorApplicationExp(op_app));
+                    } else {
+                        // Single-table NOT (e.g., NOT p.active)
+                        // Extract it as a complete filter to the table
+                        // Collect projections from the operand
+                        let mut temp_props = Vec::new();
+                        Self::collect_property_accesses(&op_app.operands[0], &mut temp_props);
+                        extracted_projections.extend(temp_props);
+                        
+                        // Extract the entire NOT expression as a filter
+                        extracted_filters.push(op_app);
+                        return None;  // Extracted - remove from remaining
+                    }
+                }
+                
                 // Check if the current operator is an Or.
                 let current_is_or = op_app.operator == Operator::Or;
 
@@ -1160,6 +1235,7 @@ impl FilterTagging {
                         return None;
                     }
                 }
+                
                 // Update our flag: once inside an Or, we stay inside.
                 let new_in_or = in_or || current_is_or;
 

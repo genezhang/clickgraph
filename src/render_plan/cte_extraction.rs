@@ -754,17 +754,16 @@ pub fn extract_ctes_with_context(
         LogicalPlan::GraphRel(graph_rel) => {
             // Handle variable-length paths with context
             if let Some(spec) = &graph_rel.variable_length {
-                // Extract actual table names and column information
-                let start_label = extract_node_label_from_viewscan(&graph_rel.left)
-                    .unwrap_or_else(|| "User".to_string());
-                let end_label = extract_node_label_from_viewscan(&graph_rel.right)
-                    .unwrap_or_else(|| "User".to_string());
-                // 🎯 FIX: Extract table name from ViewScan (authoritative) before label lookup
-                // ViewScan contains the correct fully-qualified table name from schema resolution
+                // Extract actual table names directly from ViewScan - no fallbacks
                 let start_table = extract_table_name(&graph_rel.left)
-                    .unwrap_or_else(|| label_to_table_name(&start_label));
+                    .ok_or_else(|| RenderBuildError::MissingTableInfo("start node in VLP".to_string()))?;
                 let end_table = extract_table_name(&graph_rel.right)
-                    .unwrap_or_else(|| label_to_table_name(&end_label));
+                    .ok_or_else(|| RenderBuildError::MissingTableInfo("end node in VLP".to_string()))?;
+
+                // Also extract labels for filter categorization and property extraction
+                // These are optional - not all nodes have labels (e.g., CTEs)
+                let start_label = extract_node_label_from_viewscan(&graph_rel.left).unwrap_or_default();
+                let end_label = extract_node_label_from_viewscan(&graph_rel.right).unwrap_or_default();
 
                 // Get rel_table from ViewScan's source_table (authoritative) or fall back to label lookup
                 let rel_table = match graph_rel.center.as_ref() {

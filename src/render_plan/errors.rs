@@ -40,4 +40,7 @@ pub enum RenderBuildError {
 
     #[error("ViewScan is missing required {0} column for relationship scan. This is an internal query planner error.")]
     ViewScanMissingRelationshipColumn(String),
+
+    #[error("Missing table information for {0}. Schema lookup failed and no fallback is available.")]
+    MissingTableInfo(String),
 }

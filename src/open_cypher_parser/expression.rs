@@ -331,15 +331,20 @@ pub fn parse_operator_symbols(input: &str) -> IResult<&str, Operator> {
 
 fn parse_unary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     alt((
+        // Unary minus (negation)
         map(
-            preceded(ws(tag_no_case("NOT")), parse_unary_expression),
+            preceded(ws(tag("-")), parse_unary_expression),
             |expr| {
                 Expression::OperatorApplicationExp(OperatorApplication {
-                    operator: Operator::Not,
-                    operands: vec![expr],
+                    operator: Operator::Subtraction,
+                    operands: vec![
+                        Expression::Literal(Literal::Integer(0)),
+                        expr,
+                    ],
                 })
             },
         ),
+        // DISTINCT is a unary operator
         map(
             preceded(ws(tag_no_case("DISTINCT")), parse_unary_expression),
             |expr| {
@@ -461,6 +466,24 @@ fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_
     Ok((remaining_input, final_expression))
 }
 
+// NOT operator - lower precedence than comparison
+// This allows "NOT a = b" to parse as "NOT (a = b)" rather than "(NOT a) = b"
+fn parse_not_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    alt((
+        map(
+            preceded(ws(tag_no_case("NOT")), parse_not_expression),
+            |expr| {
+                Expression::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::Not,
+                    operands: vec![expr],
+                })
+            },
+        ),
+        parse_comparison_expression, // fallback to comparison
+    ))
+    .parse(input)
+}
+
 // Deprecated: now use parse_comparison_expression instead
 fn parse_binary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Redirect to comparison expression for backward compatibility
@@ -468,14 +491,14 @@ fn parse_binary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 }
 
 fn parse_logical_and(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let (input, lhs) = parse_comparison_expression(input)?;
+    let (input, lhs) = parse_not_expression(input)?;
 
     let mut remaining_input = input;
     let mut final_expression = lhs;
 
     loop {
-        // Try to parse an "AND" followed by a comparison expression.
-        let res = preceded(ws(tag_no_case("AND")), parse_comparison_expression).parse(remaining_input);
+        // Try to parse an "AND" followed by a NOT expression.
+        let res = preceded(ws(tag_no_case("AND")), parse_not_expression).parse(remaining_input);
         match res {
             Ok((new_input, rhs)) => {
                 // Build a new expression by moving `expr` and `rhs` into a new operator application.
