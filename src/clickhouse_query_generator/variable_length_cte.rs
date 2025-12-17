@@ -627,11 +627,17 @@ impl VariableLengthCteGenerator {
     pub fn generate_cte(&self) -> Cte {
         let cte_sql = self.generate_recursive_sql();
 
-        Cte {
-            cte_name: self.cte_name.clone(),
-            content: crate::render_plan::CteContent::RawSql(cte_sql),
-            is_recursive: true,
-        }
+        Cte::new_vlp(
+            self.cte_name.clone(),
+            crate::render_plan::CteContent::RawSql(cte_sql),
+            true, // is_recursive
+            self.start_node_alias.clone(),
+            self.end_node_alias.clone(),
+            self.start_node_table.clone(),
+            self.end_node_table.clone(),
+            self.start_cypher_alias.clone(),  // Add Cypher alias
+            self.end_cypher_alias.clone(),    // Add Cypher alias
+        )
     }
 
     /// Rewrite end node filter for use in intermediate CTEs
@@ -1085,7 +1091,7 @@ impl VariableLengthCteGenerator {
 
         // Build the zero-hop query - just select from start table
         let mut query = format!(
-            "    SELECT \n        {}\n    FROM {} {}",
+            "    SELECT \n        {}\n    FROM {} AS {}",
             select_clause,
             self.format_table_name(&self.start_node_table),
             self.start_node_alias
@@ -1199,7 +1205,7 @@ impl VariableLengthCteGenerator {
 
             // Build the base query without WHERE clause
             let mut query = format!(
-                "    SELECT \n        {select}\n    FROM {start_table} {start}\n    JOIN {rel_table} {rel} ON {start}.{start_id_col} = {rel}.{from_col}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}",
+                "    SELECT \n        {select}\n    FROM {start_table} AS {start}\n    JOIN {rel_table} AS {rel} ON {start}.{start_id_col} = {rel}.{from_col}\n    JOIN {end_table} AS {end} ON {rel}.{to_col} = {end}.{end_id_col}",
                 select = select_clause,
                 start = self.start_node_alias,
                 start_id_col = self.start_node_id_column,
@@ -1367,7 +1373,7 @@ impl VariableLengthCteGenerator {
         let where_clause = where_conditions.join("\n      AND ");
 
         format!(
-            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON vp.end_id = current_node.{current_id_col}\n    JOIN {rel_table} {rel} ON current_node.{current_id_col} = {rel}.{from_col}\n    JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id_col}\n    WHERE {where_clause}",
+            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} AS current_node ON vp.end_id = current_node.{current_id_col}\n    JOIN {rel_table} AS {rel} ON current_node.{current_id_col} = {rel}.{from_col}\n    JOIN {end_table} AS {end} ON {rel}.{to_col} = {end}.{end_id_col}\n    WHERE {where_clause}",
             select = select_clause,
             end = self.end_node_alias,
             end_id_col = self.end_node_id_column,
@@ -1797,7 +1803,7 @@ impl VariableLengthCteGenerator {
 
         // Simple FROM - just the relationship table, no node tables
         let mut query = format!(
-            "    SELECT \n        {select}\n    FROM {rel_table} {rel}",
+            "    SELECT \n        {select}\n    FROM {rel_table} AS {rel}",
             select = select_clause,
             rel_table = self.format_table_name(&self.relationship_table),
             rel = self.relationship_alias
@@ -1864,7 +1870,7 @@ impl VariableLengthCteGenerator {
         // For denormalized: join directly from CTE end_id to new rel's from_col
         // No intermediate node table needed
         format!(
-            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {rel_table} {rel} ON vp.end_id = {rel}.{from_col}\n    WHERE {where_clause}",
+            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {rel_table} AS {rel} ON vp.end_id = {rel}.{from_col}\n    WHERE {where_clause}",
             select = select_clause,
             cte_name = cte_name,
             rel_table = self.format_table_name(&self.relationship_table),
@@ -2340,11 +2346,11 @@ impl ChainedJoinGenerator {
         // Wrap the query body with CTE name, like recursive CTE does
         let wrapped_sql = format!("{} AS (\n{}\n)", cte_name, cte_sql);
 
-        Cte {
+        Cte::new(
             cte_name,
-            content: crate::render_plan::CteContent::RawSql(wrapped_sql),
-            is_recursive: false, // Chained JOINs don't need recursion
-        }
+            crate::render_plan::CteContent::RawSql(wrapped_sql),
+            false, // Chained JOINs don't need recursion
+        )
     }
 
     fn format_table_name(&self, table: &str) -> String {

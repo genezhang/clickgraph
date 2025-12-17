@@ -2363,9 +2363,13 @@ impl GraphJoinInference {
                     is_first_relationship && !left_is_optional
                 };
 
+                log::debug!("🔍 JOIN strategy for CONTAINER_OF: connect_left_first={}, left_alias={}, right_alias={}, is_first_relationship={}", 
+                    connect_left_first, left_alias, right_alias, is_first_relationship);
+
                 if connect_left_first {
                     // Standard order: LEFT → EDGE → RIGHT
                     crate::debug_print!("       Connect order: LEFT → EDGE → RIGHT");
+                    log::debug!("  📍 Connect order: LEFT → EDGE → RIGHT");
 
                     // If first relationship and left is anchor, mark it joined
                     if is_first_relationship && !left_is_optional {
@@ -2373,9 +2377,12 @@ impl GraphJoinInference {
                             "       LEFT '{}' is anchor - will be FROM table",
                             left_alias
                         );
+                        log::debug!("  🎯 LEFT '{}' marked as FROM table (is_first_relationship={}, left_is_optional={})", left_alias, is_first_relationship, left_is_optional);
                         joined_entities.insert(left_alias.to_string());
                     }
 
+                    log::debug!("  🔍 Checking if LEFT '{}' needs JOIN... joined_entities={:?}", left_alias, joined_entities);
+                    
                     // JOIN: Left node (if not yet joined)
                     if !joined_entities.contains(left_alias) {
                         // Resolve columns for CTE references
@@ -2457,14 +2464,19 @@ impl GraphJoinInference {
                             join_type: Self::determine_join_type(right_is_optional),
                             pre_filter: None,
                         };
+                        
+                        log::debug!("📌 Adding RIGHT node JOIN: {} AS {}", right_cte_name, right_alias);
                         collected_graph_joins.push(right_join);
                         joined_entities.insert(right_alias.to_string());
+                    } else {
+                        log::debug!("⏭️  SKIP RIGHT node JOIN: {} (already in joined_entities)", right_alias);
                     }
                 } else {
                     // Reverse order: RIGHT → EDGE → LEFT (right is available, connect to it first)
                     crate::debug_print!(
                         "       Connect order: RIGHT → EDGE → LEFT (right already available)"
                     );
+                    log::debug!("  📍 Connect order: RIGHT → EDGE → LEFT (right already available)");
 
                     // Resolve columns for CTE references
                     let resolved_right_join_col = Self::resolve_column(right_join_col, rel_cte_name, plan_ctx);
@@ -2499,6 +2511,8 @@ impl GraphJoinInference {
                         let resolved_left_id = Self::resolve_column(&left_id_col, left_cte_name, plan_ctx);
                         let resolved_left_join_col = Self::resolve_column(left_join_col, rel_cte_name, plan_ctx);
 
+                        log::debug!("🔧 Creating LEFT node JOIN: {} AS {} (not in joined_entities: {:?})", left_cte_name, left_alias, joined_entities);
+
                         let left_join = Join {
                             table_name: left_cte_name.to_string(),
                             table_alias: left_alias.to_string(),
@@ -2518,8 +2532,12 @@ impl GraphJoinInference {
                             join_type: Self::determine_join_type(left_is_optional),
                             pre_filter: None,
                         };
+                        
+                        log::debug!("📌 Adding LEFT node JOIN: {} AS {}", left_cte_name, left_alias);
                         collected_graph_joins.push(left_join);
                         joined_entities.insert(left_alias.to_string());
+                    } else {
+                        log::debug!("⏭️  SKIP LEFT node JOIN: {} (already in joined_entities)", left_alias);
                     }
                 }
 
@@ -2984,8 +3002,19 @@ impl GraphJoinInference {
             if !is_fixed_length {
                 // Truly variable-length (*1..3, *, etc.) - skip, will use CTE path
                 crate::debug_print!(
-                    "    � ? SKIP: Variable-length path detected (not fixed-length)"
+                    "    � ? SKIP: Variable-length path detected (not fixed-length) for rel={}, left={}, right={}",
+                    graph_rel.alias, graph_rel.left_connection, graph_rel.right_connection
                 );
+                
+                // Mark VLP endpoints as "joined" so subsequent patterns don't think they're first
+                // NOTE: These nodes will need explicit JOINs created in the render phase to connect
+                // them to the VLP CTE (via start_id/end_id columns)
+                let left_alias = &graph_rel.left_connection;
+                let right_alias = &graph_rel.right_connection;
+                joined_entities.insert(left_alias.to_string());
+                joined_entities.insert(right_alias.to_string());
+                log::debug!("  🎯 VLP: Marked endpoints '{}' and '{}' as joined (note: need CTE connection JOINs in render)", left_alias, right_alias);
+                
                 crate::debug_print!("    +- infer_graph_join EXIT\n");
                 return Ok(());
             }

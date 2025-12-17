@@ -3259,6 +3259,150 @@ pub(super) fn combine_optional_filters_with_and(
     combine_render_exprs_with_and(active)
 }
 
+/// Sort JOINs by dependency order to ensure referenced tables are defined before use.
+/// 
+/// For example, if JOIN A references table B in its ON clause, then B must appear
+/// before A in the JOIN list. This is critical for OPTIONAL VLP queries where:
+/// `LEFT JOIN vlp_cte AS vlp1 ON vlp1.start_id = message.id`
+/// requires that `message` be defined in an earlier JOIN.
+///
+/// # Arguments
+/// * `joins` - Vector of JOINs to sort
+/// * `from_table` - Optional FROM table (already defined, can be referenced by JOINs)
+///
+/// # Returns
+/// Sorted vector of JOINs in dependency order
+pub(super) fn sort_joins_by_dependency(
+    mut joins: Vec<super::Join>,
+    from_table: Option<&super::FromTable>,
+) -> Vec<super::Join> {
+    use std::collections::{HashMap, HashSet};
+    
+    log::debug!("🔍 Sorting {} JOINs by dependency", joins.len());
+    
+    // Build a set of available aliases (FROM table + already processed JOINs)
+    let mut available: HashSet<String> = HashSet::new();
+    
+    // Add FROM table alias if present
+    if let Some(from) = from_table {
+        if let Some(table_ref) = &from.table {
+            if let Some(alias) = &table_ref.alias {
+                available.insert(alias.clone());
+                log::debug!("  FROM alias: {}", alias);
+            } else {
+                // Use table name as implicit alias
+                available.insert(table_ref.name.clone());
+                log::debug!("  FROM table (implicit alias): {}", table_ref.name);
+            }
+        }
+    }
+    
+    // Build dependency map: JOIN -> set of aliases it references in ON clause
+    let mut dependencies: HashMap<usize, HashSet<String>> = HashMap::new();
+    
+    for (idx, join) in joins.iter().enumerate() {
+        let mut refs = HashSet::new();
+        
+        // Extract all aliases referenced in joining_on conditions
+        for condition in &join.joining_on {
+            extract_referenced_aliases_from_op(condition, &mut refs);
+        }
+        
+        // Remove self-reference (the JOIN's own alias)
+        refs.remove(&join.table_alias);
+        
+        log::debug!(
+            "  JOIN[{}] {} AS {} depends on: {:?}",
+            idx, join.table_name, join.table_alias, refs
+        );
+        
+        dependencies.insert(idx, refs);
+    }
+    
+    // Topological sort: repeatedly find JOINs whose dependencies are all available
+    let mut sorted = Vec::new();
+    let mut remaining: Vec<usize> = (0..joins.len()).collect();
+    let mut max_iterations = joins.len() * 2; // Prevent infinite loops
+    
+    while !remaining.is_empty() && max_iterations > 0 {
+        max_iterations -= 1;
+        
+        // Find next JOIN that can be added (all dependencies available)
+        let ready_idx = remaining.iter().position(|&idx| {
+            dependencies.get(&idx)
+                .map(|deps| deps.iter().all(|dep| available.contains(dep)))
+                .unwrap_or(true)
+        });
+        
+        if let Some(pos) = ready_idx {
+            let idx = remaining.remove(pos);
+            
+            // Add this JOIN's alias to available set
+            available.insert(joins[idx].table_alias.clone());
+            
+            sorted.push(idx);
+        } else {
+            // No progress possible - break to avoid infinite loop
+            // This can happen with circular dependencies (shouldn't occur in practice)
+            log::warn!(
+                "Could not fully sort JOINs by dependency - {} remaining with circular dependencies", 
+                remaining.len()
+            );
+            break;
+        }
+    }
+    
+    // Add any remaining JOINs that couldn't be sorted
+    for idx in remaining {
+        sorted.push(idx);
+    }
+    
+    log::debug!("  Sorted order: {:?}", sorted);
+    
+    // Rebuild JOIN vector in sorted order
+    let original_joins = joins.clone();
+    joins.clear();
+    for idx in sorted {
+        joins.push(original_joins[idx].clone());
+    }
+    
+    joins
+}
+
+/// Extract all table aliases referenced in an OperatorApplication's operands
+fn extract_referenced_aliases_from_op(op: &OperatorApplication, refs: &mut HashSet<String>) {
+    for operand in &op.operands {
+        extract_referenced_aliases_from_expr(operand, refs);
+    }
+}
+
+/// Extract all table aliases referenced in a RenderExpr
+fn extract_referenced_aliases_from_expr(expr: &RenderExpr, refs: &mut HashSet<String>) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            refs.insert(prop.table_alias.0.clone());
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            extract_referenced_aliases_from_op(op, refs);
+        }
+        RenderExpr::ScalarFnCall(call) => {
+            for arg in &call.args {
+                extract_referenced_aliases_from_expr(arg, refs);
+            }
+        }
+        RenderExpr::AggregateFnCall(call) => {
+            for arg in &call.args {
+                extract_referenced_aliases_from_expr(arg, refs);
+            }
+        }
+        RenderExpr::TableAlias(alias) => {
+            refs.insert(alias.0.clone());
+        }
+        // Literals, Star, CastExpr, etc. don't reference aliases
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

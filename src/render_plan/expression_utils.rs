@@ -2,7 +2,7 @@
 //!
 //! This module provides common utilities for working with RenderExpr trees.
 
-use super::render_expr::RenderExpr;
+use super::render_expr::{RenderExpr, TableAlias};
 
 /// Check if a RenderExpr references a specific table alias
 /// Used by tests for validation
@@ -49,6 +49,74 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
         | RenderExpr::Parameter(_) => false,
         // MapLiteral may contain aliases in its values
         RenderExpr::MapLiteral(entries) => entries.iter().any(|(_, v)| references_alias(v, alias)),
+    }
+}
+
+/// Rewrite table aliases in a RenderExpr according to a mapping
+/// Used to translate Cypher aliases to VLP internal aliases
+pub fn rewrite_aliases(
+    expr: &mut RenderExpr,
+    alias_map: &std::collections::HashMap<String, String>,
+) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            if let Some(new_alias) = alias_map.get(&prop.table_alias.0) {
+                log::debug!("🔄 Rewriting alias '{}' → '{}'", prop.table_alias.0, new_alias);
+                prop.table_alias = TableAlias(new_alias.clone());
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op_app) => {
+            for operand in &mut op_app.operands {
+                rewrite_aliases(operand, alias_map);
+            }
+        }
+        RenderExpr::ScalarFnCall(fn_call) => {
+            for arg in &mut fn_call.args {
+                rewrite_aliases(arg, alias_map);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &mut agg.args {
+                rewrite_aliases(arg, alias_map);
+            }
+        }
+        RenderExpr::List(exprs) => {
+            for expr in exprs {
+                rewrite_aliases(expr, alias_map);
+            }
+        }
+        RenderExpr::Case(case_expr) => {
+            for (when, then) in &mut case_expr.when_then {
+                rewrite_aliases(when, alias_map);
+                rewrite_aliases(then, alias_map);
+            }
+            if let Some(else_expr) = &mut case_expr.else_expr {
+                rewrite_aliases(else_expr, alias_map);
+            }
+        }
+        RenderExpr::InSubquery(subquery) => {
+            rewrite_aliases(&mut subquery.expr, alias_map);
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            rewrite_aliases(&mut reduce.initial_value, alias_map);
+            rewrite_aliases(&mut reduce.list, alias_map);
+            rewrite_aliases(&mut reduce.expression, alias_map);
+        }
+        RenderExpr::MapLiteral(entries) => {
+            for (_, v) in entries {
+                rewrite_aliases(v, alias_map);
+            }
+        }
+        // Simple expressions that don't contain aliases - no rewriting needed
+        RenderExpr::Literal(_)
+        | RenderExpr::Raw(_)
+        | RenderExpr::Star
+        | RenderExpr::TableAlias(_)
+        | RenderExpr::ColumnAlias(_)
+        | RenderExpr::Column(_)
+        | RenderExpr::Parameter(_)
+        | RenderExpr::ExistsSubquery(_)
+        | RenderExpr::PatternCount(_) => {}
     }
 }
 

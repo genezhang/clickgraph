@@ -176,6 +176,55 @@ pub struct Cte {
     pub cte_name: String,
     pub content: CteContent,
     pub is_recursive: bool,
+    // VLP endpoint information (only populated for VLP CTEs)
+    pub vlp_start_alias: Option<String>,         // Internal alias used in VLP CTE (e.g., "start_node")
+    pub vlp_end_alias: Option<String>,           // Internal alias used in VLP CTE (e.g., "end_node")
+    pub vlp_start_table: Option<String>,         // Start node table name (e.g., "ldbc.Message")
+    pub vlp_end_table: Option<String>,           // End node table name (e.g., "ldbc.Post")
+    pub vlp_cypher_start_alias: Option<String>,  // Original Cypher alias for start node (e.g., "m")
+    pub vlp_cypher_end_alias: Option<String>,    // Original Cypher alias for end node (e.g., "p")
+}
+
+impl Cte {
+    /// Create a new non-VLP CTE
+    pub fn new(cte_name: String, content: CteContent, is_recursive: bool) -> Self {
+        Self {
+            cte_name,
+            content,
+            is_recursive,
+            vlp_start_alias: None,
+            vlp_end_alias: None,
+            vlp_start_table: None,
+            vlp_end_table: None,
+            vlp_cypher_start_alias: None,
+            vlp_cypher_end_alias: None,
+        }
+    }
+
+    /// Create a new VLP CTE with endpoint information
+    pub fn new_vlp(
+        cte_name: String,
+        content: CteContent,
+        is_recursive: bool,
+        start_alias: String,
+        end_alias: String,
+        start_table: String,
+        end_table: String,
+        cypher_start_alias: String,
+        cypher_end_alias: String,
+    ) -> Self {
+        Self {
+            cte_name,
+            content,
+            is_recursive,
+            vlp_start_alias: Some(start_alias),
+            vlp_end_alias: Some(end_alias),
+            vlp_start_table: Some(start_table),
+            vlp_end_table: Some(end_table),
+            vlp_cypher_start_alias: Some(cypher_start_alias),
+            vlp_cypher_end_alias: Some(cypher_end_alias),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

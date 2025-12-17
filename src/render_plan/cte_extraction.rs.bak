@@ -1229,11 +1229,11 @@ pub fn extract_ctes_with_context(
                         cte_name
                     );
 
-                    relationship_ctes.push(Cte::new(
-                    cte_name.clone(),
-                    super::CteContent::RawSql(formatted_union_sql),
-                    false,
-                ));
+                    relationship_ctes.push(Cte {
+                        cte_name: cte_name.clone(),
+                        content: super::CteContent::RawSql(formatted_union_sql),
+                        is_recursive: false,
+                    });
                 } else {
                     crate::debug_println!(
                         "DEBUG cte_extraction: Single relationship type, no UNION needed"
@@ -1331,11 +1331,11 @@ pub fn extract_ctes_with_context(
                     std::collections::HashMap::new(),
                 )
             });
-            Ok(vec![Cte::new(
-                    logical_cte.name.clone(),
-                    super::CteContent::Structured(logical_cte.input.to_render_plan(&schema)?),
-                    false,
-                )])
+            Ok(vec![Cte {
+                cte_name: logical_cte.name.clone(),
+                content: super::CteContent::Structured(logical_cte.input.to_render_plan(&schema)?),
+                is_recursive: false,
+            }])
         }
         LogicalPlan::Union(union) => {
             let mut ctes = vec![];
@@ -1402,11 +1402,11 @@ pub fn extract_ctes_with_context(
             let cte_render_plan = LogicalPlan::Projection(projection_with_with_items).to_render_plan(schema)?;
             
             // Create the CTE
-            let with_cte = Cte::new(
-                    cte_name.clone(),
-                    CteContent::Structured(cte_render_plan),
-                    false,
-                );
+            let with_cte = Cte {
+                cte_name: cte_name.clone(),
+                content: CteContent::Structured(cte_render_plan),
+                is_recursive: false,
+            };
             
             ctes.push(with_cte);
             
@@ -1439,6 +1439,7 @@ pub fn is_variable_length_optional(plan: &LogicalPlan) -> bool {
 /// Check if the plan contains a variable-length relationship and return node aliases
 /// Returns (left_alias, right_alias) if found
 pub fn has_variable_length_rel(plan: &LogicalPlan) -> Option<(String, String)> {
+    log::info!("🔍🔍🔍 has_variable_length_rel CALLED");
     log::debug!("🔍 has_variable_length_rel: Checking plan type: {:?}", std::mem::discriminant(plan));
     let result = match plan {
         LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {

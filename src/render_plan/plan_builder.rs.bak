@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use super::cte_generation::{analyze_property_requirements, extract_var_len_properties};
 use super::errors::RenderBuildError;
-use super::expression_utils::{references_alias as expr_references_alias, rewrite_aliases};
+use super::expression_utils::references_alias as expr_references_alias;
 use super::filter_pipeline::{
     categorize_filters, clean_last_node_filters, rewrite_expr_for_mixed_denormalized_cte,
     rewrite_expr_for_var_len_cte,
@@ -1730,11 +1730,11 @@ fn build_chained_with_match_cte_plan(
             log::info!("🔧 Completed expression rewriting for CTE '{}'", cte_name);
 
             // Create the CTE (without nested CTEs, they've been hoisted)
-            let with_cte = Cte::new(
-            cte_name.clone(),
-            CteContent::Structured(with_cte_render.clone()),
-            false,
-        );
+            let with_cte = Cte {
+                cte_name: cte_name.clone(),
+                content: CteContent::Structured(with_cte_render.clone()),
+                is_recursive: false,
+            };
             all_ctes.push(with_cte);
 
             // Store CTE schema for later reference creation
@@ -2546,11 +2546,11 @@ fn build_with_aggregation_match_cte_plan(
     );
 
     // Step 5: Create CTE from the GroupBy render plan
-    let group_by_cte = Cte::new(
-            cte_name.clone(),
-            CteContent::Structured(group_by_render),
-            false,
-        );
+    let group_by_cte = Cte {
+        cte_name: cte_name.clone(),
+        content: CteContent::Structured(group_by_render),
+        is_recursive: false,
+    };
 
     // Step 6: Transform the plan by replacing the GroupBy with a CTE reference
     let transformed_plan = replace_group_by_with_cte_reference(plan, &with_alias, &cte_name)?;
@@ -4776,13 +4776,16 @@ impl RenderPlanBuilder for LogicalPlan {
                 use std::collections::HashMap;
                 let empty_schema =
                     GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
-                let render_cte = Cte::new(
-                    strip_database_prefix(&logical_cte.name),
-                    super::CteContent::Structured(
+                let render_cte = Cte {
+                    cte_name: strip_database_prefix(&logical_cte.name),
+                    content: super::CteContent::Structured(
                         logical_cte.input.to_render_plan(&empty_schema)?,
                     ),
-                    false, // is_recursive
-                );
+                    is_recursive: false,
+                    // select: SelectItems(select_items),
+                    // from: from_table,
+                    // filters: FilterItems(filters)
+                };
                 Some(render_cte)
             }
             LogicalPlan::Union(union) => {
@@ -8370,9 +8373,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 } else {
                     format!("with_{}_cte", all_with_aliases.join("_"))
                 };
-                let inner_cte = Cte::new(
-                    cte_name.clone(),
-                    super::CteContent::Structured(RenderPlan {
+                let inner_cte = Cte {
+                    cte_name: cte_name.clone(),
+                    content: super::CteContent::Structured(RenderPlan {
                         ctes: CteItems(vec![]),
                         select: inner_render_plan.select.clone(),
                         from: inner_render_plan.from.clone(),
@@ -8390,8 +8393,8 @@ impl RenderPlanBuilder for LogicalPlan {
                         limit: LimitItem(None),
                         union: UnionItems(None),
                     }),
-                    false, // is_recursive
-                );
+                    is_recursive: false,
+                };
 
                 // Build outer SELECT items from RETURN projection, rewriting WITH alias references
                 let outer_select_items: Vec<SelectItem> = if let Some(proj) = return_projection {
@@ -8740,9 +8743,9 @@ impl RenderPlanBuilder for LogicalPlan {
 
                         // Step 3: Create CTE with GROUP BY + HAVING
                         let cte_name = "grouped_data".to_string();
-                        let cte = Cte::new(
-                            cte_name.clone(),
-                            super::CteContent::Structured(RenderPlan {
+                        let cte = Cte {
+                            cte_name: cte_name.clone(),
+                            content: super::CteContent::Structured(RenderPlan {
                                 ctes: CteItems(vec![]),
                                 select: SelectItems {
                                     items: cte_select_items,
@@ -8759,8 +8762,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 limit: LimitItem(None),
                                 union: UnionItems(None),
                             }),
-                            false, // is_recursive
-                        );
+                            is_recursive: false,
+                        };
 
                         // Step 4: Build outer query that joins to CTE
                         // Extract the grouping key to use for join (use the FIXED expression with ID column)
@@ -10403,42 +10406,91 @@ impl RenderPlanBuilder for LogicalPlan {
         }
 
         // For variable-length paths, add joins to get full user data
-        // FIX: Get VLP endpoint info from extracted CTEs (populated during CTE generation)
-        let vlp_cte = extracted_ctes.iter().find(|cte| {
+        // FIX: Check for VLP CTE presence instead of searching transformed plan (which may have VLP removed after CTE extraction)
+        let has_vlp_cte = extracted_ctes.iter().any(|cte| {
             cte.cte_name.starts_with("vlp_") || cte.cte_name.starts_with("chained_path_")
         });
         
-        let has_vlp_cte = vlp_cte.is_some();
-        
         log::info!("🔍 Checking extracted_ctes ({} total) for VLP:", extracted_ctes.len());
         for cte in &extracted_ctes {
-            log::info!("  - CTE: {} (recursive={}) vlp_start={:?}/{:?} vlp_end={:?}/{:?}", 
-                       cte.cte_name, cte.is_recursive, 
-                       cte.vlp_start_alias, cte.vlp_start_table,
-                       cte.vlp_end_alias, cte.vlp_end_table);
+            log::info!("  - CTE: {} (recursive={})", cte.cte_name, cte.is_recursive);
         }
         log::info!("🔍 has_vlp_cte = {}", has_vlp_cte);
         
-        // Get VLP endpoint info from CTE (more reliable than searching plan)
-        let vlp_aliases = vlp_cte.and_then(|cte| {
-            if let (Some(start), Some(end)) = (&cte.vlp_start_alias, &cte.vlp_end_alias) {
-                log::debug!("🎯 Got VLP aliases from CTE: start='{}', end='{}'", start, end);
-                log::debug!("🎯 Got VLP tables from CTE: start_table={:?}, end_table={:?}", 
-                           cte.vlp_start_table, cte.vlp_end_table);
-                Some((start.clone(), end.clone()))
+        // Try to get VLP info from original plan (before CTE extraction)
+        let vlp_rel_info = get_variable_length_rel_info(self);
+        log::info!("🔍 vlp_rel_info from self: {:?}", vlp_rel_info.as_ref().map(|i| &i.rel_alias));
+        
+        // Get start/end aliases - VariableLengthRelInfo only has rel_alias, need has_variable_length_rel for endpoints
+        let vlp_aliases = if vlp_rel_info.is_some() {
+            has_variable_length_rel(self)
+        } else {
+            let result = has_variable_length_rel(&transformed_plan);
+            log::info!("🔍 has_variable_length_rel(&transformed_plan) = {:?}", result);
+            result
+        };
+        
+        // If we have VLP CTE but no aliases from plan (because VLP was transformed to CTE),
+        // infer the aliases from the JOINs that reference undefined tables
+        let vlp_aliases = if has_vlp_cte && vlp_aliases.is_none() {
+            log::info!("🔍 VLP CTE found but no aliases from plan - inferring from JOINs");
+            
+            // Look for aliases referenced in JOINs that aren't in the JOIN list
+            let mut referenced_aliases = std::collections::HashSet::new();
+            let mut defined_aliases = std::collections::HashSet::new();
+            
+            // Collect defined aliases (table_alias in JOINs + FROM alias if exists)
+            if let Some(ref from) = final_from {
+                if let Some(ref table_ref) = from.table {
+                    if let Some(ref alias) = table_ref.alias {
+                        defined_aliases.insert(alias.clone());
+                    }
+                }
+            }
+            
+            for join in &extracted_joins {
+                defined_aliases.insert(join.table_alias.clone());
+            }
+            
+            // Collect referenced aliases (in JOIN conditions)
+            for join in &extracted_joins {
+                for cond in &join.joining_on {
+                    for operand in &cond.operands {
+                        if let RenderExpr::PropertyAccessExp(prop) = operand {
+                            referenced_aliases.insert(prop.table_alias.0.clone());
+                        }
+                    }
+                }
+            }
+            
+            // Find aliases that are referenced but not defined - these are VLP endpoints
+            let undefined: Vec<String> = referenced_aliases.difference(&defined_aliases).cloned().collect();
+            
+            log::info!("🔍 Referenced aliases: {:?}", referenced_aliases);
+            log::info!("🔍 Defined aliases: {:?}", defined_aliases);
+            log::info!("🔍 Undefined (VLP endpoints): {:?}", undefined);
+            
+            // For VLP with chained pattern, we typically have 2 undefined endpoints
+            if undefined.len() == 2 {
+                Some((undefined[0].clone(), undefined[1].clone()))
+            } else if undefined.len() == 1 {
+                // Self-loop or single endpoint
+                Some((undefined[0].clone(), undefined[0].clone()))
             } else {
-                log::warn!("🎯 VLP CTE found but missing endpoint info!");
+                log::warn!("🔍 Expected 1-2 undefined aliases for VLP endpoints, found {}", undefined.len());
                 None
             }
-        });
+        } else {
+            vlp_aliases
+        };
         
         log::info!("🔍 VLP detection: has_vlp_cte={}, vlp_aliases={:?}", has_vlp_cte, vlp_aliases);
         log::info!("{}", "=".repeat(80));
         
         if has_vlp_cte && vlp_aliases.is_some() {
             let (start_alias, end_alias) = vlp_aliases.unwrap();
-            log::debug!("🎯 ENTERING VLP ENDPOINT JOIN CREATION BLOCK");
-            log::debug!("🎯 start_alias='{}', end_alias='{}'", start_alias, end_alias);
+            log::info!("🎯🎯🎯 ENTERING VLP ENDPOINT JOIN CREATION BLOCK");
+            log::info!("🎯 start_alias='{}', end_alias='{}'", start_alias, end_alias);
             // ⚠️ COMPUTE VLP CTE ALIAS ONCE - use throughout this entire VLP handling section
             // Use PREFIX "vlp" instead of "t" to avoid collision with relationship aliases (t1, t2, ...)
             let vlp_cte_name = extracted_ctes
@@ -10451,7 +10503,7 @@ impl RenderPlanBuilder for LogicalPlan {
             // Use "vlp" prefix to avoid collision with relationship aliases (t1, t2, ...)
             let vlp_alias = vlp_cte_name.replace("vlp_cte", "vlp").replace("chained_path_", "vlp");
             
-            log::debug!("🎯 VLP CTE: {} → alias '{}'", vlp_cte_name, vlp_alias);
+            log::info!("🎯 VLP CTE: {} → alias '{}'", vlp_cte_name, vlp_alias);
             
             // Get the VLP relationship alias (e.g., "t2" for REPLY_OF)
             // We need to filter out JOINs that reference this alias
@@ -10459,7 +10511,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 .map(|info| info.rel_alias);
             
             if let Some(ref rel_alias) = vlp_rel_alias {
-                log::debug!("🎯 VLP relationship alias: '{}' (will filter JOINs referencing it)", rel_alias);
+                log::info!("🎯 VLP relationship alias: '{}' (will filter JOINs referencing it)", rel_alias);
             }
             
             // Check if this VLP is OPTIONAL (need this early for filtering logic)
@@ -10529,15 +10581,6 @@ impl RenderPlanBuilder for LogicalPlan {
                     .and_then(|d| d.start_id_col.clone())
                     .unwrap_or_else(|| get_node_id_column_for_alias(&start_alias));
 
-                // For OPTIONAL VLP, use the Cypher alias (not VLP internal alias)
-                // Because we're not creating a start_node JOIN (start is already in FROM from required MATCH)
-                let cypher_start_alias = vlp_cte
-                    .and_then(|c| c.vlp_cypher_start_alias.clone())
-                    .unwrap_or_else(|| start_alias.clone());
-                
-                log::info!("🔧 OPTIONAL VLP CTE JOIN: Using Cypher alias '{}' instead of VLP internal alias '{}'", 
-                          cypher_start_alias, start_alias);
-
                 // LEFT JOIN vlp_cte7 AS t7 ON t7.start_id = a.user_id
                 extracted_joins.push(Join {
                     table_name: vlp_cte_name.clone(),
@@ -10550,7 +10593,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 column: Column(PropertyValue::Column("start_id".to_string())),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(cypher_start_alias),  // Use Cypher alias
+                                table_alias: TableAlias(start_alias.clone()),
                                 column: Column(PropertyValue::Column(start_id_col_for_cte)),
                             }),
                         ],
@@ -10572,19 +10615,16 @@ impl RenderPlanBuilder for LogicalPlan {
             {
                 // Fully denormalized: no joins needed - CTE already has all node properties
             } else {
-                // Get the actual table names and ID columns from:
-                // 1. Plan denorm info (extracted from original GraphRel before CTE extraction)
-                // 2. VLP CTE metadata (populated during CTE generation)
-                // 3. Fallback functions (last resort)
+                // Get the actual table names and ID columns from the plan (preferred) or fallback
+                // 🎯 FIX: Use table info extracted directly from the logical plan's ViewScans
+                // This ensures we use the correct fully-qualified table names from schema resolution
                 let start_table = denorm_info
                     .as_ref()
                     .and_then(|d| d.start_table.clone())
-                    .or_else(|| vlp_cte.and_then(|c| c.vlp_start_table.clone()))
                     .unwrap_or_else(|| get_node_table_for_alias(&start_alias));
                 let end_table = denorm_info
                     .as_ref()
                     .and_then(|d| d.end_table.clone())
-                    .or_else(|| vlp_cte.and_then(|c| c.vlp_end_table.clone()))
                     .unwrap_or_else(|| get_node_table_for_alias(&end_alias));
                 let start_id_col = denorm_info
                     .as_ref()
@@ -10688,20 +10728,10 @@ impl RenderPlanBuilder for LogicalPlan {
                         log::debug!("⏭️  SKIP START node JOIN: start_is_denorm={}, vlp_is_optional={}", start_is_denorm, vlp_is_optional);
                     }
                     if !end_is_denorm {
-                        // For OPTIONAL VLP, use Cypher alias instead of VLP internal alias
-                        let end_node_alias = if vlp_is_optional {
-                            vlp_cte
-                                .and_then(|c| c.vlp_cypher_end_alias.clone())
-                                .unwrap_or_else(|| end_alias.clone())
-                        } else {
-                            end_alias.clone()
-                        };
-                        
-                        log::debug!("✅ Creating END node JOIN: {} AS {} (vlp_is_optional={}, using Cypher alias={})", 
-                                  end_table, end_node_alias, vlp_is_optional, vlp_is_optional);
+                        log::debug!("✅ Creating END node JOIN: {} AS {}", end_table, end_alias);
                         extracted_joins.push(Join {
                             table_name: end_table,
-                            table_alias: end_node_alias.clone(),
+                            table_alias: end_alias.clone(),
                             joining_on: vec![OperatorApplication {
                                 operator: Operator::Equal,
                                 operands: vec![
@@ -10710,7 +10740,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                         column: Column(PropertyValue::Column("end_id".to_string())),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(end_node_alias.clone()),
+                                        table_alias: TableAlias(end_alias.clone()),
                                         column: Column(PropertyValue::Column(end_id_col.clone())),
                                     }),
                                 ],
@@ -10732,49 +10762,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     "🔧 VLP CHAINED FIX: Re-adding {} subsequent joins after VLP endpoint JOINs",
                     subsequent_joins.len()
                 );
-                
-                // 🎯 FIX: Rewrite Cypher aliases to VLP internal aliases
-                // The Cypher query uses user-defined aliases (e.g., m, p)
-                // But VLP CTE generator uses internal aliases (start_node, end_node)
-                // We need to map: Cypher alias → VLP internal alias
-                // 
-                // IMPORTANT: For OPTIONAL VLP, don't rewrite! The "subsequent" joins
-                // for OPTIONAL VLP are actually the anchor pattern joins (before the VLP),
-                // not chained patterns after the VLP. They should keep their original aliases.
-                let cypher_to_vlp_map: std::collections::HashMap<String, String> = if !vlp_is_optional {
-                    if let Some(vlp_cte_ref) = vlp_cte {
-                        let mut map = std::collections::HashMap::new();
-                        
-                        // Get both the Cypher aliases AND VLP internal aliases from the CTE metadata
-                        if let (Some(cypher_start), Some(cypher_end), Some(vlp_start), Some(vlp_end)) = 
-                            (&vlp_cte_ref.vlp_cypher_start_alias, &vlp_cte_ref.vlp_cypher_end_alias,
-                             &vlp_cte_ref.vlp_start_alias, &vlp_cte_ref.vlp_end_alias) {
-                            log::info!("🔄 Alias mapping: Cypher '{}' → VLP '{}', Cypher '{}' → VLP '{}'", 
-                                      cypher_start, vlp_start, cypher_end, vlp_end);
-                            map.insert(cypher_start.clone(), vlp_start.clone());
-                            map.insert(cypher_end.clone(), vlp_end.clone());
-                        }
-                        map
-                    } else {
-                        std::collections::HashMap::new()
-                    }
-                } else {
-                    log::info!("🔧 OPTIONAL VLP: Skipping alias rewriting for anchor pattern joins");
-                    std::collections::HashMap::new()
-                };
-                
-                // Rewrite subsequent joins to use VLP internal aliases (only for REQUIRED VLP)
-                let rewritten_joins: Vec<Join> = subsequent_joins.into_iter().map(|mut join| {
-                    // Rewrite aliases in JOIN conditions
-                    for cond in &mut join.joining_on {
-                        for operand in &mut cond.operands {
-                            rewrite_aliases(operand, &cypher_to_vlp_map);
-                        }
-                    }
-                    join
-                }).collect();
-                
-                for join in &rewritten_joins {
+                for join in &subsequent_joins {
                     log::info!(
                         "  → JOIN {} AS {} ON {:?}",
                         join.table_name,
@@ -10782,7 +10770,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         join.joining_on
                     );
                 }
-                extracted_joins.extend(rewritten_joins);
+                extracted_joins.extend(subsequent_joins);
             }
         }
 
