@@ -354,26 +354,30 @@ fn parse_unary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     .parse(input)
 }
 
-fn parse_binary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // parse the left-hand side.
+// Multiplicative operators: * / %
+fn parse_multiplicative_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     let (input, lhs) = parse_unary_expression(input)?;
-
+    
     let mut remaining_input = input;
     let mut final_expression = lhs;
-
+    
     loop {
-        // Try to parse an operator and a right-hand side.
-        let res = (ws(parse_operator_symbols), parse_unary_expression).parse(remaining_input);
-        match res {
-            Ok((new_input, (op, rhs))) => {
-                // Build a new expression by moving the previous result into the operator application.
+        // Try to parse a multiplicative operator
+        let op_result = ws(alt((
+            map(tag_no_case("*"), |_| Operator::Multiplication),
+            map(tag_no_case("/"), |_| Operator::Division),
+            map(tag_no_case("%"), |_| Operator::ModuloDivision),
+        ))).parse(remaining_input);
+        
+        match op_result {
+            Ok((new_input, op)) => {
+                let (new_input, rhs) = parse_unary_expression(new_input)?;
                 final_expression = Expression::OperatorApplicationExp(OperatorApplication {
                     operator: op,
                     operands: vec![final_expression, rhs],
                 });
                 remaining_input = new_input;
             }
-            // If no more operator/unary expression pair is found, break out.
             Err(nom::Err::Error(_)) => break,
             Err(e) => return Err(e),
         }
@@ -381,15 +385,97 @@ fn parse_binary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     Ok((remaining_input, final_expression))
 }
 
+// Additive operators: + -
+fn parse_additive_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    let (input, lhs) = parse_multiplicative_expression(input)?;
+    
+    let mut remaining_input = input;
+    let mut final_expression = lhs;
+    
+    loop {
+        // Try to parse an additive operator
+        let op_result = ws(alt((
+            map(tag_no_case("+"), |_| Operator::Addition),
+            map(tag_no_case("-"), |_| Operator::Subtraction),
+        ))).parse(remaining_input);
+        
+        match op_result {
+            Ok((new_input, op)) => {
+                let (new_input, rhs) = parse_multiplicative_expression(new_input)?;
+                final_expression = Expression::OperatorApplicationExp(OperatorApplication {
+                    operator: op,
+                    operands: vec![final_expression, rhs],
+                });
+                remaining_input = new_input;
+            }
+            Err(nom::Err::Error(_)) => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok((remaining_input, final_expression))
+}
+
+// Comparison and string operators: = <> < > <= >= =~ IN NOT IN STARTS WITH ENDS WITH CONTAINS
+fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    let (input, lhs) = parse_additive_expression(input)?;
+    
+    let mut remaining_input = input;
+    let mut final_expression = lhs;
+    
+    loop {
+        // Try to parse a comparison operator
+        let op_result = ws(alt((
+            map(tag_no_case(">="), |_| Operator::GreaterThanEqual),
+            map(tag_no_case("<="), |_| Operator::LessThanEqual),
+            map(tag_no_case("<>"), |_| Operator::NotEqual),
+            map(tag_no_case("=~"), |_| Operator::RegexMatch),
+            map(tag_no_case(">"), |_| Operator::GreaterThan),
+            map(tag_no_case("<"), |_| Operator::LessThan),
+            map(tag_no_case("="), |_| Operator::Equal),
+            map(
+                preceded(ws(tag_no_case("STARTS")), ws(tag_no_case("WITH"))),
+                |_| Operator::StartsWith,
+            ),
+            map(
+                preceded(ws(tag_no_case("ENDS")), ws(tag_no_case("WITH"))),
+                |_| Operator::EndsWith,
+            ),
+            map(tag_no_case("CONTAINS"), |_| Operator::Contains),
+            map(tag_no_case("NOT IN"), |_| Operator::NotIn),
+            map(tag_no_case("IN"), |_| Operator::In),
+        ))).parse(remaining_input);
+        
+        match op_result {
+            Ok((new_input, op)) => {
+                let (new_input, rhs) = parse_additive_expression(new_input)?;
+                final_expression = Expression::OperatorApplicationExp(OperatorApplication {
+                    operator: op,
+                    operands: vec![final_expression, rhs],
+                });
+                remaining_input = new_input;
+            }
+            Err(nom::Err::Error(_)) => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok((remaining_input, final_expression))
+}
+
+// Deprecated: now use parse_comparison_expression instead
+fn parse_binary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    // Redirect to comparison expression for backward compatibility
+    parse_comparison_expression(input)
+}
+
 fn parse_logical_and(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let (input, lhs) = parse_binary_expression(input)?;
+    let (input, lhs) = parse_comparison_expression(input)?;
 
     let mut remaining_input = input;
     let mut final_expression = lhs;
 
     loop {
-        // Try to parse an "AND" followed by a binary expression.
-        let res = preceded(ws(tag_no_case("AND")), parse_binary_expression).parse(remaining_input);
+        // Try to parse an "AND" followed by a comparison expression.
+        let res = preceded(ws(tag_no_case("AND")), parse_comparison_expression).parse(remaining_input);
         match res {
             Ok((new_input, rhs)) => {
                 // Build a new expression by moving `expr` and `rhs` into a new operator application.

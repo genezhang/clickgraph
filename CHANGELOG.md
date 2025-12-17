@@ -1,6 +1,8 @@
 ## [Unreleased]
 
 ### 🐛 Bug Fixes
+- **Operator Precedence**: Fixed critical parser bug where arithmetic operators (+, -, *, /) had same precedence as comparison operators (>, <, =), causing expressions like `m.id > 1 + 2` to parse as `(m.id > 1) AND 2` instead of `m.id > (1 + 2)`. Now implements correct precedence: multiplicative > additive > comparison > logical AND > logical OR.
+- **BI17 Temporal Arithmetic**: Unblocked - `datetime() + duration()` now parses correctly, enabling temporal calculations in WHERE clauses.
 
 - **Correlated Subquery Handling** - Fixed ClickHouse compatibility (December 16, 2025)
   - **Issue**: `NOT (pattern)`, `EXISTS((pattern))`, and `size((pattern))` predicates were placed in JOIN ON clauses

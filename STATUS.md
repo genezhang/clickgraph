@@ -1,6 +1,31 @@
 # ClickGraph Status
 
-*Updated: December 16, 2025*
+*Updated: December 17, 2025*
+
+## 🎉 Recent Fixes (December 17, 2025)
+
+### ✅ Operator Precedence Fix
+
+**Critical Parser Bug**: All binary operators parsed at same precedence level
+
+**Issue**: Expressions like `m.id > 1 + 2` parsed as `(m.id > 1) AND 2`
+- Parser treated all binary operators (arithmetic, comparison, logical) equally
+- Left-to-right parsing caused incorrect grouping
+- Temporal arithmetic broken: `datetime("2011-01-01") + duration({hours: 4})` became `datetime(...) AND duration(...)`
+
+**Fix**: Implemented correct operator precedence hierarchy in `/src/open_cypher_parser/expression.rs`
+1. Multiplicative (`*`, `/`, `%`) - highest
+2. Additive (`+`, `-`)
+3. Comparison (`=`, `<>`, `<`, `>`, `<=`, `>=`, `IN`, `CONTAINS`, etc.)
+4. Logical AND
+5. Logical OR - lowest
+
+**Impact**: 
+- LDBC BI17 now works: temporal arithmetic `datetime() + duration()` generates correct SQL
+- All arithmetic expressions in WHERE clauses now parse correctly
+- Example: `WHERE m.id > 1 + 2` → `WHERE m.id > 1 + 2` (not `WHERE m.id > 1 AND 2`)
+
+---
 
 ## 🎉 Recent Fixes (December 16, 2025)
 

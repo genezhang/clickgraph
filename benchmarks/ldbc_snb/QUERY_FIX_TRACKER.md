@@ -22,13 +22,22 @@
   - Now generates proper `INNER JOIN b ON a.id < b.id`
   - Computed columns now properly prefixed with table alias
 
-### 🔧 Priority 1: Quick Fixes (Target: +6 queries = 27% total)
+### 🔧 Priority 1: Quick Fixes (STATUS: 2 working, 1 blocked)
+- ✅ **IC4**: Schema fix verified working
+- ✅ **BI17**: Operator precedence bug fixed (Dec 17)
+- ❌ **IC13**: Blocked by parser limitation (path assignment syntax)
 
-#### A. Parsing Fixes (2 queries)
-- [ ] **IC13**: `path = shortestPath(...)` - Assignment in MATCH not supported
-- [ ] **BI17**: Missing `$delta` parameter (already added, needs testing)
+#### A. Parsing Fixes (2 queries) - 1 FIXED, 1 BLOCKED
+- [ ] **IC13**: `path = shortestPath(...)` - ❌ Parser doesn't support variable assignment in MATCH clause
+  - Error: "Unable to parse path = shortestPath(...)"
+  - Needs: Parser enhancement to support Cypher path assignment syntax
+- [x] **BI17**: Temporal arithmetic - ✅ FIXED (Dec 17)
+  - Pattern: `datetime("2011-01-01") + duration({hours: 4})`
+  - Root Cause: Operator precedence bug - all binary operators parsed at same level
+  - Fix: Implemented proper precedence: multiplicative > additive > comparison > logical
+  - Now generates: `WHERE m.creationDate > parseDateTime64BestEffort(...) + toIntervalHour(4)`
 
-#### B. WITH Clause Fixes (STATUS: ALL PATTERNS WORK!)  
+#### B. WITH Clause Fixes (STATUS: ✅ ALL COMPLETE!)  
 - [x] **BI13**: ✅ WORKS - `WITH country, 12 AS monthNum` (Dec 16)
 - [x] **BI14 BASE**: ✅ FIXED - Cartesian WITH pattern now works (Dec 16)
   - Pattern: `MATCH (a), (b) WHERE a.id < b.id WITH a, b, 0 AS score`
@@ -37,8 +46,10 @@
   - Full BI-14 query may need additional work for OPTIONAL MATCH chains
 - [x] **BI8**: ✅ WORKS - `100 * size` arithmetic expression (Dec 16)
 
-#### C. Schema Fixes (1 query)
-- [ ] **IC4**: Tag.name property (already added to schema, needs verification)
+#### C. Schema Fixes (1 query) - ✅ COMPLETE
+- [x] **IC4**: ✅ WORKS - Tag.name property verified (Dec 17)
+  - Query: `MATCH (tag:Tag {name: "Che_Guevara"}) RETURN tag.name, tag.url`
+  - Returns: `{"tag.name": "Che_Guevara", "tag.url": "http://dbpedia.org/resource/..."}`
 
 ### 🔨 Priority 2: Feature Gaps (11 queries)
 
