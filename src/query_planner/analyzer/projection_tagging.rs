@@ -434,8 +434,11 @@ impl ProjectionTagging {
                     );
 
                 let mapped_column = if is_relation {
+                    // Get connected node labels for polymorphic relationship resolution
+                    let from_node = table_ctx.get_from_node_label().map(|s| s.as_str());
+                    let to_node = table_ctx.get_to_node_label().map(|s| s.as_str());
                     view_resolver
-                        .resolve_relationship_property(&label, property_access.column.raw())?
+                        .resolve_relationship_property(&label, property_access.column.raw(), from_node, to_node)?
                 } else {
                     // Check if this node is denormalized by looking up the schema
                     if let Ok(node_schema) = graph_schema.get_node_schema(&label) {

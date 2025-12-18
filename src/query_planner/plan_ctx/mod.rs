@@ -27,6 +27,12 @@ pub struct TableCtx {
     /// If Some, this alias references a CTE instead of a base table
     /// Format: "with_a_cte1" or "with_a_b_cte2"
     cte_reference: Option<String>,
+    /// For relationships: the label of the connected from_node (source)
+    /// Used to resolve polymorphic relationships (e.g., Person LIKES Message)
+    from_node_label: Option<String>,
+    /// For relationships: the label of the connected to_node (target)
+    /// Used to resolve polymorphic relationships
+    to_node_label: Option<String>,
 }
 
 impl TableCtx {
@@ -54,6 +60,8 @@ impl TableCtx {
             is_rel,
             explicit_alias,
             cte_reference: None,
+            from_node_label: None,
+            to_node_label: None,
         }
     }
 
@@ -86,6 +94,8 @@ impl TableCtx {
             is_rel,
             explicit_alias: true,
             cte_reference: Some(cte_name),
+            from_node_label: None,
+            to_node_label: None,
         }
     }
 
@@ -130,6 +140,22 @@ impl TableCtx {
 
     pub fn set_labels(&mut self, labels_opt: Option<Vec<String>>) {
         self.labels = labels_opt;
+    }
+
+    /// Set the connected node labels for a relationship
+    pub fn set_connected_nodes(&mut self, from: Option<String>, to: Option<String>) {
+        self.from_node_label = from;
+        self.to_node_label = to;
+    }
+
+    /// Get the from_node label for a relationship
+    pub fn get_from_node_label(&self) -> Option<&String> {
+        self.from_node_label.as_ref()
+    }
+
+    /// Get the to_node label for a relationship
+    pub fn get_to_node_label(&self) -> Option<&String> {
+        self.to_node_label.as_ref()
     }
 
     pub fn get_projections(&self) -> &Vec<ProjectionItem> {

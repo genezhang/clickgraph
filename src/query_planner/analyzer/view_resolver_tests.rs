@@ -105,7 +105,7 @@ mod tests {
         let resolver = ViewResolver::new(&schema);
 
         // Test resolving a relationship
-        let rel_schema = resolver.resolve_relationship("FOLLOWS").unwrap();
+        let rel_schema = resolver.resolve_relationship("FOLLOWS", None, None).unwrap();
         assert_eq!(rel_schema.table_name, "follows");
         assert_eq!(rel_schema.from_id, "follower_id");
         assert_eq!(rel_schema.to_id, "followed_id");
@@ -127,7 +127,7 @@ mod tests {
         let resolver = ViewResolver::new(&schema);
 
         // Test resolving a nonexistent relationship
-        let result = resolver.resolve_relationship("NONEXISTENT");
+        let result = resolver.resolve_relationship("NONEXISTENT", None, None);
         assert!(result.is_err());
     }
 }

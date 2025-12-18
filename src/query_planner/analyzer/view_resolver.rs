@@ -42,12 +42,15 @@ impl<'a> ViewResolver<'a> {
     }
 
     /// Get the schema for a relationship type
+    /// For polymorphic relationships, provide from/to node labels for accurate resolution
     pub fn resolve_relationship(
         &self,
         type_name: &str,
+        from_node: Option<&str>,
+        to_node: Option<&str>,
     ) -> Result<&'a RelationshipSchema, AnalyzerError> {
         self.schema
-            .get_rel_schema(type_name)
+            .get_rel_schema_with_nodes(type_name, from_node, to_node)
             .map_err(|_| AnalyzerError::RelationshipTypeNotFound(type_name.to_string()))
     }
 
@@ -141,15 +144,19 @@ impl<'a> ViewResolver<'a> {
     }
 
     /// Resolve a relationship property to its underlying column
+    /// Resolve a relationship property with optional node label context
+    /// For polymorphic relationships, provide from/to node labels for accurate resolution
     pub fn resolve_relationship_property(
         &self,
         type_name: &str,
         property: &str,
+        from_node: Option<&str>,
+        to_node: Option<&str>,
     ) -> Result<crate::graph_catalog::expression_parser::PropertyValue, AnalyzerError> {
         // Try to get the relationship schema and look up the property mapping
         let rel_schema = self
             .schema
-            .get_rel_schema(type_name)
+            .get_rel_schema_with_nodes(type_name, from_node, to_node)
             .map_err(|_| AnalyzerError::RelationshipTypeNotFound(type_name.to_string()))?;
 
         // Try explicit mapping first, fallback to identity mapping (property name = column name)
