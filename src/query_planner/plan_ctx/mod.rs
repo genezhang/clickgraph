@@ -636,6 +636,22 @@ impl PlanCtx {
         self.cte_columns.insert(cte_name.to_string(), columns);
     }
 
+    /// Register a single column mapping for a CTE
+    ///
+    /// # Arguments
+    /// * `cte_name` - The CTE name
+    /// * `schema_column` - The schema-specific column name (e.g., "PersonId", "CommentId")
+    /// * `cte_column` - The standardized CTE column name (e.g., "from_node_id", "to_node_id")
+    ///
+    /// Used for multi-variant relationship CTEs that need to map multiple schema columns
+    /// to standardized names.
+    pub fn register_cte_column(&mut self, cte_name: &str, schema_column: &str, cte_column: &str) {
+        self.cte_columns
+            .entry(cte_name.to_string())
+            .or_insert_with(HashMap::new)
+            .insert(schema_column.to_string(), cte_column.to_string());
+    }
+
     /// Get the CTE column name for a property
     ///
     /// # Arguments

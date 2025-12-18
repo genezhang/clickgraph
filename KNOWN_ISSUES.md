@@ -1,6 +1,6 @@
 # Known Issues
 
-**Active Issues**: 3  
+**Active Issues**: 5  
 **Last Updated**: December 17, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
@@ -10,7 +10,126 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Active Issues
 
-### 1. Cross-Table Branching Patterns - ✅ FIXED
+### 1. Multi-Variant CTE Column Name Mismatch After WITH Clause
+
+**Status**: ✅ FIXED (December 18, 2025)  
+**Severity**: HIGH  
+**Affects**: Multi-variant relationships (e.g., `[:IS_LOCATED_IN]` mapping to multiple tables) after WITH clause  
+
+**Problem**:
+When a multi-variant relationship appears after a WITH clause, the generated JOIN conditions reference the first table's schema-specific column names instead of the CTE's standardized column names (`from_node_id`, `to_node_id`).
+
+**Example Query**:
+```cypher
+MATCH (p:Person)-[:KNOWS*1..2]-(friend:Person) WHERE p.id = 14 
+WITH friend LIMIT 3 
+MATCH (friend)-[:IS_LOCATED_IN]->(friendCity:Place) 
+RETURN friend.firstName, friendCity.name
+```
+
+**Incorrect SQL Generated (Before Fix)**:
+```sql
+WITH RECURSIVE ...,
+rel_friend_friendCity AS (
+  SELECT PersonId AS from_node_id, CityId AS to_node_id FROM Person_isLocatedIn_Place 
+  UNION ALL 
+  SELECT CommentId AS from_node_id, CountryId AS to_node_id FROM Comment_isLocatedIn_Place 
+  ...
+)
+SELECT ...
+FROM with_friend_cte_1 AS friend
+INNER JOIN rel_friend_friendCity AS t2 ON t2.CommentId = friend.id  -- ❌ Wrong! Should be t2.from_node_id
+INNER JOIN Place AS friendCity ON friendCity.id = t2.CountryId        -- ❌ Wrong! Should be t2.to_node_id
+```
+
+**Root Cause**:
+- GraphJoinInference analyzer builds Traditional JOINs using relationship schema column names
+- `resolve_column()` function attempts to map schema columns to CTE columns
+- No column mappings were registered when multi-variant CTE names were created
+- Lookup failed → fell back to using schema column names as-is → Wrong JOIN conditions
+
+**Fix Implementation** (December 18, 2025):
+1. **Early Registration** (`src/query_planner/analyzer/graph_context.rs` lines 79-105):
+   - Check `graph_rel.labels.len() > 1` BEFORE borrowing from plan_ctx
+   - Collect all schema column names from all relationship schemas in the union
+   - Register mappings for each: `schema_column → "from_node_id"/"to_node_id"`
+   - Ensures mappings exist before GraphJoinInference analyzer runs
+
+2. **Simple Lookup** (`src/query_planner/analyzer/graph_join_inference.rs` lines 273-295):
+   - Simplified `resolve_column()` from 90+ lines to 20 lines
+   - Removed unreliable GLOBAL_SCHEMAS heuristic fallback
+   - Now relies entirely on registered mappings from step 1
+   - Clean separation: early registration, late lookup
+
+3. **Helper Method** (`src/query_planner/plan_ctx/mod.rs`):
+   - Added `register_cte_column()` method for individual column mapping registration
+   - Complements existing `register_cte_columns()` which takes ProjectionItems
+
+**Fixed SQL** (After Fix):
+```sql
+INNER JOIN rel_friend_friendCity AS t2 ON t2.from_node_id = friend.id  -- ✅ Correct!
+INNER JOIN Place AS friendCity ON friendCity.id = t2.to_node_id        -- ✅ Correct!
+```
+
+**Verification**:
+- Build successful with new code
+- Column mapping registration logs confirmed:
+  ```
+  🔧 Registering 4 column mappings for multi-variant CTE 'rel_u2_target'
+  🔧 Mapping follower_id → from_node_id
+  🔧 Mapping followed_id → to_node_id
+  🔧 Mapping user_id → from_node_id
+  🔧 Mapping post_id → to_node_id
+  ```
+- Note: Full end-to-end testing blocked by separate bug (node label lookup error)
+
+**Files Modified**:
+- `src/query_planner/analyzer/graph_context.rs` - Register mappings before table context borrows
+- `src/query_planner/analyzer/graph_join_inference.rs` - Simplified resolve_column()
+- `src/query_planner/plan_ctx/mod.rs` - Added register_cte_column() helper method
+
+**Commit**: (pending)
+
+**Test Case**: Create integration test with VLP + WITH + multi-variant relationship (blocked by label lookup bug)
+
+---
+
+### 2. Missing Database Prefixes After WITH Clause
+
+**Status**: 🔴 ACTIVE (Discovered December 17, 2025)  
+**Severity**: MEDIUM  
+**Affects**: Table references in JOINs after WITH clause  
+
+**Problem**:
+Tables referenced in JOINs after a WITH clause are missing database prefixes, causing "Unknown table" errors.
+
+**Example**:
+```sql
+-- Generated (incorrect):
+INNER JOIN Place AS friendCity ON friendCity.id = t2.CountryId
+
+-- Should be:
+INNER JOIN ldbc.Place AS friendCity ON friendCity.id = t2.to_node_id
+```
+
+**Error Message**:
+```
+Unknown table expression identifier 'Place'
+```
+
+**Root Cause**:
+- Table name resolution after WITH clause doesn't include database prefix
+- Likely using deprecated `label_to_table_name()` instead of `label_to_table_name_with_schema()`
+- Schema context may not be properly threaded through after WITH clause processing
+
+**Solution**:
+- Ensure all table name lookups use schema-aware functions
+- Thread schema context through WITH clause processing
+- May be related to Issue #1 (same code path)
+
+---
+
+### 3. Cross-Table Branching Patterns - ✅ FIXED
 
 **Status**: ✅ FIXED (December 15, 2025)  
 **Severity**: HIGH  

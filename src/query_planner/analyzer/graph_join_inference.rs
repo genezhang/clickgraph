@@ -275,12 +275,12 @@ impl GraphJoinInference {
         table_name: &str,
         plan_ctx: &PlanCtx,
     ) -> String {
-        // Check if this is a CTE reference
+        // Check if this is a CTE reference (including multi-variant CTEs)
         if plan_ctx.is_cte(table_name) {
-            // Look up the exported column name
+            // Look up the exported column name from registered mappings
             if let Some(cte_column) = plan_ctx.get_cte_column(table_name, schema_column) {
                 log::debug!(
-                    "  📍 Resolved CTE column: {} (schema) → {} (CTE '{}')",
+                    "  ✅ Resolved CTE column: {} (schema) → {} (CTE '{}')",
                     schema_column,
                     cte_column,
                     table_name
