@@ -295,6 +295,14 @@ fn rewrite_vlp_union_branch_aliases(plan: &mut RenderPlan) -> RenderPlanBuilderR
         rewrite_render_expr_for_vlp(&mut select_item.expression, &vlp_mappings);
     }
     
+    // CRITICAL: Also rewrite WHERE clause expressions
+    // The WHERE clause may contain filters on Cypher aliases (e.g., friend.firstName = 'Wei')
+    // that need to be rewritten to use VLP table aliases (e.g., end_node.firstName = 'Wei')
+    if let Some(where_expr) = &mut plan.filters.0 {
+        log::info!("🔄 VLP Union Branch: Rewriting WHERE clause");
+        rewrite_render_expr_for_vlp(where_expr, &vlp_mappings);
+    }
+    
     Ok(())
 }
 
