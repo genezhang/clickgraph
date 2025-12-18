@@ -153,11 +153,19 @@ impl<'a> ViewResolver<'a> {
         from_node: Option<&str>,
         to_node: Option<&str>,
     ) -> Result<crate::graph_catalog::expression_parser::PropertyValue, AnalyzerError> {
+        log::debug!(
+            "ViewResolver: Resolving rel property: type_name={}, property={}, from_node={:?}, to_node={:?}",
+            type_name, property, from_node, to_node
+        );
         // Try to get the relationship schema and look up the property mapping
         let rel_schema = self
             .schema
             .get_rel_schema_with_nodes(type_name, from_node, to_node)
-            .map_err(|_| AnalyzerError::RelationshipTypeNotFound(type_name.to_string()))?;
+            .map_err(|e| {
+                log::error!("ViewResolver: Failed to get rel schema: {:?}", e);
+                AnalyzerError::RelationshipTypeNotFound(type_name.to_string())
+            })?;
+        log::debug!("ViewResolver: Got rel schema: table_name={}", rel_schema.table_name);
 
         // Try explicit mapping first, fallback to identity mapping (property name = column name)
         // This supports wide tables without requiring hundreds of explicit mappings

@@ -1665,13 +1665,21 @@ fn traverse_connected_pattern_with_mode<'a>(
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
                 TableCtx::build(
-                    rel_alias,
+                    rel_alias.clone(),
                     rel_labels,
                     rel_properties,
                     true,
                     rel.name.is_some(),
                 ),
             );
+
+            // Set connected node labels for polymorphic relationship resolution
+            if let Some(rel_table_ctx) = plan_ctx.get_mut_table_ctx_opt(&rel_alias) {
+                rel_table_ctx.set_connected_nodes(
+                    left_node_label_for_rel.clone(),
+                    right_node_label_for_rel.clone(),
+                );
+            }
 
             // Register path variable in PlanCtx if present
             if let Some(path_var) = path_variable {
@@ -1737,6 +1745,13 @@ fn traverse_connected_pattern_with_mode<'a>(
                 ),
             );
 
+            // Compute left and right node labels based on direction for relationship lookup
+            let (left_node_label_for_rel, right_node_label_for_rel) = match rel.direction {
+                ast::Direction::Outgoing => (start_node_label.clone(), end_node_label.clone()),
+                ast::Direction::Incoming => (end_node_label.clone(), start_node_label.clone()),
+                ast::Direction::Either => (start_node_label.clone(), end_node_label.clone()),
+            };
+
             let graph_rel_node = GraphRel {
                 left: Arc::new(LogicalPlan::GraphNode(start_graph_node)),
                 center: generate_relationship_center(
@@ -1784,13 +1799,21 @@ fn traverse_connected_pattern_with_mode<'a>(
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
                 TableCtx::build(
-                    rel_alias,
+                    rel_alias.clone(),
                     rel_labels,
                     rel_properties,
                     true,
                     rel.name.is_some(),
                 ),
             );
+
+            // Set connected node labels for polymorphic relationship resolution
+            if let Some(rel_table_ctx) = plan_ctx.get_mut_table_ctx_opt(&rel_alias) {
+                rel_table_ctx.set_connected_nodes(
+                    left_node_label_for_rel.clone(),
+                    right_node_label_for_rel.clone(),
+                );
+            }
 
             // Register path variable in PlanCtx if present
             if let Some(path_var) = path_variable {
@@ -1996,13 +2019,21 @@ fn traverse_connected_pattern_with_mode<'a>(
             plan_ctx.insert_table_ctx(
                 rel_alias.clone(),
                 TableCtx::build(
-                    rel_alias,
+                    rel_alias.clone(),
                     rel_labels,
                     rel_properties,
                     true,
                     rel.name.is_some(),
                 ),
             );
+
+            // Set connected node labels for polymorphic relationship resolution
+            if let Some(rel_table_ctx) = plan_ctx.get_mut_table_ctx_opt(&rel_alias) {
+                rel_table_ctx.set_connected_nodes(
+                    left_node_label_for_rel.clone(),
+                    right_node_label_for_rel.clone(),
+                );
+            }
 
             // Register path variable in PlanCtx if present
             if let Some(path_var) = path_variable {
