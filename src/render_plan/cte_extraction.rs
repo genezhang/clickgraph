@@ -449,7 +449,20 @@ pub fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipCo
                 ))
             }
         }
-        LogicalPlan::Cte(cte) => extract_relationship_columns(&cte.input),
+        LogicalPlan::Cte(cte) => {
+            // CRITICAL: Multi-variant relationship CTEs (named rel_*) use standardized column names
+            // from_node_id and to_node_id, regardless of the underlying table schemas
+            if cte.name.starts_with("rel_") {
+                eprintln!("DEBUG extract_relationship_columns: CTE '{}' is multi-variant, using from_node_id/to_node_id", cte.name);
+                Some(RelationshipColumns {
+                    from_id: "from_node_id".to_string(),
+                    to_id: "to_node_id".to_string(),
+                })
+            } else {
+                eprintln!("DEBUG extract_relationship_columns: CTE '{}' is not multi-variant, recursing", cte.name);
+                extract_relationship_columns(&cte.input)
+            }
+        }
         LogicalPlan::GraphRel(rel) => extract_relationship_columns(&rel.center),
         LogicalPlan::Filter(filter) => extract_relationship_columns(&filter.input),
         LogicalPlan::Projection(proj) => extract_relationship_columns(&proj.input),
@@ -2256,6 +2269,11 @@ pub fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
             }
             // Otherwise, recurse into input
             extract_node_label_from_viewscan(&node.input)
+        }
+        LogicalPlan::Cte(cte) => {
+            // Recurse into CTE input to find the node label
+            // This is critical for VLP patterns where endpoints become CTEs
+            extract_node_label_from_viewscan(&cte.input)
         }
         LogicalPlan::Filter(filter) => extract_node_label_from_viewscan(&filter.input),
         _ => None,
