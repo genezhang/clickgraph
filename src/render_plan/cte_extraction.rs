@@ -1250,33 +1250,10 @@ pub fn extract_ctes_with_context(
             let mut right_ctes =
                 extract_ctes_with_context(&graph_rel.right, last_node_alias, context)?;
 
-            // CRITICAL: Separate WITH clause CTEs (non-recursive CTEs starting with "with_") 
-            // from other CTEs and move them to the beginning of the final list.
-            // This prevents them from being nested inside subsequent recursive CTE groups.
-            let mut with_clause_ctes: Vec<Cte> = Vec::new();
-            let mut other_left_ctes: Vec<Cte> = Vec::new();
-            
-            for cte in left_ctes {
-                if !cte.is_recursive && cte.cte_name.starts_with("with_") {
-                    with_clause_ctes.push(cte);
-                } else {
-                    other_left_ctes.push(cte);
-                }
-            }
-            
-            // Combine all CTEs: WITH clause CTEs FIRST, then left branch, right branch, current relationship
-            // This ensures WITH clause CTEs are in the first CTE group and accessible everywhere
-            let mut all_ctes = with_clause_ctes.clone();
-            all_ctes.append(&mut other_left_ctes);
+            // Combine all CTEs from left, right, and current relationship
+            let mut all_ctes = left_ctes;
             all_ctes.append(&mut right_ctes);
             all_ctes.append(&mut relationship_ctes);
-
-            // DEBUG: Print CTE order
-            eprintln!("DEBUG CTE EXTRACTION ORDER:");
-            for cte in &all_ctes {
-                eprintln!("  - {} (recursive={})", cte.cte_name, cte.is_recursive);
-            }
-            eprintln!("  WITH clause CTEs count: {}", with_clause_ctes.len());
 
             Ok(all_ctes)
         }
