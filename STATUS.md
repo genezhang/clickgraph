@@ -26,15 +26,21 @@ JOIN ldbc.Person AS end_node ON vlp1.end_id = end_node.id
   2. `extract_vlp_alias_mappings()`: Extract Cypher→VLP mappings from CTE metadata
   3. `rewrite_render_expr_for_vlp()`: Recursively rewrite PropertyAccessExp
 
+**Extended Fix** (Dec 17, 2025 - commit 7041692):
+- Extended rewriting to WHERE clause expressions (not just SELECT)
+- IC1 queries with filters now work: `WHERE friend.firstName = 'Wei'` → `WHERE end_node.firstName = 'Wei'`
+- Tested with LDBC database: `MATCH (p:Person {id: 14})-[:KNOWS*1..2]-(friend) WHERE friend.id <> 14` - PASS
+
 **Generated SQL After Fix**:
 ```sql
 SELECT start_node.id AS "a.id", end_node.id AS "b.id"  -- ✅ Correct aliases!
+WHERE end_node.firstName = 'Wei'  -- ✅ WHERE clause also rewritten!
 ```
 
 **Impact**:
 - ✅ Simple undirected shortestPath queries now generate valid SQL
-- ✅ All Union branches with VLP CTEs properly rewritten
-- ✅ Enables LDBC IC1 query execution
+- ✅ All Union branches with VLP CTEs properly rewritten (SELECT + WHERE)
+- ✅ Enables LDBC IC1 query execution with property filters
 
 ### ✅ ShortestPath CTE Wrapping Fix
 
