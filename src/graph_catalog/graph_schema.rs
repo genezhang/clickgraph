@@ -296,13 +296,21 @@ pub enum GraphSchemaElement {
 
 /// Node identifier schema - supports both single and composite node IDs.
 ///
+/// **Semantic Clarification (December 2025):**
+/// `node_id` specifies PROPERTY NAMES (graph layer), not column names (relational layer).
+/// The actual database column names are resolved through property_mappings.
+///
 /// For traditional nodes with own tables:
-/// - `id` contains the column name(s) directly
+/// - `id` contains property name(s) that map to columns via property_mappings
+/// - If not in property_mappings, identity mapping is auto-generated (property_name → column_name)
+/// - Example: `node_id: user_id` → auto-generates `property_mappings: {user_id: user_id}`
 ///
 /// For denormalized nodes (virtual nodes on edge tables):
 /// - `id` contains property name(s) that get resolved via from_node_properties/to_node_properties
+/// - Example: `node_id: ip` with `from_node_properties: {ip: "id.orig_h"}`
 ///
-/// This mirrors `Identifier` used for `edge_id` in relationship schemas.
+/// This provides backward compatibility: existing schemas work unchanged with auto-generated
+/// identity mappings. This mirrors `Identifier` used for `edge_id` in relationship schemas.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodeIdSchema {
     /// The identifier - can be single column or composite

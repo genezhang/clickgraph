@@ -166,9 +166,22 @@ pub struct NodeDefinition {
     pub database: String,
     /// Source table name
     pub table: String,
-    /// Node identifier - column name(s) for node ID
-    /// Supports single column: `node_id: user_id`
-    /// Or composite (future): `node_id: [tenant_id, user_id]`
+    /// Node identifier - PROPERTY NAME(S) for node ID (graph layer concept)
+    /// 
+    /// **Important**: These are Cypher property names, not database column names.
+    /// Column names are resolved through property_mappings. If a property is not
+    /// in property_mappings, an identity mapping is auto-generated (property → column).
+    ///
+    /// Supports single property: `node_id: user_id`
+    /// Or composite: `node_id: [tenant_id, user_id]`
+    ///
+    /// Example 1 (Standard - identity mapping):
+    ///   node_id: user_id
+    ///   # Auto-generates: property_mappings: {user_id: user_id}
+    ///
+    /// Example 2 (Denormalized - explicit mapping):
+    ///   node_id: ip
+    ///   from_node_properties: {ip: "id.orig_h"}
     ///
     /// Note: `id_column` is deprecated, use `node_id` instead
     #[serde(alias = "id_column")]
@@ -560,6 +573,40 @@ fn build_property_mappings(
     mappings
 }
 
+/// Build property mappings for a node, ensuring node_id properties have identity mappings
+fn build_node_property_mappings(
+    manual_mappings: HashMap<String, String>,
+    discovery: &TableDiscovery,
+    auto_discover: bool,
+    exclude_columns: &[String],
+    naming_convention: &str,
+    node_id: &Identifier,
+) -> HashMap<String, String> {
+    let mut mappings = build_property_mappings(
+        manual_mappings,
+        discovery,
+        auto_discover,
+        exclude_columns,
+        naming_convention,
+    );
+
+    // Ensure node_id properties have identity mappings if not already specified
+    // This allows node_id to be property names that default to column names
+    for id_prop in node_id.columns() {
+        if !mappings.contains_key(id_prop) {
+            // Add identity mapping: property_name → column_name (same name)
+            log::debug!(
+                "🔧 Auto-adding identity mapping for node_id property '{}' → '{}'",
+                id_prop,
+                id_prop
+            );
+            mappings.insert(id_prop.to_string(), id_prop.to_string());
+        }
+    }
+
+    mappings
+}
+
 /// Determine use_final value from config and detected engine
 fn determine_use_final(
     config_use_final: Option<bool>,
@@ -579,12 +626,14 @@ fn build_node_schema(
     discovery: &TableDiscovery,
 ) -> Result<NodeSchema, GraphSchemaError> {
     // Build property mappings (with optional auto-discovery)
-    let raw_mappings = build_property_mappings(
+    // Use build_node_property_mappings to ensure node_id properties have identity mappings
+    let raw_mappings = build_node_property_mappings(
         node_def.properties.clone(),
         discovery,
         node_def.auto_discover_columns,
         &node_def.exclude_columns,
         &node_def.naming_convention,
+        &node_def.node_id,
     );
 
     let property_mappings = parse_property_mappings(raw_mappings)?;
@@ -2154,6 +2203,156 @@ mod group_membership_tests {
         assert!(
             !schema.get_relationships_schemas().is_empty(),
             "Should have generated relationships from polymorphic edge"
+        );
+    }
+}
+#[cfg(test)]
+mod node_id_identity_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn test_node_id_identity_mapping_single() {
+        // Test that node_id properties get identity mappings even when not in property_mappings
+        let node_def = NodeDefinition {
+            label: "User".to_string(),
+            database: "test".to_string(),
+            table: "users".to_string(),
+            node_id: Identifier::Single("user_id".to_string()),
+            label_column: None,
+            label_value: None,
+            properties: HashMap::from([
+                ("name".to_string(), "full_name".to_string()),
+            ]),
+            view_parameters: None,
+            use_final: None,
+            filter: None,
+            auto_discover_columns: false,
+            exclude_columns: vec![],
+            naming_convention: "snake_case".to_string(),
+            from_node_properties: None,
+            to_node_properties: None,
+        };
+
+        let discovery = TableDiscovery {
+            columns: None,
+            engine: None,
+        };
+
+        let node_schema = build_node_schema(&node_def, &discovery)
+            .expect("Failed to build node schema");
+
+        // Verify that user_id has an identity mapping (user_id -> user_id)
+        assert!(
+            node_schema.property_mappings.contains_key("user_id"),
+            "node_id property 'user_id' should have auto-generated identity mapping"
+        );
+        
+        let user_id_mapping = &node_schema.property_mappings["user_id"];
+        assert_eq!(
+            user_id_mapping.to_sql_column_only(),
+            "user_id",
+            "user_id should map to itself (identity mapping)"
+        );
+
+        // Verify manual mapping still works
+        assert!(node_schema.property_mappings.contains_key("name"));
+        assert_eq!(
+            node_schema.property_mappings["name"].to_sql_column_only(),
+            "full_name"
+        );
+    }
+
+    #[test]
+    fn test_node_id_identity_mapping_composite() {
+        // Test that composite node_id properties get identity mappings
+        let node_def = NodeDefinition {
+            label: "Account".to_string(),
+            database: "test".to_string(),
+            table: "accounts".to_string(),
+            node_id: Identifier::Composite(vec![
+                "tenant_id".to_string(),
+                "account_id".to_string(),
+            ]),
+            label_column: None,
+            label_value: None,
+            properties: HashMap::from([
+                ("balance".to_string(), "account_balance".to_string()),
+            ]),
+            view_parameters: None,
+            use_final: None,
+            filter: None,
+            auto_discover_columns: false,
+            exclude_columns: vec![],
+            naming_convention: "snake_case".to_string(),
+            from_node_properties: None,
+            to_node_properties: None,
+        };
+
+        let discovery = TableDiscovery {
+            columns: None,
+            engine: None,
+        };
+
+        let node_schema = build_node_schema(&node_def, &discovery)
+            .expect("Failed to build node schema");
+
+        // Verify both composite ID properties have identity mappings
+        assert!(
+            node_schema.property_mappings.contains_key("tenant_id"),
+            "Composite node_id property 'tenant_id' should have identity mapping"
+        );
+        assert_eq!(
+            node_schema.property_mappings["tenant_id"].to_sql_column_only(),
+            "tenant_id"
+        );
+
+        assert!(
+            node_schema.property_mappings.contains_key("account_id"),
+            "Composite node_id property 'account_id' should have identity mapping"
+        );
+        assert_eq!(
+            node_schema.property_mappings["account_id"].to_sql_column_only(),
+            "account_id"
+        );
+    }
+
+    #[test]
+    fn test_node_id_explicit_mapping_not_overridden() {
+        // Test that explicit property_mappings take precedence over auto-generated ones
+        let node_def = NodeDefinition {
+            label: "IP".to_string(),
+            database: "test".to_string(),
+            table: "connections".to_string(),
+            node_id: Identifier::Single("ip".to_string()),
+            label_column: None,
+            label_value: None,
+            properties: HashMap::from([
+                ("ip".to_string(), "orig_h".to_string()), // Explicit mapping for node_id
+            ]),
+            view_parameters: None,
+            use_final: None,
+            filter: None,
+            auto_discover_columns: false,
+            exclude_columns: vec![],
+            naming_convention: "snake_case".to_string(),
+            from_node_properties: None,
+            to_node_properties: None,
+        };
+
+        let discovery = TableDiscovery {
+            columns: None,
+            engine: None,
+        };
+
+        let node_schema = build_node_schema(&node_def, &discovery)
+            .expect("Failed to build node schema");
+
+        // Verify that explicit mapping is used, not identity mapping
+        assert!(node_schema.property_mappings.contains_key("ip"));
+        assert_eq!(
+            node_schema.property_mappings["ip"].to_sql_column_only(),
+            "orig_h",
+            "Explicit mapping should take precedence over identity mapping"
         );
     }
 }
