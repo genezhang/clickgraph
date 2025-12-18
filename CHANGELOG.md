@@ -9,6 +9,32 @@
   - Test scripts: `scripts/test/test_mcp_compatibility.sh`, `scripts/test/test_neo4j_mcp_server.sh`
 
 ### 🐛 Bug Fixes
+- **CTE Column Aliasing Convention** - Fixed dot notation in CTE column names (December 19, 2025)
+  - **Issue**: CTE column aliases used dot notation (`"a.name"`) instead of underscore convention (`"a_name"`)
+  - **Convention**: CTEs use underscore internally (`a_name`), outer SELECT uses AS for dot mapping
+  - **Root Cause**: Two `format!("{}.{}")` calls in plan_builder.rs violating established pattern
+  - **Example**:
+    ```cypher
+    MATCH (a:User)-[:FOLLOWS]->(b:User)
+    WITH a, COUNT(b) as follows
+    WHERE follows > 1
+    RETURN a.name, follows
+    ```
+    Now correctly generates:
+    ```sql
+    WITH cte AS (
+      SELECT a.full_name AS "a_name",  -- ✅ underscore in CTE
+             ...
+    )
+    SELECT cte.a_name AS "a.name"      -- ✅ AS maps to dot notation
+    ```
+  - **Fix**: Changed two locations in `src/render_plan/plan_builder.rs`:
+    - Line 5151: TableAlias expansion - `format!("{}.{}")` → `format!("{}_{}")`
+    - Line 5219: Wildcard expansion - `format!("{}.{}")` → `format!("{}_{}")`
+  - **Tests**: Added `tests/rust/integration/cte_column_aliasing_tests.rs` (2 comprehensive tests)
+  - **Impact**: All 650 unit tests + 2 new integration tests passing (100%)
+  - **Resolves**: KNOWN_ISSUES.md Issue #1 (Active Issues section)
+
 - **Database Prefix for Base Table JOINs** - Fixed missing database qualifiers after WITH clause (December 19, 2025)
   - **Issue**: Base tables referenced in JOINs after WITH clause were missing database prefixes
   - **Error**: "Unknown table expression identifier 'Place'" when tables are in non-default database

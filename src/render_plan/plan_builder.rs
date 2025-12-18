@@ -5147,8 +5147,10 @@ impl RenderPlanBuilder for LogicalPlan {
                                 // Create a separate ProjectionItem for each property
                                 // Use original alias (e.g., "a") as prefix for column names to avoid
                                 // duplicate aliases when returning multiple nodes (e.g., RETURN a, b)
+                                // IMPORTANT: Use underscore convention for CTE column names (a_name, not a.name)
+                                // The outer SELECT will use AS to create dot notation (SELECT a_name AS "a.name")
                                 for (prop_name, col_name) in properties {
-                                    let col_alias_name = format!("{}.{}", alias.0, prop_name);
+                                    let col_alias_name = format!("{}_{}", alias.0, prop_name);
                                     expanded_items.push(ProjectionItem {
                                         expression: crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                             crate::query_planner::logical_expr::PropertyAccess {
@@ -5214,9 +5216,11 @@ impl RenderPlanBuilder for LogicalPlan {
 
                                     // Create a separate ProjectionItem for each property
                                     // Use original_alias as prefix for column names to disambiguate
+                                    // IMPORTANT: Use underscore convention for CTE column names (a_name, not a.name)
+                                    // The outer SELECT will use AS to create dot notation (SELECT a_name AS "a.name")
                                     for (prop_name, col_name) in properties {
                                         let col_alias_name =
-                                            format!("{}.{}", original_alias, prop_name);
+                                            format!("{}_{}", original_alias, prop_name);
                                         expanded_items.push(ProjectionItem {
                                             expression: crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                                                 crate::query_planner::logical_expr::PropertyAccess {

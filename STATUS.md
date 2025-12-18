@@ -54,6 +54,83 @@ else {
 
 ---
 
+## ✅ CTE Column Aliasing Fix Complete (December 19, 2025)
+
+### Objective
+Fix incorrect dot notation in CTE column aliases, implementing consistent underscore convention.
+
+### Problem
+When WITH clause exported node aliases, two code locations incorrectly generated CTE column names with dot notation (e.g., `"a.name"`) instead of underscore (e.g., `"a_name"`), causing column reference issues in outer queries.
+
+**Incorrect SQL** (before fix):
+```sql
+WITH cte AS (
+  SELECT a.full_name AS "a.name"  -- ❌ Dot notation in CTE
+  ...
+)
+SELECT cte."a.name" AS "result.name"  -- ❌ Confusing reference
+```
+
+### Established Convention
+- **Inside CTE**: Use underscore (`a_name`, `a_user_id`, `a_email`)
+- **Outer SELECT**: Use AS to map to dot notation (`SELECT a_name AS "a.name"`)
+
+### Root Cause
+Two `format!()` calls in `src/render_plan/plan_builder.rs` used dot notation:
+1. **Line 5151**: TableAlias expansion to properties
+2. **Line 5219**: Wildcard (*) expansion to properties
+
+Both used: `format!("{}.{}", alias, property)`  ← ❌ Wrong!
+
+### Changes Completed
+
+**Fixed Code**:
+```rust
+// Before (WRONG):
+let col_alias_name = format!("{}.{}", alias.0, prop_name);  // Line 5151
+
+// After (CORRECT):
+let col_alias_name = format!("{}_{}", alias.0, prop_name);  // ✅ Uses underscore
+```
+
+**Generated SQL** (✅ now correct):
+```sql
+WITH with_a_follows_cte_1 AS (
+  SELECT anyLast(a.full_name) AS "a_name",      -- ✅ Underscore in CTE
+         a.user_id AS "a_user_id",
+         count(*) AS "follows"
+  FROM users_bench AS a
+  ...
+)
+SELECT a_follows.a_name AS "a.name",             -- ✅ AS maps underscore → dot
+       a_follows.follows AS "follows"
+FROM with_a_follows_cte_1 AS a_follows
+```
+
+### Testing
+- **Unit Tests**: All 650 existing tests pass (100%)
+- **New Tests**: Added `tests/rust/integration/cte_column_aliasing_tests.rs`
+  - Test 1: CTE with node + aggregation verifies underscore convention
+  - Test 2: Wildcard expansion verifies no dot notation in CTE
+- **Test Query**:
+  ```cypher
+  MATCH (a:User)-[:FOLLOWS]->(b:User)
+  WITH a, COUNT(b) as follows
+  WHERE follows > 1
+  RETURN a.name, follows
+  ORDER BY a.name
+  ```
+
+### Final Test Status: 650/650 unit tests + 2 new integration tests passing (100%) ✅
+
+**Benefits**:
+- ✅ Consistent CTE column naming convention
+- ✅ Resolves KNOWN_ISSUES.md Issue #1 (from Active Issues section)
+- ✅ Matches established pattern used throughout codebase
+- ✅ Simple 2-character fix (`.` → `_`) in 2 locations with broad impact
+
+---
+
 ## ✅ Composite Node ID Support Complete (December 18, 2025)
 
 ### Objective

@@ -723,14 +723,15 @@ RETURN person1.id, person2.id, city1.name
 
 ## Active Issues
 
-### 1. CTE Column Aliasing for Mixed RETURN (WITH alias + node property)
+### 1. CTE Column Aliasing for Mixed RETURN (WITH alias + node property) - ✅ FIXED
 
-**Status**: 🔴 Active  
-**Severity**: MEDIUM
+**Status**: ✅ FIXED (December 19, 2025)  
+**Severity**: MEDIUM (resolved)
 
-**Symptom**: When RETURN references both WITH aliases AND node properties, the JOIN condition may use incorrect column names.
+**Problem** (resolved):
+CTE column aliases incorrectly used dot notation (e.g., `"a.age"`) instead of underscore convention (e.g., `"a_age"`), causing JOIN issues in outer queries.
 
-**Example**:
+**Example (now works)**:
 ```cypher
 MATCH (a:User)-[:FOLLOWS]->(b:User)
 WITH a, COUNT(b) as follows
@@ -739,16 +740,37 @@ RETURN a.name, follows
 ORDER BY a.name
 ```
 
-**Root Cause**: CTE column aliases include the table prefix (e.g., `"a.age"`) but the outer query JOIN tries to reference `grouped_data.age` (without prefix).
+**Root Cause**:
+Two locations in `plan_builder.rs` used `format!("{}.{}", alias, property)` to create CTE column aliases, violating the established convention:
+- **Inside CTE**: Use underscore (`a_name`, `a_user_id`)
+- **Outer SELECT**: Use AS to map to dot notation (`SELECT a_name AS "a.name"`)
 
-**Workaround**: For queries that only need WITH aliases in RETURN (no additional node properties), the optimization correctly skips the JOIN and selects directly from CTE. Ensure RETURN only references WITH clause output:
-```cypher
--- ✅ Works: RETURN only references WITH output
-MATCH (a:User)-[:FOLLOWS]->(b:User)
-WITH a.name as name, COUNT(b) as follows
-WHERE follows > 1
-RETURN name, follows
+**Fix** (December 19, 2025):
+Changed both format! calls in `src/render_plan/plan_builder.rs`:
+1. **Line 5151** (TableAlias expansion): Changed `format!("{}.{}")` → `format!("{}_{}")`
+2. **Line 5219** (Wildcard expansion): Changed `format!("{}.{}")` → `format!("{}_{}")`
+
+**Generated SQL** (✅ now correct):
+```sql
+WITH with_a_follows_cte_1 AS (
+  SELECT anyLast(a.full_name) AS "a_name",      -- ✅ underscore in CTE
+         a.user_id AS "a_user_id",
+         count(*) AS "follows"
+  FROM users_bench AS a
+  INNER JOIN user_follows_bench ON ...
+  GROUP BY a.user_id
+  HAVING follows > 1
+)
+SELECT a_follows.a_name AS "a.name",             -- ✅ AS maps to dot notation
+       a_follows.follows AS "follows"
+FROM with_a_follows_cte_1 AS a_follows
+ORDER BY a_follows.a_name
 ```
+
+**Testing**: 
+- All 650 existing unit tests pass
+- Added comprehensive test: `tests/rust/integration/cte_column_aliasing_tests.rs` (2 tests)
+- Verified underscore convention in CTEs and proper AS mapping in outer SELECT
 
 ---
 
