@@ -1,8 +1,54 @@
 # ClickGraph Status
 
-*Updated: December 17, 2025*
+*Updated: December 18, 2025*
 
-## 🎉 Recent Fixes (December 17, 2025)
+## 🎉 Recent Fixes (December 18, 2025)
+
+### ✅ CTE Database Prefix Fix for Cross-Branch JOINs
+
+**Critical Bug**: Cross-branch JOINs added database prefixes to CTE names, causing SQL syntax errors
+
+**Issue**: Multi-MATCH queries with WITH clauses generated invalid SQL:
+```sql
+WITH with_u2_cte AS (SELECT ... FROM ...)
+SELECT *
+FROM with_u2_cte AS friend
+INNER JOIN brahmand.with_u2_cte AS friend  -- ❌ Database prefix on CTE!
+```
+
+**Root Cause**: `NodeAppearance` extraction in `graph_join_inference.rs` always used schema database/table names, even when:
+1. GraphRel was wrapped in a CTE (for alternate relationships)
+2. Multi-variant relationships created UNION CTEs
+
+**Fix (commits 9ae3bc7, ddc7fe7)**: Two-location fix:
+1. **graph_context.rs** (lines 206-226): Multi-variant CTE detection
+   - Check if `labels.len() > 1` → use `rel_{left}_{right}` format
+   - Matches CTE names from `cte_extraction.rs`
+   
+2. **graph_traversal_planning.rs** (lines 678-696): Consistent CTE wrapping
+   - Multi-variant: use `rel_{left}_{right}` format
+   - Single: keep `{label}_{alias}` format (backward compatible)
+
+3. **graph_join_inference.rs** (lines 3507-3586): Database prefix removal
+   - Detect CTE-wrapped GraphRel → use CTE name, empty database
+   - Detect multi-variant labels → construct CTE name, empty database  
+   - Conditional prefix: only add database if not empty
+
+**Generated SQL After Fix**:
+```sql
+rel_friend_city AS (
+  SELECT PersonId as from_node_id, CityId as to_node_id FROM Person_isLocatedIn_Place
+  UNION ALL ...
+)
+SELECT *
+FROM with_u2_cte AS friend
+INNER JOIN rel_friend_city AS t3  -- ✅ No database prefix on CTEs!
+```
+
+**Impact**:
+- ✅ Multi-variant relationships (IS_LOCATED_IN, HAS_TAG) now work correctly
+- ✅ Cross-branch JOINs use correct CTE names without database prefixes
+- ⚠️ Known issue: WITH clause queries still fail (node label preservation bug - separate fix needed)
 
 ### ✅ VLP Alias Mapping Fix for Undirected ShortestPath
 
