@@ -672,11 +672,29 @@ impl GraphTRaversalPlanning {
                 vec![from_edge_ctx_to_update, to_edge_ctx_to_update],
             )
         } else {
-            let rel_cte_name = format!(
-                "{}_{}",
-                graph_context.rel.label.clone(),
-                graph_context.rel.alias
-            );
+            // CRITICAL: For multi-variant relationships, use consistent CTE naming
+            // Format: rel_{left_connection}_{right_connection} (matches cte_extraction.rs)
+            // Check if this GraphRel has multiple labels (multi-variant relationship)
+            let rel_cte_name = if let Some(labels) = &graph_rel.labels {
+                if labels.len() > 1 {
+                    // Multi-variant relationship - use consistent naming with cte_extraction.rs
+                    format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection)
+                } else {
+                    // Single relationship - use label-based naming
+                    format!(
+                        "{}_{}",
+                        graph_context.rel.label.clone(),
+                        graph_context.rel.alias
+                    )
+                }
+            } else {
+                // No labels - use label-based naming (fallback)
+                format!(
+                    "{}_{}",
+                    graph_context.rel.label.clone(),
+                    graph_context.rel.alias
+                )
+            };
 
             let rel_proj_input: Vec<(String, Option<ColumnAlias>)> = if !star_found {
                 vec![

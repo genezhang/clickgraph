@@ -203,8 +203,23 @@ pub fn get_graph_context<'a>(
         // Alternate relationship types - center wrapped in CTE by GraphTraversalPlanning
         log::info!("🔍 graph_context: REL alias '{}' uses CTE: '{}' (alternate relationships)", rel_alias, cte.name);
         cte.name.clone()
+    } else if let Some(labels) = &graph_rel.labels {
+        // Check if this is a multi-variant relationship (multiple labels for same rel type)
+        // If so, a UNION CTE should have been created with name: rel_{left_connection}_{right_connection}
+        if labels.len() > 1 {
+            let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
+            log::info!("🔍 graph_context: REL alias '{}' has {} labels - using multi-variant CTE: '{}'", 
+                       rel_alias, labels.len(), cte_name);
+            cte_name
+        } else {
+            // Single label - use schema table name
+            let rel_table_full = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+            let base_name = strip_database_prefix(&rel_table_full);
+            log::info!("🔍 graph_context: REL alias '{}' uses base table: '{}'", rel_alias, base_name);
+            base_name
+        }
     } else {
-        // Standard single relationship - use schema table name
+        // No labels specified - use schema table name
         let rel_table_full = format!("{}.{}", rel_schema.database, rel_schema.table_name);
         let base_name = strip_database_prefix(&rel_table_full);
         log::info!("🔍 graph_context: REL alias '{}' uses base table: '{}'", rel_alias, base_name);
