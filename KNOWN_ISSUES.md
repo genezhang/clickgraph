@@ -1,6 +1,6 @@
 # Known Issues
 
-**Active Issues**: 4  
+**Active Issues**: 3 (30 LDBC queries remaining)  
 **Last Updated**: December 19, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
@@ -8,9 +8,54 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ---
 
+## Recently Fixed
+
+### ✅ Polymorphic Relationship Lookup (December 19, 2025)
+**Fixed**: Relationships with same type but different node pairs (e.g., `IS_LOCATED_IN::Person::City` vs `IS_LOCATED_IN::Post::Place`)
+- **Solution**: Thread node labels through relationship lookup pipeline
+- **Impact**: LDBC audit improved from 7/41 (17%) → 11/41 (27%) queries passing
+- **Commit**: 3b2c781
+- **Details**: See STATUS.md and CHANGELOG.md
+
+---
+
 ## Active Issues
 
-### 1. Multi-Variant CTE Column Name Mismatch After WITH Clause
+### 1. LDBC Query Failures (30/41 queries remaining)
+
+**Status**: 🔧 IN PROGRESS  
+**Severity**: MEDIUM  
+**Current**: 11/41 (27%) LDBC queries passing  
+
+**Passing Queries**:
+- **short**: short-1, short-3 (2/7 = 29%)
+- **complex**: complex-5, complex-6, complex-14 (3/14 = 21%)
+- **bi**: bi-1, bi-12 (2/20 = 10%)
+
+**Common Failure Patterns**:
+1. **Parameter substitution errors** (short-4, short-5, short-6):
+   - Missing required parameters like `messageId`
+   - May require view parameter support
+
+2. **"SQL doesn't contain SELECT"** (short-2, short-7, many complex/bi queries):
+   - Query planning errors before SQL generation
+   - Multiple root causes likely (need investigation)
+
+3. **Complex patterns not yet supported**:
+   - Multi-hop variable-length paths with filters
+   - Nested aggregations  
+   - Complex temporal filters
+
+**Next Steps**:
+1. Investigate short-2, short-7 failures (simplest to debug)
+2. Add parameter substitution support for view-based queries
+3. Systematic review of complex query patterns
+
+**Progress Tracking**: See `benchmarks/ldbc_snb/scripts/audit_sql_generation.py`
+
+---
+
+### 2. Multi-Variant CTE Column Name Mismatch After WITH Clause
 
 **Status**: ✅ FIXED (December 18, 2025)  
 **Severity**: HIGH  

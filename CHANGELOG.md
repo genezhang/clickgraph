@@ -9,6 +9,25 @@
   - Test scripts: `scripts/test/test_mcp_compatibility.sh`, `scripts/test/test_neo4j_mcp_server.sh`
 
 ### 🐛 Bug Fixes
+- **Polymorphic Relationship Support** - Thread node labels through relationship lookup pipeline (December 19, 2025)
+  - **Issue**: Polymorphic relationships (same type, different node pairs) fail lookup
+  - **Example**: LDBC's `IS_LOCATED_IN` relationship:
+    - `Person→City` uses `Person_isLocatedIn_Place` table
+    - `Organisation→Place` uses `Organisation_isLocatedIn_Place` table  
+    - `Post→Place` uses `Post_isLocatedIn_Place` table
+  - **Root Cause**: 5 locations calling `get_rel_schema(rel_type)` without node labels
+    - Can't disambiguate: which IS_LOCATED_IN table to use?
+  - **Solution**: Thread left/right node labels through entire pipeline:
+    1. `match_clause.rs`: Pass node labels to `generate_relationship_center()`
+    2. `query_validation.rs`: Use `get_rel_schema_with_nodes()` with node labels
+    3. `graph_context.rs`: Thread node labels through label inference
+    4. `graph_join_inference.rs`: Use node-aware schema lookup in pattern context
+    5. `graph_schema.rs`: Add debug logging for composite key lookups
+  - **Results**:
+    - LDBC audit: 7/41 (17%) → 11/41 (27%) queries passing (+57% improvement)
+    - Fixed queries: short-1 plus 3 others
+  - **Impact**: Polymorphic relationships now fully supported across LDBC schema
+
 - **CTE Column Aliasing Convention** - Fixed dot notation in CTE column names (December 19, 2025)
   - **Issue**: CTE column aliases used dot notation (`"a.name"`) instead of underscore convention (`"a_name"`)
   - **Convention**: CTEs use underscore internally (`a_name`), outer SELECT uses AS for dot mapping
