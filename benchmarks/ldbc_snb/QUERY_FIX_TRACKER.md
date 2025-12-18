@@ -1,6 +1,6 @@
 # LDBC Query Fix Tracker
 
-**Last Updated**: December 17, 2025
+**Last Updated**: December 19, 2025
 
 ## Current Status: 18/41 queries generating valid SQL (44%)
 
@@ -30,13 +30,24 @@
 - **BI12**: Trending posts
 - **BI18**: Friend recommendation
 
-### 🎯 Recent Fixes (Dec 16, 2025)
-- **BI-18**: ✅ FIXED - Correlated subquery in JOIN ON issue resolved
+### 🎯 Recent Fixes (Dec 16-19, 2025)
+
+- **CTE Column Aliasing**: ✅ FIXED (Dec 19) - Underscore convention now enforced
+  - Fixed dot notation bug in CTE column names (`"a.name"` → `"a_name"`)
+  - Affects queries with `WITH alias RETURN alias.property` pattern
+  - See KNOWN_ISSUES.md Issue #1, CHANGELOG.md for details
+
+- **Database Prefix**: ✅ FIXED (Dec 19) - Base table JOINs after WITH clause
+  - Missing database qualifiers now added (e.g., `ldbc.Place`)
+  - Prevents "Unknown table" errors in non-default databases
+  - See KNOWN_ISSUES.md Issue #2, CHANGELOG.md for details
+
+- **BI-18**: ✅ FIXED (Dec 16) - Correlated subquery in JOIN ON issue resolved
   - `NOT (pattern)`, `EXISTS()`, `size()` now stay in WHERE clause
   - CartesianProduct JOIN rendering fixed
   - See CHANGELOG.md for details
 
-- **Comma Pattern WITH Bug**: ✅ FIXED - Missing JOIN ON in CartesianProduct inside WITH
+- **Comma Pattern WITH Bug**: ✅ FIXED (Dec 16) - Missing JOIN ON in CartesianProduct inside WITH
   - Pattern: `MATCH (a), (b) WHERE a.id < b.id WITH a, b, 0 AS score`
   - Now generates proper `INNER JOIN b ON a.id < b.id`
   - Computed columns now properly prefixed with table alias
@@ -110,7 +121,8 @@
 
 ### 📊 Audit Results Summary
 
-**Audit Run**: December 17, 2025 using `audit_sql_generation.py`
+**Audit Run**: December 17, 2025 using `audit_sql_generation.py`  
+**Note**: Re-audit recommended after Dec 19 fixes (CTE aliasing, database prefix)
 
 **Results**:
 - Total queries tested: 41
