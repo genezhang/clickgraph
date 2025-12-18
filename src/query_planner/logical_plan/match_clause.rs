@@ -971,23 +971,29 @@ fn try_generate_view_scan(
 fn try_generate_relationship_view_scan(
     _alias: &str,
     rel_type: &str,
+    left_node_label: Option<&str>,
+    right_node_label: Option<&str>,
     plan_ctx: &PlanCtx,
 ) -> Option<Arc<LogicalPlan>> {
     log::debug!(
-        "try_generate_relationship_view_scan: rel_type='{}'",
-        rel_type
+        "try_generate_relationship_view_scan: rel_type='{}', left_node_label={:?}, right_node_label={:?}",
+        rel_type,
+        left_node_label,
+        right_node_label
     );
 
     // Use plan_ctx.schema() instead of GLOBAL_SCHEMAS
     let schema = plan_ctx.schema();
 
-    // Look up the relationship schema for this type
-    let rel_schema = match schema.get_rel_schema(rel_type) {
+    // Look up the relationship schema for this type, using node labels for disambiguation
+    let rel_schema = match schema.get_rel_schema_with_nodes(rel_type, left_node_label, right_node_label) {
         Ok(s) => s,
         Err(e) => {
             log::warn!(
-                "Could not find relationship schema for type '{}': {:?}",
+                "Could not find relationship schema for type '{}' with nodes ({:?}, {:?}): {:?}",
                 rel_type,
+                left_node_label,
+                right_node_label,
                 e
             );
             return None;
@@ -1129,12 +1135,16 @@ fn generate_relationship_center(
     rel_labels: &Option<Vec<String>>,
     left_connection: &str,
     right_connection: &str,
+    left_node_label: &Option<String>,
+    right_node_label: &Option<String>,
     plan_ctx: &PlanCtx,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
     log::debug!(
-        "Creating relationship center for alias '{}', labels: {:?}",
+        "Creating relationship center for alias '{}', labels: {:?}, left_node_label: {:?}, right_node_label: {:?}",
         rel_alias,
-        rel_labels
+        rel_labels,
+        left_node_label,
+        right_node_label
     );
     // Try to generate a ViewScan for the relationship if we have a single type
     if let Some(labels) = rel_labels {
@@ -1157,7 +1167,13 @@ fn generate_relationship_center(
                 unique_labels[0]
             );
             if let Some(view_scan) =
-                try_generate_relationship_view_scan(rel_alias, &unique_labels[0], plan_ctx)
+                try_generate_relationship_view_scan(
+                    rel_alias,
+                    &unique_labels[0],
+                    left_node_label.as_ref().map(|s| s.as_str()),
+                    right_node_label.as_ref().map(|s| s.as_str()),
+                    plan_ctx
+                )
             {
                 log::info!(
                     "✓ Successfully created Relationship ViewScan for type '{}'",
@@ -1494,6 +1510,13 @@ fn traverse_connected_pattern_with_mode<'a>(
                 ast::Direction::Either => (start_node_alias.clone(), end_node_alias.clone()),
             };
 
+            // Compute left and right node labels based on direction for relationship lookup
+            let (left_node_label_for_rel, right_node_label_for_rel) = match rel.direction {
+                ast::Direction::Outgoing => (start_node_label.clone(), end_node_label.clone()),
+                ast::Direction::Incoming => (end_node_label.clone(), start_node_label.clone()),
+                ast::Direction::Either => (start_node_label.clone(), end_node_label.clone()),
+            };
+
             // FIX: For multi-hop patterns, use the existing plan as LEFT to create nested structure
             // This ensures (a)-[r1]->(b)-[r2]->(c) becomes GraphRel { left: GraphRel(a-r1-b), center: r2, right: c }
             let (left_node, right_node) = match rel.direction {
@@ -1620,6 +1643,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                     &rel_labels,
                     &left_conn,
                     &right_conn,
+                    &left_node_label_for_rel,
+                    &right_node_label_for_rel,
                     plan_ctx,
                 )?,
                 right: right_node,
@@ -1671,7 +1696,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         // if end alias already present in ctx map, it means the current nested connected pattern's end node will be connecting at right side plan and start node will be at the left
         else if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
             if end_node_label.is_some() {
-                table_ctx.set_labels(end_node_label.map(|l| vec![l]));
+                table_ctx.set_labels(end_node_label.clone().map(|l| vec![l]));
             }
             if !end_node_props.is_empty() {
                 table_ctx.append_properties(end_node_props);
@@ -1705,7 +1730,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 start_node_alias.clone(),
                 TableCtx::build(
                     start_node_alias.clone(),
-                    start_node_label.map(|l| vec![l]),
+                    start_node_label.clone().map(|l| vec![l]),
                     start_node_props,
                     false,
                     start_node_ref.name.is_some(),
@@ -1719,6 +1744,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                     &rel_labels,
                     &start_node_alias,
                     &end_node_alias,
+                    &start_node_label,
+                    &end_node_label,
                     plan_ctx,
                 )?,
                 right: plan.clone(),
@@ -1859,7 +1886,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 start_node_alias.clone(),
                 TableCtx::build(
                     start_node_alias.clone(),
-                    start_node_label.map(|l| vec![l]),
+                    start_node_label.clone().map(|l| vec![l]),
                     start_node_props,
                     false,
                     start_node_ref.name.is_some(),
@@ -1889,7 +1916,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 end_node_alias.clone(),
                 TableCtx::build(
                     end_node_alias.clone(),
-                    end_node_label.map(|l| vec![l]),
+                    end_node_label.clone().map(|l| vec![l]),
                     end_node_props,
                     false,
                     end_node_ref.name.is_some(),
@@ -1900,6 +1927,13 @@ fn traverse_connected_pattern_with_mode<'a>(
                 ast::Direction::Outgoing => (start_node_alias.clone(), end_node_alias.clone()),
                 ast::Direction::Incoming => (end_node_alias.clone(), start_node_alias.clone()),
                 ast::Direction::Either => (start_node_alias.clone(), end_node_alias.clone()),
+            };
+
+            // Compute left and right node labels based on direction for relationship lookup
+            let (left_node_label_for_rel, right_node_label_for_rel) = match rel.direction {
+                ast::Direction::Outgoing => (start_node_label, end_node_label),
+                ast::Direction::Incoming => (end_node_label, start_node_label),
+                ast::Direction::Either => (start_node_label, end_node_label),
             };
 
             let (left_node, right_node) = match rel.direction {
@@ -1940,6 +1974,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                     &rel_labels,
                     &left_conn,
                     &right_conn,
+                    &left_node_label_for_rel,
+                    &right_node_label_for_rel,
                     plan_ctx,
                 )?,
                 right: right_node,

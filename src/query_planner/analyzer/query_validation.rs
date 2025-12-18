@@ -140,7 +140,11 @@ impl AnalyzerPass for QueryValidation {
                         source: e,
                     })?;
 
-                let rel_schema = graph_schema.get_rel_schema(&rel_lable).map_err(|e| {
+                let rel_schema = graph_schema.get_rel_schema_with_nodes(
+                    &rel_lable,
+                    Some(&from),
+                    Some(&to)
+                ).map_err(|e| {
                     AnalyzerError::GraphSchema {
                         pass: Pass::QueryValidation,
                         source: e,

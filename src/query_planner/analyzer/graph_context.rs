@@ -141,9 +141,17 @@ pub fn get_graph_context<'a>(
         .replace(format!("_{}", Direction::Either).as_str(), "");
 
     // Get relationship schema for label inference (if needed)
+    // First, try to get node labels from context (if available)
+    let left_label_hint = left_ctx.get_label_str().ok();
+    let right_label_hint = right_ctx.get_label_str().ok();
+    
     let rel_schema_for_inference =
         graph_schema
-            .get_rel_schema(&original_rel_label)
+            .get_rel_schema_with_nodes(
+                &original_rel_label,
+                left_label_hint.as_deref(),
+                right_label_hint.as_deref()
+            )
             .map_err(|e| AnalyzerError::GraphSchema {
                 pass: pass.clone(),
                 source: e,
@@ -192,7 +200,7 @@ pub fn get_graph_context<'a>(
                 source: e,
             })?;
     let rel_schema = graph_schema
-        .get_rel_schema(&original_rel_label)
+        .get_rel_schema_with_nodes(&original_rel_label, Some(&left_label), Some(&right_label))
         .map_err(|e| AnalyzerError::GraphSchema {
             pass: pass.clone(),
             source: e,

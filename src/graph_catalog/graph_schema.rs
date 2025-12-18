@@ -640,8 +640,11 @@ impl GraphSchema {
     }
 
     pub fn get_rel_schema(&self, rel_label: &str) -> Result<&RelationshipSchema, GraphSchemaError> {
+        log::debug!("⚠️ get_rel_schema (OLD METHOD) called with rel_label='{}'", rel_label);
+        
         // First try exact match (simple key for backward compatibility)
         if let Some(schema) = self.relationships.get(rel_label) {
+            log::debug!("get_rel_schema: Found simple key '{}'", rel_label);
             return Ok(schema);
         }
         
@@ -662,6 +665,10 @@ impl GraphSchema {
         
         // If not found, it might be a composite key query from old code
         // Return error - caller should use get_rel_schema_with_nodes for composite lookups
+        log::error!(
+            "❌ get_rel_schema (OLD METHOD): No relationship schema found for '{}'. Caller should use get_rel_schema_with_nodes!",
+            rel_label
+        );
         Err(GraphSchemaError::Relation {
             rel_label: rel_label.to_string(),
         })
@@ -677,16 +684,34 @@ impl GraphSchema {
         // If both nodes specified, try composite key first
         if let (Some(from), Some(to)) = (from_node, to_node) {
             let composite_key = Self::make_rel_composite_key(rel_type, from, to);
+            log::debug!(
+                "get_rel_schema_with_nodes: Looking for composite key '{}'",
+                composite_key
+            );
             if let Some(schema) = self.relationships.get(&composite_key) {
+                log::debug!(
+                    "get_rel_schema_with_nodes: Found schema for composite key '{}'",
+                    composite_key
+                );
                 return Ok(schema);
             }
+            log::debug!(
+                "get_rel_schema_with_nodes: Composite key '{}' not found, trying simple key '{}'",
+                composite_key, rel_type
+            );
         }
         
         // Fall back to simple key (for relationships that don't have node-specific variants)
         self.relationships
             .get(rel_type)
-            .ok_or(GraphSchemaError::Relation {
-                rel_label: rel_type.to_string(),
+            .ok_or_else(|| {
+                log::error!(
+                    "❌ get_rel_schema_with_nodes: No relationship schema found for '{}' (from_node={:?}, to_node={:?})",
+                    rel_type, from_node, to_node
+                );
+                GraphSchemaError::Relation {
+                    rel_label: rel_type.to_string(),
+                }
             })
     }
     

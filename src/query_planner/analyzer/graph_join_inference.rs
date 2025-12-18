@@ -2132,7 +2132,12 @@ impl GraphJoinInference {
 
         // 3. Look up schemas
         // First get relationship schema to know which table to use
-        let rel_schema = graph_schema.get_relationships_schema_opt(&rel_types[0])?;
+        // Use node labels to disambiguate polymorphic relationships
+        let rel_schema = graph_schema.get_rel_schema_with_nodes(
+            &rel_types[0],
+            Some(&left_label),
+            Some(&right_label)
+        ).ok()?;
         
         // For denormalized edges, use composite key (database::table::label) to get the correct node schema
         // Format: "database::table::label" (matching config.rs format)
