@@ -651,14 +651,8 @@ impl SchemaInference {
                             left_table_name.clone()
                         }
                     } else {
-                        graph_schema
-                            .get_node_schema(&relation_schema.to_node)
-                            .map_err(|e| AnalyzerError::GraphSchema {
-                                pass: Pass::SchemaInference,
-                                source: e,
-                            })?
-                            .table_name
-                            .clone()
+                        // Use the node label directly, not the table name
+                        relation_schema.to_node.clone()
                     }
                 } else {
                     // Left is to_node, so right is from_node
@@ -669,14 +663,8 @@ impl SchemaInference {
                             left_table_name.clone()
                         }
                     } else {
-                        graph_schema
-                            .get_node_schema(&relation_schema.from_node)
-                            .map_err(|e| AnalyzerError::GraphSchema {
-                                pass: Pass::SchemaInference,
-                                source: e,
-                            })?
-                            .table_name
-                            .clone()
+                        // Use the node label directly, not the table name
+                        relation_schema.from_node.clone()
                     }
                 };
                 return Ok((
@@ -694,14 +682,8 @@ impl SchemaInference {
                         // Polymorphic edge - use right_table_name as fallback (self-join pattern)
                         right_table_name.clone()
                     } else {
-                        graph_schema
-                            .get_node_schema(&relation_schema.to_node)
-                            .map_err(|e| AnalyzerError::GraphSchema {
-                                pass: Pass::SchemaInference,
-                                source: e,
-                            })?
-                            .table_name
-                            .clone()
+                        // Use the node label directly, not the table name
+                        relation_schema.to_node.clone()
                     }
                 } else if relation_schema.from_node == "$any" {
                     // from_node is wildcard
@@ -709,28 +691,16 @@ impl SchemaInference {
                         // Both are wildcards - use right_table_name
                         right_table_name.clone()
                     } else {
-                        graph_schema
-                            .get_node_schema(&relation_schema.to_node)
-                            .map_err(|e| AnalyzerError::GraphSchema {
-                                pass: Pass::SchemaInference,
-                                source: e,
-                            })?
-                            .table_name
-                            .clone()
+                        // Use the node label directly, not the table name
+                        relation_schema.to_node.clone()
                     }
                 } else {
                     // Right is to_node, so left is from_node
                     if relation_schema.from_node == "$any" {
                         right_table_name.clone()
                     } else {
-                        graph_schema
-                            .get_node_schema(&relation_schema.from_node)
-                            .map_err(|e| AnalyzerError::GraphSchema {
-                                pass: Pass::SchemaInference,
-                                source: e,
-                            })?
-                            .table_name
-                            .clone()
+                        // Use the node label directly, not the table name
+                        relation_schema.from_node.clone()
                     }
                 };
                 return Ok((
@@ -1106,9 +1076,10 @@ impl SchemaInference {
             "".to_string()
         };
         if !column_name.is_empty() {
-            for (_, node_schema) in graph_schema.get_nodes_schemas().iter() {
+            for (label, node_schema) in graph_schema.get_nodes_schemas().iter() {
                 if node_schema.column_names.contains(&column_name) {
-                    return Some(node_schema.table_name.clone());
+                    // Return the node label, not the table name
+                    return Some(label.clone());
                 }
             }
         }
