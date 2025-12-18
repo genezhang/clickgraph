@@ -523,10 +523,11 @@ graph_schema:
 
     # -------------------------------------------------------------------------
     # Post IS_LOCATED_IN Place
+    # NOTE: Post_isLocatedIn_Place has bad data, use Post_isLocatedIn_Country instead
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
       database: ldbc
-      table: Post_isLocatedIn_Place
+      table: Post_isLocatedIn_Country
       from_id: PostId
       to_id: CountryId
       from_node: Post
@@ -535,11 +536,23 @@ graph_schema:
         creationDate: creationDate
 
     # -------------------------------------------------------------------------
-    # Comment IS_LOCATED_IN Place
+    # Post POST_LOCATED_IN Country (for IC3 query)
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
       database: ldbc
-      table: Comment_isLocatedIn_Place
+      table: Post_isLocatedIn_Country
+      from_id: PostId
+      to_id: CountryId
+      from_node: Post
+      to_node: Country
+
+    # -------------------------------------------------------------------------
+    # Comment IS_LOCATED_IN Place
+    # NOTE: Comment_isLocatedIn_Place has bad data, use Comment_isLocatedIn_Country instead
+    # -------------------------------------------------------------------------
+    - type: IS_LOCATED_IN
+      database: ldbc
+      table: Comment_isLocatedIn_Country
       from_id: CommentId
       to_id: CountryId
       from_node: Comment

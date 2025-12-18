@@ -221,11 +221,6 @@ fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
             // Otherwise, recurse into input
             extract_node_label_from_viewscan(&node.input)
         }
-        LogicalPlan::Cte(cte) => {
-            // Recurse into CTE input to find the node label
-            // This is critical for VLP patterns where endpoints become CTEs
-            extract_node_label_from_viewscan(&cte.input)
-        }
         LogicalPlan::Filter(filter) => extract_node_label_from_viewscan(&filter.input),
         LogicalPlan::Projection(proj) => extract_node_label_from_viewscan(&proj.input),
         _ => None,

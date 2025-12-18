@@ -622,7 +622,7 @@ impl GraphSchema {
     }
 
     pub fn get_rel_schema(&self, rel_label: &str) -> Result<&RelationshipSchema, GraphSchemaError> {
-        // First try exact match (simple key or full composite key)
+        // First try exact match (simple key for backward compatibility)
         if let Some(schema) = self.relationships.get(rel_label) {
             return Ok(schema);
         }
@@ -640,34 +640,6 @@ impl GraphSchema {
             // If direct lookup failed, the composite key doesn't exist
             // This might happen if code passes a composite key that wasn't registered
             log::warn!("get_rel_schema: Composite key '{}' not found in schema", rel_label);
-        } else {
-            // Simple type name provided (e.g., "FOLLOWS")
-            // Try to find it using the type index
-            log::debug!("get_rel_schema: Looking up simple type '{}' in type index", rel_label);
-            
-            if let Some(composite_keys) = self.rel_type_index.get(rel_label) {
-                if composite_keys.len() == 1 {
-                    // Only one variant exists, return it
-                    let composite_key = &composite_keys[0];
-                    log::debug!("get_rel_schema: Found unique relationship '{}' -> '{}'", rel_label, composite_key);
-                    if let Some(schema) = self.relationships.get(composite_key) {
-                        return Ok(schema);
-                    }
-                } else if composite_keys.len() > 1 {
-                    // Multiple variants exist - caller should use composite key or provide node context
-                    log::warn!(
-                        "get_rel_schema: Type '{}' has {} variants: {:?}. Use composite key (TYPE::FROM::TO) for disambiguation.",
-                        rel_label,
-                        composite_keys.len(),
-                        composite_keys
-                    );
-                    // For backwards compatibility, return the first variant
-                    // This matches the old behavior where duplicate types overwrite each other
-                    if let Some(schema) = self.relationships.get(&composite_keys[0]) {
-                        return Ok(schema);
-                    }
-                }
-            }
         }
         
         // If not found, it might be a composite key query from old code

@@ -747,8 +747,8 @@ fn build_relationship_schema(
             .values()
             .flat_map(|pv| pv.get_columns())
             .collect(),
-        from_node,  // Use node label, not table name
-        to_node,    // Use node label, not table name
+        from_node: from_node_table,  // Use resolved table name
+        to_node: to_node_table,      // Use resolved table name
         from_id: rel_def.from_id.clone(),
         to_id: rel_def.to_id.clone(),
         from_node_id_dtype: "UInt64".to_string(),

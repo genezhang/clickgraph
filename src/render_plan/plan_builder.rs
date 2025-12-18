@@ -108,13 +108,10 @@ fn generate_swapped_joins_for_optional_match(
     };
 
     // Get relationship columns
-    eprintln!("DEBUG plan_builder swapped_joins: graph_rel.center type: {:?}", std::mem::discriminant(&*graph_rel.center));
-    eprintln!("DEBUG plan_builder swapped_joins: graph_rel.alias: {}", graph_rel.alias);
     let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(RelationshipColumns {
         from_id: "from_node_id".to_string(),
         to_id: "to_node_id".to_string(),
     });
-    eprintln!("DEBUG plan_builder swapped_joins: rel_cols from_id={}, to_id={}", rel_cols.from_id, rel_cols.to_id);
 
     // For OPTIONAL MATCH with swapped anchor:
     // - anchor is right_connection (post)
@@ -6242,14 +6239,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             let end_table = extract_table_name(&graph_rel.right)
                                 .ok_or_else(|| RenderBuildError::MissingTableInfo("end node in cycle prevention".to_string()))?;
 
-                            eprintln!("DEBUG line 6245: Getting rel_cols for alias '{}', center discriminant: {:?}", 
-                                     graph_rel.alias, std::mem::discriminant(&*graph_rel.center));
                             let rel_cols = extract_relationship_columns(&graph_rel.center)
                                 .unwrap_or(RelationshipColumns {
                                     from_id: "from_node_id".to_string(),
                                     to_id: "to_node_id".to_string(),
                                 });
-                            eprintln!("DEBUG line 6245: rel_cols = from_id:'{}', to_id:'{}'", rel_cols.from_id, rel_cols.to_id);
 
                             // For denormalized, use relationship columns directly
                             // For normal, use node ID columns
@@ -6615,15 +6609,12 @@ impl RenderPlanBuilder for LogicalPlan {
                         .unwrap_or_else(|| graph_rel.alias.clone());
 
                     // Get relationship columns (from_id and to_id)
-                    eprintln!("DEBUG line 6615: Getting rel_cols for alias '{}', center discriminant: {:?}", 
-                             graph_rel.alias, std::mem::discriminant(&*graph_rel.center));
                     let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
                         RelationshipColumns {
                             from_id: "from_node_id".to_string(),
                             to_id: "to_node_id".to_string(),
                         },
                     );
-                    eprintln!("DEBUG line 6615: rel_cols = from_id:'{}', to_id:'{}'", rel_cols.from_id, rel_cols.to_id);
 
                     // Check if this is a chained hop (left side is another GraphRel)
                     if let LogicalPlan::GraphRel(left_rel) = graph_rel.left.as_ref() {
@@ -6897,15 +6888,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     .unwrap_or_else(|| table_to_id_column(&end_table));
 
                 // Get relationship columns
-                eprintln!("DEBUG line 6894: Getting rel_cols for alias '{}', center discriminant: {:?}", 
-                         graph_rel.alias, std::mem::discriminant(&*graph_rel.center));
                 let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
                     RelationshipColumns {
                         from_id: "from_node_id".to_string(),
                         to_id: "to_node_id".to_string(),
                     },
                 );
-                eprintln!("DEBUG line 6894: rel_cols = from_id:'{}', to_id:'{}'", rel_cols.from_id, rel_cols.to_id);
 
                 // JOIN ORDER: For standard patterns like (a)-[:R]->(b), we join:
                 // 1. Relationship table (can reference anchor `a` from FROM clause)
@@ -10961,7 +10949,6 @@ impl RenderPlanBuilder for LogicalPlan {
             .collect();
 
         if !polymorphic_ctes.is_empty() && has_polymorphic_or_multi_rel(&transformed_plan) {
-            eprintln!("DEBUG: Entering multi-hop polymorphic JOIN generation with {} CTEs", polymorphic_ctes.len());
             log::info!(
                 "🎯 MULTI-HOP POLYMORPHIC: Found {} CTEs and {} polymorphic edges",
                 polymorphic_ctes.len(),

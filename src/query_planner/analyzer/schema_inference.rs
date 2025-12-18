@@ -632,8 +632,14 @@ impl SchemaInference {
                             left_table_name.clone()
                         }
                     } else {
-                        // Use the node label directly, not the table name
-                        relation_schema.to_node.clone()
+                        graph_schema
+                            .get_node_schema(&relation_schema.to_node)
+                            .map_err(|e| AnalyzerError::GraphSchema {
+                                pass: Pass::SchemaInference,
+                                source: e,
+                            })?
+                            .table_name
+                            .clone()
                     }
                 } else if relation_schema.from_node == "$any" {
                     // from_node is wildcard, so right is to_node
@@ -978,8 +984,13 @@ impl SchemaInference {
                 let left_table_name = extracted_left_node_table_result.unwrap();
                 for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
                     if relation_schema.from_node == left_table_name {
-                        // Use the node label directly, not the table name
-                        let right_table_name = &relation_schema.to_node;
+                        let right_table_name = &graph_schema
+                            .get_node_schema(&relation_schema.to_node)
+                            .map_err(|e| AnalyzerError::GraphSchema {
+                                pass: Pass::SchemaInference,
+                                source: e,
+                            })?
+                            .table_name;
                         let rel_table_name = &relation_schema.table_name;
                         return Ok((
                             left_table_name,
@@ -987,8 +998,13 @@ impl SchemaInference {
                             right_table_name.to_string(),
                         ));
                     } else if relation_schema.to_node == left_table_name {
-                        // Use the node label directly, not the table name
-                        let right_table_name = &relation_schema.from_node;
+                        let right_table_name = &graph_schema
+                            .get_node_schema(&relation_schema.from_node)
+                            .map_err(|e| AnalyzerError::GraphSchema {
+                                pass: Pass::SchemaInference,
+                                source: e,
+                            })?
+                            .table_name;
                         let rel_table_name = &relation_schema.table_name;
                         return Ok((
                             left_table_name,
@@ -1006,8 +1022,13 @@ impl SchemaInference {
                 let right_table_name = extracted_right_node_table_result.unwrap();
                 for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
                     if relation_schema.from_node == right_table_name {
-                        // Use the node label directly, not the table name
-                        let left_table_name = &relation_schema.to_node;
+                        let left_table_name = &graph_schema
+                            .get_node_schema(&relation_schema.to_node)
+                            .map_err(|e| AnalyzerError::GraphSchema {
+                                pass: Pass::SchemaInference,
+                                source: e,
+                            })?
+                            .table_name;
                         let rel_table_name = &relation_schema.table_name;
                         return Ok((
                             left_table_name.to_string(),
@@ -1015,8 +1036,13 @@ impl SchemaInference {
                             right_table_name,
                         ));
                     } else if relation_schema.to_node == right_table_name {
-                        // Use the node label directly, not the table name
-                        let left_table_name = &relation_schema.from_node;
+                        let left_table_name = &graph_schema
+                            .get_node_schema(&relation_schema.from_node)
+                            .map_err(|e| AnalyzerError::GraphSchema {
+                                pass: Pass::SchemaInference,
+                                source: e,
+                            })?
+                            .table_name;
                         let rel_table_name = &relation_schema.table_name;
                         return Ok((
                             left_table_name.to_string(),
