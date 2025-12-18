@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 5  
-**Last Updated**: December 17, 2025
+**Active Issues**: 4  
+**Last Updated**: December 19, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -96,14 +96,22 @@ INNER JOIN Place AS friendCity ON friendCity.id = t2.to_node_id        -- ✅ Co
 
 ### 2. Missing Database Prefixes After WITH Clause
 
-**Status**: 🔴 ACTIVE (Discovered December 17, 2025)  
+**Status**: ✅ FIXED (December 19, 2025)  
 **Severity**: MEDIUM  
 **Affects**: Table references in JOINs after WITH clause  
 
-**Problem**:
-Tables referenced in JOINs after a WITH clause are missing database prefixes, causing "Unknown table" errors.
+**Problem** (resolved):
+Tables referenced in JOINs after a WITH clause were missing database prefixes, causing "Unknown table" errors.
 
-**Example**:
+**Example Query**:
+```cypher
+MATCH (p:Person)-[:KNOWS*1..2]-(friend:Person) WHERE p.id = 14 
+WITH friend LIMIT 3 
+MATCH (friend)-[:IS_LOCATED_IN]->(friendCity:Place) 
+RETURN friend.firstName, friendCity.name
+```
+
+**Incorrect SQL (Before Fix)**:
 ```sql
 -- Generated (incorrect):
 INNER JOIN Place AS friendCity ON friendCity.id = t2.CountryId
@@ -118,14 +126,43 @@ Unknown table expression identifier 'Place'
 ```
 
 **Root Cause**:
-- Table name resolution after WITH clause doesn't include database prefix
-- Likely using deprecated `label_to_table_name()` instead of `label_to_table_name_with_schema()`
-- Schema context may not be properly threaded through after WITH clause processing
+- Traditional and MixedAccess JOIN strategies were using bare table names without database prefixes
+- The code couldn't distinguish between CTEs (which cannot have prefixes) and base tables (which need prefixes)
+- Example: Both `left_cte_name` from CTEs and base table names were treated identically
 
-**Solution**:
-- Ensure all table name lookups use schema-aware functions
-- Thread schema context through WITH clause processing
-- May be related to Issue #1 (same code path)
+**Fix Implementation** (December 19, 2025):
+
+1. **Added Helper Functions** (`src/query_planner/analyzer/graph_join_inference.rs`):
+   - `get_table_name_with_prefix()`: For node tables (checks if CTE or base table)
+   - `get_rel_table_name_with_prefix()`: For relationship tables
+   - Both check `plan_ctx.get_table_ctx_from_alias_opt()` to determine table type
+
+2. **Updated Function Signature**:
+   - `handle_graph_pattern_v2()` now accepts `left_node_schema`, `right_node_schema`, `rel_schema`
+   - Provides database names for base table prefix generation
+
+3. **Fixed JOIN Creation Sites**:
+   - **Traditional strategy**: Lines ~2463, ~2508, ~2547 (left/rel/right node JOINs)
+   - **MixedAccess strategy**: Lines ~2752, ~2798 (node/rel JOINs)
+   - All now use helper functions to add prefix only for base tables
+
+**Logic**:
+```rust
+// Helper function checks:
+if table_ctx.get_cte_name().is_some() {
+    // CTE from WITH clause → no prefix
+    return cte_name.to_string();
+} else {
+    // Base table → add database prefix
+    return format!("{}.{}", schema.database, cte_name);
+}
+```
+
+**Result**:
+- CTEs (from WITH clause) remain unprefixed: `with_friend_cte_1`
+- Base tables get database qualification: `ldbc.Place`, `ldbc.Person_isLocatedIn_Place`
+- All 650/650 tests passing
+- Query generation now produces valid ClickHouse SQL
 
 ---
 

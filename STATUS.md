@@ -1,6 +1,58 @@
 # ClickGraph Status
 
-*Updated: December 18, 2025*
+*Updated: December 19, 2025*
+
+## ✅ Database Prefix Fix Complete (December 19, 2025)
+
+### Objective
+Fix missing database prefixes for base table JOINs after WITH clause, resolving "Unknown table" errors.
+
+### Problem
+When queries used WITH clauses followed by graph patterns, the generated SQL referenced base tables without database prefixes:
+```sql
+-- ❌ INCORRECT (before fix):
+INNER JOIN Place AS friendCity ON ...
+
+-- ✅ CORRECT (after fix):
+INNER JOIN ldbc.Place AS friendCity ON ...
+```
+
+### Changes Completed
+1. **Helper Functions** (`graph_join_inference.rs`):
+   - `get_table_name_with_prefix()`: Checks if table is CTE or base table for nodes
+   - `get_rel_table_name_with_prefix()`: Same logic for relationships
+   - Returns bare name for CTEs, `database.table` for base tables
+
+2. **Function Signature Updates**:
+   - `handle_graph_pattern_v2()` now accepts schema parameters
+   - Provides database names needed for prefix generation
+
+3. **JOIN Creation Fixes**:
+   - Traditional strategy: Fixed 3 JOIN sites (left/rel/right nodes)
+   - MixedAccess strategy: Fixed 2 JOIN sites (node/rel)
+   - All now use helper functions to conditionally add prefixes
+
+### Logic
+```rust
+// CTEs (from WITH clause) → no prefix
+if table_ctx.get_cte_name().is_some() {
+    return cte_name.to_string();  // e.g., "with_friend_cte_1"
+}
+// Base tables → add database prefix
+else {
+    return format!("{}.{}", schema.database, cte_name);  // e.g., "ldbc.Place"
+}
+```
+
+### Final Test Status: 650/650 passing (100%) ✅
+
+**Benefits**:
+- ✅ WITH clause queries work correctly with non-default databases
+- ✅ Proper table qualification prevents ClickHouse errors
+- ✅ CTEs remain unprefixed (ClickHouse requirement)
+- ✅ Resolves KNOWN_ISSUES.md Issue #2
+
+---
 
 ## ✅ Composite Node ID Support Complete (December 18, 2025)
 
