@@ -264,6 +264,113 @@ pub(crate) trait RenderPlanBuilder {
 }
 
 // ============================================================================
+// VLP Union Branch Alias Rewriting
+// ============================================================================
+
+/// Rewrite SELECT aliases in Union branches that reference VLP CTEs.
+///
+/// Problem: Undirected shortestPath creates Union with 2 branches (forward/backward).
+/// Each branch uses Cypher aliases (a, b) but JOINs to VLP tables (start_node, end_node).
+/// SELECT items reference non-existent aliases causing "Unknown expression identifier".
+///
+/// Solution: For each Union branch:
+/// 1. Find VLP CTEs it references (look for vlp_cte joins)
+/// 2. Get VLP metadata (cypher_start_alias → start_node mapping)
+/// 3. Rewrite SELECT items: a.property → start_node.property
+fn rewrite_vlp_union_branch_aliases(plan: &mut RenderPlan) -> RenderPlanBuilderResult<()> {
+    log::info!("🔍 VLP Union Branch: Checking for VLP CTEs... (found {} CTEs total)", plan.ctes.0.len());
+    
+    // Check if this plan has VLP CTEs
+    let vlp_mappings = extract_vlp_alias_mappings(&plan.ctes);
+    
+    if vlp_mappings.is_empty() {
+        log::info!("🔍 VLP Union Branch: No VLP mappings found, skipping rewrite");
+        return Ok(()); // No VLP CTEs, nothing to rewrite
+    }
+    
+    log::info!("🔄 VLP Union Branch: Found {} VLP CTE(s), rewriting aliases", vlp_mappings.len());
+    
+    // Rewrite SELECT items using VLP mappings
+    for select_item in &mut plan.select.items {
+        rewrite_render_expr_for_vlp(&mut select_item.expression, &vlp_mappings);
+    }
+    
+    Ok(())
+}
+
+/// Extract VLP alias mappings from CTEs: Cypher alias → VLP table alias
+fn extract_vlp_alias_mappings(ctes: &CteItems) -> HashMap<String, String> {
+    let mut mappings = HashMap::new();
+    
+    for (idx, cte) in ctes.0.iter().enumerate() {
+        log::info!("🔍 CTE[{}]: name={}, vlp_start={:?}, vlp_cypher_start={:?}", 
+                   idx, cte.cte_name, cte.vlp_start_alias, cte.vlp_cypher_start_alias);
+        
+        // Check if this is a VLP CTE with metadata
+        if let (Some(cypher_start), Some(vlp_start)) = 
+            (&cte.vlp_cypher_start_alias, &cte.vlp_start_alias) {
+            log::info!("🔄 VLP mapping: {} → {}", cypher_start, vlp_start);
+            mappings.insert(cypher_start.clone(), vlp_start.clone());
+        }
+        
+        if let (Some(cypher_end), Some(vlp_end)) = 
+            (&cte.vlp_cypher_end_alias, &cte.vlp_end_alias) {
+            log::info!("🔄 VLP mapping: {} → {}", cypher_end, vlp_end);
+            mappings.insert(cypher_end.clone(), vlp_end.clone());
+        }
+    }
+    
+    mappings
+}
+
+/// Recursively rewrite RenderExpr to use VLP table aliases
+fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<String, String>) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop_access) => {
+            // Check if this table alias needs rewriting
+            if let Some(new_alias) = mappings.get(&prop_access.table_alias.0) {
+                log::debug!("🔄 Rewriting {}.* → {}.*", prop_access.table_alias.0, new_alias);
+                prop_access.table_alias.0 = new_alias.clone();
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op_app) => {
+            for operand in &mut op_app.operands {
+                rewrite_render_expr_for_vlp(operand, mappings);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            for arg in &mut func.args {
+                rewrite_render_expr_for_vlp(arg, mappings);
+            }
+        }
+        RenderExpr::AggregateFnCall(func) => {
+            for arg in &mut func.args {
+                rewrite_render_expr_for_vlp(arg, mappings);
+            }
+        }
+        RenderExpr::InSubquery(in_exp) => {
+            rewrite_render_expr_for_vlp(&mut in_exp.expr, mappings);
+        }
+        RenderExpr::Case(case_exp) => {
+            for (when_expr, then_expr) in &mut case_exp.when_then {
+                rewrite_render_expr_for_vlp(when_expr, mappings);
+                rewrite_render_expr_for_vlp(then_expr, mappings);
+            }
+            if let Some(else_expr) = &mut case_exp.else_expr {
+                rewrite_render_expr_for_vlp(else_expr, mappings);
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                rewrite_render_expr_for_vlp(item, mappings);
+            }
+        }
+        // Other expression types don't contain table aliases
+        _ => {}
+    }
+}
+
+// ============================================================================
 // WITH Clause Helper Functions (Code Deduplication)
 // ============================================================================
 
@@ -6019,6 +6126,12 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GraphNode(graph_node) => {
                 // For node-only queries, extract both view_filter and schema_filter from the input ViewScan
                 if let LogicalPlan::ViewScan(scan) = graph_node.input.as_ref() {
+                    log::info!(
+                        "🔍 GraphNode '{}' extract_filters: ViewScan table={}",
+                        graph_node.alias,
+                        scan.source_table
+                    );
+                    
                     let mut filters = Vec::new();
 
                     // Extract view_filter (user's WHERE clause, injected by optimizer)
@@ -6222,11 +6335,25 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Combine filters from both sides with AND
                 let left_filters = cp.left.extract_filters()?;
                 let right_filters = cp.right.extract_filters()?;
+                
+                // DEBUG: Log what we're extracting
+                log::info!("🔍 CartesianProduct extract_filters:");
+                log::info!("  Left filters: {:?}", left_filters);
+                log::info!("  Right filters: {:?}", right_filters);
+                
                 match (left_filters, right_filters) {
                     (None, None) => None,
-                    (Some(l), None) => Some(l),
-                    (None, Some(r)) => Some(r),
+                    (Some(l), None) => {
+                        log::info!("  ✅ Returning left filters only");
+                        Some(l)
+                    }
+                    (None, Some(r)) => {
+                        log::info!("  ✅ Returning right filters only");
+                        Some(r)
+                    }
                     (Some(l), Some(r)) => {
+                        log::warn!("  ⚠️ BOTH sides have filters - combining with AND!");
+                        log::warn!("  ⚠️ This may cause duplicates if filters are the same!");
                         Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
                             operator: Operator::And,
                             operands: vec![l, r],
@@ -7454,14 +7581,29 @@ impl RenderPlanBuilder for LogicalPlan {
             GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
 
         let union_opt = match &self {
-            LogicalPlan::Union(union) => Some(Union {
-                input: union
+            LogicalPlan::Union(union) => {
+                log::info!("🔍 extract_union: Processing Union with {} branches", union.inputs.len());
+                
+                let mut render_plans: Vec<RenderPlan> = union
                     .inputs
                     .iter()
                     .map(|input| input.to_render_plan(&empty_schema))
-                    .collect::<Result<Vec<RenderPlan>, RenderBuildError>>()?,
-                union_type: union.union_type.clone().try_into()?,
-            }),
+                    .collect::<Result<Vec<RenderPlan>, RenderBuildError>>()?;
+                
+                // CRITICAL FIX: Rewrite SELECT aliases for VLP Union branches
+                // Each branch may reference VLP CTEs with internal aliases (start_node, end_node)
+                // but SELECT items use Cypher aliases (a, b). We need to map them.
+                log::info!("🔍 extract_union: Calling rewrite_vlp_union_branch_aliases for {} branches", render_plans.len());
+                for (idx, plan) in render_plans.iter_mut().enumerate() {
+                    log::info!("🔍 extract_union: Processing branch {}", idx);
+                    rewrite_vlp_union_branch_aliases(plan)?;
+                }
+                
+                Some(Union {
+                    input: render_plans,
+                    union_type: union.union_type.clone().try_into()?,
+                })
+            }
             _ => None,
         };
         Ok(union_opt)
@@ -7604,7 +7746,16 @@ impl RenderPlanBuilder for LogicalPlan {
                 .map(|branch| branch.to_render_plan(&empty_schema))
                 .collect();
 
-            let union_plans = union_plans?;
+            let mut union_plans = union_plans?;
+
+            // 🔧 CRITICAL FIX: Rewrite SELECT aliases for VLP Union branches
+            // Each branch may reference VLP CTEs with internal aliases (start_node, end_node)
+            // but SELECT items use Cypher aliases (a, b). We need to map them.
+            log::info!("🔍 try_build_join_based_plan: Calling rewrite_vlp_union_branch_aliases for {} branches", union_plans.len());
+            for (idx, plan) in union_plans.iter_mut().enumerate() {
+                log::info!("🔍 try_build_join_based_plan: Processing branch {}", idx);
+                rewrite_vlp_union_branch_aliases(plan)?;
+            }
 
             // Normalize UNION branches so all have the same columns
             // This handles denormalized nodes where from_node_properties and to_node_properties

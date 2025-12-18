@@ -147,13 +147,25 @@ impl AnalyzerPass for QueryValidation {
                     }
                 })?;
 
+                // Resolve query labels to table names for comparison
+                // Labels like "University" map to table "Organisation"
+                // We need to compare table names, not labels
+                let from_table = graph_schema.get_node_schema(&from)
+                    .ok()
+                    .map(|schema| schema.table_name.as_str())
+                    .unwrap_or(&from);  // Fall back to label if schema not found
+                let to_table = graph_schema.get_node_schema(&to)
+                    .ok()
+                    .map(|schema| schema.table_name.as_str())
+                    .unwrap_or(&to);  // Fall back to label if schema not found
+
                 // Check if node types match, treating "$any" as wildcard
-                let from_matches = rel_schema.from_node == *from || rel_schema.from_node == "$any";
-                let to_matches = rel_schema.to_node == *to || rel_schema.to_node == "$any";
+                let from_matches = rel_schema.from_node == from_table || rel_schema.from_node == "$any";
+                let to_matches = rel_schema.to_node == to_table || rel_schema.to_node == "$any";
 
                 log::debug!(
-                    "QueryValidation: rel={}, from={}, to={}, schema.from={}, schema.to={}, from_matches={}, to_matches={}",
-                    graph_rel.alias, from, to, rel_schema.from_node, rel_schema.to_node, from_matches, to_matches
+                    "QueryValidation: rel={}, from_label={}, from_table={}, to_label={}, to_table={}, schema.from={}, schema.to={}, from_matches={}, to_matches={}",
+                    graph_rel.alias, from, from_table, to, to_table, rel_schema.from_node, rel_schema.to_node, from_matches, to_matches
                 );
 
                 if (from_matches && to_matches)
@@ -161,9 +173,9 @@ impl AnalyzerPass for QueryValidation {
                         && (rel_schema.from_node == "$any"
                             || rel_schema.to_node == "$any"
                             || ([rel_schema.from_node.clone(), rel_schema.to_node.clone()]
-                                .contains(&from)
+                                .contains(&from_table.to_string())
                                 && [rel_schema.from_node.clone(), rel_schema.to_node.clone()]
-                                    .contains(&to))))
+                                    .contains(&to_table.to_string()))))
                 {
                     // valid graph - ClickGraph only supports edge list (relationships as explicit tables)
                     Transformed::No(logical_plan.clone())

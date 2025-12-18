@@ -381,24 +381,47 @@ impl ToSql for CteItems {
                 // Get the last CTE name in this group - that's what we'll expose
                 let last_cte_name = &group[group.len() - 1].cte_name;
                 
-                // Create wrapper: lastCte AS (SELECT * FROM (WITH RECURSIVE ...))
-                sql.push_str(&format!("{} AS (\n", last_cte_name));
-                sql.push_str("  SELECT * FROM (\n");
-                sql.push_str("    WITH RECURSIVE ");
+                // Check if the first CTE already contains nested CTE definitions (VLP multi-tier pattern)
+                // This is indicated by the presence of multiple " AS (" in RawSql content
+                let first_cte_content = match &first_cte_in_group.content {
+                    CteContent::RawSql(s) => Some(s.as_str()),
+                    _ => None,
+                };
                 
-                // Emit all CTEs in this group
-                for (i, cte) in group.iter().enumerate() {
-                    sql.push_str(&cte.to_sql());
-                    if i + 1 < group.len() {
-                        sql.push_str(", ");
+                let has_nested_ctes = first_cte_content
+                    .map(|s| s.matches(" AS (").count() > 1)
+                    .unwrap_or(false);
+                
+                if has_nested_ctes && group.len() == 1 {
+                    // VLP CTE with multi-tier structure (e.g., "vlp_inner AS..., vlp AS...")
+                    // Wrap the entire nested structure as-is
+                    sql.push_str(&format!("{} AS (\n", last_cte_name));
+                    sql.push_str("  SELECT * FROM (\n");
+                    sql.push_str("    WITH RECURSIVE ");
+                    sql.push_str(first_cte_content.unwrap());
+                    sql.push_str("\n    SELECT * FROM ");
+                    sql.push_str(last_cte_name);
+                    sql.push_str("\n  )\n)");
+                } else {
+                    // Standard case: wrap each CTE normally
+                    sql.push_str(&format!("{} AS (\n", last_cte_name));
+                    sql.push_str("  SELECT * FROM (\n");
+                    sql.push_str("    WITH RECURSIVE ");
+                    
+                    // Emit all CTEs in this group
+                    for (i, cte) in group.iter().enumerate() {
+                        sql.push_str(&cte.to_sql());
+                        if i + 1 < group.len() {
+                            sql.push_str(", ");
+                        }
+                        sql.push('\n');
                     }
-                    sql.push('\n');
+                    
+                    // Close the nested WITH and select the final CTE
+                    sql.push_str("    SELECT * FROM ");
+                    sql.push_str(last_cte_name);
+                    sql.push_str("\n  )\n)");
                 }
-                
-                // Close the nested WITH and select the final CTE
-                sql.push_str("    SELECT * FROM ");
-                sql.push_str(last_cte_name);
-                sql.push_str("\n  )\n)");
                 
                 if group_idx + 1 < cte_groups.len() {
                     sql.push_str(",\n");

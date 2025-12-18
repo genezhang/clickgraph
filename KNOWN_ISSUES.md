@@ -1,7 +1,7 @@
 # Known Issues
 
 **Active Issues**: 3  
-**Last Updated**: December 16, 2025
+**Last Updated**: December 17, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -123,7 +123,57 @@ RETURN name
 
 ---
 
-### 5. WITH+MATCH with Aggregation on Second MATCH Variables (LDBC IC-3) - ✅ FIXED
+### 6. ShortestPath Undirected Alias Mapping - ✅ FIXED
+
+**Status**: ✅ FIXED (December 17, 2025)  
+**Severity**: MEDIUM  
+**Affects**: Simple shortestPath queries with undirected patterns
+
+**Problem** (resolved):
+Simple shortestPath queries with undirected patterns failed with "Unknown expression identifier":
+
+```cypher
+MATCH path = shortestPath((a:Person)-[:KNOWS*1..2]-(b:Person)) 
+RETURN a.id, b.id LIMIT 5
+```
+
+**Error** (before):
+```
+Code: 47. DB::Exception: Unknown expression identifier `a.id` in scope 
+SELECT a.id AS "a.id", b.id AS "b.id"  -- ❌ a, b don't exist!
+FROM vlp_cte1 AS vlp1 
+INNER JOIN ldbc.Person AS start_node ON vlp1.start_id = start_node.id 
+INNER JOIN ldbc.Person AS end_node ON vlp1.end_id = end_node.id
+```
+
+**Root Cause**:
+- SELECT used Cypher aliases (`a`, `b`)
+- FROM used VLP table aliases (`start_node`, `end_node`)
+- Union branches rendered independently without VLP context
+- VLP metadata existed but wasn't used during Union rendering
+
+**Fix**: Modified `src/render_plan/plan_builder.rs`:
+- Added `rewrite_vlp_union_branch_aliases()` to extract VLP metadata and rewrite SELECT aliases
+- Called from `try_build_join_based_plan()` after Union branches render
+- Three helper functions for mapping extraction and recursive expression rewriting
+
+**Generated SQL** (after):
+```sql
+SELECT start_node.id AS "a.id", end_node.id AS "b.id"  -- ✅ Correct aliases!
+```
+
+**Impact**:
+- ✅ Simple undirected shortestPath queries now work
+- ✅ All Union branches with VLP CTEs properly rewritten
+- ✅ LDBC IC1 query execution enabled
+
+**Testing**: Verified with LDBC schema, SQL generation shows correct alias rewriting.
+
+**Related**: ✅ Fixed duplicate CTE declarations (see `notes/shortestpath-cte-wrapping-fix.md`)
+
+---
+
+### 5. WITH Expression Aliases - ✅ FIXED
 
 **Status**: ✅ FIXED (December 15, 2025)  
 **Severity**: MEDIUM  

@@ -1351,13 +1351,13 @@ fn traverse_connected_pattern_with_mode<'a>(
         };
 
         // Handle anonymous edge patterns: [] (no type specified)
-        // Automatically expand to UNION of relationship types from schema
-        // FIX: Only include relationship types that match the start/end node labels
+        // Expand relationship types using composite key index from schema
+        // Supports multiple relationships with same type name differentiated by from/to nodes
         let rel_labels = match rel.labels.as_ref() {
             Some(labels) => {
                 // Explicit labels provided: [:TYPE1|TYPE2]
-                // Auto-expand generic relationship names (e.g., HAS_TAG → POST_HAS_TAG|COMMENT_HAS_TAG)
-                // with semantic filtering based on node types
+                // Look up relationship types using composite key index (O(1) lookup)
+                // Filters by node compatibility when node types are known
                 let graph_schema = plan_ctx.schema();
                 let mut expanded_labels = Vec::new();
                 

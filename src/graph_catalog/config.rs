@@ -669,6 +669,26 @@ fn build_relationship_schema(
         .unwrap_or(&default_node_type.to_string())
         .clone();
 
+    // Resolve from_node and to_node to table names (in case they're labels)
+    // E.g., "University" label resolves to "Organisation" table
+    // E.g., "City" label resolves to "Place" table
+    let from_node_table = nodes
+        .get(&from_node)
+        .map(|schema| schema.table_name.clone())
+        .unwrap_or_else(|| from_node.clone()); // Fall back to from_node if not found
+    let to_node_table = nodes
+        .get(&to_node)
+        .map(|schema| schema.table_name.clone())
+        .unwrap_or_else(|| to_node.clone()); // Fall back to to_node if not found
+        
+    log::debug!(
+        "Resolving relationship nodes: from_node='{}' -> from_table='{}', to_node='{}' -> to_table='{}'",
+        from_node,
+        from_node_table,
+        to_node,
+        to_node_table
+    );
+
     // Parse filter if provided
     let filter = if let Some(filter_str) = &rel_def.filter {
         Some(
@@ -706,19 +726,19 @@ fn build_relationship_schema(
     // 1. Self-referencing FK: from_node == to_node (e.g., parent_id in same table)
     // 2. Non-self-ref FK: from_node != to_node (e.g., orders.customer_id → customers)
     let edge_table = format!("{}.{}", rel_def.database, rel_def.table);
-    let from_node_table = nodes
+    let from_node_fq_table = nodes
         .get(&from_composite_key)
         .or_else(|| nodes.get(&from_node))
         .map(|n| format!("{}.{}", n.database, n.table_name));
-    let to_node_table = nodes
+    let to_node_fq_table = nodes
         .get(&to_composite_key)
         .or_else(|| nodes.get(&to_node))
         .map(|n| format!("{}.{}", n.database, n.table_name));
 
     let is_fk_edge = from_node_props.is_none()
         && to_node_props.is_none()
-        && (from_node_table.as_ref() == Some(&edge_table)
-            || to_node_table.as_ref() == Some(&edge_table));
+        && (from_node_fq_table.as_ref() == Some(&edge_table)
+            || to_node_fq_table.as_ref() == Some(&edge_table));
 
     Ok(RelationshipSchema {
         database: rel_def.database.clone(),
@@ -727,8 +747,8 @@ fn build_relationship_schema(
             .values()
             .flat_map(|pv| pv.get_columns())
             .collect(),
-        from_node,
-        to_node,
+        from_node: from_node_table,  // Use resolved table name
+        to_node: to_node_table,      // Use resolved table name
         from_id: rel_def.from_id.clone(),
         to_id: rel_def.to_id.clone(),
         from_node_id_dtype: "UInt64".to_string(),
@@ -781,6 +801,26 @@ fn build_standard_edge_schema(
         None
     };
 
+    // Resolve from_node and to_node to table names (in case they're labels)
+    // E.g., "University" label resolves to "Organisation" table
+    // E.g., "City" label resolves to "Place" table
+    let resolved_from_node = nodes
+        .get(&std_edge.from_node)
+        .map(|schema| schema.table_name.clone())
+        .unwrap_or_else(|| std_edge.from_node.clone());
+    let resolved_to_node = nodes
+        .get(&std_edge.to_node)
+        .map(|schema| schema.table_name.clone())
+        .unwrap_or_else(|| std_edge.to_node.clone());
+
+    log::debug!(
+        "Resolving edge nodes: from_node='{}' -> from_table='{}', to_node='{}' -> to_table='{}'",
+        std_edge.from_node,
+        resolved_from_node,
+        std_edge.to_node,
+        resolved_to_node
+    );
+
     // Look up denormalized node properties from NODE definitions
     // Try table-specific lookup first (composite key), then fall back to label-only
     let from_composite_key = format!(
@@ -810,19 +850,19 @@ fn build_standard_edge_schema(
     // 1. Self-referencing FK: from_node == to_node (e.g., parent_id in same table)
     // 2. Non-self-ref FK: from_node != to_node (e.g., orders.customer_id → customers)
     let edge_table = format!("{}.{}", std_edge.database, std_edge.table);
-    let from_node_table = nodes
+    let from_node_fq_table = nodes
         .get(&from_composite_key)
         .or_else(|| nodes.get(&std_edge.from_node))
         .map(|n| format!("{}.{}", n.database, n.table_name));
-    let to_node_table = nodes
+    let to_node_fq_table = nodes
         .get(&to_composite_key)
         .or_else(|| nodes.get(&std_edge.to_node))
         .map(|n| format!("{}.{}", n.database, n.table_name));
 
     let is_fk_edge = from_node_props.is_none()
         && to_node_props.is_none()
-        && (from_node_table.as_ref() == Some(&edge_table)
-            || to_node_table.as_ref() == Some(&edge_table));
+        && (from_node_fq_table.as_ref() == Some(&edge_table)
+            || to_node_fq_table.as_ref() == Some(&edge_table));
 
     Ok(RelationshipSchema {
         database: std_edge.database.clone(),
@@ -831,8 +871,8 @@ fn build_standard_edge_schema(
             .values()
             .flat_map(|pv| pv.get_columns())
             .collect(),
-        from_node: std_edge.from_node.clone(),
-        to_node: std_edge.to_node.clone(),
+        from_node: resolved_from_node,  // Use resolved table name
+        to_node: resolved_to_node,      // Use resolved table name
         from_id: std_edge.from_id.clone(),
         to_id: std_edge.to_id.clone(),
         from_node_id_dtype: "UInt64".to_string(),
@@ -977,23 +1017,9 @@ impl GraphSchemaConfig {
             }
         }
 
-        // Check for duplicate edge types (new format)
-        for edge in &self.graph_schema.edges {
-            let type_name = match edge {
-                EdgeDefinition::Standard(std_edge) => &std_edge.type_name,
-                EdgeDefinition::Polymorphic(_) => {
-                    // Polymorphic edges generate multiple types at runtime
-                    // Skip duplicate checking here
-                    continue;
-                }
-            };
-
-            if !seen_types.insert(type_name) {
-                return Err(GraphSchemaError::InvalidConfig {
-                    message: format!("Duplicate edge type: {}", type_name),
-                });
-            }
-        }
+        // Note: With composite keys (TYPE::FROM::TO), multiple relationships with
+        // the same type name are allowed and differentiated by from/to nodes.
+        // No need to check for duplicate edge types.
 
         // Validate denormalized nodes (node.table == edge.table)
         self.validate_denormalized_nodes()?;
@@ -1217,7 +1243,13 @@ impl GraphSchemaConfig {
         for rel_def in &self.graph_schema.relationships {
             let rel_schema =
                 build_relationship_schema(rel_def, &default_node_type, &nodes, &no_discovery)?;
-            relationships.insert(rel_def.type_name.clone(), rel_schema);
+            // Use composite key: TYPE::FROM::TO
+            let composite_key = GraphSchema::make_rel_composite_key(
+                &rel_def.type_name,
+                &rel_schema.from_node,
+                &rel_schema.to_node,
+            );
+            relationships.insert(composite_key, rel_schema);
         }
 
         // Convert edge definitions (new format) using shared builders
@@ -1225,7 +1257,13 @@ impl GraphSchemaConfig {
             match edge_def {
                 EdgeDefinition::Standard(std_edge) => {
                     let rel_schema = build_standard_edge_schema(std_edge, &nodes, &no_discovery)?;
-                    relationships.insert(std_edge.type_name.clone(), rel_schema);
+                    // Use composite key: TYPE::FROM::TO
+                    let composite_key = GraphSchema::make_rel_composite_key(
+                        &std_edge.type_name,
+                        &rel_schema.from_node,
+                        &rel_schema.to_node,
+                    );
+                    relationships.insert(composite_key, rel_schema);
                 }
                 EdgeDefinition::Polymorphic(poly_edge) => {
                     let poly_schemas = build_polymorphic_edge_schemas(poly_edge, &no_discovery)?;
@@ -1339,7 +1377,13 @@ impl GraphSchemaConfig {
 
             let rel_schema =
                 build_relationship_schema(rel_def, &default_node_type, &nodes, &discovery)?;
-            relationships.insert(rel_def.type_name.clone(), rel_schema);
+            // Use composite key: TYPE::FROM::TO
+            let composite_key = GraphSchema::make_rel_composite_key(
+                &rel_def.type_name,
+                &rel_schema.from_node,
+                &rel_schema.to_node,
+            );
+            relationships.insert(composite_key, rel_schema);
         }
 
         // Convert edge definitions (new format) with auto-discovery
@@ -1368,7 +1412,13 @@ impl GraphSchemaConfig {
                     let discovery = TableDiscovery { columns, engine };
 
                     let rel_schema = build_standard_edge_schema(std_edge, &nodes, &discovery)?;
-                    relationships.insert(std_edge.type_name.clone(), rel_schema);
+                    // Use composite key: TYPE::FROM::TO
+                    let composite_key = GraphSchema::make_rel_composite_key(
+                        &std_edge.type_name,
+                        &rel_schema.from_node,
+                        &rel_schema.to_node,
+                    );
+                    relationships.insert(composite_key, rel_schema);
                 }
                 EdgeDefinition::Polymorphic(poly_edge) => {
                     // Polymorphic edges don't support auto_discover_columns,

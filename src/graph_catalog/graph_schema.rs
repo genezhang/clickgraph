@@ -440,9 +440,21 @@ pub struct GraphSchema {
     /// Maps node label -> metadata
     #[serde(skip)]
     denormalized_nodes: HashMap<String, ProcessedNodeMetadata>,
+    
+    /// Secondary index: relationship type name -> composite keys
+    /// Enables O(1) lookup of all relationships by type without scanning
+    /// Example: "HAS_TAG" -> ["HAS_TAG::Post::Tag", "HAS_TAG::Comment::Tag", "HAS_TAG::Message::Tag"]
+    #[serde(skip)]
+    rel_type_index: HashMap<String, Vec<String>>,
 }
 
 impl GraphSchema {
+    /// Create a composite key for a relationship: "type::from_node::to_node"
+    /// This allows multiple relationships with the same type but different node combinations
+    pub fn make_rel_composite_key(type_name: &str, from_node: &str, to_node: &str) -> String {
+        format!("{}::{}::{}", type_name, from_node, to_node)
+    }
+
     pub fn build(
         version: u32,
         database: String,
@@ -451,6 +463,9 @@ impl GraphSchema {
     ) -> GraphSchema {
         // Build denormalized node metadata
         let denormalized_nodes = Self::build_denormalized_metadata(&relationships);
+        
+        // Build secondary index for fast relationship type lookup
+        let rel_type_index = Self::build_rel_type_index(&relationships);
 
         GraphSchema {
             version,
@@ -458,7 +473,33 @@ impl GraphSchema {
             nodes,
             relationships,
             denormalized_nodes,
+            rel_type_index,
         }
+    }
+    
+    /// Build secondary index: relationship type -> list of composite keys
+    /// Enables O(1) lookup by type name without iterating through all relationships
+    fn build_rel_type_index(
+        relationships: &HashMap<String, RelationshipSchema>,
+    ) -> HashMap<String, Vec<String>> {
+        let mut index: HashMap<String, Vec<String>> = HashMap::new();
+        
+        for (composite_key, rel_schema) in relationships {
+            // Extract type name from composite key or schema
+            // Composite key format: "TYPE::FROM::TO" or just "TYPE" for legacy entries
+            let type_name = if composite_key.contains("::") {
+                composite_key.split("::").next().unwrap_or(composite_key)
+            } else {
+                composite_key.as_str()
+            };
+            
+            index
+                .entry(type_name.to_string())
+                .or_insert_with(Vec::new)
+                .push(composite_key.clone());
+        }
+        
+        index
     }
 
     /// Build denormalized node metadata from relationships
@@ -581,11 +622,53 @@ impl GraphSchema {
     }
 
     pub fn get_rel_schema(&self, rel_label: &str) -> Result<&RelationshipSchema, GraphSchemaError> {
+        // First try exact match (simple key for backward compatibility)
+        if let Some(schema) = self.relationships.get(rel_label) {
+            return Ok(schema);
+        }
+        
+        // If not found, it might be a composite key query from old code
+        // Return error - caller should use get_rel_schema_with_nodes for composite lookups
+        Err(GraphSchemaError::Relation {
+            rel_label: rel_label.to_string(),
+        })
+    }
+    
+    /// Get relationship schema by type and node types (supports composite keys)
+    pub fn get_rel_schema_with_nodes(
+        &self,
+        rel_type: &str,
+        from_node: Option<&str>,
+        to_node: Option<&str>,
+    ) -> Result<&RelationshipSchema, GraphSchemaError> {
+        // If both nodes specified, try composite key first
+        if let (Some(from), Some(to)) = (from_node, to_node) {
+            let composite_key = Self::make_rel_composite_key(rel_type, from, to);
+            if let Some(schema) = self.relationships.get(&composite_key) {
+                return Ok(schema);
+            }
+        }
+        
+        // Fall back to simple key (for relationships that don't have node-specific variants)
         self.relationships
-            .get(rel_label)
+            .get(rel_type)
             .ok_or(GraphSchemaError::Relation {
-                rel_label: rel_label.to_string(),
+                rel_label: rel_type.to_string(),
             })
+    }
+    
+    /// Get all relationship schemas matching a type name
+    /// O(1) lookup using secondary index instead of O(n) iteration
+    pub fn get_all_rel_schemas_by_type(&self, rel_type: &str) -> Vec<&RelationshipSchema> {
+        // Use secondary index for O(1) lookup
+        if let Some(composite_keys) = self.rel_type_index.get(rel_type) {
+            composite_keys
+                .iter()
+                .filter_map(|key| self.relationships.get(key))
+                .collect()
+        } else {
+            Vec::new()
+        }
     }
 
     /// Find all relationship types that match a generic pattern, filtering by node type compatibility.
@@ -604,8 +687,8 @@ impl GraphSchema {
     /// 
     /// Parameters:
     /// - generic_name: The relationship type name (e.g., "HAS_TAG")
-    /// - from_label: Optional source node label (e.g., "Message")
-    /// - to_label: Optional target node label (e.g., "Tag")
+    /// - from_label: Optional source node label (e.g., "Message", "University")
+    /// - to_label: Optional target node label (e.g., "Tag", "City")
     /// 
     /// Returns empty vec if no matches found.
     pub fn expand_generic_relationship_type(
@@ -614,59 +697,79 @@ impl GraphSchema {
         from_label: Option<&str>,
         to_label: Option<&str>,
     ) -> Vec<String> {
-        // First, try exact match
-        if self.relationships.contains_key(generic_name) {
-            return vec![generic_name.to_string()];
-        }
-
-        // Find all pattern-matching candidates
-        let suffix_pattern = format!("_{}", generic_name);
-        let prefix_pattern = format!("{}_", generic_name);
+        // Use composite key index for direct O(1) lookup by type name
+        // No more pattern matching - rely on proper schema definition
         
-        let mut candidates: Vec<String> = self.relationships
-            .keys()
-            .filter(|key| {
-                key.ends_with(&suffix_pattern) || 
-                key.starts_with(&prefix_pattern) ||
-                key.contains(&format!("_{}_", generic_name))
-            })
-            .cloned()
-            .collect();
+        // Get all composite keys for this relationship type from the index
+        let composite_keys = match self.rel_type_index.get(generic_name) {
+            Some(keys) => keys.clone(),
+            None => return Vec::new(), // Type not found in schema
+        };
         
-        // If no node labels provided, return all pattern matches (backward compatibility)
+        // If no node labels provided, return all matches
         if from_label.is_none() && to_label.is_none() {
-            if !candidates.is_empty() {
-                log::info!(
-                    "🔄 Pattern-expanded '{}' to {} variants: {:?}",
+            if !composite_keys.is_empty() {
+                log::debug!(
+                    "Found {} relationship(s) with type '{}': {:?}",
+                    composite_keys.len(),
                     generic_name,
-                    candidates.len(),
-                    candidates
+                    composite_keys
                 );
             }
-            return candidates;
+            return composite_keys;
         }
         
-        // Semantic filtering: only keep relationships compatible with node types
-        candidates.retain(|rel_type| {
-            if let Some(rel_schema) = self.relationships.get(rel_type) {
-                self.is_relationship_compatible(rel_schema, from_label, to_label)
-            } else {
-                false
-            }
+        // Resolve labels to table names
+        // Some labels like "University" map to table "Organisation"
+        // We need to match against the actual table name, not the label
+        let from_table_name = from_label.and_then(|label| {
+            self.nodes.get(label).map(|schema| schema.table_name.as_str())
+        });
+        let to_table_name = to_label.and_then(|label| {
+            self.nodes.get(label).map(|schema| schema.table_name.as_str())
         });
         
-        if !candidates.is_empty() {
-            log::info!(
-                "🔄 Semantic-expanded '{}' for ({:?})-[]->({:?}) to {} variants: {:?}",
+        log::debug!(
+            "Resolving labels: from_label={:?} -> from_table={:?}, to_label={:?} -> to_table={:?}",
+            from_label,
+            from_table_name,
+            to_label,
+            to_table_name
+        );
+        
+        // Filter by node compatibility using EXACT matching
+        // When node labels are specified, we want exact from_node/to_node matches
+        // not "smart" polymorphic compatibility
+        let mut compatible: Vec<String> = Vec::new();
+        for composite_key in &composite_keys {
+            if let Some(schema) = self.relationships.get(composite_key) {
+                // Match against table names, not labels
+                // If table name not found (label doesn't exist), fall back to direct label match
+                let from_ok = from_label.map_or(true, |f| {
+                    from_table_name.map_or(schema.from_node == f, |table| schema.from_node == table)
+                });
+                let to_ok = to_label.map_or(true, |t| {
+                    to_table_name.map_or(schema.to_node == t, |table| schema.to_node == table)
+                });
+                
+                if from_ok && to_ok {
+                    compatible.push(composite_key.clone());
+                }
+            }
+        }
+        
+        if !compatible.is_empty() {
+            log::debug!(
+                "Found {} compatible '{}' relationship(s) for ({:?})-[]->({:?}): {:?}",
+                compatible.len(),
                 generic_name,
                 from_label,
                 to_label,
-                candidates.len(),
-                candidates
+                compatible
             );
         }
         
-        candidates
+        compatible
     }
     
     /// Check if a relationship is compatible with given source/target node labels.

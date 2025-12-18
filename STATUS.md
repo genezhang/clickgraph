@@ -4,7 +4,88 @@
 
 ## 🎉 Recent Fixes (December 17, 2025)
 
-### ✅ Operator Precedence Fix
+### ✅ VLP Alias Mapping Fix for Undirected ShortestPath
+
+**Critical Bug**: Simple undirected shortestPath queries failed with "Unknown expression identifier"
+
+**Issue**: Query `MATCH path = shortestPath((a)-[:KNOWS*]-(b)) RETURN a.id, b.id` generated:
+```sql
+SELECT a.id AS "a.id", b.id AS "b.id"  -- ❌ a, b don't exist!
+FROM vlp_cte1 AS vlp1
+JOIN ldbc.Person AS start_node ON vlp1.start_id = start_node.id
+JOIN ldbc.Person AS end_node ON vlp1.end_id = end_node.id
+```
+
+**Root Cause**: BidirectionalUnion creates Union branches before CTE extraction. Each branch uses Cypher aliases (`a`, `b`) but VLP CTEs use SQL aliases (`start_node`, `end_node`). SELECT items reference non-existent aliases.
+
+**Fix**: Modified `src/render_plan/plan_builder.rs`:
+- Added `rewrite_vlp_union_branch_aliases()` to extract VLP metadata and rewrite SELECT aliases
+- Called from `try_build_join_based_plan()` after Union branches render (lines 7748-7764)
+- Three helper functions (lines 267-364):
+  1. `rewrite_vlp_union_branch_aliases()`: Main entry point
+  2. `extract_vlp_alias_mappings()`: Extract Cypher→VLP mappings from CTE metadata
+  3. `rewrite_render_expr_for_vlp()`: Recursively rewrite PropertyAccessExp
+
+**Generated SQL After Fix**:
+```sql
+SELECT start_node.id AS "a.id", end_node.id AS "b.id"  -- ✅ Correct aliases!
+```
+
+**Impact**:
+- ✅ Simple undirected shortestPath queries now generate valid SQL
+- ✅ All Union branches with VLP CTEs properly rewritten
+- ✅ Enables LDBC IC1 query execution
+
+### ✅ ShortestPath CTE Wrapping Fix
+
+**Critical Bug**: Duplicate CTE declarations in nested WITH RECURSIVE blocks
+
+**Issue**: Queries with multiple shortestPath patterns generated duplicate CTE names
+```sql
+vlp_cte2 AS (
+  SELECT * FROM (
+    WITH RECURSIVE vlp_cte2_inner AS (...),
+    vlp_cte2 AS (...)  -- ❌ DUPLICATE!
+```
+
+**Root Cause**: VLP CTEs with shortest path generate multi-tier structures (`vlp_inner`, `vlp_to_target`, `vlp`) stored as single `RawSql`. Wrapping logic for 2nd+ recursive CTEs created duplicate declarations.
+
+**Fix**: Modified `src/clickhouse_query_generator/to_sql_query.rs` lines 374-412:
+- Detect nested CTE structures (multiple ` AS (` patterns)
+- Use raw content directly instead of adding another wrapper
+- Prevents duplicate CTE names in nested blocks
+
+**Impact**:
+- ✅ IC1 query SQL generation now works (no duplicates)
+- ✅ Complex multi-WITH shortestPath queries work
+- ✅ All CTE nesting properly structured
+
+**Remaining**: Simple undirected shortestPath queries have alias mapping issue (see KNOWN_ISSUES.md #6)
+
+### ✅ FilterIntoGraphRel Duplicate WHERE Fix
+
+**Critical Bug**: CartesianProduct queries generated duplicate WHERE conditions
+
+**Issue**: Query `MATCH (p:Person {id: X}), (friend:Person) RETURN ...` generated:
+```sql
+WHERE (p.id = X AND p.id = X)  -- ❌ DUPLICATE!
+```
+
+**Root Cause**: FilterIntoGraphRel optimizer matched by table name instead of alias:
+- GraphNode('p') had filter `p.id = X` ✓
+- GraphNode('friend') ALSO received filter `p.id = X` ❌
+- ViewScan handler iterated ALL aliases, injected FIRST filter found
+
+**Fix**: Modified `src/query_planner/optimizer/filter_into_graph_rel.rs`:
+- GraphNode handler: Inject filters ONLY for matching alias
+- ViewScan handler: Removed filter injection entirely
+- Filters now correctly scoped to their specific nodes
+
+**Impact**: All comma patterns with property filters now generate correct SQL
+
+---
+
+## 🎉 Recent Fixes (December 16, 2025)
 
 **Critical Parser Bug**: All binary operators parsed at same precedence level
 
