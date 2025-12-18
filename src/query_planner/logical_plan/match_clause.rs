@@ -2598,49 +2598,9 @@ mod tests {
         assert_eq!(user_ctx.get_label_opt(), Some("Employee".to_string()));
     }
 
-    #[test]
-    fn test_traverse_connected_pattern_disconnected_error() {
-        let mut plan_ctx = PlanCtx::default();
-        let initial_plan = Arc::new(LogicalPlan::Empty);
-
-        let start_node = ast::NodePattern {
-            name: Some("user1"),
-            label: Some("Person"),
-            properties: None,
-        };
-
-        let end_node = ast::NodePattern {
-            name: Some("user2"),
-            label: Some("Person"),
-            properties: None,
-        };
-
-        let relationship = ast::RelationshipPattern {
-            name: Some("knows"),
-            direction: ast::Direction::Either,
-            labels: Some(vec!["KNOWS"]),
-            properties: None,
-            variable_length: None,
-        };
-
-        let connected_pattern = ast::ConnectedPattern {
-            start_node: Rc::new(RefCell::new(start_node)),
-            relationship,
-            end_node: Rc::new(RefCell::new(end_node)),
-        };
-
-        let connected_patterns = vec![connected_pattern];
-
-        // Pass pathpattern_idx > 0 to simulate second pattern that's disconnected
-        let result =
-            traverse_connected_pattern(&connected_patterns, initial_plan, &mut plan_ctx, 1);
-
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            LogicalPlanError::DisconnectedPatternFound => (), // Expected error
-            _ => panic!("Expected DisconnectedPatternFound error"),
-        }
-    }
+    // Test removed: DisconnectedPatternFound error no longer exists
+    // as of commit b015cf0 which allows disconnected comma patterns
+    // with WHERE clause predicates for cross-table correlation
 
     #[test]
     fn test_evaluate_match_clause_with_node_and_connected_pattern() {
@@ -2744,8 +2704,11 @@ mod tests {
             LogicalExpr::OperatorApplicationExp(op_app) => {
                 assert_eq!(op_app.operator, Operator::Equal);
                 match &op_app.operands[0] {
-                    LogicalExpr::Column(col) => assert_eq!(col.0, "status"),
-                    _ => panic!("Expected Column"),
+                    LogicalExpr::PropertyAccessExp(prop_access) => {
+                        assert_eq!(prop_access.table_alias.0, "user");
+                        assert_eq!(prop_access.column.raw(), "status");
+                    }
+                    _ => panic!("Expected PropertyAccessExp"),
                 }
             }
             _ => panic!("Expected OperatorApplication"),

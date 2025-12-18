@@ -902,10 +902,10 @@ mod tests {
         assert_eq!(&expr, &expected);
     }
 
-    // unary
+    // NOT operator (handled by parse_not_expression, not parse_unary_expression)
     #[test]
     fn test_parse_unary_expression_not() {
-        let (rem, expr) = parse_unary_expression("NOT a").unwrap();
+        let (rem, expr) = parse_not_expression("NOT a").unwrap();
         assert_eq!(rem, "");
         let expected = Expression::OperatorApplicationExp(OperatorApplication {
             operator: Operator::Not,
