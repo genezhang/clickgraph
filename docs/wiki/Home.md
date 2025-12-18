@@ -94,6 +94,9 @@ curl -X POST http://localhost:8080/query \
 - **[Production Best Practices](Production-Best-Practices.md)** - Security, performance, monitoring
 - **[Performance Tuning](Performance-Query-Optimization.md)** - Query and schema optimization
 
+### Integrations
+- **[AI Assistant Integration (MCP)](AI-Assistant-Integration-MCP.md)** - 🤖 Use ClickGraph with Claude and other AI assistants via Model Context Protocol
+
 ### Use Cases & Examples
 - **[Social Network Analysis](Use-Case-Social-Network.md)** - Friend recommendations and communities
 - **[Fraud Detection](Use-Case-Fraud-Detection.md)** - Transaction network analysis

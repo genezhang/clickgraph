@@ -326,6 +326,55 @@ I'll be back:)
 
 ---
 
+## 🤖 AI Assistant Integration (MCP Protocol)
+
+Use ClickGraph with AI assistants like Claude through the Model Context Protocol (MCP).
+
+**Zero Configuration**: ClickGraph's Bolt protocol is compatible with Neo4j's MCP server out-of-the-box!
+
+### Quick Setup with Claude Desktop
+
+1. **Start ClickGraph** with Bolt protocol enabled (default):
+   ```bash
+   docker run -d -p 8080:8080 -p 7687:7687 genezhang/clickgraph:latest
+   ```
+
+2. **Configure Claude Desktop** to connect via Neo4j's MCP server:
+   
+   Add to Claude Desktop's MCP configuration (`claude_desktop_config.json`):
+   ```json
+   {
+     "mcpServers": {
+       "clickgraph": {
+         "command": "npx",
+         "args": [
+           "@modelcontextprotocol/server-neo4j",
+           "bolt://localhost:7687"
+         ],
+         "env": {
+           "NEO4J_USERNAME": "neo4j",
+           "NEO4J_PASSWORD": "password"
+         }
+       }
+     }
+   }
+   ```
+
+3. **Query with natural language**:
+   - "Show me all users in the graph"
+   - "Find users who follow each other"
+   - "What's the average age of users by country?"
+
+**Features Available**:
+- ✅ Natural language to Cypher query translation
+- ✅ Schema introspection and discovery
+- ✅ Complex graph pattern queries
+- ✅ Aggregations and analytics
+
+📖 **[Complete MCP Setup Guide →](docs/wiki/AI-Assistant-Integration-MCP.md)**
+
+---
+
 ## 📊 View-Based Graph Model
 
 Transform existing relational data into graph format through YAML configuration:

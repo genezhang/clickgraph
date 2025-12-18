@@ -1003,6 +1003,7 @@ Note: PageRank requires named argument syntax (not positional).
 - ✅ CASE expressions (23/25 tests)
 - ✅ Shortest paths
 - ✅ Bolt protocol
+- ✅ **AI Assistant Integration (MCP)** - Use ClickGraph with Claude via Neo4j MCP server (zero config)
 - ✅ Error handling
 - ✅ **USE clause (schema selection)**
 - ✅ **Parameters (`$paramName` substitution)**
