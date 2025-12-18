@@ -1,6 +1,40 @@
 # ClickGraph Status
 
-*Updated: December 22, 2025*
+*Updated: December 18, 2025*
+
+## ✅ Node ID Semantic Clarification Complete (December 18, 2025)
+
+### Objective
+Unify node_id semantics: treat as property names (graph layer) with auto-generated identity mappings to column names (relational layer).
+
+### Changes Completed
+1. **Auto-Identity Mappings**:
+   - Added `build_node_property_mappings()` function
+   - Auto-generates identity mappings for node_id properties not in property_mappings
+   - Example: `node_id: user_id` → auto-adds `property_mappings: {user_id: user_id}`
+   - Explicit mappings take precedence over auto-generated ones
+
+2. **Documentation Updates**:
+   - Updated NodeIdSchema documentation with semantic clarification
+   - Updated NodeDefinition comments with examples
+   - Clarified property name vs column name distinction
+
+3. **Testing**:
+   - Added 3 new tests for identity mapping behavior
+   - Single node_id identity mapping
+   - Composite node_id identity mapping
+   - Explicit mappings precedence
+
+### Final Test Status: 649/649 passing (100%) ✅
+
+**Benefits**:
+- ✅ Consistent semantics: node_id is always property names
+- ✅ Backward compatible: existing schemas work unchanged
+- ✅ Supports denormalized edges naturally (already using property names)
+- ✅ Prepares for composite node_id support (Phase 2)
+- ✅ Aligns with edge_id pattern (both use Identifier type)
+
+---
 
 ## ✅ RelationshipSchema Refactoring Complete (December 22, 2025)
 
@@ -29,7 +63,7 @@ Separate graph labels from relational table names in `RelationshipSchema` to fix
    - **Match Clause**: Updated PropertyAccessExp expectations, removed obsolete disconnected pattern test
    - **Graph Join Inference**: Updated all assertions to use unqualified table names, fixed cross-branch JOIN handling
 
-### Final Test Status: 646/646 passing (100%) ✅
+### Test Status: 646/646 passing → 649/649 passing (100%) ✅
 
 **All test categories passing**:
 - ✅ Core RelationshipSchema refactoring
@@ -38,9 +72,7 @@ Separate graph labels from relational table names in `RelationshipSchema` to fix
 - ✅ All query_planner tests
 - ✅ All parser tests
 - ✅ Cross-branch JOIN detection with duplicate aliases
-3. Investigate parser test failure
-4. Verify 100% test pass rate
-5. Commit and document
+- ✅ Node ID identity mapping tests
 
 ---
 

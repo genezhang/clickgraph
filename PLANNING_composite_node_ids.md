@@ -1,9 +1,36 @@
 # Composite Node ID Implementation Plan
 
-**Status**: Planning Phase  
+**Status**: Phase 1 Complete ✅ (Semantic Clarification - December 18, 2025)  
 **Target Release**: v0.6.0  
-**Estimated Effort**: 2-3 days (Medium complexity)  
+**Estimated Effort**: Phase 1: ✅ Done | Phase 2: 2-3 days remaining  
 **Priority**: HIGH (Required for real-world applications)
+
+---
+
+## Phase 1: Semantic Clarification ✅ COMPLETE (December 18, 2025)
+
+**Goal**: Establish that `node_id` represents property names (graph layer), not column names
+
+**Changes Made**:
+1. **Auto-Identity Mappings**: `build_node_property_mappings()` auto-generates identity mappings
+   - `node_id: user_id` → auto-adds `property_mappings: {user_id: user_id}`
+   - Explicit mappings take precedence over auto-generated ones
+2. **Documentation**: Updated NodeIdSchema and NodeDefinition comments
+3. **Testing**: Added 3 tests for identity mapping behavior (649/649 passing)
+
+**Impact**:
+- ✅ Consistent semantics: node_id is always property names
+- ✅ Backward compatible: existing schemas work unchanged
+- ✅ Denormalized edges naturally supported (already using property names)
+- ✅ Aligns with edge_id pattern (both use Identifier type)
+
+**Commit**: `3b2a750` - feat: Clarify node_id semantics as property names
+
+---
+
+## Phase 2: Composite Node ID Support (TODO)
+
+**Goal**: Enable multi-column `node_id` for composite primary keys
 
 ---
 
@@ -11,8 +38,8 @@
 
 **What**: Support multi-column `node_id` for nodes with composite primary keys  
 **Why**: Real-world applications have composite node identifiers (e.g., `[tenant_id, user_id]`, `[bank_id, account_number]`)  
-**Status**: Infrastructure designed but NOT implemented in query generation  
-**Blocker**: All code uses `NodeIdSchema.column()` which **PANICS** on composite keys
+**Status**: Phase 1 complete (semantics unified), Phase 2 pending (SQL generation)  
+**Blocker**: Some code uses `NodeIdSchema.column()` which **PANICS** on composite keys
 
 ---
 
@@ -41,12 +68,12 @@ tuple(rel.FlightDate, rel.Flight_Number_Reporting_Airline, rel.OriginAirportID, 
 
 ---
 
-### ❌ What Doesn't Work (Composite Node IDs)
+### ⚠️ What Partially Works (Composite Node IDs)
 
-**Node composite IDs are NOT implemented**:
+**Node composite IDs infrastructure is READY** (Phase 1 complete):
 
 ```yaml
-# This will PANIC at runtime! ❌
+# This will LOAD correctly but may PANIC at query time ⚠️
 nodes:
   - label: Account
     table: accounts
