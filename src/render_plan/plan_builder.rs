@@ -2232,8 +2232,22 @@ fn build_chained_with_match_cte_plan(
     }
 
     // Add all CTEs (innermost first, which is correct order for SQL)
+    eprintln!("DEBUG CHAINED WITH: all_ctes count BEFORE extend: {}", all_ctes.len());
+    for (i, cte) in all_ctes.iter().enumerate() {
+        eprintln!("  [{}] {} (recursive={})", i, cte.cte_name, cte.is_recursive);
+    }
+    eprintln!("DEBUG CHAINED WITH: render_plan.ctes count BEFORE extend: {}", render_plan.ctes.0.len());
+    for (i, cte) in render_plan.ctes.0.iter().enumerate() {
+        eprintln!("  [{}] {} (recursive={})", i, cte.cte_name, cte.is_recursive);
+    }
+    
     all_ctes.extend(render_plan.ctes.0.into_iter());
     render_plan.ctes = CteItems(all_ctes);
+    
+    eprintln!("DEBUG CHAINED WITH: render_plan.ctes count AFTER extend: {}", render_plan.ctes.0.len());
+    for (i, cte) in render_plan.ctes.0.iter().enumerate() {
+        eprintln!("  [{}] {} (recursive={})", i, cte.cte_name, cte.is_recursive);
+    }
 
     // Skip validation - CTEs are hoisted progressively through recursion
     // ClickHouse will validate CTE references when executing the SQL

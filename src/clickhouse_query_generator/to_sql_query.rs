@@ -347,6 +347,43 @@ impl ToSql for CteItems {
             cte_groups.push(current_group);
         }
         
+        // CRITICAL FIX: For groups 2+ that would be wrapped, extract trailing non-recursive CTEs
+        // and move them to Group 1 (top level). This prevents:
+        // 1. Duplicate CTE names (wrapper name = inner CTE name)
+        // 2. Scope issues (WITH clause CTEs need to be accessible from final SELECT)
+        if cte_groups.len() > 1 {
+            let mut trailing_non_recursive: Vec<&Cte> = Vec::new();
+            
+            // Process groups in reverse (from last to second)
+            for group_idx in (1..cte_groups.len()).rev() {
+                let group = &mut cte_groups[group_idx];
+                
+                // Skip if first CTE isn't recursive (shouldn't happen based on grouping logic)
+                if group.is_empty() || !group[0].is_recursive {
+                    continue;
+                }
+                
+                // Extract all trailing non-recursive CTEs from this group
+                let mut non_recursive_start = 1; // Start after the recursive CTE
+                for i in 1..group.len() {
+                    if group[i].is_recursive {
+                        non_recursive_start = i + 1;
+                    }
+                }
+                
+                if non_recursive_start < group.len() {
+                    // Extract trailing non-recursive CTEs
+                    let extracted: Vec<&Cte> = group.drain(non_recursive_start..).collect();
+                    trailing_non_recursive.splice(0..0, extracted);  // Prepend to maintain order
+                }
+            }
+            
+            // Add extracted CTEs to Group 1 (top level)
+            if !trailing_non_recursive.is_empty() {
+                cte_groups[0].extend(trailing_non_recursive);
+            }
+        }
+        
         // If no recursive CTEs at all
         if cte_groups.is_empty() || !cte_groups.iter().any(|g| g[0].is_recursive) {
             sql.push_str("WITH ");
