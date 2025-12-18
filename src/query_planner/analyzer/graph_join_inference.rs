@@ -3504,11 +3504,37 @@ impl GraphJoinInference {
             rel_schema.to_id.clone()
         };
 
+        // 5. Determine actual table name (may be CTE, not base table)
+        // CRITICAL: Check if GraphRel center is wrapped in LogicalCte
+        // If so, use CTE name WITHOUT database prefix (CTEs don't have databases)
+        // This matches logic in graph_context.rs
+        let (table_name, database) = if let LogicalPlan::Cte(cte) = graph_rel.center.as_ref() {
+            // Wrapped in CTE - use CTE name, no database prefix
+            log::info!("🔍 NodeAppearance: REL '{}' wrapped in CTE '{}' - using CTE name without database",
+                       graph_rel.alias, cte.name);
+            (cte.name.clone(), String::new())  // Empty database for CTEs
+        } else if let Some(labels) = &graph_rel.labels {
+            // Check if multi-variant relationship (UNION CTE should exist)
+            if labels.len() > 1 {
+                // Multi-variant: use standardized CTE name (matches graph_traversal_planning.rs)
+                let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
+                log::info!("🔍 NodeAppearance: REL '{}' has {} labels - using multi-variant CTE: '{}'",
+                           graph_rel.alias, labels.len(), cte_name);
+                (cte_name, String::new())  // Empty database for CTEs
+            } else {
+                // Single label - use schema table name
+                (rel_schema.table_name.clone(), rel_schema.database.clone())
+            }
+        } else {
+            // No labels - use schema table name
+            (rel_schema.table_name.clone(), rel_schema.database.clone())
+        };
+
         Ok(NodeAppearance {
             rel_alias: graph_rel.alias.clone(),
             node_label: node_label.clone(),
-            table_name: rel_schema.table_name.clone(),
-            database: rel_schema.database.clone(),
+            table_name,
+            database,
             column_name,
             is_from_side,
         })
@@ -3549,8 +3575,17 @@ impl GraphJoinInference {
         }
 
         // Create JOIN: current_table JOIN prev_table ON current.col = prev.col
+        // CRITICAL: Only add database prefix if database is not empty (CTEs have no database)
+        let table_name = if prev_appearance.database.is_empty() {
+            // CTE - no database prefix
+            prev_appearance.table_name.clone()
+        } else {
+            // Regular table - use database.table format
+            format!("{}.{}", prev_appearance.database, prev_appearance.table_name)
+        };
+
         let join = Join {
-            table_name: format!("{}.{}", prev_appearance.database, prev_appearance.table_name),
+            table_name,
             table_alias: prev_appearance.rel_alias.clone(),
             joining_on: vec![OperatorApplication {
                 operator: Operator::Equal,
