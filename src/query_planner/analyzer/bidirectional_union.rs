@@ -958,6 +958,7 @@ mod tests {
             labels: Some(vec!["FOLLOWS".to_string()]),
             is_optional: None,
             anchor_connection: None,
+            cte_references: std::collections::HashMap::new(),
         };
 
         let plan = Arc::new(LogicalPlan::GraphRel(graph_rel));

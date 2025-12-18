@@ -1040,7 +1040,7 @@ mod tests {
 
         // Verify basic AST structure
         let ast = parsed.unwrap();
-        assert!(ast.match_clause.is_some(), "Should have MATCH clause");
+        assert!(!ast.match_clauses.is_empty(), "Should have MATCH clause");
         assert!(ast.return_clause.is_some(), "Should have RETURN clause");
 
         // This test documents that parsing works.

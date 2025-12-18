@@ -2267,7 +2267,7 @@ mod tests {
             }),
         ];
 
-        let result = convert_properties(properties).unwrap();
+        let result = convert_properties(properties, "n").unwrap();
         assert_eq!(result.len(), 2);
 
         // Check first property conversion
@@ -2310,7 +2310,7 @@ mod tests {
             Property::Param("param1".to_string()),
         ];
 
-        let result = convert_properties(properties);
+        let result = convert_properties(properties, "n");
         assert!(result.is_err());
         match result.unwrap_err() {
             LogicalPlanError::FoundParamInProperties => (), // Expected error
@@ -2321,7 +2321,7 @@ mod tests {
     #[test]
     fn test_convert_properties_empty_list() {
         let properties = vec![];
-        let result = convert_properties(properties).unwrap();
+        let result = convert_properties(properties, "n").unwrap();
         assert_eq!(result.len(), 0);
     }
 

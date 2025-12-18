@@ -661,6 +661,7 @@ fn test_analyzer_denormalized_property_integration() {
             labels: Some(vec!["FLIGHT".to_string()]),
             is_optional: None,
             anchor_connection: None,
+            cte_references: std::collections::HashMap::new(),
         },
     ));
 

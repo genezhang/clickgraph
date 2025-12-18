@@ -228,7 +228,7 @@ mod tests {
         match parsed {
             Ok(ast) => {
                 // Ensure each clause is present.
-                assert!(ast.match_clause.is_some(), "Expected MATCH clause");
+                assert!(!ast.match_clauses.is_empty(), "Expected MATCH clause");
                 assert!(ast.with_clause.is_some(), "Expected WITH clause");
                 // WHERE after WITH is now part of WITH clause, not query-level
                 assert!(
@@ -244,7 +244,7 @@ mod tests {
                 assert!(ast.skip_clause.is_some(), "Expected SKIP clause");
                 assert!(ast.limit_clause.is_some(), "Expected LIMIT clause");
 
-                let match_clause = ast.match_clause.unwrap();
+                let match_clause = &ast.match_clauses[0];
 
                 if let PathPattern::Node(node) = &match_clause.path_patterns[0] {
                     assert_eq!(node.name, Some("a"));
@@ -364,7 +364,7 @@ mod tests {
         match parsed {
             Ok(ast) => {
                 // These clauses should be present.
-                assert!(ast.match_clause.is_some(), "Expected MATCH clause");
+                assert!(!ast.match_clauses.is_empty(), "Expected MATCH clause");
                 assert!(ast.where_clause.is_some(), "Expected WHERE clause");
                 assert!(ast.return_clause.is_some(), "Expected RETURN clause");
                 // The rest should be None.
@@ -460,7 +460,7 @@ mod tests {
             ])],
         };
 
-        assert_eq!(match_clause, expected_match_clause);
+        assert_eq!(*match_clause, expected_match_clause);
 
         assert!(query_ast.with_clause.is_some(), "Expected WITH clause");
         let with_clause = query_ast.with_clause.unwrap();
@@ -645,7 +645,7 @@ mod tests {
                 },
             ])],
         };
-        assert_eq!(match_clause, expected_match_clause);
+        assert_eq!(*match_clause, expected_match_clause);
 
         assert!(query_ast.where_clause.is_some(), "Expected WHERE clause");
         let where_clause = query_ast.where_clause.unwrap();
@@ -783,7 +783,7 @@ mod tests {
                 }),
             ],
         };
-        assert_eq!(match_clause, expected_match_clause);
+        assert_eq!(*match_clause, expected_match_clause);
 
         assert!(query_ast.where_clause.is_some(), "Expected WHERE clause");
         let where_clause = query_ast.where_clause.unwrap();
@@ -911,7 +911,7 @@ mod tests {
                 })]),
             })],
         };
-        assert_eq!(match_clause, expected_match_clause);
+        assert_eq!(*match_clause, expected_match_clause);
 
         assert!(query_ast.set_clause.is_some(), "Expected SET clause");
         let set_clause = query_ast.set_clause.unwrap();
@@ -1002,7 +1002,7 @@ mod tests {
                 })]),
             })],
         };
-        assert_eq!(match_clause, expected_match_clause);
+        assert_eq!(*match_clause, expected_match_clause);
 
         assert!(query_ast.delete_clause.is_some(), "Expected DELETE clause");
         let delete_clause = query_ast.delete_clause.unwrap();
@@ -1073,7 +1073,7 @@ mod tests {
                 })]),
             })],
         };
-        assert_eq!(match_clause, expected_match_clause);
+        assert_eq!(*match_clause, expected_match_clause);
 
         assert!(query_ast.remove_clause.is_some(), "Expected REMOVE clause");
         let remove_clause = query_ast.remove_clause.unwrap();
@@ -1156,7 +1156,7 @@ mod tests {
                 properties: None,
             })],
         };
-        assert_eq!(match_clause, expected_match_clause);
+        assert_eq!(*match_clause, expected_match_clause);
 
         assert!(query_ast.where_clause.is_some(), "Expected WHERE clause");
         let where_clause = query_ast.where_clause.unwrap();
@@ -1279,7 +1279,7 @@ mod tests {
                 properties: None,
             })],
         };
-        assert_eq!(match_clause, expected_match_clause);
+        assert_eq!(*match_clause, expected_match_clause);
 
         assert!(query_ast.where_clause.is_some(), "Expected WHERE clause");
         let where_clause = query_ast.where_clause.unwrap();
@@ -1419,7 +1419,7 @@ mod tests {
             stmt.union_clauses.is_empty(),
             "Expected no UNION clauses for single query"
         );
-        assert!(stmt.query.match_clause.is_some(), "Expected MATCH clause");
+        assert!(!stmt.query.match_clauses.is_empty(), "Expected MATCH clause");
     }
 
     #[test]
@@ -1443,9 +1443,9 @@ mod tests {
         assert_eq!(stmt.union_clauses[0].union_type, UnionType::Distinct);
 
         // Verify first query
-        assert!(stmt.query.match_clause.is_some());
+        assert!(!stmt.query.match_clauses.is_empty());
         // Verify union query
-        assert!(stmt.union_clauses[0].query.match_clause.is_some());
+        assert!(!stmt.union_clauses[0].query.match_clauses.is_empty());
     }
 
     #[test]
