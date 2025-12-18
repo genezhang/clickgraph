@@ -2204,6 +2204,78 @@ impl GraphJoinInference {
     // PatternSchemaContext-Based Join Generation (Phase 3)
     // ========================================================================
 
+    /// Helper function to get table name with database prefix if needed.
+    ///
+    /// CTEs (Common Table Expressions) from WITH clauses should NOT have database prefixes.
+    /// Base tables from schema SHOULD have database prefixes.
+    ///
+    /// # Arguments
+    /// * `cte_name` - The CTE or table name (without database prefix)
+    /// * `alias` - The variable alias (to check if it's a CTE reference)
+    /// * `schema` - The node/rel schema (provides database name for base tables)
+    /// * `plan_ctx` - The plan context (to check if alias references a CTE)
+    ///
+    /// # Returns
+    /// Table name with database prefix if it's a base table, without prefix if it's a CTE.
+    fn get_table_name_with_prefix(
+        cte_name: &str,
+        alias: &str,
+        schema: &NodeSchema,
+        plan_ctx: &PlanCtx,
+    ) -> String {
+        // Check if this alias references a CTE from WITH clause
+        if let Ok(table_ctx) = plan_ctx.get_table_ctx_from_alias_opt(&Some(alias.to_string())) {
+            if table_ctx.get_cte_name().is_some() {
+                // CTE reference - no database prefix
+                crate::debug_print!(
+                    "    🔍 Table name for alias '{}': '{}' (CTE - no prefix)",
+                    alias,
+                    cte_name
+                );
+                return cte_name.to_string();
+            }
+        }
+        
+        // Base table - add database prefix
+        let table_name = format!("{}.{}", schema.database, cte_name);
+        crate::debug_print!(
+            "    🔍 Table name for alias '{}': '{}' (base table - added prefix)",
+            alias,
+            table_name
+        );
+        table_name
+    }
+
+    /// Helper function to get table name with database prefix for relationship tables.
+    fn get_rel_table_name_with_prefix(
+        cte_name: &str,
+        alias: &str,
+        schema: &RelationshipSchema,
+        plan_ctx: &PlanCtx,
+    ) -> String {
+        // Check if this alias references a CTE from WITH clause
+        if let Ok(table_ctx) = plan_ctx.get_table_ctx_from_alias_opt(&Some(alias.to_string())) {
+            if table_ctx.get_cte_name().is_some() {
+                // CTE reference - no database prefix
+                crate::debug_print!(
+                    "    🔍 Rel table name for alias '{}': '{}' (CTE - no prefix)",
+                    alias,
+                    cte_name
+                );
+                return cte_name.to_string();
+            }
+        }
+        
+        // Base table - add database prefix
+        let table_name = format!("{}.{}", schema.database, cte_name);
+        crate::debug_print!(
+            "    🔍 Rel table name for alias '{}': '{}' (base table - added prefix)",
+            alias,
+            table_name
+        );
+        table_name
+    }
+
     /// Generate graph JOINs using PatternSchemaContext for exhaustive pattern matching.
     ///
     /// This is the new implementation that replaces the scattered detection logic
@@ -2236,6 +2308,9 @@ impl GraphJoinInference {
         left_is_optional: bool,
         rel_is_optional: bool,
         right_is_optional: bool,
+        left_node_schema: &NodeSchema,
+        right_node_schema: &NodeSchema,
+        rel_schema: &RelationshipSchema,
         plan_ctx: &mut PlanCtx,
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
@@ -2389,8 +2464,16 @@ impl GraphJoinInference {
                         let resolved_left_id = Self::resolve_column(&left_id_col, left_cte_name, plan_ctx);
                         let resolved_left_join_col = Self::resolve_column(left_join_col, rel_cte_name, plan_ctx);
 
+                        // Get table name with database prefix if needed (not for CTEs)
+                        let left_table_name = Self::get_table_name_with_prefix(
+                            left_cte_name,
+                            left_alias,
+                            left_node_schema,
+                            plan_ctx,
+                        );
+
                         let left_join = Join {
-                            table_name: left_cte_name.to_string(),
+                            table_name: left_table_name,
                             table_alias: left_alias.to_string(),
                             joining_on: vec![OperatorApplication {
                                 operator: Operator::Equal,
@@ -2416,8 +2499,16 @@ impl GraphJoinInference {
                     // Note: resolved_left_join_col was already computed above for the left_join
                     let resolved_left_id_for_rel = Self::resolve_column(&left_id_col, left_cte_name, plan_ctx);
 
+                    // Get table name with database prefix if needed (not for CTEs)
+                    let rel_table_name = Self::get_rel_table_name_with_prefix(
+                        rel_cte_name,
+                        rel_alias,
+                        rel_schema,
+                        plan_ctx,
+                    );
+
                     let rel_join = Join {
-                        table_name: rel_cte_name.to_string(),
+                        table_name: rel_table_name,
                         table_alias: rel_alias.to_string(),
                         joining_on: vec![OperatorApplication {
                             operator: Operator::Equal,
@@ -2445,8 +2536,16 @@ impl GraphJoinInference {
                         let resolved_right_id = Self::resolve_column(&right_id_col, right_cte_name, plan_ctx);
                         let resolved_right_join_col = Self::resolve_column(right_join_col, rel_cte_name, plan_ctx);
 
+                        // Get table name with database prefix if needed (not for CTEs)
+                        let right_table_name = Self::get_table_name_with_prefix(
+                            right_cte_name,
+                            right_alias,
+                            right_node_schema,
+                            plan_ctx,
+                        );
+
                         let right_join = Join {
-                            table_name: right_cte_name.to_string(),
+                            table_name: right_table_name,
                             table_alias: right_alias.to_string(),
                             joining_on: vec![OperatorApplication {
                                 operator: Operator::Equal,
@@ -2642,8 +2741,21 @@ impl GraphJoinInference {
                     let resolved_node_id = Self::resolve_column(&join_node_id_col, join_node_cte, plan_ctx);
                     let resolved_join_col = Self::resolve_column(join_col, rel_cte_name, plan_ctx);
 
+                    // Get table name with database prefix if needed (not for CTEs)
+                    // Determine which schema to use based on joined_node position
+                    let join_node_schema = match joined_node {
+                        NodePosition::Left => left_node_schema,
+                        NodePosition::Right => right_node_schema,
+                    };
+                    let join_table_name = Self::get_table_name_with_prefix(
+                        join_node_cte,
+                        join_node_alias,
+                        join_node_schema,
+                        plan_ctx,
+                    );
+
                     let node_join = Join {
-                        table_name: join_node_cte.to_string(),
+                        table_name: join_table_name,
                         table_alias: join_node_alias.to_string(),
                         joining_on: vec![OperatorApplication {
                             operator: Operator::Equal,
@@ -2670,8 +2782,16 @@ impl GraphJoinInference {
                 let resolved_node_id_for_rel = Self::resolve_column(&join_node_id_col, join_node_cte, plan_ctx);
                 let resolved_join_col_for_rel = Self::resolve_column(join_col, rel_cte_name, plan_ctx);
 
+                // Get table name with database prefix if needed (not for CTEs)
+                let rel_table_name = Self::get_rel_table_name_with_prefix(
+                    rel_cte_name,
+                    rel_alias,
+                    rel_schema,
+                    plan_ctx,
+                );
+
                 let rel_join = Join {
-                    table_name: rel_cte_name.to_string(),
+                    table_name: rel_table_name,
                     table_alias: rel_alias.to_string(),
                     joining_on: vec![OperatorApplication {
                         operator: Operator::Equal,
@@ -3309,6 +3429,9 @@ impl GraphJoinInference {
             left_is_optional,
             rel_is_optional,
             right_is_optional,
+            &left_node_schema,
+            &right_node_schema,
+            &rel_schema,
             plan_ctx,
             collected_graph_joins,
             joined_entities,
@@ -3992,7 +4115,7 @@ mod tests {
 
                         // First join: relationship (f1)
                         let rel_join = &graph_joins.joins[0];
-                        assert_eq!(rel_join.table_name, "FOLLOWS");
+                        assert_eq!(rel_join.table_name, "default.FOLLOWS");
                         assert_eq!(rel_join.table_alias, "f1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         assert_eq!(rel_join.joining_on.len(), 1);
@@ -4023,7 +4146,7 @@ mod tests {
 
                         // Second join: right node (p1)
                         let p1_join = &graph_joins.joins[1];
-                        assert_eq!(p1_join.table_name, "Person");
+                        assert_eq!(p1_join.table_name, "default.Person");
                         assert_eq!(p1_join.table_alias, "p1");
                         assert_eq!(p1_join.join_type, JoinType::Inner);
                         assert_eq!(p1_join.joining_on.len(), 1);
@@ -4115,7 +4238,7 @@ mod tests {
                         // (p1)-[w1:WORKS_AT]->(c1)
                         // Multi-hop fix: Creates joins for both w1 (relationship) and c1 (end node)
                         let rel_join = &graph_joins.joins[0];
-                        assert_eq!(rel_join.table_name, "WORKS_AT");
+                        assert_eq!(rel_join.table_name, "default.WORKS_AT");
                         assert_eq!(rel_join.table_alias, "w1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         assert_eq!(rel_join.joining_on.len(), 1);
@@ -4225,7 +4348,7 @@ mod tests {
                         // (p1)-[f1:FOLLOWS]->(p2)
                         // For bitmap traversal, only relationship join is needed (start node in FROM)
                         let rel_join = &graph_joins.joins[0];
-                        assert_eq!(rel_join.table_name, "FOLLOWS"); // Now uses actual table name
+                        assert_eq!(rel_join.table_name, "default.FOLLOWS"); // Base table with database prefix
                         assert_eq!(rel_join.table_alias, "f1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         assert_eq!(rel_join.joining_on.len(), 1);
@@ -4318,7 +4441,7 @@ mod tests {
 
                         // First join: relationship f2
                         let rel_join = &graph_joins.joins[0];
-                        assert_eq!(rel_join.table_name, "FOLLOWS"); // CTE name includes database prefix
+                        assert_eq!(rel_join.table_name, "default.FOLLOWS"); // Base table includes database prefix
                         assert_eq!(rel_join.table_alias, "f2");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         // V2: Only 1 join condition (to left anchor p1)
@@ -4450,7 +4573,7 @@ mod tests {
 
                         // First join: relationship (f1)
                         let rel_join = &graph_joins.joins[0];
-                        assert_eq!(rel_join.table_name, "FOLLOWS");
+                        assert_eq!(rel_join.table_name, "default.FOLLOWS");
                         assert_eq!(rel_join.table_alias, "f1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
                         assert_eq!(rel_join.joining_on.len(), 1);
@@ -4480,7 +4603,7 @@ mod tests {
 
                         // Second join: right node (p2)
                         let p2_join = &graph_joins.joins[1];
-                        assert_eq!(p2_join.table_name, "Person");
+                        assert_eq!(p2_join.table_name, "default.Person");
                         assert_eq!(p2_join.table_alias, "p2");
                         assert_eq!(p2_join.join_type, JoinType::Inner);
                         assert_eq!(p2_join.joining_on.len(), 1);
@@ -4669,7 +4792,7 @@ mod tests {
                                     }
                                 }
                                 "f1" => {
-                                    assert_eq!(join.table_name, "FOLLOWS"); // CTE name includes database prefix
+                                    assert_eq!(join.table_name, "default.FOLLOWS"); // Base table includes database prefix
                                     assert_eq!(join.joining_on.len(), 1);
 
                                     let join_condition = &join.joining_on[0];
@@ -4696,7 +4819,7 @@ mod tests {
                                     }
                                 }
                                 "p1" => {
-                                    assert_eq!(join.table_name, "Person"); // Table name includes database prefix
+                                    assert_eq!(join.table_name, "default.Person"); // Base table includes database prefix
                                     assert_eq!(join.joining_on.len(), 1);
 
                                     let join_condition = &join.joining_on[0];
