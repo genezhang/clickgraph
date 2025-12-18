@@ -151,10 +151,34 @@ impl AnalyzerPass for QueryValidation {
                     }
                 })?;
 
-                // Compare node labels directly (graph-space semantics)
-                // rel_schema.from_node/to_node now contain labels, not table names
-                let from_matches = rel_schema.from_node == from || rel_schema.from_node == "$any";
-                let to_matches = rel_schema.to_node == to || rel_schema.to_node == "$any";
+                // Compare node labels - support filtered views (e.g., Company=Organisation, Country=Place)
+                // For exact label match, accept immediately
+                let from_label_match = rel_schema.from_node == from || rel_schema.from_node == "$any";
+                let to_label_match = rel_schema.to_node == to || rel_schema.to_node == "$any";
+                
+                // If labels don't match exactly, check if they map to same underlying table
+                // Example: Company (filter on Organisation table) should match Organisation
+                let from_matches = from_label_match || {
+                    if let (Ok(query_node), Ok(schema_node)) = (
+                        graph_schema.get_node_schema(&from),
+                        graph_schema.get_node_schema(&rel_schema.from_node)
+                    ) {
+                        query_node.table_name == schema_node.table_name
+                    } else {
+                        false
+                    }
+                };
+                
+                let to_matches = to_label_match || {
+                    if let (Ok(query_node), Ok(schema_node)) = (
+                        graph_schema.get_node_schema(&to),
+                        graph_schema.get_node_schema(&rel_schema.to_node)
+                    ) {
+                        query_node.table_name == schema_node.table_name
+                    } else {
+                        false
+                    }
+                };
 
                 log::debug!(
                     "QueryValidation: rel={}, from_label={}, to_label={}, schema.from={}, schema.to={}, from_matches={}, to_matches={}",

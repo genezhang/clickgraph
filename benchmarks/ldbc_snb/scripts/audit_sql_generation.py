@@ -78,8 +78,11 @@ class QueryAuditor:
                 result = response.json()
                 if "generated_sql" in result or "sql" in result:
                     sql = result.get("generated_sql") or result.get("sql", "")
+                    # Check for planning errors first
+                    if sql.startswith("PLANNING_ERROR"):
+                        return False, f"✗ Planning error: {sql[16:150]}"  # Skip "PLANNING_ERROR: "
                     # Check for render errors
-                    if sql.startswith("RENDER_ERROR"):
+                    elif sql.startswith("RENDER_ERROR"):
                         return False, f"✗ Render error: {sql[:80]}"
                     # Basic SQL validation
                     elif "SELECT" in sql.upper():
