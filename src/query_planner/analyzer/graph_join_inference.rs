@@ -3700,6 +3700,8 @@ mod tests {
                 ],
                 from_node: "Person".to_string(),
                 to_node: "Person".to_string(),
+                from_node_table: "Person".to_string(),
+                to_node_table: "Person".to_string(),
                 from_id: "from_id".to_string(),
                 to_id: "to_id".to_string(),
                 from_node_id_dtype: "UInt64".to_string(),
@@ -3734,6 +3736,8 @@ mod tests {
                 ],
                 from_node: "Person".to_string(),
                 to_node: "Company".to_string(),
+                from_node_table: "Person".to_string(),
+                to_node_table: "Company".to_string(),
                 from_id: "from_id".to_string(),
                 to_id: "to_id".to_string(),
                 from_node_id_dtype: "UInt64".to_string(),
@@ -4817,6 +4821,8 @@ mod tests {
                 column_names: vec![],
                 from_node: "Object".to_string(),
                 to_node: "Object".to_string(),    // Self-referencing
+                from_node_table: "fs_objects".to_string(),
+                to_node_table: "fs_objects".to_string(),
                 from_id: "parent_id".to_string(), // FK column
                 to_id: "object_id".to_string(),   // PK column
                 from_node_id_dtype: "UInt64".to_string(),
@@ -4929,6 +4935,8 @@ mod tests {
                 column_names: vec![],
                 from_node: "Order".to_string(),
                 to_node: "Customer".to_string(),  // Different table
+                from_node_table: "orders".to_string(),
+                to_node_table: "customers".to_string(),
                 from_id: "order_id".to_string(),  // Order's PK
                 to_id: "customer_id".to_string(), // FK pointing to Customer
                 from_node_id_dtype: "UInt64".to_string(),

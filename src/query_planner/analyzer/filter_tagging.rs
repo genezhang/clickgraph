@@ -2105,6 +2105,8 @@ mod tests {
                 ],
                 from_node: "Person".to_string(),
                 to_node: "Person".to_string(),
+                from_node_table: "persons".to_string(),
+                to_node_table: "persons".to_string(),
                 from_id: "from_node_id".to_string(),
                 to_id: "to_node_id".to_string(),
                 from_node_id_dtype: "UInt32".to_string(),

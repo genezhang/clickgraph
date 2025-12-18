@@ -5,8 +5,8 @@ graph_schema:
       database: brahmand
       table: customers
       node_id: customer_id
-      properties:
-        customer_id: customer_id
+      property-mappings:
+        customer_id: customer_id  # this is default and can be omitted, backwards compatibility
         email: email
         first_name: first_name
         last_name: last_name
@@ -22,7 +22,7 @@ graph_schema:
       database: brahmand
       table: products
       node_id: product_id
-      properties:
+      property_mappings:
         product_id: product_id
         name: name
         category: category
@@ -33,12 +33,12 @@ graph_schema:
         in_stock: in_stock
         created_date: created_date
 
-  relationships:
+  edges:
     - type: PURCHASED
       table: orders
       from_id: customer_id
       to_id: product_id
-      properties:
+      property_mappings:
         order_id: order_id
         quantity: quantity
         unit_price: unit_price

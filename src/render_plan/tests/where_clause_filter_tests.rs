@@ -128,6 +128,8 @@ fn setup_test_graph_schema() -> GraphSchema {
         column_names: vec!["from_id".to_string(), "to_id".to_string()],
         from_node: "User".to_string(),
         to_node: "User".to_string(),
+        from_node_table: "users".to_string(),
+        to_node_table: "users".to_string(),
         from_id: "from_id".to_string(),
         to_id: "to_id".to_string(),
         from_node_id_dtype: "UInt64".to_string(),

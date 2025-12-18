@@ -747,8 +747,10 @@ fn build_relationship_schema(
             .values()
             .flat_map(|pv| pv.get_columns())
             .collect(),
-        from_node: from_node_table,  // Use resolved table name
-        to_node: to_node_table,      // Use resolved table name
+        from_node,                          // 🟢 GRAPH: Store label from YAML
+        to_node,                            // 🟢 GRAPH: Store label from YAML
+        from_node_table: from_node_table,   // 🔵 RELATIONAL: Resolved table name
+        to_node_table: to_node_table,       // 🔵 RELATIONAL: Resolved table name
         from_id: rel_def.from_id.clone(),
         to_id: rel_def.to_id.clone(),
         from_node_id_dtype: "UInt64".to_string(),
@@ -871,8 +873,10 @@ fn build_standard_edge_schema(
             .values()
             .flat_map(|pv| pv.get_columns())
             .collect(),
-        from_node: resolved_from_node,  // Use resolved table name
-        to_node: resolved_to_node,      // Use resolved table name
+        from_node: std_edge.from_node.clone(),          // 🟢 GRAPH: Store label from YAML
+        to_node: std_edge.to_node.clone(),              // 🟢 GRAPH: Store label from YAML
+        from_node_table: resolved_from_node,            // 🔵 RELATIONAL: Resolved table name
+        to_node_table: resolved_to_node,                // 🔵 RELATIONAL: Resolved table name
         from_id: std_edge.from_id.clone(),
         to_id: std_edge.to_id.clone(),
         from_node_id_dtype: "UInt64".to_string(),
@@ -939,8 +943,10 @@ fn build_polymorphic_edge_schemas(
                 .values()
                 .flat_map(|pv| pv.get_columns())
                 .collect(),
-            from_node: from_node.clone(),
-            to_node: to_node.clone(),
+            from_node: from_node.clone(),               // 🟢 GRAPH: Label or "$any"
+            to_node: to_node.clone(),                   // 🟢 GRAPH: Label or "$any"
+            from_node_table: from_node.clone(),         // 🔵 RELATIONAL: Same as label for polymorphic
+            to_node_table: to_node.clone(),             // 🔵 RELATIONAL: Same as label for polymorphic
             from_id: poly_edge.from_id.clone(),
             to_id: poly_edge.to_id.clone(),
             from_node_id_dtype: "UInt64".to_string(),
@@ -1243,13 +1249,15 @@ impl GraphSchemaConfig {
         for rel_def in &self.graph_schema.relationships {
             let rel_schema =
                 build_relationship_schema(rel_def, &default_node_type, &nodes, &no_discovery)?;
-            // Use composite key: TYPE::FROM::TO
+            // Register with composite key: TYPE::FROM::TO
             let composite_key = GraphSchema::make_rel_composite_key(
                 &rel_def.type_name,
                 &rel_schema.from_node,
                 &rel_schema.to_node,
             );
-            relationships.insert(composite_key, rel_schema);
+            relationships.insert(composite_key, rel_schema.clone());
+            // Also register with simple key for backward compatibility
+            relationships.insert(rel_def.type_name.clone(), rel_schema);
         }
 
         // Convert edge definitions (new format) using shared builders
@@ -1257,13 +1265,15 @@ impl GraphSchemaConfig {
             match edge_def {
                 EdgeDefinition::Standard(std_edge) => {
                     let rel_schema = build_standard_edge_schema(std_edge, &nodes, &no_discovery)?;
-                    // Use composite key: TYPE::FROM::TO
+                    // Register with composite key: TYPE::FROM::TO
                     let composite_key = GraphSchema::make_rel_composite_key(
                         &std_edge.type_name,
                         &rel_schema.from_node,
                         &rel_schema.to_node,
                     );
-                    relationships.insert(composite_key, rel_schema);
+                    relationships.insert(composite_key, rel_schema.clone());
+                    // Also register with simple key for backward compatibility
+                    relationships.insert(std_edge.type_name.clone(), rel_schema);
                 }
                 EdgeDefinition::Polymorphic(poly_edge) => {
                     let poly_schemas = build_polymorphic_edge_schemas(poly_edge, &no_discovery)?;
