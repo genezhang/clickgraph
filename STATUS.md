@@ -2,6 +2,42 @@
 
 *Updated: December 19, 2025*
 
+## 🎯 Active Development (December 18-19, 2025)
+
+### Polymorphic Relationship Resolution - Phase 2 Complete
+
+**Quick Wins**:
+- ✅ Test harness parameter fix: 14→23 LDBC queries passing (+64% improvement!)
+- ✅ Polymorphic resolution architecture complete
+- ✅ Simple queries working: `Person_likes_Message` correctly resolved
+- ✅ Property access working: `like.creationDate` from correct table
+
+**What Works Now**:
+```cypher
+# ✅ Simple queries with relationship properties
+MATCH (p:Person {id: 1})<-[:HAS_CREATOR]-(message:Message)<-[like:LIKES]-(liker:Person) 
+RETURN like.creationDate 
+# Generates: JOIN Person_likes_Message AS like (correct!)
+```
+
+**Remaining Issue**:
+WITH clause CTEs still use lowercase aliases instead of resolved table names:
+```cypher
+# ❌ WITH clause fails
+MATCH (p:Person)<-[:HAS_CREATOR]-(message:Message)<-[like:LIKES]-(liker:Person) 
+WITH liker, like.creationDate AS likeTime
+RETURN liker.firstName, likeTime
+# CTE generates: JOIN likes AS like (wrong - should be Person_likes_Message)
+```
+
+**Root Cause**: CTE generation doesn't use ViewScan's `source_table` field for JOINs.
+
+**Status**: 90% complete. Simple queries work, CTEs need JOIN generator fix (1-2 hours).
+
+**Impact**: Will fix 6 remaining LDBC queries (complex-7, complex-8, complex-10, complex-11, short-7, bi-5), bringing total to 29/41 (71%).
+
+---
+
 ## ✅ Polymorphic Relationship Support Complete (December 19, 2025)
 
 ### Objective
