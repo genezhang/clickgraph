@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-### � Features
+### 🚀 Features
 - **AI Assistant Integration (MCP)** - Zero-configuration support for Model Context Protocol (December 17, 2025)
   - ClickGraph's Bolt protocol is fully compatible with Neo4j's MCP server
   - Use with Claude Desktop and other AI assistants for natural language graph queries
@@ -8,7 +8,21 @@
   - Documentation: README.md and docs/wiki/AI-Assistant-Integration-MCP.md
   - Test scripts: `scripts/test/test_mcp_compatibility.sh`, `scripts/test/test_neo4j_mcp_server.sh`
 
-### �🐛 Bug Fixes
+### 🐛 Bug Fixes
+- **Database Prefix for Base Table JOINs** - Fixed missing database qualifiers after WITH clause (December 19, 2025)
+  - **Issue**: Base tables referenced in JOINs after WITH clause were missing database prefixes
+  - **Error**: "Unknown table expression identifier 'Place'" when tables are in non-default database
+  - **Example**: Generated `INNER JOIN Place` instead of `INNER JOIN ldbc.Place`
+  - **Fix**: Added logic to distinguish CTEs (no prefix) from base tables (needs prefix)
+    - New helper functions: `get_table_name_with_prefix()`, `get_rel_table_name_with_prefix()`
+    - Checks `plan_ctx.get_table_ctx_from_alias_opt()` to determine table type
+    - CTEs remain unprefixed (ClickHouse requirement): `with_friend_cte_1`
+    - Base tables get database qualification: `ldbc.Place`, `default.Person`
+  - **Impact**: Traditional and MixedAccess JOIN strategies (5 JOIN creation sites fixed)
+  - **Files**: `src/query_planner/analyzer/graph_join_inference.rs`
+  - **Tests**: 650/650 passing (100%) - Updated all test assertions to expect qualified names
+  - **Resolves**: KNOWN_ISSUES.md Issue #2
+
 - **Operator Precedence**: Fixed critical parser bug where arithmetic operators (+, -, *, /) had same precedence as comparison operators (>, <, =), causing expressions like `m.id > 1 + 2` to parse as `(m.id > 1) AND 2` instead of `m.id > (1 + 2)`. Now implements correct precedence: multiplicative > additive > comparison > logical AND > logical OR.
 - **BI17 Temporal Arithmetic**: Unblocked - `datetime() + duration()` now parses correctly, enabling temporal calculations in WHERE clauses.
 
