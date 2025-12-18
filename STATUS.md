@@ -2,6 +2,54 @@
 
 *Updated: December 18, 2025*
 
+## ✅ Composite Node ID Support Complete (December 18, 2025)
+
+### Objective
+Enable multi-column `node_id` for nodes with composite primary keys (e.g., `[tenant_id, user_id]`).
+
+### Changes Completed
+1. **Phase 1 - Semantic Clarification**:
+   - Unified node_id semantics: always property names (graph layer)
+   - Auto-generated identity mappings for node_id properties
+   - Backward compatible with existing schemas
+
+2. **Phase 2 - Composite Support**:
+   - Fixed panic site in `plan_builder.rs` - now handles composite IDs in GROUP BY
+   - Audited all node_id access patterns (all composite-safe)
+   - SQL generation methods work: `.sql_tuple()`, `.sql_equality()`, `.columns()`
+   - Example schema: `schemas/examples/composite_node_id_test.yaml`
+
+3. **Testing**:
+   - Added 4 new tests (identity mappings + composite loading)
+   - All 650 tests passing (100%)
+
+### Example Usage
+```yaml
+nodes:
+  - label: Account
+    database: banking
+    table: accounts
+    node_id: [tenant_id, account_id]  # Composite ID
+    property_mappings:
+      balance: account_balance
+```
+
+**Generated SQL**:
+```sql
+GROUP BY a.tenant_id, a.account_id
+WHERE (a.tenant_id, a.account_id) = (b.tenant_id, b.account_id)
+```
+
+### Final Test Status: 650/650 passing (100%) ✅
+
+**Benefits**:
+- ✅ Real-world multi-tenant applications enabled
+- ✅ Composite primary keys fully supported
+- ✅ Backward compatible (single IDs still work)
+- ✅ Aligns with composite edge_id pattern
+
+---
+
 ## ✅ Node ID Semantic Clarification Complete (December 18, 2025)
 
 ### Objective

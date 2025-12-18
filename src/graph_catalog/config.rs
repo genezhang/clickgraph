@@ -2356,3 +2356,77 @@ mod node_id_identity_mapping_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod composite_node_id_tests {
+    use super::*;
+
+    #[test]
+    fn test_composite_node_id_schema_loading() {
+        // Test loading a schema with composite node_id from YAML
+        let yaml = r#"
+name: composite_test
+version: "1.0"
+graph_schema:
+  nodes:
+    - label: Account
+      database: test
+      table: accounts
+      node_id: [tenant_id, account_id]
+      property_mappings:
+        balance: account_balance
+  relationships:
+    - type: OWNS
+      database: test
+      table: ownership
+      from_id: owner_id
+      to_id: account_id
+      from_node: Account
+      to_node: Account
+      property_mappings: {}
+"#;
+
+        let config = GraphSchemaConfig::from_yaml_str(yaml)
+            .expect("Failed to parse composite node_id schema");
+
+        assert_eq!(config.graph_schema.nodes.len(), 1);
+        let node_def = &config.graph_schema.nodes[0];
+        
+        // Verify composite node_id was parsed
+        assert!(node_def.node_id.is_composite());
+        assert_eq!(node_def.node_id.columns(), vec!["tenant_id", "account_id"]);
+
+        // Convert to GraphSchema
+        let schema = config.to_graph_schema()
+            .expect("Failed to convert composite schema to GraphSchema");
+
+        let node_schema = schema.get_node_schema_opt("Account")
+            .expect("Account node should exist");
+
+        // Verify NodeIdSchema has composite ID
+        assert!(node_schema.node_id.is_composite());
+        assert_eq!(node_schema.node_id.columns(), vec!["tenant_id", "account_id"]);
+
+        // Verify identity mappings were auto-generated for both ID columns
+        assert!(node_schema.property_mappings.contains_key("tenant_id"));
+        assert!(node_schema.property_mappings.contains_key("account_id"));
+        assert_eq!(
+            node_schema.property_mappings["tenant_id"].to_sql_column_only(),
+            "tenant_id"
+        );
+        assert_eq!(
+            node_schema.property_mappings["account_id"].to_sql_column_only(),
+            "account_id"
+        );
+
+        // Verify SQL generation methods work
+        assert_eq!(
+            node_schema.node_id.sql_tuple("a"),
+            "(a.tenant_id, a.account_id)"
+        );
+        assert_eq!(
+            node_schema.node_id.sql_equality("a", "b"),
+            "(a.tenant_id, a.account_id) = (b.tenant_id, b.account_id)"
+        );
+    }
+}

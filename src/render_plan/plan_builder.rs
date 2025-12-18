@@ -551,12 +551,27 @@ fn expand_table_alias_to_group_by_id_only(
     if let Some(label) = find_label_for_alias(plan, alias) {
         log::info!("🔧 expand_table_alias_to_group_by_id_only: Found label '{}' for alias '{}'", label, alias);
         if let Some(node_schema) = schema.get_node_schema_opt(&label) {
-            let id_col = node_schema.node_id.column().to_string();
-            log::info!("🔧 expand_table_alias_to_group_by_id_only: Using schema node_id column '{}' for alias '{}'", id_col, alias);
-            return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
-                table_alias: TableAlias(alias.to_string()),
-                column: Column(PropertyValue::Column(id_col)),
-            })];
+            // Handle both single and composite node_id
+            if node_schema.node_id.is_composite() {
+                // For composite IDs, return multiple PropertyAccessExp (one per column)
+                log::info!("🔧 expand_table_alias_to_group_by_id_only: Using composite node_id {:?} for alias '{}'", 
+                    node_schema.node_id.columns(), alias);
+                return node_schema.node_id.columns()
+                    .iter()
+                    .map(|col| RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(alias.to_string()),
+                        column: Column(PropertyValue::Column(col.to_string())),
+                    }))
+                    .collect();
+            } else {
+                // Single ID column
+                let id_col = node_schema.node_id.columns()[0];
+                log::info!("🔧 expand_table_alias_to_group_by_id_only: Using schema node_id column '{}' for alias '{}'", id_col, alias);
+                return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(alias.to_string()),
+                    column: Column(PropertyValue::Column(id_col.to_string())),
+                })];
+            }
         } else {
             log::warn!("⚠️ expand_table_alias_to_group_by_id_only: Label '{}' not found in schema", label);
         }

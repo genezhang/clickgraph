@@ -1,0 +1,29 @@
+name: composite_node_id_test
+version: "1.0"
+description: Test schema for composite node IDs
+
+nodes:
+  - label: Account
+    database: test
+    table: accounts
+    node_id: [tenant_id, account_id]  # Composite ID
+    property_mappings:
+      balance: account_balance
+      name: account_name
+
+  - label: Transaction
+    database: test
+    table: transactions
+    node_id: transaction_id  # Single ID for comparison
+    property_mappings:
+      amount: transaction_amount
+
+relationships:
+  - type: OWNS
+    database: test
+    table: account_ownership
+    from_id: tenant_id
+    to_id: account_id
+    from_node: Account
+    to_node: Account
+    property_mappings: {}
