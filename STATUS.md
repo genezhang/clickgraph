@@ -1,6 +1,58 @@
 # ClickGraph Status
 
-*Updated: December 18, 2025*
+*Updated: December 22, 2025*
+
+## 🔧 In Progress: RelationshipSchema Refactoring (December 22, 2025)
+
+### Objective
+Separate graph labels from relational table names in `RelationshipSchema` to fix VLP + WITH label corruption bug and improve code clarity.
+
+### Changes Made
+1. **Schema Structure** (✅ Complete):
+   - Added `from_node_table` and `to_node_table` fields to `RelationshipSchema`
+   - Separated graph concepts (labels) from relational concepts (table names)
+   - Updated 45+ test constructors across 14 files
+
+2. **Compilation** (✅ Complete):
+   - Fixed 24 compilation errors
+   - Updated AST field usage: `match_clause` → `match_clauses`
+   - Added `cte_references` field to GraphRel constructors
+   - Updated function signatures with `node_alias` parameter
+
+3. **Multi-Relationship Query Fix** (✅ Complete):
+   - Fixed `MissingTableInfo` error in `render_plan/plan_builder.rs`
+   - Added fallback to lookup table names from relationship schema
+   - Queries like `MATCH (c:Customer)-[:PURCHASED|PLACED_ORDER]->(target)` now work
+
+### Test Status: 639/649 passing (98.5%)
+
+**Passing**:
+- ✅ Core RelationshipSchema refactoring
+- ✅ Multi-relationship type queries
+- ✅ All render_plan tests
+- ✅ 634/639 query_planner tests
+
+**Remaining Issues** (8 tests):
+1. **5 graph_join_inference tests** - Database prefix inconsistency
+   - Expected: `"default.FOLLOWS"` 
+   - Actual: `"FOLLOWS"`
+   - Cause: Test Scan nodes use unqualified names, but JOINs expect qualified names
+   
+2. **2 match_clause tests**:
+   - `test_convert_properties_to_operator_application` - needs PropertyAccessExp expectations
+   - `test_traverse_connected_pattern_disconnected_error` - assertion failure
+   
+3. **1 parser test**:
+   - `test_parse_unary_expression_not` - unary expression parsing issue
+
+### Next Steps
+1. Fix database qualification in graph_join_inference JOIN creation
+2. Update match_clause test expectations for PropertyAccessExp
+3. Investigate parser test failure
+4. Verify 100% test pass rate
+5. Commit and document
+
+---
 
 ## 🎉 Recent Fixes (December 18, 2025)
 
