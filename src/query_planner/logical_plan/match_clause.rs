@@ -2276,8 +2276,14 @@ mod tests {
                 assert_eq!(op_app.operator, Operator::Equal);
                 assert_eq!(op_app.operands.len(), 2);
                 match &op_app.operands[0] {
-                    LogicalExpr::Column(col) => assert_eq!(col.0, "name"),
-                    _ => panic!("Expected Column"),
+                    LogicalExpr::PropertyAccessExp(prop) => {
+                        assert_eq!(prop.table_alias.0, "n");
+                        match &prop.column {
+                            PropertyValue::Column(col) => assert_eq!(col, "name"),
+                            _ => panic!("Expected Column property"),
+                        }
+                    }
+                    _ => panic!("Expected PropertyAccessExp"),
                 }
                 match &op_app.operands[1] {
                     LogicalExpr::Literal(Literal::String(s)) => assert_eq!(s, "John"),

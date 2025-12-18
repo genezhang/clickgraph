@@ -6845,8 +6845,52 @@ impl RenderPlanBuilder for LogicalPlan {
                         .ok_or_else(|| RenderBuildError::MissingTableInfo("node table in extract_joins".to_string()))
                 }
 
-                let start_table = get_table_name_or_cte(&graph_rel.left)?;
-                let end_table = get_table_name_or_cte(&graph_rel.right)?;
+                // Helper function to get table name from relationship schema
+                // Used when target node doesn't have a specific label (e.g., in multi-relationship queries)
+                fn get_table_from_rel_schema(
+                    labels: &Option<Vec<String>>,
+                    is_from_node: bool,
+                ) -> Option<String> {
+                    if let Some(label_list) = labels {
+                        if !label_list.is_empty() {
+                            // Use the first relationship type to get the table name
+                            // For multi-relationship queries, all relationships should connect to the same table
+                            // (or the query should use denormalized edges)
+                            if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                                if let Ok(schemas) = schemas_lock.try_read() {
+                                    // Try "default" schema first, then empty string
+                                    for schema_name in ["default", ""] {
+                                        if let Some(schema) = schemas.get(schema_name) {
+                                            if let Ok(rel_schema) = schema.get_rel_schema(&label_list[0]) {
+                                                let table_name = if is_from_node {
+                                                    &rel_schema.from_node_table
+                                                } else {
+                                                    &rel_schema.to_node_table
+                                                };
+                                                return Some(format!("{}.{}", rel_schema.database, table_name));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None
+                }
+
+                let start_table = get_table_name_or_cte(&graph_rel.left)
+                    .or_else(|_| {
+                        // Fallback: try to get from relationship schema
+                        get_table_from_rel_schema(&graph_rel.labels, true)
+                            .ok_or_else(|| RenderBuildError::MissingTableInfo("start node table in extract_joins".to_string()))
+                    })?;
+                
+                let end_table = get_table_name_or_cte(&graph_rel.right)
+                    .or_else(|_| {
+                        // Fallback: try to get from relationship schema
+                        get_table_from_rel_schema(&graph_rel.labels, false)
+                            .ok_or_else(|| RenderBuildError::MissingTableInfo("end node table in extract_joins".to_string()))
+                    })?;
 
                 // Also extract labels for schema filter generation (optional for CTEs)
                 let start_label = extract_node_label_from_viewscan(&graph_rel.left);
