@@ -92,159 +92,9 @@ fn infer_node_label_from_schema(schema: &GraphSchema) -> LogicalPlanResult<Optio
 /// - Schema: FLIGHT has from_node=Airport, to_node=Airport
 /// - Result: Both nodes inferred as Airport
 ///
-/// For polymorphic edges (multiple possible types), returns the list of possible labels:
-/// - Query: `(f:Folder)-[:CONTAINS]->(child)`
-/// - Schema: CONTAINS has to_label_values=[Folder, File]
-/// - Result: child could be Folder or File (needs UNION expansion)
-///
-/// Returns (start_label, end_label, start_possible_labels, end_possible_labels)
-fn infer_node_labels_from_relationship(
-    start_label: Option<String>,
-    end_label: Option<String>,
-    rel_labels: &Option<Vec<String>>,
-    direction: &ast::Direction,
-    schema: &GraphSchema,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<Vec<String>>,
-    Option<Vec<String>>,
-) {
-    // If both labels are already specified, nothing to infer
-    if start_label.is_some() && end_label.is_some() {
-        return (start_label, end_label, None, None);
-    }
-
-    // If no relationship type specified, can't infer node labels
-    let rel_types = match rel_labels {
-        Some(types) if !types.is_empty() => types,
-        _ => return (start_label, end_label, None, None),
-    };
-
-    // For now, only handle single relationship type
-    // TODO: For multiple types like [:FOLLOWS|FRIENDS], find common node types
-    if rel_types.len() != 1 {
-        log::debug!(
-            "Label inference: Multiple relationship types {:?}, skipping inference",
-            rel_types
-        );
-        return (start_label, end_label, None, None);
-    }
-
-    let rel_type = &rel_types[0];
-    let rel_schema = match schema.get_rel_schema(rel_type) {
-        Ok(s) => s,
-        Err(_) => {
-            log::debug!(
-                "Label inference: Relationship '{}' not found in schema",
-                rel_type
-            );
-            return (start_label, end_label, None, None);
-        }
-    };
-
-    // Determine which schema fields apply based on direction
-    // Outgoing: start=from, end=to
-    // Incoming: start=to, end=from
-    let (from_node, to_node, from_values, to_values) = match direction {
-        ast::Direction::Outgoing => (
-            &rel_schema.from_node,
-            &rel_schema.to_node,
-            &rel_schema.from_label_values,
-            &rel_schema.to_label_values,
-        ),
-        ast::Direction::Incoming => (
-            &rel_schema.to_node,   // Incoming: start is the "to" side
-            &rel_schema.from_node, // Incoming: end is the "from" side
-            &rel_schema.to_label_values,
-            &rel_schema.from_label_values,
-        ),
-        ast::Direction::Either => {
-            // For undirected, both nodes could be either from or to
-            // Take the union of possible types (conservative approach)
-            log::debug!("Label inference: Undirected relationship, using from_node for both");
-            (
-                &rel_schema.from_node,
-                &rel_schema.to_node,
-                &rel_schema.from_label_values,
-                &rel_schema.to_label_values,
-            )
-        }
-    };
-
-    let mut inferred_start = start_label.clone();
-    let mut inferred_end = end_label.clone();
-    let mut start_possible: Option<Vec<String>> = None;
-    let mut end_possible: Option<Vec<String>> = None;
-
-    // Infer start node label if missing
-    if start_label.is_none() {
-        if let Some(values) = from_values {
-            // Polymorphic: multiple possible types
-            if values.len() == 1 {
-                inferred_start = Some(values[0].clone());
-                log::info!(
-                    "Label inference: Inferred start node label '{}' from relationship '{}'",
-                    values[0],
-                    rel_type
-                );
-            } else if !values.is_empty() {
-                // Multiple types - use first and record alternatives for potential UNION
-                inferred_start = Some(values[0].clone());
-                start_possible = Some(values.clone());
-                log::info!(
-                    "Label inference: Start node could be {:?} from relationship '{}', using '{}'",
-                    values,
-                    rel_type,
-                    values[0]
-                );
-            }
-        } else {
-            // Non-polymorphic: single fixed type
-            inferred_start = Some(from_node.clone());
-            log::info!(
-                "Label inference: Inferred start node label '{}' from relationship '{}'",
-                from_node,
-                rel_type
-            );
-        }
-    }
-
-    // Infer end node label if missing
-    if end_label.is_none() {
-        if let Some(values) = to_values {
-            // Polymorphic: multiple possible types
-            if values.len() == 1 {
-                inferred_end = Some(values[0].clone());
-                log::info!(
-                    "Label inference: Inferred end node label '{}' from relationship '{}'",
-                    values[0],
-                    rel_type
-                );
-            } else if !values.is_empty() {
-                // Multiple types - use first and record alternatives for potential UNION
-                inferred_end = Some(values[0].clone());
-                end_possible = Some(values.clone());
-                log::info!(
-                    "Label inference: End node could be {:?} from relationship '{}', using '{}'",
-                    values,
-                    rel_type,
-                    values[0]
-                );
-            }
-        } else {
-            // Non-polymorphic: single fixed type
-            inferred_end = Some(to_node.clone());
-            log::info!(
-                "Label inference: Inferred end node label '{}' from relationship '{}'",
-                to_node,
-                rel_type
-            );
-        }
-    }
-
-    (inferred_start, inferred_end, start_possible, end_possible)
-}
+// REMOVED: Old parsing-time label inference (now handled by TypeInference analyzer pass)
+// The TypeInference pass runs after parsing and provides more robust inference
+// that works across WITH boundaries and handles both node labels and edge types.
 
 /// Infer relationship type from typed node labels when edge is untyped.
 ///
@@ -1455,45 +1305,22 @@ fn traverse_connected_pattern_with_mode<'a>(
         };
 
         // === LABEL INFERENCE ===
-        // If nodes are unlabeled but relationship type is known, try to infer node labels from schema
-        let (inferred_start_label, inferred_end_label, start_possible_labels, end_possible_labels) =
-            infer_node_labels_from_relationship(
-                start_node_label.clone(),
-                end_node_label.clone(),
-                &rel_labels,
-                &rel.direction,
-                plan_ctx.schema(),
-            );
-
-        // Use inferred labels (single type inference)
-        let start_node_label = inferred_start_label;
-        let end_node_label = inferred_end_label;
-
-        // DEBUG: Log what we got from inference
-        log::info!(
-            ">>> After label inference: start='{}' ({}), end='{}' ({})",
+        // NOTE: Label and edge type inference is now handled by the TypeInference analyzer pass
+        // which runs after parsing. This provides more robust inference that works across
+        // WITH boundaries and handles both node labels AND edge types.
+        // The labels in start_node_label/end_node_label come from AST parsing or will be
+        // inferred by TypeInference pass.
+        
+        log::debug!(
+            "Pattern processing: start='{}' ({}), end='{}' ({})",
             start_node_alias,
             start_node_label.as_ref().map(|s| s.as_str()).unwrap_or("None"),
             end_node_alias,
             end_node_label.as_ref().map(|s| s.as_str()).unwrap_or("None")
         );
 
-        // TODO: Handle polymorphic inference (multiple possible types)
-        // For now, log a warning if we have multiple possible types
-        if let Some(ref possible) = start_possible_labels {
-            log::warn!(
-                "Label inference: Start node has multiple possible types {:?}, using first",
-                possible
-            );
-            // Could generate UNION here for polymorphic support
-        }
-        if let Some(ref possible) = end_possible_labels {
-            log::warn!(
-                "Label inference: End node has multiple possible types {:?}, using first",
-                possible
-            );
-            // Could generate UNION here for polymorphic support
-        }
+        // Polymorphic inference removed - TypeInference pass handles this
+        // (start_possible_labels and end_possible_labels were used for UNION generation)
 
         crate::debug_print!(
             "│ Relationship: alias='{}', labels={:?}, direction={:?}",
