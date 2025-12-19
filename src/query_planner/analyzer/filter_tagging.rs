@@ -482,6 +482,21 @@ impl FilterTagging {
                     property_access.table_alias.0,
                     property_access.column.raw()
                 );
+                
+                // DEBUG: Always write to file to see what properties we're processing
+                if property_access.table_alias.0 == "person" || property_access.table_alias.0 == "post" {
+                    use std::io::Write;
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/clickgraph_debug_labels.txt")
+                    {
+                        writeln!(file, "\n=== FilterTagging processing {}.{} ===",
+                                 property_access.table_alias.0,
+                                 property_access.column.raw()).ok();
+                        writeln!(file, "About to call get_table_ctx...").ok();
+                    }
+                }
 
                 // Check if this is a temporal property access (e.g., birthday.year, birthday.month)
                 // These should be converted to function calls without table lookup
@@ -521,6 +536,29 @@ impl FilterTagging {
                 let table_ctx = plan_ctx
                     .get_table_ctx(&property_access.table_alias.0)
                     .map_err(|e| {
+                        // DEBUG: Write to file when table_ctx lookup fails
+                        use std::io::Write;
+                        if let Ok(mut file) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("/tmp/clickgraph_debug_labels.txt")
+                        {
+                            writeln!(file, "\n=== FilterTagging get_table_ctx Failed ===").ok();
+                            writeln!(file, "Looking for alias: '{}'", property_access.table_alias.0).ok();
+                            writeln!(file, "Error: {:?}", e).ok();
+                            writeln!(file, "Available aliases in plan_ctx:").ok();
+                            for (alias, ctx) in plan_ctx.iter_table_contexts() {
+                                writeln!(
+                                    file,
+                                    "  - '{}': is_rel={}, label={:?}",
+                                    alias,
+                                    ctx.is_relation(),
+                                    ctx.get_label_opt()
+                                ).ok();
+                            }
+                            writeln!(file, "=== End ===\n").ok();
+                        }
+                        
                         crate::debug_print!(
                             "FilterTagging: ERROR - Failed to get table_ctx for alias '{}': {:?}",
                             property_access.table_alias.0,
@@ -540,6 +578,28 @@ impl FilterTagging {
 
                 // Get the label for this table
                 let label = table_ctx.get_label_opt().ok_or_else(|| {
+                    // DEBUG: Write debug info to file
+                    use std::io::Write;
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/clickgraph_debug_labels.txt")
+                    {
+                        writeln!(file, "\n=== FilterTagging Label Lookup Failed ===").ok();
+                        writeln!(file, "Looking for: '{}'", property_access.table_alias.0).ok();
+                        writeln!(file, "Available aliases in plan_ctx:").ok();
+                        for (alias, ctx) in plan_ctx.iter_table_contexts() {
+                            writeln!(
+                                file,
+                                "  - '{}': is_rel={}, label={:?}",
+                                alias,
+                                ctx.is_relation(),
+                                ctx.get_label_opt()
+                            ).ok();
+                        }
+                        writeln!(file, "=== End ===\n").ok();
+                    }
+                    
                     crate::debug_print!(
                         "FilterTagging: ERROR - No label found for alias '{}', is_relation={}",
                         property_access.table_alias.0,

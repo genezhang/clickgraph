@@ -1331,12 +1331,27 @@ fn traverse_connected_pattern_with_mode<'a>(
         crate::debug_print!("┌─ Processing connected_pattern #{}", pattern_idx);
 
         let start_node_ref = connected_pattern.start_node.borrow();
-        let start_node_label = start_node_ref.label.map(|val| val.to_string());
+        let start_node_label_from_ast = start_node_ref.label.map(|val| val.to_string());
         // Use pre-assigned alias to ensure shared nodes get the same alias
         let start_node_alias = node_alias_map
             .get(&(connected_pattern.start_node.as_ptr() as usize))
             .cloned()
             .unwrap_or_else(generate_id);
+        
+        // CRITICAL FIX: If node already exists in plan_ctx (from previous pattern),
+        // use its label from TableCtx instead of AST label (which may be None)
+        // This fixes multi-pattern MATCH like: MATCH (a)-[:R]->(b:B), (b)-[:S]->(c)
+        // where second pattern needs to know b's label from first pattern
+        let start_node_label = if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&start_node_alias) {
+            if let Some(label) = table_ctx.get_label_opt() {
+                log::info!(">>> Found existing '{}' in plan_ctx with label: {}", start_node_alias, label);
+                Some(label)
+            } else {
+                start_node_label_from_ast
+            }
+        } else {
+            start_node_label_from_ast
+        };
 
         crate::debug_print!(
             "│ Start node: alias='{}', label={:?}",
@@ -1357,7 +1372,19 @@ fn traverse_connected_pattern_with_mode<'a>(
             .get(&(connected_pattern.end_node.as_ptr() as usize))
             .cloned()
             .unwrap_or_else(generate_id);
-        let end_node_label = end_node_ref.label.map(|val| val.to_string());
+        let end_node_label_from_ast = end_node_ref.label.map(|val| val.to_string());
+        
+        // CRITICAL FIX: Same as start_node - check plan_ctx for existing label
+        let end_node_label = if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
+            if let Some(label) = table_ctx.get_label_opt() {
+                log::info!(">>> Found existing '{}' in plan_ctx with label: {}", end_node_alias, label);
+                Some(label)
+            } else {
+                end_node_label_from_ast
+            }
+        } else {
+            end_node_label_from_ast
+        };
 
         let rel = &connected_pattern.relationship;
         let rel_alias = if let Some(alias) = rel.name {
@@ -1435,6 +1462,15 @@ fn traverse_connected_pattern_with_mode<'a>(
         // Use inferred labels (single type inference)
         let start_node_label = inferred_start_label;
         let end_node_label = inferred_end_label;
+
+        // DEBUG: Log what we got from inference
+        log::info!(
+            ">>> After label inference: start='{}' ({}), end='{}' ({})",
+            start_node_alias,
+            start_node_label.as_ref().map(|s| s.as_str()).unwrap_or("None"),
+            end_node_alias,
+            end_node_label.as_ref().map(|s| s.as_str()).unwrap_or("None")
+        );
 
         // TODO: Handle polymorphic inference (multiple possible types)
         // For now, log a warning if we have multiple possible types
@@ -1703,8 +1739,12 @@ fn traverse_connected_pattern_with_mode<'a>(
         }
         // if end alias already present in ctx map, it means the current nested connected pattern's end node will be connecting at right side plan and start node will be at the left
         else if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
+            log::info!(">>> Found existing TableCtx for '{}', updating with label: {:?}", end_node_alias, end_node_label);
             if end_node_label.is_some() {
                 table_ctx.set_labels(end_node_label.clone().map(|l| vec![l]));
+                log::info!(">>> Updated '{}' with label: {}", end_node_alias, end_node_label.as_ref().unwrap());
+            } else {
+                log::warn!(">>> end_node_label is None for '{}', cannot update TableCtx!", end_node_alias);
             }
             if !end_node_props.is_empty() {
                 table_ctx.append_properties(end_node_props);
