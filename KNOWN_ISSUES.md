@@ -21,37 +21,49 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Active Issues
 
-### 1. LDBC Query Failures (30/41 queries remaining)
+### 1. LDBC Query Failures - Investigation Complete (December 19, 2025)
 
-**Status**: 🔧 IN PROGRESS  
+**Status**: 📋 ANALYZED  
 **Severity**: MEDIUM  
-**Current**: 11/41 (27%) LDBC queries passing  
+**Current**: 29/41 (70%) LDBC queries passing ✅ ALL SHORT QUERIES PASS!
 
-**Passing Queries**:
-- **short**: short-1, short-3 (2/7 = 29%)
-- **complex**: complex-5, complex-6, complex-14 (3/14 = 21%)
-- **bi**: bi-1, bi-12 (2/20 = 10%)
+**Failure Analysis (12 remaining)**:
 
-**Common Failure Patterns**:
-1. **Parameter substitution errors** (short-4, short-5, short-6):
-   - Missing required parameters like `messageId`
-   - May require view parameter support
+#### 1.1 UNWIND Variable Scope (3 queries - 25%)
+**Queries**: complex-7, complex-9, bi-16  
+**Error**: "Property 'X' not found on node 'Y'"  
+**Root Cause**: UNWIND creates new variables not registered in plan_ctx
 
-2. **"SQL doesn't contain SELECT"** (short-2, short-7, many complex/bi queries):
-   - Query planning errors before SQL generation
-   - Multiple root causes likely (need investigation)
+**Example**:
+```cypher
+WITH collect(friend) as friends
+UNWIND friends as friend         # Creates new 'friend' variable
+MATCH (friend)<-[:HAS_CREATOR]-(m)
+RETURN friend.id                  # ❌ Fails: 'friend' not in plan_ctx
+```
 
-3. **Complex patterns not yet supported**:
-   - Multi-hop variable-length paths with filters
-   - Nested aggregations  
-   - Complex temporal filters
+**Reproducible**: ✅ `MATCH (u:User)-[:FOLLOWS]->(f:User) WITH collect(f) as friends UNWIND friends as friend RETURN friend.name`  
+**Complexity**: HIGH - Requires variable_resolver refactoring  
+**Location**: `src/query_planner/analyzer/variable_resolver.rs`, plan_ctx tracking
+
+#### 1.2 WITH Clause Expression Aliases (2 queries - 17%)
+**Queries**: bi-8, bi-14  
+**Error**: "Expression without alias"  
+**Status**: Requires LDBC database to verify (queries appear to have aliases)
+
+#### 1.3 Unknown Parser Crashes (7 queries - 58%)
+**Queries**: complex-13, bi-10, bi-13, bi-15, bi-17, bi-19, bi-20  
+**Error**: "SQL doesn't contain SELECT"  
+**Status**: Requires LDBC database and individual query inspection
+
+**Blocker**: LDBC schema requires `ldbc` database (not available in current setup)
 
 **Next Steps**:
-1. Investigate short-2, short-7 failures (simplest to debug)
-2. Add parameter substitution support for view-based queries
-3. Systematic review of complex query patterns
+1. **UNWIND variable tracking** - Architectural improvement needed
+2. **LDBC database setup** - Required for remaining 9 queries
+3. Focus on other high-value features until LDBC environment available
 
-**Progress Tracking**: See `benchmarks/ldbc_snb/scripts/audit_sql_generation.py`
+**Progress Tracking**: `benchmarks/ldbc_snb/scripts/audit_sql_generation.py`
 
 ---
 
