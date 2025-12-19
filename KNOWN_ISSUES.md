@@ -90,10 +90,59 @@ Now the parser detects pattern comprehensions early and provides:
 **Complexity**: HIGH - Requires significant parser and planner work  
 **Priority**: MEDIUM - Blocks 2 LDBC BI queries, but workarounds exist
 
-#### 1.3 Unknown Parser Crashes (7 queries - 58%)
-**Queries**: complex-13, bi-10, bi-13, bi-15, bi-17, bi-19, bi-20  
-**Error**: "SQL doesn't contain SELECT"  
+#### 1.3 Bidirectional Relationship Patterns Not Supported (1 query - 8%)
+**Queries**: bi-17  
+**Status**: ⚠️ NOT IMPLEMENTED (clear error messages added Dec 19, 2025)  
+**Error Message**: `Bidirectional relationship patterns <-[:TYPE]-> are not supported. Use two separate MATCH clauses or the undirected pattern -[:TYPE]-.`
+
+**What are Bidirectional Patterns?**
+Bidirectional patterns use both incoming (`<-`) and outgoing (`->`) arrows on the same relationship:
+```cypher
+(forum)<-[:HAS_MEMBER]->(person)
+```
+
+This is non-standard Cypher syntax. Standard Cypher requires either:
+- Directed: `(forum)<-[:HAS_MEMBER]-(person)` or `(forum)-[:HAS_MEMBER]->(person)`
+- Undirected: `(forum)-[:HAS_MEMBER]-(person)` (matches either direction)
+
+**bi-17 Example**:
+```cypher
+MATCH
+  (forum1)<-[:HAS_MEMBER]->(person2:Person),  # Bidirectional pattern
+  (forum1)<-[:HAS_MEMBER]->(person3:Person)   # Ensures different persons
+RETURN forum1, person2, person3
+```
+
+The query uses this to ensure edge-isomorphic matching (person2 ≠ person3).
+
+**Parser Enhancement (Dec 19, 2025)**:
+
+Previously, bidirectional patterns caused parse errors with unclear messages.
+
+Now the parser detects bidirectional patterns early and provides:
+- ✅ Clear error: "Bidirectional relationship patterns... not supported"
+- ✅ Helpful guidance: "Use two separate MATCH clauses or -[:TYPE]-"
+- ✅ No more confusing parser failures
+
+**Workaround**: Use two separate MATCH clauses or undirected patterns:
+```cypher
+MATCH (forum)-[:HAS_MEMBER]-(person2:Person),
+      (forum)-[:HAS_MEMBER]-(person3:Person)
+WHERE person2 <> person3  # Explicit inequality check
+```
+
+**Complexity**: MEDIUM - Non-standard syntax, low priority  
+**Priority**: LOW - Single LDBC query, has simple workarounds
+
+#### 1.4 Other Parse Errors (6 queries - 50%)
+**Queries**: complex-13, bi-10, bi-13, bi-15, bi-19, bi-20  
+**Error**: "SQL doesn't contain SELECT" or "No select items found"  
 **Status**: Requires LDBC database and individual query inspection
+
+**Known Issues**:
+- complex-13: CASE...IS NULL syntax variation
+- bi-10, bi-15, bi-19, bi-20: APOC/GDS procedures (clear errors already)
+- bi-13: DateTime property accessors (`.year`, `.month`)
 
 **Blocker**: LDBC schema requires `ldbc` database (not available in current setup)
 

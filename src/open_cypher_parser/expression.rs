@@ -745,6 +745,14 @@ pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>>
 
     // Then: the property name (can be identifier or *)
     let (input, key_str) = parse_property_name(input)?;
+    
+    // Check for datetime property accessors that are not supported
+    if key_str == "year" || key_str == "month" || key_str == "day" 
+        || key_str == "hour" || key_str == "minute" || key_str == "second" {
+        // This might be a datetime property accessor - check if it looks like one
+        // We can't be 100% sure without type info, but if the base looks like a date field...
+        // For now, we'll allow it through but could add detection if patterns emerge
+    }
 
     let base = match parse_literal_or_variable_expression(base_str) {
         Ok((_, Expression::Variable(base))) => base,
