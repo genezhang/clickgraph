@@ -584,12 +584,39 @@ pub fn parse_function_call(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     
     // Then parse the comma-separated arguments within parentheses.
     // Need to try lambda first before regular expression
-    let (input, args) = delimited(
+    let args_result = delimited(
         ws(char('(')),
         separated_list0(ws(char(',')), alt((parse_lambda_expression, parse_expression))),
         ws(char(')')),
     )
-    .parse(input)?;
+    .parse(input);
+    
+    // Check if we failed due to pattern comprehension syntax
+    let (input, args) = match args_result {
+        Ok(result) => result,
+        Err(nom::Err::Failure(e)) => {
+            // Check if the error is due to pattern comprehension
+            // Look ahead to see if we have [(pattern) | projection] syntax
+            if let Some(paren_pos) = input.find('(') {
+                let after_paren = &input[paren_pos + 1..];
+                if after_paren.trim_start().starts_with('[') {
+                    if let Some(bracket_end) = after_paren.find(']') {
+                        let inside_bracket = &after_paren[..bracket_end];
+                        if inside_bracket.contains('|') 
+                            && (inside_bracket.contains("->") || inside_bracket.contains("<-") || inside_bracket.contains("-[")) {
+                            // This is a pattern comprehension - provide clear error
+                            return Err(nom::Err::Failure(Error::new(
+                                input,
+                                ErrorKind::Tag,
+                            )));
+                        }
+                    }
+                }
+            }
+            return Err(nom::Err::Failure(e));
+        }
+        Err(e) => return Err(e),
+    };
 
     Ok((
         input,
@@ -663,6 +690,26 @@ pub fn parse_map_literal(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 }
 
 pub fn parse_list_literal(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    // First, check for pattern comprehension syntax and reject it early with clear error
+    // Pattern comprehensions: [(pattern) | projection] - e.g., [(a)-[:R]->(b) | b.name]
+    if let Some(bracket_start) = input.find('[') {
+        let after_bracket = &input[bracket_start + 1..];
+        // Look for pattern-like syntax: starts with '(' and contains '-' before a potential '|'
+        if after_bracket.trim_start().starts_with('(') {
+            // Check if this looks like a path pattern by finding '-' followed by '[' or '>'
+            if let Some(pipe_pos) = after_bracket.find('|') {
+                let before_pipe = &after_bracket[..pipe_pos];
+                // If we see pattern-like characters (-, [, >, <) before |, it's likely a pattern comprehension
+                if before_pipe.contains("->") || before_pipe.contains("<-") || before_pipe.contains("-[") {
+                    return Err(nom::Err::Failure(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Tag,
+                    )));
+                }
+            }
+        }
+    }
+    
     // Parse content within [ ... ] as a comma-separated list of expressions.
     let (input, exprs) = delimited(
         // Opening bracket with optional whitespace afterwards
