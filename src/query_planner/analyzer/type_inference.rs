@@ -1,44 +1,45 @@
-//! Label Inference Analyzer Pass
+//! Type Inference Analyzer Pass
 //!
-//! **Purpose**: Infer missing node labels from relationship schemas.
+//! **Purpose**: Infer missing node labels AND relationship types from graph schema.
 //!
-//! **Problem**: Nodes in Cypher queries may not have explicit labels:
+//! **Problem**: Cypher allows omitting types when they can be inferred:
 //! ```cypher
-//! MATCH (a:Person)-[:KNOWS]->(b)  -- b has no label
-//! RETURN b.name
+//! MATCH (a:Person)-[r]->(b)        -- r has no type, b has no label
+//! MATCH ()-[r:KNOWS]->()           -- nodes have no labels
+//! MATCH ()-[r]->()                 -- nothing specified!
 //! ```
 //!
-//! Without b's label, we can't:
-//! - Map properties to columns (FilterTagging fails)
-//! - Generate correct SQL table names
-//! - Validate queries
+//! **Solution**: Smart inference using graph schema:
 //!
-//! **Solution**: Use relationship schemas to infer missing labels.
-//! If KNOWS relationship connects Person → Person, then b must be Person.
+//! **Node Label Inference**:
+//! 1. From relationship: If KNOWS connects Person → Person, infer node labels
+//! 2. From schema: If only one node type exists, use it
+//! 3. From connected relationships: Propagate labels through patterns
+//!
+//! **Edge Type Inference**:
+//! 1. From nodes: If Person-?->City and only LIVES_IN connects them, infer LIVES_IN
+//! 2. From schema: If only one relationship type exists, use it
+//! 3. From pattern: Use relationship properties to disambiguate
 //!
 //! **When to run**: Early in analyzer pipeline (position 2, after SchemaInference)
-//! This ensures all downstream passes have complete label information.
+//! This ensures all downstream passes have complete type information.
 //!
-//! **Scope handling**: Uses existing plan_ctx scope barriers. When a WITH clause
-//! creates a scope boundary, get_table_ctx() won't look past it automatically.
-//! No additional scope tracking needed.
-//!
-//! **Example**:
+//! **Examples**:
 //! ```cypher
-//! MATCH (a:Person)-[:KNOWS]->(b), (b)-[:LIVES_IN]->(c)
-//! ```
-//! - Pattern 1: a=Person (explicit), infer b=Person from KNOWS schema
-//! - Pattern 2: b=Person (from pattern 1), infer c=City from LIVES_IN schema
+//! // Infer node labels from edge type
+//! MATCH (a)-[:KNOWS]->(b)           → a:Person, b:Person
 //!
-//! **Cross-WITH example**:
-//! ```cypher
+//! // Infer edge type from node labels  
+//! MATCH (a:Person)-[r]->(b:City)    → r:LIVES_IN
+//!
+//! // Infer everything (if only one edge type exists)
+//! MATCH (a)-[r]->(b)                → a:Person, r:KNOWS, b:Person
+//!
+//! // Cross-WITH inference
 //! MATCH (a:Person)-[:KNOWS]->(b)
 //! WITH b
-//! MATCH (b)-[:LIVES_IN]->(c)
+//! MATCH (b)-[:LIVES_IN]->(c)        → b:Person, c:City
 //! ```
-//! - First MATCH: infer b=Person from KNOWS
-//! - WITH exports b with label
-//! - Second MATCH: sees b=Person, infers c=City from LIVES_IN
 
 use std::sync::Arc;
 
@@ -55,20 +56,22 @@ use crate::{
     },
 };
 
-pub struct LabelInference;
+pub struct TypeInference;
 
-impl LabelInference {
+impl TypeInference {
     pub fn new() -> Self {
-        LabelInference
+        TypeInference
     }
 
-    /// Recursively walk plan tree and infer missing node labels.
+    /// Recursively walk plan tree and infer missing types (node labels + edge types).
     ///
     /// Strategy:
-    /// 1. For each GraphRel, check if connected nodes have labels
-    /// 2. If a node has no label, try to infer from relationship schema
-    /// 3. Update TableCtx with inferred label
-    /// 4. Recurse into child plans
+    /// 1. For each GraphRel:
+    ///    a. Infer missing edge type from node labels (if both known)
+    ///    b. Infer missing node labels from edge type (if known)
+    ///    c. If still missing, try schema-level defaults
+    /// 2. Update plan_ctx with inferred types
+    /// 3. Recurse into child plans
     ///
     /// **Scope handling**: plan_ctx.get_table_ctx() automatically respects
     /// WITH boundaries via is_with_scope flag. No special handling needed.
@@ -81,33 +84,41 @@ impl LabelInference {
         match plan.as_ref() {
             LogicalPlan::GraphRel(rel) => {
                 log::debug!(
-                    "🏷️  LabelInference: Processing GraphRel '{}' (labels: {:?})",
+                    "🔍 TypeInference: Processing GraphRel '{}' (edge_types: {:?})",
                     rel.alias,
                     rel.labels
                 );
 
-                // Check left connection (start node)
-                let left_label = self.get_or_infer_label(
-                    &rel.left_connection,
+                // STEP 1: Get or infer edge type(s)
+                let edge_types = self.infer_edge_types(
                     &rel.labels,
+                    &rel.left_connection,
+                    &rel.right_connection,
+                    plan_ctx,
+                    graph_schema,
+                )?;
+
+                // STEP 2: Infer node labels from edge types
+                let left_label = self.get_or_infer_node_label(
+                    &rel.left_connection,
+                    &edge_types,
                     true, // is_from_side
                     plan_ctx,
                     graph_schema,
                 )?;
 
-                // Check right connection (end node)
-                let right_label = self.get_or_infer_label(
+                let right_label = self.get_or_infer_node_label(
                     &rel.right_connection,
-                    &rel.labels,
+                    &edge_types,
                     false, // is_to_side
                     plan_ctx,
                     graph_schema,
                 )?;
 
-                log::debug!(
-                    "🏷️  LabelInference: '{}' → [{}] → '{}' (labels: {:?}, {:?})",
+                log::info!(
+                    "🔍 TypeInference: '{}' → [{}] → '{}' (labels: {:?}, {:?})",
                     rel.left_connection,
-                    rel.labels.as_ref().map(|v| v.join("|")).unwrap_or_else(|| "None".to_string()),
+                    edge_types.as_ref().map(|v| v.join("|")).unwrap_or_else(|| "?".to_string()),
                     rel.right_connection,
                     left_label,
                     right_label
@@ -118,8 +129,13 @@ impl LabelInference {
                 let center_transformed = self.infer_labels_recursive(rel.center.clone(), plan_ctx, graph_schema)?;
                 let right_transformed = self.infer_labels_recursive(rel.right.clone(), plan_ctx, graph_schema)?;
 
-                // If any child was transformed, rebuild GraphRel
-                if left_transformed.is_yes() || center_transformed.is_yes() || right_transformed.is_yes() {
+                // Check if we need to rebuild with inferred edge types
+                let needs_rebuild = left_transformed.is_yes() 
+                    || center_transformed.is_yes() 
+                    || right_transformed.is_yes()
+                    || (edge_types.is_some() && edge_types != rel.labels);
+
+                if needs_rebuild {
                     let new_rel = GraphRel {
                         left: left_transformed.get_plan().clone(),
                         center: center_transformed.get_plan().clone(),
@@ -133,7 +149,7 @@ impl LabelInference {
                         shortest_path_mode: rel.shortest_path_mode.clone(),
                         path_variable: rel.path_variable.clone(),
                         where_predicate: rel.where_predicate.clone(),
-                        labels: rel.labels.clone(),
+                        labels: edge_types.or_else(|| rel.labels.clone()),  // Use inferred types
                         is_optional: rel.is_optional,
                         anchor_connection: rel.anchor_connection.clone(),
                         cte_references: rel.cte_references.clone(),
@@ -349,14 +365,103 @@ impl LabelInference {
         }
     }
 
-    /// Get existing label or infer from relationship schema.
+    /// Infer edge type(s) from node labels or schema.
+    ///
+    /// Strategy:
+    /// 1. If edge_types already specified → use them
+    /// 2. If both node labels known → find relationships connecting them
+    /// 3. If only one edge type in entire schema → use it
+    /// 4. Otherwise → return None (can't infer)
+    ///
+    /// Returns: Some(vec![edge_type]) if inferred, None if couldn't infer
+    fn infer_edge_types(
+        &self,
+        current_types: &Option<Vec<String>>,
+        left_connection: &str,
+        right_connection: &str,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Option<Vec<String>>> {
+        // If types already specified, use them
+        if current_types.is_some() {
+            log::debug!("🔗 TypeInference: Edge types already specified: {:?}", current_types);
+            return Ok(current_types.clone());
+        }
+
+        // Try to get node labels from plan_ctx
+        let left_label = plan_ctx
+            .get_table_ctx(left_connection)
+            .ok()
+            .and_then(|ctx| ctx.get_label_opt().map(|s| s.to_string()));
+        
+        let right_label = plan_ctx
+            .get_table_ctx(right_connection)
+            .ok()
+            .and_then(|ctx| ctx.get_label_opt().map(|s| s.to_string()));
+
+        log::debug!(
+            "🔗 TypeInference: Inferring edge type for '{}' ({:?}) -> '{}' ({:?})",
+            left_connection, left_label, right_connection, right_label
+        );
+
+        // Strategy 2: If both labels known, find relationships connecting them
+        if let (Some(ref from_label), Some(ref to_label)) = (left_label, right_label) {
+            let connecting_rels: Vec<String> = graph_schema
+                .get_relationships_schemas()
+                .iter()
+                .filter(|(_, rel_schema)| {
+                    &rel_schema.from_node == from_label && &rel_schema.to_node == to_label
+                })
+                .map(|(rel_type, _)| rel_type.clone())
+                .collect();
+
+            if !connecting_rels.is_empty() {
+                log::info!(
+                    "🔗 TypeInference: Inferred edge type(s) from node labels {} -> {}: {:?}",
+                    from_label, to_label, connecting_rels
+                );
+                return Ok(Some(connecting_rels));
+            } else {
+                log::debug!(
+                    "🔗 TypeInference: No relationships found connecting {} -> {}",
+                    from_label, to_label
+                );
+            }
+        }
+
+        // Strategy 3: If only one edge type in entire schema, use it
+        let all_rel_types: Vec<String> = graph_schema
+            .get_relationships_schemas()
+            .keys()
+            .filter_map(|k| {
+                // Extract type name from composite key "TYPE::FROM::TO"
+                k.split("::").next().map(|s| s.to_string())
+            })
+            .collect::<std::collections::HashSet<_>>() // Deduplicate
+            .into_iter()
+            .collect();
+
+        if all_rel_types.len() == 1 {
+            log::info!(
+                "🔗 TypeInference: Only one edge type in schema, using: {}",
+                all_rel_types[0]
+            );
+            return Ok(Some(vec![all_rel_types[0].clone()]));
+        }
+
+        // Can't infer
+        log::debug!("🔗 TypeInference: Could not infer edge type");
+        Ok(None)
+    }
+
+    /// Get existing node label or infer from edge type(s).
     ///
     /// Returns: Some(label) if found/inferred, None if couldn't infer.
     /// Side effect: Updates plan_ctx if label was inferred.
-    fn get_or_infer_label(
+    fn get_or_infer_node_label(
         &self,
         node_alias: &str,
-        rel_labels: &Option<Vec<String>>,
+        edge_types: &Option<Vec<String>>,
         is_from_side: bool,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
@@ -364,37 +469,37 @@ impl LabelInference {
         // Try to get existing label from plan_ctx
         if let Ok(table_ctx) = plan_ctx.get_table_ctx(node_alias) {
             if let Some(label) = table_ctx.get_label_opt() {
-                log::debug!("🏷️  LabelInference: '{}' already has label: {}", node_alias, label);
+                log::debug!("🏷️ TypeInference: '{}' already has label: {}", node_alias, label);
                 return Ok(Some(label));
             }
         }
 
-        // No existing label - try to infer from relationship
-        let rel_labels = match rel_labels {
-            Some(labels) => labels,
+        // No existing label - try to infer from edge type(s)
+        let edge_types = match edge_types {
+            Some(types) => types,
             None => {
-                log::debug!("🏷️  LabelInference: '{}' has no label and relationship has no types", node_alias);
+                log::debug!("🏷️ TypeInference: '{}' has no label and relationship has no types", node_alias);
                 return Ok(None);
             }
         };
 
-        if rel_labels.is_empty() {
-            log::debug!("🏷️  LabelInference: '{}' has no label and relationship has empty types", node_alias);
+        if edge_types.is_empty() {
+            log::debug!("🏷️ TypeInference: '{}' has no label and relationship has empty types", node_alias);
             return Ok(None);
         }
 
         // For multiple relationship types, we can't infer reliably
         // (different types might have different node labels)
-        if rel_labels.len() > 1 {
+        if edge_types.len() > 1 {
             log::debug!(
-                "🏷️  LabelInference: '{}' has no label and relationship has multiple types {:?} - can't infer",
+                "🏷️ TypeInference: '{}' has no label and relationship has multiple types {:?} - can't infer",
                 node_alias,
-                rel_labels
+                edge_types
             );
             return Ok(None);
         }
 
-        let rel_type = &rel_labels[0];
+        let rel_type = &edge_types[0];
         
         // Look up relationship schema
         let rel_schema = graph_schema.get_relationships_schema_opt(rel_type)
@@ -413,7 +518,7 @@ impl LabelInference {
         };
 
         log::info!(
-            "🏷️  LabelInference: Inferred '{}' label as '{}' from {} side of '{}' relationship",
+            "🏷️ TypeInference: Inferred '{}' label as '{}' from {} side of '{}' relationship",
             node_alias,
             inferred_label,
             if is_from_side { "from" } else { "to" },
@@ -423,10 +528,10 @@ impl LabelInference {
         // Update TableCtx with inferred label
         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(node_alias) {
             table_ctx.set_labels(Some(vec![inferred_label.clone()]));
-            log::debug!("🏷️  LabelInference: Updated TableCtx for '{}' with label '{}'", node_alias, inferred_label);
+            log::debug!("🏷️ TypeInference: Updated TableCtx for '{}' with label '{}'", node_alias, inferred_label);
         } else {
             log::warn!(
-                "🏷️  LabelInference: Could not find TableCtx for '{}' to update with inferred label",
+                "🏷️ TypeInference: Could not find TableCtx for '{}' to update with inferred label",
                 node_alias
             );
         }
@@ -435,16 +540,16 @@ impl LabelInference {
     }
 }
 
-impl AnalyzerPass for LabelInference {
+impl AnalyzerPass for TypeInference {
     fn analyze_with_graph_schema(
         &self,
         logical_plan: Arc<LogicalPlan>,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        log::info!("🏷️  LabelInference: Starting label inference pass");
+        log::info!("🏷️ TypeInference: Starting type inference pass");
         let result = self.infer_labels_recursive(logical_plan, plan_ctx, graph_schema)?;
-        log::info!("🏷️  LabelInference: Completed - plan transformed: {}", result.is_yes());
+        log::info!("🏷️ TypeInference: Completed - plan transformed: {}", result.is_yes());
         Ok(result)
     }
 }

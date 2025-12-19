@@ -15,7 +15,7 @@ use crate::{
             duplicate_scans_removing::DuplicateScansRemoving, filter_tagging::FilterTagging,
             graph_join_inference::GraphJoinInference,
             graph_traversal_planning::GraphTRaversalPlanning, group_by_building::GroupByBuilding,
-            label_inference::LabelInference,
+            type_inference::TypeInference,
             plan_sanitization::PlanSanitization, projection_tagging::ProjectionTagging,
             projected_columns_resolver::ProjectedColumnsResolver,
             query_validation::QueryValidation, schema_inference::SchemaInference,
@@ -43,7 +43,7 @@ mod graph_context;
 mod graph_join_inference;
 mod graph_traversal_planning;
 mod group_by_building;
-mod label_inference;
+mod type_inference;
 mod plan_sanitization;
 mod projection_tagging;
 mod projected_columns_resolver;
@@ -66,12 +66,13 @@ pub fn initial_analyzing(
         plan
     };
 
-    // Step 2: Label Inference - infer missing node labels from relationship schemas
-    // This runs early to ensure all downstream passes have complete label information
+    // Step 2: Type Inference - infer missing node labels AND edge types from schema
+    // This runs early to ensure all downstream passes have complete type information
     // Works across WITH boundaries using existing plan_ctx scope barriers
-    let label_inference = LabelInference::new();
+    // Infers: node labels from edge types, edge types from node labels, defaults from schema
+    let type_inference = TypeInference::new();
     let plan = if let Ok(transformed_plan) =
-        label_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)
+        type_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)
     {
         transformed_plan.get_plan()
     } else {
