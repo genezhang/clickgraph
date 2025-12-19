@@ -4,42 +4,51 @@
 
 ## 🎯 Active Development (December 19, 2025)
 
-### Polymorphic Relationship Resolution + JOIN Ordering Fix - COMPLETE ✓
+### Session Summary: Polymorphic Resolution + JOIN Ordering + Schema Fixes
 
-**Session Results**:
-- ✅ Test harness parameter fix: 14→23 LDBC queries passing (+9 queries, +64%)
-- ✅ Polymorphic resolution architecture: 100% complete
-- ✅ CTE JOIN generation fix: GraphRel.extract_joins() now uses ViewScan.source_table
-- ✅ JOIN dependency sorting: Added to CTE generation path (was only in main query path)
-- ✅ Multi-hop WITH clauses now generate correctly ordered JOINs
+**Completed Work**:
+- ✅ Test harness parameter fix: 14→23 LDBC queries (+9 queries, +64%)
+- ✅ Polymorphic resolution architecture: 100% complete (TableCtx node labels, ViewResolver, CTE generation)
+- ✅ JOIN dependency sorting: Added to CTE generation path (multi-hop WITH clauses now work)
+- ✅ Comment REPLY_OF Message schema: Added missing polymorphic relationship (+2 queries)
+
+**Current Test Pass Rate**: 25/41 LDBC queries (61%, +11 from session start)
 
 **What Works Now**:
 ```cypher
-# ✅ Simple polymorphic queries
+# ✅ Polymorphic LIKES (Person→Message)
 MATCH (liker:Person)-[like:LIKES]->(message:Message) 
 RETURN liker.firstName, message.content
-# Generates: JOIN ldbc.Person_likes_Message AS like (correct!)
+# Generates: JOIN ldbc.Person_likes_Message AS like ✓
+
+# ✅ Polymorphic HAS_CREATOR (Message→Person)
+MATCH (p:Person)<-[:HAS_CREATOR]-(m:Message)
+RETURN m.content
+# Generates: JOIN ldbc.Message_hasCreator_Person ✓
+
+# ✅ Polymorphic REPLY_OF (Comment→Message)  
+MATCH (message:Message)<-[:REPLY_OF]-(comment:Comment)
+RETURN comment.content
+# Generates: JOIN ldbc.Comment_replyOf_Message ✓
 
 # ✅ Multi-hop WITH clauses with proper JOIN order
 MATCH (p:Person)<-[:HAS_CREATOR]-(message:Message)<-[like:LIKES]-(liker:Person) 
 WITH liker, like.creationDate AS likeTime
 RETURN liker.firstName, likeTime
-# Generates JOINs in correct dependency order:
-#   1. FROM liker
-#   2. JOIN like (depends on liker) ✓
-#   3. JOIN message (depends on like) ✓
-#   4. JOIN t1 (depends on message) ✓
-#   5. JOIN p (depends on t1) ✓
+# JOINs now in correct dependency order ✓
 ```
 
-**JOIN Ordering Fix Details**:
-- **Root Cause**: `sort_joins_by_dependency()` was only called in main query path (line 11213)
-- **Problem**: CTE generation path (`build_simple_relationship_render_plan`) didn't sort JOINs
-- **Result**: Multi-hop patterns generated JOINs referencing undefined tables
-- **Solution**: Added `sort_joins_by_dependency()` call after `filtered_joins` creation
-- **Impact**: Zero regressions - all 23/41 queries still pass, JOINs now correctly ordered
+**Remaining Failures (16 queries)**:
+- 7 queries: Unsupported Neo4j features (APOC, CASE expressions, duration functions)
+- 4 queries: Property resolution in chained MATCH+WITH patterns (scope tracking issue)
+- 2 queries: WITH clause validation (missing aliases for expressions)
+- 2 queries: Schema lookup issues (complex-10, complex-11) - needs investigation
+- 1 query: Polymorphic pattern syntax (bi-5)
 
-**Current Test Pass Rate**: 23/41 LDBC queries (56%) - maintained, no regressions
+**Key Architecture Improvements**:
+1. **Polymorphic Resolution Pipeline**: Thread node labels through entire relationship lookup chain
+2. **JOIN Dependency Sorting**: Applied in both main query and CTE generation paths
+3. **Unified View Pattern**: Consistent schema definitions for polymorphic relationships
 
 ---
 
