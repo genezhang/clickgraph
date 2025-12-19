@@ -1273,4 +1273,39 @@ mod tests {
             panic!("Expected FunctionCallExp, got {:?}", expr);
         }
     }
+
+    #[test]
+    fn test_parse_size_with_pattern_comprehension() {
+        // Test pattern comprehension: size([(t)-[r]-(f) | f])
+        let (rem, expr) = parse_expression("size([(t)-[r]-(f) | f])").unwrap();
+        assert_eq!(rem, "");
+        assert!(matches!(expr, Expression::FunctionCallExp(_)));
+    }
+
+    #[test]
+    fn test_parse_multiplication_with_size_pattern() {
+        // Test: 100 * size([(t)-[r]-(f) | f])
+        // This is the failing case from bi-8
+        let result = parse_expression("100 * size([(t)-[r]-(f) | f])");
+        eprintln!("Parse result: {:#?}", result);
+        
+        match result {
+            Ok((rem, expr)) => {
+                eprintln!("SUCCESS - Remaining: '{}'", rem);
+                eprintln!("Expression: {:#?}", expr);
+                assert_eq!(rem, "");
+                // Should be multiplication operator with 100 on left, size(...) on right
+                if let Expression::OperatorApplicationExp(op) = expr {
+                    assert_eq!(op.operator, Operator::Multiplication);
+                    assert_eq!(op.operands.len(), 2);
+                } else {
+                    panic!("Expected OperatorApplicationExp, got {:?}", expr);
+                }
+            }
+            Err(e) => {
+                eprintln!("FAILED: {:?}", e);
+                panic!("Parser should handle 100 * size([pattern])");
+            }
+        }
+    }
 }
