@@ -1338,19 +1338,23 @@ fn traverse_connected_pattern_with_mode<'a>(
             .cloned()
             .unwrap_or_else(generate_id);
         
-        // CRITICAL FIX: If node already exists in plan_ctx (from previous pattern),
-        // use its label from TableCtx instead of AST label (which may be None)
-        // This fixes multi-pattern MATCH like: MATCH (a)-[:R]->(b:B), (b)-[:S]->(c)
-        // where second pattern needs to know b's label from first pattern
-        let start_node_label = if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&start_node_alias) {
+        // CRITICAL FIX: Label resolution order:
+        // 1. If AST has explicit label (Some(...)), use it
+        // 2. Else if node exists in plan_ctx with label, use that
+        // 3. Else None
+        // This fixes: MATCH (a)-[:R]->(b:B), (b)-[:S]->(c)
+        // where second pattern needs b's label from first pattern (AST returns None after first use)
+        let start_node_label = if start_node_label_from_ast.is_some() {
+            start_node_label_from_ast
+        } else if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&start_node_alias) {
             if let Some(label) = table_ctx.get_label_opt() {
                 log::info!(">>> Found existing '{}' in plan_ctx with label: {}", start_node_alias, label);
                 Some(label)
             } else {
-                start_node_label_from_ast
+                None
             }
         } else {
-            start_node_label_from_ast
+            None
         };
 
         crate::debug_print!(
@@ -1374,16 +1378,18 @@ fn traverse_connected_pattern_with_mode<'a>(
             .unwrap_or_else(generate_id);
         let end_node_label_from_ast = end_node_ref.label.map(|val| val.to_string());
         
-        // CRITICAL FIX: Same as start_node - check plan_ctx for existing label
-        let end_node_label = if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
+        // CRITICAL FIX: Same label resolution order as start_node
+        let end_node_label = if end_node_label_from_ast.is_some() {
+            end_node_label_from_ast
+        } else if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
             if let Some(label) = table_ctx.get_label_opt() {
                 log::info!(">>> Found existing '{}' in plan_ctx with label: {}", end_node_alias, label);
                 Some(label)
             } else {
-                end_node_label_from_ast
+                None
             }
         } else {
-            end_node_label_from_ast
+            None
         };
 
         let rel = &connected_pattern.relationship;

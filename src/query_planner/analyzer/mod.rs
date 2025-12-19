@@ -18,7 +18,7 @@ use crate::{
             plan_sanitization::PlanSanitization, projection_tagging::ProjectionTagging,
             projected_columns_resolver::ProjectedColumnsResolver,
             query_validation::QueryValidation, schema_inference::SchemaInference,
-            variable_resolver::VariableResolver, with_scope_splitter::WithScopeSplitter,
+            variable_resolver::VariableResolver,
             cte_reference_populator::CteReferencePopulator,
         },
         logical_plan::LogicalPlan,
@@ -48,7 +48,6 @@ mod projected_columns_resolver;
 mod query_validation;
 mod schema_inference;
 mod variable_resolver;
-mod with_scope_splitter;
 
 pub fn initial_analyzing(
     plan: Arc<LogicalPlan>,
@@ -173,14 +172,7 @@ pub fn intermediate_analyzing(
     )?;
     let plan = transformed_plan.get_plan();
 
-    // CRITICAL: Split plan at WITH boundaries BEFORE join inference
-    // This prevents GraphJoinInference from computing joins across scope boundaries
-    // Each WITH creates a materialization point - joins should only be computed within each scope
-    let with_scope_splitter = WithScopeSplitter::new();
-    let transformed_plan = with_scope_splitter.analyze(plan.clone(), plan_ctx)?;
-    let plan = transformed_plan.get_plan();
-
-    // CRITICAL: Resolve variables AFTER scope splitting, BEFORE join inference
+    // CRITICAL: Resolve variables BEFORE join inference
     // This transforms TableAlias("cnt") → PropertyAccessExp("cnt_cte", "cnt")
     // Making the renderer "dumb" - it only needs to emit SQL for resolved expressions
     log::info!("🔍 ANALYZER: About to call VariableResolver.analyze()");
