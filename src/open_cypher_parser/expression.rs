@@ -737,41 +737,67 @@ fn parse_property_name(input: &str) -> IResult<&str, &str> {
 }
 
 pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // First part: the base (e.g., "src")
-    let (input, base_str) = common::parse_alphanumeric_with_underscore(input)?;
+    // First part: the base (e.g., "src" or "p")
+    let (mut input, base_str) = common::parse_alphanumeric_with_underscore(input)?;
 
-    // Then: a dot
-    let (input, _) = char('.')(input)?;
-
-    // Then: the property name (can be identifier or *)
-    let (input, key_str) = parse_property_name(input)?;
+    // Parse the first property: base.property
+    let (new_input, _) = char('.')(input)?;
+    let (new_input, first_key) = parse_property_name(new_input)?;
+    input = new_input;
     
-    // Check for datetime property accessors that are not supported
-    if key_str == "year" || key_str == "month" || key_str == "day" 
-        || key_str == "hour" || key_str == "minute" || key_str == "second" {
-        // This might be a datetime property accessor - check if it looks like one
-        // We can't be 100% sure without type info, but if the base looks like a date field...
-        // For now, we'll allow it through but could add detection if patterns emerge
-    }
-
-    let base = match parse_literal_or_variable_expression(base_str) {
+    // Build initial expression for base.first_property
+    let base_expr = match parse_literal_or_variable_expression(base_str) {
         Ok((_, Expression::Variable(base))) => base,
         _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
     };
-
-    // For wildcard (*), key is just "*"
-    let key = if key_str == "*" {
-        "*"
+    
+    let mut current_expr = if first_key == "*" {
+        Expression::PropertyAccessExp(PropertyAccess { base: base_expr, key: "*" })
     } else {
-        match parse_literal_or_variable_expression(key_str) {
-            Ok((_, Expression::Variable(key))) => key,
+        match parse_literal_or_variable_expression(first_key) {
+            Ok((_, Expression::Variable(key))) => {
+                Expression::PropertyAccessExp(PropertyAccess { base: base_expr, key })
+            }
             _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
         }
     };
+    
+    // Try to parse additional chained properties: .property2.property3...
+    loop {
+        // Try to parse another .property
+        let chain_result = preceded(char('.'), parse_property_name).parse(input);
+        
+        match chain_result {
+            Ok((new_input, next_key)) => {
+                // Check if this is a temporal accessor - if so, convert to function call
+                let temporal_accessors = ["year", "month", "day", "hour", "minute", "second", 
+                                           "millisecond", "microsecond", "nanosecond"];
+                
+                if temporal_accessors.contains(&next_key) {
+                    // Convert current_expr.temporal_accessor to temporal_accessor(current_expr)
+                    return Ok((
+                        new_input,
+                        Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
+                            name: next_key.to_string(),
+                            args: vec![current_expr],
+                        }),
+                    ));
+                }
+                
+                // Not a temporal accessor - continue building property chain
+                // But we need PropertyAccess to support Expression as base, not just &str
+                // For now, we'll stop chaining after first property if not temporal
+                input = new_input;
+                break;
+            }
+            Err(_) => {
+                // No more properties to chain
+                break;
+            }
+        }
+    }
 
-    let property_access = Expression::PropertyAccessExp(PropertyAccess { base, key });
-
-    Ok((input, property_access))
+    Ok((input, current_expr))
 }
 
 /// Helper function to determine if a character is valid in a parameter name.
@@ -784,7 +810,34 @@ pub fn parse_parameter(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 
     let (input, param) = preceded(tag("$"), take_while1(is_param_char)).parse(input)?;
 
-    Ok((input, Expression::Parameter(param)))
+    // Check for temporal property accessor after the parameter: $param.year
+    let (input, temporal_accessor) = opt(preceded(
+        char('.'),
+        alt((
+            map(tag_no_case("year"), |_| "year"),
+            map(tag_no_case("month"), |_| "month"),
+            map(tag_no_case("day"), |_| "day"),
+            map(tag_no_case("hour"), |_| "hour"),
+            map(tag_no_case("minute"), |_| "minute"),
+            map(tag_no_case("second"), |_| "second"),
+            map(tag_no_case("millisecond"), |_| "millisecond"),
+            map(tag_no_case("microsecond"), |_| "microsecond"),
+            map(tag_no_case("nanosecond"), |_| "nanosecond"),
+        ))
+    )).parse(input)?;
+
+    // If we found a temporal accessor, convert to function call
+    if let Some(accessor) = temporal_accessor {
+        Ok((
+            input,
+            Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
+                name: accessor.to_string(),
+                args: vec![Expression::Parameter(param)],
+            }),
+        ))
+    } else {
+        Ok((input, Expression::Parameter(param)))
+    }
 }
 
 /// Reserved for future use when order-specific expression parsing is needed

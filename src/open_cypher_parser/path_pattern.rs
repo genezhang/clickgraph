@@ -227,10 +227,14 @@ pub fn parse_properties(input: &'_ str) -> IResult<&'_ str, Vec<Property<'_>>> {
         ),
         // Parameter variant: no curly braces are expected.
         map(ws(parse_parameter), |expr| {
-            if let Expression::Parameter(s) = expr {
-                vec![Property::Param(s)]
-            } else {
-                unreachable!()
+            match expr {
+                Expression::Parameter(s) => vec![Property::Param(s)],
+                Expression::FunctionCallExp(_) => {
+                    // Parameters with temporal accessors ($param.year) are converted to function calls
+                    // These shouldn't be used as node properties, but handle gracefully
+                    vec![]
+                }
+                _ => unreachable!("parse_parameter returned unexpected expression type"),
             }
         }),
     ))
