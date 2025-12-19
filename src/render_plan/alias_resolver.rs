@@ -237,6 +237,7 @@ impl AliasResolverContext {
                     input: transformed_input,
                     expression: self.transform_expr(u.expression.clone()),
                     alias: u.alias.clone(),
+                    label: u.label.clone(),
                 })
             }
             LogicalPlan::CartesianProduct(cp) => {

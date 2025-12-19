@@ -723,6 +723,11 @@ pub struct Unwind {
     pub expression: LogicalExpr,
     /// The alias for each unwound element
     pub alias: String,
+    /// The label/type of elements being unwound (e.g., "Person", "Post")
+    /// Used for property resolution when unwinding collected nodes
+    /// Example: collect(u:Person) → UNWIND → user:Person
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

@@ -82,7 +82,7 @@ use crate::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::AnalyzerError,
         },
-        logical_expr::Direction,
+        logical_expr::{Direction, LogicalExpr},
         logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan},
         plan_ctx::PlanCtx,
         transformed::Transformed,
@@ -418,11 +418,32 @@ impl TypeInference {
 
             LogicalPlan::Unwind(unwind) => {
                 let input_transformed = self.infer_labels_recursive(unwind.input.clone(), plan_ctx, graph_schema)?;
-                if input_transformed.is_yes() {
+                
+                // Try to infer the label from the expression being unwound
+                // We look at the plan structure directly since TypeInference runs before FilterTagging
+                let label = self.infer_unwind_element_label_from_plan(&unwind.expression, &unwind.input, plan_ctx);
+                
+                // Update plan_ctx if we inferred a label
+                if let Some(ref label_str) = label {
+                    if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&unwind.alias) {
+                        table_ctx.set_labels(Some(vec![label_str.clone()]));
+                        log::info!(
+                            "🏷️ TypeInference: Updated UNWIND alias '{}' with label '{}'",
+                            unwind.alias,
+                            label_str
+                        );
+                    }
+                }
+                
+                // Check if we need to rebuild
+                let needs_rebuild = input_transformed.is_yes() || (label.is_some() && label != unwind.label);
+                
+                if needs_rebuild {
                     let new_unwind = crate::query_planner::logical_plan::Unwind {
                         input: input_transformed.get_plan().clone(),
                         expression: unwind.expression.clone(),
                         alias: unwind.alias.clone(),
+                        label: label.or_else(|| unwind.label.clone()),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::Unwind(new_unwind))))
                 } else {
@@ -705,6 +726,129 @@ impl TypeInference {
         }
 
         Ok(Some(inferred_label.clone()))
+    }
+
+    /// Infer the label/type of elements being unwound from an UNWIND expression.
+    /// 
+    /// Strategy:
+    /// 1. If UNWIND input is a WithClause, check its projection items
+    /// 2. Find the projection item that matches the UNWIND expression alias
+    /// 3. If it's collect(node_alias), extract the node_alias label from plan_ctx
+    /// 4. Fall back to checking plan_ctx projection aliases (if registered by earlier passes)
+    ///
+    /// Examples:
+    /// - `WITH collect(u) AS users UNWIND users AS user` → input is WithClause, find "users" item → collect(u) → u:Person
+    /// - `UNWIND [1,2,3] AS num` → No label (scalar)
+    fn infer_unwind_element_label_from_plan(
+        &self,
+        expression: &LogicalExpr,
+        input_plan: &Arc<LogicalPlan>,
+        plan_ctx: &PlanCtx,
+    ) -> Option<String> {
+        use crate::query_planner::logical_expr::{AggregateFnCall, TableAlias as TableAliasStruct, ColumnAlias};
+        
+        // Extract alias name from expression
+        let alias_name = match expression {
+            LogicalExpr::TableAlias(table_alias) => &table_alias.0,
+            _ => {
+                log::debug!("🔍 TypeInference::infer_unwind_element_label_from_plan: Expression type not supported");
+                return None;
+            }
+        };
+        
+        // STRATEGY 1: Look at input plan directly (works before FilterTagging registers aliases)
+        if let LogicalPlan::WithClause(with_clause) = input_plan.as_ref() {
+            log::debug!(
+                "🔍 TypeInference::infer_unwind_element_label_from_plan: UNWIND input is WithClause, checking items for '{}'",
+                alias_name
+            );
+            
+            // Find the projection item matching this alias
+            for item in &with_clause.items {
+                if let Some(col_alias) = &item.col_alias {
+                    if col_alias.0 == *alias_name {
+                        log::debug!(
+                            "🔍 TypeInference::infer_unwind_element_label_from_plan: Found matching item: {} -> {:?}",
+                            alias_name,
+                            item.expression
+                        );
+                        
+                        // Check if it's collect()
+                        if let LogicalExpr::AggregateFnCall(agg_fn) = &item.expression {
+                            if agg_fn.name.eq_ignore_ascii_case("collect") && !agg_fn.args.is_empty() {
+                                // Extract the first argument (the node being collected)
+                                if let LogicalExpr::TableAlias(collected_alias) = &agg_fn.args[0] {
+                                    // Look up the label of the collected node
+                                    if let Ok(table_ctx) = plan_ctx.get_table_ctx(&collected_alias.0) {
+                                        if let Some(labels) = table_ctx.get_labels() {
+                                            if let Some(first_label) = labels.first() {
+                                                log::info!(
+                                                    "🔍 TypeInference::infer_unwind_element_label_from_plan: '{}' → collect('{}') → label '{}'",
+                                                    alias_name,
+                                                    collected_alias.0,
+                                                    first_label
+                                                );
+                                                return Some(first_label.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // STRATEGY 2: Check if it's already registered as projection alias (from earlier passes)
+        if let Some(alias_expr) = plan_ctx.get_projection_alias_expr(alias_name) {
+            log::debug!(
+                "🔍 TypeInference::infer_unwind_element_label_from_plan: '{}' found in projection aliases: {:?}",
+                alias_name,
+                alias_expr
+            );
+            
+            // Check if it's collect()
+            if let LogicalExpr::AggregateFnCall(agg_fn) = alias_expr {
+                if agg_fn.name.eq_ignore_ascii_case("collect") && !agg_fn.args.is_empty() {
+                    if let LogicalExpr::TableAlias(collected_alias) = &agg_fn.args[0] {
+                        if let Ok(table_ctx) = plan_ctx.get_table_ctx(&collected_alias.0) {
+                            if let Some(labels) = table_ctx.get_labels() {
+                                if let Some(first_label) = labels.first() {
+                                    log::info!(
+                                        "🔍 TypeInference::infer_unwind_element_label_from_plan: '{}' → collect('{}') → label '{}' (from projection aliases)",
+                                        alias_name,
+                                        collected_alias.0,
+                                        first_label
+                                    );
+                                    return Some(first_label.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // STRATEGY 3: Try direct table context lookup
+        if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias_name) {
+            if let Some(labels) = table_ctx.get_labels() {
+                if let Some(first_label) = labels.first() {
+                    log::info!(
+                        "🔍 TypeInference::infer_unwind_element_label_from_plan: '{}' → label '{}' (direct lookup)",
+                        alias_name,
+                        first_label
+                    );
+                    return Some(first_label.clone());
+                }
+            }
+        }
+        
+        log::debug!(
+            "🔍 TypeInference::infer_unwind_element_label_from_plan: No label found for '{}'",
+            alias_name
+        );
+        None
     }
 }
 

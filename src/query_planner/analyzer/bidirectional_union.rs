@@ -299,6 +299,7 @@ fn transform_bidirectional(
                         input: new_input,
                         expression: unwind.expression.clone(),
                         alias: unwind.alias.clone(),
+                        label: unwind.label.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::Unwind(new_unwind))))
                 }

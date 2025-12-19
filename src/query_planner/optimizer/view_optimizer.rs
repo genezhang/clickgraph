@@ -226,6 +226,7 @@ impl OptimizerPass for ViewOptimizer {
                             input: new_input,
                             expression: u.expression.clone(),
                             alias: u.alias.clone(),
+                            label: u.label.clone(),
                         },
                     ))),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),

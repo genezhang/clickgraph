@@ -529,6 +529,7 @@ impl VariableResolver {
                         input: new_input,
                         expression: resolved_expr,
                         alias: unwind.alias.clone(),
+                        label: unwind.label.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::Unwind(new_unwind))))
                 } else {

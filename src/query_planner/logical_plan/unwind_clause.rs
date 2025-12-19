@@ -58,6 +58,7 @@ pub fn evaluate_unwind_clause(
         input: plan,
         expression,
         alias: unwind_clause.alias.to_string(),
+        label: None, // Will be set by type_inference if needed
     };
 
     Arc::new(LogicalPlan::Unwind(unwind))
