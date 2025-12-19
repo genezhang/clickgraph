@@ -4,9 +4,16 @@
 
 ## 🎯 Active Development (December 19, 2025)
 
-### Session Summary: TypeInference Fix + Polymorphic Resolution + JOIN Ordering
+### Session Summary: TypeInference + QueryValidation Parser Normalization Fixes
 
-**Latest Fix (Dec 19, 2025 - Evening)**:
+**Latest Fix (Dec 19, 2025 - Late Evening)**:
+- ✅ **QueryValidation Parser Normalization**: Fixed reverse direction validation
+  - Issue: QueryValidation was swapping for `Direction::Incoming`, but parser already normalizes
+  - Root cause: Parser ALWAYS puts left=from, right=to in GraphRel (swaps nodes for `<-` syntax)
+  - Solution: Removed direction-based swapping in QueryValidation
+  - Result: **LDBC audit: 29/41 queries passing (70%, up from 61%)**
+
+**Previous Fix (Dec 19, 2025 - Evening)**:
 - ✅ **TypeInference ViewScan Creation**: Fixed SQL generation for inferred node labels
   - Issue: TypeInference correctly inferred labels but GraphNode.input remained Scan (no table)
   - Solution: Create ViewScan with proper table info when label is inferred
@@ -19,10 +26,15 @@
 - ✅ JOIN dependency sorting: Added to CTE generation path (multi-hop WITH clauses now work)
 - ✅ Comment REPLY_OF Message schema: Added missing polymorphic relationship (+2 queries)
 
-**Current Test Pass Rate**: 25/41 LDBC queries (61%, +11 from session start)
+**Current Test Pass Rate**: 29/41 LDBC queries (70%, +15 from session start)
 
 **What Works Now**:
 ```cypher
+# ✅ Both forward and reverse direction queries
+MATCH (forum)-[:HAS_MEMBER]->(person) RETURN forum.title
+MATCH (person)<-[:HAS_MEMBER]-(forum) RETURN forum.title
+# Both generate correct SQL with proper table aliases ✓
+
 # ✅ Polymorphic LIKES (Person→Message)
 MATCH (liker:Person)-[like:LIKES]->(message:Message) 
 RETURN liker.firstName, message.content
@@ -45,12 +57,11 @@ RETURN liker.firstName, likeTime
 # JOINs now in correct dependency order ✓
 ```
 
-**Remaining Failures (16 queries)**:
-- 7 queries: Unsupported Neo4j features (APOC, CASE expressions, duration functions)
-- 4 queries: Property resolution in chained MATCH+WITH patterns (scope tracking issue)
+**Remaining Failures (12 queries)**:
+- 5 queries: Unsupported Neo4j features (APOC, CASE expressions, duration functions)
+- 3 queries: Property resolution in chained MATCH+WITH patterns (scope tracking issue)
 - 2 queries: WITH clause validation (missing aliases for expressions)
 - 2 queries: Schema lookup issues (complex-10, complex-11) - needs investigation
-- 1 query: Polymorphic pattern syntax (bi-5)
 
 **Key Architecture Improvements**:
 1. **Polymorphic Resolution Pipeline**: Thread node labels through entire relationship lookup chain
