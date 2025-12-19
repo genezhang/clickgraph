@@ -10,9 +10,10 @@
 - ✅ **Consolidated TypeInference with Polymorphic Support**: Unified inference logic
   - Problem: Duplicate inference code in match_clause.rs and type_inference.rs causing feature drift
   - Solution: Merged both implementations into single rock-solid TypeInference
-  - Features: $any wildcards, from_label_values/to_label_values, MAX_INFERRED_TYPES limit (20)
+  - Features: $any wildcards, from_label_values/to_label_values, **MAX_INFERRED_TYPES limit (20→5)**
   - Result: **TypeInference is now THE authoritative inference engine**
-  - Example: `MATCH (u:User)-[r]->(p:Post)` infers 5 polymorphic types (FOLLOWS, LIKES, etc.) ✓
+  - Example: `MATCH (u:User)-[r]->(p:Post)` infers up to 5 polymorphic types ✓
+  - Limit rationale: Prevents query explosion; forces explicit types for highly polymorphic patterns
 
 **Previous Fixes (Dec 19, 2025 - Evening)**:
 - ✅ **QueryValidation Parser Normalization**: Fixed reverse direction validation

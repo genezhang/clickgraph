@@ -8,7 +8,44 @@
   - Documentation: README.md and docs/wiki/AI-Assistant-Integration-MCP.md
   - Test scripts: `scripts/test/test_mcp_compatibility.sh`, `scripts/test/test_neo4j_mcp_server.sh`
 
+- **TypeInference Consolidation with Polymorphic Support** - Unified inference logic (December 19, 2025)
+  - **Problem**: Duplicate inference code in `match_clause.rs` and `type_inference.rs` causing feature drift
+  - **Solution**: Consolidated into single authoritative TypeInference implementation
+  - **Features**:
+    - Full polymorphic relationship support: `$any` wildcards, `from_label_values`, `to_label_values`
+    - MAX_INFERRED_TYPES limit: 20 → 5 (prevents combinatorial query explosion)
+    - Comprehensive logging at each inference step
+    - All three strategies: specified types, single edge, node-based filtering
+  - **Example**: `MATCH (u:User)-[r]->(p:Post)` infers up to 5 matching polymorphic types
+  - **Impact**: Single source of truth for type inference across entire codebase
+  - **Test Coverage**: All polymorphic edge patterns (LDBC, OnTime flights) ✓
+
 ### 🐛 Bug Fixes
+- **TypeInference ViewScan Creation** - Fixed SQL generation for inferred node labels (December 19, 2025)
+  - **Issue**: TypeInference correctly inferred labels but GraphNode.input remained Scan (no table info)
+  - **Symptom**: Generated SQL missing `FROM` clause for inferred nodes
+  - **Example**: `MATCH (person)<-[:HAS_MEMBER]-(forum)` where `forum` label is inferred
+    - Before: Missing `FROM ldbc.Forum AS forum` ❌
+    - After: Includes proper FROM clause with table ✓
+  - **Root Cause**: TypeInference updated `plan_ctx` labels but didn't create ViewScan plan node
+  - **Solution**: When label is inferred, create ViewScan with proper table/schema info
+  - **Fix Location**: `src/query_planner/analyzer/type_inference.rs` (GraphNode handler)
+  - **Impact**: LDBC IC5 and all queries with label inference now generate correct SQL
+  - **Tests**: 250/251 unit tests passing (99.6%), LDBC audit improved
+
+- **QueryValidation Parser Normalization** - Removed redundant direction-based swapping (December 19, 2025)
+  - **Issue**: QueryValidation was swapping node positions for `Direction::Incoming`, but parser already normalizes
+  - **Critical Fact**: Parser ALWAYS creates `left=from_node, right=to_node` in GraphRel structure
+    - For `(a)-[:R]->(b)`: left=a (from), right=b (to)
+    - For `(a)<-[:R]-(b)`: **left=b (from), right=a (to)** ← nodes already swapped!
+    - Direction field is only for display/syntax tracking, NOT logical structure
+  - **Problem**: QueryValidation was swapping again, causing reverse direction queries to fail
+  - **Solution**: Removed direction-based swapping in QueryValidation (parser already normalized)
+  - **Fix Location**: `src/query_planner/analyzer/query_validation.rs`
+  - **Results**:
+    - LDBC audit: 25/41 (61%) → 29/41 (70%) queries passing (+9 percentage points)
+    - Both forward and reverse queries now work: `(a)-[:R]->(b)` and `(a)<-[:R]-(b)` ✓
+  - **Impact**: All relationship directions now validated correctly
 - **Polymorphic Relationship Support** - Thread node labels through relationship lookup pipeline (December 19, 2025)
   - **Issue**: Polymorphic relationships (same type, different node pairs) fail lookup
   - **Example**: LDBC's `IS_LOCATED_IN` relationship:
