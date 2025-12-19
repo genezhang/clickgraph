@@ -48,7 +48,7 @@ echo "✅ Tables created"
 
 echo ""
 echo "Step 5: Check for data files..."
-DATA_DIR="ldbc/data"
+DATA_DIR="benchmarks/ldbc_snb/data"
 if [ ! -d "$DATA_DIR" ]; then
     echo "⚠️  Data directory not found: $DATA_DIR"
     echo ""

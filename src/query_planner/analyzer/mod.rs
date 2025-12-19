@@ -15,6 +15,7 @@ use crate::{
             duplicate_scans_removing::DuplicateScansRemoving, filter_tagging::FilterTagging,
             graph_join_inference::GraphJoinInference,
             graph_traversal_planning::GraphTRaversalPlanning, group_by_building::GroupByBuilding,
+            label_inference::LabelInference,
             plan_sanitization::PlanSanitization, projection_tagging::ProjectionTagging,
             projected_columns_resolver::ProjectedColumnsResolver,
             query_validation::QueryValidation, schema_inference::SchemaInference,
@@ -42,6 +43,7 @@ mod graph_context;
 mod graph_join_inference;
 mod graph_traversal_planning;
 mod group_by_building;
+mod label_inference;
 mod plan_sanitization;
 mod projection_tagging;
 mod projected_columns_resolver;
@@ -64,7 +66,19 @@ pub fn initial_analyzing(
         plan
     };
 
-    // Step 1.5: CTE Schema Resolver - register CTE schemas in plan_ctx for analyzer/planner
+    // Step 2: Label Inference - infer missing node labels from relationship schemas
+    // This runs early to ensure all downstream passes have complete label information
+    // Works across WITH boundaries using existing plan_ctx scope barriers
+    let label_inference = LabelInference::new();
+    let plan = if let Ok(transformed_plan) =
+        label_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)
+    {
+        transformed_plan.get_plan()
+    } else {
+        plan
+    };
+
+    // Step 3: CTE Schema Resolver - register CTE schemas in plan_ctx for analyzer/planner
     // This runs after SchemaInference to ensure property mappings are available
     // Registers WithClause CTE schemas, making column info available to downstream passes
     let cte_schema_resolver = CteSchemaResolver::new();
@@ -78,7 +92,7 @@ pub fn initial_analyzing(
         plan
     };
 
-    // Step 1.6: Projected Columns Resolver - pre-compute projected columns for GraphNodes
+    // Step 4: Projected Columns Resolver - pre-compute projected columns for GraphNodes
     // This runs after SchemaInference to ensure we have property mappings available
     // Populates GraphNode.projected_columns, eliminating need for renderer to traverse plan
     let projected_columns_resolver = ProjectedColumnsResolver::new();
@@ -92,14 +106,14 @@ pub fn initial_analyzing(
         plan
     };
 
-    // Step 2: Query Validation - VALIDATE EARLY before any transformations
+    // Step 5: Query Validation - VALIDATE EARLY before any transformations
     // This prevents invalid queries from being processed further
     let query_validation = QueryValidation::new();
     let transformed_plan =
         query_validation.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?;
     let plan = transformed_plan.get_plan();
 
-    // Step 3: Property Mapping - map Cypher properties to database columns (ONCE)
+    // Step 6: Property Mapping - map Cypher properties to database columns (ONCE)
     // NOTE: FilterTagging now PRESERVES cross-table filters (those referencing WITH aliases
     // and having CartesianProduct descendants) instead of extracting them. This allows
     // CartesianJoinExtraction (step 3.5) to pick up the property-mapped predicate.
