@@ -182,6 +182,48 @@ impl VariableResolver {
         name
     }
 
+    /// Collect all GraphNode and GraphRel aliases from a plan tree
+    /// This is used to populate scope with schema entities from MATCH patterns
+    /// 
+    /// Stops at WithClause boundaries (doesn't recurse past WITH)
+    fn collect_schema_entities(&self, plan: &Arc<LogicalPlan>, entities: &mut HashMap<String, EntityType>) {
+        match plan.as_ref() {
+            LogicalPlan::GraphNode(gn) => {
+                log::debug!("🔍 collect_schema_entities: Found GraphNode '{}'", gn.alias);
+                entities.insert(gn.alias.clone(), EntityType::Node);
+                self.collect_schema_entities(&gn.input, entities);
+            }
+            LogicalPlan::GraphRel(rel) => {
+                log::debug!("🔍 collect_schema_entities: Found GraphRel '{}'", rel.alias);
+                entities.insert(rel.alias.clone(), EntityType::Relationship);
+                // Recurse into left, center, right
+                self.collect_schema_entities(&rel.left, entities);
+                self.collect_schema_entities(&rel.center, entities);
+                self.collect_schema_entities(&rel.right, entities);
+            }
+            LogicalPlan::Filter(filter) => {
+                self.collect_schema_entities(&filter.input, entities);
+            }
+            // STOP at WithClause - don't include entities from before the WITH
+            LogicalPlan::WithClause(_) => {
+                log::debug!("🔍 collect_schema_entities: Stopping at WithClause boundary");
+            }
+            LogicalPlan::Projection(proj) => {
+                self.collect_schema_entities(&proj.input, entities);
+            }
+            LogicalPlan::Union(union) => {
+                for input in &union.inputs {
+                    self.collect_schema_entities(input, entities);
+                }
+            }
+            LogicalPlan::GroupBy(gb) => {
+                self.collect_schema_entities(&gb.input, entities);
+            }
+            // Empty, Scan, Subquery: no entities
+            _ => {}
+        }
+    }
+
     /// Resolve variables in the plan tree
     ///
     /// This is the main recursive function that:
@@ -267,56 +309,58 @@ impl VariableResolver {
                     proj.items.len()
                 );
 
-                // CRITICAL FIX: Check if input is WithClause
-                // If so, we need to use the scope that WithClause creates for resolving projection items
-                let (input_changed, new_input, projection_scope) = if let LogicalPlan::WithClause(wc) = proj.input.as_ref() {
-                    log::info!("🔍 VariableResolver: Projection input is WithClause - will use exported scope");
+                // First, resolve the input
+                let input_resolved = self.resolve(proj.input.clone(), scope)?;
+                let input_changed = input_resolved.is_yes();
+                let new_input = input_resolved.get_plan();
 
-                    // First, resolve the WithClause input
-                    let input_resolved = self.resolve(proj.input.clone(), scope)?;
-                    let input_changed = input_resolved.is_yes();
-                    let new_input = input_resolved.get_plan();
+                // CRITICAL FIX: Collect all schema entities (GraphNode/GraphRel aliases) from input
+                // This handles queries like:
+                //   MATCH (a) WITH a MATCH (a)-[:FOLLOWS]->(b) RETURN b.name
+                // Where 'b' is defined in MATCH after WITH, but before Projection
+                let mut schema_entities = HashMap::new();
+                self.collect_schema_entities(&new_input, &mut schema_entities);
+                log::info!("🔍 VariableResolver: Collected {} schema entities from input: {:?}", 
+                           schema_entities.len(), schema_entities.keys().collect::<Vec<_>>());
 
-                    // Extract the WithClause from resolved input to get its exported aliases
-                    if let LogicalPlan::WithClause(resolved_wc) = new_input.as_ref() {
-                        // Create a NEW scope with the exported aliases from WITH
-                        let mut with_scope = scope.clone();
-
-                        log::info!("🔍 VariableResolver: Creating projection scope with {} exported aliases from WITH",
-                                   resolved_wc.exported_aliases.len());
-                        log::info!("🔍 VariableResolver: WithClause has {} cte_references",
-                                   resolved_wc.cte_references.len());
-
-                        // Use the CTE references that were already populated by WithClause
-                        for alias in &resolved_wc.exported_aliases {
-                            if let Some(cte_name) = resolved_wc.cte_references.get(alias) {
-                                log::info!("🔍 VariableResolver: Adding '{}' to projection scope as CTE column from '{}'",
-                                           alias, cte_name);
-                                with_scope.add_variable(
-                                    alias.clone(),
-                                    VarSource::CteColumn {
-                                        cte_name: cte_name.clone(),
-                                        column_name: alias.clone(),
-                                    },
-                                );
-                            } else {
-                                log::warn!("🔍 VariableResolver: Exported alias '{}' not found in cte_references!", alias);
-                            }
+                // Build projection scope
+                // Start with current scope (or WITH exported scope if input is WithClause)
+                let mut projection_scope = if let LogicalPlan::WithClause(wc) = new_input.as_ref() {
+                    log::info!("🔍 VariableResolver: Input is WithClause, adding {} exported aliases to scope",
+                               wc.exported_aliases.len());
+                    
+                    let mut with_scope = scope.clone();
+                    for alias in &wc.exported_aliases {
+                        if let Some(cte_name) = wc.cte_references.get(alias) {
+                            log::info!("🔍 VariableResolver: Adding WITH alias '{}' from CTE '{}'",
+                                       alias, cte_name);
+                            with_scope.add_variable(
+                                alias.clone(),
+                                VarSource::CteColumn {
+                                    cte_name: cte_name.clone(),
+                                    column_name: alias.clone(),
+                                },
+                            );
                         }
-
-                        (input_changed, new_input, with_scope)
-                    } else {
-                        // Shouldn't happen, but fallback to original scope
-                        log::warn!("🔍 VariableResolver: Resolved input is not WithClause anymore!");
-                        (input_changed, new_input, scope.clone())
                     }
+                    with_scope
                 } else {
-                    // Input is not WithClause, use current scope
-                    let input_resolved = self.resolve(proj.input.clone(), scope)?;
-                    let input_changed = input_resolved.is_yes();
-                    let new_input = input_resolved.get_plan();
-                    (input_changed, new_input, scope.clone())
+                    scope.clone()
                 };
+
+                // CRITICAL FIX: Add all schema entities to projection scope
+                // This makes nodes/relationships from current MATCH visible in Projection
+                for (entity_alias, entity_type) in schema_entities {
+                    log::info!("🔍 VariableResolver: Adding schema entity '{}' ({:?}) to projection scope",
+                               entity_alias, entity_type);
+                    projection_scope.add_variable(
+                        entity_alias.clone(),
+                        VarSource::SchemaEntity {
+                            alias: entity_alias,
+                            entity_type,
+                        },
+                    );
+                }
 
                 // Resolve projection items using the appropriate scope
                 // (either current scope or WITH's exported scope)
