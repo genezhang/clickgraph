@@ -139,9 +139,16 @@ WHERE person2 <> person3  # Explicit inequality check
 **Error**: "SQL doesn't contain SELECT" or "No select items found"  
 
 **Known Issues**:
-- complex-13: CASE...IS NULL syntax (actually works in parser, SQL generation issue)
+- ~~complex-13: CASE...IS NULL syntax~~ ✅ **CASE works! Query fails due to path variable assignment: `path = shortestPath(...)`**
 - bi-10, bi-15, bi-19, bi-20: APOC/GDS procedures (clear errors already)
 - ~~bi-13: DateTime property accessors (`.year`, `.month`)~~ ✅ **FIXED Dec 19, 2025**
+
+**CASE Expression Status (Dec 19, 2025)** ✅:
+All CASE variants fully implemented and working:
+- Simple CASE: `CASE x WHEN val1 THEN res1 WHEN val2 THEN res2 ELSE default END`
+- Searched CASE: `CASE WHEN condition1 THEN res1 WHEN condition2 THEN res2 ELSE default END`  
+- CASE with IS NULL: `CASE x IS NULL WHEN true THEN 'null' ELSE 'not null' END`
+- SQL generation: ClickHouse `caseWithExpression()` for simple CASE, standard CASE...END for searched
 
 **bi-13 Fix (Dec 19, 2025)**:
 Temporal property accessors now converted to function calls at parser level:
