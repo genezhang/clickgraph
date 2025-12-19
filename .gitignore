@@ -16,6 +16,10 @@ STATUS.md
 # Process management
 server.pid
 
+# Log files (regenerate as needed)
+*.log
+/logs/
+
 # Test artifacts
 *.pyc
 __pycache__/
