@@ -48,8 +48,8 @@ RETURN friend.id                  # ❌ Fails: 'friend' not in plan_ctx
 
 #### 1.2 Pattern Comprehensions Not Supported (2 queries - 17%)
 **Queries**: bi-8, bi-14  
-**Error**: Various (parser errors, "No table context for alias", etc.)  
-**Root Cause**: Pattern comprehensions `[(pattern) | projection]` are NOT implemented
+**Status**: ⚠️ NOT IMPLEMENTED (clear error messages added Dec 19, 2025)  
+**Error Message**: `Pattern comprehensions [(pattern) | projection] are not yet supported. Use MATCH with collect() instead.`
 
 **What are Pattern Comprehensions?**
 Pattern comprehensions are Cypher syntax for creating lists by matching graph patterns:
@@ -68,35 +68,26 @@ WITH
   AS score
 ```
 
-**Why The Confusing Error Messages?**
+**Parser Enhancement (Dec 19, 2025)**:
 
-When parsing `100 * size([(tag)<-[r]-(f) | f])`:
-1. Parser sees `100 *` successfully
-2. Tries to parse RHS: `size([(tag)<-[r]-(f) | f])`
-3. `parse_function_call` tries to parse `size` as function name ✓
-4. Looks for `(` and finds it ✓
-5. Tries to parse argument: `[(tag)<-[r]-(f) | f]`
-6. This looks like a list `[...]`, so `parse_list_literal` is tried
-7. Inside the list, tries to parse `(tag)<-[r]-(f) | f` as expression
-8. The `|` character is NOT valid in normal expressions
-9. Parser fails to parse the full argument
-10. `parse_function_call` FAILS (can't parse args)
-11. Falls back to `parse_literal_or_variable_expression`
-12. Matches `size` as a variable
-13. Later stages error: "No table context for alias `size`"
+Previously, pattern comprehensions caused confusing error messages like:
+- ❌ "No table context for alias `size`"  
+- ❌ Server crashes with cascading parse failures
 
-**Why Does `size([pattern]) * 100` Sometimes Work?**
+Now the parser detects pattern comprehensions early and provides:
+- ✅ Clear error: "Pattern comprehensions... not yet supported"
+- ✅ Helpful guidance: "Use MATCH with collect() instead"
+- ✅ No more confusing fallback behavior or crashes
 
-It depends on the pattern complexity. Simple cases might partially parse before hitting the `|` separator.
-
-**Current Status**: ❌ NOT IMPLEMENTED
-- Pattern comprehensions are advanced Cypher syntax
-- Would require significant parser and planner work
-- Used extensively in LDBC BI queries
+**Implementation Requirements**:
+- New AST nodes for pattern comprehension expressions
+- Parser rules for `[(pattern) | projection]` syntax  
+- Query planning to convert patterns to SQL subqueries
+- Projection logic for the `| projection` part
 
 **Workaround**: Rewrite queries using explicit MATCH + collect() instead of pattern comprehensions
 
-**Complexity**: HIGH - Requires new AST nodes, parser rules, and query planning logic  
+**Complexity**: HIGH - Requires significant parser and planner work  
 **Priority**: MEDIUM - Blocks 2 LDBC BI queries, but workarounds exist
 
 #### 1.3 Unknown Parser Crashes (7 queries - 58%)
