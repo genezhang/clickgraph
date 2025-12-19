@@ -37,8 +37,11 @@ pub fn evaluate_optional_match_clause<'a>(
     // Create a temporary MatchClause from the OptionalMatchClause
     // This allows us to reuse the existing match clause logic
     let temp_match_clause = ast::MatchClause {
-        path_patterns: optional_match_clause.path_patterns.clone(),
-        path_variable: None, // OPTIONAL MATCH doesn't support path variables
+        path_patterns: optional_match_clause
+            .path_patterns
+            .iter()
+            .map(|p| (None, p.clone())) // Wrap each pattern with None for path_variable
+            .collect(),
     };
 
     // Process the patterns using the _with_optional variant and pass is_optional=true

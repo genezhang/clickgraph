@@ -2094,7 +2094,7 @@ pub fn evaluate_match_clause_with_optional<'a>(
     plan_ctx: &mut PlanCtx,
     is_optional: bool,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
-    for (idx, path_pattern) in match_clause.path_patterns.iter().enumerate() {
+    for (idx, (path_variable, path_pattern)) in match_clause.path_patterns.iter().enumerate() {
         match path_pattern {
             ast::PathPattern::Node(node_pattern) => {
                 plan = traverse_node_pattern(node_pattern, plan, plan_ctx)?;
@@ -2106,7 +2106,7 @@ pub fn evaluate_match_clause_with_optional<'a>(
                     plan_ctx,
                     idx,
                     None,
-                    match_clause.path_variable,
+                    *path_variable,
                     is_optional,
                 )?;
             }
@@ -2118,7 +2118,7 @@ pub fn evaluate_match_clause_with_optional<'a>(
                     plan_ctx,
                     idx,
                     Some(ShortestPathMode::Shortest),
-                    match_clause.path_variable,
+                    *path_variable,
                 )?;
             }
             ast::PathPattern::AllShortestPaths(inner_pattern) => {
@@ -2129,7 +2129,7 @@ pub fn evaluate_match_clause_with_optional<'a>(
                     plan_ctx,
                     idx,
                     Some(ShortestPathMode::AllShortest),
-                    match_clause.path_variable,
+                    *path_variable,
                 )?;
             }
         }
@@ -2584,10 +2584,9 @@ mod tests {
         };
 
         let match_clause = ast::MatchClause {
-            path_variable: None,
             path_patterns: vec![
-                ast::PathPattern::Node(node_pattern),
-                ast::PathPattern::ConnectedPattern(vec![connected_pattern]),
+                (None, ast::PathPattern::Node(node_pattern)),
+                (None, ast::PathPattern::ConnectedPattern(vec![connected_pattern])),
             ],
         };
 

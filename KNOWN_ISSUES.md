@@ -134,14 +134,21 @@ WHERE person2 <> person3  # Explicit inequality check
 **Complexity**: MEDIUM - Non-standard syntax, low priority  
 **Priority**: LOW - Single LDBC query, has simple workarounds
 
-#### 1.4 Other Parse Errors (5 queries - 42%)
-**Queries**: complex-13, bi-10, bi-15, bi-19, bi-20  
+#### 1.4 Procedure Calls Not Supported (4 queries - 33%)
+**Queries**: bi-10, bi-15, bi-19, bi-20  
 **Error**: "SQL doesn't contain SELECT" or "No select items found"  
 
 **Known Issues**:
-- ~~complex-13: CASE...IS NULL syntax~~ ✅ **CASE works! Query fails due to path variable assignment: `path = shortestPath(...)`**
+- ~~complex-13: Path variable assignment in comma-separated patterns~~ ✅ **FIXED Dec 19, 2025** - Parsing now works! (SQL generation has minor bug with `t.hop_count`)
 - bi-10, bi-15, bi-19, bi-20: APOC/GDS procedures (clear errors already)
 - ~~bi-13: DateTime property accessors (`.year`, `.month`)~~ ✅ **FIXED Dec 19, 2025**
+
+**Path Variable Support (Dec 19, 2025)** ✅:
+Path variables in comma-separated patterns now fully parse:
+- ✅ `MATCH (a:Person), (b:Person), path = shortestPath((a)-[:KNOWS*]-(b)) RETURN path`
+- ✅ AST refactored: `path_patterns: Vec<(Option<&str>, PathPattern)>` (each pattern can have path variable)
+- ✅ Parser updated: `parse_pattern_with_optional_variable()` function
+- ⚠️ SQL generation has minor alias bug (`t.hop_count` should be `vlp1.hop_count`)
 
 **CASE Expression Status (Dec 19, 2025)** ✅:
 All CASE variants fully implemented and working:

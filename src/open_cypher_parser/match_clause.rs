@@ -15,34 +15,45 @@ pub fn parse_match_clause(
     input: &'_ str,
 ) -> IResult<&'_ str, MatchClause<'_>, OpenCypherParsingError<'_>> {
     let (input, _) = tag_no_case("MATCH").parse(input)?;
-    let (mut input, _) = multispace0(input)?;
+    let (input, _) = multispace0(input)?;
 
-    // Try to parse optional path variable: "p = "
-    let mut path_variable = None;
-    if let Ok((rest, name)) = parse_identifier(input) {
-        let (rest, _) = multispace0(rest)?;
-        if let Ok((rest, _)) = char::<_, nom::error::Error<_>>('=')(rest) {
-            let (rest, _) = multispace0(rest)?;
-            path_variable = Some(name);
-            input = rest;
-        }
-    }
-
+    // Parse comma-separated list of (optional path_variable, pattern)
     let (input, pattern_parts) = context(
         "Error in match clause",
         separated_list1(
             delimited(multispace0, char(','), multispace0),
-            cut(path_parser),
+            cut(parse_pattern_with_optional_variable),
         ),
     )
     .parse(input)?;
 
     let match_clause = MatchClause {
         path_patterns: pattern_parts,
-        path_variable,
     };
 
     Ok((input, match_clause))
+}
+
+/// Parse optional "varname = " followed by pattern
+fn parse_pattern_with_optional_variable(
+    input: &str,
+) -> IResult<&str, (Option<&str>, PathPattern<'_>), OpenCypherParsingError<'_>> {
+    let mut input_after_var = input;
+    let mut path_variable = None;
+    
+    // Try to parse "varname = "
+    if let Ok((rest, name)) = parse_identifier(input) {
+        let (rest, _) = multispace0(rest)?;
+        if let Ok((rest, _)) = char::<_, nom::error::Error<_>>('=')(rest) {
+            let (rest, _) = multispace0(rest)?;
+            path_variable = Some(name);
+            input_after_var = rest;
+        }
+    }
+    
+    // Parse the pattern
+    let (input, pattern) = path_parser(input_after_var)?;
+    Ok((input, (path_variable, pattern)))
 }
 
 fn path_parser(input: &str) -> IResult<&str, PathPattern<'_>, OpenCypherParsingError<'_>> {
