@@ -82,11 +82,17 @@ use crate::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::AnalyzerError,
         },
+        logical_expr::Direction,
         logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan},
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
 };
+
+/// Maximum number of relationship types that can be inferred when unspecified.
+/// Prevents excessive UNION ALL expansion that would generate extremely large queries.
+/// If inference would result in more types, user must specify explicit type(s).
+const MAX_INFERRED_TYPES: usize = 20;
 
 pub struct TypeInference;
 
@@ -126,6 +132,7 @@ impl TypeInference {
                     &rel.labels,
                     &rel.left_connection,
                     &rel.right_connection,
+                    &rel.direction,
                     plan_ctx,
                     graph_schema,
                 )?;
@@ -449,28 +456,57 @@ impl TypeInference {
 
     /// Infer edge type(s) from node labels or schema.
     ///
-    /// Strategy:
+    /// **Strategy** (combines match_clause and type_inference logic):
     /// 1. If edge_types already specified → use them
-    /// 2. If both node labels known → find relationships connecting them
-    /// 3. If only one edge type in entire schema → use it
+    /// 2. If schema has only one relationship → use it
+    /// 3. If both node labels known → find relationships connecting them (supports polymorphic)
     /// 4. Otherwise → return None (can't infer)
     ///
+    /// **Polymorphic Support**:
+    /// - Handles `$any` wildcards in schema (from polymorphic edge tables)
+    /// - Checks `from_label_values` and `to_label_values` for runtime discovery
+    /// - Applies MAX_INFERRED_TYPES limit to prevent excessive UNION expansion
+    ///
     /// Returns: Some(vec![edge_type]) if inferred, None if couldn't infer
+    /// Errors: TooManyInferredTypes if more than MAX_INFERRED_TYPES matches
     fn infer_edge_types(
         &self,
         current_types: &Option<Vec<String>>,
         left_connection: &str,
         right_connection: &str,
+        direction: &Direction,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Option<Vec<String>>> {
-        // If types already specified, use them
+        // Strategy 1: If types already specified, use them
         if current_types.is_some() {
             log::debug!("🔗 TypeInference: Edge types already specified: {:?}", current_types);
             return Ok(current_types.clone());
         }
 
-        // Try to get node labels from plan_ctx
+        let rel_schemas = graph_schema.get_relationships_schemas();
+
+        // Strategy 2: If schema has only one relationship, use it
+        // Extract unique type names (excluding composite keys)
+        let all_rel_types: Vec<String> = rel_schemas
+            .keys()
+            .filter_map(|k| {
+                // Extract type name from composite key "TYPE::FROM::TO" or simple "TYPE"
+                k.split("::").next().map(|s| s.to_string())
+            })
+            .collect::<std::collections::HashSet<_>>() // Deduplicate
+            .into_iter()
+            .collect();
+
+        if all_rel_types.len() == 1 {
+            log::info!(
+                "🔗 TypeInference: Only one edge type in schema, using: {}",
+                all_rel_types[0]
+            );
+            return Ok(Some(vec![all_rel_types[0].clone()]));
+        }
+
+        // Strategy 3: Try to get node labels from plan_ctx
         let left_label = plan_ctx
             .get_table_ctx(left_connection)
             .ok()
@@ -486,54 +522,99 @@ impl TypeInference {
             left_connection, left_label, right_connection, right_label
         );
 
-        // Strategy 2: If both labels known, find relationships connecting them
-        if let (Some(ref from_label), Some(ref to_label)) = (left_label, right_label) {
-            let connecting_rels: Vec<String> = graph_schema
-                .get_relationships_schemas()
-                .iter()
-                .filter(|(_, rel_schema)| {
-                    &rel_schema.from_node == from_label && &rel_schema.to_node == to_label
-                })
-                .map(|(rel_type, _)| rel_type.clone())
-                .collect();
-
-            if !connecting_rels.is_empty() {
-                log::info!(
-                    "🔗 TypeInference: Inferred edge type(s) from node labels {} -> {}: {:?}",
-                    from_label, to_label, connecting_rels
-                );
-                return Ok(Some(connecting_rels));
-            } else {
-                log::debug!(
-                    "🔗 TypeInference: No relationships found connecting {} -> {}",
-                    from_label, to_label
-                );
-            }
+        // If both labels unknown and multiple relationships exist, can't infer
+        if left_label.is_none() && right_label.is_none() {
+            log::debug!(
+                "🔗 TypeInference: Both nodes untyped and schema has {} relationships, cannot infer",
+                rel_schemas.len()
+            );
+            return Ok(None);
         }
 
-        // Strategy 3: If only one edge type in entire schema, use it
-        let all_rel_types: Vec<String> = graph_schema
-            .get_relationships_schemas()
-            .keys()
-            .filter_map(|k| {
-                // Extract type name from composite key "TYPE::FROM::TO"
-                k.split("::").next().map(|s| s.to_string())
+        // Strategy 3: Filter relationships by node type compatibility
+        // Supports polymorphic relationships with $any wildcards and label_values
+        let matching_types: Vec<String> = rel_schemas
+            .iter()
+            .filter(|(_, rel_schema)| {
+                // Helper: Check if query label matches schema (supports $any and label_values)
+                let matches_from = |query_label: &Option<String>| -> bool {
+                    query_label
+                        .as_ref()
+                        .map(|l| {
+                            // Direct match
+                            if l == &rel_schema.from_node || &rel_schema.from_node == "$any" {
+                                return true;
+                            }
+                            // Check polymorphic from_label_values
+                            if let Some(values) = &rel_schema.from_label_values {
+                                return values.contains(l);
+                            }
+                            false
+                        })
+                        .unwrap_or(true) // None means any label OK
+                };
+
+                let matches_to = |query_label: &Option<String>| -> bool {
+                    query_label
+                        .as_ref()
+                        .map(|l| {
+                            // Direct match
+                            if l == &rel_schema.to_node || &rel_schema.to_node == "$any" {
+                                return true;
+                            }
+                            // Check polymorphic to_label_values  
+                            if let Some(values) = &rel_schema.to_label_values {
+                                return values.contains(l);
+                            }
+                            false
+                        })
+                        .unwrap_or(true) // None means any label OK
+                };
+
+                // CRITICAL: Parser already normalized left=from, right=to
+                // Direction field is only for display, not for logical structure!
+                // Always check: left_label with from_node, right_label with to_node
+                matches_from(&left_label) && matches_to(&right_label)
             })
-            .collect::<std::collections::HashSet<_>>() // Deduplicate
-            .into_iter()
+            .map(|(type_name, _)| type_name.clone())
             .collect();
 
-        if all_rel_types.len() == 1 {
-            log::info!(
-                "🔗 TypeInference: Only one edge type in schema, using: {}",
-                all_rel_types[0]
+        if matching_types.is_empty() {
+            log::debug!(
+                "🔗 TypeInference: No relationships found connecting {:?} -> {:?}",
+                left_label, right_label
             );
-            return Ok(Some(vec![all_rel_types[0].clone()]));
+            return Ok(None);
         }
 
-        // Can't infer
-        log::debug!("🔗 TypeInference: Could not infer edge type");
-        Ok(None)
+        // Check if too many types would result in excessive UNION branches
+        if matching_types.len() > MAX_INFERRED_TYPES {
+            let types_preview: Vec<_> = matching_types.iter().take(5).cloned().collect();
+            let types_str = if matching_types.len() > 5 {
+                format!("{}, ...", types_preview.join(", "))
+            } else {
+                matching_types.join(", ")
+            };
+
+            return Err(AnalyzerError::InvalidPlan(format!(
+                "Too many matching relationship types ({}) for {:?}->{:?}: [{}]. Max allowed is {}. Please specify explicit relationship type(s).",
+                matching_types.len(), left_label, right_label, types_str, MAX_INFERRED_TYPES
+            )));
+        }
+
+        if matching_types.len() == 1 {
+            log::info!(
+                "🔗 TypeInference: Inferred edge type '{}' from node labels {:?} -> {:?}",
+                matching_types[0], left_label, right_label
+            );
+        } else {
+            log::info!(
+                "🔗 TypeInference: Multiple matching types {:?} for {:?} -> {:?}, will expand to UNION",
+                matching_types, left_label, right_label
+            );
+        }
+
+        Ok(Some(matching_types))
     }
 
     /// Get existing node label or infer from edge type(s).
