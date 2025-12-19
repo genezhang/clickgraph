@@ -2,6 +2,38 @@
 //!
 //! **Purpose**: Infer missing node labels AND relationship types from graph schema.
 //!
+//! **CRITICAL INVARIANT** ⚠️ **Parser Normalization**:
+//! The Cypher parser ALREADY normalizes relationship direction in the logical plan:
+//! - `left_connection` ALWAYS means the FROM node (source of relationship)
+//! - `right_connection` ALWAYS means the TO node (target of relationship)  
+//! - `direction` field only records original syntax (for display/SQL generation)
+//!
+//! Examples:
+//! ```cypher
+//! // Outgoing: (a)-[:REL]->(b)
+//! // Parser creates: left="a", right="b", direction=Outgoing
+//! // a is FROM, b is TO ✓
+//!
+//! // Incoming: (a)<-[:REL]-(b)  
+//! // Parser creates: left="b", right="a", direction=Incoming
+//! // b is FROM, a is TO ✓ (parser swapped them!)
+//! ```
+//!
+//! **TypeInference Strategy** (query schema like a database):
+//! Use KNOWN facts as filters to find candidates for UNKNOWN labels:
+//!
+//! **Known Facts**:
+//! - Relationship type (if specified): `[:KNOWS]`
+//! - Node labels (if specified): `(a:Person)`
+//! - Direction (normalized in plan structure, not the field!)
+//! - Graph schema (relationship definitions: FROM→TO)
+//!
+//! **Inference Rules**:
+//! 1. If relationship type known → look up schema → infer node labels from from_node/to_node
+//! 2. If both node labels known → look up schema → infer relationship type
+//! 3. Always use: left_connection → from_node, right_connection → to_node
+//!    (DO NOT check direction field - parser already normalized!)
+//!
 //! **Problem**: Cypher allows omitting types when they can be inferred:
 //! ```cypher
 //! MATCH (a:Person)-[r]->(b)        -- r has no type, b has no label
@@ -99,10 +131,14 @@ impl TypeInference {
                 )?;
 
                 // STEP 2: Infer node labels from edge types
+                // No direction swapping needed - syntactic left/right already map correctly:
+                // - In (a)<-[:T]-(b), arrow points b→a, so b connects to from_id, a connects to to_id
+                // - Relationship schema defines from_node → to_node
+                // - So b (left) is from_node, a (right) is to_node ✓
                 let left_label = self.get_or_infer_node_label(
                     &rel.left_connection,
                     &edge_types,
-                    true, // is_from_side
+                    true, // left is from_node
                     plan_ctx,
                     graph_schema,
                 )?;
@@ -110,7 +146,7 @@ impl TypeInference {
                 let right_label = self.get_or_infer_node_label(
                     &rel.right_connection,
                     &edge_types,
-                    false, // is_to_side
+                    false, // right is to_node
                     plan_ctx,
                     graph_schema,
                 )?;
@@ -556,7 +592,7 @@ impl TypeInference {
                 ))
             })?;
 
-        // Infer label from schema
+        // Infer label from schema based on whether node is on from or to side
         let inferred_label = if is_from_side {
             &rel_schema.from_node
         } else {
@@ -574,7 +610,8 @@ impl TypeInference {
         // Update TableCtx with inferred label
         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(node_alias) {
             table_ctx.set_labels(Some(vec![inferred_label.clone()]));
-            log::debug!("🏷️ TypeInference: Updated TableCtx for '{}' with label '{}'", node_alias, inferred_label);
+            log::info!("🏷️ TypeInference: SET plan_ctx['{}'] = '{}' (from {} side of {})", 
+                      node_alias, inferred_label, if is_from_side { "from" } else { "to" }, rel_type);
         } else {
             log::warn!(
                 "🏷️ TypeInference: Could not find TableCtx for '{}' to update with inferred label",
