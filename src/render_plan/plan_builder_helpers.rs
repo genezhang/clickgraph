@@ -3282,7 +3282,7 @@ pub(super) fn sort_joins_by_dependency(
 ) -> Vec<super::Join> {
     use std::collections::{HashMap, HashSet};
     
-    log::debug!("🔍 Sorting {} JOINs by dependency", joins.len());
+    println!("🔍 DEBUG sort_joins_by_dependency: Sorting {} JOINs by dependency", joins.len());
     
     // Build a set of available aliases (FROM table + already processed JOINs)
     let mut available: HashSet<String> = HashSet::new();
@@ -3292,11 +3292,11 @@ pub(super) fn sort_joins_by_dependency(
         if let Some(table_ref) = &from.table {
             if let Some(alias) = &table_ref.alias {
                 available.insert(alias.clone());
-                log::debug!("  FROM alias: {}", alias);
+                println!("  DEBUG FROM alias: {}", alias);
             } else {
                 // Use table name as implicit alias
                 available.insert(table_ref.name.clone());
-                log::debug!("  FROM table (implicit alias): {}", table_ref.name);
+                println!("  DEBUG FROM table (implicit alias): {}", table_ref.name);
             }
         }
     }
@@ -3315,8 +3315,8 @@ pub(super) fn sort_joins_by_dependency(
         // Remove self-reference (the JOIN's own alias)
         refs.remove(&join.table_alias);
         
-        log::debug!(
-            "  JOIN[{}] {} AS {} depends on: {:?}",
+        println!(
+            "  DEBUG JOIN[{}] {} AS {} depends on: {:?}",
             idx, join.table_name, join.table_alias, refs
         );
         
@@ -3327,6 +3327,8 @@ pub(super) fn sort_joins_by_dependency(
     let mut sorted = Vec::new();
     let mut remaining: Vec<usize> = (0..joins.len()).collect();
     let mut max_iterations = joins.len() * 2; // Prevent infinite loops
+    
+    println!("  DEBUG Starting topological sort with {} JOINs", remaining.len());
     
     while !remaining.is_empty() && max_iterations > 0 {
         max_iterations -= 1;
@@ -3343,15 +3345,27 @@ pub(super) fn sort_joins_by_dependency(
             
             // Add this JOIN's alias to available set
             available.insert(joins[idx].table_alias.clone());
+            println!("  DEBUG Added JOIN[{}] {} AS {} to sorted list (available now: {:?})", 
+                     idx, joins[idx].table_name, joins[idx].table_alias, available);
             
             sorted.push(idx);
         } else {
             // No progress possible - break to avoid infinite loop
             // This can happen with circular dependencies (shouldn't occur in practice)
-            log::warn!(
-                "Could not fully sort JOINs by dependency - {} remaining with circular dependencies", 
+            println!(
+                "WARNING: Could not fully sort JOINs by dependency - {} remaining with circular dependencies", 
                 remaining.len()
             );
+            println!("  DEBUG Remaining JOINs: {:?}", remaining.iter().map(|&idx| 
+                format!("{} AS {}", joins[idx].table_name, joins[idx].table_alias)
+            ).collect::<Vec<_>>());
+            println!("  DEBUG Available aliases: {:?}", available);
+            for &idx in &remaining {
+                if let Some(deps) = dependencies.get(&idx) {
+                    println!("    JOIN[{}] {} AS {} needs: {:?}", 
+                             idx, joins[idx].table_name, joins[idx].table_alias, deps);
+                }
+            }
             break;
         }
     }
@@ -3361,7 +3375,9 @@ pub(super) fn sort_joins_by_dependency(
         sorted.push(idx);
     }
     
-    log::debug!("  Sorted order: {:?}", sorted);
+    println!("  DEBUG Sorted order: {:?}", sorted.iter().map(|&idx| 
+        format!("{} AS {}", joins[idx].table_name, joins[idx].table_alias)
+    ).collect::<Vec<_>>());
     
     // Rebuild JOIN vector in sorted order
     let original_joins = joins.clone();

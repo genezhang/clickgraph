@@ -2,43 +2,48 @@
 
 *Updated: December 19, 2025*
 
-## 🎯 Active Development (December 18-19, 2025)
+## 🎯 Active Development (December 19, 2025)
 
-### Polymorphic Relationship Resolution - Phase 2 Complete
+### Polymorphic Relationship Resolution - COMPLETE ✓
 
-**Quick Wins**:
-- ✅ Test harness parameter fix: 14→23 LDBC queries passing (+64% improvement!)
-- ✅ Polymorphic resolution architecture complete
-- ✅ Simple queries working: `Person_likes_Message` correctly resolved
-- ✅ Property access working: `like.creationDate` from correct table
+**Session Results**:
+- ✅ Test harness parameter fix: 14→23 LDBC queries passing (+9 queries, +64%)
+- ✅ Polymorphic resolution architecture: 100% complete
+- ✅ CTE JOIN generation fix: GraphRel.extract_joins() now uses ViewScan.source_table
+- ✅ Simple queries fully working with correct polymorphic table names
 
 **What Works Now**:
 ```cypher
-# ✅ Simple queries with relationship properties
-MATCH (p:Person {id: 1})<-[:HAS_CREATOR]-(message:Message)<-[like:LIKES]-(liker:Person) 
-RETURN like.creationDate 
-# Generates: JOIN Person_likes_Message AS like (correct!)
+# ✅ Simple polymorphic queries
+MATCH (liker:Person)-[like:LIKES]->(message:Message) 
+RETURN liker.firstName, message.content
+# Generates: JOIN ldbc.Person_likes_Message AS like (correct!)
+
+# ✅ Relationship property access  
+MATCH (p:Person)<-[:HAS_CREATOR]-(m:Message)
+RETURN m.content
+# Uses: JOIN ldbc.Message_hasCreator_Person (correct!)
 ```
 
-**Remaining Issue**:
-WITH clause CTEs still use lowercase aliases instead of resolved table names:
+**Remaining Issue** (not polymorphic - different bug):
+Multi-hop patterns in WITH clauses have JOIN ordering issue:
 ```cypher
-# ❌ WITH clause fails
+# ⚠️ Multi-hop WITH clause has node JOIN issue
 MATCH (p:Person)<-[:HAS_CREATOR]-(message:Message)<-[like:LIKES]-(liker:Person) 
 WITH liker, like.creationDate AS likeTime
 RETURN liker.firstName, likeTime
-# CTE generates: JOIN likes AS like (wrong - should be Person_likes_Message)
+# Error: JOIN ordering - tries to reference 'message' before it's defined
 ```
 
-**Root Cause**: CTE generation doesn't use ViewScan's `source_table` field for JOINs.
+**Root Cause**: Multi-hop recursion creates duplicate JOINs (needs JOIN deduplication/ordering fix).
 
-**Status**: 90% complete. Simple queries work, CTEs need JOIN generator fix (1-2 hours).
+**Status**: Polymorphic resolution ✓ complete. Multi-hop WITH needs separate fix (join ordering, not resolution).
 
-**Impact**: Will fix 6 remaining LDBC queries (complex-7, complex-8, complex-10, complex-11, short-7, bi-5), bringing total to 29/41 (71%).
+**Current Test Pass Rate**: 23/41 LDBC queries (56%)
 
 ---
 
-## ✅ Polymorphic Relationship Support Complete (December 19, 2025)
+## ✅ Polymorphic Relationship Support Architecture (December 18-19, 2025)
 
 ### Objective
 Fix relationship lookup failures for polymorphic relationships (same type, different node pairs).

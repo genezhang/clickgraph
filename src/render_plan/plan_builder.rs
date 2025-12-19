@@ -9712,6 +9712,15 @@ impl RenderPlanBuilder for LogicalPlan {
             filtered_joins
         );
 
+        // Sort JOINs by dependency order to ensure referenced tables are defined before use
+        // CRITICAL FIX: This was missing in CTE generation path, causing multi-hop WITH clauses
+        // to generate JOINs in wrong order (e.g., JOIN t1 ON t1.MessageId = message.id before message is defined)
+        let sorted_joins = sort_joins_by_dependency(filtered_joins, final_from.as_ref());
+        println!(
+            "DEBUG: build_simple_relationship_render_plan - sorted_joins: {:?}",
+            sorted_joins
+        );
+
         // distinct was already extracted at the beginning of this function
         println!(
             "DEBUG: build_simple_relationship_render_plan - using pre-extracted distinct: {}",
@@ -9935,7 +9944,7 @@ impl RenderPlanBuilder for LogicalPlan {
             },
             from: FromTableItem(from_table_to_view_ref(final_from)),
             joins: JoinItems({
-                let mut all_joins = filtered_joins;
+                let mut all_joins = sorted_joins;  // CRITICAL FIX: Use sorted_joins instead of filtered_joins
                 all_joins.extend(cte_joins);
                 all_joins
             }),
