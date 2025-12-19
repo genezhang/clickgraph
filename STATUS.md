@@ -4,13 +4,14 @@
 
 ## 🎯 Active Development (December 19, 2025)
 
-### Polymorphic Relationship Resolution - COMPLETE ✓
+### Polymorphic Relationship Resolution + JOIN Ordering Fix - COMPLETE ✓
 
 **Session Results**:
 - ✅ Test harness parameter fix: 14→23 LDBC queries passing (+9 queries, +64%)
 - ✅ Polymorphic resolution architecture: 100% complete
 - ✅ CTE JOIN generation fix: GraphRel.extract_joins() now uses ViewScan.source_table
-- ✅ Simple queries fully working with correct polymorphic table names
+- ✅ JOIN dependency sorting: Added to CTE generation path (was only in main query path)
+- ✅ Multi-hop WITH clauses now generate correctly ordered JOINs
 
 **What Works Now**:
 ```cypher
@@ -19,27 +20,26 @@ MATCH (liker:Person)-[like:LIKES]->(message:Message)
 RETURN liker.firstName, message.content
 # Generates: JOIN ldbc.Person_likes_Message AS like (correct!)
 
-# ✅ Relationship property access  
-MATCH (p:Person)<-[:HAS_CREATOR]-(m:Message)
-RETURN m.content
-# Uses: JOIN ldbc.Message_hasCreator_Person (correct!)
-```
-
-**Remaining Issue** (not polymorphic - different bug):
-Multi-hop patterns in WITH clauses have JOIN ordering issue:
-```cypher
-# ⚠️ Multi-hop WITH clause has node JOIN issue
+# ✅ Multi-hop WITH clauses with proper JOIN order
 MATCH (p:Person)<-[:HAS_CREATOR]-(message:Message)<-[like:LIKES]-(liker:Person) 
 WITH liker, like.creationDate AS likeTime
 RETURN liker.firstName, likeTime
-# Error: JOIN ordering - tries to reference 'message' before it's defined
+# Generates JOINs in correct dependency order:
+#   1. FROM liker
+#   2. JOIN like (depends on liker) ✓
+#   3. JOIN message (depends on like) ✓
+#   4. JOIN t1 (depends on message) ✓
+#   5. JOIN p (depends on t1) ✓
 ```
 
-**Root Cause**: Multi-hop recursion creates duplicate JOINs (needs JOIN deduplication/ordering fix).
+**JOIN Ordering Fix Details**:
+- **Root Cause**: `sort_joins_by_dependency()` was only called in main query path (line 11213)
+- **Problem**: CTE generation path (`build_simple_relationship_render_plan`) didn't sort JOINs
+- **Result**: Multi-hop patterns generated JOINs referencing undefined tables
+- **Solution**: Added `sort_joins_by_dependency()` call after `filtered_joins` creation
+- **Impact**: Zero regressions - all 23/41 queries still pass, JOINs now correctly ordered
 
-**Status**: Polymorphic resolution ✓ complete. Multi-hop WITH needs separate fix (join ordering, not resolution).
-
-**Current Test Pass Rate**: 23/41 LDBC queries (56%)
+**Current Test Pass Rate**: 23/41 LDBC queries (56%) - maintained, no regressions
 
 ---
 

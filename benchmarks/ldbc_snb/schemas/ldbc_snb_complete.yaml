@@ -384,6 +384,21 @@ graph_schema:
         creationDate: creationDate
 
     # -------------------------------------------------------------------------
+    # Comment REPLY_OF Message (unified view for polymorphic Message queries)
+    # This allows queries like (message:Message)<-[:REPLY_OF]-(comment:Comment)
+    # Uses Comment_replyOf_Message view which unions Post and Comment replies
+    # -------------------------------------------------------------------------
+    - type: REPLY_OF
+      database: ldbc
+      table: Comment_replyOf_Message
+      from_id: CommentId
+      to_id: MessageId
+      from_node: Comment
+      to_node: Message
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
     # Forum CONTAINER_OF Post
     # -------------------------------------------------------------------------
     - type: CONTAINER_OF

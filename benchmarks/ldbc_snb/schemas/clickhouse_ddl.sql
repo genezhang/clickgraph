@@ -364,3 +364,17 @@ SELECT
     PersonId, 
     CommentId AS MessageId
 FROM ldbc.Person_likes_Comment;
+
+-- Unified reply-of view (Comment can reply to either Post or Comment, both are Messages)
+CREATE VIEW IF NOT EXISTS ldbc.Comment_replyOf_Message AS
+SELECT 
+    creationDate,
+    CommentId, 
+    PostId AS MessageId
+FROM ldbc.Comment_replyOf_Post
+UNION ALL
+SELECT 
+    creationDate,
+    Comment1Id AS CommentId, 
+    Comment2Id AS MessageId
+FROM ldbc.Comment_replyOf_Comment;
