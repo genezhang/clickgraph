@@ -3,7 +3,7 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::{
-    GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem,
+    GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, ViewScan,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -6490,75 +6490,104 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 }
 
-                // Use the pre-computed joins from GraphJoinInference analyzer
-                // These were carefully constructed to handle OPTIONAL MATCH, multi-hop, etc.
-                println!(
-                    "DEBUG: GraphJoins extract_joins - using pre-computed joins from analyzer"
-                );
-                println!(
-                    "DEBUG: graph_joins.joins.len() = {}",
-                    graph_joins.joins.len()
-                );
+                // FIX: Use ViewScan source_table instead of deprecated joins field table_name
+                // The deprecated joins field has incorrect table names for polymorphic relationships
+                // Extract alias → source_table mapping from GraphRel nodes in the plan
                 
-                for (idx, j) in graph_joins.joins.iter().enumerate() {
-                    println!("  DEBUG graph_joins.joins[{}]: {} AS {} (ON: {} conditions)", 
-                        idx, j.table_name, j.table_alias, j.joining_on.len());
+                println!("DEBUG: GraphJoins extract_joins called");
+                println!("DEBUG:   Input plan type: {:?}", std::mem::discriminant(graph_joins.input.as_ref()));
+                println!("DEBUG:   Deprecated joins count: {}", graph_joins.joins.len());
+                for (i, j) in graph_joins.joins.iter().enumerate() {
+                    println!("DEBUG:   Deprecated join[{}]: {} AS {}", i, j.table_name, j.table_alias);
                 }
-
-                // COMMA PATTERN FIX: If joins is empty, check if input is CartesianProduct
-                // For comma patterns like (a:User), (b:User), the analyzer doesn't generate joins
-                // but the CartesianProduct needs to generate the JOIN for the right side
-                if graph_joins.joins.is_empty() {
-                    // Check through Projection/Filter wrappers to find CartesianProduct
-                    fn find_cartesian(plan: &LogicalPlan) -> Option<&LogicalPlan> {
-                        match plan {
-                            LogicalPlan::CartesianProduct(_) => Some(plan),
-                            LogicalPlan::Projection(proj) => find_cartesian(&proj.input),
-                            LogicalPlan::Filter(f) => find_cartesian(&f.input),
-                            _ => None,
+                
+                fn extract_rel_tables(plan: &LogicalPlan) -> std::collections::HashMap<String, String> {
+                    let mut map = std::collections::HashMap::new();
+                    
+                    match plan {
+                        LogicalPlan::GraphRel(gr) => {
+                            // Extract the ViewScan from center plan (the relationship)
+                            fn get_viewscan(p: &LogicalPlan) -> Option<&ViewScan> {
+                                match p {
+                                    LogicalPlan::ViewScan(vs) => Some(vs.as_ref()),
+                                    LogicalPlan::Projection(proj) => get_viewscan(&proj.input),
+                                    LogicalPlan::Filter(f) => get_viewscan(&f.input),
+                                    _ => None,
+                                }
+                            }
+                            
+                            if let Some(vs) = get_viewscan(&gr.center) {
+                                map.insert(gr.alias.clone(), vs.source_table.clone());
+                                println!(
+                                    "DEBUG: extract_rel_tables - found GraphRel alias='{}' → source_table='{}'",
+                                    gr.alias, vs.source_table
+                                );
+                            }
+                            
+                            // Recursively check left and right nodes
+                            map.extend(extract_rel_tables(&gr.left));
+                            map.extend(extract_rel_tables(&gr.right));
                         }
+                        LogicalPlan::Projection(p) => {
+                            map.extend(extract_rel_tables(&p.input));
+                        }
+                        LogicalPlan::Filter(f) => {
+                            map.extend(extract_rel_tables(&f.input));
+                        }
+                        LogicalPlan::CartesianProduct(cp) => {
+                            map.extend(extract_rel_tables(&cp.left));
+                            map.extend(extract_rel_tables(&cp.right));
+                        }
+                        LogicalPlan::GraphJoins(gj) => {
+                            map.extend(extract_rel_tables(&gj.input));
+                        }
+                        LogicalPlan::GraphNode(gn) => {
+                            // Also extract node tables for completeness
+                            fn get_node_viewscan(p: &LogicalPlan) -> Option<&ViewScan> {
+                                match p {
+                                    LogicalPlan::ViewScan(vs) => Some(vs.as_ref()),
+                                    LogicalPlan::Projection(proj) => get_node_viewscan(&proj.input),
+                                    LogicalPlan::Filter(f) => get_node_viewscan(&f.input),
+                                    _ => None,
+                                }
+                            }
+                            
+                            if let Some(vs) = get_node_viewscan(&gn.input) {
+                                map.insert(gn.alias.clone(), vs.source_table.clone());
+                            }
+                        }
+                        _ => {}
                     }
                     
-                    if let Some(cp_plan) = find_cartesian(graph_joins.input.as_ref()) {
-                        println!("🎯 COMMA PATTERN: Empty joins with CartesianProduct, extracting joins from CartesianProduct");
-                        return cp_plan.extract_joins();
-                    }
+                    map
                 }
-
-                // Convert from logical_plan::Join to render_plan::Join
-                // CRITICAL FIX: Ensure unique table aliases when same table appears multiple times
-                // This fixes bidirectional patterns where t37 appears twice causing ClickHouse error:
-                // "Multiple table expressions with same alias"
-                let mut joins: Vec<Join> = Vec::new();
-                let mut used_aliases: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
                 
+                let rel_tables = extract_rel_tables(graph_joins.input.as_ref());
+                println!("DEBUG: GraphJoins - extracted rel tables: {:?}", rel_tables);
+                
+                // Now fix the table_name in each deprecated join using the extracted mapping
+                let mut joins: Vec<Join> = Vec::new();
                 for logical_join in &graph_joins.joins {
                     let mut render_join: Join = logical_join.clone().try_into()?;
                     
-                    // Check if this alias has been used before
-                    let count = used_aliases.entry(render_join.table_alias.clone()).or_insert(0);
-                    *count += 1;
-                    
-                    // If this is a duplicate (count > 1), append a unique suffix
-                    if *count > 1 {
-                        let original_alias = render_join.table_alias.clone();
-                        render_join.table_alias = format!("{}_{}", original_alias, *count - 1);
-                        
-                        // Also update references to this alias in the join conditions
-                        for join_cond in &mut render_join.joining_on {
-                            for operand in &mut join_cond.operands {
-                                if let RenderExpr::PropertyAccessExp(ref mut prop) = operand {
-                                    if prop.table_alias.0 == original_alias {
-                                        prop.table_alias = TableAlias(render_join.table_alias.clone());
-                                    }
-                                }
-                            }
-                        }
+                    // Fix table_name if we have a resolved table for this alias
+                    if let Some(resolved_table) = rel_tables.get(&render_join.table_alias) {
+                        println!(
+                            "DEBUG: FIXING table_name: '{}' → '{}' (alias: '{}')",
+                            render_join.table_name, resolved_table, render_join.table_alias
+                        );
+                        render_join.table_name = resolved_table.clone();
+                    } else {
+                        println!(
+                            "DEBUG: NO FIX for alias '{}', keeping table_name '{}'",
+                            render_join.table_alias, render_join.table_name
+                        );
                     }
                     
                     joins.push(render_join);
                 }
                 
+                println!("DEBUG: GraphJoins extract_joins returning {} joins", joins.len());
                 joins
             }
             LogicalPlan::GraphRel(graph_rel) => {
@@ -6724,12 +6753,23 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
 
                 // STANDARD (non-denormalized) multi-hop handling
+                // MULTI-HOP FIX: Check BOTH left and right sides for nested GraphRel patterns
                 if let LogicalPlan::GraphRel(_) = graph_rel.left.as_ref() {
                     println!(
-                        "DEBUG: Multi-hop pattern detected - recursively extracting left GraphRel joins"
+                        "DEBUG: Multi-hop pattern detected on LEFT side - recursively extracting left GraphRel joins"
                     );
                     let mut left_joins = graph_rel.left.extract_joins()?;
                     joins.append(&mut left_joins);
+                }
+                
+                // Also check right side for nested GraphRel (e.g., (a)-[r1]->(b)-[r2]->(c))
+                // In this case, right side contains (b)-[r2]->(c) which needs its own joins
+                if let LogicalPlan::GraphRel(_) = graph_rel.right.as_ref() {
+                    println!(
+                        "DEBUG: Multi-hop pattern detected on RIGHT side - recursively extracting right GraphRel joins"
+                    );
+                    let mut right_joins = graph_rel.right.extract_joins()?;
+                    joins.append(&mut right_joins);
                 }
 
                 // CTE REFERENCE CHECK: If right side is GraphJoins with pre-computed joins,
@@ -6746,7 +6786,13 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     // First, add the relationship table join (center -> left node)
                     let rel_table = extract_table_name(&graph_rel.center)
-                        .unwrap_or_else(|| graph_rel.alias.clone());
+                        .unwrap_or_else(|| {
+                            println!("WARNING: extract_table_name returned None for relationship alias '{}', falling back to alias", graph_rel.alias);
+                            graph_rel.alias.clone()
+                        });
+                    
+                    println!("DEBUG extract_joins GraphRel: alias='{}', rel_table from extract_table_name='{}'", graph_rel.alias, rel_table);
+                    
                     let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
                         RelationshipColumns {
                             from_id: "from_node_id".to_string(),
@@ -6916,20 +6962,17 @@ impl RenderPlanBuilder for LogicalPlan {
                 let end_label = extract_node_label_from_viewscan(&graph_rel.right);
 
                 // Get relationship table
-                // NOTE: GraphJoinInference should have set rel_cte_name correctly for alternate relationships
-                // This fallback code is for edge cases where extract_joins is called directly
+                // POLYMORPHIC FIX: Always use extract_table_name from ViewScan source_table
+                // which contains the correctly resolved polymorphic table name (e.g., "ldbc.Person_likes_Message")
+                // NOT rel_type_to_table_name which doesn't know about node labels
                 let rel_table = if matches!(&*graph_rel.center, LogicalPlan::Cte(_)) {
                     extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
-                } else if let Some(labels) = &graph_rel.labels {
-                    if !labels.is_empty() {
-                        rel_type_to_table_name(&labels[0])
-                    } else {
-                        extract_table_name(&graph_rel.center)
-                            .unwrap_or_else(|| graph_rel.alias.clone())
-                    }
                 } else {
+                    // Always use extract_table_name for ViewScan (polymorphic resolution)
                     extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
                 };
+                
+                println!("DEBUG: GraphRel extract_joins - rel_table='{}' for alias='{}'", rel_table, graph_rel.alias);
 
                 // MULTI-HOP FIX: For ID columns, use table lookup based on connection aliases
                 // instead of extract_id_column which fails for nested GraphRel

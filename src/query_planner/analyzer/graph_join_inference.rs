@@ -2511,6 +2511,11 @@ impl GraphJoinInference {
                         rel_schema,
                         plan_ctx,
                     );
+                    
+                    log::debug!(
+                        "🔍 Creating rel JOIN: rel_alias='{}', rel_cte_name='{}', rel_table_name='{}', rel_schema.table_name='{}'",
+                        rel_alias, rel_cte_name, rel_table_name, rel_schema.table_name
+                    );
 
                     let rel_join = Join {
                         table_name: rel_table_name,
