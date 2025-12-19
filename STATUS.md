@@ -4,9 +4,16 @@
 
 ## 🎯 Active Development (December 19, 2025)
 
-### Session Summary: Polymorphic Resolution + JOIN Ordering + Schema Fixes
+### Session Summary: TypeInference Fix + Polymorphic Resolution + JOIN Ordering
 
-**Completed Work**:
+**Latest Fix (Dec 19, 2025 - Evening)**:
+- ✅ **TypeInference ViewScan Creation**: Fixed SQL generation for inferred node labels
+  - Issue: TypeInference correctly inferred labels but GraphNode.input remained Scan (no table)
+  - Solution: Create ViewScan with proper table info when label is inferred
+  - Result: IC5 and all queries with inferred labels now generate correct SQL
+  - Example: `MATCH (person)<-[:HAS_MEMBER]-(forum)` → includes `FROM ldbc.Forum AS forum` ✓
+
+**Completed Work (Earlier)**:
 - ✅ Test harness parameter fix: 14→23 LDBC queries (+9 queries, +64%)
 - ✅ Polymorphic resolution architecture: 100% complete (TableCtx node labels, ViewResolver, CTE generation)
 - ✅ JOIN dependency sorting: Added to CTE generation path (multi-hop WITH clauses now work)
