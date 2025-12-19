@@ -4,16 +4,23 @@
 
 ## 🎯 Active Development (December 19, 2025)
 
-### Session Summary: TypeInference + QueryValidation Parser Normalization Fixes
+### Session Summary: TypeInference Consolidation + Parser Normalization Fixes
 
-**Latest Fix (Dec 19, 2025 - Late Evening)**:
+**Latest Achievement (Dec 19, 2025 - Night)**:
+- ✅ **Consolidated TypeInference with Polymorphic Support**: Unified inference logic
+  - Problem: Duplicate inference code in match_clause.rs and type_inference.rs causing feature drift
+  - Solution: Merged both implementations into single rock-solid TypeInference
+  - Features: $any wildcards, from_label_values/to_label_values, MAX_INFERRED_TYPES limit (20)
+  - Result: **TypeInference is now THE authoritative inference engine**
+  - Example: `MATCH (u:User)-[r]->(p:Post)` infers 5 polymorphic types (FOLLOWS, LIKES, etc.) ✓
+
+**Previous Fixes (Dec 19, 2025 - Evening)**:
 - ✅ **QueryValidation Parser Normalization**: Fixed reverse direction validation
   - Issue: QueryValidation was swapping for `Direction::Incoming`, but parser already normalizes
   - Root cause: Parser ALWAYS puts left=from, right=to in GraphRel (swaps nodes for `<-` syntax)
   - Solution: Removed direction-based swapping in QueryValidation
   - Result: **LDBC audit: 29/41 queries passing (70%, up from 61%)**
-
-**Previous Fix (Dec 19, 2025 - Evening)**:
+  
 - ✅ **TypeInference ViewScan Creation**: Fixed SQL generation for inferred node labels
   - Issue: TypeInference correctly inferred labels but GraphNode.input remained Scan (no table)
   - Solution: Create ViewScan with proper table info when label is inferred

@@ -92,7 +92,11 @@ use crate::{
 /// Maximum number of relationship types that can be inferred when unspecified.
 /// Prevents excessive UNION ALL expansion that would generate extremely large queries.
 /// If inference would result in more types, user must specify explicit type(s).
-const MAX_INFERRED_TYPES: usize = 20;
+/// 
+/// Limit of 5: Each inferred type creates a separate CTE branch in the query.
+/// For complex patterns with multiple inferences, this can combinatorially explode.
+/// Example: 5 edge types × 3 node labels = 15 CTE branches = very large SQL.
+const MAX_INFERRED_TYPES: usize = 5;
 
 pub struct TypeInference;
 
