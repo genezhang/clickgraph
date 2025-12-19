@@ -490,6 +490,52 @@ impl VariableResolver {
                 }
             }
 
+            LogicalPlan::Unwind(unwind) => {
+                log::info!(
+                    "🔍 VariableResolver: Processing UNWIND with alias '{}'",
+                    unwind.alias
+                );
+
+                // Step 1: Resolve input using current scope
+                let input_resolved = self.resolve(unwind.input.clone(), scope)?;
+                let input_changed = input_resolved.is_yes();
+                let new_input = input_resolved.get_plan();
+
+                // Step 2: Resolve the expression being unwound (using current scope)
+                let resolved_expr = self.resolve_expression(&unwind.expression, scope)?;
+                let expr_changed = !std::ptr::eq(&resolved_expr as *const _, &unwind.expression as *const _);
+
+                // Step 3: IMPORTANT: Create new scope that includes the UNWIND alias
+                // The unwound variable is visible downstream as a schema entity
+                // This allows: UNWIND friends AS friend ... RETURN friend.name
+                let mut new_scope = scope.clone();
+                new_scope.add_variable(
+                    unwind.alias.clone(),
+                    VarSource::SchemaEntity {
+                        alias: unwind.alias.clone(),
+                        // Treat unwound elements as nodes (could be nodes or relationships)
+                        // The type system will handle proper resolution later
+                        entity_type: EntityType::Node,
+                    },
+                );
+
+                log::info!(
+                    "🔍 VariableResolver: Added UNWIND alias '{}' to scope as SchemaEntity",
+                    unwind.alias
+                );
+
+                if input_changed || expr_changed {
+                    let new_unwind = crate::query_planner::logical_plan::Unwind {
+                        input: new_input,
+                        expression: resolved_expr,
+                        alias: unwind.alias.clone(),
+                    };
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Unwind(new_unwind))))
+                } else {
+                    Ok(Transformed::No(plan))
+                }
+            }
+
             LogicalPlan::GraphNode(gn) => {
                 log::debug!("🔍 VariableResolver: Found GraphNode with alias '{}'", gn.alias);
 

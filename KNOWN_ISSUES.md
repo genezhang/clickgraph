@@ -134,15 +134,21 @@ WHERE person2 <> person3  # Explicit inequality check
 **Complexity**: MEDIUM - Non-standard syntax, low priority  
 **Priority**: LOW - Single LDBC query, has simple workarounds
 
-#### 1.4 Other Parse Errors (6 queries - 50%)
-**Queries**: complex-13, bi-10, bi-13, bi-15, bi-19, bi-20  
+#### 1.4 Other Parse Errors (5 queries - 42%)
+**Queries**: complex-13, bi-10, bi-15, bi-19, bi-20  
 **Error**: "SQL doesn't contain SELECT" or "No select items found"  
-**Status**: Requires LDBC database and individual query inspection
 
 **Known Issues**:
-- complex-13: CASE...IS NULL syntax variation
+- complex-13: CASE...IS NULL syntax (actually works in parser, SQL generation issue)
 - bi-10, bi-15, bi-19, bi-20: APOC/GDS procedures (clear errors already)
-- bi-13: DateTime property accessors (`.year`, `.month`)
+- ~~bi-13: DateTime property accessors (`.year`, `.month`)~~ ✅ **FIXED Dec 19, 2025**
+
+**bi-13 Fix (Dec 19, 2025)**:
+Temporal property accessors now converted to function calls at parser level:
+- `$endDate.year` → `year($endDate)` → SQL: `toYear(?)`
+- `zombie.creationDate.month` → `month(zombie.creationDate)` → SQL: `toMonth(Person.creationDate)`
+- Supports chained properties and parameters
+- Transparent to query planner and SQL generator
 
 **Blocker**: LDBC schema requires `ldbc` database (not available in current setup)
 
