@@ -1413,8 +1413,6 @@ MATCH (u:User) RETURN u.country, ch.uniq(u.user_id) AS unique_users
 
 ### Lambda Expressions
 
-**Status**: ⭐ **NEW** (v0.5.5+)
-
 Lambda expressions enable passing inline anonymous functions to ClickHouse higher-order array functions.
 
 #### Quick Syntax

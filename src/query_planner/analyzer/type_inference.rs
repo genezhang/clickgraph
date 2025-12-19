@@ -50,7 +50,7 @@ use crate::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::AnalyzerError,
         },
-        logical_plan::{GraphRel, LogicalPlan},
+        logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan},
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
@@ -226,8 +226,54 @@ impl TypeInference {
                 }
             }
 
-            LogicalPlan::GraphNode(_) 
-            | LogicalPlan::ViewScan(_)
+            LogicalPlan::GraphNode(node) => {
+                // Check if this node needs ViewScan creation from inferred label
+                if node.label.is_none() {
+                    // Try to get inferred label from plan_ctx
+                    if let Ok(table_ctx) = plan_ctx.get_table_ctx(&node.alias) {
+                        if let Some(labels) = &table_ctx.get_labels() {
+                            if let Some(label) = labels.first() {
+                                log::info!("🏷️ TypeInference: Creating ViewScan for GraphNode '{}' with inferred label '{}'", node.alias, label);
+                                
+                                // Get node schema to create ViewScan
+                                if let Ok(node_schema) = graph_schema.get_node_schema(label) {
+                                    let full_table_name = format!("{}.{}", node_schema.database, node_schema.table_name);
+                                    let id_column = node_schema
+                                        .node_id
+                                        .columns()
+                                        .first()
+                                        .unwrap_or(&"id")
+                                        .to_string();
+                                    
+                                    let view_scan = ViewScan::new(
+                                        full_table_name,
+                                        None,
+                                        node_schema.property_mappings.clone(),
+                                        id_column,
+                                        vec!["id".to_string()],
+                                        vec![],
+                                    );
+                                    
+                                    // Create new GraphNode with ViewScan input and label
+                                    let new_node = GraphNode {
+                                        input: Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))),
+                                        alias: node.alias.clone(),
+                                        label: Some(label.clone()),
+                                        is_denormalized: false,
+                                        projected_columns: None,
+                                    };
+                                    
+                                    return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(new_node))));
+                                }
+                            }
+                        }
+                    }
+                }
+                // No changes needed
+                Ok(Transformed::No(plan))
+            }
+            
+            LogicalPlan::ViewScan(_)
             | LogicalPlan::Scan(_)
             | LogicalPlan::Empty => {
                 // Leaf nodes - no recursion needed

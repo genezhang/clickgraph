@@ -20,7 +20,7 @@ RETURN <columns>
 
 ## Use Cases
 
-### 1. Find Entities with Optional Relationships
+### 1. Find Entities with Optional Edges
 
 **Problem**: Get all users, showing friends if they exist
 
@@ -43,7 +43,7 @@ RETURN u.name, friend.name
 
 ### 2. Aggregate with Optional Patterns
 
-**Problem**: Count relationships that may not exist
+**Problem**: Count edges that may not exist
 
 ```cypher
 MATCH (u:User)
@@ -64,7 +64,7 @@ ORDER BY friend_count DESC
 
 ### 3. Multiple Optional Patterns
 
-**Problem**: Check multiple optional relationships independently
+**Problem**: Check multiple optional edges independently
 
 ```cypher
 MATCH (u:User)
@@ -87,7 +87,7 @@ LEFT JOIN users AS other ON uf.followed_id = other.user_id
 
 ### 4. Mixed Required and Optional Patterns
 
-**Problem**: Filter on required relationships, show optional ones
+**Problem**: Filter on required edges, show optional ones
 
 ```cypher
 MATCH (u:User)-[:AUTHORED]->(p:Post)
