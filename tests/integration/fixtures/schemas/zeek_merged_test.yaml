@@ -77,7 +77,7 @@ graph_schema:
       to_node_properties:
         ip: answers  # Array of resolved IPs
 
-  relationships:
+  edges:
     # ========================================
     # DNS relationships (from dns_log table) - 2 coupled edges
     # ========================================

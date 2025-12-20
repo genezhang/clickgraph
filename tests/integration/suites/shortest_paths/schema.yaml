@@ -12,7 +12,7 @@ graph_schema:
         user_id: user_id
         name: name
 
-  relationships:
+  edges:
     - type: FOLLOWS
       database: test_shortest
       table: follows

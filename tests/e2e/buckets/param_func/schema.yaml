@@ -39,7 +39,7 @@ graph_schema:
         total: total
         order_date: order_date
 
-  relationships:
+  edges:
     - type: PLACED
       from_node: User
       to_node: Order

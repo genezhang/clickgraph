@@ -26,7 +26,7 @@ graph_schema:
         price: price
         category: category
 
-  relationships:
+  edges:
     - type: FOLLOWS
       database: test_integration
       table: follows

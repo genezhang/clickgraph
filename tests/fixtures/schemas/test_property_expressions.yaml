@@ -43,7 +43,7 @@ graph_schema:
         is_premium_bool: "is_premium = 1"
         has_metadata: "metadata_json != ''"
 
-  relationships:
+  edges:
     - type: FOLLOWS
       database: brahmand
       table: follows_expressions_test

@@ -37,7 +37,7 @@ graph_schema:
         protocols: protocols
         bytes_sent: bytes_sent
 
-  relationships:
+  edges:
     - type: FOLLOWS
       database: brahmand
       table: user_follows_bench

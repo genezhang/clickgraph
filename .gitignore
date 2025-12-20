@@ -26,6 +26,10 @@ __pycache__/
 .pytest_cache/
 .venv/
 
+# Test logs and private data
+tests/**/*.log
+tests/private/
+
 # Test output files
 test_*.txt
 test_*.log

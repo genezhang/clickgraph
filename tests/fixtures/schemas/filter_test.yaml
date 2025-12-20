@@ -23,7 +23,7 @@ graph_schema:
         content: post_content
         date: post_date
 
-  relationships:
+  edges:
     - type: FOLLOWS
       database: brahmand
       table: user_follows_bench

@@ -20,7 +20,7 @@ graph_schema:
         ip: resp_h
         port: resp_p
 
-  relationships:
+  edges:
     - type: ACCESSED
       database: test_zeek
       table: conn_log

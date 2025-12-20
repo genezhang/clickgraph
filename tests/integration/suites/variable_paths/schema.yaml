@@ -13,7 +13,7 @@ graph_schema:
         name: name
         level: level
 
-  relationships:
+  edges:
     - type: FOLLOWS
       database: test_vlp
       table: follows

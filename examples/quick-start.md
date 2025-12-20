@@ -121,6 +121,9 @@ views:
 
 ```bash
 # Set environment and start server
+export CLICKHOUSE_URL="http://localhost:8123"
+export CLICKHOUSE_USER="test_user"
+export CLICKHOUSE_PASSWORD="test_pass"
 export CLICKHOUSE_DATABASE="social"
 export GRAPH_CONFIG_FILE="social_network.yaml"
 

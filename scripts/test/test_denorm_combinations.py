@@ -105,7 +105,7 @@ def main():
         sys.exit(1)
     
     # Load schema
-    if not load_schema('schemas/tests/denormalized_flights.yaml', 'denormalized_flights_test'):
+    if not load_schema('schemas/test/denormalized_flights.yaml', 'denormalized_flights_test'):
         sys.exit(1)
     
     results = []

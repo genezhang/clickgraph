@@ -8,7 +8,7 @@ BASE_URL = "http://localhost:8080"
 
 def load_schema():
     """Load the denormalized flights schema."""
-    with open('schemas/tests/denormalized_flights.yaml', 'r') as f:
+    with open('schemas/test/denormalized_flights.yaml', 'r') as f:
         schema_content = f.read()
     
     response = requests.post(

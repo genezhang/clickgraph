@@ -23,7 +23,7 @@ graph_schema:
         content: content
         created_at: created_at
 
-  relationships:
+  edges:
     - type: FOLLOWS
       database: test_optional_match
       table: follows
