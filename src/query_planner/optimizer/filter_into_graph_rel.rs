@@ -302,6 +302,11 @@ impl OptimizerPass for FilterIntoGraphRel {
                     // Get filters for THIS specific alias only
                     if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&graph_node.alias) {
                         let filters = table_ctx.get_filters();
+                        log::info!(
+                            "FilterIntoGraphRel: Found table_ctx for alias '{}', filters.len() = {}",
+                            graph_node.alias,
+                            filters.len()
+                        );
                         
                         if !filters.is_empty() && view_scan.view_filter.is_none() {
                             log::info!(
@@ -363,6 +368,11 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 graph_node.alias
                             );
                         }
+                    } else {
+                        log::warn!(
+                            "FilterIntoGraphRel: No table_ctx found for GraphNode alias '{}'",
+                            graph_node.alias
+                        );
                     }
                 }
                 

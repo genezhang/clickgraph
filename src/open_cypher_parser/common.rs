@@ -11,6 +11,98 @@ use nom::{
 
 use nom::character::complete::char;
 
+/// Strip SQL-style comments from input before parsing
+/// This handles both line comments (--) and block comments (/* */)
+/// Respects string literals and identifiers - comments inside them are preserved
+/// 
+/// Cypher quote types:
+/// - Single quotes ('): String literals
+/// - Double quotes ("): Identifiers (property names, labels)
+/// - Backticks (`): Identifiers (Neo4j style)
+pub fn strip_comments(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    let mut in_string: Option<char> = None; // Track if we're in a string/identifier (and which quote type)
+    let mut escape_next = false;
+    
+    while let Some(ch) = chars.next() {
+        // Handle escape sequences in strings/identifiers
+        if escape_next {
+            result.push(ch);
+            escape_next = false;
+            continue;
+        }
+        
+        // Check for escape character in strings/identifiers
+        if in_string.is_some() && ch == '\\' {
+            result.push(ch);
+            escape_next = true;
+            continue;
+        }
+        
+        // Track string literal and identifier boundaries
+        if ch == '\'' || ch == '"' || ch == '`' {
+            if in_string == Some(ch) {
+                // End of string/identifier
+                in_string = None;
+            } else if in_string.is_none() {
+                // Start of string/identifier
+                in_string = Some(ch);
+            }
+            result.push(ch);
+            continue;
+        }
+        
+        // If we're inside a string/identifier, preserve everything
+        if in_string.is_some() {
+            result.push(ch);
+            continue;
+        }
+        
+        // Now handle comments (only when NOT in a string/identifier)
+        
+        // Check for line comment
+        if ch == '-' {
+            if chars.peek() == Some(&'-') {
+                chars.next(); // consume second '-'
+                // Skip until newline
+                while let Some(c) = chars.next() {
+                    if c == '\n' {
+                        result.push('\n'); // preserve newline
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        
+        // Check for block comment
+        if ch == '/' {
+            if chars.peek() == Some(&'*') {
+                chars.next(); // consume '*'
+                // Skip until */
+                let mut found_end = false;
+                while let Some(c) = chars.next() {
+                    if c == '*' && chars.peek() == Some(&'/') {
+                        chars.next(); // consume '/'
+                        found_end = true;
+                        break;
+                    }
+                }
+                if !found_end {
+                    // Unclosed block comment - just continue
+                }
+                continue;
+            }
+        }
+        
+        result.push(ch);
+    }
+    
+    result
+}
+
+/// Whitespace-handling combinator (original version, no comment parsing)
 pub fn ws<'a, O, E: ParseError<&'a str>, F>(inner: F) -> impl Parser<&'a str, Output = O, Error = E>
 where
     F: Parser<&'a str, Output = O, Error = E>,
@@ -213,4 +305,78 @@ mod tests {
         // failure: starting with an underscore should be rejected.
         assert!(parse_alphanumeric_with_underscore("_abc").is_err());
     }
+
+    #[test]
+    fn test_strip_comments() {
+        use super::strip_comments;
+        
+        // Line comments
+        assert_eq!(
+            strip_comments("-- Comment\nMATCH"),
+            "\nMATCH"
+        );
+        
+        assert_eq!(
+            strip_comments("-- LDBC Query\n-- Description\n\nMATCH (n) RETURN n"),
+            "\n\n\nMATCH (n) RETURN n"
+        );
+        
+        // Block comments
+        assert_eq!(
+            strip_comments("/* Comment */MATCH"),
+            "MATCH"
+        );
+        
+        assert_eq!(
+            strip_comments("/* Multi\nline\ncomment */MATCH"),
+            "MATCH"
+        );
+        
+        // Mixed comments
+        assert_eq!(
+            strip_comments("-- Line\n/* Block */ MATCH"),
+            "\n MATCH"
+        );
+        
+        // String literals with comment-like content (should NOT be stripped)
+        assert_eq!(
+            strip_comments("MATCH (n) WHERE n.url = 'http://test--page' RETURN n"),
+            "MATCH (n) WHERE n.url = 'http://test--page' RETURN n"
+        );
+        
+        assert_eq!(
+            strip_comments("MATCH (n) WHERE n.note = \"test /* not a comment */ end\" RETURN n"),
+            "MATCH (n) WHERE n.note = \"test /* not a comment */ end\" RETURN n"
+        );
+        
+        // Backtick identifiers (Neo4j style)
+        assert_eq!(
+            strip_comments("MATCH (n:`Some--Label`) WHERE n.`prop--name` = 1 RETURN n"),
+            "MATCH (n:`Some--Label`) WHERE n.`prop--name` = 1 RETURN n"
+        );
+        
+        // Mixed: real comments + string literals
+        assert_eq!(
+            strip_comments("-- Comment\nMATCH (n) WHERE n.url = 'test--value' -- another comment\nRETURN n"),
+            "\nMATCH (n) WHERE n.url = 'test--value' \nRETURN n"
+        );
+        
+        // Escaped quotes in strings
+        assert_eq!(
+            strip_comments("WHERE n.text = 'it\\'s -- not a comment' RETURN n"),
+            "WHERE n.text = 'it\\'s -- not a comment' RETURN n"
+        );
+        
+        assert_eq!(
+            strip_comments("WHERE n.text = \"test \\\"--\\\" value\" RETURN n"),
+            "WHERE n.text = \"test \\\"--\\\" value\" RETURN n"
+        );
+        
+        // Backticks with dashes
+        assert_eq!(
+            strip_comments("WHERE n.`prop-with-dashes` = 1 RETURN n"),
+            "WHERE n.`prop-with-dashes` = 1 RETURN n"
+        );
+    }
 }
+

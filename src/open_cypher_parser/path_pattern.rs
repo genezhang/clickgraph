@@ -482,20 +482,8 @@ fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<Variabl
 // '<-[]', '-[]->', '-[]-'
 //  '<-[*1..3]-', '-[*2]->', '-[r:KNOWS*]- '
 fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<RelationshipPattern<'_>>> {
-    // Check for bidirectional pattern <-[:TYPE]-> which is not standard Cypher
-    // This pattern appears in some LDBC queries but is non-standard
-    if input.trim_start().starts_with("<-[") {
-        if let Some(dash_arrow_pos) = input.find("->") {
-            let before_arrow = &input[..dash_arrow_pos];
-            if before_arrow.contains("<-[") && before_arrow.contains("]-") {
-                // This looks like <-[:TYPE]-> pattern - not supported
-                return Err(nom::Err::Failure(nom::error::Error::new(
-                    input,
-                    nom::error::ErrorKind::Tag,
-                )));
-            }
-        }
-    }
+    // Note: Removed bidirectional check - mixed-direction chains like
+    // (a)<-[:]-(b)-[:]->(c) are valid Cypher patterns
     
     let empty_incoming_relationship_parser =
         map(delimited(ws(tag("<-")), space0, ws(tag("-"))), |_| {

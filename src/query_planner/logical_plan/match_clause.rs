@@ -1883,7 +1883,90 @@ fn traverse_connected_pattern_with_mode<'a>(
                 variable_length: rel.variable_length.clone().map(|v| v.into()),
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
-                where_predicate: None, // Will be populated by filter pushdown optimization
+                where_predicate: {
+                    // 🔧 FIX: For shortestPath with bound nodes, extract filters/properties from left/right nodes
+                    // When nodes like (p1:Person {id: 1}) are bound before shortestPath, their filters
+                    // are in plan_ctx but not automatically merged into GraphRel.where_predicate
+                    if shortest_path_mode.is_some() {
+                        use crate::query_planner::logical_expr::{Operator, OperatorApplication};
+                        let mut node_filters = vec![];
+                        
+                        // Extract filters/properties for left node
+                        if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&left_conn) {
+                            // Get both existing filters AND unconverted properties
+                            node_filters.extend(table_ctx.get_filters().iter().cloned());
+                            
+                            // Convert any remaining properties to filters
+                            let props = table_ctx.get_and_clear_properties();
+                            if !props.is_empty() {
+                                match convert_properties(props, &left_conn) {
+                                    Ok(mut prop_filters) => {
+                                        log::info!(
+                                            "🔧 shortestPath: Converted {} properties to filters for left node '{}'",
+                                            prop_filters.len(),
+                                            left_conn
+                                        );
+                                        node_filters.append(&mut prop_filters);
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "Failed to convert properties for left node '{}': {:?}",
+                                            left_conn,
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Extract filters/properties for right node  
+                        if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&right_conn) {
+                            // Get both existing filters AND unconverted properties
+                            node_filters.extend(table_ctx.get_filters().iter().cloned());
+                            
+                            // Convert any remaining properties to filters
+                            let props = table_ctx.get_and_clear_properties();
+                            if !props.is_empty() {
+                                match convert_properties(props, &right_conn) {
+                                    Ok(mut prop_filters) => {
+                                        log::info!(
+                                            "🔧 shortestPath: Converted {} properties to filters for right node '{}'",
+                                            prop_filters.len(),
+                                            right_conn
+                                        );
+                                        node_filters.append(&mut prop_filters);
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "Failed to convert properties for right node '{}': {:?}",
+                                            right_conn,
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Combine all filters with AND
+                        if !node_filters.is_empty() {
+                            log::info!(
+                                "🔧 shortestPath: Merged {} bound node filters into where_predicate for rel '{}'",
+                                node_filters.len(),
+                                rel_alias
+                            );
+                            Some(node_filters.into_iter().reduce(|acc, filter| {
+                                LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::And,
+                                    operands: vec![acc, filter],
+                                })
+                            }).unwrap())
+                        } else {
+                            None // No filters found
+                        }
+                    } else {
+                        None // Will be populated by filter pushdown optimization for regular patterns
+                    }
+                },
                 labels: rel_labels.clone(),
                 is_optional: if is_optional { Some(true) } else { None },
                 anchor_connection,

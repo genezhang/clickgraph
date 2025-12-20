@@ -634,6 +634,12 @@ pub struct Join {
     /// Used for OPTIONAL MATCH WHERE predicates that reference only the optional alias
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pre_filter: Option<LogicalExpr>,
+    /// The ID column name from the source/left side of the relationship (if this is a relationship join)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub from_id_column: Option<String>,
+    /// The ID column name from the target/right side of the relationship (if this is a relationship join)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub to_id_column: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Default)]

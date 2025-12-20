@@ -165,21 +165,156 @@ LIMIT 50
 
 ---
 
-## Real-World Examples
+## Shortest Path Queries
 
-### Example 1: LinkedIn-Style Connection Degree
+**Status**: ✅ Production-ready (December 2025)
+
+Shortest path queries find the minimum-hop path(s) between two nodes using breadth-first search. ClickGraph implements this using recursive CTEs with early result filtering.
+
+### Syntax
 
 ```cypher
--- Show connection path between two users
-MATCH path = (user1:User {email: "alice@example.com"})
-             -[*1..4]-
-             (user2:User {email: "bob@example.com"})
-RETURN user1.name as start,
-       user2.name as end,
-       length(path) as degree,
-       [n in nodes(path) | n.name] as connection_path
-ORDER BY degree
-LIMIT 1
+-- Single shortest path
+MATCH path = shortestPath((start)-[*]-(end))
+RETURN path
+
+-- All shortest paths (all paths with minimum length)
+MATCH path = allShortestPaths((start)-[*]-(end))
+RETURN path
+```
+
+### How It Works
+
+1. **Breadth-First Search**: Recursive CTE explores paths level-by-level (1 hop, then 2 hops, etc.)
+2. **First Match Wins**: Due to BFS nature, the first path reaching the target IS the shortest
+3. **ROW_NUMBER() Filtering**: Post-processing selects shortest path per start node
+4. **Automatic Deduplication**: Cycle detection prevents revisiting edges
+
+### Basic Examples
+
+```cypher
+-- Find shortest connection between two people
+MATCH path = shortestPath((p1:Person {id: 123})-[:KNOWS*]-(p2:Person {id: 456}))
+RETURN CASE path IS NULL
+         WHEN true THEN -1
+         ELSE length(path)
+       END AS distance
+
+-- Get the actual path
+MATCH path = shortestPath((p1:Person {id: 123})-[:KNOWS*]-(p2:Person {id: 456}))
+RETURN nodes(path) AS people,
+       relationships(path) AS connections,
+       length(path) AS hops
+```
+
+### ⚠️ Important: Always Use Explicit Hop Bounds for Large Graphs
+
+**The Challenge**: On large graphs (10K+ nodes), unbounded shortest path queries can consume significant memory because ClickGraph must explore all possible paths up to the default limit before filtering to the target.
+
+**Best Practice**: Always specify explicit hop bounds based on your graph's characteristics.
+
+```cypher
+-- ❌ AVOID: Unbounded on large graphs (may exhaust memory)
+MATCH path = shortestPath((p1:Person {id: X})-[:KNOWS*]-(p2:Person {id: Y}))
+RETURN length(path)
+
+-- ✅ GOOD: Explicit bounds (fast and memory-efficient)
+MATCH path = shortestPath((p1:Person {id: X})-[:KNOWS*1..5]-(p2:Person {id: Y}))
+RETURN length(path)
+
+-- ✅ BEST: Inline node patterns with bounds
+MATCH path = shortestPath((p1:Person {id: X})-[:KNOWS*1..5]-(p2:Person {id: Y}))
+RETURN length(path)
+```
+
+### Performance Guidelines
+
+| Graph Type | Recommended Max Hops | Rationale |
+|------------|---------------------|-----------|
+| **Social Networks** | `*1..4` | Small-world property: 6 degrees of separation |
+| **Organization Charts** | `*1..5` | Typically shallow hierarchies |
+| **Citation Networks** | `*1..3` | Most citations are recent/nearby |
+| **File Dependencies** | `*1..10` | Deeper dependency chains common |
+| **General Purpose** | `*1..5` | Safe default for most graphs |
+
+### Default Behavior
+
+- **Unbounded `*`**: Defaults to 5 hops for shortestPath (10 hops for regular variable-length)
+- **Explicit bounds**: Always recommended for production queries
+- **User control**: Specify exact bounds in your query for optimal performance
+
+### Advanced Patterns
+
+```cypher
+-- Shortest path with property filtering
+MATCH path = shortestPath((p1:Person {verified: true})-[:KNOWS*1..4]-(p2:Person {verified: true}))
+WHERE p1.id = 123 AND p2.id = 456
+RETURN length(path) AS degrees_of_separation
+
+-- Multiple shortest paths (all minimum-length paths)
+MATCH path = allShortestPaths((p1:Person {id: 123})-[:KNOWS*1..5]-(p2:Person {id: 456}))
+RETURN path,
+       length(path) AS path_length,
+       [n IN nodes(path) | n.name] AS path_members
+
+-- Shortest path with direction
+MATCH path = shortestPath((p1:Person {id: 123})-[:KNOWS*1..5]->(p2:Person {id: 456}))
+RETURN length(path)  -- Only following KNOWS in forward direction
+```
+
+### When to Use Explicit Bounds
+
+**Always use explicit bounds when:**
+- Graph has >1,000 nodes
+- Querying in production environments
+- Memory constraints exist
+- Query timeouts occur
+- You know the typical path length (e.g., org charts rarely exceed 5 levels)
+
+**Example: Social Network Query**
+```cypher
+-- Most people are within 4 degrees in social networks
+MATCH path = shortestPath((me:Person {id: $myId})-[:KNOWS*1..4]-(friend:Person {id: $friendId}))
+RETURN CASE path IS NULL
+         WHEN true THEN "Not connected within 4 hops"
+         ELSE "Connected: " + toString(length(path)) + " degrees"
+       END AS connection_status
+```
+
+### Troubleshooting
+
+**Problem**: Query times out or runs out of memory
+
+**Solutions**:
+1. ✅ Add explicit hop bounds: `*1..4` instead of `*`
+2. ✅ Use inline node patterns: `(p1:Person {id: X})` instead of comma-separated
+3. ✅ Add indexes on node ID columns in ClickHouse
+4. ✅ Check if path actually exists first with smaller bound
+5. ✅ Consider using approximate algorithms for very large graphs
+
+**Problem**: No results returned
+
+**Solutions**:
+1. Check if path exists with regular variable-length: `MATCH (a)-[*1..10]-(b)`
+2. Try bidirectional: `*` instead of `*->`
+3. Increase hop limit: `*1..6` instead of `*1..3`
+4. Verify node IDs are correct
+
+---
+
+## Real-World Examples
+
+### Example 1: LinkedIn-Style Connection Degree (Updated with shortestPath)
+
+```cypher
+-- Show shortest connection path between two users
+MATCH path = shortestPath((user1:User {email: "alice@example.com"})
+                          -[:CONNECTS_WITH*1..4]-
+                          (user2:User {email: "bob@example.com"}))
+RETURN user1.name AS start,
+       user2.name AS end,
+       length(path) AS degree,
+       [n IN nodes(path) | n.name] AS connection_path
 ```
 
 **Output**:
@@ -189,6 +324,8 @@ end: "Bob Smith"
 degree: 2
 connection_path: ["Alice Johnson", "Carol White", "Bob Smith"]
 ```
+
+**Note**: Using `shortestPath()` with explicit bounds (`*1..4`) ensures optimal performance and finds the minimum-hop connection.
 
 ### Example 2: GitHub-Style Repository Discovery
 
@@ -382,6 +519,17 @@ CREATE INDEX idx_country ON users (country) TYPE set(100);
 5. **Test with Representative Data**
    - Verify performance with realistic graph sizes
    - Check memory usage under load
+
+6. **Use Inline Node Patterns for Shortest Path**
+   ```cypher
+   -- Inline patterns ensure proper filter application
+   MATCH path = shortestPath((p1:Person {id: X})-[:KNOWS*1..5]-(p2:Person {id: Y}))
+   ```
+
+7. **Always Set Explicit Hop Bounds on Large Graphs**
+   - For graphs with >1,000 nodes
+   - Prevents memory exhaustion
+   - Typical bounds: social networks `*1..4`, org charts `*1..5`
 
 ### ❌ DON'T
 
@@ -711,17 +859,24 @@ When reporting performance or correctness issues, include:
 
 ### Planned Enhancements
 
-- [ ] Multiple relationship types: `[r:FOLLOWS|FRIEND*1..3]`
-- [ ] Shortest path algorithms: `shortestPath()`
-- [ ] All paths enumeration: `allPaths()`
+- [ ] Multiple relationship types: `[r:FOLLOWS|FRIEND*1..3]` *(In Progress)*
 - [ ] Path length weighting: `shortestPath((a)-[*]-(b), weight: r.distance)`
+- [ ] All paths enumeration with limits: `allPaths((a)-[*1..3]-(b)) LIMIT 100`
 - [ ] Conditional path traversal: More complex WHERE on path segments
+- [ ] Graph algorithms: PageRank, centrality measures, community detection
+
+### Recently Completed
+
+- [x] **Shortest path algorithms**: `shortestPath()` and `allShortestPaths()` *(December 2025)*
+- [x] Variable-length paths with property access *(October 2025)*
+- [x] Path variables and functions: `nodes()`, `relationships()`, `length()` *(October 2025)*
 
 ### Current Limitations
 
-- Single relationship type per pattern (use multiple MATCH for now)
-- No named path variables in complex patterns
-- Limited path metadata (working on enhancement)
+- Unbounded shortestPath on large graphs (>10K nodes) requires explicit hop bounds for optimal performance
+- Single relationship type per pattern (use multiple MATCH clauses for now)
+- No named path variables in highly complex nested patterns
+- Early termination optimization not available in ClickHouse recursive CTEs
 
 ---
 

@@ -75,22 +75,120 @@ fn extract_schema_filter_from_node(plan: &LogicalPlan, cte_alias: &str) -> Optio
 
 /// Helper function to extract the actual table name from a LogicalPlan node
 /// Recursively traverses the plan tree to find the Scan or ViewScan node
-fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
+/// Extract filters from a bound node (Filter → GraphNode structure)
+/// Returns the filter expression in SQL format suitable for CTE WHERE clauses
+fn extract_bound_node_filter(plan: &LogicalPlan, node_alias: &str, cte_alias: &str) -> Option<String> {
     match plan {
-        LogicalPlan::Scan(scan) => scan.table_name.clone(),
-        LogicalPlan::ViewScan(view_scan) => Some(view_scan.source_table.clone()),
-        LogicalPlan::GraphNode(node) => extract_table_name(&node.input),
+        LogicalPlan::Filter(filter) => {
+            // Found a filter - convert to RenderExpr and then to SQL
+            if let Ok(mut render_expr) = RenderExpr::try_from(filter.predicate.clone()) {
+                // Apply property mapping to the filter expression
+                apply_property_mapping_to_expr(&mut render_expr, plan);
+                
+                // Create alias mapping: node_alias → cte_alias (e.g., "p1" → "start_node")
+                let alias_mapping = [(node_alias.to_string(), cte_alias.to_string())];
+                let filter_sql = render_expr_to_sql_string(&render_expr, &alias_mapping);
+                
+                log::info!("🔍 Extracted bound node filter: {} → {}", node_alias, filter_sql);
+                return Some(filter_sql);
+            }
+            None
+        }
+        LogicalPlan::GraphNode(node) => {
+            // Recurse into the node's input in case there's a filter there
+            extract_bound_node_filter(&node.input, node_alias, cte_alias)
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            // For CartesianProduct, the filter might be on either side
+            // Try right first (most recent pattern), then left
+            if let Some(filter) = extract_bound_node_filter(&cp.right, node_alias, cte_alias) {
+                Some(filter)
+            } else {
+                extract_bound_node_filter(&cp.left, node_alias, cte_alias)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
+    let result = match plan {
+        LogicalPlan::Scan(scan) => {
+            log::debug!("extract_table_name: Scan, table={:?}", scan.table_name);
+            scan.table_name.clone()
+        }
+        LogicalPlan::ViewScan(view_scan) => {
+            log::debug!("extract_table_name: ViewScan, table={}", view_scan.source_table);
+            Some(view_scan.source_table.clone())
+        }
+        LogicalPlan::GraphNode(node) => {
+            log::debug!("extract_table_name: GraphNode, alias={}, label={:?}", node.alias, node.label);
+            // First try to extract from the input (ViewScan/Scan)
+            if let Some(table) = extract_table_name(&node.input) {
+                return Some(table);
+            }
+            // 🔧 FIX: Fallback to label-based lookup for bound nodes
+            // When a node is bound from an earlier pattern (e.g., MATCH (person1:Person {id: 1}), ...),
+            // its input is an empty Scan with no table name. Use the node's label to look up the table.
+            log::debug!("🔍 extract_table_name: GraphNode alias='{}', label={:?}", node.alias, node.label);
+            if let Some(label) = &node.label {
+                let table = label_to_table_name(label);
+                log::info!("🔧 extract_table_name: Using label '{}' → table '{}'", label, table);
+                return Some(table);
+            }
+            log::warn!("⚠️  extract_table_name: GraphNode '{}' has no label and no table in input", node.alias);
+            None
+        }
         LogicalPlan::GraphRel(rel) => {
+            log::debug!("extract_table_name: GraphRel, recursing to left");
             // For nested GraphRel (e.g., when VLP connects to another relationship),
             // extract the node table from the LEFT side, not the relationship table from CENTER
             // Example: (person)<-[:HAS_CREATOR]-(message)-[:REPLY_OF*0..]->(post)
             // When processing REPLY_OF, left is HAS_CREATOR GraphRel, need message node table
             extract_table_name(&rel.left)
         }
-        LogicalPlan::Filter(filter) => extract_table_name(&filter.input),
-        LogicalPlan::Projection(proj) => extract_table_name(&proj.input),
-        _ => None,
-    }
+        LogicalPlan::Filter(filter) => {
+            log::debug!("extract_table_name: Filter, recursing to input");
+            extract_table_name(&filter.input)
+        }
+        LogicalPlan::Projection(proj) => {
+            log::debug!("extract_table_name: Projection, recursing to input");
+            extract_table_name(&proj.input)
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            log::debug!("extract_table_name: CartesianProduct, checking right side first");
+            // For CartesianProduct from comma-separated patterns like:
+            // MATCH (p1:Person {id: 1}), (p2:Person {id: 2}), path = shortestPath((p1)-[*]-(p2))
+            // The right side contains the most recent pattern (p2), left contains earlier patterns (p1)
+            // When extracting table for a bound node, try right first (most likely to be the target)
+            if let Some(table) = extract_table_name(&cp.right) {
+                return Some(table);
+            }
+            // If right doesn't work, try left
+            extract_table_name(&cp.left)
+        }
+        other => {
+            let plan_type = match other {
+                LogicalPlan::Empty => "Empty",
+                LogicalPlan::Union(_) => "Union",
+                LogicalPlan::PageRank(_) => "PageRank",
+                LogicalPlan::Unwind(_) => "Unwind",
+                LogicalPlan::CartesianProduct(_) => "CartesianProduct",
+                LogicalPlan::WithClause(_) => "WithClause",
+                LogicalPlan::GroupBy(_) => "GroupBy",
+                LogicalPlan::OrderBy(_) => "OrderBy",
+                LogicalPlan::Skip(_) => "Skip",
+                LogicalPlan::Limit(_) => "Limit",
+                LogicalPlan::Cte(_) => "Cte",
+                LogicalPlan::GraphJoins(_) => "GraphJoins",
+                _ => "Unknown",
+            };
+            log::warn!("extract_table_name: Unhandled plan type: {}", plan_type);
+            None
+        }
+    };
+    log::debug!("extract_table_name: result={:?}", result);
+    result
 }
 
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
@@ -754,7 +852,18 @@ pub fn extract_ctes_with_context(
         LogicalPlan::GraphRel(graph_rel) => {
             // Handle variable-length paths with context
             if let Some(spec) = &graph_rel.variable_length {
-                // Extract actual table names directly from ViewScan - no fallbacks
+                // Extract actual table names directly from ViewScan - with fallback to label lookup
+                let left_plan_desc = match graph_rel.left.as_ref() {
+                    LogicalPlan::Empty => "Empty".to_string(),
+                    LogicalPlan::Scan(_) => "Scan".to_string(),
+                    LogicalPlan::ViewScan(_) => "ViewScan".to_string(),
+                    LogicalPlan::GraphNode(n) => format!("GraphNode({})", n.alias),
+                    LogicalPlan::GraphRel(_) => "GraphRel".to_string(),
+                    LogicalPlan::Filter(_) => "Filter".to_string(),
+                    LogicalPlan::Projection(_) => "Projection".to_string(),
+                    _ => "Other".to_string()
+                };
+                log::info!("🔍 VLP: Left plan = {}", left_plan_desc);
                 let start_table = extract_table_name(&graph_rel.left)
                     .ok_or_else(|| RenderBuildError::MissingTableInfo("start node in VLP".to_string()))?;
                 let end_table = extract_table_name(&graph_rel.right)
@@ -810,8 +919,9 @@ pub fn extract_ctes_with_context(
                 let end_alias = graph_rel.right_connection.clone();
 
                 // Extract and categorize filters for variable-length paths from GraphRel.where_predicate
-                let (start_filters_sql, end_filters_sql, categorized_filters_opt) =
+                let (mut start_filters_sql, mut end_filters_sql, categorized_filters_opt) =
                     if let Some(where_predicate) = &graph_rel.where_predicate {
+                        log::info!("🔍 GraphRel has where_predicate: {:?}", where_predicate);
                         // Convert LogicalExpr to RenderExpr
                         let mut render_expr = RenderExpr::try_from(where_predicate.clone())
                             .map_err(|e| {
@@ -864,6 +974,41 @@ pub fn extract_ctes_with_context(
                     } else {
                         (None, None, None)
                     };
+
+                // 🔧 BOUND NODE FIX: Extract filters from bound nodes (Filter → GraphNode)
+                // For queries like: MATCH (p1:Person {id: 1}), (p2:Person {id: 2}), path = shortestPath((p1)-[:KNOWS*]-(p2))
+                // The {id: 1} and {id: 2} filters are in Filter nodes wrapping the GraphNodes, not in where_predicate
+                if graph_rel.shortest_path_mode.is_some() {
+                    log::info!("🔍 shortestPath: Checking for bound node filters...");
+                    log::info!("  Start alias: {}, End alias: {}", start_alias, end_alias);
+                    log::info!("  Current start_filters_sql: {:?}", start_filters_sql);
+                    log::info!("  Current end_filters_sql: {:?}", end_filters_sql);
+                    
+                    // Extract start node filter (from left side)
+                    if let Some(bound_start_filter) = extract_bound_node_filter(&graph_rel.left, &start_alias, "start_node") {
+                        log::info!("🔧 Adding bound start node filter: {}", bound_start_filter);
+                        start_filters_sql = Some(match start_filters_sql {
+                            Some(existing) => format!("({}) AND ({})", existing, bound_start_filter),
+                            None => bound_start_filter,
+                        });
+                    } else {
+                        log::info!("⚠️  No bound start node filter found");
+                    }
+                    
+                    // Extract end node filter (from right side)
+                    if let Some(bound_end_filter) = extract_bound_node_filter(&graph_rel.right, &end_alias, "end_node") {
+                        log::info!("🔧 Adding bound end node filter: {}", bound_end_filter);
+                        end_filters_sql = Some(match end_filters_sql {
+                            Some(existing) => format!("({}) AND ({})", existing, bound_end_filter),
+                            None => bound_end_filter,
+                        });
+                    } else {
+                        log::info!("⚠️  No bound end node filter found");
+                    }
+                    
+                    log::info!("  Final start_filters_sql: {:?}", start_filters_sql);
+                    log::info!("  Final end_filters_sql: {:?}", end_filters_sql);
+                }
 
                 // Extract properties from filter expressions for shortest path queries
                 // Even in SQL_ONLY mode, we need properties that appear in filters
@@ -2353,6 +2498,8 @@ pub fn expand_fixed_length_joins(
             }],
             join_type: JoinType::Inner,
             pre_filter: None,
+            from_id_column: None,
+            to_id_column: None,
         });
 
         // TODO: Add intermediate node JOIN only if properties referenced
@@ -2379,6 +2526,8 @@ pub fn expand_fixed_length_joins(
         }],
         join_type: JoinType::Inner,
         pre_filter: None,
+        from_id_column: None,
+        to_id_column: None,
     });
 
     println!(
@@ -2445,6 +2594,8 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     }],
                     join_type: JoinType::Inner,
                     pre_filter: None,
+                    from_id_column: None,
+                    to_id_column: None,
                 });
             }
 
@@ -2494,6 +2645,8 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     }],
                     join_type: JoinType::Inner,
                     pre_filter: None,
+                    from_id_column: None,
+                    to_id_column: None,
                 });
             }
 
@@ -2517,6 +2670,8 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 }],
                 join_type: JoinType::Inner,
                 pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
             });
 
             println!(
@@ -2574,6 +2729,8 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     }],
                     join_type: JoinType::Inner,
                     pre_filter: None,
+                    from_id_column: None,
+                    to_id_column: None,
                 });
             }
 

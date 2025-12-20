@@ -24,4 +24,6 @@ pub enum LogicalPlanError {
     AmbiguousPattern(String),
     #[error("WITH clause validation error: {0}")]
     WithClauseValidation(String),
+    #[error("Query planning error: {0}")]
+    QueryPlanningError(String),
 }

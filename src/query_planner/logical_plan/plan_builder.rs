@@ -32,6 +32,36 @@ pub fn build_logical_plan(
         query_ast.optional_match_clauses.len()
     );
 
+    // 🚨 DIAGNOSTIC: Check if query is completely empty
+    if query_ast.match_clauses.is_empty() 
+        && query_ast.optional_match_clauses.is_empty() 
+        && query_ast.return_clause.is_none() 
+        && query_ast.with_clause.is_none() {
+        log::error!("❌ EMPTY QUERY DETECTED: Parser returned empty AST!");
+        log::error!("   This usually means:");
+        log::error!("   1. Query has unsupported syntax (e.g., multi-line comments with -- style)");
+        log::error!("   2. Parser failed silently without returning error");
+        log::error!("   3. Query might be using features not yet supported");
+        log::error!("   Raw query AST dump:");
+        log::error!("     - MATCH clauses: {}", query_ast.match_clauses.len());
+        log::error!("     - OPTIONAL MATCH: {}", query_ast.optional_match_clauses.len());
+        log::error!("     - RETURN clause: {}", query_ast.return_clause.is_some());
+        log::error!("     - WITH clause: {}", query_ast.with_clause.is_some());
+        log::error!("     - WHERE clause: {}", query_ast.where_clause.is_some());
+        log::error!("     - ORDER BY: {}", query_ast.order_by_clause.is_some());
+        log::error!("     - LIMIT: {}", query_ast.limit_clause.is_some());
+        log::error!("     - SKIP: {}", query_ast.skip_clause.is_some());
+        log::error!("     - UNWIND: {}", query_ast.unwind_clause.is_some());
+        log::error!("     - CALL: {}", query_ast.call_clause.is_some());
+        
+        return Err(LogicalPlanError::QueryPlanningError(
+            "Parser returned empty query AST. This indicates unsupported syntax or parser failure. \
+            Common causes: 1) Multi-line SQL-style comments (use /* */ instead of --), \
+            2) Unsupported Cypher features, 3) Query syntax errors not caught by parser. \
+            Enable DEBUG logging to see more details.".to_string()
+        ));
+    }
+
     // Process all MATCH clauses in sequence
     for (idx, match_clause) in query_ast.match_clauses.iter().enumerate() {
         log::debug!("build_logical_plan: Processing MATCH clause {}", idx);
@@ -94,6 +124,25 @@ pub fn build_logical_plan(
 
     if let Some(limit_clause) = &query_ast.limit_clause {
         logical_plan = skip_n_limit_clause::evaluate_limit_clause(limit_clause, logical_plan);
+    }
+
+    // 🚨 DIAGNOSTIC: Final check if plan is still Empty after processing
+    if matches!(*logical_plan, LogicalPlan::Empty) {
+        log::warn!("⚠️  WARNING: Logical plan is Empty after processing all clauses!");
+        log::warn!("   This means query parsed but produced no plan. Possible causes:");
+        log::warn!("   1. All MATCH clauses failed to generate nodes/relationships");
+        log::warn!("   2. Schema mismatch (labels/relationships not in YAML schema)");
+        log::warn!("   3. Query pattern not yet supported by planner");
+        log::warn!("   Plan type: Empty (no operations)");
+        
+        return Err(LogicalPlanError::QueryPlanningError(
+            "Query produced Empty logical plan. This indicates query parsed successfully \
+            but planner could not generate a valid execution plan. Common causes: \
+            1) Node labels or relationship types not defined in schema YAML, \
+            2) Complex query patterns not yet supported, \
+            3) All MATCH patterns filtered out. \
+            Check that all labels and relationship types exist in your schema.".to_string()
+        ));
     }
 
     Ok((logical_plan, plan_ctx))

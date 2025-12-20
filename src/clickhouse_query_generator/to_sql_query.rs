@@ -12,12 +12,20 @@ use crate::{
         },
     },
 };
+use std::collections::HashMap;
+use std::cell::RefCell;
 
 // Import function translator for Neo4j -> ClickHouse function mappings
 use super::function_registry::get_function_mapping;
 use super::function_translator::{
     get_ch_function_name, CH_PASSTHROUGH_PREFIX,
 };
+
+/// Thread-local mapping of relationship alias → (from_id_column, to_id_column)
+/// Populated during JOIN rendering, used for IS NULL checks on relationship aliases
+thread_local! {
+    static RELATIONSHIP_COLUMNS: RefCell<HashMap<String, (String, String)>> = RefCell::new(HashMap::new());
+}
 
 /// Check if an expression contains a string literal (recursively for nested + operations)
 fn contains_string_literal(expr: &RenderExpr) -> bool {
@@ -47,8 +55,47 @@ fn flatten_addition_operands(expr: &RenderExpr) -> Vec<String> {
     }
 }
 
+/// Pre-populate the relationship columns mapping from a RenderPlan
+/// This must be called BEFORE rendering SQL so that IS NULL expressions can look up columns
+pub fn populate_relationship_columns_from_plan(plan: &RenderPlan) {
+    RELATIONSHIP_COLUMNS.with(|rc| {
+        let mut map = rc.borrow_mut();
+        map.clear();
+        
+        // Add joins from main plan - extract column from joining_on conditions
+        for join in &plan.joins.0 {
+            if let Some(from_col) = join.get_relationship_id_column() {
+                // For now, just store from_col for both (we only need one for NULL checks)
+                map.insert(join.table_alias.clone(), (from_col.clone(), from_col));
+            }
+        }
+        
+        // Also process unions (each branch has its own joins)
+        if let Some(ref union) = plan.union.0 {
+            for union_plan in &union.input {
+                for join in &union_plan.joins.0 {
+                    if let Some(from_col) = join.get_relationship_id_column() {
+                        map.insert(join.table_alias.clone(), (from_col.clone(), from_col));
+                    }
+                }
+            }
+        }
+        
+        // Process CTEs recursively
+        for cte in &plan.ctes.0 {
+            if let CteContent::Structured(ref cte_plan) = cte.content {
+                // Recursively populate from CTE plan
+                populate_relationship_columns_from_plan(cte_plan);
+            }
+        }
+    });
+}
+
 /// Generate SQL from RenderPlan with configurable CTE depth limit
 pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
+    // Pre-populate relationship columns mapping before rendering
+    populate_relationship_columns_from_plan(&plan);
+    
     let mut sql = String::new();
 
     // If there's a Union, wrap it in a subquery for correct ClickHouse behavior.
@@ -1007,19 +1054,32 @@ impl RenderExpr {
                 }
 
                 // Special handling for IS NULL / IS NOT NULL with wildcard property access (e.g., r.*)
-                // Convert r.* to r.from_id for null checks (LEFT JOIN produces NULL for all columns)
+                // Convert r.* to appropriate ID column for null checks (LEFT JOIN produces NULL for all columns)
                 // Since base tables have no NULLABLE columns, LEFT JOIN makes ALL columns NULL together,
-                // so checking just from_id is sufficient (even for composite keys).
+                // so checking ANY ID column is sufficient (even for composite keys).
                 if matches!(op.operator, Operator::IsNull | Operator::IsNotNull) 
                     && op.operands.len() == 1
                 {
                     if let RenderExpr::PropertyAccessExp(prop) = &op.operands[0] {
                         let col_name = prop.column.0.raw();
                         if col_name == "*" {
-                            // Extract the relationship alias and use from_id column instead of wildcard
                             let table_alias = &prop.table_alias.0;
-                            let id_sql = format!("{}.from_id", table_alias);
                             let op_str = if op.operator == Operator::IsNull { "IS NULL" } else { "IS NOT NULL" };
+                            
+                            // Look up the actual column name from the JOIN metadata (populated during rendering)
+                            // This ensures we use the CORRECT column for the SPECIFIC relationship table
+                            let id_col = RELATIONSHIP_COLUMNS.with(|rc| {
+                                let map = rc.borrow();
+                                if let Some((from_id, _to_id)) = map.get(table_alias) {
+                                    // Use from_id - any ID column works since LEFT JOIN makes all NULL together
+                                    from_id.clone()
+                                } else {
+                                    // Fallback for non-relationship tables (shouldn't happen with r.*)
+                                    "id".to_string()
+                                }
+                            });
+                            
+                            let id_sql = format!("{}.{}", table_alias, id_col);
                             return format!("{} {}", id_sql, op_str);
                         }
                     }

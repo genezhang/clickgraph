@@ -109,7 +109,7 @@ RETURN
 // =============================================================================
 
 // Aggregation-heavy: Count posts per tag across all users
-MATCH (post:Post)-[:POST_HAS_TAG]->(tag:Tag)
+MATCH (post:Post)-[:HAS_TAG]->(tag:Tag)
 RETURN tag.name AS tagName, count(post) AS postCount
 ORDER BY postCount DESC
 LIMIT 20

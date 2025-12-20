@@ -1,6 +1,29 @@
 ## [Unreleased]
 
 ### 🚀 Features
+- **SQL-Style Comment Support** - Automatic comment stripping for Cypher queries (December 20, 2025)
+  - **Problem**: SQL-style comments (`--` and `/* */`) caused parser failures
+  - **Solution**: Pre-process queries to strip comments before parsing
+  - **Implementation**: `strip_comments()` function in `common.rs`, applied in `handlers.rs`
+  - **Features**:
+    - Line comments: `-- comment until newline` ✓
+    - Block comments: `/* multi-line comment */` ✓
+    - Mixed comment types in same query ✓
+    - Preserves newlines for line comments ✓
+    - **String literal awareness**: Comments inside strings are preserved ✓
+  - **Example**: `WHERE n.url = "test--page"` keeps the `--` intact
+  - **Impact**: LDBC benchmark queries with SQL-style documentation now work natively
+  - **Test Results**: All 15 LDBC queries parse correctly + 5/5 string literal tests pass
+  - **User Benefit**: Better compatibility with SQL-literate users' query documentation
+
+- **Comprehensive Empty Plan Diagnostics** - Two-layer diagnostic system (December 20, 2025)
+  - **Problem**: Queries failed silently with Empty plans and no diagnostic information
+  - **Solution**: Implemented detection at parser and planning levels
+  - **Layer 1 - Empty AST Detection**: Detects parser failures with detailed AST component breakdown
+  - **Layer 2 - Empty Plan Detection**: Detects planning failures with schema mismatch warnings
+  - **Impact**: Clear actionable error messages guide users to solutions
+  - **Discovery**: Found that SQL-style comments were root cause of many parser failures
+
 - **AI Assistant Integration (MCP)** - Zero-configuration support for Model Context Protocol (December 17, 2025)
   - ClickGraph's Bolt protocol is fully compatible with Neo4j's MCP server
   - Use with Claude Desktop and other AI assistants for natural language graph queries

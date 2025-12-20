@@ -667,6 +667,30 @@ impl VariableLengthCteGenerator {
         rewritten
     }
 
+    /// Extract simple equality filter for early termination optimization
+    /// Converts "end_node.id = 123" to "end_id = 123" for use in EXISTS clause
+    /// Returns None if filter is complex (AND/OR) or not a simple equality
+    fn extract_simple_equality_filter(&self, filter: &str) -> Option<String> {
+        // Skip complex filters with AND/OR
+        if filter.contains(" AND ") || filter.contains(" OR ") {
+            return None;
+        }
+
+        // Rewrite end_node references to end_id format
+        // Replace end_node.{id_column} with end_id
+        let rewritten = filter.replace(
+            &format!("{}.{}", self.end_node_alias, self.end_node_id_column),
+            "end_id",
+        );
+
+        // Only return if it looks like a simple equality (contains '=')
+        if rewritten.contains('=') && !rewritten.contains("!=") {
+            Some(rewritten.trim().to_string())
+        } else {
+            None
+        }
+    }
+
     /// Generate the actual recursive SQL string
     fn generate_recursive_sql(&self) -> String {
         // For heterogeneous polymorphic paths, use special two-CTE structure
@@ -717,11 +741,16 @@ impl VariableLengthCteGenerator {
             query_body.push_str("\n    UNION ALL\n");
 
             let default_depth = if max_hops.is_none() {
-                // Unbounded case: use reasonable default
-                if self.shortest_path_mode.is_some() && min_hops == 0 {
-                    3 // Lower limit for shortest path from a to a queries
+                // Unbounded case: use reasonable default based on query type
+                if self.shortest_path_mode.is_some() {
+                    // For shortestPath queries, use lower limit to prevent memory exhaustion
+                    // Most social graphs have small-world property (6 degrees of separation)
+                    // If users need longer paths, they should specify explicit bounds
+                    5
+                } else if min_hops == 0 {
+                    3 // Lower limit for zero-hop base queries
                 } else {
-                    10 // Standard default
+                    10 // Standard default for regular variable-length paths
                 }
             } else {
                 max_hops.unwrap()
@@ -1364,6 +1393,11 @@ impl VariableLengthCteGenerator {
         // For shortest path queries, do NOT add end_node_filters in recursive case
         // End filters are applied in the _to_target wrapper CTE after recursion completes
         // This allows the recursion to explore all paths until the target is found
+        //
+        // Note: Early termination via NOT EXISTS is not practical because:
+        // 1. It creates circular reference (checking CTE being built)
+        // 2. ClickHouse evaluates EXISTS after generating all rows in that iteration
+        // Better approach: Use reasonable max_hops or explicit hop constraints in query
         if self.shortest_path_mode.is_none() {
             if let Some(ref filters) = self.end_node_filters {
                 where_conditions.push(filters.clone());

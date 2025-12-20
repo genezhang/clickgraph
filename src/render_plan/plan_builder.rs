@@ -44,6 +44,48 @@ use super::CteGenerationContext;
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
 
+/// Build explicit property mapping from CTE column names.
+/// Maps (alias, property) → column_name for all columns in SELECT items.
+///
+/// Handles patterns:
+/// - "friend.id" → (friend, id) → "friend.id"
+/// - "friend_firstName" → (friend, firstName) → "friend_firstName"
+///
+/// This explicit mapping avoids fragile pattern-matching later.
+fn build_property_mapping_from_columns(
+    select_items: &[SelectItem],
+) -> HashMap<(String, String), String> {
+    let mut property_mapping = HashMap::new();
+    
+    for item in select_items {
+        if let Some(col_alias) = &item.col_alias {
+            let col_name = &col_alias.0;
+            
+            // Pattern 1: "alias.property" (dotted, used in VLP CTEs)
+            if let Some(dot_pos) = col_name.find('.') {
+                let alias = col_name[..dot_pos].to_string();
+                let property = col_name[dot_pos + 1..].to_string();
+                property_mapping.insert((alias.clone(), property.clone()), col_name.clone());
+                log::debug!("  Property mapping: ({}, {}) → {}", alias, property, col_name);
+            }
+            // Pattern 2: "alias_property" (underscore, used in WITH CTEs)
+            else if let Some(underscore_pos) = col_name.find('_') {
+                let alias = col_name[..underscore_pos].to_string();
+                let property = col_name[underscore_pos + 1..].to_string();
+                property_mapping.insert((alias.clone(), property.clone()), col_name.clone());
+                log::debug!("  Property mapping: ({}, {}) → {}", alias, property, col_name);
+            }
+            // Pattern 3: No separator - might be aggregate column like "cnt"
+            else {
+                log::debug!("  Skipping column '{}' (no separator)", col_name);
+            }
+        }
+    }
+    
+    log::info!("Built property mapping with {} entries", property_mapping.len());
+    property_mapping
+}
+
 /// Strip database prefix from table name for use in CTE names.
 /// Converts "ldbc.Comment" -> "Comment", "Message" -> "Message"
 fn strip_database_prefix(table_name: &str) -> String {
@@ -170,6 +212,8 @@ fn generate_swapped_joins_for_optional_match(
         joining_on: vec![rel_join_condition],
         join_type: JoinType::Left,
         pre_filter: None,
+        from_id_column: Some(rel_col_to_new.clone()),
+        to_id_column: Some(rel_col_to_anchor.clone()),
     });
 
     // JOIN 2: New node (left_connection) connecting to relationship
@@ -193,6 +237,8 @@ fn generate_swapped_joins_for_optional_match(
         joining_on: vec![new_node_join_condition],
         join_type: JoinType::Left,
         pre_filter: None,
+        from_id_column: None,
+        to_id_column: None,
     });
 
     Ok(joins)
@@ -213,6 +259,13 @@ pub(crate) trait RenderPlanBuilder {
     /// Find the ID column for a given table alias by traversing the logical plan
     fn find_id_column_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<String>;
 
+    /// Find ID column for an alias with CTE context (checks CTE schemas first)
+    fn find_id_column_with_cte_context(
+        &self,
+        alias: &str,
+        cte_schemas: &HashMap<String, (Vec<SelectItem>, Vec<String>, HashMap<String, String>, HashMap<(String, String), String>)>,
+        cte_references: &HashMap<String, String>,
+    ) -> RenderPlanBuilderResult<String>;
 
     /// Get all properties for an alias along with the actual table alias to use for SQL generation.
     /// For denormalized nodes, this returns the relationship alias instead of the node alias.
@@ -326,6 +379,18 @@ fn extract_vlp_alias_mappings(ctes: &CteItems) -> HashMap<String, String> {
             log::info!("🔄 VLP mapping: {} → {}", cypher_end, vlp_end);
             mappings.insert(cypher_end.clone(), vlp_end.clone());
         }
+        
+        // 🔧 FIX: Map "t" (generic path function alias) to the actual VLP CTE alias
+        // When rewrite_logical_path_functions converts length(path) → t.hop_count,
+        // we need to rewrite "t" to the actual VLP alias (e.g., "vlp1", "vlp2")
+        if cte.cte_name.starts_with("vlp_cte") || cte.cte_name.starts_with("chained_path_") {
+            // Extract VLP alias from CTE name: vlp_cte1 → vlp1, vlp_cte2 → vlp2
+            let vlp_alias = cte.cte_name
+                .replace("vlp_cte", "vlp")
+                .replace("chained_path_", "vlp");
+            log::info!("🔄 VLP path function mapping: t → {}", vlp_alias);
+            mappings.insert("t".to_string(), vlp_alias);
+        }
     }
     
     mappings
@@ -399,7 +464,7 @@ fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<String,
 fn expand_table_alias_to_select_items(
     alias: &str,
     plan: &LogicalPlan,
-    cte_schemas: &HashMap<String, (Vec<SelectItem>, Vec<String>)>,
+    cte_schemas: &HashMap<String, (Vec<SelectItem>, Vec<String>, HashMap<String, String>, HashMap<(String, String), String>)>,
     cte_references: &HashMap<String, String>,
 ) -> Vec<SelectItem> {
     log::info!("🔍 expand_table_alias_to_select_items: Expanding alias '{}', cte_references={:?}", alias, cte_references);
@@ -410,7 +475,7 @@ fn expand_table_alias_to_select_items(
         log::info!("🔍 expand_table_alias_to_select_items: Available CTE schemas: {:?}", cte_schemas.keys().collect::<Vec<_>>());
         
         // STEP 2: Get columns from that CTE with this alias prefix
-        if let Some((select_items, _)) = cte_schemas.get(cte_name) {
+        if let Some((select_items, _, _, _)) = cte_schemas.get(cte_name) {
             log::info!("✅ expand_table_alias_to_select_items: Found CTE schema '{}' with {} items", cte_name, select_items.len());
             // Calculate the CTE alias used in FROM clause (e.g., "with_a_b_cte" -> "a_b")
             let cte_alias = cte_name
@@ -534,10 +599,30 @@ fn expand_table_alias_to_group_by_id_only(
     alias: &str,
     plan: &LogicalPlan,
     schema: &GraphSchema,
+    cte_schemas: &HashMap<String, (Vec<SelectItem>, Vec<String>, HashMap<String, String>, HashMap<(String, String), String>)>,
+    cte_references: &HashMap<String, String>,
 ) -> Vec<RenderExpr> {
     log::info!("🔧 expand_table_alias_to_group_by_id_only: Looking for ID column for alias '{}'", alias);
     
-    // BEST APPROACH: Use find_id_column_for_alias which traverses the plan to find ViewScan.id_column
+    // FIRST: Check if this alias comes from a CTE (e.g., VLP CTE)
+    if let Some(cte_name) = cte_references.get(alias) {
+        log::info!("🔧 expand_table_alias_to_group_by_id_only: Alias '{}' is from CTE '{}'", alias, cte_name);
+        if let Some((_items, _names, alias_to_id, _prop_map)) = cte_schemas.get(cte_name) {
+            if let Some(id_col) = alias_to_id.get(alias) {
+                log::info!("🔧 expand_table_alias_to_group_by_id_only: Using ID column '{}' from CTE schema for alias '{}'", id_col, alias);
+                return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(alias.to_string()),
+                    column: Column(PropertyValue::Column(id_col.clone())),
+                })];
+            } else {
+                log::warn!("⚠️ expand_table_alias_to_group_by_id_only: CTE '{}' does not have ID mapping for alias '{}'", cte_name, alias);
+            }
+        } else {
+            log::warn!("⚠️ expand_table_alias_to_group_by_id_only: CTE '{}' not found in schemas", cte_name);
+        }
+    }
+    
+    // SECOND: Use find_id_column_for_alias which traverses the plan to find ViewScan.id_column
     // This is more reliable than find_label_for_alias because it directly gets the ID from the schema
     if let Ok(id_col) = plan.find_id_column_for_alias(alias) {
         log::info!("🔧 expand_table_alias_to_group_by_id_only: Using ID column '{}' from ViewScan for alias '{}'", id_col, alias);
@@ -1131,10 +1216,17 @@ fn build_chained_with_match_cte_plan(
     let mut all_ctes: Vec<Cte> = Vec::new();
     let mut iteration = 0;
 
-    // Track CTE schemas: map CTE name to (SELECT items, property names)
-    // This allows creating proper property_mapping when referencing CTEs
-    let mut cte_schemas: std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>)> =
-        std::collections::HashMap::new();
+    // Track CTE schemas: map CTE name to:
+    // 1. Vec<SelectItem>: Column definitions
+    // 2. Vec<String>: Property names
+    // 3. HashMap<String, String>: alias → ID column name
+    // 4. HashMap<(String, String), String>: (alias, property) → CTE column name (EXPLICIT MAPPING)
+    let mut cte_schemas: std::collections::HashMap<String, (
+        Vec<SelectItem>,              // SELECT items
+        Vec<String>,                  // Property names  
+        HashMap<String, String>,      // alias → ID column
+        HashMap<(String, String), String>  // (alias, property) → column_name
+    )> = std::collections::HashMap::new();
 
     // Track aliases that have been converted to CTEs across ALL iterations
     // This prevents re-processing the same alias in subsequent iterations
@@ -1263,7 +1355,7 @@ fn build_chained_with_match_cte_plan(
             // CRITICAL: Create a snapshot of cte_references that only includes CTEs from PREVIOUS iterations
             // Do NOT include the CTE we're about to build for this alias!
             // This prevents resolve_cte_reference from using future CTEs that don't exist yet
-            let cte_references_for_rendering = cte_references.clone();
+            let mut cte_references_for_rendering = cte_references.clone();
             log::info!(
                 "🔧 build_chained_with_match_cte_plan: cte_references for rendering '{}': {:?}",
                 with_alias,
@@ -1388,7 +1480,12 @@ fn build_chained_with_match_cte_plan(
                     with_cte_refs,
                 ) = match with_plan {
                     LogicalPlan::WithClause(wc) => {
-                        log::info!("🔧 build_chained_with_match_cte_plan: Unwrapping WithClause, rendering input");
+                        log::info!("� DEBUG: Unwrapping WithClause for alias '{}'", with_alias);
+                        log::info!("🐛 DEBUG: WithClause has {} items", wc.items.len());
+                        for (i, item) in wc.items.iter().enumerate() {
+                            log::info!("🐛 DEBUG: wc.items[{}]: {:?}", i, item);
+                        }
+                        log::info!("�🔧 build_chained_with_match_cte_plan: Unwrapping WithClause, rendering input");
                         log::info!(
                             "🔧 build_chained_with_match_cte_plan: wc.input type: {:?}",
                             std::mem::discriminant(wc.input.as_ref())
@@ -1452,7 +1549,10 @@ fn build_chained_with_match_cte_plan(
                                         }
                                     }
                                     super::CteContent::RawSql(_) => {
-                                        // Can't extract schema from raw SQL, skip
+                                        // VLP CTEs are RawSql - can't extract schema directly
+                                        // But we can infer from the UNION that uses them
+                                        // Skip for now, will be handled when we see the UNION
+                                        log::info!("🔧 Skipping RawSql CTE '{}' (VLP CTE - schema will be inferred from UNION)", cte.cte_name);
                                         continue;
                                     }
                                 };
@@ -1461,14 +1561,41 @@ fn build_chained_with_match_cte_plan(
                                     .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
                                     .collect();
                                 
+                                // Extract ID column information: map alias -> ID column name
+                                // For VLP CTEs, columns are like "friend.id", "friend.firstName", "p.id", etc.
+                                // We need to track that alias "friend" has ID column "id"
+                                let mut alias_to_id_column: HashMap<String, String> = HashMap::new();
+                                for item in &select_items {
+                                    if let Some(col_alias) = &item.col_alias {
+                                        let alias_str = col_alias.0.as_str();
+                                        // Match pattern: "{alias}.id" or "{alias}_id"
+                                        if let Some(dot_pos) = alias_str.rfind('.') {
+                                            let (prefix, suffix) = alias_str.split_at(dot_pos);
+                                            if suffix == ".id" {
+                                                // Found ID column: "friend.id" means alias "friend" has ID "id"
+                                                alias_to_id_column.insert(prefix.to_string(), "id".to_string());
+                                                log::info!("📊 CTE '{}': Found ID column for alias '{}' -> 'id'", cte.cte_name, prefix);
+                                            }
+                                        } else if alias_str.ends_with("_id") {
+                                            // Pattern like "friend_id"
+                                            let prefix = &alias_str[..alias_str.len() - 3];
+                                            alias_to_id_column.insert(prefix.to_string(), "id".to_string());
+                                            log::info!("📊 CTE '{}': Found ID column for alias '{}' -> 'id'", cte.cte_name, prefix);
+                                        }
+                                    }
+                                }
+                                
+                                // Build explicit property mapping
+                                let property_mapping = build_property_mapping_from_columns(&select_items);
+                                
                                 log::info!(
-                                    "🔧 build_chained_with_match_cte_plan: Extracted nested CTE schema '{}': {} columns",
-                                    cte.cte_name, property_names.len()
+                                    "🔧 build_chained_with_match_cte_plan: Extracted nested CTE schema '{}': {} columns, {} aliases with ID, {} property mappings",
+                                    cte.cte_name, property_names.len(), alias_to_id_column.len(), property_mapping.len()
                                 );
                                 
                                 cte_schemas.insert(
                                     cte.cte_name.clone(),
-                                    (select_items, property_names),
+                                    (select_items, property_names, alias_to_id_column, property_mapping),
                                 );
                             }
                         }
@@ -1489,10 +1616,65 @@ fn build_chained_with_match_cte_plan(
                             );
                         }
 
+                        // CRITICAL: Extract schema from UNION (for VLP CTEs)
+                        // VLP CTEs are RawSql so we can't extract schema from them directly
+                        // But the UNION that uses them has SELECT items with aliases like "friend.id", "p.firstName"
+                        if let UnionItems(Some(union)) = &rendered.union {
+                            if !union.input.is_empty() {
+                                let union_select_items = &union.input[0].select.items;
+                                let union_property_names: Vec<String> = union_select_items
+                                    .iter()
+                                    .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                                    .collect();
+                                
+                                // Extract ID column mappings from UNION columns
+                                let mut union_alias_to_id: HashMap<String, String> = HashMap::new();
+                                for item in union_select_items {
+                                    if let Some(col_alias) = &item.col_alias {
+                                        let alias_str = col_alias.0.as_str();
+                                        if let Some(dot_pos) = alias_str.rfind('.') {
+                                            let (prefix, suffix) = alias_str.split_at(dot_pos);
+                                            if suffix == ".id" {
+                                                union_alias_to_id.insert(prefix.to_string(), "id".to_string());
+                                                log::info!("📊 UNION: Found ID column for alias '{}' -> 'id'", prefix);
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Build explicit property mapping for UNION (VLP results)
+                                let union_property_mapping = build_property_mapping_from_columns(&union_select_items);
+                                
+                                // Register the UNION schema as a pseudo-CTE for alias lookups
+                                // This allows WITH clauses to reference VLP results
+                                let union_cte_name = "__union_vlp";
+                                log::info!(
+                                    "🔧 Extracted UNION schema (VLP results): {} columns, {} aliases with ID: {:?}, {} property mappings",
+                                    union_property_names.len(), union_alias_to_id.len(), union_alias_to_id.keys(), union_property_mapping.len()
+                                );
+                                cte_schemas.insert(
+                                    union_cte_name.to_string(),
+                                    (union_select_items.clone(), union_property_names, union_alias_to_id.clone(), union_property_mapping),
+                                );
+                                
+                                // Also register for each alias that appears in the UNION
+                                // This allows direct alias lookups
+                                for (alias, _id_col) in &union_alias_to_id {
+                                    cte_references_for_rendering.insert(alias.clone(), union_cte_name.to_string());
+                                    log::info!("🔧 Registered alias '{}' -> CTE '{}'", alias, union_cte_name);
+                                }
+                            }
+                        }
+
                         // Apply WITH items projection if present
                         // This handles cases like `WITH friend.firstName AS name` or `WITH count(friend) AS cnt`
                         // CRITICAL: Also apply for TableAlias items (WITH a) to standardize CTE column names
                         if let Some(ref items) = with_items {
+                            log::info!("🐛 DEBUG: with_items is Some, has {} items", items.len());
+                            for (i, item) in items.iter().enumerate() {
+                                log::info!("🐛 DEBUG: with_item[{}]: {:?}", i, item);
+                            }
+                            
                             let needs_projection = items.iter().any(|item| {
                                 !matches!(
                                     &item.expression,
@@ -1508,6 +1690,9 @@ fn build_chained_with_match_cte_plan(
                                 matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::TableAlias(_))
                             });
 
+                            log::info!("🐛 DEBUG: needs_projection={}, has_aggregation={}, has_table_alias={}", 
+                                      needs_projection, has_aggregation, has_table_alias);
+
                             // Apply projection if we have non-TableAlias items, aggregations, OR TableAlias items
                             // TableAlias items need projection to generate CTE columns with simple names
                             if needs_projection || has_aggregation || has_table_alias {
@@ -1520,6 +1705,28 @@ fn build_chained_with_match_cte_plan(
                                 //
                                 // Performance optimization: Wrap non-ID columns with ANY() when aggregating
                                 // This allows GROUP BY to only include ID column (more efficient)
+                                
+                                // Pre-check: If aggregation, verify all TableAlias items have ID columns
+                                if has_aggregation {
+                                    for item in items.iter() {
+                                        if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) = &item.expression {
+                                            match plan_to_render.find_id_column_with_cte_context(&alias.0, &cte_schemas, &cte_references_for_rendering) {
+                                                Ok(_) => {
+                                                    log::info!("✅ Pre-check: ID column found for alias '{}'", alias.0);
+                                                }
+                                                Err(e) => {
+                                                    log::error!("❌ Cannot find ID column for alias '{}': {:?}", alias.0, e);
+                                                    log::error!("❌ Available CTEs: {:?}", cte_schemas.keys());
+                                                    log::error!("❌ CTE references: {:?}", cte_references_for_rendering);
+                                                    return Err(RenderBuildError::InvalidRenderPlan(
+                                                        format!("Cannot find ID column for alias '{}' needed for GROUP BY aggregation. This alias may come from a CTE that hasn't been properly registered.", alias.0)
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
                                 let select_items: Vec<SelectItem> = items.iter()
                                     .flat_map(|item| {
                                         // Check if this is a TableAlias that needs expansion to ALL columns
@@ -1535,9 +1742,10 @@ fn build_chained_with_match_cte_plan(
                                                 // If there's aggregation, wrap non-ID columns with ANY()
                                                 // This allows efficient GROUP BY (only ID column)
                                                 if has_aggregation {
-                                                    // Find the ID column for this alias
-                                                    if let Ok(id_col) = plan_to_render.find_id_column_for_alias(&alias.0) {
-                                                        log::info!("🔧 build_chained_with_match_cte_plan: Wrapping non-ID columns with ANY() for alias '{}' (id_col='{}')", alias.0, id_col);
+                                                    // Find the ID column for this alias using CTE-aware lookup
+                                                    // (we pre-checked this exists above)
+                                                    if let Ok(id_col) = plan_to_render.find_id_column_with_cte_context(&alias.0, &cte_schemas, &cte_references_for_rendering) {
+                                                        log::info!("✅ Found ID column '{}' for alias '{}', wrapping non-ID columns with anyLast()", id_col, alias.0);
                                                         expanded = expanded.into_iter().map(|mut si| {
                                                             // Check if this is the ID column
                                                             let is_id_column = if let RenderExpr::PropertyAccessExp(ref prop_access) = si.expression {
@@ -1617,7 +1825,7 @@ fn build_chained_with_match_cte_plan(
                                                 match &item.expression {
                                                     crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
                                                         // Use ID-only helper for efficient GROUP BY
-                                                        expand_table_alias_to_group_by_id_only(&alias.0, plan_to_render, schema)
+                                                        expand_table_alias_to_group_by_id_only(&alias.0, plan_to_render, schema, &cte_schemas, &cte_references_for_rendering)
                                                     }
                                                     _ => {
                                                         // Not a TableAlias, convert normally
@@ -1807,7 +2015,7 @@ fn build_chained_with_match_cte_plan(
                 }
             }
             
-            for (cte_name_ref, (select_items, _)) in &cte_schemas {
+            for (cte_name_ref, (select_items, _, _, _)) in &cte_schemas {
                 log::info!("🔧 Processing CTE '{}' with {} columns", cte_name_ref, select_items.len());
                 
                 // Get the composite alias for this CTE (e.g., "a_b" for "with_a_b_cte_1")
@@ -1887,14 +2095,43 @@ fn build_chained_with_match_cte_plan(
                     (items, names)
                 }
             };
+            
+            // Extract ID column mappings for this CTE
+            let mut alias_to_id_column: HashMap<String, String> = HashMap::new();
+            for item in &select_items_for_schema {
+                if let Some(col_alias) = &item.col_alias {
+                    let alias_str = col_alias.0.as_str();
+                    if let Some(dot_pos) = alias_str.rfind('.') {
+                        let (prefix, suffix) = alias_str.split_at(dot_pos);
+                        if suffix == ".id" {
+                            alias_to_id_column.insert(prefix.to_string(), "id".to_string());
+                            log::info!("📊 WITH CTE '{}': ID for alias '{}' -> 'id'", cte_name, prefix);
+                        }
+                    } else if alias_str.ends_with("_id") {
+                        let prefix = &alias_str[..alias_str.len() - 3];
+                        alias_to_id_column.insert(prefix.to_string(), "id".to_string());
+                        log::info!("📊 WITH CTE '{}': ID for alias '{}' -> 'id'", cte_name, prefix);
+                    }
+                }
+            }
+            
+            // Build explicit property mapping for WITH CTE
+            let mut property_mapping = build_property_mapping_from_columns(&select_items_for_schema);
+            
+            // Transform dotted column names to underscores for WITH CTEs
+            // (WITH CTE columns use "friend_id", not "friend.id")
+            property_mapping = property_mapping.into_iter()
+                .map(|(k, v)| (k, v.replace('.', "_")))
+                .collect();
+            
             cte_schemas.insert(
                 cte_name.clone(),
-                (select_items_for_schema, property_names_for_schema.clone()),
+                (select_items_for_schema, property_names_for_schema.clone(), alias_to_id_column, property_mapping.clone()),
             );
             log::info!(
-                "🔧 build_chained_with_match_cte_plan: Stored schema for CTE '{}': {:?}",
+                "🔧 build_chained_with_match_cte_plan: Stored schema for CTE '{}': {:?}, {} property mappings",
                 cte_name,
-                property_names_for_schema
+                property_names_for_schema, property_mapping.len()
             );
 
             // Replacing WITH clauses with this alias with CTE reference
@@ -2038,6 +2275,9 @@ fn build_chained_with_match_cte_plan(
     // Use non-recursive render to get the base plan
     let mut render_plan = render_without_with_detection(&current_plan, schema)?;
 
+    log::info!("🔧 build_chained_with_match_cte_plan: Final render complete. FROM: {:?}, SELECT items: {}", 
+               render_plan.from, render_plan.select.items.len());
+
     // CRITICAL: Rewrite SELECT items to use CTE column references
     // When the FROM is a CTE (e.g., with_b_c_cte AS b_c), SELECT items that reference
     // aliases from the CTE (e.g., b.name) need to be rewritten to b_c.b_name
@@ -2062,7 +2302,7 @@ fn build_chained_with_match_cte_plan(
                     // Reconstruct property_mapping from cte_schemas
                     log::info!("🔧 build_chained_with_match_cte_plan: Source is not ViewScan, reconstructing from cte_schemas");
                     
-                    if let Some((select_items, _)) = cte_schemas.get(&from_ref.name) {
+                    if let Some((select_items, _, _, _)) = cte_schemas.get(&from_ref.name) {
                         // Build mapping from SelectItems: column_alias → PropertyValue
                         let mapping: HashMap<String, PropertyValue> = select_items.iter()
                             .filter_map(|item| {
@@ -2143,55 +2383,18 @@ fn build_chained_with_match_cte_plan(
                     }
                 }
                 
-                // Build mappings from CTE schema
-                if let Some((select_items, _)) = cte_schemas.get(&from_ref.name) {
-                    for item in select_items {
-                        if let Some(col_alias) = &item.col_alias {
-                            // The CTE column name (e.g., "a_user_id")
-                            let cte_col_name = &col_alias.0;
-                            
-                            // Extract table alias and property from CTE column name
-                            // Format: "alias_property" (e.g., "a_user_id" → alias="a", property="user_id")
-                            for with_alias in &with_aliases {
-                                let prefix = format!("{}_", with_alias);
-                                if let Some(property) = cte_col_name.strip_prefix(&prefix) {
-                                    // Add main mapping: (alias, property) → cte_column
-                                    // This handles Cypher property names
-                                    reverse_mapping.insert((with_alias.clone(), property.to_string()), cte_col_name.clone());
-                                    log::info!("🔧 Reverse mapping: ({}, '{}') → {}", with_alias, property, cte_col_name);
-                                    
-                                    // CRITICAL: Also try to get the DB column name from the original expression
-                                    // The SelectItem expression might be like: with_prev_cte.a_city or a.city
-                                    // If it's a PropertyAccessExp, extract the original DB column
-                                    if let RenderExpr::PropertyAccessExp(pa) = &item.expression {
-                                        if let Column(PropertyValue::Column(original_col)) = &pa.column {
-                                            // Check if this is a CTE column or a DB column
-                                            // CTE columns have the alias prefix, DB columns don't
-                                            if !original_col.contains('_') || !original_col.starts_with(&prefix) {
-                                                // This looks like a DB column name (e.g., "city", "full_name")
-                                                // But wait, after our fix, these are CTE column names...
-                                            }
-                                            // Try a different approach: check if the original_col != property
-                                            // If they differ, original_col might be the DB column
-                                            if original_col != property {
-                                                reverse_mapping.insert((with_alias.clone(), original_col.clone()), cte_col_name.clone());
-                                                log::info!("🔧 DB column mapping: ({}, '{}') → {}", with_alias, original_col, cte_col_name);
-                                            }
-                                        }
-                                    }
-                                    
-                                    // CRITICAL: If this looks like an ID column (e.g., "user_id", "node_id"),
-                                    // also map the generic "id" reference to it
-                                    if property.ends_with("_id") || property == "id" {
-                                        reverse_mapping.insert((with_alias.clone(), "id".to_string()), cte_col_name.clone());
-                                        log::info!("🔧 Added ID mapping: ({}, 'id') → {}", with_alias, cte_col_name);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    log::info!("🔧 build_chained_with_match_cte_plan: Built reverse mapping with {} entries", reverse_mapping.len());
+                // Build mappings from CTE schema - USE EXPLICIT PROPERTY MAPPING
+                log::info!("🔍 Looking for CTE '{}' in cte_schemas (have {} schemas)", from_ref.name, cte_schemas.len());
+                log::info!("🔍 Available CTE schemas: {:?}", cte_schemas.keys().collect::<Vec<_>>());
+                if let Some((_select_items, _names, _alias_to_id, property_mapping)) = cte_schemas.get(&from_ref.name) {
+                    log::info!("✅ Using explicit property mapping with {} entries", property_mapping.len());
+                    
+                    // Direct lookup instead of fragile pattern matching
+                    reverse_mapping = property_mapping.clone();
+                    
+                    log::info!("🔧 build_chained_with_match_cte_plan: Built reverse mapping with {} entries from explicit property mapping", reverse_mapping.len());
+                } else {
+                    log::warn!("⚠️ CTE '{}' not found in cte_schemas", from_ref.name);
                 }
                 
                 // Rewrite SELECT items
@@ -3623,7 +3826,7 @@ fn prune_joins_covered_by_cte(
     plan: &LogicalPlan,
     cte_name: &str,
     exported_aliases: &std::collections::HashSet<&str>,
-    _cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>)>,
+    _cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>, HashMap<String, String>, HashMap<(String, String), String>)>,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
     use crate::query_planner::logical_plan::*;
     use std::sync::Arc;
@@ -3801,7 +4004,7 @@ fn replace_with_clause_with_cte_reference_v2(
     with_alias: &str,
     cte_name: &str,
     pre_with_aliases: &std::collections::HashSet<String>,
-    cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>)>,
+    cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>, HashMap<String, String>, HashMap<(String, String), String>)>,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
     use crate::query_planner::logical_plan::*;
     use std::collections::HashMap;
@@ -3985,7 +4188,7 @@ fn replace_with_clause_with_cte_reference_v2(
     fn create_cte_reference(
         cte_name: &str,
         with_alias: &str,
-        cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>)>,
+        cte_schemas: &std::collections::HashMap<String, (Vec<SelectItem>, Vec<String>, HashMap<String, String>, HashMap<(String, String), String>)>,
     ) -> LogicalPlan {
         use crate::graph_catalog::expression_parser::PropertyValue;
 
@@ -3996,7 +4199,7 @@ fn replace_with_clause_with_cte_reference_v2(
 
         // Build property_mapping using CYPHER PROPERTY NAMES ONLY
         // Store the ViewScan's DB mapping separately so we can reverse-resolve DB columns
-        let (property_mapping, db_to_cypher_mapping) = if let Some((select_items, property_names)) =
+        let (property_mapping, db_to_cypher_mapping) = if let Some((select_items, property_names, _, _)) =
             cte_schemas.get(cte_name)
         {
             let mut mapping = HashMap::new();
@@ -4280,7 +4483,7 @@ fn replace_with_clause_with_cte_reference_v2(
                 if let LogicalPlan::GraphNode(gn) = &new_input {
                     if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
                         // Rebuild db_to_cypher mapping from cte_schemas
-                        let db_to_cypher = if let Some((select_items, _)) = cte_schemas.get(&vs.source_table) {
+                        let db_to_cypher = if let Some((select_items, _, _, property_mapping)) = cte_schemas.get(&vs.source_table) {
                             let mut mapping = HashMap::new();
                             let alias_prefix = with_alias;
                             for item in select_items {
@@ -4417,6 +4620,8 @@ fn replace_with_clause_with_cte_reference_v2(
                             joining_on: j.joining_on.clone(),
                             join_type: j.join_type.clone(),
                             pre_filter: j.pre_filter.clone(),
+                            from_id_column: j.from_id_column.clone(),
+                            to_id_column: j.to_id_column.clone(),
                         })
                     } else {
                         Some(j.clone())
@@ -4624,6 +4829,32 @@ impl RenderPlanBuilder for LogicalPlan {
     // This function was marked as dead_code and never called externally.
     // It traversed the plan tree to extract all properties for an alias.
     // Removed as part of renderer simplification - ~180 lines.
+
+    /// Find ID column for an alias by checking CTE schemas first, then plan tree
+    /// This handles both regular nodes and aliases from CTEs (like VLP results)
+    fn find_id_column_with_cte_context(
+        &self,
+        alias: &str,
+        cte_schemas: &HashMap<String, (Vec<SelectItem>, Vec<String>, HashMap<String, String>, HashMap<(String, String), String>)>,
+        cte_references: &HashMap<String, String>,
+    ) -> RenderPlanBuilderResult<String> {
+        // First, check if this alias comes from a CTE
+        if let Some(cte_name) = cte_references.get(alias) {
+            if let Some((_select_items, _property_names, alias_to_id_column, _prop_map)) = cte_schemas.get(cte_name) {
+                // Look up the ID column for this specific alias
+                if let Some(id_col) = alias_to_id_column.get(alias) {
+                    log::info!("✅ Found ID column '{}' for alias '{}' in CTE '{}'", id_col, alias, cte_name);
+                    return Ok(id_col.clone());
+                } else {
+                    log::warn!("⚠️ CTE '{}' found for alias '{}' but no ID column mapping exists", cte_name, alias);
+                    log::warn!("⚠️ Available alias mappings: {:?}", alias_to_id_column);
+                }
+            }
+        }
+        
+        // Fall back to plan tree traversal
+        self.find_id_column_for_alias(alias)
+    }
 
     /// Get all properties for an alias, returning both properties and the actual table alias to use.
     /// For denormalized nodes, the table alias is the relationship alias (not the node alias).
@@ -6463,6 +6694,8 @@ impl RenderPlanBuilder for LogicalPlan {
                             joining_on: vec![],                    // Empty for CROSS JOIN
                             join_type: JoinType::Join,             // CROSS JOIN
                             pre_filter: None,
+                            from_id_column: None,
+                            to_id_column: None,
                         });
                     }
                 }
@@ -6744,6 +6977,8 @@ impl RenderPlanBuilder for LogicalPlan {
                             }],
                             join_type: JoinType::Inner,
                             pre_filter: None,
+                            from_id_column: Some(rel_cols.from_id.clone()), // Preserve for NULL checks
+                            to_id_column: Some(rel_cols.to_id.clone()),     // Preserve for NULL checks
                         });
                     }
                     // For single-hop denormalized, no JOINs needed - relationship table IS the data
@@ -6756,9 +6991,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 // MULTI-HOP FIX: Check BOTH left and right sides for nested GraphRel patterns
                 if let LogicalPlan::GraphRel(_) = graph_rel.left.as_ref() {
                     println!(
-                        "DEBUG: Multi-hop pattern detected on LEFT side - recursively extracting left GraphRel joins"
+                        "🔍 DEBUG: Multi-hop pattern detected on LEFT side - recursively extracting left GraphRel joins (alias={})",
+                        graph_rel.alias
                     );
                     let mut left_joins = graph_rel.left.extract_joins()?;
+                    println!("  ↳ Got {} joins from left GraphRel", left_joins.len());
                     joins.append(&mut left_joins);
                 }
                 
@@ -6766,9 +7003,14 @@ impl RenderPlanBuilder for LogicalPlan {
                 // In this case, right side contains (b)-[r2]->(c) which needs its own joins
                 if let LogicalPlan::GraphRel(_) = graph_rel.right.as_ref() {
                     println!(
-                        "DEBUG: Multi-hop pattern detected on RIGHT side - recursively extracting right GraphRel joins"
+                        "🔍 DEBUG: Multi-hop pattern detected on RIGHT side - recursively extracting right GraphRel joins (alias={})",
+                        graph_rel.alias
                     );
                     let mut right_joins = graph_rel.right.extract_joins()?;
+                    println!("  ↳ Got {} joins from right GraphRel", right_joins.len());
+                    for (idx, j) in right_joins.iter().enumerate() {
+                        println!("      [{}] {} AS {} ON {:?}", idx, j.table_name, j.table_alias, j.joining_on);
+                    }
                     joins.append(&mut right_joins);
                 }
 
@@ -6844,6 +7086,8 @@ impl RenderPlanBuilder for LogicalPlan {
                         }],
                         join_type: join_type.clone(),
                         pre_filter: None,
+                        from_id_column: Some(rel_col_start.clone()), // Preserve for NULL checks
+                        to_id_column: Some(rel_col_end.clone()),     // Preserve for NULL checks
                     });
 
                     // JOIN 2: CTE (right node) -> Relationship table
@@ -6876,6 +7120,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 }],
                                 join_type,
                                 pre_filter: None,
+                                from_id_column: None,
+                                to_id_column: None,
                             });
                         }
                     }
@@ -7189,12 +7435,15 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 };
 
+                println!("🔧 DEBUG: About to push JOIN 1 (relationship): {} AS {}", rel_table, graph_rel.alias);
                 joins.push(Join {
                     table_name: rel_table.clone(),
                     table_alias: graph_rel.alias.clone(),
                     joining_on: vec![rel_join_condition],
                     join_type: join_type.clone(),
                     pre_filter: rel_pre_filter.clone(),
+                    from_id_column: Some(rel_cols.from_id.clone()),
+                    to_id_column: Some(rel_cols.to_id.clone()),
                 });
 
                 // JOIN 2: Relationship table -> End node
@@ -7305,14 +7554,18 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 };
 
+                println!("🔧 DEBUG: About to push JOIN 2 (end node): {} AS {}", end_table, graph_rel.right_connection);
                 joins.push(Join {
                     table_name: end_table,
                     table_alias: graph_rel.right_connection.clone(),
                     joining_on: vec![end_join_condition],
                     join_type,
                     pre_filter: right_node_pre_filter.clone(),
+                    from_id_column: None,
+                    to_id_column: None,
                 });
 
+                println!("📤 DEBUG: GraphRel (alias={}) returning {} total joins", graph_rel.alias, joins.len());
                 joins
             }
             LogicalPlan::CartesianProduct(cp) => {
@@ -7398,6 +7651,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 joining_on,
                                 join_type,
                                 pre_filter: None,
+                                from_id_column: None,
+                                to_id_column: None,
                             });
                         }
                     }
@@ -9199,6 +9454,8 @@ impl RenderPlanBuilder for LogicalPlan {
                             joining_on: vec![join_condition],
                             join_type: super::JoinType::Inner,
                             pre_filter: None,
+                            from_id_column: None,
+                            to_id_column: None,
                         };
 
                         println!(
@@ -9931,6 +10188,8 @@ impl RenderPlanBuilder for LogicalPlan {
                         joining_on: join_condition,
                         join_type: JoinType::Inner,
                         pre_filter: None,
+                        from_id_column: None,
+                        to_id_column: None,
                     });
                 }
             }
@@ -10826,6 +11085,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     }],
                     join_type: JoinType::Left,
                     pre_filter: None,
+                    from_id_column: None,
+                    to_id_column: None,
                 });
             }
 
@@ -10925,6 +11186,8 @@ impl RenderPlanBuilder for LogicalPlan {
                             ],
                             join_type: vlp_join_type.clone(),
                             pre_filter: None,
+                            from_id_column: None,
+                            to_id_column: None,
                         });
                     }
                 } else {
@@ -10952,6 +11215,8 @@ impl RenderPlanBuilder for LogicalPlan {
                             }],
                             join_type: vlp_join_type.clone(),
                             pre_filter: None,
+                            from_id_column: None,
+                            to_id_column: None,
                         });
                     } else {
                         log::debug!("⏭️  SKIP START node JOIN: start_is_denorm={}, vlp_is_optional={}", start_is_denorm, vlp_is_optional);
@@ -10986,6 +11251,8 @@ impl RenderPlanBuilder for LogicalPlan {
                             }],
                             join_type: vlp_join_type.clone(),
                             pre_filter: None,
+                            from_id_column: None,
+                            to_id_column: None,
                         });
                     } else {
                         log::debug!("⏭️  SKIP END node JOIN: end_is_denorm={}", end_is_denorm);
@@ -11186,6 +11453,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     }],
                     join_type: JoinType::Join,
                     pre_filter: None,
+                    from_id_column: None,
+                    to_id_column: None,
                 });
 
                 // Record this CTE as the source for its target node (for chaining)

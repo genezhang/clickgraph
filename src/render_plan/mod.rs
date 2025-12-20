@@ -95,6 +95,45 @@ pub struct Join {
     /// This is used for schema filters and OPTIONAL MATCH WHERE clauses
     /// to ensure correct LEFT JOIN semantics (filter BEFORE join, not after).
     pub pre_filter: Option<RenderExpr>,
+    /// For relationship tables: the source node ID column name (e.g., "Person1Id", "from_id")
+    /// Used for NULL checks: `r IS NULL` → `r.from_id IS NULL`
+    /// Extracted during planning from schema lookups, NOT from joining_on (to avoid circular logic)
+    pub from_id_column: Option<String>,
+    /// For relationship tables: the target node ID column name (e.g., "Person2Id", "to_id")
+    pub to_id_column: Option<String>,
+}
+
+impl Join {
+    /// Get the relationship ID column for NULL checks.
+    /// Returns from_id_column if set (populated during planning from schema),
+    /// otherwise extracts from JOIN condition as fallback.
+    /// For `LEFT JOIN Person_knows_Person AS k ON k.Person1Id = a.id`,
+    /// returns "Person1Id".
+    pub fn get_relationship_id_column(&self) -> Option<String> {
+        // First priority: use from_id_column if explicitly set during planning
+        if let Some(ref col) = self.from_id_column {
+            return Some(col.clone());
+        }
+        
+        // Fallback: extract from joining_on condition
+        if let Some(first_condition) = self.joining_on.first() {
+            if first_condition.operands.len() >= 2 {
+                // Check if first operand is PropertyAccess with our table_alias
+                if let RenderExpr::PropertyAccessExp(prop) = &first_condition.operands[0] {
+                    if prop.table_alias.0 == self.table_alias {
+                        return Some(prop.column.0.raw().to_string());
+                    }
+                }
+                // Sometimes the order is reversed: other.column = alias.column
+                if let RenderExpr::PropertyAccessExp(prop) = &first_condition.operands[1] {
+                    if prop.table_alias.0 == self.table_alias {
+                        return Some(prop.column.0.raw().to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -157,6 +196,8 @@ impl TryFrom<LogicalJoin> for Join {
                 .collect::<Result<Vec<OperatorApplication>, RenderBuildError>>()?,
             join_type: value.join_type.clone().try_into()?,
             pre_filter,
+            from_id_column: value.from_id_column,
+            to_id_column: value.to_id_column,
         };
         Ok(join)
     }

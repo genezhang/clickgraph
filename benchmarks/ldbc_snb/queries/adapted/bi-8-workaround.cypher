@@ -5,11 +5,11 @@
 */
 MATCH (tag:Tag {name: $tag})
 
--- Collect interested persons
+
 OPTIONAL MATCH (tag)<-[:HAS_INTEREST]-(interestedPerson:Person)
 WITH tag, collect(interestedPerson) AS interestedPersons
 
--- Collect message creators
+
 OPTIONAL MATCH (tag)<-[:HAS_TAG]-(message:Message)-[:HAS_CREATOR]->(messagePerson:Person)
 WHERE $startDate < message.creationDate
   AND message.creationDate < $endDate
@@ -18,19 +18,19 @@ WITH tag, interestedPersons, interestedPersons + collect(messagePerson) AS perso
 UNWIND persons AS person
 WITH DISTINCT tag, person
 
--- Calculate score using size() on patterns instead of pattern comprehension
+
 WITH
   tag,
   person,
   100 * size((tag)<-[:HAS_INTEREST]-(person)) AS interestScore
   
--- Count messages in date range (may need separate OPTIONAL MATCH if WHERE in size() not supported)
+
 OPTIONAL MATCH (tag)<-[:HAS_TAG]-(message:Message)-[:HAS_CREATOR]->(person)
 WHERE $startDate < message.creationDate AND message.creationDate < $endDate
 WITH tag, person, interestScore, count(message) AS messageCount
 WITH tag, person, interestScore + messageCount AS score
 
--- Calculate friend scores
+
 OPTIONAL MATCH (person)-[:KNOWS]-(friend)
 WITH person, score, tag, friend
 OPTIONAL MATCH (tag)<-[:HAS_INTEREST]-(friend)

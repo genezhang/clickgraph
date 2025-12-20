@@ -164,7 +164,11 @@ pub async fn query_handler(
     // Extract replan option and clean query
     let replan_option = query_cache::ReplanOption::from_query_prefix(&payload.query)
         .unwrap_or(query_cache::ReplanOption::Default);
-    let clean_query = query_cache::ReplanOption::strip_prefix(&payload.query);
+    let clean_query_with_comments = query_cache::ReplanOption::strip_prefix(&payload.query);
+    
+    // Strip SQL-style comments (-- and /* */) before parsing
+    let clean_query_string = open_cypher_parser::strip_comments(clean_query_with_comments);
+    let clean_query = clean_query_string.as_str();
 
     // Pre-parse to check for USE clause (minimal parse just to extract database selection)
     // IMPORTANT: Parse the CLEAN query without CYPHER prefix

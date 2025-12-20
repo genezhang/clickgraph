@@ -12,11 +12,11 @@ WHERE  (toMonth(birthday)=$month AND toDayOfMonth(birthday)>=21) OR
         (toMonth(birthday)=($month%12)+1 AND toDayOfMonth(birthday)<22)
 WITH DISTINCT friend, city, person
 
--- Collect all posts
+
 OPTIONAL MATCH (friend)<-[:HAS_CREATOR]-(post:Post)
 WITH friend, city, person, collect(post) AS allPosts
 
--- Count common interest posts separately
+
 OPTIONAL MATCH (friend)<-[:HAS_CREATOR]-(commonPost:Post)
 WHERE (commonPost)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)
 WITH friend, 

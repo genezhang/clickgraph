@@ -4,6 +4,7 @@ use ast::{
     SkipClause, UnionClause, UnionType, UnwindClause, UseClause, WhereClause, WithClause,
 };
 use common::ws;
+pub use common::strip_comments;
 use errors::OpenCypherParsingError;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case};

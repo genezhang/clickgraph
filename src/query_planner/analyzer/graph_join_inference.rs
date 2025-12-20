@@ -1532,8 +1532,10 @@ impl GraphJoinInference {
                                 joining_on: vec![], // Empty = this is the FROM table
                                 join_type: JoinType::Inner,
                                 pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
                             };
-                            collected_graph_joins.push(from_marker);
+                            Self::push_join_if_not_duplicate(collected_graph_joins, from_marker);
                             crate::debug_print!(
                                 "📦 CartesianProduct: Added FROM marker for left table"
                             );
@@ -1579,8 +1581,10 @@ impl GraphJoinInference {
                                             JoinType::Inner
                                         },
                                         pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
                                     };
-                                    collected_graph_joins.push(cross_join);
+                                    Self::push_join_if_not_duplicate(collected_graph_joins, cross_join);
                                     crate::debug_print!("📦 CartesianProduct: Added cross-table JOIN, total joins now={}",
                                         collected_graph_joins.len());
                                 }
@@ -2496,6 +2500,8 @@ impl GraphJoinInference {
                             }],
                             join_type: Self::determine_join_type(left_is_optional),
                             pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
                         };
                         collected_graph_joins.push(left_join);
                         joined_entities.insert(left_alias.to_string());
@@ -2538,6 +2544,8 @@ impl GraphJoinInference {
                         }],
                         join_type: Self::determine_join_type(rel_is_optional),
                         pre_filter: pre_filter.clone(),
+                        from_id_column: Some(rel_schema.from_id.clone()),
+                        to_id_column: Some(rel_schema.to_id.clone()),
                     };
                     collected_graph_joins.push(rel_join);
                     joined_entities.insert(rel_alias.to_string());
@@ -2573,6 +2581,8 @@ impl GraphJoinInference {
                             }],
                             join_type: Self::determine_join_type(right_is_optional),
                             pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
                         };
                         
                         log::debug!("📌 Adding RIGHT node JOIN: {} AS {}", right_cte_name, right_alias);
@@ -2611,6 +2621,8 @@ impl GraphJoinInference {
                         }],
                         join_type: Self::determine_join_type(rel_is_optional),
                         pre_filter: pre_filter.clone(),
+                        from_id_column: None,
+                        to_id_column: None,
                     };
                     collected_graph_joins.push(rel_join);
                     joined_entities.insert(rel_alias.to_string());
@@ -2641,6 +2653,8 @@ impl GraphJoinInference {
                             }],
                             join_type: Self::determine_join_type(left_is_optional),
                             pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
                         };
                         
                         log::debug!("📌 Adding LEFT node JOIN: {} AS {}", left_cte_name, left_alias);
@@ -2783,6 +2797,8 @@ impl GraphJoinInference {
                         }],
                         join_type: Self::determine_join_type(join_node_optional),
                         pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
                     };
                     collected_graph_joins.push(node_join);
                     joined_entities.insert(join_node_alias.to_string());
@@ -2825,6 +2841,8 @@ impl GraphJoinInference {
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
                     pre_filter,
+                    from_id_column: Some(rel_schema.from_id.clone()),
+                    to_id_column: Some(rel_schema.to_id.clone()),
                 };
                 collected_graph_joins.push(rel_join);
                 joined_entities.insert(rel_alias.to_string());
@@ -2907,6 +2925,8 @@ impl GraphJoinInference {
                     }],
                     join_type: Self::determine_join_type(rel_is_optional),
                     pre_filter,
+                    from_id_column: None,
+                    to_id_column: None,
                 };
                 collected_graph_joins.push(edge_join);
 
@@ -3041,6 +3061,8 @@ impl GraphJoinInference {
                                 }],
                                 join_type: Self::determine_join_type(left_is_optional),
                                 pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
                             };
                             collected_graph_joins.push(left_join);
                             joined_entities.insert(left_alias.to_string());
@@ -3088,6 +3110,8 @@ impl GraphJoinInference {
                                 }],
                                 join_type: Self::determine_join_type(right_is_optional),
                                 pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
                             };
                             collected_graph_joins.push(right_join);
                             joined_entities.insert(right_alias.to_string());
@@ -3098,6 +3122,20 @@ impl GraphJoinInference {
                 Ok(())
             }
         }
+    }
+
+    /// Add a JOIN to the collection, but only if it's not a duplicate.
+    /// Duplicates are detected by comparing table_alias (which must be unique).
+    fn push_join_if_not_duplicate(collected_graph_joins: &mut Vec<Join>, new_join: Join) {
+        // Check if this alias already exists
+        if collected_graph_joins.iter().any(|j| j.table_alias == new_join.table_alias) {
+            log::debug!("   ⏭️  Skipping duplicate JOIN: {} AS {} (already in collection)", 
+                       new_join.table_name, new_join.table_alias);
+            return;
+        }
+        
+        log::debug!("   ✅ Adding JOIN: {} AS {}", new_join.table_name, new_join.table_alias);
+        collected_graph_joins.push(new_join);
     }
 
     fn infer_graph_join(
@@ -3538,25 +3576,30 @@ impl GraphJoinInference {
             node_alias, current_appearance.rel_alias, 
             current_appearance.table_name, current_appearance.column_name);
 
-        // Check if this node was already seen in a DIFFERENT GraphRel
-        if let Some(prev_appearances) = node_appearances.get(node_alias) {
-            for prev in prev_appearances {
-                if prev.rel_alias != current_appearance.rel_alias {
-                    // Found cross-branch sharing! Generate JOIN
-                    log::debug!("   🔗 Cross-branch match: '{}' appears in both {} and {}",
-                        node_alias, prev.rel_alias, current_appearance.rel_alias);
-                    
-                    self.generate_cross_branch_join(
-                        node_alias,
-                        prev,
-                        &current_appearance,
-                        collected_graph_joins,
-                    )?;
-                    
-                    // Only generate one JOIN per node pair (first match is enough)
-                    break;
-                }
-            }
+        // DISABLED: Cross-branch JOIN generation
+        // 
+        // This logic was causing duplicate JOINs for normal patterns.
+        // Analysis: ALL Cypher patterns can be decomposed into linear chains.
+        // Even `(a)-[r1]->(b)<-[r2]-(c)` is linear: a→b, c→b (processed in sequence)
+        // The regular JOIN generation (infer_graph_join) already handles this correctly
+        // by processing relationships in pattern order and connecting them to already-joined nodes.
+        //
+        // The "cross-branch" concept artificially creates problems where none exist.
+        // Example: (a)→(b)→(c) and (a)→(b)←(c) are both linear chains, just with different directions.
+        // The regular JOIN logic handles both by:
+        //   1. FROM table (first node)
+        //   2. JOIN rel1 ON rel1.from_id = first.id
+        //   3. JOIN node b ON b.id = rel1.to_id
+        //   4. JOIN rel2 ON rel2.to_id = b.id (for incoming) or rel2.from_id = b.id (for outgoing)
+        //   5. JOIN node c ON c.id = rel2.from_id (for incoming) or rel2.to_id (for outgoing)
+        //
+        // No cross-branch JOIN needed - the relationships connect through their shared node naturally.
+        //
+        // If this causes issues with complex patterns in the future, we can re-enable with proper
+        // logic to detect truly independent branches that need explicit JOINs.
+        
+        if let Some(_prev_appearances) = node_appearances.get(node_alias) {
+            log::debug!("   ℹ️  Node '{}' seen before in different GraphRel - regular JOINs will handle connection", node_alias);
         }
 
         // Record this appearance for future checks
@@ -3740,6 +3783,8 @@ impl GraphJoinInference {
             }],
             join_type: JoinType::Inner, // Cross-branch is always INNER (required match)
             pre_filter: None, // No pre-filter for cross-branch JOINs
+            from_id_column: None,
+            to_id_column: None,
         };
 
         collected_graph_joins.push(join);

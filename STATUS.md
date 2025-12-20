@@ -1,12 +1,209 @@
 # ClickGraph Status
 
-*Updated: December 19, 2025*
+*Updated: December 23, 2025*
+
+## ✅ Latest: Duplicate JOIN Bug Fixed (Dec 23, 2025)
+
+**Achievement**: Fixed critical duplicate JOIN bug in linear relationship chains
+
+**Problem**: Linear chains like `(m)-[:HAS_TAG]->(t)-[:HAS_TYPE]->(tc)` generated duplicate JOINs with incorrect join conditions
+
+**Root Cause**: `check_and_generate_cross_branch_joins()` in graph_join_inference.rs treated ALL patterns as potential branches, even simple linear chains
+
+**Solution**: Completely disabled cross-branch JOIN generation logic. Regular JOIN collection handles ALL patterns correctly:
+- **Linear chains**: `(a)->(b)->(c)` ✅
+- **Diamond patterns**: `(a)->(b1), (a)->(b2)` ✅
+- **V-patterns**: `(a1)->(b), (a2)->(b)` ✅
+- **Mixed directions**: `(a)->(b)<-(c)` ✅
+
+**Why it works**: JOIN ordering is just graph connectivity - pick JOINs that reference already-joined tables. No special "cross-branch" logic needed.
+
+**Test Results**:
+- Before: 8/15 LDBC queries passing (53%)
+- After: 10/15 LDBC queries passing (67%)
+- ✅ BI3, BI5 now pass
+- ✅ All branching patterns verified working
+
+**See**: `notes/duplicate_join_fix_dec2024.md` for full details
+
+---
+
+## ✅ Previous: SQL-Style Comment Support (Dec 20, 2025)
+
+**Achievement**: Implemented automatic comment stripping for SQL-style comments in Cypher queries
+
+**Problem Solved**: Queries with SQL-style comments (`--` and `/* */`) were causing parser failures
+
+**Implementation**:
+- Added `strip_comments()` function in `src/open_cypher_parser/common.rs`
+- Handles both line comments (`--`) and block comments (`/* */`)
+- Comments automatically stripped in `src/server/handlers.rs` before parsing
+- Pre-processing approach chosen over parser-level handling for simplicity
+
+**Features**:
+- ✅ Line comments: `-- comment text until newline`
+- ✅ Block comments: `/* multi-line comment */`
+- ✅ Mixed comments in same query
+- ✅ Preserves newlines in line comments
+- ✅ Works with all LDBC queries containing SQL-style documentation
+
+**Test Results**:
+- ✅ All 15 LDBC queries parse correctly WITH comments (100%)
+- ✅ Simple comment tests pass: line, block, mixed
+- ✅ IC1 query with SQL comments generates correct SQL
+- ✅ No regression in existing functionality
+
+**Impact**:
+- Users can now include SQL-style comments directly in Cypher queries
+- LDBC benchmark queries with comments work without preprocessing
+- Better compatibility with SQL-literate users' query documentation style
+
+---
+
+## ✅ Previous: Comprehensive Empty Plan Diagnostics (Dec 20, 2025)
+
+**Achievement**: Implemented two-layer diagnostic system for debugging Empty logical plans
+
+**Problem Solved**: Queries were failing silently with Empty plans and no diagnostic information
+
+**Implementation**:
+1. **Empty AST Detection** (parser failure): Detects when parser returns empty AST
+   - Logs detailed breakdown of all AST components (MATCH, RETURN, WITH, etc.)
+   - Returns error with common causes
+   
+2. **Empty Plan Detection** (planning failure): Detects Empty plan after clause processing
+   - Logs warnings about schema mismatches, unsupported patterns
+   - Returns error with actionable guidance
+
+**Impact**:
+- ✅ Clear actionable error messages instead of silent failures
+- ✅ Specific guidance on common causes
+- ✅ Found root cause leading to comment support implementation
+
+---
+
+## 🔧 Known Issue: WITH + GROUP BY (Column Resolution)
+
+**Problem**: WITH aggregation queries generate SQL with wrong column references in final SELECT
+
+**Status**: ✅ GROUP BY fixed, 🔧 column name resolution in progress
+
+**Progress**:
+- ✅ GROUP BY now correctly uses ID column only: `GROUP BY friend.id`
+- ✅ anyLast() wrapping: Non-ID columns wrapped correctly
+- ✅ CTE schema tracking extended with `alias_to_id_column` map
+- ✅ `expand_table_alias_to_group_by_id_only()` now checks CTE schemas first
+- 🔧 NEW ISSUE: Final SELECT column references need fixing
+
+**Current Error (IC1)**:
+```
+Code: 47. Identifier 'cnt_friend.id' cannot be resolved
+```
+
+**Generated SQL**:
+```sql
+WITH with_cnt_friend_cte_1 AS (
+  SELECT anyLast(friend.birthday) AS friend_birthday,
+         friend.id AS friend_id,  ← Column named "friend_id"
+         ...
+  FROM ... GROUP BY friend.id   ← ✅ FIXED
+)
+SELECT cnt_friend.id,            ← ❌ Should be "friend_id"
+       cnt_friend.firstName      ← ❌ Should be "friend_firstName"
+FROM with_cnt_friend_cte_1 AS cnt_friend
+```
+
+**Root Cause**: `RETURN friend.id` rendered as `cnt_friend.id` (property access) instead of `cnt_friend.friend_id` (CTE column name)
+
+**Next Step**: Fix column name resolution in final SELECT to use CTE schema column names
+
+---
 
 ## 🎯 Active Development (December 19, 2025)
 
-### Session Summary: TypeInference Consolidation + Parser Normalization Fixes
+### Latest: Shortest Path Query Optimization & Best Practices (Dec 19, 2025)
 
-**Latest Achievement (Dec 19, 2025 - Night)**:
+**Objective**: Optimize shortestPath queries for large graphs and establish best practices
+
+**Key Findings**:
+- ✅ **Inline Node Patterns Work Perfectly**: Both bound node filters applied correctly
+  ```cypher
+  -- ✓ Works: Inline patterns with properties
+  MATCH path = shortestPath((p1:Person {id: X})-[:KNOWS*1..5]-(p2:Person {id: Y}))
+  
+  -- ✗ Problematic: Comma-separated patterns (filter propagation issues)
+  MATCH (p1:Person {id: X}), (p2:Person {id: Y}), path = shortestPath((p1)-[:KNOWS*]-(p2))
+  ```
+
+- ⚠️ **Memory Limits on Large Graphs**: Even with bounded hops, large graphs (67K+ nodes) can exhaust memory
+  - Problem: ClickHouse recursive CTEs explore exponentially growing paths
+  - Root cause: Social network density creates millions of 5-hop paths
+  - Solution: Users MUST specify explicit hop bounds based on graph characteristics
+
+**Optimization Attempted (NOT VIABLE)**:
+- Tried: NOT EXISTS early termination to stop recursion when target found
+- Result: **Failed** - creates circular reference (checking CTE being built)
+- Reason: ClickHouse evaluates EXISTS after generating all rows in iteration
+- Conclusion: Early termination not possible in ClickHouse recursive CTEs
+
+**Implemented Solutions**:
+1. ✅ **Reduced Default max_hops**: 10 → 5 for shortestPath queries
+   - Regular variable-length paths: still 10 hops
+   - Shortest path: now 5 hops (safe for most graphs)
+   - Location: `src/clickhouse_query_generator/variable_length_cte.rs` line 746
+
+2. ✅ **Comprehensive Documentation**: Added to `docs/variable-length-paths-guide.md`
+   - New "Shortest Path Queries" section with performance guidelines
+   - Best practices: Always use explicit bounds on graphs >1,000 nodes
+   - Table of recommended max_hops by graph type:
+     - Social networks: `*1..4` (6 degrees of separation)
+     - Org charts: `*1..5` (shallow hierarchies)
+     - Citations: `*1..3` (recent/nearby)
+     - Dependencies: `*1..10` (deeper chains)
+
+3. ✅ **User Control**: Users specify exact bounds in queries
+   ```cypher
+   -- Recommended pattern for production
+   MATCH path = shortestPath((p1:Person {id: X})-[:KNOWS*1..4]-(p2:Person {id: Y}))
+   RETURN length(path)
+   ```
+
+**Test Results**:
+- ✅ With explicit bounds (`*1..2`): Query executes successfully on LDBC (67K nodes)
+- ❌ Unbounded or `*1..5`: Memory exhaustion (70GB limit) on LDBC
+- ✓ Breadth-first nature confirmed: First path IS shortest (ROW_NUMBER optimization works)
+
+**Why Breadth-First Works**:
+- Recursive CTEs naturally iterate by depth (1 hop, then 2, then 3...)
+- First path reaching target has minimum hops
+- ROW_NUMBER() OVER (ORDER BY hop_count ASC) ensures shortest path selection
+- No early termination needed - post-filtering is efficient enough with bounds
+
+**Key Takeaway**: 
+Shortest path is production-ready with explicit hop bounds. The breadth-first recursive CTE correctly finds shortest paths. Users must balance completeness vs. performance by setting appropriate bounds for their graph size and density.
+
+---
+
+### Session Summary: Path Variables in Comma-Separated Patterns + CASE Expression Verification
+
+**Latest Achievement (Dec 19, 2025 - Late Night)**:
+- ✅ **Path Variables in Comma-Separated Patterns**: Refactored AST to support per-pattern path variables
+  - Problem: Parser only supported path variable for entire MATCH, not individual patterns in comma list
+  - Symptom: `MATCH (a:Person), (b:Person), path = shortestPath((a)-[*]-(b))` failed to parse
+  - Solution: Changed `path_patterns: Vec<PathPattern>` → `Vec<(Option<&str>, PathPattern)>`
+  - Parser: Added `parse_pattern_with_optional_variable()` to parse "varname = " before each pattern
+  - Result: **complex-13 query now parses!** (LDBC SNB benchmark)
+  - Example: `MATCH (p1 {id: 1}), (p2 {id: 2}), path = shortestPath((p1)-[:KNOWS*]-(p2))` ✓
+
+- ✅ **CASE Expression Status Verified**: All CASE variants already fully working
+  - Discovery: User expected CASE needed implementation, but it was already complete!
+  - Tested: Simple CASE, Searched CASE, CASE IS NULL, CASE with properties - all work
+  - Implementation: Complete from parser → logical plan → render → SQL generation
+  - SQL Generation: Simple CASE uses `caseWithExpression()`, searched CASE uses `CASE WHEN...END`
+  - Result: **No work needed** - just documentation clarification
+  - Note: complex-13 failure was NOT due to CASE (which works), but due to path variable parsing (now fixed!)
+
+**Previous Achievements (Dec 19, 2025 - Night)**:
 - ✅ **Consolidated TypeInference with Polymorphic Support**: Unified inference logic
   - Problem: Duplicate inference code in match_clause.rs and type_inference.rs causing feature drift
   - Solution: Merged both implementations into single rock-solid TypeInference

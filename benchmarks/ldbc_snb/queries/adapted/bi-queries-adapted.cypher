@@ -34,7 +34,7 @@ RETURN count(*) AS totalComments
 // =============================================================================
 
 // BI-2a: Posts per tag (most popular tags)
-MATCH (post:Post)-[:POST_HAS_TAG]->(tag:Tag)
+MATCH (post:Post)-[:HAS_TAG]->(tag:Tag)
 RETURN 
     tag.name AS tagName,
     count(post) AS postCount
@@ -55,9 +55,9 @@ LIMIT 100
 // =============================================================================
 
 // BI-3: Top forums by message count with specific tag class
-MATCH (country:Place {name: 'China'})<-[:IS_PART_OF]-(city:Place)<-[:IS_LOCATED_IN]-(person:Person)
+MATCH (country:Country {name: 'China'})<-[:IS_PART_OF]-(city:City)<-[:IS_LOCATED_IN]-(person:Person)
 MATCH (person)<-[:HAS_MODERATOR]-(forum:Forum)-[:CONTAINER_OF]->(post:Post)
-MATCH (post)-[:POST_HAS_TAG]->(tag:Tag)-[:HAS_TYPE]->(tagClass:TagClass)
+MATCH (post)-[:HAS_TAG]->(tag:Tag)-[:HAS_TYPE]->(tagClass:TagClass)
 WHERE tagClass.name = 'MusicalArtist'
 RETURN
     forum.id AS forumId,
@@ -97,7 +97,8 @@ LIMIT 100
 // =============================================================================
 
 // BI-5: Active users for a tag with engagement scoring
-MATCH (tag:Tag {name: 'Arnold_Schwarzenegger'})<-[:POST_HAS_TAG]-(post:Post)-[:HAS_CREATOR]->(person:Person)
+MATCH (post:Post)-[:HAS_TAG]->(tag:Tag {name: 'Arnold_Schwarzenegger'})
+MATCH (post)-[:HAS_CREATOR]->(person:Person)
 RETURN 
     person.id AS personId,
     person.firstName AS firstName,
@@ -107,7 +108,8 @@ ORDER BY postCount DESC, personId
 LIMIT 100
 
 // BI-5 variant with likes (if data available)
-MATCH (tag:Tag)<-[:POST_HAS_TAG]-(post:Post)-[:HAS_CREATOR]->(person:Person)
+MATCH (post:Post)-[:HAS_TAG]->(tag:Tag)
+MATCH (post)-[:HAS_CREATOR]->(person:Person)
 OPTIONAL MATCH (post)<-[:LIKES]-(liker:Person)
 WITH person, tag, count(DISTINCT post) AS postCount, count(DISTINCT liker) AS likeCount
 RETURN 
@@ -125,7 +127,8 @@ LIMIT 100
 // =============================================================================
 
 // BI-6: Authors of posts about a tag
-MATCH (tag:Tag {name: 'Che_Guevara'})<-[:POST_HAS_TAG]-(post:Post)-[:HAS_CREATOR]->(person:Person)
+MATCH (post:Post)-[:HAS_TAG]->(tag:Tag {name: 'Che_Guevara'})
+MATCH (post)-[:HAS_CREATOR]->(person:Person)
 OPTIONAL MATCH (post)<-[:LIKES]-(liker:Person)
 RETURN 
     person.id AS personId,
@@ -140,7 +143,7 @@ LIMIT 100
 // =============================================================================
 
 // BI-7: Related tags through comment replies
-MATCH (tag:Tag {name: 'Enrique_Iglesias'})<-[:POST_HAS_TAG]-(post:Post)
+MATCH (tag:Tag {name: 'Enrique_Iglesias'})<-[:HAS_TAG]-(post:Post)
 MATCH (post)<-[:REPLY_OF_POST]-(comment:Comment)-[:COMMENT_HAS_TAG]->(relatedTag:Tag)
 WHERE relatedTag.id <> tag.id
 RETURN 
@@ -163,7 +166,8 @@ ORDER BY interestedCount DESC
 LIMIT 50
 
 // BI-8b: People who post about a tag
-MATCH (tag:Tag)<-[:POST_HAS_TAG]-(post:Post)-[:HAS_CREATOR]->(person:Person)
+MATCH (post:Post)-[:HAS_TAG]->(tag:Tag)
+MATCH (post)-[:HAS_CREATOR]->(person:Person)
 RETURN 
     tag.name AS tagName,
     person.id AS personId,
@@ -204,7 +208,7 @@ ORDER BY friendId
 
 // BI-10b: Friends who post about a tag class
 MATCH (person:Person {id: 14})-[:KNOWS*1..2]->(expert:Person)
-MATCH (expert)<-[:HAS_CREATOR]-(post:Post)-[:POST_HAS_TAG]->(tag:Tag)-[:HAS_TYPE]->(tc:TagClass)
+MATCH (expert)<-[:HAS_CREATOR]-(post:Post)-[:HAS_TAG]->(tag:Tag)-[:HAS_TYPE]->(tc:TagClass)
 WHERE tc.name = 'MusicalArtist'
 RETURN DISTINCT
     expert.id AS expertId,
@@ -279,8 +283,8 @@ LIMIT 100
 // =============================================================================
 
 // BI-16: Multi-topic posters
-MATCH (person:Person)<-[:HAS_CREATOR]-(post1:Post)-[:POST_HAS_TAG]->(tag1:Tag)
-MATCH (person)<-[:HAS_CREATOR]-(post2:Post)-[:POST_HAS_TAG]->(tag2:Tag)
+MATCH (person:Person)<-[:HAS_CREATOR]-(post1:Post)-[:HAS_TAG]->(tag1:Tag)
+MATCH (person)<-[:HAS_CREATOR]-(post2:Post)-[:HAS_TAG]->(tag2:Tag)
 WHERE tag1.name = 'Meryl_Streep' AND tag2.name = 'Hank_Williams'
   AND post1.id <> post2.id
 RETURN DISTINCT
@@ -367,7 +371,7 @@ LIMIT 20
 
 // AGG-5: Tag class popularity
 MATCH (tag:Tag)-[:HAS_TYPE]->(tc:TagClass)
-MATCH (post:Post)-[:POST_HAS_TAG]->(tag)
+MATCH (post:Post)-[:HAS_TAG]->(tag)
 RETURN 
     tc.name AS tagClassName,
     count(DISTINCT tag) AS tagCount,
@@ -430,7 +434,7 @@ LIMIT 20
 
 // COMPLEX-5: Company influence network
 MATCH (company:Organisation)<-[:WORK_AT]-(employee:Person)
-MATCH (employee)<-[:HAS_CREATOR]-(post:Post)-[:POST_HAS_TAG]->(tag:Tag)
+MATCH (employee)<-[:HAS_CREATOR]-(post:Post)-[:HAS_TAG]->(tag:Tag)
 RETURN 
     company.name AS companyName,
     tag.name AS topicTag,
