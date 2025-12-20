@@ -9753,6 +9753,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     LogicalPlan::Limit(l) => extract_cte_references_from_plan(&l.input),
                     LogicalPlan::Skip(s) => extract_cte_references_from_plan(&s.input),
                     LogicalPlan::OrderBy(o) => extract_cte_references_from_plan(&o.input),
+                    LogicalPlan::GroupBy(g) => extract_cte_references_from_plan(&g.input),
                     _ => std::collections::HashMap::new(),
                 }
             }
@@ -9769,14 +9770,29 @@ impl RenderPlanBuilder for LogicalPlan {
                     use_final: false,
                 })));
             } else {
-                // Fallback to system.one only if no CTE found (standalone UNWIND)
-                log::debug!("UNWIND clause without CTE reference, using system.one as dummy source");
-                final_from = Some(FromTable::new(Some(ViewTableRef {
-                    source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
-                    name: "system.one".to_string(),
-                    alias: Some("_dummy".to_string()),
-                    use_final: false,
-                })));
+                // Check if the UNWIND expression itself is standalone (no schema references)
+                // Only use system.one if unwinding a literal or standalone expression
+                let array_join_ref = array_join.as_ref().unwrap();
+                let is_standalone = super::plan_builder_helpers::is_standalone_expression(&array_join_ref.expression);
+                
+                if is_standalone {
+                    // Standalone UNWIND with literals: UNWIND [1,2,3] AS n
+                    log::debug!("✅ UNWIND: Expression is standalone (no schema refs), using system.one");
+                    final_from = Some(FromTable::new(Some(ViewTableRef {
+                        source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
+                        name: "system.one".to_string(),
+                        alias: Some("_dummy".to_string()),
+                        use_final: false,
+                    })));
+                } else {
+                    // UNWIND references schema elements but no CTE found - this is an error!
+                    log::error!("❌ UNWIND: Expression references schema elements but no CTE or FROM table found!");
+                    log::error!("   Expression: {:?}", array_join_ref.expression);
+                    return Err(RenderBuildError::InvalidRenderPlan(
+                        format!("UNWIND expression references schema elements (columns/properties) but no FROM table or CTE was found. \
+                                This indicates a query planning bug. Expression: {:?}", array_join_ref.expression)
+                    ));
+                }
             }
         }
 

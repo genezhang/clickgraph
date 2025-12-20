@@ -29,41 +29,57 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 **Failure Analysis (12 remaining)**:
 
-#### 1.1 UNWIND After WITH - Wrong FROM Table (3 queries - 25%)
-**Status**: ✅ **PARTIALLY FIXED** (Dec 20, 2025) - RefCell panic prevented, core UNWIND bug remains  
-**Queries**: complex-7, complex-9, bi-16  
-**Error**: Empty results or incorrect SQL (uses `system.one` instead of CTE)
+#### 1.1 UNWIND After WITH - Remaining ARRAY JOIN Issues (3 queries - 25%)
+**Status**: ✅ **MAJOR FIX** (Dec 20, 2025) - FROM table now correct, ARRAY JOIN semantics remain  
+**Queries**: complex-7, complex-9, bi-16
 
-**Problem**:
-When UNWIND appears after WITH clause, generated SQL uses `FROM system.one` instead of the CTE:
+**Fixed (Dec 20, 2025)**:
+1. ✅ **RefCell panic**: Recursive borrow in `populate_relationship_columns_from_plan()` - FIXED
+2. ✅ **FROM table bug**: UNWIND now uses CTE as FROM instead of `system.one` - FIXED
+
+**Problem (Fixed)**:
 ```cypher
-MATCH (p:Person)-[:KNOWS]-(friend:Person) 
-WITH collect(friend) as friends
-UNWIND friends as friend         # Should SELECT from CTE, not system.one!
-RETURN friend.firstName
+MATCH (p)-[:KNOWS]-(f) WITH collect(f) as friends
+UNWIND friends as friend RETURN friend.firstName
 ```
 
-**Generated SQL (WRONG)**:
+**Before Fix (WRONG)**:
 ```sql
-WITH with_friends_cte AS (SELECT friend.* FROM Person...)
+WITH cte AS (SELECT friend.* FROM Person...)
 SELECT friend.firstName 
-FROM system.one AS _dummy        -- ❌ Wrong! Should be: FROM with_friends_cte
-ARRAY JOIN friends AS friend     -- ❌ 'friends' doesn't exist in system.one!
+FROM system.one AS _dummy        -- ❌ Wrong!
+ARRAY JOIN friends AS friend     -- ❌ 'friends' doesn't exist!
+WHERE p.id = 933                 -- ❌ 'p' doesn't exist in system.one!
 ```
 
-**Root Causes**:
-1. ✅ **FIXED (Dec 20)**: RefCell panic when populating relationship columns from nested CTEs
-   - `populate_relationship_columns_from_plan()` had illegal reentrancy
-   - Called recursively while holding `borrow_mut()` → panic at runtime
-   - Fixed by collecting CTE plans first, then processing after releasing borrow
-   
-2. **REMAINING**: UNWIND FROM table resolution bug
-   - Code at `plan_builder.rs:9741-9750` assumes no FROM → use `system.one`
-   - Should detect CTE context and use CTE as FROM table
-   - ARRAY JOIN references non-existent `friends` array in `system.one`
+**After Fix (BETTER)**:
+```sql
+WITH cte AS (SELECT friend.* FROM Person...)
+SELECT friend.firstName
+FROM with_friends_cte            -- ✅ Correct!
+ARRAY JOIN friends AS friend     -- ⚠️  Still wrong, but different issue
+```
 
-**Location**: `src/render_plan/plan_builder.rs` lines 9741-9750  
-**Complexity**: MEDIUM - Need to detect CTE context and set correct FROM table
+**Remaining Issues**:
+1. **ARRAY JOIN semantics**: CTE has individual columns (`friend.firstName`), not array `friends`
+   - Need to implement proper collect() aggregation
+   - ARRAY JOIN should reference the aggregated array from CTE
+   - Complexity: MEDIUM - requires aggregation tracking
+
+2. **Filter extraction**: WHERE clauses still reference CTE variables outside CTE scope
+   - Example: `WHERE p.id = 933` appears after CTE when p is in CTE
+   - Should be part of CTE definition or rewritten to CTE column references
+   - Complexity: LOW - filter extraction logic needs CTE awareness
+
+**Root Cause Analysis**:
+This was a fundamental architectural gap. Initial UNWIND implementation only handled:
+- Standalone UNWIND: `UNWIND [1,2,3] AS n` (correct: system.one)
+- UNWIND after MATCH: `MATCH (a) UNWIND a.prop AS x` (correct: extract FROM)
+
+But WITH...UNWIND was never implemented - created CTE but didn't use it as FROM.
+
+**Location**: `src/render_plan/plan_builder.rs` lines 9741-9775  
+**Complexity**: MEDIUM - Core ARRAY JOIN + aggregation semantics need work
 
 #### 1.2 Pattern Comprehensions Not Supported (2 queries - 17%)
 **Queries**: bi-8, bi-14  
