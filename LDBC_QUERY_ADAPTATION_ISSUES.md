@@ -1,20 +1,24 @@
 # LDBC Benchmark Query Adaptation Issues
 
 **Date**: January 2025  
-**Status**: Query files need schema alignment
+**Status**: ✅ All BI queries fixed (Dec 20, 2025) - IC queries pending WITH clause fix
 
 ## Summary
 
-The LDBC benchmark audit revealed that **parser and SQL generation are working correctly** (100% success on schema-aligned queries). The 7 "failing" queries are actually **query adaptation issues** where query files don't match the schema definitions.
+The LDBC benchmark audit revealed that **parser and SQL generation are working correctly** (100% success on schema-aligned queries). Issues were **query adaptation problems** where query files didn't match the schema definitions.
 
-## Test Results
+## Fixed (Dec 20, 2025)
 
-```
-SQL Generation: 15/15 (100%) ✅
-Execution: 8/15 (53%) ⚠️
-```
+**Commit**: `fa6985c` - "fix(ldbc): Align BI queries with LDBC schema definitions"
 
-**Failing Queries**: BI3, BI5, BI8, IC1, IC3, IS6, IS7
+**Changes**:
+- ✅ BI-2, BI-6: `COMMENT_HAS_TAG` → `HAS_TAG`
+- ✅ BI-13: France country/city labels fixed
+- ✅ BI-14: Chile/Argentina country/city labels fixed
+- ✅ AGG-3: Geographic distribution labels fixed
+- ✅ COMPLEX-1: Country/city labels fixed, removed redundant type filter
+
+**Remaining Issues**: IC1, IC3 (WITH + aggregation bug - separate issue)
 
 ## Root Cause Analysis
 

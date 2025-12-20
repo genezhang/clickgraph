@@ -58,6 +58,15 @@ fn flatten_addition_operands(expr: &RenderExpr) -> Vec<String> {
 /// Pre-populate the relationship columns mapping from a RenderPlan
 /// This must be called BEFORE rendering SQL so that IS NULL expressions can look up columns
 pub fn populate_relationship_columns_from_plan(plan: &RenderPlan) {
+    // Collect all CTE plans first (to avoid recursive borrow inside borrow_mut)
+    let mut cte_plans = Vec::new();
+    for cte in &plan.ctes.0 {
+        if let CteContent::Structured(ref cte_plan) = cte.content {
+            cte_plans.push(cte_plan);
+        }
+    }
+    
+    // Now populate the mapping (single borrow scope)
     RELATIONSHIP_COLUMNS.with(|rc| {
         let mut map = rc.borrow_mut();
         map.clear();
@@ -80,15 +89,12 @@ pub fn populate_relationship_columns_from_plan(plan: &RenderPlan) {
                 }
             }
         }
-        
-        // Process CTEs recursively
-        for cte in &plan.ctes.0 {
-            if let CteContent::Structured(ref cte_plan) = cte.content {
-                // Recursively populate from CTE plan
-                populate_relationship_columns_from_plan(cte_plan);
-            }
-        }
     });
+    
+    // Process CTEs recursively AFTER releasing the borrow
+    for cte_plan in cte_plans {
+        populate_relationship_columns_from_plan(cte_plan);
+    }
 }
 
 /// Generate SQL from RenderPlan with configurable CTE depth limit
