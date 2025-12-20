@@ -132,7 +132,7 @@ graph_schema:
         card_number_masked: card_number_masked  # Masked card number
         transaction_date: transaction_date
   
-  relationships:
+  edges:
     - type: HAD_TRANSACTION
       table: transactions_secure
       view_parameters: [tenant_id]

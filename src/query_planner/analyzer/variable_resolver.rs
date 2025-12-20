@@ -61,6 +61,7 @@ use crate::{
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
+    utils::cte_naming::generate_cte_name,
 };
 
 /// Tracks variable sources within a scope
@@ -171,13 +172,10 @@ impl VariableResolver {
     }
 
     /// Generate unique CTE name for a WITH clause
-    /// Uses ALL exported aliases to match analyzer's CTE naming convention
-    fn generate_cte_name(&self, exported_aliases: &[String]) -> String {
+    /// Uses centralized utility to ensure consistency across codebase
+    fn gen_cte_name(&self, exported_aliases: &[String]) -> String {
         let mut counter = self.cte_counter.borrow_mut();
-        let mut sorted_aliases = exported_aliases.to_vec();
-        sorted_aliases.sort();
-        let aliases_str = sorted_aliases.join("_");
-        let name = format!("with_{}_cte_{}", aliases_str, *counter);
+        let name = generate_cte_name(exported_aliases, *counter);
         *counter += 1;
         name
     }
@@ -249,7 +247,7 @@ impl VariableResolver {
                 // Step 2: Generate CTE name for this WITH
                 // Use ALL exported aliases (sorted) to match analyzer + renderer convention
                 // Format: with_<alias1>_<alias2>_..._cte_<seq>
-                let cte_name = self.generate_cte_name(&wc.exported_aliases);
+                let cte_name = self.gen_cte_name(&wc.exported_aliases);
 
                 log::info!("🔍 VariableResolver: Generated CTE name '{}' from exported aliases {:?}", cte_name, wc.exported_aliases);
 
@@ -530,6 +528,7 @@ impl VariableResolver {
                         expression: resolved_expr,
                         alias: unwind.alias.clone(),
                         label: unwind.label.clone(),
+                        tuple_properties: unwind.tuple_properties.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::Unwind(new_unwind))))
                 } else {
@@ -1063,9 +1062,9 @@ mod tests {
     #[test]
     fn test_cte_name_generation() {
         let resolver = VariableResolver::new();
-        let name1 = resolver.generate_cte_name(&["cnt".to_string()]);
-        let name2 = resolver.generate_cte_name(&["cnt".to_string()]);
-        let name3 = resolver.generate_cte_name(&["a".to_string(), "age".to_string()]);
+        let name1 = resolver.gen_cte_name(&["cnt".to_string()]);
+        let name2 = resolver.gen_cte_name(&["cnt".to_string()]);
+        let name3 = resolver.gen_cte_name(&["a".to_string(), "age".to_string()]);
 
         assert_eq!(name1, "with_cnt_cte_1");
         assert_eq!(name2, "with_cnt_cte_2");

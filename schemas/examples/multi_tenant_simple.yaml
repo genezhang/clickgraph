@@ -83,7 +83,7 @@ graph_schema:
         amount: amount
         order_date: order_date
   
-  relationships:
+  edges:
     - type: PLACED
       table: orders_by_tenant  # Reuse orders table for relationship
       view_parameters: [tenant_id]  # Relationships are also tenant-isolated

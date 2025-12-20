@@ -21,7 +21,42 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Active Issues
 
-### 1. LDBC Query Failures - Investigation Complete (December 19, 2025)
+### 1. collect() Performance - Wide Tables (December 20, 2025)
+
+**Status**: 🎯 OPTIMIZATION OPPORTUNITY  
+**Severity**: HIGH (for production workloads with 100+ column tables)  
+**Impact**: 85-98% performance improvement possible
+
+**Issue**: `collect(node)` currently expands to collect ALL properties, even if downstream only uses a few:
+
+```cypher
+WITH collect(f) as friends  -- Collects ALL 100+ columns
+UNWIND friends as friend
+RETURN friend.firstName     -- Only uses 1 column!
+```
+
+**Current Behavior**:
+- Expands to `groupArray(tuple(col1, col2, ..., col100))`
+- Materializes unnecessary data in memory
+- Expensive for LDBC Person (50+ properties), e-commerce products (100-200 properties)
+
+**Optimization Opportunities**:
+1. **Column Projection**: Analyze downstream usage, collect only referenced properties
+2. **No-op Detection**: Eliminate `collect() + UNWIND` when it's effectively a passthrough
+3. **Partial Materialization**: Use ClickHouse window functions when possible
+
+**Documentation**: See [notes/collect_unwind_optimization.md](notes/collect_unwind_optimization.md)
+
+**Workaround**: Manually use `collect(node.property)` for single properties:
+```cypher
+WITH collect(f.firstName) as names  -- Only collects firstName
+```
+
+**Priority**: HIGH for production deployments, MEDIUM for development
+
+---
+
+### 2. LDBC Query Failures - Investigation Complete (December 19, 2025)
 
 **Status**: 📋 ANALYZED  
 **Severity**: MEDIUM  

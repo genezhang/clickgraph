@@ -776,6 +776,139 @@ print(response.json())
 
 ---
 
+## 🏗️ Architecture Pattern: Metadata Preservation
+
+### The Problem
+
+When adding metadata fields to LogicalPlan nodes (e.g., `tuple_properties` on Unwind), the metadata must be preserved through **all** pipeline transformations. Without a systematic approach, this requires updating 15-20 files, which is error-prone and creates bugs.
+
+### The Solution: Builder Pattern with Helper Methods
+
+**Pattern**: Add helper methods to struct that clone metadata automatically
+
+```rust
+impl Unwind {
+    /// Preserve all metadata while changing input
+    pub fn with_new_input(&self, new_input: Arc<LogicalPlan>) -> Self {
+        Unwind {
+            input: new_input,
+            expression: self.expression.clone(),
+            alias: self.alias.clone(),
+            label: self.label.clone(),
+            tuple_properties: self.tuple_properties.clone(), // ← Automatic
+            // Future metadata fields get added here once
+        }
+    }
+
+    /// Standard rebuild pattern used in pipeline transformations
+    pub fn rebuild_or_clone(
+        &self,
+        input_tf: Transformed<Arc<LogicalPlan>>,
+        old_plan: Arc<LogicalPlan>,
+    ) -> Transformed<Arc<LogicalPlan>> {
+        match input_tf {
+            Transformed::Yes(new_input) => {
+                Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                    self.with_new_input(new_input)
+                )))
+            }
+            Transformed::No(_) => Transformed::No(old_plan.clone()),
+        }
+    }
+}
+```
+
+### Usage in Pipeline Code
+
+**Before** (error-prone):
+```rust
+LogicalPlan::Unwind(u) => {
+    let child_tf = self.analyze(u.input.clone(), _plan_ctx)?;
+    match child_tf {
+        Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+            Unwind {
+                input: new_input,
+                expression: u.expression.clone(),
+                alias: u.alias.clone(),
+                label: u.label.clone(),
+                tuple_properties: u.tuple_properties.clone(), // EASY TO FORGET!
+            },
+        ))),
+        Transformed::No(_) => Transformed::No(logical_plan.clone()),
+    }
+}
+```
+
+**After** (automatic):
+```rust
+LogicalPlan::Unwind(u) => {
+    let child_tf = self.analyze(u.input.clone(), _plan_ctx)?;
+    u.rebuild_or_clone(child_tf, logical_plan.clone())
+}
+```
+
+### Guidelines for Adding Metadata Fields
+
+#### When Adding a New Metadata Field
+
+1. **Add field to struct** in `query_planner/logical_plan/mod.rs`
+   ```rust
+   pub struct Unwind {
+       // ... existing fields ...
+       pub new_metadata: Option<SomeType>,
+   }
+   ```
+
+2. **Update helper methods** (ONE place):
+   ```rust
+   impl Unwind {
+       pub fn with_new_input(&self, new_input: Arc<LogicalPlan>) -> Self {
+           Unwind {
+               input: new_input,
+               // ... existing clones ...
+               new_metadata: self.new_metadata.clone(), // ← Add here
+           }
+       }
+   }
+   ```
+
+3. **Set metadata where created** (analyzer, enricher):
+   ```rust
+   LogicalPlan::Unwind(Unwind {
+       input,
+       expression,
+       alias,
+       label: Some("User".to_string()),
+       new_metadata: Some(computed_value), // ← Initialize
+   })
+   ```
+
+4. **Test metadata flows through**:
+   - Add test to verify metadata preserved after optimization
+   - Check in query_planner tests
+   - Verify in integration tests
+
+#### When NOT to Use This Pattern
+
+- **Immutable leaf nodes** (Empty, ViewScan) - no transformations
+- **Simple wrapper nodes** - use spread operator `..node.clone()`
+- **One-off transformations** - manual clone acceptable
+
+### Benefits
+
+✅ **Single Point of Update**: New metadata = update 1 method, not 19 files  
+✅ **Compiler Enforced**: Forget to update method → compilation error  
+✅ **Self-Documenting**: Helper names explain intent  
+✅ **Testing**: Easy to verify metadata preservation  
+
+### See Also
+
+- **Design Document**: `notes/metadata_preservation.md`
+- **Case Study**: `tuple_properties` field (Dec 20, 2025)
+- **Example Implementation**: `src/query_planner/logical_plan/mod.rs` - Unwind impl block
+
+---
+
 ## 🔗 Related Documents
 
 - **Architecture**: `.github/copilot-instructions.md` - Project structure and conventions

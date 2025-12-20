@@ -322,17 +322,8 @@ impl AnalyzerPass for GroupByBuilding {
             LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::Unwind(u) => {
                 let child_tf = self.analyze(u.input.clone(), _plan_ctx)?;
-                match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
-                        crate::query_planner::logical_plan::Unwind {
-                            input: new_input,
-                            expression: u.expression.clone(),
-                            alias: u.alias.clone(),
-                            label: u.label.clone(),
-                        },
-                    ))),
-                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
-                }
+                // Use rebuild_or_clone to automatically preserve metadata
+                u.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::CartesianProduct(cp) => {
                 let transformed_left = self.analyze(cp.left.clone(), _plan_ctx)?;

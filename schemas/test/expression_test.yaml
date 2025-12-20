@@ -1,9 +1,8 @@
 database: "brahmand"
-node_views:
-  User:
+nodes:
+  - label: User
     table: "users_bench"
-    node_id:
-      column: "user_id"
+    node_id: "user_id"
     property_mappings:
       user_id: "user_id"
       name: "full_name"  # Simple column mapping
@@ -19,14 +18,12 @@ node_views:
       # Expression: Array indexing
       primary_tag: "tags[1]"
 
-relationship_views:
-  FOLLOWS:
+edges:
+  - type: FOLLOWS
     table: "user_follows_bench"
     from_node: "User"
     to_node: "User"
-    from_id:
-      column: "follower_id"
-    to_id:
-      column: "followed_id"
+    from_id: "follower_id"
+    to_id: "followed_id"
     property_mappings:
       follow_date: "follow_date"

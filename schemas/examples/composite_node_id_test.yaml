@@ -18,7 +18,7 @@ nodes:
     property_mappings:
       amount: transaction_amount
 
-relationships:
+edges:
   - type: OWNS
     database: test
     table: account_ownership

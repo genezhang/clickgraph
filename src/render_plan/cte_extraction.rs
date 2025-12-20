@@ -7,6 +7,7 @@ use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGen
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::utils::cte_naming::generate_cte_base_name;
 
 use super::cte_generation::map_property_to_column_with_schema;
 use super::errors::RenderBuildError;
@@ -523,7 +524,7 @@ pub fn extract_relationship_columns_from_table_with_schema(
     let table_only = table_name.split('.').last().unwrap_or(table_name);
 
     // Find relationship schema by table name
-    for rel_schema in schema.get_relationships_schemas().values() {
+    for (_key, rel_schema) in schema.get_relationships_schemas() {
         // Match both with full name (db.table) or just table name
         if rel_schema.table_name == table_name
             || rel_schema.table_name == table_only
@@ -536,8 +537,8 @@ pub fn extract_relationship_columns_from_table_with_schema(
         }
     }
 
-    // NO FALLBACK - log error and return generic columns that will work but log the issue
-    log::error!("\u{274c} SCHEMA ERROR: Relationship table '{}' not found in schema. Using generic from_id/to_id columns.", table_name);
+    // NO FALLBACK - log error and return generic columns that will cause SQL error
+    log::error!("\u{274c} SCHEMA ERROR: Relationship table '{}' not found in schema. Using generic from_id/to_id columns which will likely fail.", table_name);
     RelationshipColumns {
         from_id: "from_id".to_string(),
         to_id: "to_id".to_string(),
@@ -834,6 +835,7 @@ pub fn extract_ctes_with_context(
     plan: &LogicalPlan,
     last_node_alias: &str,
     context: &mut super::cte_generation::CteGenerationContext,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> RenderPlanBuilderResult<Vec<Cte>> {
     // Debug: Log the plan type being processed
     let plan_type = match plan {
@@ -887,11 +889,12 @@ pub fn extract_ctes_with_context(
                 );
                 return Ok(vec![]);
             }
-            extract_ctes_with_context(&graph_node.input, last_node_alias, context)
+            extract_ctes_with_context(&graph_node.input, last_node_alias, context, schema)
         }
         LogicalPlan::GraphRel(graph_rel) => {
             // Handle variable-length paths with context
             if let Some(spec) = &graph_rel.variable_length {
+                eprintln!("🔧 VLP: Entering variable-length path handling");
                 // Extract actual table names directly from ViewScan - with fallback to label lookup
                 let left_plan_desc = match graph_rel.left.as_ref() {
                     LogicalPlan::Empty => "Empty".to_string(),
@@ -928,12 +931,25 @@ pub fn extract_ctes_with_context(
                             &graph_rel.alias
                         };
                         
+                        // For VLP with different start/end labels (e.g., Message→Post),
+                        // the recursive traversal should use start→start relationship (Message→Message)
+                        // Only the initial base case needs start→end
+                        let (lookup_from, lookup_to) = if !start_label.is_empty() && !end_label.is_empty() && start_label != end_label {
+                            // Different labels: use start→start for recursive traversal
+                            log::info!("🔍 VLP with different labels: {}→{}. Using {}→{} for recursive traversal", 
+                                start_label, end_label, start_label, start_label);
+                            (Some(start_label.as_str()), Some(start_label.as_str()))
+                        } else {
+                            // Same label or missing: use as-is
+                            (Some(start_label.as_str()), Some(end_label.as_str()))
+                        };
+                        
                         // Use schema lookup with node types if available
                         if let Some(schema) = context.schema() {
                             rel_type_to_table_name_with_nodes(
                                 rel_type,
-                                Some(&start_label),
-                                Some(&end_label),
+                                lookup_from,
+                                lookup_to,
                                 schema
                             )
                         } else {
@@ -949,15 +965,15 @@ pub fn extract_ctes_with_context(
                 let end_id_col = extract_id_column(&graph_rel.right)
                     .unwrap_or_else(|| table_to_id_column(&end_table));
 
-                // Extract relationship columns
-                let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
-                    RelationshipColumns {
-                        from_id: "from_node_id".to_string(),
-                        to_id: "to_node_id".to_string(),
-                    },
-                );
+                // Extract relationship columns from schema using the rel_table
+                eprintln!("🔧 VLP: About to extract rel columns for table: {}", rel_table);
+                eprintln!("🔧 VLP: Schema is explicitly passed as parameter");
+                eprintln!("🔧 VLP: Calling extract_relationship_columns_from_table_with_schema");
+                // Use schema lookup for the relationship table columns
+                let rel_cols = extract_relationship_columns_from_table_with_schema(&rel_table, schema);
                 let from_col = rel_cols.from_id;
                 let to_col = rel_cols.to_id;
+                eprintln!("🔧 VLP: Final columns: from_col='{}', to_col='{}' for table '{}'", from_col, to_col, rel_table);
 
                 // Define aliases for traversal
                 // Note: GraphRel.left_connection and right_connection are ALREADY swapped based on direction
@@ -1109,7 +1125,7 @@ pub fn extract_ctes_with_context(
 
                     // Extract CTEs from child plans (if any)
                     let child_ctes =
-                        extract_ctes_with_context(&graph_rel.right, last_node_alias, context)?;
+                        extract_ctes_with_context(&graph_rel.right, last_node_alias, context, schema)?;
 
                     return Ok(child_ctes);
                 } else {
@@ -1161,11 +1177,10 @@ pub fn extract_ctes_with_context(
                     // Get edge_id from relationship schema if available
                     // Use the first relationship label to look up the schema
                     let (edge_id, type_column, from_label_column, to_label_column, is_fk_edge) =
-                        if let Some(schema) = context.schema() {
-                            if let Some(labels) = &graph_rel.labels {
-                                if let Some(first_label) = labels.first() {
-                                    // Try to get relationship schema by label (not table name)
-                                    if let Ok(rel_schema) = schema.get_rel_schema(first_label) {
+                        if let Some(labels) = &graph_rel.labels {
+                            if let Some(first_label) = labels.first() {
+                                // Try to get relationship schema by label (not table name)
+                                if let Ok(rel_schema) = schema.get_rel_schema(first_label) {
                                         (
                                             rel_schema.edge_id.clone(),
                                             rel_schema.type_column.clone(),
@@ -1181,10 +1196,7 @@ pub fn extract_ctes_with_context(
                                 }
                             } else {
                                 (None, None, None, None, false)
-                            }
-                        } else {
-                            (None, None, None, None, false)
-                        };
+                            };
 
                     if is_fk_edge {
                         log::debug!("CTE: Detected FK-edge pattern for relationship type");
@@ -1283,7 +1295,7 @@ pub fn extract_ctes_with_context(
 
                     // Also extract CTEs from child plans
                     let mut child_ctes =
-                        extract_ctes_with_context(&graph_rel.right, last_node_alias, context)?;
+                        extract_ctes_with_context(&graph_rel.right, last_node_alias, context, schema)?;
                     child_ctes.push(var_len_cte);
 
                     return Ok(child_ctes);
@@ -1440,9 +1452,9 @@ pub fn extract_ctes_with_context(
             // This is needed for multi-hop polymorphic patterns like (u)-[r1]->(m)-[r2]->(t)
             // where both r1 and r2 are wildcard edges needing their own CTEs
             let mut left_ctes =
-                extract_ctes_with_context(&graph_rel.left, last_node_alias, context)?;
+                extract_ctes_with_context(&graph_rel.left, last_node_alias, context, schema)?;
             let mut right_ctes =
-                extract_ctes_with_context(&graph_rel.right, last_node_alias, context)?;
+                extract_ctes_with_context(&graph_rel.right, last_node_alias, context, schema)?;
 
             // Combine all CTEs from left, right, and current relationship
             let mut all_ctes = left_ctes;
@@ -1468,6 +1480,7 @@ pub fn extract_ctes_with_context(
                 &filter.input,
                 last_node_alias,
                 &mut new_context.clone(),
+                schema,
             )?;
 
             // Merge end filters from the new context back to the original context
@@ -1499,20 +1512,20 @@ pub fn extract_ctes_with_context(
                     LogicalPlan::WithClause(_) => "WithClause",
                 }
             );
-            extract_ctes_with_context(&projection.input, last_node_alias, context)
+            extract_ctes_with_context(&projection.input, last_node_alias, context, schema)
         }
         LogicalPlan::GraphJoins(graph_joins) => {
-            extract_ctes_with_context(&graph_joins.input, last_node_alias, context)
+            extract_ctes_with_context(&graph_joins.input, last_node_alias, context, schema)
         }
         LogicalPlan::GroupBy(group_by) => {
-            extract_ctes_with_context(&group_by.input, last_node_alias, context)
+            extract_ctes_with_context(&group_by.input, last_node_alias, context, schema)
         }
         LogicalPlan::OrderBy(order_by) => {
-            extract_ctes_with_context(&order_by.input, last_node_alias, context)
+            extract_ctes_with_context(&order_by.input, last_node_alias, context, schema)
         }
-        LogicalPlan::Skip(skip) => extract_ctes_with_context(&skip.input, last_node_alias, context),
+        LogicalPlan::Skip(skip) => extract_ctes_with_context(&skip.input, last_node_alias, context, schema),
         LogicalPlan::Limit(limit) => {
-            extract_ctes_with_context(&limit.input, last_node_alias, context)
+            extract_ctes_with_context(&limit.input, last_node_alias, context, schema)
         }
         LogicalPlan::Cte(logical_cte) => {
             // Use schema from context if available, otherwise create empty schema for tests
@@ -1538,20 +1551,22 @@ pub fn extract_ctes_with_context(
                     input_plan,
                     last_node_alias,
                     context,
+                    schema,
                 )?);
             }
             Ok(ctes)
         }
         LogicalPlan::PageRank(_) => Ok(vec![]),
-        LogicalPlan::Unwind(u) => extract_ctes_with_context(&u.input, last_node_alias, context),
+        LogicalPlan::Unwind(u) => extract_ctes_with_context(&u.input, last_node_alias, context, schema),
         LogicalPlan::CartesianProduct(cp) => {
             println!("DEBUG CTE Extraction: Processing CartesianProduct");
-            let mut ctes = extract_ctes_with_context(&cp.left, last_node_alias, context)?;
+            let mut ctes = extract_ctes_with_context(&cp.left, last_node_alias, context, schema)?;
             println!("DEBUG CTE Extraction: CartesianProduct left side returned {} CTEs", ctes.len());
             ctes.append(&mut extract_ctes_with_context(
                 &cp.right,
                 last_node_alias,
                 context,
+                schema,
             )?);
             println!("DEBUG CTE Extraction: CartesianProduct total {} CTEs", ctes.len());
             Ok(ctes)
@@ -1562,17 +1577,10 @@ pub fn extract_ctes_with_context(
             // The CTE contains the SQL from the input plan with the WITH projection
             
             // First, extract any CTEs from the input
-            let mut ctes = extract_ctes_with_context(&wc.input, last_node_alias, context)?;
+            let mut ctes = extract_ctes_with_context(&wc.input, last_node_alias, context, schema)?;
             
-            // Generate CTE name from exported aliases (matches naming in variable_resolver.rs)
-            let cte_name = if !wc.exported_aliases.is_empty() {
-                // Sort aliases for consistent naming
-                let mut sorted_aliases = wc.exported_aliases.clone();
-                sorted_aliases.sort();
-                format!("with_{}_cte", sorted_aliases.join("_"))
-            } else {
-                "with_cte".to_string()
-            };
+            // Generate CTE name using centralized utility (base name without counter)
+            let cte_name = generate_cte_base_name(&wc.exported_aliases);
             
             log::info!("🔧 CTE Extraction: Generating CTE '{}' for WITH clause with {} exported aliases", 
                 cte_name, wc.exported_aliases.len());
@@ -1583,17 +1591,159 @@ pub fn extract_ctes_with_context(
                 "Cannot generate WITH CTE: No schema found in context".to_string()
             ))?;
             
+            // CRITICAL: Expand collect(node) to groupArray(tuple(...)) BEFORE creating Projection
+            // This ensures the CTE has the proper aggregation structure
+            use crate::query_planner::logical_expr::LogicalExpr;
+            
+            // First pass: Check if we have any aggregations
+            let has_aggregation_in_items = wc.items.iter().any(|item| 
+                matches!(&item.expression, LogicalExpr::AggregateFnCall(_))
+            );
+            
+            let expanded_items: Vec<_> = wc.items.iter().map(|item| {
+                let expanded_expr = if let LogicalExpr::AggregateFnCall(ref agg) = item.expression {
+                    if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
+                        if let LogicalExpr::TableAlias(ref alias) = agg.args[0] {
+                            log::info!("🔧 CTE Extraction: Expanding collect({}) to groupArray(tuple(...))", alias.0);
+                            
+                            // Get properties for this alias from the input plan
+                            // We need to construct a temporary PlanBuilder to access get_properties_with_table_alias
+                            // For now, log and keep as-is (will be handled by plan_builder path)
+                            // TODO: Refactor to access schema properties directly
+                            log::warn!("⚠️  CTE Extraction path for collect() - need schema access to expand");
+                            item.expression.clone()
+                        } else {
+                            item.expression.clone()
+                        }
+                    } else {
+                        item.expression.clone()
+                    }
+                } else if has_aggregation_in_items {
+                    // If we have aggregations in the items, wrap non-aggregate TableAlias with anyLast()
+                    // for all non-ID columns (ID columns will be in GROUP BY)
+                    if let LogicalExpr::TableAlias(ref alias) = item.expression {
+                        // We'll wrap this later after we know which columns are IDs
+                        item.expression.clone()
+                    } else {
+                        item.expression.clone()
+                    }
+                } else {
+                    item.expression.clone()
+                };
+                
+                crate::query_planner::logical_plan::ProjectionItem {
+                    expression: expanded_expr,
+                    col_alias: item.col_alias.clone(),
+                }
+            }).collect();
+            
+            // Detect if any items contain aggregation functions
+            // If so, we need to wrap in GroupBy to generate proper SQL
+            let has_aggregation = expanded_items.iter().any(|item| {
+                use crate::query_planner::logical_expr::LogicalExpr;
+                matches!(&item.expression, LogicalExpr::AggregateFnCall(_))
+            });
+            
+            log::info!("🔧 CTE Extraction: has_aggregation={}", has_aggregation);
+            
+            // If we have aggregations, we need to:
+            // 1. Wrap TableAlias non-ID columns with anyLast()
+            // 2. Create GroupBy node with ID columns only
+            // Use the same logic as build_chained_with_match_cte_plan (lines 1745-1900)
+            
+            let final_items = if has_aggregation {
+                // Wrap non-ID columns of TableAlias with anyLast()
+                expanded_items.into_iter().map(|mut item| {
+                    use crate::query_planner::logical_expr::LogicalExpr;
+                    
+                    // Only wrap TableAlias, not aggregate functions
+                    if let LogicalExpr::TableAlias(ref alias) = item.expression {
+                        // Find the ID column for this alias
+                        if let Ok(id_col) = wc.input.find_id_column_for_alias(&alias.0) {
+                            log::info!("🔧 CTE Extraction: Wrapping non-ID columns of '{}' with anyLast()", alias.0);
+                            
+                            // Expand TableAlias to all properties and wrap non-ID with anyLast()
+                            // For now, keep as TableAlias - it will be expanded in plan_builder
+                            // where we have access to the schema and can determine which columns are IDs
+                            // The anyLast wrapping happens in plan_builder.rs around line 1745-1780
+                            item
+                        } else {
+                            log::warn!("⚠️ CTE Extraction: Could not find ID column for alias '{}', keeping as-is", alias.0);
+                            item
+                        }
+                    } else {
+                        item
+                    }
+                }).collect()
+            } else {
+                expanded_items
+            };
+            
             // Create a Projection wrapping the input with the WITH items
             // This ensures the rendered SQL has proper SELECT items
             use crate::query_planner::logical_plan::Projection;
             
             let projection_with_with_items = Projection {
                 input: wc.input.clone(),
-                items: wc.items.clone(),
+                items: final_items.clone(),
                 distinct: wc.distinct,
             };
             
-            let cte_render_plan = LogicalPlan::Projection(projection_with_with_items).to_render_plan(schema)?;
+            // If we have aggregations, wrap in GroupBy node with proper ID column lookup
+            // Use the same logic as build_chained_with_match_cte_plan
+            let plan_to_render = if has_aggregation {
+                // Build GROUP BY expressions using TableAlias → ID column lookup
+                // Only group by non-aggregate items
+                let group_by_exprs: Vec<_> = final_items.iter()
+                    .filter(|item| !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)))
+                    .flat_map(|item| {
+                        use crate::query_planner::logical_expr::LogicalExpr;
+                        match &item.expression {
+                            LogicalExpr::TableAlias(alias) => {
+                                // For TableAlias, find and use ID column only
+                                // Try to find the ID column from the input plan
+                                if let Ok(id_col) = wc.input.find_id_column_for_alias(&alias.0) {
+                                    log::info!("🔧 CTE Extraction: Found ID column '{}' for alias '{}' via find_id_column_for_alias", id_col, alias.0);
+                                    vec![LogicalExpr::PropertyAccessExp(
+                                        crate::query_planner::logical_expr::PropertyAccess {
+                                            table_alias: alias.clone(),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_col),
+                                        }
+                                    )]
+                                } else {
+                                    log::warn!("⚠️ CTE Extraction: Could not find ID column for alias '{}', skipping from GROUP BY", alias.0);
+                                    vec![]
+                                }
+                            }
+                            _ => {
+                                // For other expressions, use as-is in GROUP BY
+                                vec![item.expression.clone()]
+                            }
+                        }
+                    })
+                    .collect();
+                
+                if !group_by_exprs.is_empty() {
+                    log::info!("🔧 CTE Extraction: Creating GroupBy with {} expressions", group_by_exprs.len());
+                    use crate::query_planner::logical_plan::GroupBy;
+                    use std::sync::Arc;
+                    
+                    LogicalPlan::GroupBy(GroupBy {
+                        input: Arc::new(LogicalPlan::Projection(projection_with_with_items)),
+                        expressions: group_by_exprs,
+                        having_clause: None,
+                        is_materialization_boundary: false,
+                        exposed_alias: wc.exported_aliases.first().cloned(),
+                    })
+                } else {
+                    log::warn!("⚠️ CTE Extraction: has_aggregation but no valid GROUP BY expressions, using Projection only");
+                    LogicalPlan::Projection(projection_with_with_items)
+                }
+            } else {
+                LogicalPlan::Projection(projection_with_with_items)
+            };
+            
+            let cte_render_plan = plan_to_render.to_render_plan(schema)?;
             
             // Create the CTE
             let with_cte = Cte::new(

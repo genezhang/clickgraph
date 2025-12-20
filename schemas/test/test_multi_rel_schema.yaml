@@ -11,7 +11,7 @@ graph_schema:
       property_mappings:
         name: name
 
-  relationships:
+  edges:
     - type: FOLLOWS
       database: test_multi_rel
       table: follows

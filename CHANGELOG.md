@@ -1,6 +1,20 @@
 ## [Unreleased]
 
 ### 🚀 Features
+- **Tuple Property Mapping for collect() + UNWIND** - Automatic property-to-index mapping (December 20, 2025)
+  - **Problem**: After `WITH collect(u) as users UNWIND users as user`, accessing `user.name` failed because ClickHouse ARRAY JOIN creates tuples requiring index access
+  - **Solution**: Two-phase system - enricher populates metadata, rewriter transforms PropertyAccess expressions
+  - **Architecture**:
+    - `unwind_tuple_enricher.rs`: Populates `tuple_properties` field with ClickHouse column → tuple index mapping
+    - `unwind_property_rewriter.rs`: Transforms `user.name` to `user.5` (tuple index) at end of final_analyzing
+    - Updated 20+ analyzer/optimizer passes to preserve tuple_properties metadata through pipeline
+  - **Key Design Decision**: Use ClickHouse column names (not Cypher property names) for consistency with resolved PropertyAccess expressions
+  - **Example**: `MATCH (u:User) WITH u, collect(u) as users UNWIND users as user RETURN user.name, user.email`
+    - Generated SQL: `SELECT user.5 AS user.name, user.3 AS user.email`
+    - Properties automatically mapped: `name→5`, `email→3`, `city→1`, etc.
+  - **Impact**: Enables GROUP BY + aggregation + UNWIND patterns for graph analytics
+  - **Quality Discovery**: Identified systemic metadata preservation issue - documented for future architecture improvement
+
 - **SQL-Style Comment Support** - Automatic comment stripping for Cypher queries (December 20, 2025)
   - **Problem**: SQL-style comments (`--` and `/* */`) caused parser failures
   - **Solution**: Pre-process queries to strip comments before parsing

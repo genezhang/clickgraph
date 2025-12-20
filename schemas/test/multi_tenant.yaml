@@ -22,7 +22,7 @@ graph_schema:
         product: product
         amount: amount
 
-  relationships:
+  edges:
     - type: FRIENDS_WITH
       database: brahmand
       table: friendships_by_tenant

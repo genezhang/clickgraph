@@ -29,7 +29,7 @@ graph_schema:
         state: DestState
         airport: DestAirportName
 
-  relationships:
+  edges:
     # Flight relationship - node properties declared in Airport node above
     - type: FLIGHT
       database: test_integration

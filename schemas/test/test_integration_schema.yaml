@@ -10,7 +10,7 @@ graph_schema:
         name: name
         age: age
   
-  relationships:
+  edges:
     - type: FOLLOWS
       database: test_multi_rel
       table: follows

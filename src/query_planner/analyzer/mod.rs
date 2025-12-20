@@ -50,6 +50,8 @@ mod projected_columns_resolver;
 mod query_validation;
 mod schema_inference;
 mod variable_resolver;
+mod unwind_property_rewriter;
+mod unwind_tuple_enricher;
 
 pub fn initial_analyzing(
     plan: Arc<LogicalPlan>,
@@ -224,6 +226,11 @@ pub fn intermediate_analyzing(
     )?;
     let plan = transformed_plan.get_plan();
 
+    // Enrich Unwind nodes with tuple structure metadata for property-to-index mapping
+    // This enables user.name → user.5 (tuple index) after UNWIND of collect(node)
+    // Must run AFTER all analysis passes that might recreate Unwind nodes
+    let plan = unwind_tuple_enricher::enrich_unwind_with_tuple_info(plan);
+
     Ok(plan)
 }
 
@@ -257,6 +264,10 @@ pub fn final_analyzing(
             crate::debug_print!("  item {}: expr={:?}", _i, _item.expression);
         }
     }
+
+    // Rewrite property access expressions to use tuple indices
+    // MUST run at the VERY END after all transformations complete
+    let plan = unwind_property_rewriter::rewrite_unwind_properties(plan);
 
     Ok(plan)
 }

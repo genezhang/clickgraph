@@ -444,6 +444,7 @@ impl TypeInference {
                         expression: unwind.expression.clone(),
                         alias: unwind.alias.clone(),
                         label: label.or_else(|| unwind.label.clone()),
+                        tuple_properties: unwind.tuple_properties.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::Unwind(new_unwind))))
                 } else {

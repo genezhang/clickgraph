@@ -25,6 +25,11 @@ use super::function_translator::{
 /// Populated during JOIN rendering, used for IS NULL checks on relationship aliases
 thread_local! {
     static RELATIONSHIP_COLUMNS: RefCell<HashMap<String, (String, String)>> = RefCell::new(HashMap::new());
+    
+    /// Thread-local mapping of CTE alias → property mapping (Cypher property → CTE column name)
+    /// Example: "cnt_friend" → { "id" → "friend_id", "firstName" → "friend_firstName" }
+    /// Populated from RenderPlan CTEs during SQL generation
+    static CTE_PROPERTY_MAPPINGS: RefCell<HashMap<String, HashMap<String, String>>> = RefCell::new(HashMap::new());
 }
 
 /// Check if an expression contains a string literal (recursively for nested + operations)
@@ -97,10 +102,67 @@ pub fn populate_relationship_columns_from_plan(plan: &RenderPlan) {
     }
 }
 
+/// Populate CTE property mappings from RenderPlan CTEs
+/// Extracts column aliases from CTE SELECT items to build property → column name mappings
+fn populate_cte_property_mappings(plan: &RenderPlan) {
+    CTE_PROPERTY_MAPPINGS.with(|cpm| {
+        let mut map = cpm.borrow_mut();
+        map.clear();
+        
+        // Process each CTE in the plan
+        for cte in &plan.ctes.0 {
+            if let CteContent::Structured(ref cte_plan) = cte.content {
+                let mut property_map: HashMap<String, String> = HashMap::new();
+                
+                // Build property mapping from SELECT items
+                // Format: "property_name" → "cte_column_name"
+                for select_item in &cte_plan.select.items {
+                    if let Some(ref col_alias) = select_item.col_alias {
+                        let cte_col = col_alias.0.as_str();
+                        
+                        // Handle patterns like "friend_id" or "friend.id" → property "id"
+                        if let Some(underscore_pos) = cte_col.rfind('_') {
+                            let property = &cte_col[underscore_pos + 1..];
+                            property_map.insert(property.to_string(), cte_col.to_string());
+                        } else if let Some(dot_pos) = cte_col.rfind('.') {
+                            let property = &cte_col[dot_pos + 1..];
+                            property_map.insert(property.to_string(), cte_col.to_string());
+                        }
+                    }
+                }
+                
+                if !property_map.is_empty() {
+                    log::debug!("🗺️  CTE '{}' property mapping: {:?}", cte.cte_name, property_map);
+                    map.insert(cte.cte_name.clone(), property_map.clone());
+                }
+            }
+        }
+        
+        // CRITICAL: Also scan main plan's FROM clause to map CTE aliases
+        // Example: FROM with_cnt_friend_cte_1 AS cnt_friend
+        // We need to map BOTH "with_cnt_friend_cte_1" AND "cnt_friend" to the same property mapping
+        if let Some(ref from_table) = plan.from.0 {
+            let table_name = &from_table.name;
+            let alias = from_table.alias.as_ref().unwrap_or(table_name);
+            
+            // If this FROM references a CTE (name starts with "with_" or matches a CTE name)
+            if let Some(cte_mapping) = map.get(table_name).cloned() {
+                if alias != table_name {
+                    log::debug!("🔗 Aliasing CTE '{}' as '{}' with same property mapping", table_name, alias);
+                    map.insert(alias.clone(), cte_mapping);
+                }
+            }
+        }
+    });
+}
+
 /// Generate SQL from RenderPlan with configurable CTE depth limit
 pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     // Pre-populate relationship columns mapping before rendering
     populate_relationship_columns_from_plan(&plan);
+    
+    // Pre-populate CTE property mappings from CTE metadata
+    populate_cte_property_mappings(&plan);
     
     let mut sql = String::new();
 
@@ -1009,6 +1071,23 @@ impl RenderExpr {
                 table_alias,
                 column,
             }) => {
+                // Check if table_alias refers to a CTE and needs property mapping
+                let cte_mapped_result = CTE_PROPERTY_MAPPINGS.with(|cpm| {
+                    let map = cpm.borrow();
+                    if let Some(property_map) = map.get(&table_alias.0) {
+                        let col_name = column.0.raw();
+                        if let Some(cte_col) = property_map.get(col_name) {
+                            log::debug!("🔧 CTE property mapping: {}.{} → {}", table_alias.0, col_name, cte_col);
+                            return Some(format!("{}.{}", table_alias.0, cte_col));
+                        }
+                    }
+                    None
+                });
+                
+                if let Some(sql) = cte_mapped_result {
+                    return sql;
+                }
+                
                 // Check if this is a temporal property access (e.g., birthday.year, birthday.month)
                 // These should be converted to function calls (e.g., year(birthday), month(birthday))
                 let col_name = column.0.raw().to_lowercase();

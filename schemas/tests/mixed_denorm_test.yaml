@@ -34,7 +34,7 @@ graph_schema:
         population: population
         country: country
 
-  relationships:
+  edges:
     # FLIGHT between Airports (denorm → denorm) - existing case
     - type: FLIGHT
       database: test_integration

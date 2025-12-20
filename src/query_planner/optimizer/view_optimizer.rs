@@ -227,6 +227,7 @@ impl OptimizerPass for ViewOptimizer {
                             expression: u.expression.clone(),
                             alias: u.alias.clone(),
                             label: u.label.clone(),
+                            tuple_properties: u.tuple_properties.clone(),
                         },
                     ))),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),

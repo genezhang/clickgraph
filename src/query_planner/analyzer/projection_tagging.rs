@@ -186,6 +186,7 @@ impl AnalyzerPass for ProjectionTagging {
                             expression: transformed_expr,
                             alias: u.alias.clone(),
                             label: u.label.clone(),
+                            tuple_properties: u.tuple_properties.clone(),
                         }),
                     )),
                     (Transformed::No(_), true) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
@@ -194,6 +195,7 @@ impl AnalyzerPass for ProjectionTagging {
                             expression: transformed_expr,
                             alias: u.alias.clone(),
                             label: u.label.clone(),
+                            tuple_properties: u.tuple_properties.clone(),
                         },
                     ))),
                     (Transformed::No(_), false) => Transformed::No(logical_plan.clone()),

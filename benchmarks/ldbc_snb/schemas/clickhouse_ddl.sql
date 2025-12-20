@@ -378,3 +378,17 @@ SELECT
     Comment1Id AS CommentId, 
     Comment2Id AS MessageId
 FROM ldbc.Comment_replyOf_Comment;
+
+-- Unified reply-of view (to get target Message of a reply)
+CREATE OR REPLACE VIEW Message_replyOf_Message AS
+SELECT 
+    CommentId AS MessageId,
+    PostId AS TargetMessageId,
+    creationDate
+FROM Comment_replyOf_Post
+UNION ALL
+SELECT 
+    Comment1Id AS MessageId,
+    Comment2Id AS TargetMessageId,
+    creationDate
+FROM Comment_replyOf_Comment

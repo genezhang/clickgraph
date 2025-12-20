@@ -1,6 +1,7 @@
 pub mod alias_resolver;
 pub mod cte_extraction;
 pub mod cte_generation;
+pub mod property_expansion;
 mod expression_utils;
 mod filter_pipeline;
 mod from_table;

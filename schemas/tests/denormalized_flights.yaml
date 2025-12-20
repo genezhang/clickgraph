@@ -25,7 +25,7 @@ graph_schema:
         city: DestCityName
         state: DestState
 
-  relationships:
+  edges:
     # FLIGHT relationship - node properties declared above
     - type: FLIGHT
       database: test_integration

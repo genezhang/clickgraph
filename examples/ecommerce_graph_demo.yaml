@@ -1,12 +1,12 @@
 name: ecommerce_graph
 version: "1.0"
-views:
-  - name: ecommerce_view
+
+graph_schema:
     nodes:
-      Customer:
-        source_table: "customers"
-        node_id: "customer_id"
-        label: "Customer"
+      - label: Customer
+        database: ecommerce
+        table: customers
+        node_id: customer_id
         property_mappings:
           name: "CONCAT(first_name, ' ', last_name)"
           email: "email"
@@ -19,25 +19,27 @@ views:
           is_premium: "is_premium"
           customer_id: "customer_id"
 
-      Product:
-        source_table: "products"
-        node_id: "product_id"
-        label: "Product"
+      - label: Product
+        database: ecommerce
+        table: products
+        node_id: product_id
+        label: Product
         property_mappings:
-          name: "name"
-          category: "category"
-          brand: "brand"
-          price: "price"
-          rating: "rating"
-          num_reviews: "num_reviews"
-          in_stock: "in_stock"
-          created_date: "created_date"
-          product_id: "product_id"
+          name: name
+          category: category
+          brand: brand
+          price: price
+          rating: rating
+          num_reviews: num_reviews
+          in_stock: in_stock
+          created_date: created_date
+          product_id: product_id
 
-    relationships:
-      PURCHASED:
-        source_table: "orders"
-        from_id: "customer_id"
+    edges:
+      - type: PURCHASED
+        database: ecommerce
+        table: orders
+        from_id: customer_id
         to_id: "product_id"
         type_name: "PURCHASED"
         property_mappings:

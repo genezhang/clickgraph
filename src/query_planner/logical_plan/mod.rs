@@ -734,6 +734,12 @@ pub struct Unwind {
     /// Example: collect(u:Person) → UNWIND → user:Person
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub label: Option<String>,
+    /// Tuple structure metadata for unwound arrays from collect(node)
+    /// Maps property names to their positions in the tuple
+    /// Example: [("city", 1), ("country", 2), ("email", 3), ...]
+    /// Used to convert user.name → user.5 (tuple index access)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tuple_properties: Option<Vec<(String, usize)>>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -746,6 +752,53 @@ pub struct OrderByItem {
 pub enum OrderByOrder {
     Asc,
     Desc,
+}
+
+impl Unwind {
+    /// Create a new Unwind node from an existing one, preserving all metadata
+    /// while modifying the input plan. This ensures metadata like tuple_properties
+    /// is automatically carried forward during query transformations.
+    ///
+    /// # Example
+    /// ```rust
+    /// let new_unwind = old_unwind.with_new_input(transformed_input);
+    /// // tuple_properties, label, expression, alias all preserved
+    /// ```
+    pub fn with_new_input(&self, new_input: Arc<LogicalPlan>) -> Self {
+        Unwind {
+            input: new_input,
+            expression: self.expression.clone(),
+            alias: self.alias.clone(),
+            label: self.label.clone(),
+            tuple_properties: self.tuple_properties.clone(),
+        }
+    }
+
+    /// Create a new Unwind node with a different expression, preserving metadata
+    pub fn with_new_expression(&self, new_expr: LogicalExpr) -> Self {
+        Unwind {
+            input: self.input.clone(),
+            expression: new_expr,
+            alias: self.alias.clone(),
+            label: self.label.clone(),
+            tuple_properties: self.tuple_properties.clone(),
+        }
+    }
+
+    /// Standard rebuild_or_clone pattern used throughout the codebase.
+    /// Automatically preserves all metadata fields.
+    pub fn rebuild_or_clone(
+        &self,
+        input_tf: Transformed<Arc<LogicalPlan>>,
+        old_plan: Arc<LogicalPlan>,
+    ) -> Transformed<Arc<LogicalPlan>> {
+        match input_tf {
+            Transformed::Yes(new_input) => {
+                Transformed::Yes(Arc::new(LogicalPlan::Unwind(self.with_new_input(new_input))))
+            }
+            Transformed::No(_) => Transformed::No(old_plan.clone()),
+        }
+    }
 }
 
 impl Filter {

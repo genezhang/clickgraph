@@ -1,8 +1,61 @@
 # ClickGraph Status
 
-*Updated: December 23, 2025*
+*Updated: December 20, 2025*
 
-## ✅ Latest: Duplicate JOIN Bug Fixed (Dec 23, 2025)
+## ✅ Latest: Tuple Property Mapping for collect() + UNWIND (Dec 20, 2025)
+
+**Achievement**: Fully functional `collect(node)` + `UNWIND` pattern with automatic tuple index mapping
+
+**Problem Solved**: After `WITH collect(u) as users UNWIND users as user`, property access like `user.name` failed because `user` is a ClickHouse tuple requiring index access (`user.5`)
+
+**Solution Architecture**:
+1. **Metadata Enrichment** (`unwind_tuple_enricher.rs`): Populates `tuple_properties` field on Unwind nodes with property→index mapping
+2. **Property Rewriting** (`unwind_property_rewriter.rs`): Transforms `user.name` (PropertyAccess) to `user.5` (tuple index) in final_analyzing
+3. **Metadata Preservation**: Updated 20+ analyzer/optimizer passes to preserve tuple_properties through pipeline
+
+**Key Implementation Details**:
+- Uses **ClickHouse column names** (not Cypher property names) in tuple_properties for consistency
+- Tuple indices are 1-based (ClickHouse convention)
+- Property rewriter runs at END of final_analyzing to catch all PropertyAccess expressions
+- Enricher extracts property order from ViewScan's property_mapping
+
+**Examples**:
+```cypher
+# Basic pattern
+MATCH (u:User)
+WITH u, collect(u) as users
+UNWIND users as user
+RETURN user.name, user.email
+-- ✅ Works: user.name → user.5, user.email → user.3
+
+# With filtering
+MATCH (u:User) WHERE u.is_active = true
+WITH u, collect(u) as users
+UNWIND users as user
+RETURN user.name
+-- ✅ Works: Filtering happens before collection
+
+# Multiple properties
+MATCH (u:User)
+WITH u, collect(u) as users
+UNWIND users as user
+RETURN user.name, user.email, user.city, user.country
+-- ✅ Works: All properties correctly mapped to tuple indices
+```
+
+**Test Results**:
+- ✅ Basic collect + UNWIND with single property
+- ✅ Multiple properties accessed from tuple
+- ✅ Property rewriting logged at debug level
+- ✅ Correct SQL generation: `SELECT user.5 AS user.name`
+
+**Quality Improvement**: Discovered and documented systemic metadata preservation issue - see Architecture section below
+
+**See**: Implementation in `src/query_planner/analyzer/unwind_tuple_enricher.rs` and `unwind_property_rewriter.rs`
+
+---
+
+## ✅ Previous: Duplicate JOIN Bug Fixed (Dec 23, 2025)
 
 **Achievement**: Fixed critical duplicate JOIN bug in linear relationship chains
 
@@ -88,34 +141,35 @@
 
 **Status**: ✅ GROUP BY fixed, 🔧 column name resolution in progress
 
-**Progress**:
-- ✅ GROUP BY now correctly uses ID column only: `GROUP BY friend.id`
-- ✅ anyLast() wrapping: Non-ID columns wrapped correctly
-- ✅ CTE schema tracking extended with `alias_to_id_column` map
-- ✅ `expand_table_alias_to_group_by_id_only()` now checks CTE schemas first
-- 🔧 NEW ISSUE: Final SELECT column references need fixing
+**Status**: ✅ **FIXED** (December 20, 2025)
 
-**Current Error (IC1)**:
-```
-Code: 47. Identifier 'cnt_friend.id' cannot be resolved
+**Solution Implemented**:
+- Thread-local `CTE_PROPERTY_MAPPINGS` storage
+- `populate_cte_property_mappings()` extracts property→column mappings from CTE schemas
+- `PropertyAccessExp` rendering checks CTE mappings before standard resolution
+- Alias handling: Maps both CTE name AND FROM alias to same property mapping
+
+**What Works**:
+```cypher
+MATCH (p:Person)-[:KNOWS]-(friend:Person)  
+WITH friend, count(*) as cnt  
+WHERE cnt > 2  
+RETURN friend.id, cnt  
+ORDER BY cnt DESC LIMIT 5
 ```
 
-**Generated SQL**:
+**Generated SQL** (correct):
 ```sql
 WITH with_cnt_friend_cte_1 AS (
-  SELECT anyLast(friend.birthday) AS friend_birthday,
-         friend.id AS friend_id,  ← Column named "friend_id"
-         ...
-  FROM ... GROUP BY friend.id   ← ✅ FIXED
+  SELECT friend.id AS friend_id, anyLast(friend.firstName) AS friend_firstName, count(*) AS cnt
+  FROM ... GROUP BY friend.id
 )
-SELECT cnt_friend.id,            ← ❌ Should be "friend_id"
-       cnt_friend.firstName      ← ❌ Should be "friend_firstName"
+SELECT cnt_friend.friend_id AS "friend.id", cnt_friend.cnt AS "cnt"
 FROM with_cnt_friend_cte_1 AS cnt_friend
 ```
 
-**Root Cause**: `RETURN friend.id` rendered as `cnt_friend.id` (property access) instead of `cnt_friend.friend_id` (CTE column name)
-
-**Next Step**: Fix column name resolution in final SELECT to use CTE schema column names
+**Files Modified**:
+- `src/clickhouse_query_generator/to_sql_query.rs`: Added CTE property mapping system
 
 ---
 

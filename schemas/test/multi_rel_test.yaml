@@ -5,29 +5,31 @@ description: "Test schema for multiple relationship types"
 views:
   - name: test_graph
     nodes:
-      User:
-        source_table: users
+      - label: User
+        database: social_network
+        table: users
         node_id: user_id
-        label: User
         property_mappings:
           name: name
 
-    relationships:
-      FOLLOWS:
-        source_table: follows
+    edges:
+      - type: FOLLOWS
+        database: social_network
+        table: follows
         from_id: from_user_id
         to_id: to_user_id
         type_name: FOLLOWS
-        from_node_type: User
-        to_node_type: User
+        from_node: User
+        to_node: User
         property_mappings: {}
 
-      FRIENDS_WITH:
-        source_table: friends
+      - type: FRIENDS_WITH
+        database: social_network
+        table: friends
         from_id: from_user_id
         to_id: to_user_id
         type_name: FRIENDS_WITH
-        from_node_type: User
-        to_node_type: User
+        from_node: User
+        to_node: User
         property_mappings:
           since: friendship_date

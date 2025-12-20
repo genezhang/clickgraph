@@ -233,12 +233,11 @@ impl AliasResolverContext {
             LogicalPlan::PageRank(pr) => LogicalPlan::PageRank(pr),
             LogicalPlan::Unwind(u) => {
                 let transformed_input = Arc::new(self.transform_plan((*u.input).clone()));
-                LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-                    input: transformed_input,
-                    expression: self.transform_expr(u.expression.clone()),
-                    alias: u.alias.clone(),
-                    label: u.label.clone(),
-                })
+                let transformed_expr = self.transform_expr(u.expression.clone());
+                // Use with_new_input then modify expression to preserve all metadata
+                LogicalPlan::Unwind(
+                    u.with_new_input(transformed_input).with_new_expression(transformed_expr),
+                )
             }
             LogicalPlan::CartesianProduct(cp) => {
                 let transformed_left = Arc::new(self.transform_plan((*cp.left).clone()));

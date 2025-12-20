@@ -26,6 +26,7 @@ docker-compose up -d clickhouse-service
 export CLICKHOUSE_URL="http://localhost:8123"
 export CLICKHOUSE_USER="test_user"
 export CLICKHOUSE_PASSWORD="test_pass"
+export GRAPH_CONFIG_PATH="social_network.yaml"
 ```
 
 ### Create Database and Tables
@@ -95,17 +96,19 @@ description: "Simple social network for ClickGraph demo"
 views:
   - name: social_graph
     nodes:
-      User:
-        source_table: users
+      - label: User
+        database: social
+        table: users
         node_id: user_id  
         property_mappings:
           name: name
           age: age
           city: city
           
-    relationships:
-      FRIENDS_WITH:
-        source_table: friendships
+    edges:
+      - label: FRIENDS_WITH
+        database: social
+        table: friendships
         from_node: User
         to_node: User
         from_id: user1_id
@@ -122,7 +125,7 @@ export CLICKHOUSE_DATABASE="social"
 export GRAPH_CONFIG_FILE="social_network.yaml"
 
 # Start ClickGraph
-cargo run --bin brahmand -- --http-port 8080 --bolt-port 7687
+cargo run --bin clickgraph -- --http-port 8080 --bolt-port 7687
 ```
 
 **Expected output**:

@@ -3,22 +3,17 @@ nodes:
   - label: Account
     table: accounts_composite
     node_id: [bank_id, account_number]  # Composite node ID!
-    properties:
-      - name: balance
-        column: balance
-      - name: account_type
-        column: account_type
+    property_mappings:
+      balance: balance
+      account_type: account_type
   
   - label: User
     table: users
     node_id: user_id  # Single column (mixed with composite)
-    properties:
-      - name: name
-        column: full_name
-      - name: email
-        column: email_address
-
-relationships:
+    property_mappings:
+      name: full_name
+      email: email_address
+edges:
   - type: OWNS
     table: account_ownership
     from_id: owner_id

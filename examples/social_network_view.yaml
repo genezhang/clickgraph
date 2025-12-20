@@ -4,8 +4,9 @@ views:
   - name: user_interaction_graph
     nodes:
       # Map users table to graph nodes
-      user:
-        source_table: users
+      - label: user
+        database: social
+        table: users
         node_id: user_id
         property_mappings:
           name: full_name
@@ -15,8 +16,9 @@ views:
         filter_condition: "is_active = 1"
       
       # Map posts table to content nodes
-      post:
-        source_table: posts
+      - label: post
+        database: social
+        table: posts
         node_id: post_id
         property_mappings:
           title: post_title
@@ -24,10 +26,11 @@ views:
           created_at: post_date
         label: Post
     
-    relationships:
+    edges:
       # Map follows table to FOLLOWS relationships
-      follows:
-        source_table: user_follows
+      - type: follows
+        database: social
+        table: user_follows
         from_id: follower_id
         to_id: followed_id
         property_mappings:
@@ -35,8 +38,9 @@ views:
         type_name: FOLLOWS
       
       # Map post authorship to AUTHORED relationships
-      authored:
-        source_table: posts
+      - type: authored
+        database: social
+        table: posts
         from_id: author_id
         to_id: post_id
         property_mappings:
@@ -44,8 +48,9 @@ views:
         type_name: AUTHORED
       
       # Map likes to LIKED relationships
-      likes:
-        source_table: post_likes
+      - type: likes
+        database: social
+        table: post_likes
         from_id: user_id
         to_id: post_id
         property_mappings:
@@ -55,8 +60,9 @@ views:
   - name: product_interaction_graph
     nodes:
       # Map products table to product nodes
-      product:
-        source_table: products
+      - label: product
+        database: ecommerce
+        table: products
         node_id: product_id
         property_mappings:
           name: product_name
@@ -65,8 +71,9 @@ views:
         label: Product
       
       # Reuse users table for customer nodes
-      customer:
-        source_table: users
+      - label: customer
+        database: ecommerce
+        table: users
         node_id: user_id
         property_mappings:
           name: full_name
@@ -74,10 +81,11 @@ views:
         label: Customer
         filter_condition: "has_purchased = 1"
     
-    relationships:
+    edges:
       # Map purchases to PURCHASED relationships
-      purchased:
-        source_table: orders
+      - type: purchased
+        database: ecommerce
+        table: orders
         from_id: user_id
         to_id: product_id
         property_mappings:

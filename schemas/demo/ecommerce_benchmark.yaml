@@ -1,3 +1,5 @@
+name: ecommerce_benchmark
+version: "1.0"
 
 graph_schema:
   nodes:

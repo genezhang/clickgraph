@@ -20,6 +20,7 @@ use crate::{
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
+    utils::cte_naming::generate_cte_base_name,
 };
 
 /// Tracks where a node variable appears in the query plan.
@@ -149,12 +150,8 @@ impl GraphJoinInference {
                 
                 // Now register this WithClause's CTE references (will overwrite inner ones for same alias)
                 // Found a WITH clause - register exported aliases as CTE references
-                // CTE name format: with_{aliases}_cte (no counter needed - render phase handles duplicates)
-                let cte_name = if wc.exported_aliases.len() == 1 {
-                    format!("with_{}_cte", wc.exported_aliases[0])
-                } else {
-                    format!("with_{}_cte", wc.exported_aliases.join("_"))
-                };
+                // CTE name format: with_{sorted_aliases}_cte (no counter - render phase adds it)
+                let cte_name = generate_cte_base_name(&wc.exported_aliases);
                 
                 log::info!(
                     "🔍 register_with_cte_references: Found WITH exporting {:?} → CTE '{}'",
@@ -1438,6 +1435,7 @@ impl GraphJoinInference {
                             expression: u.expression.clone(),
                             alias: u.alias.clone(),
                             label: u.label.clone(),
+                            tuple_properties: u.tuple_properties.clone(),
                         },
                     ))),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
@@ -1636,11 +1634,7 @@ impl GraphJoinInference {
                 );
                 
                 // Look up the captured CTE references for this WITH clause
-                let cte_name = if with_clause.exported_aliases.len() == 1 {
-                    format!("with_{}_cte", with_clause.exported_aliases[0])
-                } else {
-                    format!("with_{}_cte", with_clause.exported_aliases.join("_"))
-                };
+                let cte_name = generate_cte_base_name(&with_clause.exported_aliases);
                 
                 let cte_references = captured_cte_refs.iter()
                     .find(|(name, _)| name == &cte_name)

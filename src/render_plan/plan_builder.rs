@@ -5,6 +5,7 @@ use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::{
     GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, ViewScan,
 };
+use crate::utils::cte_naming::generate_cte_name;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -254,6 +255,7 @@ pub(crate) trait RenderPlanBuilder {
         &self,
         last_node_alias: &str,
         context: &mut CteGenerationContext,
+        schema: &crate::graph_catalog::graph_schema::GraphSchema,
     ) -> RenderPlanBuilderResult<Vec<Cte>>;
 
     /// Find the ID column for a given table alias by traversing the logical plan
@@ -1782,7 +1784,38 @@ fn build_chained_with_match_cte_plan(
                                                     item.expression.clone()
                                                 };
                                                 
-                                                let expr_result: Result<RenderExpr, _> = logical_expr.try_into();
+                                                // CRITICAL: Expand collect(node) to groupArray(tuple(...)) BEFORE converting to RenderExpr
+                                                // This must happen in WITH context too, not just in extract_select_items()
+                                                let expanded_expr = if let crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(ref agg) = logical_expr {
+                                                    if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
+                                                        if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(ref alias) = agg.args[0] {
+                                                            log::info!("🔧 WITH context: Expanding collect({}) to groupArray(tuple(...))", alias.0);
+                                                            
+                                                            // Get all properties for this alias
+                                                            match plan_to_render.get_properties_with_table_alias(&alias.0) {
+                                                                Ok((props, _actual_alias)) if !props.is_empty() => {
+                                                                    log::info!("🔧 Found {} properties for alias '{}', expanding", props.len(), alias.0);
+                                                                    
+                                                                    // Use centralized expansion utility
+                                                                    use crate::render_plan::property_expansion::expand_collect_to_group_array;
+                                                                    expand_collect_to_group_array(&alias.0, props)
+                                                                }
+                                                                _ => {
+                                                                    log::warn!("⚠️  Could not expand collect({}) in WITH - no properties found, keeping as-is", alias.0);
+                                                                    logical_expr
+                                                                }
+                                                            }
+                                                        } else {
+                                                            logical_expr
+                                                        }
+                                                    } else {
+                                                        logical_expr
+                                                    }
+                                                } else {
+                                                    logical_expr
+                                                };
+                                                
+                                                let expr_result: Result<RenderExpr, _> = expanded_expr.try_into();
                                                 expr_result.ok().map(|expr| {
                                                     SelectItem {
                                                         expression: expr,
@@ -1928,16 +1961,15 @@ fn build_chained_with_match_cte_plan(
                 })
                 .unwrap_or_else(|| vec![with_alias.clone()]);
             
-            // Generate unique CTE name using ALL exported aliases + sequence number
-            // Format: with_<alias1>_<alias2>_..._cte_<seq>
-            // This matches analyzer's format in graph_join_inference.rs
+            // Generate unique CTE name using centralized utility
+            // Format: with_<sorted_aliases>_cte_<seq>
             let mut sorted_aliases = exported_aliases.clone();
             sorted_aliases.sort(); // Ensure consistent ordering
             let aliases_str = sorted_aliases.join("_");
             
             let seq_num = cte_sequence_numbers.entry(aliases_str.clone()).or_insert(1);
             let current_seq = *seq_num;
-            let cte_name = format!("with_{}_cte_{}", aliases_str, current_seq);
+            let cte_name = generate_cte_name(&exported_aliases, current_seq);
             *seq_num += 1; // Increment for next iteration
             
             log::info!("🔧 build_chained_with_match_cte_plan: Generated unique CTE name '{}' from exported aliases {:?} (sequence {})", 
@@ -5047,6 +5079,30 @@ impl RenderPlanBuilder for LogicalPlan {
                     return Ok(result);
                 }
             }
+            LogicalPlan::Unwind(u) => {
+                // Check if the alias matches the unwound variable
+                if u.alias == alias {
+                    // If we have tuple_properties metadata, return it as property mappings
+                    // Convert tuple position to "1", "2", "3" for tuple index access
+                    if let Some(tuple_props) = &u.tuple_properties {
+                        let properties: Vec<(String, String)> = tuple_props
+                            .iter()
+                            .map(|(prop_name, idx)| {
+                                (prop_name.clone(), idx.to_string())
+                            })
+                            .collect();
+                        return Ok((properties, None));
+                    }
+                    // Fallback: Try to get properties from the label (if set)
+                    if let Some(_label) = &u.label {
+                        // TODO: Could look up schema properties by label here
+                        // For now, return empty to avoid errors
+                        return Ok((vec![], None));
+                    }
+                }
+                // Not this unwind, recurse to input
+                return u.input.get_properties_with_table_alias(alias);
+            }
             _ => {}
         }
         Err(RenderBuildError::InvalidRenderPlan(format!(
@@ -5170,8 +5226,9 @@ impl RenderPlanBuilder for LogicalPlan {
         &self,
         last_node_alias: &str,
         context: &mut CteGenerationContext,
+        schema: &GraphSchema,
     ) -> RenderPlanBuilderResult<Vec<Cte>> {
-        extract_ctes_with_context(self, last_node_alias, context)
+        extract_ctes_with_context(self, last_node_alias, context, schema)
     }
 
     fn extract_select_items(&self) -> RenderPlanBuilderResult<Vec<SelectItem>> {
@@ -5346,9 +5403,47 @@ impl RenderPlanBuilder for LogicalPlan {
                         item.expression,
                         item.col_alias
                     );
+                    
+                    // FIRST: Check for collect(node) expansion
+                    // Must happen BEFORE TableAlias expansion to catch collect(u) patterns
+                    let item_to_process = if let crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(ref agg) = item.expression {
+                        if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
+                            if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(ref alias) = agg.args[0] {
+                                log::info!("🔧 extract_select_items: Expanding collect({}) to groupArray(tuple(...))", alias.0);
+                                
+                                // Get all properties for this alias
+                                match self.get_properties_with_table_alias(&alias.0) {
+                                    Ok((props, _actual_alias)) if !props.is_empty() => {
+                                        log::info!("🔧 Found {} properties for alias '{}', expanding", props.len(), alias.0);
+                                        
+                                        // Use centralized expansion utility
+                                        use crate::render_plan::property_expansion::expand_collect_to_group_array;
+                                        let expanded_expr = expand_collect_to_group_array(&alias.0, props);
+                                        
+                                        // Create new item with expanded expression
+                                        ProjectionItem {
+                                            expression: expanded_expr,
+                                            col_alias: item.col_alias.clone(),
+                                        }
+                                    }
+                                    _ => {
+                                        log::warn!("⚠️  Could not expand collect({}) - no properties found, keeping as-is", alias.0);
+                                        item.clone()
+                                    }
+                                }
+                            } else {
+                                item.clone()
+                            }
+                        } else {
+                            item.clone()
+                        }
+                    } else {
+                        item.clone()
+                    };
+                    
                     // Check for TableAlias (u) - expand to all properties
                     if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) =
-                        &item.expression
+                        &item_to_process.expression
                     {
                         crate::debug_print!(
                             "DEBUG: Found TableAlias {} - checking if should expand to properties",
@@ -5361,37 +5456,21 @@ impl RenderPlanBuilder for LogicalPlan {
                             self.get_properties_with_table_alias(&alias.0)
                         {
                             if !properties.is_empty() {
-                                let table_alias_to_use = actual_table_alias
-                                    .as_ref()
-                                    .map(|s| {
-                                        crate::query_planner::logical_expr::TableAlias(s.clone())
-                                    })
-                                    .unwrap_or_else(|| alias.clone());
-
                                 println!(
-                                    "DEBUG: Expanding TableAlias {} to {} properties (using table alias: {})",
+                                    "DEBUG: Expanding TableAlias {} to {} properties",
                                     alias.0,
-                                    properties.len(),
-                                    table_alias_to_use.0
+                                    properties.len()
                                 );
 
-                                // Create a separate ProjectionItem for each property
-                                // Use original alias (e.g., "a") as prefix for column names to avoid
-                                // duplicate aliases when returning multiple nodes (e.g., RETURN a, b)
-                                // IMPORTANT: Use underscore convention for CTE column names (a_name, not a.name)
-                                // The outer SELECT will use AS to create dot notation (SELECT a_name AS "a.name")
-                                for (prop_name, col_name) in properties {
-                                    let col_alias_name = format!("{}_{}", alias.0, prop_name);
-                                    expanded_items.push(ProjectionItem {
-                                        expression: crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
-                                            crate::query_planner::logical_expr::PropertyAccess {
-                                                table_alias: table_alias_to_use.clone(),
-                                                column: PropertyValue::Column(col_name),
-                                            }
-                                        ),
-                                        col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(col_alias_name)),
-                                    });
-                                }
+                                // Use centralized expansion utility
+                                use crate::render_plan::property_expansion::{expand_alias_to_properties, PropertyAliasFormat};
+                                let property_items = expand_alias_to_properties(
+                                    &alias.0,
+                                    properties,
+                                    actual_table_alias,
+                                    PropertyAliasFormat::Underscore,
+                                );
+                                expanded_items.extend(property_items);
                                 continue; // Skip adding the TableAlias item itself
                             }
                         }
@@ -5400,13 +5479,13 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Check for PropertyAccessExp with wildcard (u.*) - expand to all properties
                     if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
                         prop,
-                    ) = &item.expression
+                    ) = &item_to_process.expression
                     {
                         if prop.column.raw() == "*" {
                             // This is u.* - need to expand to all properties from schema
                             // IMPORTANT: For denormalized nodes, the table_alias may have been converted
                             // to the edge alias, but we can use col_alias to recover the original node name
-                            let original_alias = item
+                            let original_alias = item_to_process
                                 .col_alias
                                 .as_ref()
                                 .and_then(|ca| ca.0.strip_suffix(".*"))
@@ -5439,29 +5518,20 @@ impl RenderPlanBuilder for LogicalPlan {
                                         .unwrap_or_else(|| prop.table_alias.clone());
 
                                     crate::debug_print!(
-                                        "DEBUG: Expanding {}.* to {} properties (using table alias: {})",
+                                        "DEBUG: Expanding {}.* to {} properties",
                                         original_alias,
-                                        properties.len(),
-                                        table_alias_to_use.0
+                                        properties.len()
                                     );
 
-                                    // Create a separate ProjectionItem for each property
-                                    // Use original_alias as prefix for column names to disambiguate
-                                    // IMPORTANT: Use underscore convention for CTE column names (a_name, not a.name)
-                                    // The outer SELECT will use AS to create dot notation (SELECT a_name AS "a.name")
-                                    for (prop_name, col_name) in properties {
-                                        let col_alias_name =
-                                            format!("{}_{}", original_alias, prop_name);
-                                        expanded_items.push(ProjectionItem {
-                                            expression: crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
-                                                crate::query_planner::logical_expr::PropertyAccess {
-                                                    table_alias: table_alias_to_use.clone(),
-                                                    column: PropertyValue::Column(col_name),
-                                                }
-                                            ),
-                                            col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(col_alias_name)),
-                                        });
-                                    }
+                                    // Use centralized expansion utility
+                                    use crate::render_plan::property_expansion::{expand_alias_to_properties, PropertyAliasFormat};
+                                    let property_items = expand_alias_to_properties(
+                                        original_alias,
+                                        properties,
+                                        actual_table_alias,
+                                        PropertyAliasFormat::Underscore,
+                                    );
+                                    expanded_items.extend(property_items);
                                     continue; // Skip adding the wildcard item itself
                                 } else {
                                     crate::debug_print!(
@@ -5489,18 +5559,18 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Not a node variable or wildcard expansion failed - keep the item as-is
                     // For wildcards, strip the alias (can't alias a wildcard in ClickHouse)
                     let should_strip_alias = matches!(
-                        &item.expression,
+                        &item_to_process.expression,
                         crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa)
                         if pa.column.raw() == "*"
                     );
 
                     if should_strip_alias {
                         expanded_items.push(ProjectionItem {
-                            expression: item.expression.clone(),
+                            expression: item_to_process.expression.clone(),
                             col_alias: None,
                         });
                     } else {
-                        expanded_items.push(item.clone());
+                        expanded_items.push(item_to_process.clone());
                     }
                 }
 
@@ -5509,8 +5579,43 @@ impl RenderPlanBuilder for LogicalPlan {
                     // The VariableResolver analyzer pass already transformed TableAlias → PropertyAccessExp
                     // No need to resolve variables here anymore
 
+                    // COLLECT() EXPANSION for UNWIND support:
+                    // collect(node_variable) where node_variable is a TableAlias needs to be expanded
+                    // to groupArray(tuple(node.prop1, node.prop2, ...)) so UNWIND/ARRAY JOIN can work.
+                    // This expansion must happen BEFORE converting to RenderExpr.
+                    let logical_expr = if let crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(ref agg) = item.expression {
+                        if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
+                            if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(ref alias) = agg.args[0] {
+                                log::info!("🔧 Expanding collect({}) to groupArray(tuple(...)) in SELECT items", alias.0);
+                                
+                                // Get all properties for this alias
+                                let props_result = self.get_properties_with_table_alias(&alias.0);
+                                
+                                match props_result {
+                                    Ok((props, _actual_alias)) if !props.is_empty() => {
+                                        log::info!("🔧 Found {} properties for alias '{}'", props.len(), alias.0);
+                                        
+                                        // Use centralized expansion utility
+                                        use crate::render_plan::property_expansion::expand_collect_to_group_array;
+                                        expand_collect_to_group_array(&alias.0, props)
+                                    }
+                                    _ => {
+                                        log::warn!("⚠️  Could not expand collect({}) - no properties found, keeping as-is", alias.0);
+                                        item.expression.clone()
+                                    }
+                                }
+                            } else {
+                                item.expression.clone()
+                            }
+                        } else {
+                            item.expression.clone()
+                        }
+                    } else {
+                        item.expression.clone()
+                    };
+
                     // Convert logical expression to render expression
-                    let expr: RenderExpr = item.expression.clone().try_into()?;
+                    let expr: RenderExpr = logical_expr.try_into()?;
 
                     // DENORMALIZED TABLE ALIAS RESOLUTION:
                     // For denormalized nodes on fully denormalized edges (like (ip1)-[]->(d) where both
@@ -5606,7 +5711,160 @@ impl RenderPlanBuilder for LogicalPlan {
                 items.collect::<Result<Vec<SelectItem>, RenderBuildError>>()?
             }
             LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_select_items()?,
-            LogicalPlan::GroupBy(group_by) => group_by.input.extract_select_items()?,
+            LogicalPlan::GroupBy(group_by) => {
+                // CRITICAL: When extracting SELECT items from a GroupBy, we need to wrap
+                // non-ID columns of TableAlias items with anyLast() for efficient aggregation
+                // We CANNOT use group_by.input.extract_select_items() because that will expand
+                // TableAlias to properties WITHOUT anyLast wrapping. We need to handle it ourselves.
+                
+                // Get the Projection items BEFORE they're expanded
+                // (we need to expand them ourselves WITH anyLast wrapping)
+                use crate::query_planner::logical_plan::LogicalPlan;
+                let projection_items = match group_by.input.as_ref() {
+                    LogicalPlan::Projection(proj) => &proj.items,
+                    _ => {
+                        // GroupBy input is not a Projection, delegate to standard extract_select_items
+                        return group_by.input.extract_select_items();
+                    }
+                };
+                
+                // Now process each item and expand TableAlias with anyLast() wrapping
+                let wrapped_items: Vec<SelectItem> = projection_items.iter().flat_map(|item| {
+                    use crate::query_planner::logical_expr::LogicalExpr;
+                    
+                    // Check if this is a TableAlias that needs expansion
+                    if let LogicalExpr::TableAlias(ref alias) = item.expression {
+                        // Find ID column for this alias
+                        match group_by.input.find_id_column_for_alias(&alias.0) {
+                            Ok(id_col) => {
+                                // Get properties for this alias
+                                match group_by.input.get_properties_with_table_alias(&alias.0) {
+                                    Ok((properties, actual_alias)) if !properties.is_empty() => {
+                                        let table_alias_to_use = actual_alias.clone().unwrap_or_else(|| alias.0.clone());
+                                        
+                                        // Expand to multiple PropertyAccess SelectItems, wrapping non-ID with anyLast()
+                                        properties.into_iter().map(|(prop_name, col_name)| {
+                                            use crate::graph_catalog::expression_parser::PropertyValue;
+                                            
+                                            let base_expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(table_alias_to_use.clone()),
+                                                column: Column(PropertyValue::Column(col_name.clone())),
+                                            });
+                                            
+                                            // Wrap non-ID columns with anyLast()
+                                            let wrapped_expr = if col_name == id_col {
+                                                base_expr
+                                            } else {
+                                                RenderExpr::AggregateFnCall(AggregateFnCall {
+                                                    name: "anyLast".to_string(),
+                                                    args: vec![base_expr],
+                                                })
+                                            };
+                                            
+                                            SelectItem {
+                                                expression: wrapped_expr,
+                                                col_alias: if let Some(ref alias_str) = item.col_alias {
+                                                    Some(ColumnAlias(format!("{}_{}", alias_str.0, prop_name)))
+                                                } else {
+                                                    Some(ColumnAlias(format!("{}_{}", alias.0, prop_name)))
+                                                },
+                                            }
+                                        }).collect()
+                                    }
+                                    _ => {
+                                        // Could not get properties - convert to RenderExpr and keep as-is
+                                        let render_expr: Result<RenderExpr, _> = item.expression.clone().try_into();
+                                        match render_expr {
+                                            Ok(expr) => vec![SelectItem {
+                                                expression: expr,
+                                                col_alias: item.col_alias.as_ref().map(|s| ColumnAlias(s.0.clone())),
+                                            }],
+                                            Err(_) => vec![]
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                // Could not find ID column - convert to RenderExpr and keep as-is
+                                let render_expr: Result<RenderExpr, _> = item.expression.clone().try_into();
+                                match render_expr {
+                                    Ok(expr) => vec![SelectItem {
+                                        expression: expr,
+                                        col_alias: item.col_alias.as_ref().map(|s| ColumnAlias(s.0.clone())),
+                                    }],
+                                    Err(_) => vec![]
+                                }
+                            }
+                        }
+                    } else if let LogicalExpr::AggregateFnCall(ref agg) = item.expression {
+                        // Aggregate function - check if it's collect(node) that needs expansion
+                        if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
+                            if let LogicalExpr::TableAlias(ref alias) = agg.args[0] {
+                                // Get properties for this alias and expand to groupArray(tuple(...))
+                                match group_by.input.get_properties_with_table_alias(&alias.0) {
+                                    Ok((properties, _actual_alias)) if !properties.is_empty() => {
+                                        use crate::render_plan::property_expansion::expand_collect_to_group_array;
+                                        let expanded_logical = expand_collect_to_group_array(&alias.0, properties.clone());
+                                        
+                                        // Convert to RenderExpr
+                                        let render_expr: Result<RenderExpr, _> = expanded_logical.try_into();
+                                        match render_expr {
+                                            Ok(expr) => vec![SelectItem {
+                                                expression: expr,
+                                                col_alias: item.col_alias.as_ref().map(|s| ColumnAlias(s.0.clone())),
+                                            }],
+                                            Err(_) => vec![]
+                                        }
+                                    }
+                                    _ => {
+                                        // Could not get properties - convert to RenderExpr and keep as-is
+                                        let render_expr: Result<RenderExpr, _> = item.expression.clone().try_into();
+                                        match render_expr {
+                                            Ok(expr) => vec![SelectItem {
+                                                expression: expr,
+                                                col_alias: item.col_alias.as_ref().map(|s| ColumnAlias(s.0.clone())),
+                                            }],
+                                            Err(_) => vec![]
+                                        }
+                                    }
+                                }
+                            } else {
+                                // collect() of something other than TableAlias - convert and keep as-is
+                                let render_expr: Result<RenderExpr, _> = item.expression.clone().try_into();
+                                match render_expr {
+                                    Ok(expr) => vec![SelectItem {
+                                        expression: expr,
+                                        col_alias: item.col_alias.as_ref().map(|s| ColumnAlias(s.0.clone())),
+                                    }],
+                                    Err(_) => vec![]
+                                }
+                            }
+                        } else {
+                            // Other aggregate function - convert and keep as-is
+                            let render_expr: Result<RenderExpr, _> = item.expression.clone().try_into();
+                            match render_expr {
+                                Ok(expr) => vec![SelectItem {
+                                    expression: expr,
+                                    col_alias: item.col_alias.as_ref().map(|s| ColumnAlias(s.0.clone())),
+                                }],
+                                Err(_) => vec![]
+                            }
+                        }
+                    } else {
+                        // Other expression - convert and keep as-is
+                        let render_expr: Result<RenderExpr, _> = item.expression.clone().try_into();
+                        match render_expr {
+                            Ok(expr) => vec![SelectItem {
+                                expression: expr,
+                                col_alias: item.col_alias.as_ref().map(|s| ColumnAlias(s.0.clone())),
+                            }],
+                            Err(_) => vec![]
+                        }
+                    }
+                }).collect();
+                
+                wrapped_items
+            },
             LogicalPlan::OrderBy(order_by) => order_by.input.extract_select_items()?,
             LogicalPlan::Skip(skip) => skip.input.extract_select_items()?,
             LogicalPlan::Limit(limit) => limit.input.extract_select_items()?,
@@ -8890,11 +9148,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     .cloned()
                     .collect();
                 all_with_aliases.sort(); // Ensure consistent ordering
-                let cte_name = if all_with_aliases.len() == 1 {
-                    format!("with_{}_cte", all_with_aliases[0])
-                } else {
-                    format!("with_{}_cte", all_with_aliases.join("_"))
-                };
+                // Use base name (without counter) - counter added later if needed
+                let cte_name = crate::utils::cte_naming::generate_cte_base_name(&all_with_aliases);
                 let inner_cte = Cte::new(
                     cte_name.clone(),
                     super::CteContent::Structured(RenderPlan {
@@ -10045,7 +10300,7 @@ impl RenderPlanBuilder for LogicalPlan {
         // This is needed for WITH...MATCH patterns where first MATCH is in CTE
         println!("DEBUG CTE EXTRACTION SHORT: About to extract CTEs from plan type {:?}", std::mem::discriminant(self));
         let mut context = analyze_property_requirements(self, schema);
-        let extracted_ctes = match self.extract_ctes_with_context("_", &mut context) {
+        let extracted_ctes = match self.extract_ctes_with_context("_", &mut context, schema) {
             Ok(ctes) => {
                 println!("DEBUG CTE EXTRACTION SHORT: Successfully extracted {} CTEs", ctes.len());
                 for (i, cte) in ctes.iter().enumerate() {
@@ -10405,7 +10660,7 @@ impl RenderPlanBuilder for LogicalPlan {
             // Second pass: generate CTEs with full context
             println!("DEBUG: About to call extract_ctes_with_context with last_node_alias={}", last_node_alias);
             extracted_ctes =
-                transformed_plan.extract_ctes_with_context(last_node_alias, &mut context)?;
+                transformed_plan.extract_ctes_with_context(last_node_alias, &mut context, schema)?;
             println!("DEBUG: Extracted {} CTEs", extracted_ctes.len());
 
             // Check if we have a variable-length CTE (it will be a recursive RawSql CTE)
@@ -10525,7 +10780,7 @@ impl RenderPlanBuilder for LogicalPlan {
             // No CTE wrapper, but check for variable-length paths which generate CTEs directly
             // Extract CTEs with a dummy alias and context (variable-length doesn't use the alias)
             println!("DEBUG: About to call extract_ctes_with_context in else branch");
-            extracted_ctes = transformed_plan.extract_ctes_with_context("_", &mut context)?;
+            extracted_ctes = transformed_plan.extract_ctes_with_context("_", &mut context, schema)?;
             println!("DEBUG: else branch extracted {} CTEs", extracted_ctes.len());
 
             // Check if we have a variable-length CTE (recursive or chained join)
@@ -11250,10 +11505,15 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Different start and end nodes: Add JOINs for non-denormalized nodes
                     // For OPTIONAL VLP, skip the start node JOIN (it's already in FROM)
                     if !start_is_denorm && !vlp_is_optional {
-                        log::debug!("✅ Creating START node JOIN: {} AS {}", start_table, start_alias);
+                        // 🔧 FIX: Use Cypher alias from VLP metadata instead of internal VLP alias
+                        let start_node_alias = vlp_cte
+                            .and_then(|c| c.vlp_cypher_start_alias.clone())
+                            .unwrap_or_else(|| start_alias.clone());
+                        
+                        log::debug!("✅ Creating START node JOIN: {} AS {} (Cypher alias from VLP metadata)", start_table, start_node_alias);
                         extracted_joins.push(Join {
                             table_name: start_table,
-                            table_alias: start_alias.clone(),
+                            table_alias: start_node_alias.clone(),
                             joining_on: vec![OperatorApplication {
                                 operator: Operator::Equal,
                                 operands: vec![
@@ -11264,7 +11524,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                         )),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(start_alias.clone()),
+                                        table_alias: TableAlias(start_node_alias.clone()),
                                         column: Column(PropertyValue::Column(start_id_col.clone())),
                                     }),
                                 ],
@@ -11278,17 +11538,13 @@ impl RenderPlanBuilder for LogicalPlan {
                         log::debug!("⏭️  SKIP START node JOIN: start_is_denorm={}, vlp_is_optional={}", start_is_denorm, vlp_is_optional);
                     }
                     if !end_is_denorm {
-                        // For OPTIONAL VLP, use Cypher alias instead of VLP internal alias
-                        let end_node_alias = if vlp_is_optional {
-                            vlp_cte
-                                .and_then(|c| c.vlp_cypher_end_alias.clone())
-                                .unwrap_or_else(|| end_alias.clone())
-                        } else {
-                            end_alias.clone()
-                        };
+                        // 🔧 FIX: Always use Cypher alias from VLP metadata (for both OPTIONAL and REQUIRED)
+                        let end_node_alias = vlp_cte
+                            .and_then(|c| c.vlp_cypher_end_alias.clone())
+                            .unwrap_or_else(|| end_alias.clone());
                         
-                        log::debug!("✅ Creating END node JOIN: {} AS {} (vlp_is_optional={}, using Cypher alias={})", 
-                                  end_table, end_node_alias, vlp_is_optional, vlp_is_optional);
+                        log::debug!("✅ Creating END node JOIN: {} AS {} (Cypher alias from VLP metadata)", 
+                                  end_table, end_node_alias);
                         extracted_joins.push(Join {
                             table_name: end_table,
                             table_alias: end_node_alias.clone(),

@@ -5,58 +5,64 @@ description: "Test schema with multiple relationship types"
 views:
   - name: test_graph
     nodes:
-      User:
-        source_table: users
+      - label: User
+        database: test_multiple_rels
+        table: users
         node_id: user_id
         property_mappings:
           name: full_name
           email: email_address
 
-      Product:
-        source_table: products_mem
+      - label: Product
+        database: test_multiple_rels
+        table: products_mem
         node_id: product_id
         property_mappings:
           name: name
           price: price
 
-    relationships:
-      FOLLOWS:
-        source_table: user_follows
+    edges:
+      - type: FOLLOWS
+        database: test_multiple_rels
+        table: user_follows
         from_id: follower_id
         to_id: followed_id
         type_name: FOLLOWS
-        from_node_type: User
-        to_node_type: User
+        from_node: User
+        to_node: User
         property_mappings:
           since: follow_date
 
-      FRIENDS_WITH:
-        source_table: friendships
+      - type: FRIENDS_WITH
+        database: test_multiple_rels
+        table: friendships
         from_id: user1_id
         to_id: user2_id
         type_name: FRIENDS_WITH
-        from_node_type: User
-        to_node_type: User
+        from_node: User
+        to_node: User
         property_mappings:
           since: since_date
 
-      LIKES:
-        source_table: user_likes
+      - type: LIKES
+        database: test_multiple_rels
+        table: user_likes
         from_id: user_id
         to_id: product_id
         type_name: LIKES
-        from_node_type: User
-        to_node_type: Product
+        from_node: User
+        to_node: Product
         property_mappings:
           rating: rating
 
-      PURCHASED:
-        source_table: orders_mem
+      - type: PURCHASED
+        database: test_multiple_rels
+        table: orders_mem
         from_id: customer_id
         to_id: product_id
         type_name: PURCHASED
-        from_node_type: User
-        to_node_type: Product
+        from_node: User
+        to_node: Product
         property_mappings:
           quantity: quantity
           amount: total_amount

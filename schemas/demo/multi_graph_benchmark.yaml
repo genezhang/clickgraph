@@ -7,71 +7,69 @@ graphs:
     name: social_network
     version: "1.0"
     description: "Social network graph schema"
-    views:
-      - name: social_network
-        nodes:
-          User:
-            source_table: users_bench
-            node_id: user_id
-            label: User
-            property_mappings:
-              user_id: user_id
-              full_name: full_name
-              email_address: email_address
-              registration_date: registration_date
-              is_active: is_active
-              country: country
-              city: city
 
-        relationships:
-          FOLLOWS:
-            source_table: user_follows_bench
-            from_id: follower_id
-            to_id: followed_id
-            type_name: FOLLOWS
-            from_node_type: User
-            to_node_type: User
-            property_mappings:
-              follow_date: follow_date
+    nodes:
+      - label: User
+        database: brahmand
+        table: users_bench
+        node_id: user_id
+        property_mappings:
+          user_id: user_id
+          full_name: full_name
+          email_address: email_address
+          registration_date: registration_date
+          is_active: is_active
+          country: country
+          city: city
+
+    edges:
+      - type: FOLLOWS
+        database: brahmand
+        table: user_follows_bench
+        from_id: follower_id
+        to_id: followed_id
+        from_node: User
+        to_node: User
+        property_mappings:
+          follow_date: follow_date
 
   ecommerce:
     name: ecommerce
     version: "1.0"
     description: "E-commerce graph schema"
-    views:
-      - name: ecommerce
-        nodes:
-          Customer:
-            source_table: customers_bench
-            node_id: customer_id
-            label: Customer
-            property_mappings:
-              customer_id: customer_id
-              name: name
-              email: email
-              registration_date: registration_date
-              country: country
 
-          Product:
-            source_table: products_bench
-            node_id: product_id
-            label: Product
-            property_mappings:
-              product_id: product_id
-              name: name
-              category: category
-              price: price
-              in_stock: in_stock
+    nodes:
+      - label: Customer
+        database: ecommerce
+        table: customers_bench
+        node_id: customer_id
+        property_mappings:
+          customer_id: customer_id
+          name: name
+          email: email
+          registration_date: registration_date
+          country: country
 
-        relationships:
-          PURCHASED:
-            source_table: purchases_bench
-            from_id: customer_id
-            to_id: product_id
-            type_name: PURCHASED
-            from_node_type: Customer
-            to_node_type: Product
-            property_mappings:
-              purchase_date: purchase_date
-              quantity: quantity
-              total_amount: total_amount
+      - label: Product
+        database: ecommerce
+        table: products_bench
+        node_id: product_id
+        property_mappings:
+          product_id: product_id
+          name: name
+          category: category
+          price: price
+          in_stock: in_stock
+        
+    edges:
+      - type: PURCHASED
+        database: ecommerce
+        table: purchases_bench
+        from_id: customer_id
+        to_id: product_id
+        from_node: Customer
+        to_node: Product
+        property_mappings:
+          purchase_date: purchase_date
+          quantity: quantity
+          total_amount: total_amount

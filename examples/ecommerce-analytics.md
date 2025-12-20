@@ -193,11 +193,11 @@ name: ecommerce_analytics
 version: "1.0"
 description: "E-commerce platform graph analysis"
 
-views:
-  - name: ecommerce_graph
+graph_schema:
     nodes:
-      Customer:
-        source_table: customers
+      - label: Customer
+        database: ecommerce
+        table: customers
         node_id: customer_id
         property_mappings:
           email: email
@@ -214,8 +214,9 @@ views:
         filters:
           - "customer_id > 0"
           
-      Product:
-        source_table: products  
+      - label: Product
+        database: ecommerce
+        table: products  
         node_id: product_id
         property_mappings:
           name: name
@@ -229,8 +230,9 @@ views:
         filters:
           - "in_stock = 1"
           
-      Order:
-        source_table: orders
+      - label: Order
+        database: ecommerce
+        table: orders
         node_id: order_id
         property_mappings:
           quantity: quantity
@@ -242,8 +244,9 @@ views:
         filters:
           - "status != 'cancelled'"
           
-      Review:
-        source_table: reviews
+      - label: Review
+        database: ecommerce
+        table: reviews
         node_id: review_id
         property_mappings:
           rating: rating
@@ -251,17 +254,19 @@ views:
           review_date: review_date
           helpful_votes: helpful_votes
           
-      Category:
-        source_table: category_hierarchy
+      - label: Category
+        database: ecommerce
+        table: category_hierarchy
         node_id: child_category
         property_mappings:
           name: child_category
           parent: parent_category
           level: level
           
-    relationships:
-      PURCHASED:
-        source_table: orders
+    edges:
+      - type: PURCHASED
+        database: ecommerce
+        table: orders
         from_node: Customer
         to_node: Product
         from_id: customer_id
@@ -274,8 +279,9 @@ views:
         filters:
           - "status IN ('shipped', 'delivered')"
           
-      PLACED_ORDER:
-        source_table: orders
+      - type: PLACED_ORDER
+        database: ecommerce
+        table: orders
         from_node: Customer
         to_node: Order
         from_id: customer_id
@@ -283,8 +289,9 @@ views:
         property_mappings:
           date: order_date
           
-      ORDER_CONTAINS:
-        source_table: orders
+      - type: ORDER_CONTAINS
+        database: ecommerce
+        table: orders
         from_node: Order
         to_node: Product
         from_id: order_id
@@ -293,8 +300,9 @@ views:
           quantity: quantity
           unit_price: unit_price
           
-      REVIEWED:
-        source_table: reviews
+      - type: REVIEWED
+        database: ecommerce
+        table: reviews
         from_node: Customer
         to_node: Product
         from_id: customer_id
@@ -305,8 +313,9 @@ views:
           date: review_date
           helpful_votes: helpful_votes
           
-      BELONGS_TO:
-        source_table: products
+      - type: BELONGS_TO
+        database: ecommerce
+        table: products
         from_node: Product
         to_node: Category
         from_id: product_id

@@ -25,6 +25,7 @@ use crate::{
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
+    utils::cte_naming::generate_cte_name,
 };
 
 pub struct CteSchemaResolver;
@@ -58,8 +59,10 @@ impl CteSchemaResolver {
         with_clause: &WithClause,
         plan_ctx: &mut PlanCtx,
     ) {
-        // Generate CTE name
-        let cte_name = Self::generate_cte_name(with_clause, plan_ctx);
+        // Generate CTE name using centralized utility
+        let cte_counter = plan_ctx.cte_counter;
+        plan_ctx.cte_counter += 1;
+        let cte_name = generate_cte_name(&with_clause.exported_aliases, cte_counter);
 
         log::debug!(
             "🔧 CteSchemaResolver: Registering schema for CTE '{}' with {} items",
