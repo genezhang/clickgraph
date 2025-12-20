@@ -613,24 +613,11 @@ fn generate_not_exists_from_path_pattern(
                 }
             }
 
-            // Fallback: generate a reasonable default
-            let table_name = rel_type.to_lowercase();
-            match (end_alias, is_undirected) {
-                (None, _) => Ok(format!(
-                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.from_id = {}.id OR {}.to_id = {}.id)",
-                    table_name, table_name, start_alias, table_name, start_alias
-                )),
-                (Some(end), true) => Ok(format!(
-                    "NOT EXISTS (SELECT 1 FROM {} WHERE ({}.Person1Id = {}.id AND {}.Person2Id = {}.id) OR ({}.Person1Id = {}.id AND {}.Person2Id = {}.id))",
-                    table_name,
-                    table_name, start_alias, table_name, end,
-                    table_name, end, table_name, start_alias
-                )),
-                (Some(end), false) => Ok(format!(
-                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.from_id = {}.id AND {}.to_id = {}.id)",
-                    table_name, table_name, start_alias, table_name, end
-                )),
-            }
+            // NO FALLBACK - schema is required!
+            return Err(RenderBuildError::InvalidRenderPlan(format!(
+                "INTERNAL ERROR: Relationship type '{}' not found in schema for EXISTS pattern. This should have been caught during query planning.",
+                rel_type
+            )));
         }
         PathPattern::Node(_) => Err(RenderBuildError::InvalidRenderPlan(
             "NOT pattern with single node is not supported".to_string(),

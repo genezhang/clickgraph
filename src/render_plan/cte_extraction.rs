@@ -414,13 +414,16 @@ pub fn label_to_table_name_with_schema(
     label: &str,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> String {
-    if let Ok(node_schema) = schema.get_node_schema(label) {
-        // Use fully qualified table name: database.table_name
-        return format!("{}.{}", node_schema.database, node_schema.table_name);
+    match schema.get_node_schema(label) {
+        Ok(node_schema) => {
+            // Use fully qualified table name: database.table_name
+            format!("{}.{}", node_schema.database, node_schema.table_name)
+        }
+        Err(_) => {
+            // NO FALLBACK - fail fast!
+            panic!("INTERNAL ERROR: Node label '{}' not found in schema. This should have been caught during query planning.", label)
+        }
     }
-
-    // Fallback to label as table name (not ideal but better than wrong hardcoded values)
-    label.to_lowercase()
 }
 
 /// Convert a label to its corresponding table name
@@ -435,8 +438,8 @@ pub fn label_to_table_name(label: &str) -> String {
         }
     }
 
-    // Fallback to label as table name (not ideal but better than wrong hardcoded values)
-    label.to_lowercase()
+    // NO FALLBACK - schema is required!
+    panic!("INTERNAL ERROR: GLOBAL_SCHEMAS not initialized or 'default' schema not found. Cannot resolve label '{}' without schema.", label)
 }
 
 /// Convert a relationship type to its corresponding table name using provided schema
@@ -444,13 +447,17 @@ pub fn rel_type_to_table_name_with_schema(
     rel_type: &str,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> String {
-    if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-        // Use fully qualified table name: database.table_name
-        return format!("{}.{}", rel_schema.database, rel_schema.table_name);
+    match schema.get_rel_schema(rel_type) {
+        Ok(rel_schema) => {
+            // Use fully qualified table name: database.table_name
+            format!("{}.{}", rel_schema.database, rel_schema.table_name)
+        }
+        Err(_) => {
+            // NO FALLBACK - fail fast!
+            // Note: For polymorphic relationships, use get_rel_schema_with_nodes() instead
+            panic!("INTERNAL ERROR: Relationship type '{}' not found in schema. This should have been caught during query planning. For polymorphic relationships with multiple tables, use get_rel_schema_with_nodes() to specify node types.", rel_type)
+        }
     }
-
-    // Fallback to rel_type as table name
-    rel_type.to_lowercase()
 }
 
 /// Convert a relationship type to its corresponding table name
@@ -465,8 +472,8 @@ pub fn rel_type_to_table_name(rel_type: &str) -> String {
         }
     }
 
-    // Fallback to relationship type as table name (not ideal but better than wrong hardcoded values)
-    rel_type.to_string()
+    // NO FALLBACK - schema is required!
+    panic!("INTERNAL ERROR: GLOBAL_SCHEMAS not initialized or 'default' schema not found. Cannot resolve relationship type '{}' without schema.", rel_type)
 }
 
 /// Convert multiple relationship types to table names
@@ -499,11 +506,8 @@ pub fn extract_relationship_columns_from_table_with_schema(
         }
     }
 
-    // Fallback to hardcoded defaults
-    RelationshipColumns {
-        from_id: "from_id".to_string(),
-        to_id: "to_id".to_string(),
-    }
+    // NO FALLBACK - fail fast!
+    panic!("INTERNAL ERROR: Relationship table '{}' not found in schema. This should have been caught during query planning.", table_name)
 }
 
 /// Extract relationship columns from a table name
@@ -518,12 +522,8 @@ pub fn extract_relationship_columns_from_table(table_name: &str) -> Relationship
         }
     }
 
-    // No schema available or table not found - use generic defaults
-    // This ensures the system works in schema-less mode but doesn't bypass user configuration
-    RelationshipColumns {
-        from_id: "from_id".to_string(),
-        to_id: "to_id".to_string(),
-    }
+    // NO FALLBACK - schema is required!
+    panic!("INTERNAL ERROR: GLOBAL_SCHEMAS not initialized. Cannot extract relationship columns for table '{}' without schema.", table_name)
 }
 
 /// Extract relationship columns from a LogicalPlan
@@ -589,8 +589,8 @@ pub fn table_to_id_column_with_schema(
         }
     }
 
-    // Fallback to "id" if not found
-    "id".to_string()
+    // NO FALLBACK - fail fast!
+    panic!("INTERNAL ERROR: Node table '{}' not found in schema. This should have been caught during query planning.", table)
 }
 
 /// Get ID column for a table
@@ -605,8 +605,8 @@ pub fn table_to_id_column(table: &str) -> String {
         }
     }
 
-    // Fallback to "id" if schema not available or table not found
-    "id".to_string()
+    // NO FALLBACK - schema is required!
+    panic!("INTERNAL ERROR: GLOBAL_SCHEMAS not initialized. Cannot get ID column for table '{}' without schema.", table)
 }
 
 /// Get ID column for a label
@@ -881,15 +881,18 @@ pub fn extract_ctes_with_context(
                         vs.source_table.clone()
                     }
                     _ => {
-                        // Fallback to label-based lookup
-                        if let Some(labels) = &graph_rel.labels {
-                            if let Some(first_label) = labels.first() {
-                                rel_type_to_table_name(first_label)
-                            } else {
-                                rel_type_to_table_name(&graph_rel.alias)
-                            }
+                        // Fallback to label-based lookup with schema
+                        let rel_type = if let Some(labels) = &graph_rel.labels {
+                            labels.first().unwrap_or(&graph_rel.alias)
                         } else {
-                            rel_type_to_table_name(&graph_rel.alias)
+                            &graph_rel.alias
+                        };
+                        
+                        // Use schema lookup if available, otherwise fallback
+                        if let Some(schema) = context.schema() {
+                            rel_type_to_table_name_with_schema(rel_type, schema)
+                        } else {
+                            rel_type_to_table_name(rel_type)
                         }
                     }
                 };
