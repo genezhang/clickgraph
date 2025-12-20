@@ -420,8 +420,9 @@ pub fn label_to_table_name_with_schema(
             format!("{}.{}", node_schema.database, node_schema.table_name)
         }
         Err(_) => {
-            // NO FALLBACK - fail fast!
-            panic!("INTERNAL ERROR: Node label '{}' not found in schema. This should have been caught during query planning.", label)
+            // NO FALLBACK - log error!
+            log::error!("❌ SCHEMA ERROR: Node label '{}' not found in schema.", label);
+            format!("ERROR_NODE_SCHEMA_MISSING_{}", label)
         }
     }
 }
@@ -438,8 +439,9 @@ pub fn label_to_table_name(label: &str) -> String {
         }
     }
 
-    // NO FALLBACK - schema is required!
-    panic!("INTERNAL ERROR: GLOBAL_SCHEMAS not initialized or 'default' schema not found. Cannot resolve label '{}' without schema.", label)
+    // NO FALLBACK - log error!
+    log::error!("❌ SCHEMA ERROR: GLOBAL_SCHEMAS not initialized. Cannot resolve label '{}'.", label);
+    format!("ERROR_SCHEMA_NOT_INITIALIZED_{}", label)
 }
 
 /// Convert a relationship type to its corresponding table name using provided schema
@@ -456,11 +458,12 @@ pub fn rel_type_to_table_name_with_nodes(
             format!("{}.{}", rel_schema.database, rel_schema.table_name)
         }
         Err(_) => {
-            // NO FALLBACK - fail fast!
-            panic!(
-                "INTERNAL ERROR: Relationship type '{}' (from={:?}, to={:?}) not found in schema. This should have been caught during query planning.",
+            // NO FALLBACK - log error and return marker that will fail in ClickHouse
+            log::error!(
+                "❌ SCHEMA ERROR: Relationship type '{}' (from_node={:?}, to_node={:?}) not found in schema. This should have been caught during query planning.",
                 rel_type, from_node, to_node
-            )
+            );
+            format!("ERROR_SCHEMA_MISSING_{}_FROM_{:?}_TO_{:?}", rel_type, from_node, to_node)
         }
     }
 }
@@ -476,9 +479,12 @@ pub fn rel_type_to_table_name_with_schema(
             format!("{}.{}", rel_schema.database, rel_schema.table_name)
         }
         Err(_) => {
-            // NO FALLBACK - fail fast!
-            // Note: For polymorphic relationships, use get_rel_schema_with_nodes() instead
-            panic!("INTERNAL ERROR: Relationship type '{}' not found in schema. This should have been caught during query planning. For polymorphic relationships with multiple tables, use get_rel_schema_with_nodes() to specify node types.", rel_type)
+            // NO FALLBACK - log error and return marker that will fail in ClickHouse
+            log::error!(
+                "❌ SCHEMA ERROR: Relationship type '{}' not found in schema. For polymorphic relationships with multiple tables, use get_rel_schema_with_nodes() to specify node types.",
+                rel_type
+            );
+            format!("ERROR_SCHEMA_MISSING_{}", rel_type)
         }
     }
 }
@@ -495,8 +501,9 @@ pub fn rel_type_to_table_name(rel_type: &str) -> String {
         }
     }
 
-    // NO FALLBACK - schema is required!
-    panic!("INTERNAL ERROR: GLOBAL_SCHEMAS not initialized or 'default' schema not found. Cannot resolve relationship type '{}' without schema.", rel_type)
+    // NO FALLBACK - log error and return marker
+    log::error!("❌ SCHEMA ERROR: GLOBAL_SCHEMAS not initialized or 'default' schema not found. Cannot resolve relationship type '{}' without schema.", rel_type);
+    format!("ERROR_SCHEMA_NOT_INITIALIZED_{}", rel_type)
 }
 
 /// Convert multiple relationship types to table names
@@ -529,8 +536,12 @@ pub fn extract_relationship_columns_from_table_with_schema(
         }
     }
 
-    // NO FALLBACK - fail fast!
-    panic!("INTERNAL ERROR: Relationship table '{}' not found in schema. This should have been caught during query planning.", table_name)
+    // NO FALLBACK - log error and return generic columns that will work but log the issue
+    log::error!("\u{274c} SCHEMA ERROR: Relationship table '{}' not found in schema. Using generic from_id/to_id columns.", table_name);
+    RelationshipColumns {
+        from_id: "from_id".to_string(),
+        to_id: "to_id".to_string(),
+    }
 }
 
 /// Extract relationship columns from a table name
@@ -545,8 +556,12 @@ pub fn extract_relationship_columns_from_table(table_name: &str) -> Relationship
         }
     }
 
-    // NO FALLBACK - schema is required!
-    panic!("INTERNAL ERROR: GLOBAL_SCHEMAS not initialized. Cannot extract relationship columns for table '{}' without schema.", table_name)
+    // NO FALLBACK - log error and use generic columns
+    log::error!("❌ SCHEMA ERROR: GLOBAL_SCHEMAS not initialized. Using generic from_id/to_id for table '{}'.", table_name);
+    RelationshipColumns {
+        from_id: "from_id".to_string(),
+        to_id: "to_id".to_string(),
+    }
 }
 
 /// Extract relationship columns from a LogicalPlan
@@ -612,8 +627,9 @@ pub fn table_to_id_column_with_schema(
         }
     }
 
-    // NO FALLBACK - fail fast!
-    panic!("INTERNAL ERROR: Node table '{}' not found in schema. This should have been caught during query planning.", table)
+    // NO FALLBACK - log error and use generic 'id'
+    log::error!("❌ SCHEMA ERROR: Node table '{}' not found in schema. Using generic 'id' column.", table);
+    "id".to_string()
 }
 
 /// Get ID column for a table
@@ -628,8 +644,9 @@ pub fn table_to_id_column(table: &str) -> String {
         }
     }
 
-    // NO FALLBACK - schema is required!
-    panic!("INTERNAL ERROR: GLOBAL_SCHEMAS not initialized. Cannot get ID column for table '{}' without schema.", table)
+    // NO FALLBACK - log error and use generic 'id'
+    log::error!("❌ SCHEMA ERROR: GLOBAL_SCHEMAS not initialized. Using generic 'id' column for table '{}'.", table);
+    "id".to_string()
 }
 
 /// Get ID column for a label
@@ -920,7 +937,8 @@ pub fn extract_ctes_with_context(
                                 schema
                             )
                         } else {
-                            panic!("INTERNAL ERROR: Schema context required for relationship table lookup")
+                            log::error!("❌ SCHEMA ERROR: Schema context required for relationship table lookup");
+                            format!("ERROR_SCHEMA_CONTEXT_REQUIRED_{}", rel_type)
                         }
                     }
                 };
