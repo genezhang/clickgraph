@@ -7043,8 +7043,13 @@ impl RenderPlanBuilder for LogicalPlan {
                     );
 
                     // Get left side ID column from the FROM table
-                    let left_id_col =
-                        extract_id_column(&graph_rel.left).unwrap_or_else(|| "id".to_string());
+                    let left_id_col = extract_id_column(&graph_rel.left).ok_or_else(|| {
+                        RenderBuildError::InvalidRenderPlan(format!(
+                            "Cannot determine ID column for left node '{}' in relationship '{}'. \
+                             Node schema must define id_column in YAML, or node might have invalid plan structure.",
+                            graph_rel.left_connection, graph_rel.alias
+                        ))
+                    })?;
 
                     // Determine join condition based on direction
                     let is_optional = graph_rel.is_optional.unwrap_or(false);
@@ -7095,8 +7100,13 @@ impl RenderPlanBuilder for LogicalPlan {
                     if let LogicalPlan::GraphNode(gn) = right_joins.input.as_ref() {
                         if let Some(cte_table) = extract_table_name(&gn.input) {
                             // Get the right node's ID column
-                            let right_id_col = extract_id_column(&right_joins.input)
-                                .unwrap_or_else(|| "id".to_string());
+                            let right_id_col = extract_id_column(&right_joins.input).ok_or_else(|| {
+                                RenderBuildError::InvalidRenderPlan(format!(
+                                    "Cannot determine ID column for right node '{}' in relationship '{}'. \
+                                     Node schema must define id_column in YAML, or node might have invalid plan structure.",
+                                    graph_rel.right_connection, graph_rel.alias
+                                ))
+                            })?;
 
                             joins.push(Join {
                                 table_name: cte_table,

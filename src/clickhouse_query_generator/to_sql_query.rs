@@ -1074,8 +1074,14 @@ impl RenderExpr {
                                     // Use from_id - any ID column works since LEFT JOIN makes all NULL together
                                     from_id.clone()
                                 } else {
-                                    // Fallback for non-relationship tables (shouldn't happen with r.*)
-                                    "id".to_string()
+                                    // ERROR: r.* wildcard is ALWAYS for relationships
+                                    // If alias not in map = bug in planning (missing from_id_column population)
+                                    panic!(
+                                        "Internal error: Relationship alias '{}' not found in column mapping. \
+                                         This indicates a bug in query planning - relationship JOINs should populate \
+                                         from_id_column during creation. Check graph_join_inference.rs line ~2547.",
+                                        table_alias
+                                    )
                                 }
                             });
                             

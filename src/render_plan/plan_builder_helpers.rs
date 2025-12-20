@@ -1255,11 +1255,22 @@ pub(super) fn get_node_id_columns_for_alias(alias: &str) -> Vec<String> {
 
 /// Backwards compatibility wrapper - returns first column only
 /// TODO: Update VLP code to use get_node_id_columns_for_alias directly
+/// 
+/// Returns "id" as default if no specific column found - this is a safe default
+/// for most graph schemas. However, callers should verify the column exists.
 pub(super) fn get_node_id_column_for_alias(alias: &str) -> String {
     get_node_id_columns_for_alias(alias)
         .into_iter()
         .next()
-        .unwrap_or_else(|| "id".to_string())
+        .unwrap_or_else(|| {
+            // Log warning but return "id" as conventional default
+            log::warn!(
+                "No specific ID column found for alias '{}', using 'id' as default. \
+                 If query fails with 'column id not found', check schema defines id_column.",
+                alias
+            );
+            "id".to_string()
+        })
 }
 
 /// Get relationship columns from schema by relationship type
