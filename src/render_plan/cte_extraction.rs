@@ -443,6 +443,29 @@ pub fn label_to_table_name(label: &str) -> String {
 }
 
 /// Convert a relationship type to its corresponding table name using provided schema
+/// For polymorphic relationships (multiple tables for same relationship type), specify node types
+pub fn rel_type_to_table_name_with_nodes(
+    rel_type: &str,
+    from_node: Option<&str>,
+    to_node: Option<&str>,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> String {
+    match schema.get_rel_schema_with_nodes(rel_type, from_node, to_node) {
+        Ok(rel_schema) => {
+            // Use fully qualified table name: database.table_name
+            format!("{}.{}", rel_schema.database, rel_schema.table_name)
+        }
+        Err(_) => {
+            // NO FALLBACK - fail fast!
+            panic!(
+                "INTERNAL ERROR: Relationship type '{}' (from={:?}, to={:?}) not found in schema. This should have been caught during query planning.",
+                rel_type, from_node, to_node
+            )
+        }
+    }
+}
+
+/// Convert a relationship type to its corresponding table name using provided schema
 pub fn rel_type_to_table_name_with_schema(
     rel_type: &str,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
@@ -881,18 +904,23 @@ pub fn extract_ctes_with_context(
                         vs.source_table.clone()
                     }
                     _ => {
-                        // Fallback to label-based lookup with schema
+                        // Schema-based lookup with node types for polymorphic relationships
                         let rel_type = if let Some(labels) = &graph_rel.labels {
                             labels.first().unwrap_or(&graph_rel.alias)
                         } else {
                             &graph_rel.alias
                         };
                         
-                        // Use schema lookup if available, otherwise fallback
+                        // Use schema lookup with node types if available
                         if let Some(schema) = context.schema() {
-                            rel_type_to_table_name_with_schema(rel_type, schema)
+                            rel_type_to_table_name_with_nodes(
+                                rel_type,
+                                Some(&start_label),
+                                Some(&end_label),
+                                schema
+                            )
                         } else {
-                            rel_type_to_table_name(rel_type)
+                            panic!("INTERNAL ERROR: Schema context required for relationship table lookup")
                         }
                     }
                 };
