@@ -42,7 +42,7 @@ ORDER BY postCount DESC
 LIMIT 100
 
 // BI-2b: Comments per tag
-MATCH (comment:Comment)-[:COMMENT_HAS_TAG]->(tag:Tag)
+MATCH (comment:Comment)-[:HAS_TAG]->(tag:Tag)
 RETURN 
     tag.name AS tagName,
     count(comment) AS commentCount
@@ -144,7 +144,7 @@ LIMIT 100
 
 // BI-7: Related tags through comment replies
 MATCH (tag:Tag {name: 'Enrique_Iglesias'})<-[:HAS_TAG]-(post:Post)
-MATCH (post)<-[:REPLY_OF_POST]-(comment:Comment)-[:COMMENT_HAS_TAG]->(relatedTag:Tag)
+MATCH (post)<-[:REPLY_OF_POST]-(comment:Comment)-[:HAS_TAG]->(relatedTag:Tag)
 WHERE relatedTag.id <> tag.id
 RETURN 
     relatedTag.name AS relatedTagName,
@@ -248,7 +248,7 @@ ORDER BY personCount DESC, messageCount DESC
 // =============================================================================
 
 // BI-13: Low-activity users by country
-MATCH (country:Place {name: 'France'})<-[:IS_PART_OF]-(city:Place)<-[:IS_LOCATED_IN]-(person:Person)
+MATCH (country:Country {name: 'France'})<-[:IS_PART_OF]-(city:City)<-[:IS_LOCATED_IN]-(person:Person)
 OPTIONAL MATCH (person)<-[:HAS_CREATOR]-(post:Post)
 WITH person, count(post) AS messageCount
 WHERE messageCount < 5
@@ -266,8 +266,8 @@ LIMIT 100
 // =============================================================================
 
 // BI-14: Cross-country friendships
-MATCH (country1:Place {name: 'Chile'})<-[:IS_PART_OF]-(city1:Place)<-[:IS_LOCATED_IN]-(person1:Person)
-MATCH (country2:Place {name: 'Argentina'})<-[:IS_PART_OF]-(city2:Place)<-[:IS_LOCATED_IN]-(person2:Person)
+MATCH (country1:Country {name: 'Chile'})<-[:IS_PART_OF]-(city1:City)<-[:IS_LOCATED_IN]-(person1:Person)
+MATCH (country2:Country {name: 'Argentina'})<-[:IS_PART_OF]-(city2:City)<-[:IS_LOCATED_IN]-(person2:Person)
 MATCH (person1)-[:KNOWS]-(person2)
 RETURN 
     person1.id AS person1Id,
@@ -354,7 +354,7 @@ MATCH (p:Person)-[l:LIKES]->(post:Post)
 RETURN 'LIKES' AS relType, count(*) AS cnt
 
 // AGG-3: Geographic distribution
-MATCH (p:Person)-[:IS_LOCATED_IN]->(city:Place)-[:IS_PART_OF]->(country:Place)
+MATCH (p:Person)-[:IS_LOCATED_IN]->(city:City)-[:IS_PART_OF]->(country:Country)
 RETURN 
     country.name AS country,
     count(p) AS personCount
@@ -384,7 +384,7 @@ LIMIT 20
 // =============================================================================
 
 // COMPLEX-1: Engagement funnel by country
-MATCH (country:Place {type: 'Country'})<-[:IS_PART_OF]-(city:Place)<-[:IS_LOCATED_IN]-(person:Person)
+MATCH (country:Country)<-[:IS_PART_OF]-(city:City)<-[:IS_LOCATED_IN]-(person:Person)
 OPTIONAL MATCH (person)<-[:HAS_CREATOR]-(post:Post)
 OPTIONAL MATCH (post)<-[:LIKES]-(liker:Person)
 WITH country, person, count(DISTINCT post) AS posts, count(DISTINCT liker) AS likes
