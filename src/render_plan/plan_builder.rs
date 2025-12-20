@@ -9738,16 +9738,46 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
-        // Check if we have an UNWIND clause - if so and no FROM, use system.one
+        // Check if we have an UNWIND clause - if so and no FROM, resolve the source table
         let array_join = self.extract_array_join()?;
         if final_from.is_none() && array_join.is_some() {
-            log::debug!("UNWIND clause without FROM, using system.one as dummy source");
-            final_from = Some(FromTable::new(Some(ViewTableRef {
-                source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
-                name: "system.one".to_string(),
-                alias: Some("_dummy".to_string()),
-                use_final: false,
-            })));
+            log::debug!("UNWIND clause detected without FROM table - checking for CTE references");
+            
+            // Try to find CTE references from GraphJoins in the plan
+            fn extract_cte_references_from_plan(plan: &LogicalPlan) -> std::collections::HashMap<String, String> {
+                match plan {
+                    LogicalPlan::GraphJoins(gj) => gj.cte_references.clone(),
+                    LogicalPlan::Projection(p) => extract_cte_references_from_plan(&p.input),
+                    LogicalPlan::Filter(f) => extract_cte_references_from_plan(&f.input),
+                    LogicalPlan::Unwind(u) => extract_cte_references_from_plan(&u.input),
+                    LogicalPlan::Limit(l) => extract_cte_references_from_plan(&l.input),
+                    LogicalPlan::Skip(s) => extract_cte_references_from_plan(&s.input),
+                    LogicalPlan::OrderBy(o) => extract_cte_references_from_plan(&o.input),
+                    _ => std::collections::HashMap::new(),
+                }
+            }
+            
+            let cte_refs = extract_cte_references_from_plan(self);
+            
+            if let Some(cte_name) = cte_refs.values().next() {
+                // Use the CTE as FROM table
+                log::info!("✅ UNWIND: Found CTE reference '{}', using as FROM table instead of system.one", cte_name);
+                final_from = Some(FromTable::new(Some(ViewTableRef {
+                    source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
+                    name: cte_name.clone(),
+                    alias: Some(cte_name.clone()),
+                    use_final: false,
+                })));
+            } else {
+                // Fallback to system.one only if no CTE found (standalone UNWIND)
+                log::debug!("UNWIND clause without CTE reference, using system.one as dummy source");
+                final_from = Some(FromTable::new(Some(ViewTableRef {
+                    source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
+                    name: "system.one".to_string(),
+                    alias: Some("_dummy".to_string()),
+                    use_final: false,
+                })));
+            }
         }
 
         // Validate that we have a FROM clause

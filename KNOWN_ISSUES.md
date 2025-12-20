@@ -29,22 +29,41 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 **Failure Analysis (12 remaining)**:
 
-#### 1.1 UNWIND Variable Scope (3 queries - 25%)
+#### 1.1 UNWIND After WITH - Wrong FROM Table (3 queries - 25%)
+**Status**: ✅ **PARTIALLY FIXED** (Dec 20, 2025) - RefCell panic prevented, core UNWIND bug remains  
 **Queries**: complex-7, complex-9, bi-16  
-**Error**: "Property 'X' not found on node 'Y'"  
-**Root Cause**: UNWIND creates new variables not registered in plan_ctx
+**Error**: Empty results or incorrect SQL (uses `system.one` instead of CTE)
 
-**Example**:
+**Problem**:
+When UNWIND appears after WITH clause, generated SQL uses `FROM system.one` instead of the CTE:
 ```cypher
+MATCH (p:Person)-[:KNOWS]-(friend:Person) 
 WITH collect(friend) as friends
-UNWIND friends as friend         # Creates new 'friend' variable
-MATCH (friend)<-[:HAS_CREATOR]-(m)
-RETURN friend.id                  # ❌ Fails: 'friend' not in plan_ctx
+UNWIND friends as friend         # Should SELECT from CTE, not system.one!
+RETURN friend.firstName
 ```
 
-**Reproducible**: ✅ `MATCH (u:User)-[:FOLLOWS]->(f:User) WITH collect(f) as friends UNWIND friends as friend RETURN friend.name`  
-**Complexity**: HIGH - Requires variable_resolver refactoring  
-**Location**: `src/query_planner/analyzer/variable_resolver.rs`, plan_ctx tracking
+**Generated SQL (WRONG)**:
+```sql
+WITH with_friends_cte AS (SELECT friend.* FROM Person...)
+SELECT friend.firstName 
+FROM system.one AS _dummy        -- ❌ Wrong! Should be: FROM with_friends_cte
+ARRAY JOIN friends AS friend     -- ❌ 'friends' doesn't exist in system.one!
+```
+
+**Root Causes**:
+1. ✅ **FIXED (Dec 20)**: RefCell panic when populating relationship columns from nested CTEs
+   - `populate_relationship_columns_from_plan()` had illegal reentrancy
+   - Called recursively while holding `borrow_mut()` → panic at runtime
+   - Fixed by collecting CTE plans first, then processing after releasing borrow
+   
+2. **REMAINING**: UNWIND FROM table resolution bug
+   - Code at `plan_builder.rs:9741-9750` assumes no FROM → use `system.one`
+   - Should detect CTE context and use CTE as FROM table
+   - ARRAY JOIN references non-existent `friends` array in `system.one`
+
+**Location**: `src/render_plan/plan_builder.rs` lines 9741-9750  
+**Complexity**: MEDIUM - Need to detect CTE context and set correct FROM table
 
 #### 1.2 Pattern Comprehensions Not Supported (2 queries - 17%)
 **Queries**: bi-8, bi-14  
