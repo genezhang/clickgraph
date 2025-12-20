@@ -202,22 +202,22 @@ echo $GRAPH_CONFIG_PATH  # Linux/Mac
 echo $env:GRAPH_CONFIG_PATH  # Windows
 
 # Set to schema file location
-export GRAPH_CONFIG_PATH="./schemas/demo/users.yaml"  # Linux/Mac
+export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"  # Linux/Mac
 $env:GRAPH_CONFIG_PATH = ".\schemas\demo\users.yaml"  # Windows
 
 # Use absolute path to avoid issues:
-export GRAPH_CONFIG_PATH="$(pwd)/schemas/demo/users.yaml"  # Linux/Mac
+export GRAPH_CONFIG_PATH="$(pwd)/benchmarks/social_network/schemas/social_benchmark.yaml"  # Linux/Mac
 $env:GRAPH_CONFIG_PATH = "$PWD\schemas\demo\users.yaml"  # Windows
 ```
 
 **2. Schema file doesn't exist**
 ```bash
 # Verify file exists
-ls -la schemas/demo/users.yaml  # Linux/Mac
+ls -la benchmarks/social_network/schemas/social_benchmark.yaml  # Linux/Mac
 Get-Item schemas\demo\users.yaml  # Windows
 
 # List available schemas
-ls schemas/demo/  # Demo schemas
+ls schemas/examples/  # Demo schemas
 ls schemas/examples/  # Example schemas
 ls benchmarks/schemas/  # Benchmark schemas
 ```
@@ -225,7 +225,7 @@ ls benchmarks/schemas/  # Benchmark schemas
 **3. Invalid YAML syntax**
 ```bash
 # Validate YAML syntax
-python -c "import yaml; yaml.safe_load(open('schemas/demo/users.yaml'))"
+python -c "import yaml; yaml.safe_load(open('benchmarks/social_network/schemas/social_benchmark.yaml'))"
 
 # Common YAML errors:
 # - Incorrect indentation (use 2 or 4 spaces, NOT tabs)
@@ -259,7 +259,7 @@ ERROR: Table 'default.users' doesn't exist
 docker exec clickhouse-clickhouse clickhouse-client -q "SHOW TABLES FROM default"
 
 # Create tables (demo data)
-docker exec -i clickhouse-clickhouse clickhouse-client < schemas/demo/setup_demo_data.sql
+docker exec -i clickhouse-clickhouse clickhouse-client < benchmarks/social_network/data/setup_unified.sql
 ```
 
 **2. Wrong database name**
@@ -627,7 +627,7 @@ CREATE TABLE users (...) ENGINE = Memory;
 
 **Symptoms**:
 ```
-ERROR: Cannot find file: ./schemas/demo/users.yaml
+ERROR: Cannot find file: ./benchmarks/social_network/schemas/social_benchmark.yaml
 ```
 
 **Problem**: Unix-style paths don't work on Windows.
@@ -639,7 +639,7 @@ ERROR: Cannot find file: ./schemas/demo/users.yaml
 $env:GRAPH_CONFIG_PATH = ".\schemas\demo\users.yaml"
 
 # ✅ Or use forward slashes (works on Windows too)
-$env:GRAPH_CONFIG_PATH = "./schemas/demo/users.yaml"
+$env:GRAPH_CONFIG_PATH = "./benchmarks/social_network/schemas/social_benchmark.yaml"
 
 # ✅ Best: Use absolute paths
 $env:GRAPH_CONFIG_PATH = "$PWD\schemas\demo\users.yaml"
@@ -814,7 +814,7 @@ curl http://localhost:8080/version
 # Python validation script
 import yaml
 
-with open('schemas/demo/users.yaml') as f:
+with open('benchmarks/social_network/schemas/social_benchmark.yaml') as f:
     schema = yaml.safe_load(f)
     
 # Check required fields

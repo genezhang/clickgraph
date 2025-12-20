@@ -26,7 +26,8 @@ docker-compose up -d clickhouse-service
 export CLICKHOUSE_URL="http://localhost:8123"
 export CLICKHOUSE_USER="test_user"
 export CLICKHOUSE_PASSWORD="test_pass"
-export GRAPH_CONFIG_PATH="social_network.yaml"
+# Use benchmark schema as starting point
+export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
 ```
 
 ### Create Database and Tables
@@ -86,7 +87,13 @@ SELECT * FROM friendships;
 
 ## Step 2: Configure ClickGraph (1 minute)
 
-Create `social_network.yaml`:
+**Option A**: Use the included benchmark schema (recommended):
+```bash
+# Already configured! Just use this path:
+export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
+```
+
+**Option B**: Create your own custom schema file `my_social_network.yaml`:
 
 ```yaml
 name: social_network_demo
@@ -125,7 +132,7 @@ export CLICKHOUSE_URL="http://localhost:8123"
 export CLICKHOUSE_USER="test_user"
 export CLICKHOUSE_PASSWORD="test_pass"
 export CLICKHOUSE_DATABASE="social"
-export GRAPH_CONFIG_FILE="social_network.yaml"
+export GRAPH_CONFIG_PATH="./my_social_network.yaml"  # Or use benchmark schema
 
 # Start ClickGraph
 cargo run --bin clickgraph -- --http-port 8080 --bolt-port 7687

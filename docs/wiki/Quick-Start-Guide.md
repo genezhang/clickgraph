@@ -37,7 +37,7 @@ You should see:
 
 ```bash
 # Load demo social network data (users and relationships)
-docker exec -i clickgraph-clickhouse clickhouse-client < schemas/demo/setup_demo_data.sql
+docker exec -i clickgraph-clickhouse clickhouse-client < benchmarks/social_network/data/setup_unified.sql
 ```
 
 **Sample data includes**:
@@ -148,8 +148,8 @@ export CLICKHOUSE_USER="default"
 export CLICKHOUSE_PASSWORD=""
 export CLICKHOUSE_DATABASE="default"
 
-# Graph schema
-export GRAPH_CONFIG_PATH="./schemas/demo/users.yaml"
+# Graph schema (use benchmark schema)
+export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
 ```
 
 **Windows (PowerShell)**:
@@ -158,7 +158,7 @@ $env:CLICKHOUSE_URL = "http://localhost:8123"
 $env:CLICKHOUSE_USER = "default"
 $env:CLICKHOUSE_PASSWORD = ""
 $env:CLICKHOUSE_DATABASE = "default"
-$env:GRAPH_CONFIG_PATH = ".\schemas\demo\users.yaml"
+$env:GRAPH_CONFIG_PATH = ".\benchmarks\social_network\schemas\social_benchmark.yaml"
 ```
 
 ### Step 4: Run ClickGraph
@@ -183,7 +183,7 @@ You should see:
 
 ```bash
 # In a new terminal, load demo data
-docker exec -i clickhouse clickhouse-client < schemas/demo/setup_demo_data.sql
+docker exec -i clickhouse clickhouse-client < benchmarks/social_network/data/setup_unified.sql
 
 # Run a query
 curl -X POST http://localhost:8080/query \
@@ -277,11 +277,11 @@ echo $GRAPH_CONFIG_PATH  # Linux/Mac
 echo $env:GRAPH_CONFIG_PATH  # Windows PowerShell
 
 # Verify schema file exists
-ls -la schemas/demo/users.yaml  # Linux/Mac
+ls -la benchmarks/social_network/schemas/social_benchmark.yaml  # Linux/Mac
 Get-Item schemas\demo\users.yaml  # Windows
 
 # Set correct path
-export GRAPH_CONFIG_PATH="$(pwd)/schemas/demo/users.yaml"  # Linux/Mac
+export GRAPH_CONFIG_PATH="$(pwd)/benchmarks/social_network/schemas/social_benchmark.yaml"  # Linux/Mac
 $env:GRAPH_CONFIG_PATH = "$PWD\schemas\demo\users.yaml"  # Windows
 ```
 
@@ -292,7 +292,7 @@ $env:GRAPH_CONFIG_PATH = "$PWD\schemas\demo\users.yaml"  # Windows
 **Solutions**:
 ```bash
 # Load the demo data
-docker exec -i clickhouse-clickhouse clickhouse-client < schemas/demo/setup_demo_data.sql
+docker exec -i clickhouse-clickhouse clickhouse-client < benchmarks/social_network/data/setup_unified.sql
 
 # Verify tables exist
 docker exec clickhouse-clickhouse clickhouse-client -q "SHOW TABLES FROM default"
@@ -383,7 +383,7 @@ RETURN length(path), [node IN nodes(path) | node.name]
 ### Configuration Files
 
 ```yaml
-# schemas/demo/users.yaml
+# benchmarks/social_network/schemas/social_benchmark.yaml
 name: social_network
 views:
   - name: main
@@ -411,7 +411,7 @@ CLICKHOUSE_URL="http://localhost:8123"
 CLICKHOUSE_USER="default"
 CLICKHOUSE_PASSWORD=""
 CLICKHOUSE_DATABASE="default"
-GRAPH_CONFIG_PATH="./schemas/demo/users.yaml"
+GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
 
 # Optional
 CLICKGRAPH_HTTP_HOST="0.0.0.0"

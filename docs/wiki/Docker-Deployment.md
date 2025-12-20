@@ -92,7 +92,7 @@ services:
       CLICKHOUSE_USER: test_user
       CLICKHOUSE_PASSWORD: test_pass
       CLICKHOUSE_DATABASE: brahmand
-      GRAPH_CONFIG_PATH: /app/schemas/demo/users.yaml
+      GRAPH_CONFIG_PATH: /app/benchmarks/social_network/schemas/social_benchmark.yaml
       RUST_LOG: info
     depends_on:
       clickhouse:
