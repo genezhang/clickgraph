@@ -632,13 +632,12 @@ class TestRandomQueries:
         response = execute_cypher(
             """
             MATCH (u:User)
-            WHERE (u.exposure = 'external' OR u.name = 'Alice') AND u.email LIKE '%@%'
+            WHERE (u.exposure = 'external' OR u.name = 'Alice') AND u.email CONTAINS '@'
             RETURN u.name, u.email
             ORDER BY u.name
             """
         )
-        # LIKE may not be supported
-        assert response.status_code in [200, 400, 500]
+        assert response.status_code == 200
     
     def test_order_by_limit_skip(self):
         """ORDER BY with LIMIT and SKIP."""

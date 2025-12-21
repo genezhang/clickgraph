@@ -235,10 +235,10 @@ class TestPropertyFiltering:
         assert result["success"]
 
     def test_string_like_pattern(self):
-        """Test string pattern matching with LIKE."""
+        """Test string pattern matching with ENDS WITH."""
         query = """
             MATCH (u:User)
-            WHERE u.email LIKE '%@example.com'
+            WHERE u.email ENDS WITH '@example.com'
             RETURN u.name, u.email
             LIMIT 10
         """
@@ -249,7 +249,7 @@ class TestPropertyFiltering:
         """Test substring matching."""
         query = """
             MATCH (u:User)
-            WHERE u.name LIKE '%Alice%'
+            WHERE u.name CONTAINS 'Alice'
             RETURN u.name
         """
         result = execute_query(query)
@@ -652,7 +652,7 @@ class TestPracticeExercises:
         """Exercise 3.2: Users whose name contains 'Alice'."""
         query = """
             MATCH (u:User)
-            WHERE u.name LIKE '%Alice%'
+            WHERE u.name CONTAINS 'Alice'
             RETURN u.name
         """
         result = execute_query(query)
