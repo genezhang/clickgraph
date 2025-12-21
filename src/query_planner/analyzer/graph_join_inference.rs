@@ -1,12 +1,15 @@
 use std::{collections::{HashMap, HashSet}, sync::Arc};
 
 use crate::{
-    graph_catalog::graph_schema::{
-        GraphSchema,
-        NodeSchema,
-        RelationshipSchema,
+    graph_catalog::{
+        expression_parser::PropertyValue,
+        graph_schema::{
+            GraphSchema,
+            NodeSchema,
+            RelationshipSchema,
+        },
+        pattern_schema::{JoinStrategy, NodeAccessStrategy, PatternSchemaContext},
     },
-    graph_catalog::pattern_schema::{JoinStrategy, NodeAccessStrategy, PatternSchemaContext},
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
@@ -1497,6 +1500,100 @@ impl GraphJoinInference {
                     correlation_predicates.push(join_cond.clone());
                 }
 
+                // CROSS-TABLE COMMA PATTERN FIX: For comma-separated patterns with shared node aliases,
+                // we need to generate a JOIN even when there's NO explicit join_condition.
+                // Example: MATCH (srcip:IP)-[:REQUESTED]->(d), (srcip)-[:ACCESSED]->(dest)
+                // Both patterns share "srcip" but there's no WHERE clause to create join_condition.
+                // We need to detect this and generate: dns_log JOIN conn_log ON dns.orig_h = conn.orig_h
+                // 
+                // IMPORTANT: We check this even when left_joins/right_joins are empty because
+                // simple single-hop patterns don't have intermediate JOINs - the shared-node JOIN
+                // IS the JOIN we need to create!
+                if cp.join_condition.is_none() {
+                    log::info!("📦 CartesianProduct: No join_condition but have joins on both sides - checking for shared nodes");
+                    
+                    // Extract node aliases from both sides using existing helper
+                    let left_nodes = Self::collect_node_aliases_from_plan(&cp.left);
+                    let right_nodes = Self::collect_node_aliases_from_plan(&cp.right);
+                    
+                    // Find shared nodes
+                    let shared_nodes: Vec<String> = left_nodes.iter()
+                        .filter(|n| right_nodes.contains(n))
+                        .cloned()
+                        .collect();
+                    
+                    if !shared_nodes.is_empty() {
+                        log::info!("📦 CartesianProduct: Found {} shared nodes: {:?}", shared_nodes.len(), shared_nodes);
+                        log::info!("📦 CartesianProduct: Generating cross-table JOINs for shared nodes");
+                        
+                        // For each shared node, we need to generate a JOIN between the two relationship tables
+                        // We'll use the existing cross-branch JOIN generation infrastructure
+                        for shared_node in &shared_nodes {
+                            // Extract table info from both sides using existing helper
+                            if let (Some((left_table, left_alias)), Some((right_table, right_alias))) = (
+                                Self::extract_right_table_from_plan(&cp.left, graph_schema),
+                                Self::extract_right_table_from_plan(&cp.right, graph_schema)
+                            ) {
+                                // Try to extract node appearances to get column names
+                                // We need to find the GraphRel from each side to call extract_node_appearance
+                                if let (Some(left_rel), Some(right_rel)) = (
+                                    Self::find_graph_rel_in_plan(&cp.left),
+                                    Self::find_graph_rel_in_plan(&cp.right)
+                                ) {
+                                    // Determine which side the shared node is on for each GraphRel
+                                    let left_is_from = left_rel.left_connection == *shared_node;
+                                    let right_is_from = right_rel.left_connection == *shared_node;
+                                    
+                                    // Get node appearances using existing method (via the disabled cross-branch logic)
+                                    let graph_join_inference = GraphJoinInference::new();
+                                    if let (Ok(left_appearance), Ok(right_appearance)) = (
+                                        graph_join_inference.extract_node_appearance(
+                                            shared_node, left_rel, left_is_from, plan_ctx, graph_schema
+                                        ),
+                                        graph_join_inference.extract_node_appearance(
+                                            shared_node, right_rel, right_is_from, plan_ctx, graph_schema
+                                        )
+                                    ) {
+                                        // Generate JOIN using existing generate_cross_branch_join method
+                                        let join = Join {
+                                            table_name: if left_appearance.database.is_empty() {
+                                                left_appearance.table_name.clone()
+                                            } else {
+                                                format!("{}.{}", left_appearance.database, left_appearance.table_name)
+                                            },
+                                            table_alias: left_appearance.rel_alias.clone(),
+                                            joining_on: vec![OperatorApplication {
+                                                operator: Operator::Equal,
+                                                operands: vec![
+                                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                        table_alias: TableAlias(right_appearance.rel_alias.clone()),
+                                                        column: PropertyValue::Column(right_appearance.column_name.clone()),
+                                                    }),
+                                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                        table_alias: TableAlias(left_appearance.rel_alias.clone()),
+                                                        column: PropertyValue::Column(left_appearance.column_name.clone()),
+                                                    }),
+                                                ],
+                                            }],
+                                            join_type: JoinType::Inner,
+                                            pre_filter: None,
+                                            from_id_column: None,
+                                            to_id_column: None,
+                                        };
+                                        
+                                        log::info!("📦 Generated JOIN for shared node '{}': {} JOIN {} ON {}.{} = {}.{}", 
+                                            shared_node, 
+                                            right_appearance.rel_alias, left_appearance.rel_alias,
+                                            right_appearance.rel_alias, right_appearance.column_name,
+                                            left_appearance.rel_alias, left_appearance.column_name);
+                                        Self::push_join_if_not_duplicate(collected_graph_joins, join);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 // CROSS-TABLE DENORMALIZED FIX: If both sides have 0 joins (fully denormalized)
                 // AND there's a join_condition, we need to create a JOIN for the right-side table.
                 // This connects the two fully denormalized patterns.
@@ -3551,6 +3648,10 @@ impl GraphJoinInference {
         node_appearances: &mut HashMap<String, Vec<NodeAppearance>>,
         collected_graph_joins: &mut Vec<Join>,
     ) -> AnalyzerResult<()> {
+        log::debug!("   📍 check_node_for_cross_branch_join: node='{}', GraphRel({}), is_from_side={}", 
+            node_alias, graph_rel.alias, is_from_side);
+        log::debug!("   📍 node_appearances currently has {} entries", node_appearances.len());
+        
         // Extract node appearance info
         let current_appearance = match self.extract_node_appearance(
             node_alias,
@@ -3559,7 +3660,11 @@ impl GraphJoinInference {
             plan_ctx,
             graph_schema,
         ) {
-            Ok(appearance) => appearance,
+            Ok(appearance) => {
+                log::debug!("   📍 Successfully extracted appearance for '{}': table={}, rel={}, column={}", 
+                    node_alias, appearance.table_name, appearance.rel_alias, appearance.column_name);
+                appearance
+            }
             Err(e) => {
                 log::debug!("   ⚠️  Cannot extract node appearance for '{}': {}", node_alias, e);
                 return Ok(()); // Skip if we can't extract info (might be a CTE reference or other special case)
@@ -3570,30 +3675,42 @@ impl GraphJoinInference {
             node_alias, current_appearance.rel_alias, 
             current_appearance.table_name, current_appearance.column_name);
 
-        // DISABLED: Cross-branch JOIN generation
+        // SELECTIVE Cross-Branch JOIN generation
         // 
-        // This logic was causing duplicate JOINs for normal patterns.
-        // Analysis: ALL Cypher patterns can be decomposed into linear chains.
-        // Even `(a)-[r1]->(b)<-[r2]-(c)` is linear: a→b, c→b (processed in sequence)
-        // The regular JOIN generation (infer_graph_join) already handles this correctly
-        // by processing relationships in pattern order and connecting them to already-joined nodes.
+        // Re-enabled on Dec 21, 2025 to fix comma-separated pattern bug.
         //
-        // The "cross-branch" concept artificially creates problems where none exist.
-        // Example: (a)→(b)→(c) and (a)→(b)←(c) are both linear chains, just with different directions.
-        // The regular JOIN logic handles both by:
-        //   1. FROM table (first node)
-        //   2. JOIN rel1 ON rel1.from_id = first.id
-        //   3. JOIN node b ON b.id = rel1.to_id
-        //   4. JOIN rel2 ON rel2.to_id = b.id (for incoming) or rel2.from_id = b.id (for outgoing)
-        //   5. JOIN node c ON c.id = rel2.from_id (for incoming) or rel2.to_id (for outgoing)
+        // Key insight: The original logic was disabled because it caused duplicate JOINs for linear patterns.
+        // However, comma-separated patterns like `MATCH (a)-[:R1]->(b), (a)-[:R2]->(c)` NEED cross-branch JOINs!
         //
-        // No cross-branch JOIN needed - the relationships connect through their shared node naturally.
+        // The fix: Only generate cross-branch JOIN when the shared node appears in DIFFERENT relationship tables.
+        // Linear pattern: (a)-[:R1]->(b)-[:R2]->(c) - 'b' appears in R1 and R2 but it's sequential (no cross-branch)
+        // Comma pattern: (a)-[:R1]->(b), (a)-[:R2]->(c) - 'a' appears in TWO independent branches (needs cross-branch)
         //
-        // If this causes issues with complex patterns in the future, we can re-enable with proper
-        // logic to detect truly independent branches that need explicit JOINs.
+        // We detect comma patterns by checking if the shared node appears in different rel tables.
         
-        if let Some(_prev_appearances) = node_appearances.get(node_alias) {
-            log::debug!("   ℹ️  Node '{}' seen before in different GraphRel - regular JOINs will handle connection", node_alias);
+        if let Some(prev_appearances) = node_appearances.get(node_alias) {
+            log::debug!("   🔍 Node '{}' seen before - checking if cross-branch JOIN needed", node_alias);
+            
+            // Check if this is a new relationship table (comma pattern indicator)
+            for prev_appearance in prev_appearances {
+                if prev_appearance.table_name != current_appearance.table_name {
+                    // Different relationship tables - this is a comma pattern!
+                    log::info!("   ✅ COMMA PATTERN: Node '{}' appears in different relationship tables: {} vs {}",
+                        node_alias, prev_appearance.table_name, current_appearance.table_name);
+                    log::info!("   ✅ Generating cross-branch JOIN between {} and {}",
+                        prev_appearance.rel_alias, current_appearance.rel_alias);
+                    
+                    // Generate JOIN between the two relationship tables
+                    self.generate_cross_branch_join(
+                        node_alias,
+                        &current_appearance,
+                        prev_appearance,
+                        collected_graph_joins,
+                    )?;
+                    
+                    break; // Only need one JOIN per shared node
+                }
+            }
         }
 
         // Record this appearance for future checks
@@ -3614,10 +3731,14 @@ impl GraphJoinInference {
         plan_ctx: &PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<NodeAppearance> {
-        // 1. Get node label from plan_ctx
+        log::debug!("      🔎 extract_node_appearance: node='{}', GraphRel({}), is_from_side={}", 
+            node_alias, graph_rel.alias, is_from_side);
+        
+        // 1. Get node label for the current node from plan_ctx
         let table_ctx = plan_ctx
             .get_table_ctx_from_alias_opt(&Some(node_alias.to_string()))
             .map_err(|e| {
+                log::debug!("      ❌ Failed to get table_ctx for '{}': {}", node_alias, e);
                 AnalyzerError::PlanCtx {
                     pass: Pass::GraphJoinInference,
                     source: e,
@@ -3631,7 +3752,18 @@ impl GraphJoinInference {
             }
         })?;
 
-        // 2. Get relationship schema to determine table name
+        // 2. Get left and right node labels from GraphRel for relationship lookup
+        let left_label_opt = plan_ctx
+            .get_table_ctx_from_alias_opt(&Some(graph_rel.left_connection.clone()))
+            .ok()
+            .and_then(|ctx| ctx.get_label_str().ok());
+            
+        let right_label_opt = plan_ctx
+            .get_table_ctx_from_alias_opt(&Some(graph_rel.right_connection.clone()))
+            .ok()
+            .and_then(|ctx| ctx.get_label_str().ok());
+
+        // 3. Get relationship schema using composite key (rel_type::from_label::to_label)
         let rel_types: Vec<String> = graph_rel
             .labels
             .as_ref()
@@ -3646,9 +3778,19 @@ impl GraphJoinInference {
         }
 
         let rel_schema = graph_schema
-            .get_relationships_schema_opt(&rel_types[0])
-            .ok_or_else(|| {
-                AnalyzerError::RelationshipTypeNotFound(rel_types[0].clone())
+            .get_rel_schema_with_nodes(
+                &rel_types[0],
+                left_label_opt.as_deref(),
+                right_label_opt.as_deref(),
+            )
+            .map_err(|e| {
+                AnalyzerError::SchemaNotFound(format!(
+                    "Failed to get rel schema for {}::{}::{}: {}",
+                    rel_types[0],
+                    left_label_opt.as_deref().unwrap_or("None"),
+                    right_label_opt.as_deref().unwrap_or("None"),
+                    e
+                ))
             })?;
 
         // 3. Build composite key and get node schema
@@ -3795,15 +3937,27 @@ impl GraphJoinInference {
 
         Ok(())
     }
+    
+    /// Find GraphRel in a logical plan (helper for CartesianProduct shared node processing).
+    fn find_graph_rel_in_plan(plan: &LogicalPlan) -> Option<&GraphRel> {
+        match plan {
+            LogicalPlan::GraphRel(gr) => Some(gr),
+            LogicalPlan::Projection(p) => Self::find_graph_rel_in_plan(p.input.as_ref()),
+            LogicalPlan::Filter(f) => Self::find_graph_rel_in_plan(f.input.as_ref()),
+            _ => None,
+        }
+    }
 }
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
         graph_catalog::graph_schema::{NodeIdSchema, NodeSchema, RelationshipSchema},
         query_planner::{
-            logical_expr::{Direction, LogicalExpr, Operator, PropertyAccess, TableAlias},
+            logical_expr::{Direction},
             logical_plan::{
-                GraphNode, GraphRel, JoinType, LogicalPlan, Projection, ProjectionItem, Scan,
+                GraphNode, GraphRel, LogicalPlan, Scan,
             },
             plan_ctx::{PlanCtx, TableCtx},
         },

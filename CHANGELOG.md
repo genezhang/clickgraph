@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### 🐛 Bug Fixes
+- **Cross-Table Comma Pattern JOINs** - Fixed missing JOINs for comma-separated patterns with shared nodes across different relationship tables (December 21, 2025)
+  - **Problem**: `MATCH (a)-[:R1]->(b), (a)-[:R2]->(c)` generated SQL missing the JOIN between relationship tables
+  - **Example**: `MATCH (srcip:IP)-[:REQUESTED]->(d:Domain), (srcip)-[:ACCESSED]->(dest:IP)` produced incomplete SQL referencing `t1.orig_h` with only `t2` in FROM clause
+  - **Root Cause**: Cross-branch JOIN logic was disabled (Dec 19) to prevent duplicate JOINs, but this broke comma patterns
+  - **Solution**: Re-enabled selective cross-branch JOIN generation with smart detection:
+    - Only generates JOIN when shared node appears in **different relationship tables**
+    - Uses composite key lookup (`get_rel_schema_with_nodes`) to support multi-table schemas
+    - Reuses existing helper functions (`collect_node_aliases_from_plan`, `extract_node_appearance`)
+  - **Impact**: Zeek merged tests: **21/24 passing (87.5%)**, TestCrossTableCorrelation: **5/6 passing (83%)**
+  - **Technical**: Modified `check_node_for_cross_branch_join()` in `graph_join_inference.rs` to detect comma patterns via table name comparison
+
 ### 🧪 Testing
 - **Unified Test Data Setup** - Created `scripts/setup/setup_all_test_data.sh` for repeatable test fixture loading (December 21, 2025)
   - **Problem**: Test data setup was ad-hoc, scattered across 20+ SQL files, not consistently loaded

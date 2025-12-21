@@ -1,16 +1,160 @@
 # Test Failure Investigation Plan
 
-**Status**: 2581/3363 passing (76.7%) - 762 failures remaining  
+**Status**: ~2428/3475 passing (~69.9%) - ~1047 failures remaining  
 **Created**: December 21, 2025  
+**Last Updated**: December 21, 2025 (Comma Pattern Fix)  
 **Goal**: Systematic investigation and resolution of remaining test failures
 
 ## Executive Summary
 
-After fixing the database prefix bug (+22% improvement), we have 762 remaining failures across distinct categories. This plan provides a systematic approach to investigate and fix them, prioritized by impact and complexity.
+**MAJOR BREAKTHROUGH**: Comma-separated pattern bug FIXED! ✅ Cross-table correlation now working with smart cross-branch JOIN detection. Zeek merged test suite: **21/24 passing (87.5%)**.
+
+**Key Achievement**: Re-enabled selective cross-branch JOIN generation that:
+- Detects shared nodes across different relationship tables (comma patterns)
+- Generates proper JOINs: `FROM dns_log AS t1 INNER JOIN conn_log AS t2 ON t1.orig_h = t2.orig_h`
+- Avoids duplicate JOINs for linear patterns (the reason it was disabled before)
+
+**Next Focus**: Variable-length paths (~200 failures) and aggregation edge cases.
 
 ---
 
-## Failure Categories (from pytest output)
+## Recent Fix (December 21, 2025)
+
+### ✅ Comma-Separated Patterns with Cross-Table Correlation - **FIXED**
+
+**Test Results**:
+- `TestCrossTableCorrelation`: **5/6 passing** (83%)
+- Full Zeek merged suite: **21/24 passing** (87.5%)
+- **Impact**: ~50 matrix test failures now likely resolved
+
+**What was fixed**:
+```rust
+// src/query_planner/analyzer/graph_join_inference.rs
+// Re-enabled cross-branch JOIN with smart detection:
+if prev_appearance.table_name != current_appearance.table_name {
+    // Different relationship tables = comma pattern!
+    generate_cross_branch_join(...)
+}
+```
+
+**Technical details**:
+1. Fixed `extract_node_appearance()` to use `get_rel_schema_with_nodes()` (composite key lookup)
+2. Detects when shared node appears in different relationship tables
+3. Only generates JOIN for true comma patterns, not linear chains
+4. Reused existing sophisticated helper functions
+
+**Remaining TestCrossTableCorrelation failure**: 
+- `test_with_match_correlation`: WITH clause + second MATCH (different issue, not comma pattern)
+
+---
+
+## Current Failure Analysis (December 21, 2025)
+
+### 🎉 Recent Wins
+- ✅ **Comma-separated patterns**: Fixed cross-table JOINs
+- **Matrix tests**: 2144/2408 passing (89%)
+- **Zeek merged schema**: **21/24 passing (87.5%)**
+- **Simple aggregations**: COUNT, COUNT DISTINCT, GROUP BY all passing for zeek_merged
+- **OPTIONAL MATCH**: Basic patterns working
+
+### 🔍 Remaining Issues by Category
+
+#### 1. **Cross-Table Comma Patterns** - ✅ **FIXED** (Was ~50 failures)
+**Status**: Resolved December 21, 2025
+**Commit**: Re-enabled selective cross-branch JOIN generation
+**Tests passing**: 5/6 TestCrossTableCorrelation, likely ~45 matrix tests now fixed
+
+---
+
+#### 2. **Variable-Length Paths** - **~200 failures** (High Priority - NEXT)
+**Affected tests**:
+- Matrix test_e2e_v2.py: ~180 failures
+- Matrix test_comprehensive.py zeek_merged VLP tests: ~15 failures
+
+**Patterns failing**:
+- `*` (unbounded)
+- `*2`, `*3`, `*4` (exact hops)
+- `*1..3`, `*2..4`, `*1..5` (ranges)
+- `*1..`, `*2..` (open-ended)
+
+**Likely Issues**:
+- CTE generation for zeek_merged schema
+- Property selection within recursive CTEs
+- FK-based relationships in VLP patterns
+
+**Estimated Effort**: 3-4 days
+
+---
+
+#### 3. **Aggregation Edge Cases** - **~150 failures** (Medium Priority)
+**Affected tests**:
+- Matrix test_e2e.py: ~60 failures
+- Various aggregation tests across schemas
+
+**Failing patterns**:
+- SUM/AVG on nullable columns
+- COLLECT with complex expressions
+- MIN/MAX with ordering
+- Aggregations within VLP patterns
+
+**Estimated Effort**: 2-3 days
+
+---
+
+#### 4. **Wiki/Tutorial Tests** - **~150 failures** (Low Priority)
+**Affected**: `tests/integration/wiki/test_cypher_basic_patterns.py`
+
+**Note**: These use a different schema (`social_benchmark.yaml`), not zeek_merged. Should pass once that schema is properly configured in unified setup.
+
+**Estimated Effort**: 1 day
+
+---
+
+#### 5. **Misc Categories** - **~547 failures**
+- Shortest path algorithms: ~45 failures
+- Optional match edge cases: ~27 failures  
+- Security graph tests: ~20 failures
+- Denormalized edges: 20 errors (test setup)
+- Expression/function tests: ~435 failures
+
+**Estimated Effort**: 5-7 days (distributed across categories)
+
+---
+
+## 🎯 Immediate Next Steps (Comma-Pattern Fix)
+
+### Investigation Checklist  
+- [x] Identify root cause: Missing table in FROM clause for comma-separated patterns
+- [x] Document failing test cases with SQL output
+- [ ] Locate query planning code for comma-separated MATCH clauses
+- [ ] Understand how table aliases are tracked across multiple patterns
+- [ ] Design fix for shared node correlation
+
+### Code Areas to Review
+1. **`query_planner/logical_plan/match_clause.rs`** - MATCH clause planning
+2. **`query_planner/analyzer/graph_join_inference.rs`** - JOIN generation  
+3. **`render_plan/plan_builder.rs`** - SQL FROM clause construction
+4. **`clickhouse_query_generator/to_sql_query.rs`** - Final SQL assembly
+
+### Test Commands
+```bash
+# Run failing cross-table tests
+pytest tests/integration/test_zeek_merged.py::TestCrossTableCorrelation -vv --tb=short
+
+# Minimal repro for debugging
+pytest tests/integration/test_zeek_merged.py::TestCrossTableCorrelation::test_comma_pattern_cross_table -vv --tb=short
+
+# Check generated SQL (add --sql-only flag when available)
+# Or check server logs for query planning details
+```
+
+### Expected Fix Approach
+1. **Phase 1**: Track all table scans involved in comma-separated patterns
+2. **Phase 2**: Generate CROSS JOIN or include all tables in FROM clause
+3. **Phase 3**: Ensure WHERE clause properly correlates shared nodes
+4. **Phase 4**: Test with incrementally complex patterns
+
+---
 
 ### 1. Matrix Tests - **565 failures** (74% of failures)
 **Schemas affected**: zeek_merged, filesystem, ontime_benchmark, group_membership
