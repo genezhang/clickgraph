@@ -6,6 +6,7 @@ use crate::query_planner::logical_plan::{
     GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, ViewScan,
 };
 use crate::utils::cte_naming::generate_cte_name;
+use log::debug;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -5932,6 +5933,8 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn extract_from(&self) -> RenderPlanBuilderResult<Option<FromTable>> {
+        log::debug!("🔍 extract_from START: plan type={:?}", std::mem::discriminant(self));
+        
         let from_ref = match &self {
             LogicalPlan::Empty => None,
             LogicalPlan::Scan(scan) => {
@@ -5991,10 +5994,33 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::ViewScan(scan) => {
                 // Check if this is a relationship ViewScan (has from_id/to_id)
                 if scan.from_id.is_some() && scan.to_id.is_some() {
-                    // For relationship ViewScans, use the CTE name instead of table name
-                    let cte_name =
-                        format!("rel_{}", scan.source_table.replace([' ', '-', '_'], ""));
-                    Some(ViewTableRef::new_table(scan.as_ref().clone(), cte_name))
+                    // For denormalized edges, use the actual table name directly
+                    // CTE references (rel_*) are only needed for standard edges with separate node tables
+                    // Denormalized ViewScans have from_node_properties/to_node_properties indicating
+                    // node data is stored on the edge table itself
+                    let use_actual_table = scan.from_node_properties.is_some() 
+                        && scan.to_node_properties.is_some();
+                    
+                    debug!("📊 extract_from ViewScan: source_table={}, from_props={:?}, to_props={:?}, use_actual_table={}",
+                        scan.source_table,
+                        scan.from_node_properties.as_ref().map(|p| p.len()),
+                        scan.to_node_properties.as_ref().map(|p| p.len()),
+                        use_actual_table);
+                    
+                    if use_actual_table {
+                        // Denormalized: use actual table name
+                        debug!("✅ Using actual table name: {}", scan.source_table);
+                        Some(ViewTableRef::new_table(
+                            scan.as_ref().clone(),
+                            scan.source_table.clone(),
+                        ))
+                    } else {
+                        // Standard edge: use CTE reference
+                        let cte_name =
+                            format!("rel_{}", scan.source_table.replace([' ', '-', '_'], ""));
+                        debug!("🔄 Using CTE reference: {}", cte_name);
+                        Some(ViewTableRef::new_table(scan.as_ref().clone(), cte_name))
+                    }
                 } else {
                     // For node ViewScans, use the table name
                     Some(ViewTableRef::new_table(
@@ -6018,8 +6044,14 @@ impl RenderPlanBuilder for LogicalPlan {
                         );
                         // Check if this is a relationship ViewScan (has from_id/to_id)
                         let table_or_cte_name = if scan.from_id.is_some() && scan.to_id.is_some() {
-                            // For relationship ViewScans, use the CTE name instead of table name
-                            format!("rel_{}", scan.source_table.replace([' ', '-', '_'], ""))
+                            // For denormalized edges, use actual table; for standard edges, use CTE
+                            let use_actual_table = scan.from_node_properties.is_some() 
+                                && scan.to_node_properties.is_some();
+                            if use_actual_table {
+                                scan.source_table.clone()
+                            } else {
+                                format!("rel_{}", scan.source_table.replace([' ', '-', '_'], ""))
+                            }
                         } else {
                             // For node ViewScans, use the table name
                             scan.source_table.clone()
@@ -6055,14 +6087,13 @@ impl RenderPlanBuilder for LogicalPlan {
                 let left_is_denormalized = is_node_denormalized(&graph_rel.left);
                 let right_is_denormalized = is_node_denormalized(&graph_rel.right);
                 
-                println!("🔍 DEBUG extract_from GraphRel: alias='{}', left_is_denorm={}, right_is_denorm={}", 
+                log::debug!("🔍 extract_from GraphRel: alias='{}', left_is_denorm={}, right_is_denorm={}", 
                     graph_rel.alias, left_is_denormalized, right_is_denormalized);
 
                 if left_is_denormalized && right_is_denormalized {
-                    crate::debug_println!("DEBUG: extract_from - DENORMALIZED pattern, using relationship table as FROM");
+                    log::debug!("✓ DENORMALIZED pattern: both nodes on edge table, using edge table as FROM");
 
                     // For multi-hop denormalized, find the first (leftmost) relationship
-                    // We need to traverse recursively to find the leftmost GraphRel
                     fn find_first_graph_rel(
                         graph_rel: &crate::query_planner::logical_plan::GraphRel,
                     ) -> &crate::query_planner::logical_plan::GraphRel {
@@ -6074,11 +6105,10 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     let first_graph_rel = find_first_graph_rel(graph_rel);
 
+                    // Try ViewScan first (normal case)
                     if let LogicalPlan::ViewScan(scan) = first_graph_rel.center.as_ref() {
-                        println!(
-                            "DEBUG: Using relationship table '{}' as FROM with alias '{}'",
-                            scan.source_table, first_graph_rel.alias
-                        );
+                        log::debug!("✓ Using ViewScan edge table '{}' AS '{}'", 
+                            scan.source_table, first_graph_rel.alias);
                         return Ok(Some(FromTable::new(Some(ViewTableRef {
                             source: first_graph_rel.center.clone(),
                             name: scan.source_table.clone(),
@@ -6086,6 +6116,31 @@ impl RenderPlanBuilder for LogicalPlan {
                             use_final: scan.use_final,
                         }))));
                     }
+                    
+                    // Handle Scan with table_name (can happen with CTE placeholders)
+                    // For denormalized edges, need to get the actual edge table name from schema
+                    if let LogicalPlan::Scan(scan) = first_graph_rel.center.as_ref() {
+                        if let Some(table_name) = &scan.table_name {
+                            // Skip CTE placeholders - these indicate the relationship is part of a larger query
+                            // that should be handled differently
+                            if table_name.starts_with("rel_") {
+                                log::debug!("⚠️  Denormalized edge has CTE placeholder '{}' - cannot use as FROM directly", table_name);
+                            } else {
+                                // Real table name - use it
+                                log::debug!("✓ Using Scan edge table '{}' AS '{}'", 
+                                    table_name, first_graph_rel.alias);
+                                return Ok(Some(FromTable::new(Some(ViewTableRef {
+                                    source: first_graph_rel.center.clone(),
+                                    name: table_name.clone(),
+                                    alias: Some(first_graph_rel.alias.clone()),
+                                    use_final: false,
+                                }))));
+                            }
+                        }
+                    }
+                    
+                    log::debug!("⚠️  Could not extract edge table from center (type: {:?})", 
+                        std::mem::discriminant(first_graph_rel.center.as_ref()));
                 }
 
                 // Check if both nodes are anonymous (edge-driven query)
@@ -6231,8 +6286,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 }
             }
-            LogicalPlan::Filter(filter) => from_table_to_view_ref(filter.input.extract_from()?),
+            LogicalPlan::Filter(filter) => {
+                log::debug!("  → Filter, recursing to input type={:?}", std::mem::discriminant(filter.input.as_ref()));
+                from_table_to_view_ref(filter.input.extract_from()?)
+            }
             LogicalPlan::Projection(projection) => {
+                log::debug!("  → Projection, recursing to input type={:?}", std::mem::discriminant(projection.input.as_ref()));
                 from_table_to_view_ref(projection.input.extract_from()?)
             }
             LogicalPlan::GraphJoins(graph_joins) => {
@@ -6270,29 +6329,78 @@ impl RenderPlanBuilder for LogicalPlan {
                     matches!(graph_node.input.as_ref(), LogicalPlan::ViewScan(_))
                 }
 
-                // RULE: When joins is empty, check if we have a LABELED node that should be FROM
-                // Only use relationship table as FROM if both nodes are denormalized/unlabeled
+                // RULE: When joins is empty, no node tables are needed - use edge table as FROM
+                // This happens for: 1) Denormalized edges, 2) Anonymous node patterns, 3) Pure edge queries
+                log::debug!("🔍 GraphJoins.extract_from: joins.len()={}, is_empty()={}", 
+                    graph_joins.joins.len(), graph_joins.joins.is_empty());
+                
                 if graph_joins.joins.is_empty() {
+                    log::debug!("✓ Empty joins - looking for edge-only pattern");
+                    
                     if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
-                        // CRITICAL FIX: For denormalized edges, BOTH nodes live in the relationship table
-                        // Check if the relationship center has from_node_properties/to_node_properties
-                        // If yes, use the relationship table with relationship alias, NOT node alias
-                        if let LogicalPlan::ViewScan(rel_scan) = graph_rel.center.as_ref() {
-                            let has_denorm_props = rel_scan.from_node_properties.is_some() 
-                                || rel_scan.to_node_properties.is_some();
-                            
-                            if has_denorm_props {
-                                log::info!(
-                                    "🎯 DENORMALIZED EDGE: Relationship '{}' has denormalized node properties, using relationship table '{}' AS '{}'",
-                                    graph_rel.alias, rel_scan.source_table, graph_rel.alias
-                                );
+                        log::debug!("✓ Found GraphRel '{}', checking if denormalized", graph_rel.alias);
+                        
+                        // Check if center is denormalized by looking for from_node_properties
+                        let center_is_denormalized = if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+                            scan.from_node_properties.is_some() && scan.to_node_properties.is_some()
+                        } else {
+                            false
+                        };
+                        
+                        log::debug!("  center_denormalized={}", center_is_denormalized);
+                        
+                        if center_is_denormalized {
+                            // Center is denormalized - use it as FROM regardless of node state
+                            if let LogicalPlan::ViewScan(rel_scan) = graph_rel.center.as_ref() {
+                                log::info!("🎯 DENORMALIZED EDGE CENTER: Using '{}' AS '{}' as FROM",
+                                    rel_scan.source_table, graph_rel.alias);
                                 return Ok(Some(FromTable::new(Some(super::ViewTableRef {
                                     source: graph_rel.center.clone(),
                                     name: rel_scan.source_table.clone(),
-                                    alias: Some(graph_rel.alias.clone()),  // Use relationship alias!
+                                    alias: Some(graph_rel.alias.clone()),
                                     use_final: rel_scan.use_final,
                                 }))));
                             }
+                        }
+                        
+                        let left_is_denormalized = is_node_denormalized(&graph_rel.left);
+                        let right_is_denormalized = is_node_denormalized(&graph_rel.right);
+                        
+                        log::debug!("  left_denorm={}, right_denorm={}", 
+                            left_is_denormalized, right_is_denormalized);
+                        
+                        if left_is_denormalized && right_is_denormalized {
+                            // Both nodes denormalized - use edge table directly
+                            if let LogicalPlan::ViewScan(rel_scan) = graph_rel.center.as_ref() {
+                                log::info!("🎯 DENORMALIZED EDGE (empty joins): Using '{}' AS '{}' as FROM",
+                                    rel_scan.source_table, graph_rel.alias);
+                                return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                                    source: graph_rel.center.clone(),
+                                    name: rel_scan.source_table.clone(),
+                                    alias: Some(graph_rel.alias.clone()),
+                                    use_final: rel_scan.use_final,
+                                }))));
+                            }
+                            
+                            // Handle Scan case (with table_name)
+                            if let LogicalPlan::Scan(rel_scan) = graph_rel.center.as_ref() {
+                                if let Some(table_name) = &rel_scan.table_name {
+                                    if !table_name.starts_with("rel_") {
+                                        log::info!("🎯 DENORMALIZED EDGE (empty joins, Scan): Using '{}' AS '{}' as FROM",
+                                            table_name, graph_rel.alias);
+                                        return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                                            source: graph_rel.center.clone(),
+                                            name: table_name.clone(),
+                                            alias: Some(graph_rel.alias.clone()),
+                                            use_final: false,
+                                        }))));
+                                    } else {
+                                        log::debug!("⚠️  Skipping CTE placeholder '{}' for FROM", table_name);
+                                    }
+                                }
+                            }
+                            
+                            log::debug!("⚠️  Denormalized edge center is neither ViewScan nor Scan with table_name");
                         }
                         
                         // Check if LEFT node has a real table (ViewScan, not just placeholder Scan)
@@ -6403,6 +6511,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     
                     fn is_cte_reference(plan: &LogicalPlan) -> bool {
                         match plan {
+                            // WithClause IS a CTE source - the entire point of WITH is to create a CTE
+                            LogicalPlan::WithClause(_) => true,
                             LogicalPlan::ViewScan(vs) => vs.source_table.starts_with("with_"),
                             LogicalPlan::GraphNode(gn) => is_cte_reference(&gn.input),
                             LogicalPlan::Projection(p) => is_cte_reference(&p.input),
@@ -9857,9 +9967,10 @@ impl RenderPlanBuilder for LogicalPlan {
         }
 
         let mut final_from = self.extract_from()?;
-        println!(
-            "DEBUG: build_simple_relationship_render_plan - final_from: {:?}",
-            final_from
+        log::debug!(
+            "🔍 build_simple_relationship_render_plan - extracted final_from from plan type: {:?}, is_some: {}",
+            std::mem::discriminant(self),
+            final_from.is_some()
         );
 
         // 🚀 CONSOLIDATED VLP FROM CLAUSE AND ALIAS REWRITING
