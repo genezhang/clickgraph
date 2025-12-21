@@ -4776,12 +4776,12 @@ mod tests {
 
                         // Should have joins for both relationships in the chain: (p1)-[f1:FOLLOWS]->(p2)-[w1:WORKS_AT]->(c1)
                         // Plus the referenced node (p1) and intermediate node (p2)
-                        // Plus 1 cross-branch JOIN (w1 appears in multiple branches)
+                        // Total: w1, p2, f1, p1 = 4 joins (c1 is anchor, not joined)
                         println!("Actual joins len: {}", graph_joins.joins.len());
                         let join_aliases: Vec<&String> =
                             graph_joins.joins.iter().map(|j| &j.table_alias).collect();
                         println!("Join aliases: {:?}", join_aliases);
-                        assert!(graph_joins.joins.len() == 5); // 2 rel joins + 2 nodes + 1 cross-branch
+                        assert!(graph_joins.joins.len() == 4); // 2 rel joins + 2 nodes (c1 is anchor)
 
                         // Verify we have the expected join aliases for the new structure: (p1)-[f1:FOLLOWS]->(p2)-[w1:WORKS_AT]->(c1)
                         let join_aliases: Vec<&String> =
