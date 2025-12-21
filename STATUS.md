@@ -2,17 +2,34 @@
 
 *Updated: December 21, 2025*
 
-## 🎯 Latest: Zeek Merged Tests 100% Passing (Dec 21, 2025)
+## 🎯 Latest: Test Label Fixes + 75 More Tests Passing (Dec 21, 2025)
+
+**Achievement**: Fixed schema label mismatches in integration tests
+
+**Test Pass Rate**: 743 failed, 2616 passed (+75 from previous)
+
+### Summary of Fixes
+1. **Test Label Updates**: Changed tests to use `TestUser`/`TEST_FOLLOWS` instead of `User`/`FOLLOWS`
+   - `User` maps to `brahmand.users_bench` (benchmark data)
+   - `TestUser` maps to `test_integration.users` (test fixture data)
+   - Fixed 12 test files using simple_graph fixture
+
+2. **Schema Path Fix**: `test_denormalized_edges.py` had wrong schema path
+   - Changed `schemas/tests/` → `schemas/test/`
+   - Fixed 20 test errors (setup failures)
+
+3. **Test Function Naming**: `test_standalone_return.py` and `test_with_having.py` had utility functions named `test_query` which pytest tried to collect as tests
+
+4. **USE Clause Tests**: `test_multi_database.py` was using `database` where it should use `schema_name`
+   - USE clause expects schema name, not database name
+   - Fixed 5 more tests
+
+### Previous Fix: Zeek Merged Tests 100% Passing
 
 **Achievement**: All 24 zeek merged schema tests now pass!
 
-### Fix 1: rel_type_index Duplicate Keys (21/24 → 23/24)
-**Problem**: `build_rel_type_index()` stored BOTH simple keys (`"REQUESTED"`) AND composite keys (`"REQUESTED::IP::Domain"`) for the same relationship, causing queries to generate CTE placeholders instead of actual tables.  
-**Fix**: Skip simple keys when composite keys exist for the same type.
-
-### Fix 2: WITH...MATCH FROM Clause (23/24 → 24/24)
-**Problem**: `is_cte_reference()` didn't recognize `WithClause` as a CTE source, so `WITH src.ip AS x MATCH (a)-[r:REL]->(b)` used the CTE side as FROM instead of the second MATCH's table.  
-**Fix**: Added `LogicalPlan::WithClause(_) => true` to `is_cte_reference()`.
+- **Fix 1**: `build_rel_type_index()` - skip simple keys when composite keys exist
+- **Fix 2**: `is_cte_reference()` - recognize `WithClause` as CTE source
 
 **Generated SQL** (now correct):
 ```sql

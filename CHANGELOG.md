@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### 🧪 Testing
+- **Integration Test Label Fixes** - Updated tests to use correct schema labels (December 21, 2025)
+  - **Problem**: Tests used `User`/`FOLLOWS` labels but simple_graph fixture data uses `TestUser`/`TEST_FOLLOWS`
+  - **Root Cause**: `User` maps to `brahmand.users_bench` (benchmark data), `TestUser` maps to `test_integration.users` (fixture data)
+  - **Solution**: Updated 12 test files to use correct labels: `TestUser`, `TEST_FOLLOWS`, `TestProduct`, `TEST_PURCHASED`, `TEST_FRIENDS_WITH`
+  - **Also Fixed**:
+    - `test_denormalized_edges.py` schema path: `schemas/tests/` → `schemas/test/`
+    - `test_standalone_return.py` and `test_with_having.py`: renamed utility functions from `test_query` to avoid pytest collection
+    - `test_multi_database.py`: USE clause tests used `database` instead of `schema_name`
+  - **Impact**: +75 passing tests (2541 → 2616 passed, 800 → 743 failed)
+  - **Commits**: `2296b7c`, `c7f9746`
+
 ### 🐛 Bug Fixes
 - **WITH...MATCH FROM Clause Fix** - Fixed WITH...MATCH patterns using wrong table for FROM clause (December 21, 2025)
   - **Problem**: Queries like `WITH x MATCH (a)-[r:TYPE]->(b)` generated `FROM cte_table` instead of `FROM actual_table JOIN cte_table`
