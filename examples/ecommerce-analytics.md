@@ -331,9 +331,10 @@ export CLICKHOUSE_URL="http://localhost:8123"
 export CLICKHOUSE_USER="default"
 export CLICKHOUSE_PASSWORD=""
 export CLICKHOUSE_DATABASE="ecommerce"
+export CLICKGRAPH_CONFIG_PATH="ecommerce_graph.yaml"
 
 # Start ClickGraph
-cargo run --bin brahmand
+cargo run --bin clickgraph
 ```
 
 ## 4. Graph Analysis Queries

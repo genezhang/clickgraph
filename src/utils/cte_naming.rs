@@ -101,12 +101,17 @@ pub fn extract_aliases_from_cte_name(cte_name: &str) -> Option<Vec<String>> {
     // Format: with_{aliases}_cte_{counter} or with_cte_{counter}
     let stripped = cte_name.strip_prefix("with_")?;
     
+    // Check if it's the "with_cte_{counter}" format (no aliases)
+    if stripped.starts_with("cte_") {
+        return Some(vec![]);
+    }
+    
     // Find the last occurrence of "_cte"
     let cte_pos = stripped.rfind("_cte")?;
     let middle = &stripped[..cte_pos];
     
     if middle.is_empty() {
-        // "with_cte_1" case - no aliases
+        // This shouldn't happen with the starts_with check above, but be safe
         Some(vec![])
     } else {
         // "with_friends_p_cte_1" case - split by underscore
@@ -141,7 +146,7 @@ mod tests {
     fn test_generate_cte_base_name() {
         assert_eq!(generate_cte_base_name(&["p"]), "with_p_cte");
         assert_eq!(generate_cte_base_name(&["p", "friends"]), "with_friends_p_cte");
-        assert_eq!(generate_cte_base_name(&[]), "with_cte");
+        assert_eq!(generate_cte_base_name(&Vec::<String>::new()), "with_cte");
     }
 
     #[test]

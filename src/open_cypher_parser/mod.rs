@@ -247,7 +247,7 @@ mod tests {
 
                 let match_clause = &ast.match_clauses[0];
 
-                if let PathPattern::Node(node) = &match_clause.path_patterns[0] {
+                if let (_, PathPattern::Node(node)) = &match_clause.path_patterns[0] {
                     assert_eq!(node.name, Some("a"));
                 } else {
                     panic!("Expected MATCH clause to contain a Node pattern");
@@ -415,8 +415,7 @@ mod tests {
         let match_clause = &query_ast.match_clauses[0];
 
         let expected_match_clause = MatchClause {
-            path_variable: None,
-            path_patterns: vec![PathPattern::ConnectedPattern(vec![
+            path_patterns: vec![(None, PathPattern::ConnectedPattern(vec![
                 ConnectedPattern {
                     start_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("david"),
@@ -458,7 +457,7 @@ mod tests {
                         properties: None,
                     })),
                 },
-            ])],
+            ]))],
         };
 
         assert_eq!(*match_clause, expected_match_clause);
@@ -599,8 +598,7 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_variable: None,
-            path_patterns: vec![PathPattern::ConnectedPattern(vec![
+            path_patterns: vec![(None, PathPattern::ConnectedPattern(vec![
                 // (p:Person {name: 'Tom Hardy'})-[r:ACTED_IN]->(movie:Movie)
                 ConnectedPattern {
                     start_node: Rc::new(RefCell::new(NodePattern {
@@ -644,7 +642,7 @@ mod tests {
                         properties: None,
                     })),
                 },
-            ])],
+            ]))],
         };
         assert_eq!(*match_clause, expected_match_clause);
 
@@ -770,18 +768,17 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_variable: None,
             path_patterns: vec![
-                PathPattern::Node(NodePattern {
+                (None, PathPattern::Node(NodePattern {
                     name: Some("a"),
                     label: Some("Person"),
                     properties: None,
-                }),
-                PathPattern::Node(NodePattern {
+                })),
+                (None, PathPattern::Node(NodePattern {
                     name: Some("b"),
                     label: Some("Person"),
                     properties: None,
-                }),
+                })),
             ],
         };
         assert_eq!(*match_clause, expected_match_clause);
@@ -902,15 +899,14 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_variable: None,
-            path_patterns: vec![PathPattern::Node(NodePattern {
+            path_patterns: vec![(None, PathPattern::Node(NodePattern {
                 name: Some("n"),
                 label: None,
                 properties: Some(vec![Property::PropertyKV(PropertyKVPair {
                     key: "name",
                     value: Expression::Literal(Literal::String("Andres")),
                 })]),
-            })],
+            }))],
         };
         assert_eq!(*match_clause, expected_match_clause);
 
@@ -993,15 +989,14 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_variable: None,
-            path_patterns: vec![PathPattern::Node(NodePattern {
+            path_patterns: vec![(None, PathPattern::Node(NodePattern {
                 name: Some("n"),
                 label: None,
                 properties: Some(vec![Property::PropertyKV(PropertyKVPair {
                     key: "name",
                     value: Expression::Literal(Literal::String("Andres")),
                 })]),
-            })],
+            }))],
         };
         assert_eq!(*match_clause, expected_match_clause);
 
@@ -1064,15 +1059,14 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_variable: None,
-            path_patterns: vec![PathPattern::Node(NodePattern {
+            path_patterns: vec![(None, PathPattern::Node(NodePattern {
                 name: Some("andres"),
                 label: None,
                 properties: Some(vec![Property::PropertyKV(PropertyKVPair {
                     key: "name",
                     value: Expression::Literal(Literal::String("Andres")),
                 })]),
-            })],
+            }))],
         };
         assert_eq!(*match_clause, expected_match_clause);
 
@@ -1150,12 +1144,11 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_variable: None,
-            path_patterns: vec![PathPattern::Node(NodePattern {
+            path_patterns: vec![(None, PathPattern::Node(NodePattern {
                 name: Some("p"),
                 label: Some("Person"),
                 properties: None,
-            })],
+            }))],
         };
         assert_eq!(*match_clause, expected_match_clause);
 
@@ -1273,12 +1266,11 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_variable: None,
-            path_patterns: vec![PathPattern::Node(NodePattern {
+            path_patterns: vec![(None, PathPattern::Node(NodePattern {
                 name: Some("p"),
                 label: Some("Person"),
                 properties: None,
-            })],
+            }))],
         };
         assert_eq!(*match_clause, expected_match_clause);
 

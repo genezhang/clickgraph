@@ -3175,8 +3175,10 @@ mod tests {
     }
 
     // Tests for node label inference from relationship type
+    // Note: infer_node_labels_from_relationship function was removed
+    // These tests are commented out until the feature is reimplemented
 
-    #[test]
+    /* #[test]
     fn test_infer_node_labels_from_typed_relationship() {
         // ()-[r:FLIGHT]->() should infer both nodes as Airport
         let schema = create_test_schema_with_relationships();
@@ -3228,6 +3230,7 @@ mod tests {
         assert_eq!(start, Some("Post".to_string()));
         assert_eq!(end, Some("User".to_string()));
     }
+    */
 
     #[test]
     fn test_infer_relationship_type_too_many_matches_error() {

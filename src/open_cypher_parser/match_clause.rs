@@ -82,7 +82,7 @@ mod tests {
                 // We expect one path pattern.
                 assert_eq!(match_clause.path_patterns.len(), 1);
                 match &match_clause.path_patterns[0] {
-                    PathPattern::Node(node) => {
+                    (_, PathPattern::Node(node)) => {
                         // Expected empty node: no name, no label, no properties.
                         let expected = NodePattern {
                             name: None,
@@ -110,7 +110,7 @@ mod tests {
                 assert_eq!(match_clause.path_patterns.len(), 2);
                 for pattern in &match_clause.path_patterns {
                     match pattern {
-                        PathPattern::Node(node) => {
+                        (_, PathPattern::Node(node)) => {
                             let expected = NodePattern {
                                 name: None,
                                 label: None,
@@ -175,7 +175,7 @@ mod tests {
         match result {
             Ok((remaining, clause)) => {
                 assert_eq!(remaining.trim(), "");
-                assert_eq!(clause.path_variable, Some("p"));
+                assert_eq!(clause.path_patterns[0].0, Some("p"));
                 assert_eq!(clause.path_patterns.len(), 1);
             }
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
@@ -189,10 +189,10 @@ mod tests {
         match result {
             Ok((remaining, clause)) => {
                 assert_eq!(remaining.trim(), "");
-                assert_eq!(clause.path_variable, Some("p"));
+                assert_eq!(clause.path_patterns[0].0, Some("p"));
                 assert_eq!(clause.path_patterns.len(), 1);
                 match &clause.path_patterns[0] {
-                    PathPattern::ShortestPath(_) => {
+                    (_, PathPattern::ShortestPath(_)) => {
                         // Expected
                     }
                     other => {
@@ -211,7 +211,7 @@ mod tests {
         match result {
             Ok((remaining, clause)) => {
                 assert_eq!(remaining.trim(), "");
-                assert_eq!(clause.path_variable, None);
+                assert_eq!(clause.path_patterns[0].0, None);
                 assert_eq!(clause.path_patterns.len(), 1);
             }
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
