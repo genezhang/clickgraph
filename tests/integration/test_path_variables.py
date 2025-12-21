@@ -28,7 +28,7 @@ class TestPathVariableAssignment:
         """Test assigning path to variable."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN a.name, b.name
             ORDER BY b.name
@@ -44,7 +44,7 @@ class TestPathVariableAssignment:
         """Test path variable with multi-hop pattern."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)-[:TEST_FOLLOWS]->(c:TestUser)
             WHERE a.name = 'Alice'
             RETURN a.name, c.name
             ORDER BY c.name
@@ -60,7 +60,7 @@ class TestPathVariableAssignment:
         """Test path variable with variable-length pattern."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN a.name, b.name
             ORDER BY b.name
@@ -80,7 +80,7 @@ class TestLengthFunction:
         """Test length() on single-hop path."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN a.name, b.name, length(p) as path_length
             ORDER BY b.name
@@ -103,7 +103,7 @@ class TestLengthFunction:
         """Test length() on multi-hop paths."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)-[:TEST_FOLLOWS]->(c:TestUser)
             WHERE a.name = 'Alice'
             RETURN a.name, c.name, length(p) as path_length
             ORDER BY c.name
@@ -125,7 +125,7 @@ class TestLengthFunction:
         """Test length() on variable-length paths."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*1..3]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*1..3]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN DISTINCT length(p) as path_length
             ORDER BY path_length
@@ -141,7 +141,7 @@ class TestLengthFunction:
         """Test filtering paths by length."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser)
             WHERE a.name = 'Alice' AND length(p) = 2
             RETURN a.name, b.name, length(p) as path_length
             ORDER BY b.name
@@ -163,7 +163,7 @@ class TestLengthFunction:
         """Test aggregating path lengths."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN MIN(length(p)) as min_length, 
                    MAX(length(p)) as max_length,
@@ -186,7 +186,7 @@ class TestNodesFunction:
         """Test nodes() returning all nodes in path."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE a.name = 'Alice' AND b.name = 'Bob'
             RETURN nodes(p) as path_nodes
             """,
@@ -202,7 +202,7 @@ class TestNodesFunction:
         """Test counting nodes in path."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)-[:TEST_FOLLOWS]->(c:TestUser)
             WHERE a.name = 'Alice'
             RETURN length(nodes(p)) as node_count
             """,
@@ -223,7 +223,7 @@ class TestNodesFunction:
         """Test nodes() on variable-length paths."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*2]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*2]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN a.name, b.name, length(nodes(p)) as node_count
             ORDER BY b.name
@@ -249,7 +249,7 @@ class TestRelationshipsFunction:
         """Test relationships() returning all relationships in path."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE a.name = 'Alice' AND b.name = 'Bob'
             RETURN relationships(p) as path_rels
             """,
@@ -265,7 +265,7 @@ class TestRelationshipsFunction:
         """Test counting relationships in path."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*2]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*2]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN a.name, b.name, length(relationships(p)) as rel_count
             ORDER BY b.name
@@ -287,7 +287,7 @@ class TestRelationshipsFunction:
         """Test that length(relationships(p)) equals length(p)."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*1..3]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*1..3]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN length(p) as path_length, 
                    length(relationships(p)) as rel_count
@@ -314,7 +314,7 @@ class TestPathWithShortestPath:
         """Test path variable with shortestPath()."""
         response = execute_cypher(
             """
-            MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH p = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN a.name, b.name, length(p) as path_length
             """,
@@ -335,7 +335,7 @@ class TestPathWithShortestPath:
         """Test comparing shortest path lengths."""
         response = execute_cypher(
             """
-            MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH p = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice'
             RETURN b.name, length(p) as distance
             ORDER BY distance, b.name
@@ -351,7 +351,7 @@ class TestPathWithShortestPath:
         """Test path lengths with allShortestPaths()."""
         response = execute_cypher(
             """
-            MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH p = allShortestPaths((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN COUNT(*) as path_count, MIN(length(p)) as min_length
             """,
@@ -370,7 +370,7 @@ class TestPathFunctionsInWhere:
         """Test filtering paths by length in WHERE."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser)
             WHERE a.name = 'Alice' AND length(p) >= 2
             RETURN DISTINCT b.name
             ORDER BY b.name
@@ -386,7 +386,7 @@ class TestPathFunctionsInWhere:
         """Test filtering by node count in path."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser)
             WHERE a.name = 'Alice' AND length(nodes(p)) = 3
             RETURN DISTINCT b.name
             ORDER BY b.name
@@ -406,7 +406,7 @@ class TestPathFunctionsInReturn:
         """Test returning multiple path functions."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN DISTINCT
                 length(p) as path_length,
@@ -426,7 +426,7 @@ class TestPathFunctionsInReturn:
         """Test path functions in aggregation."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN 
                 AVG(length(p)) as avg_path_length,
@@ -449,7 +449,7 @@ class TestPathEdgeCases:
         """Test path of length zero."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*0]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*0]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN a.name, b.name, length(p) as path_length
             """,
@@ -474,7 +474,7 @@ class TestPathEdgeCases:
         """Test path functions when no paths exist."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS*]->(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser)
             WHERE a.name = 'Eve' AND b.name = 'Alice'
             RETURN length(p) as path_length
             """,
@@ -489,7 +489,7 @@ class TestPathEdgeCases:
         """Test path functions on undirected patterns."""
         response = execute_cypher(
             """
-            MATCH p = (a:User)-[:FOLLOWS]-(b:User)
+            MATCH p = (a:TestUser)-[:TEST_FOLLOWS]-(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN b.name, length(p) as path_length
             ORDER BY b.name

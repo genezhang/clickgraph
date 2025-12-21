@@ -31,7 +31,7 @@ class TestBasicAggregations:
         """Test COUNT(*) on all nodes."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(*) as total_users
             """,
             schema_name=simple_graph["schema_name"]
@@ -45,7 +45,7 @@ class TestBasicAggregations:
         """Test COUNT(DISTINCT) on nodes."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN COUNT(DISTINCT a) as unique_followers
             """,
             schema_name=simple_graph["schema_name"]
@@ -60,7 +60,7 @@ class TestBasicAggregations:
         """Test SUM aggregation on property."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN SUM(n.age) as total_age
             """,
             schema_name=simple_graph["schema_name"]
@@ -74,7 +74,7 @@ class TestBasicAggregations:
         """Test AVG aggregation on property."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN AVG(n.age) as average_age
             """,
             schema_name=simple_graph["schema_name"]
@@ -93,7 +93,7 @@ class TestBasicAggregations:
         """Test MIN and MAX aggregations."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN MIN(n.age) as youngest, MAX(n.age) as oldest
             """,
             schema_name=simple_graph["schema_name"]
@@ -119,7 +119,7 @@ class TestGroupBy:
         """Test GROUP BY with single key."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follows_count
             ORDER BY a.name
             """,
@@ -136,7 +136,7 @@ class TestGroupBy:
         """Test GROUP BY with multiple aggregations."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follow_count, AVG(b.age) as avg_age
             ORDER BY a.name
             """,
@@ -152,7 +152,7 @@ class TestGroupBy:
         """Test GROUP BY with multiple grouping keys."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, b.name, COUNT(*) as connection_count
             ORDER BY a.name, b.name
             """,
@@ -166,7 +166,7 @@ class TestGroupBy:
         """Test GROUP BY with ORDER BY on aggregation."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follows
             ORDER BY follows DESC, a.name
             """,
@@ -185,7 +185,7 @@ class TestHavingClause:
         """Test HAVING with COUNT condition."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WITH a, COUNT(b) as follows
             WHERE follows > 1
             RETURN a.name, follows
@@ -202,7 +202,7 @@ class TestHavingClause:
         """Test HAVING with AVG condition."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WITH a, AVG(b.age) as avg_age
             WHERE avg_age > 25
             RETURN a.name, avg_age
@@ -219,7 +219,7 @@ class TestHavingClause:
         """Test HAVING with multiple conditions."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WITH a, COUNT(b) as follows, AVG(b.age) as avg_age
             WHERE follows > 0 AND avg_age > 20
             RETURN a.name, follows, avg_age
@@ -239,7 +239,7 @@ class TestAggregationWithWhere:
         """Test WHERE clause before aggregation."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE b.age > 25
             RETURN a.name, COUNT(b) as follows_older
             ORDER BY a.name
@@ -255,7 +255,7 @@ class TestAggregationWithWhere:
         """Test WHERE after grouping (HAVING equivalent)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WITH a, COUNT(b) as follow_count
             WHERE follow_count >= 1
             RETURN a.name, follow_count
@@ -271,7 +271,7 @@ class TestAggregationWithWhere:
         """Test complex filtering with aggregation."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE a.age > 25 AND b.age > 25
             RETURN a.name, COUNT(b) as mature_follows
             ORDER BY a.name
@@ -290,7 +290,7 @@ class TestAggregationWithLimit:
         """Test GROUP BY with LIMIT."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follows
             ORDER BY follows DESC, a.name
             LIMIT 3
@@ -305,7 +305,7 @@ class TestAggregationWithLimit:
         """Test GROUP BY with SKIP."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follows
             ORDER BY a.name
             SKIP 1
@@ -321,7 +321,7 @@ class TestAggregationWithLimit:
         """Test GROUP BY with both LIMIT and SKIP."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follows
             ORDER BY a.name
             SKIP 1
@@ -341,7 +341,7 @@ class TestRelationshipAggregations:
         """Test counting relationships."""
         response = execute_cypher(
             """
-            MATCH ()-[r:FOLLOWS]->()
+            MATCH ()-[r:TEST_FOLLOWS]->()
             RETURN COUNT(r) as total_follows
             """,
             schema_name=simple_graph["schema_name"]
@@ -356,9 +356,9 @@ class TestRelationshipAggregations:
         """Test counting incoming and outgoing relationships."""
         response = execute_cypher(
             """
-            MATCH (n:User)
-            OPTIONAL MATCH (n)-[:FOLLOWS]->(out)
-            OPTIONAL MATCH (in)-[:FOLLOWS]->(n)
+            MATCH (n:TestUser)
+            OPTIONAL MATCH (n)-[:TEST_FOLLOWS]->(out)
+            OPTIONAL MATCH (in)-[:TEST_FOLLOWS]->(n)
             RETURN n.name, 
                    COUNT(DISTINCT out) as following,
                    COUNT(DISTINCT in) as followers
@@ -376,7 +376,7 @@ class TestRelationshipAggregations:
         """Test aggregating relationship properties."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[r:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[r:TEST_FOLLOWS]->(b:TestUser)
             RETURN MIN(r.since) as earliest, MAX(r.since) as latest
             """,
             schema_name=simple_graph["schema_name"]
@@ -394,7 +394,7 @@ class TestDistinctInAggregations:
         """Test COUNT(DISTINCT) in aggregation."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
             RETURN a.name, COUNT(DISTINCT b) as unique_reachable
             ORDER BY a.name
             """,
@@ -409,7 +409,7 @@ class TestDistinctInAggregations:
         """Test difference between COUNT and COUNT(DISTINCT)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN COUNT(b) as total_paths, COUNT(DISTINCT b) as unique_nodes
             """,
@@ -435,7 +435,7 @@ class TestComplexAggregations:
         """Test nested aggregation with WITH clause."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WITH a, COUNT(b) as follows
             RETURN AVG(follows) as avg_follows_per_user
             """,
@@ -450,7 +450,7 @@ class TestComplexAggregations:
         """Test aggregation with CASE expression."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN 
                 COUNT(CASE WHEN n.age < 30 THEN 1 END) as young,
                 COUNT(CASE WHEN n.age >= 30 THEN 1 END) as mature
@@ -467,9 +467,9 @@ class TestComplexAggregations:
         """Test multiple aggregations on different patterns."""
         response = execute_cypher(
             """
-            MATCH (n:User)
-            OPTIONAL MATCH (n)-[:FOLLOWS]->(out)
-            OPTIONAL MATCH (in)-[:FOLLOWS]->(n)
+            MATCH (n:TestUser)
+            OPTIONAL MATCH (n)-[:TEST_FOLLOWS]->(out)
+            OPTIONAL MATCH (in)-[:TEST_FOLLOWS]->(n)
             RETURN n.name,
                    COUNT(DISTINCT out) as following,
                    COUNT(DISTINCT in) as followers,
@@ -493,7 +493,7 @@ class TestAggregationEdgeCases:
         """Test aggregation on empty result set."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE a.name = 'NonExistent'
             RETURN COUNT(b) as count
             """,
@@ -508,8 +508,8 @@ class TestAggregationEdgeCases:
         """Test aggregation handling NULL values."""
         response = execute_cypher(
             """
-            MATCH (a:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follows
             ORDER BY a.name
             """,
@@ -524,7 +524,7 @@ class TestAggregationEdgeCases:
         """Test aggregation when all rows in same group."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN 'all_users' as group_key, COUNT(n) as total
             """,
             schema_name=simple_graph["schema_name"]

@@ -25,7 +25,7 @@ class TestMalformedQueries:
         """Test incomplete MATCH pattern."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE
             RETURN a.name
             """,
@@ -40,7 +40,7 @@ class TestMalformedQueries:
         """Test query without RETURN clause - now auto-returns matched nodes."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.age > 25
             """,
             schema_name=simple_graph["schema_name"],
@@ -56,7 +56,7 @@ class TestMalformedQueries:
         """Test query with unmatched parentheses."""
         response = execute_cypher(
             """
-            MATCH (a:User
+            MATCH (a:TestUser
             RETURN a.name
             """,
             schema_name=simple_graph["schema_name"],
@@ -69,7 +69,7 @@ class TestMalformedQueries:
         """Test query with invalid operator."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.age === 30
             RETURN a.name
             """,
@@ -84,7 +84,7 @@ class TestMalformedQueries:
         """Test incomplete relationship pattern."""
         response = execute_cypher(
             """
-            MATCH (a)-[:FOLLOWS
+            MATCH (a)-[:TEST_FOLLOWS
             RETURN a.name
             """,
             schema_name=simple_graph["schema_name"],
@@ -115,7 +115,7 @@ class TestNonExistentElements:
         """Test querying non-existent relationship type."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:NONEXISTENT_REL]->(b:User)
+            MATCH (a:TestUser)-[:NONEXISTENT_REL]->(b:TestUser)
             RETURN a.name, b.name
             """,
             schema_name=simple_graph["schema_name"], raise_on_error=False)
@@ -128,7 +128,7 @@ class TestNonExistentElements:
         """Test accessing non-existent property."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.nonexistent_property
             """,
             schema_name=simple_graph["schema_name"], raise_on_error=False)
@@ -142,7 +142,7 @@ class TestNonExistentElements:
         """Test querying non-existent database."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as count
             """,
             schema_name="completely_nonexistent_database_12345", raise_on_error=False)
@@ -158,7 +158,7 @@ class TestInvalidSyntax:
         """Test invalid WHERE clause syntax."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.age > AND a.name = 'Alice'
             RETURN a.name
             """,
@@ -170,7 +170,7 @@ class TestInvalidSyntax:
         """Test invalid RETURN syntax - now handled gracefully."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             RETURN a.name AS
             """,
             schema_name=simple_graph["schema_name"], raise_on_error=False)
@@ -182,7 +182,7 @@ class TestInvalidSyntax:
         """Test invalid ORDER BY syntax."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             RETURN a.name
             ORDER BY
             """,
@@ -194,7 +194,7 @@ class TestInvalidSyntax:
         """Test invalid aggregation syntax - COUNT() now handled."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             RETURN COUNT()
             """,
             schema_name=simple_graph["schema_name"], raise_on_error=False)
@@ -210,7 +210,7 @@ class TestTypeMismatches:
         """Test comparing string with number."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name > 30
             RETURN a.name
             """,
@@ -224,7 +224,7 @@ class TestTypeMismatches:
         """Test invalid arithmetic operations."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             RETURN a.name + a.age
             """,
             schema_name=simple_graph["schema_name"], raise_on_error=False)
@@ -236,7 +236,7 @@ class TestTypeMismatches:
         """Test NULL comparisons (edge case)."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = NULL
             RETURN a.name
             """,
@@ -255,7 +255,7 @@ class TestInvalidPatterns:
         """Test pattern with disconnected nodes (Cartesian product)."""
         response = execute_cypher(
             """
-            MATCH (a:User), (b:User)
+            MATCH (a:TestUser), (b:TestUser)
             WHERE a.name = 'Alice' AND b.name = 'Bob'
             RETURN a.name, b.name
             """,
@@ -269,7 +269,7 @@ class TestInvalidPatterns:
         """Test invalid variable-length range."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*5..2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*5..2]->(b:TestUser)
             RETURN a.name, b.name
             """,
             schema_name=simple_graph["schema_name"], raise_on_error=False)
@@ -281,7 +281,7 @@ class TestInvalidPatterns:
         """Test negative variable-length hop count."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*-1]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*-1]->(b:TestUser)
             RETURN a.name, b.name
             """,
             schema_name=simple_graph["schema_name"], raise_on_error=False)
@@ -297,8 +297,8 @@ class TestQueryComplexity:
         """Test very deep pattern (should succeed or timeout gracefully)."""
         response = execute_cypher(
             """
-            MATCH (a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)-[:FOLLOWS]->(d)
-                 -[:FOLLOWS]->(e)-[:FOLLOWS]->(f)-[:FOLLOWS]->(g)
+            MATCH (a)-[:TEST_FOLLOWS]->(b)-[:TEST_FOLLOWS]->(c)-[:TEST_FOLLOWS]->(d)
+                 -[:TEST_FOLLOWS]->(e)-[:TEST_FOLLOWS]->(f)-[:TEST_FOLLOWS]->(g)
             RETURN a.name
             """,
             schema_name=simple_graph["schema_name"], raise_on_error=False)
@@ -310,7 +310,7 @@ class TestQueryComplexity:
         """Test very large variable-length bound."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..1000]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..1000]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN COUNT(b) as count
             """,
@@ -323,8 +323,8 @@ class TestQueryComplexity:
         """Test multiple variable-length patterns in one query."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..3]->(b:User),
-                  (b)-[:FOLLOWS*1..3]->(c:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..3]->(b:TestUser),
+                  (b)-[:TEST_FOLLOWS*1..3]->(c:TestUser)
             WHERE a.name = 'Alice'
             RETURN COUNT(c) as count
             """,
@@ -343,7 +343,7 @@ class TestEmptyResults:
         """Test filter that can never be true."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.age > 1000
             RETURN a.name
             """,
@@ -356,7 +356,7 @@ class TestEmptyResults:
         """Test contradictory WHERE conditions."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.age > 30 AND a.age < 25
             RETURN a.name
             """,
@@ -369,7 +369,7 @@ class TestEmptyResults:
         """Test relationship pattern with no matches."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE a.name = 'Eve'
             RETURN b.name
             """,
@@ -387,7 +387,7 @@ class TestSpecialCharacters:
         """Test string with single quotes."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Alice'
             RETURN a.name
             """,
@@ -401,7 +401,7 @@ class TestSpecialCharacters:
         """Test Unicode characters in query."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = '测试用户'
             RETURN a.name
             """,
@@ -414,7 +414,7 @@ class TestSpecialCharacters:
         """Test special characters in property values."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name CONTAINS '@#$%'
             RETURN a.name
             """,
@@ -431,7 +431,7 @@ class TestLimitsAndBoundaries:
         """Test LIMIT 0."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             RETURN a.name
             LIMIT 0
             """,
@@ -444,7 +444,7 @@ class TestLimitsAndBoundaries:
         """Test negative LIMIT."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             RETURN a.name
             LIMIT -1
             """,
@@ -457,7 +457,7 @@ class TestLimitsAndBoundaries:
         """Test very large LIMIT."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             RETURN a.name
             LIMIT 1000000
             """,
@@ -470,7 +470,7 @@ class TestLimitsAndBoundaries:
         """Test negative SKIP."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             RETURN a.name
             SKIP -5
             """,
@@ -487,7 +487,7 @@ class TestCaseInsensitivity:
         """Test query with lowercase keywords."""
         response = execute_cypher(
             """
-            match (a:User)
+            match (a:TestUser)
             where a.age > 25
             return a.name
             """,
@@ -500,7 +500,7 @@ class TestCaseInsensitivity:
         """Test query with mixed case keywords."""
         response = execute_cypher(
             """
-            MaTcH (a:User)
+            MaTcH (a:TestUser)
             WhErE a.age > 25
             ReTuRn a.name
             """,
@@ -552,8 +552,8 @@ class TestVariableLengthPathErrors:
         """
         Test incorrect usage of length() on relationship variable.
         
-        Common mistake: using -[path:FOLLOWS*1..3]- (relationship variable)
-        instead of path = (...)-[r:FOLLOWS*1..3]-(...) (path variable).
+        Common mistake: using -[path:TEST_FOLLOWS*1..3]- (relationship variable)
+        instead of path = (...)-[r:TEST_FOLLOWS*1..3]-(...) (path variable).
         
         The relationship variable 'path' refers to the edges, not the entire path,
         so length(path) is undefined and should produce a clear error.
@@ -566,7 +566,7 @@ class TestVariableLengthPathErrors:
         """
         response = execute_cypher(
             """
-            MATCH (a:User)-[path:FOLLOWS*1..3]-(b:User)
+            MATCH (a:TestUser)-[path:TEST_FOLLOWS*1..3]-(b:TestUser)
             WITH b, min(length(path)) AS distance
             RETURN b.name, distance
             LIMIT 5

@@ -25,7 +25,7 @@ class TestBasicMatch:
     def test_match_all_nodes(self, simple_graph):
         """Test MATCH (n) RETURN n pattern."""
         response = execute_cypher(
-            "MATCH (n:User) RETURN n.name",
+            "MATCH (n:TestUser) RETURN n.name",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -36,7 +36,7 @@ class TestBasicMatch:
     def test_match_with_label(self, simple_graph):
         """Test MATCH with node label."""
         response = execute_cypher(
-            "MATCH (u:User) RETURN u.name, u.age",
+            "MATCH (u:TestUser) RETURN u.name, u.age",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -48,7 +48,7 @@ class TestBasicMatch:
     def test_match_with_alias(self, simple_graph):
         """Test MATCH with different alias."""
         response = execute_cypher(
-            "MATCH (person:User) RETURN person.name",
+            "MATCH (person:TestUser) RETURN person.name",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -63,7 +63,7 @@ class TestWhereClause:
     def test_where_equals(self, simple_graph):
         """Test WHERE with equality comparison."""
         response = execute_cypher(
-            "MATCH (u:User) WHERE u.name = 'Alice' RETURN u.name, u.age",
+            "MATCH (u:TestUser) WHERE u.name = 'Alice' RETURN u.name, u.age",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -74,7 +74,7 @@ class TestWhereClause:
     def test_where_greater_than(self, simple_graph):
         """Test WHERE with > comparison."""
         response = execute_cypher(
-            "MATCH (u:User) WHERE u.age > 30 RETURN u.name ORDER BY u.name",
+            "MATCH (u:TestUser) WHERE u.age > 30 RETURN u.name ORDER BY u.name",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -86,7 +86,7 @@ class TestWhereClause:
     def test_where_less_than(self, simple_graph):
         """Test WHERE with < comparison."""
         response = execute_cypher(
-            "MATCH (u:User) WHERE u.age < 30 RETURN u.name ORDER BY u.name",
+            "MATCH (u:TestUser) WHERE u.age < 30 RETURN u.name ORDER BY u.name",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -96,7 +96,7 @@ class TestWhereClause:
     def test_where_and(self, simple_graph):
         """Test WHERE with AND logic."""
         response = execute_cypher(
-            "MATCH (u:User) WHERE u.age > 25 AND u.age < 32 RETURN u.name ORDER BY u.name",
+            "MATCH (u:TestUser) WHERE u.age > 25 AND u.age < 32 RETURN u.name ORDER BY u.name",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -106,7 +106,7 @@ class TestWhereClause:
     def test_where_or(self, simple_graph):
         """Test WHERE with OR logic."""
         response = execute_cypher(
-            "MATCH (u:User) WHERE u.name = 'Alice' OR u.name = 'Bob' RETURN u.name ORDER BY u.name",
+            "MATCH (u:TestUser) WHERE u.name = 'Alice' OR u.name = 'Bob' RETURN u.name ORDER BY u.name",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -122,7 +122,7 @@ class TestOrderByLimit:
     def test_order_by_ascending(self, simple_graph):
         """Test ORDER BY ASC."""
         response = execute_cypher(
-            "MATCH (u:User) RETURN u.name ORDER BY u.age ASC",
+            "MATCH (u:TestUser) RETURN u.name ORDER BY u.age ASC",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -139,7 +139,7 @@ class TestOrderByLimit:
     def test_order_by_descending(self, simple_graph):
         """Test ORDER BY DESC."""
         response = execute_cypher(
-            "MATCH (u:User) RETURN u.name ORDER BY u.age DESC",
+            "MATCH (u:TestUser) RETURN u.name ORDER BY u.age DESC",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -156,7 +156,7 @@ class TestOrderByLimit:
     def test_limit(self, simple_graph):
         """Test LIMIT clause."""
         response = execute_cypher(
-            "MATCH (u:User) RETURN u.name LIMIT 3",
+            "MATCH (u:TestUser) RETURN u.name LIMIT 3",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -166,7 +166,7 @@ class TestOrderByLimit:
     def test_order_by_with_limit(self, simple_graph):
         """Test ORDER BY combined with LIMIT."""
         response = execute_cypher(
-            "MATCH (u:User) RETURN u.name ORDER BY u.age DESC LIMIT 2",
+            "MATCH (u:TestUser) RETURN u.name ORDER BY u.age DESC LIMIT 2",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -183,7 +183,7 @@ class TestPropertyAccess:
     def test_single_property(self, simple_graph):
         """Test accessing single property."""
         response = execute_cypher(
-            "MATCH (u:User) WHERE u.name = 'Alice' RETURN u.age",
+            "MATCH (u:TestUser) WHERE u.name = 'Alice' RETURN u.age",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -199,7 +199,7 @@ class TestPropertyAccess:
     def test_multiple_properties(self, simple_graph):
         """Test accessing multiple properties."""
         response = execute_cypher(
-            "MATCH (u:User) WHERE u.name = 'Bob' RETURN u.name, u.age",
+            "MATCH (u:TestUser) WHERE u.name = 'Bob' RETURN u.name, u.age",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -211,7 +211,7 @@ class TestPropertyAccess:
     def test_property_in_where_and_return(self, simple_graph):
         """Test using same property in WHERE and RETURN."""
         response = execute_cypher(
-            "MATCH (u:User) WHERE u.age > 30 RETURN u.name, u.age ORDER BY u.age",
+            "MATCH (u:TestUser) WHERE u.age > 30 RETURN u.name, u.age ORDER BY u.age",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -225,7 +225,7 @@ class TestBasicAggregation:
     def test_count_all(self, simple_graph):
         """Test COUNT(*) aggregation."""
         response = execute_cypher(
-            "MATCH (u:User) RETURN COUNT(*) as total",
+            "MATCH (u:TestUser) RETURN COUNT(*) as total",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -243,7 +243,7 @@ class TestBasicAggregation:
     def test_count_with_where(self, simple_graph):
         """Test COUNT with WHERE clause."""
         response = execute_cypher(
-            "MATCH (u:User) WHERE u.age > 30 RETURN COUNT(*) as count",
+            "MATCH (u:TestUser) WHERE u.age > 30 RETURN COUNT(*) as count",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -261,7 +261,7 @@ class TestBasicAggregation:
     def test_min_max(self, simple_graph):
         """Test MIN and MAX aggregations."""
         response = execute_cypher(
-            "MATCH (u:User) RETURN MIN(u.age) as min_age, MAX(u.age) as max_age",
+            "MATCH (u:TestUser) RETURN MIN(u.age) as min_age, MAX(u.age) as max_age",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -284,7 +284,7 @@ class TestReturnDistinct:
     def test_distinct_values(self, simple_graph):
         """Test RETURN DISTINCT on values."""
         response = execute_cypher(
-            "MATCH (u:User) RETURN DISTINCT u.name ORDER BY u.name",
+            "MATCH (u:TestUser) RETURN DISTINCT u.name ORDER BY u.name",
             schema_name=simple_graph["schema_name"]
         )
         

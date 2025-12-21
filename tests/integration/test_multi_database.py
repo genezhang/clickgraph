@@ -26,7 +26,7 @@ class TestSchemaNameParameter:
         """Test querying with schema_name parameter."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as user_count
             """,
             schema_name=simple_graph["schema_name"]
@@ -47,7 +47,7 @@ class TestSchemaNameParameter:
         # Query with explicit schema_name
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             WHERE n.name = 'Alice'
             RETURN n.name
             """,
@@ -61,7 +61,7 @@ class TestSchemaNameParameter:
         """Test querying nonexistent schema."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as count
             """,
             schema_name="nonexistent_database",
@@ -81,7 +81,7 @@ class TestUSEClause:
         response = execute_cypher(
             f"""
             USE {simple_graph["database"]}
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as user_count
             """
         )
@@ -95,7 +95,7 @@ class TestUSEClause:
         response = execute_cypher(
             f"""
             USE {simple_graph["database"]}
-            MATCH (n:User)
+            MATCH (n:TestUser)
             WHERE n.name = 'Alice'
             RETURN n.name
             """,
@@ -112,7 +112,7 @@ class TestUSEClause:
         response = execute_cypher(
             f"""
             USE `{db_name}`
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as count
             """
         )
@@ -130,14 +130,14 @@ class TestDatabaseSwitching:
         
         # First query
         response1 = execute_cypher(
-            "MATCH (n:User) RETURN COUNT(n) as count",
+            "MATCH (n:TestUser) RETURN COUNT(n) as count",
             schema_name=db_name
         )
         assert_query_success(response1)
         
         # Second query to same database
         response2 = execute_cypher(
-            "MATCH (n:User) WHERE n.name = 'Alice' RETURN n.name",
+            "MATCH (n:TestUser) WHERE n.name = 'Alice' RETURN n.name",
             schema_name=db_name
         )
         assert_query_success(response2)
@@ -164,21 +164,21 @@ class TestDatabaseSwitching:
         
         # Query first database
         response1 = execute_cypher(
-            "MATCH (n:User) RETURN COUNT(n) as count",
+            "MATCH (n:TestUser) RETURN COUNT(n) as count",
             schema_name=db1
         )
         assert_query_success(response1)
         
         # Query second database
         response2 = execute_cypher(
-            "MATCH (n:Product) RETURN COUNT(n) as count",
+            "MATCH (n:TestProduct) RETURN COUNT(n) as count",
             schema_name=db2
         )
         assert_query_success(response2)
         
         # Query first database again
         response3 = execute_cypher(
-            "MATCH (n:User) WHERE n.name = 'Bob' RETURN n.name",
+            "MATCH (n:TestUser) WHERE n.name = 'Bob' RETURN n.name",
             schema_name=db1
         )
         assert_query_success(response3)
@@ -208,7 +208,7 @@ class TestSchemaIsolation:
         
         # Query User in db1 should work
         response1 = execute_cypher(
-            "MATCH (n:User) RETURN COUNT(n) as count",
+            "MATCH (n:TestUser) RETURN COUNT(n) as count",
             schema_name=db1
         )
         assert_query_success(response1)
@@ -239,7 +239,7 @@ class TestPrecedenceOrder:
         response = execute_cypher(
             f"""
             USE {db_name}
-            MATCH (n:User)
+            MATCH (n:TestUser)
             WHERE n.name = 'Alice'
             RETURN n.name
             """,
@@ -257,7 +257,7 @@ class TestPrecedenceOrder:
         # Explicit schema_name should override default
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as count
             """,
             schema_name=db_name
@@ -274,7 +274,7 @@ class TestComplexDatabaseQueries:
         """Test aggregation query with database parameter."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follows
             ORDER BY follows DESC, a.name
             LIMIT 3
@@ -290,7 +290,7 @@ class TestComplexDatabaseQueries:
         """Test variable-length paths with database parameter."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN DISTINCT b.name
             ORDER BY b.name
@@ -305,9 +305,9 @@ class TestComplexDatabaseQueries:
         """Test OPTIONAL MATCH with database parameter."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Eve'
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, b.name
             """,
             schema_name=simple_graph["schema_name"]
@@ -324,7 +324,7 @@ class TestDatabaseEdgeCases:
         """Test handling of empty database name."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as count
             """,
             schema_name=""
@@ -339,7 +339,7 @@ class TestDatabaseEdgeCases:
         # This tests proper escaping/validation
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as count
             """,
             schema_name="test-database-with-dashes"
@@ -355,7 +355,7 @@ class TestDatabaseEdgeCases:
         # Try uppercase version
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as count
             """,
             schema_name=db_name.upper()
@@ -378,7 +378,7 @@ class TestUSEClauseEdgeCases:
             f"""
             USE wrong_database
             USE {db_name}
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as count
             """
         )
@@ -397,7 +397,7 @@ class TestUSEClauseEdgeCases:
             USE {db_name}
             /* Multi-line
                comment */
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as count
             """
         )
@@ -416,7 +416,7 @@ class TestDatabaseValidation:
         
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as count
             """,
             schema_name=malicious_name
@@ -429,7 +429,7 @@ class TestDatabaseValidation:
         # Verify users table still exists in real database
         verify = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as count
             """,
             schema_name=simple_graph["schema_name"]
@@ -440,7 +440,7 @@ class TestDatabaseValidation:
         """Test database names with Unicode characters."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as count
             """,
             schema_name="test_数据库_😀"

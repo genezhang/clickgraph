@@ -6,7 +6,7 @@ import json
 
 BASE_URL = "http://localhost:8080"
 
-def test_query(query, parameters=None, description=""):
+def execute_query(query, parameters=None, description=""):
     """Execute a query and print results"""
     print(f"\n{'='*60}")
     print(f"Test: {description}")
@@ -42,22 +42,22 @@ def main():
     
     # Test 1: Simple literal
     tests_total += 1
-    if test_query("RETURN 1 + 1 AS sum", description="Simple arithmetic"):
+    if execute_query("RETURN 1 + 1 AS sum", description="Simple arithmetic"):
         tests_passed += 1
     
     # Test 2: String literal
     tests_total += 1
-    if test_query("RETURN 'hello' AS greeting", description="String literal"):
+    if execute_query("RETURN 'hello' AS greeting", description="String literal"):
         tests_passed += 1
     
     # Test 3: Function call
     tests_total += 1
-    if test_query("RETURN toUpper('hello') AS upper", description="Function call"):
+    if execute_query("RETURN toUpper('hello') AS upper", description="Function call"):
         tests_passed += 1
     
     # Test 4: Parameter
     tests_total += 1
-    if test_query(
+    if execute_query(
         "RETURN $name AS param_value",
         parameters={"name": "World"},
         description="Parameter reference"
@@ -66,7 +66,7 @@ def main():
     
     # Test 5: Function with parameter
     tests_total += 1
-    if test_query(
+    if execute_query(
         "RETURN toUpper($text) AS result",
         parameters={"text": "hello world"},
         description="Function with parameter"
@@ -75,7 +75,7 @@ def main():
     
     # Test 6: Multiple expressions
     tests_total += 1
-    if test_query(
+    if execute_query(
         "RETURN 1 + 1 AS sum, 2 * 3 AS product, 'test' AS text",
         description="Multiple expressions"
     ):
@@ -83,7 +83,7 @@ def main():
     
     # Test 7: Nested functions
     tests_total += 1
-    if test_query(
+    if execute_query(
         "RETURN length(toUpper('hello')) AS len",
         description="Nested functions"
     ):

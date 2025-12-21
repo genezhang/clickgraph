@@ -28,9 +28,9 @@ class TestSingleOptionalMatch:
         """Test OPTIONAL MATCH when node exists."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Alice'
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, b.name
             ORDER BY b.name
             """,
@@ -47,9 +47,9 @@ class TestSingleOptionalMatch:
         """Test OPTIONAL MATCH when relationship doesn't exist."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Eve'
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, b.name
             """,
             schema_name=simple_graph["schema_name"]
@@ -71,9 +71,9 @@ class TestSingleOptionalMatch:
         """Test OPTIONAL MATCH with incoming relationship."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Alice'
-            OPTIONAL MATCH (b:User)-[:FOLLOWS]->(a)
+            OPTIONAL MATCH (b:TestUser)-[:TEST_FOLLOWS]->(a)
             RETURN a.name, b.name
             """,
             schema_name=simple_graph["schema_name"]
@@ -88,9 +88,9 @@ class TestSingleOptionalMatch:
         """Test OPTIONAL MATCH with undirected relationship."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Bob'
-            OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]-(b:TestUser)
             RETURN a.name, COUNT(b) as connections
             """,
             schema_name=simple_graph["schema_name"]
@@ -107,10 +107,10 @@ class TestMultipleOptionalMatch:
         """Test two OPTIONAL MATCH when both relationships exist."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Alice'
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(c:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(c:TestUser)
             WHERE c.name <> b.name
             RETURN a.name, b.name, c.name
             ORDER BY b.name, c.name
@@ -126,10 +126,10 @@ class TestMultipleOptionalMatch:
         """Test two OPTIONAL MATCH when one doesn't exist."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Eve'
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
-            OPTIONAL MATCH (b)-[:FOLLOWS]->(c:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
+            OPTIONAL MATCH (b)-[:TEST_FOLLOWS]->(c:TestUser)
             RETURN a.name, b.name, c.name
             """,
             schema_name=simple_graph["schema_name"]
@@ -148,10 +148,10 @@ class TestMultipleOptionalMatch:
         """Test chained OPTIONAL MATCH patterns."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Alice'
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
-            OPTIONAL MATCH (b)-[:FOLLOWS]->(c:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
+            OPTIONAL MATCH (b)-[:TEST_FOLLOWS]->(c:TestUser)
             RETURN a.name, b.name, c.name
             ORDER BY b.name, c.name
             """,
@@ -171,8 +171,8 @@ class TestMixedRequiredOptional:
         """Test required MATCH followed by OPTIONAL MATCH."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
-            OPTIONAL MATCH (b)-[:FOLLOWS]->(c:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
+            OPTIONAL MATCH (b)-[:TEST_FOLLOWS]->(c:TestUser)
             RETURN a.name, b.name, c.name
             ORDER BY a.name, b.name, c.name
             """,
@@ -187,9 +187,9 @@ class TestMixedRequiredOptional:
         """Test OPTIONAL MATCH followed by required MATCH."""
         response = execute_cypher(
             """
-            OPTIONAL MATCH (a:User)-[:FOLLOWS]->(b:User)
+            OPTIONAL MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE a.name = 'Eve'
-            MATCH (x:User)
+            MATCH (x:TestUser)
             WHERE x.name = 'Alice'
             RETURN a.name, b.name, x.name
             """,
@@ -204,10 +204,10 @@ class TestMixedRequiredOptional:
         """Test alternating required and optional patterns."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Alice'
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
-            MATCH (x:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
+            MATCH (x:TestUser)
             WHERE x.name = 'Bob'
             RETURN a.name, b.name, x.name
             ORDER BY b.name
@@ -227,9 +227,9 @@ class TestOptionalMatchWithFilters:
         """Test OPTIONAL MATCH with filter on the optional node."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Alice'
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE b.age > 25
             RETURN a.name, b.name, b.age
             ORDER BY b.name
@@ -245,9 +245,9 @@ class TestOptionalMatchWithFilters:
         """Test OPTIONAL MATCH with filter on relationship property."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Alice'
-            OPTIONAL MATCH (a)-[r:FOLLOWS]->(b:User)
+            OPTIONAL MATCH (a)-[r:TEST_FOLLOWS]->(b:TestUser)
             WHERE r.since > '2020'
             RETURN a.name, b.name
             """,
@@ -262,8 +262,8 @@ class TestOptionalMatchWithFilters:
         """Test OPTIONAL MATCH with complex WHERE clause."""
         response = execute_cypher(
             """
-            MATCH (a:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE b.age > 25 AND b.name <> 'Charlie'
             RETURN a.name, COUNT(b) as filtered_follows
             ORDER BY a.name
@@ -282,9 +282,9 @@ class TestOptionalMatchWithProperties:
         """Test returning properties from optional nodes."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Alice'
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, a.age, b.name, b.age
             ORDER BY b.name
             """,
@@ -301,9 +301,9 @@ class TestOptionalMatchWithProperties:
         """Test accessing properties when optional match returns NULL."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Eve'
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, b.name, b.age
             """,
             schema_name=simple_graph["schema_name"]
@@ -328,8 +328,8 @@ class TestOptionalMatchAggregation:
         """Test COUNT with OPTIONAL MATCH."""
         response = execute_cypher(
             """
-            MATCH (a:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follow_count
             ORDER BY a.name
             """,
@@ -344,8 +344,8 @@ class TestOptionalMatchAggregation:
         """Test aggregation functions on optional matches."""
         response = execute_cypher(
             """
-            MATCH (a:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follows, AVG(b.age) as avg_age
             ORDER BY a.name
             """,
@@ -360,8 +360,8 @@ class TestOptionalMatchAggregation:
         """Test GROUP BY with OPTIONAL MATCH."""
         response = execute_cypher(
             """
-            MATCH (a:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follow_count
             ORDER BY follow_count DESC, a.name
             """,
@@ -379,9 +379,9 @@ class TestOptionalMatchVariableLength:
         """Test OPTIONAL MATCH with variable-length when path exists."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Alice'
-            OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
             RETURN a.name, COUNT(DISTINCT b) as reachable
             """,
             schema_name=simple_graph["schema_name"]
@@ -401,9 +401,9 @@ class TestOptionalMatchVariableLength:
         """Test OPTIONAL MATCH with variable-length when no path exists."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Eve'
-            OPTIONAL MATCH (a)-[:FOLLOWS*1..3]->(b:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS*1..3]->(b:TestUser)
             RETURN a.name, COUNT(b) as reachable
             """,
             schema_name=simple_graph["schema_name"]
@@ -423,8 +423,8 @@ class TestOptionalMatchVariableLength:
         """Test OPTIONAL MATCH with unbounded variable-length."""
         response = execute_cypher(
             """
-            MATCH (a:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS*]->(b:User)
+            MATCH (a:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS*]->(b:TestUser)
             RETURN a.name, COUNT(DISTINCT b) as reachable_count
             ORDER BY reachable_count DESC, a.name
             """,
@@ -443,8 +443,8 @@ class TestOptionalMatchDistinct:
         """Test DISTINCT on OPTIONAL MATCH results."""
         response = execute_cypher(
             """
-            MATCH (a:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
@@ -459,9 +459,9 @@ class TestOptionalMatchDistinct:
         """Test DISTINCT includes NULL from optional matches."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name IN ['Alice', 'Eve']
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
@@ -480,10 +480,10 @@ class TestOptionalMatchEdgeCases:
         """Test OPTIONAL MATCH when all results are NULL."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Eve'
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
-            OPTIONAL MATCH (b)-[:FOLLOWS]->(c:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
+            OPTIONAL MATCH (b)-[:TEST_FOLLOWS]->(c:TestUser)
             RETURN a.name, b.name, c.name
             """,
             schema_name=simple_graph["schema_name"]
@@ -500,9 +500,9 @@ class TestOptionalMatchEdgeCases:
         """Test OPTIONAL MATCH when base MATCH returns nothing."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'NonExistent'
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, b.name
             """,
             schema_name=simple_graph["schema_name"]
@@ -516,8 +516,8 @@ class TestOptionalMatchEdgeCases:
         """Test OPTIONAL MATCH with LIMIT clause."""
         response = execute_cypher(
             """
-            MATCH (a:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, b.name
             ORDER BY a.name, b.name
             LIMIT 5
@@ -533,9 +533,9 @@ class TestOptionalMatchEdgeCases:
         """Test OPTIONAL MATCH with self-referencing pattern."""
         response = execute_cypher(
             """
-            MATCH (a:User)
+            MATCH (a:TestUser)
             WHERE a.name = 'Alice'
-            OPTIONAL MATCH (a)-[:FOLLOWS*0..]->(a)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS*0..]->(a)
             RETURN a.name, COUNT(*) as paths
             """,
             schema_name=simple_graph["schema_name"]

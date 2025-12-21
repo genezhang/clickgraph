@@ -26,7 +26,7 @@ class TestFixedLengthPaths:
         """Test *2 pattern (exactly 2 hops)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*2]->(b:TestUser)
             RETURN a.name, b.name
             ORDER BY a.name, b.name
             """,
@@ -46,7 +46,7 @@ class TestFixedLengthPaths:
         """Test *3 pattern (exactly 3 hops)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*3]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*3]->(b:TestUser)
             RETURN a.name, b.name
             ORDER BY a.name, b.name
             """,
@@ -64,7 +64,7 @@ class TestFixedLengthPaths:
         """Test *1 pattern (same as single relationship)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1]->(b:TestUser)
             RETURN COUNT(*) as count
             """,
             schema_name=simple_graph["schema_name"]
@@ -86,7 +86,7 @@ class TestRangePaths:
         """Test *1..2 pattern (1 or 2 hops)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN DISTINCT b.name
             ORDER BY b.name
@@ -104,7 +104,7 @@ class TestRangePaths:
         """Test *1..3 pattern (1, 2, or 3 hops)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..3]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..3]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN DISTINCT b.name
             ORDER BY b.name
@@ -123,7 +123,7 @@ class TestRangePaths:
         """Test *2..4 pattern (2, 3, or 4 hops)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*2..4]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*2..4]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN DISTINCT b.name
             ORDER BY b.name
@@ -142,7 +142,7 @@ class TestRangePaths:
         """Test counting paths in range."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
             WHERE a.name = 'Bob'
             RETURN COUNT(*) as path_count
             """,
@@ -168,7 +168,7 @@ class TestUnboundedPaths:
         """Test *0.. pattern (includes self)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*0..]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*0..]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN DISTINCT b.name
             ORDER BY b.name
@@ -188,7 +188,7 @@ class TestUnboundedPaths:
         """Test *1.. or *.. pattern (excludes self)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN DISTINCT b.name
             ORDER BY b.name
@@ -207,7 +207,7 @@ class TestUnboundedPaths:
         """Test *2.. pattern (at least 2 hops)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*2..]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*2..]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN DISTINCT b.name
             ORDER BY b.name
@@ -227,7 +227,7 @@ class TestVariableLengthWithFilters:
         """Test variable-length with start node filter."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*2]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN b.name
             ORDER BY b.name
@@ -245,7 +245,7 @@ class TestVariableLengthWithFilters:
         """Test variable-length with end node filter."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*2]->(b:TestUser)
             WHERE b.name = 'Diana'
             RETURN a.name
             ORDER BY a.name
@@ -262,7 +262,7 @@ class TestVariableLengthWithFilters:
         """Test variable-length with both start and end filters."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..3]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..3]->(b:TestUser)
             WHERE a.name = 'Alice' AND b.name = 'Eve'
             RETURN COUNT(*) as path_count
             """,
@@ -277,7 +277,7 @@ class TestVariableLengthWithFilters:
         """Test variable-length with property filter on end node."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*2]->(b:TestUser)
             WHERE a.name = 'Alice' AND b.age > 27
             RETURN b.name, b.age
             ORDER BY b.name
@@ -298,7 +298,7 @@ class TestVariableLengthProperties:
         """Test accessing start node properties."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*2]->(b:TestUser)
             RETURN a.name, a.age, b.name
             ORDER BY a.name, b.name
             LIMIT 3
@@ -315,7 +315,7 @@ class TestVariableLengthProperties:
         """Test accessing end node properties."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*2]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN b.name, b.age
             ORDER BY b.name
@@ -331,7 +331,7 @@ class TestVariableLengthProperties:
         """Test accessing both start and end node properties."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
             WHERE a.name = 'Bob'
             RETURN a.name, a.age, b.name, b.age
             ORDER BY b.name
@@ -351,7 +351,7 @@ class TestVariableLengthBidirectional:
         """Test -[*2]- pattern (either direction)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*2]-(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*2]-(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN DISTINCT b.name
             ORDER BY b.name
@@ -368,7 +368,7 @@ class TestVariableLengthBidirectional:
         """Test -[*1..2]- pattern (either direction, range)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..2]-(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..2]-(b:TestUser)
             WHERE a.name = 'Bob'
             RETURN DISTINCT b.name
             ORDER BY b.name
@@ -388,7 +388,7 @@ class TestVariableLengthAggregation:
         """Test counting paths of different lengths."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..3]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..3]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN COUNT(*) as total_paths
             """,
@@ -402,7 +402,7 @@ class TestVariableLengthAggregation:
         """Test grouping paths by end node."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN b.name, COUNT(*) as path_count
             ORDER BY path_count DESC, b.name
@@ -418,7 +418,7 @@ class TestVariableLengthAggregation:
         """Test MAX/MIN on variable-length results."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..3]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..3]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN MIN(b.age) as min_age, MAX(b.age) as max_age
             """,
@@ -438,7 +438,7 @@ class TestVariableLengthDistinct:
         """Test DISTINCT on end nodes from variable-length."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..3]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..3]->(b:TestUser)
             RETURN DISTINCT b.name
             ORDER BY b.name
             """,
@@ -454,7 +454,7 @@ class TestVariableLengthDistinct:
         """Test DISTINCT on start-end node pairs."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*2]->(b:TestUser)
             RETURN DISTINCT a.name, b.name
             ORDER BY a.name, b.name
             """,
@@ -474,7 +474,7 @@ class TestVariableLengthEdgeCases:
         """Test *0 pattern (returns same node)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*0]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*0]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN a.name, b.name
             """,
@@ -494,7 +494,7 @@ class TestVariableLengthEdgeCases:
         """Test variable-length when no paths exist."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*5]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*5]->(b:TestUser)
             WHERE a.name = 'Diana'
             RETURN a.name, b.name
             """,
@@ -509,7 +509,7 @@ class TestVariableLengthEdgeCases:
         """Test if variable-length avoids immediate self-loops."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..2]->(a)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..2]->(a)
             RETURN COUNT(*) as loops
             """,
             schema_name=simple_graph["schema_name"]

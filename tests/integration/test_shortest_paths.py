@@ -26,7 +26,7 @@ class TestShortestPath:
         """Test basic shortestPath query."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]-(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]-(b:TestUser))
             WHERE a.name = 'Alice' AND b.name = 'Eve'
             RETURN a.name, b.name
             """,
@@ -41,7 +41,7 @@ class TestShortestPath:
         """Test shortestPath with directed relationships."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN a.name, b.name
             """,
@@ -56,7 +56,7 @@ class TestShortestPath:
         """Test shortestPath with maximum depth limit."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*..3]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*..3]->(b:TestUser))
             WHERE a.name = 'Alice' AND b.name = 'Eve'
             RETURN a.name, b.name
             """,
@@ -71,7 +71,7 @@ class TestShortestPath:
         """Test shortestPath when no path exists."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Eve' AND b.name = 'Alice'
             RETURN a.name, b.name
             """,
@@ -86,7 +86,7 @@ class TestShortestPath:
         """Test shortestPath from node to itself."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*0..]->(a))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*0..]->(a))
             WHERE a.name = 'Alice'
             RETURN a.name
             """,
@@ -105,7 +105,7 @@ class TestAllShortestPaths:
         """Test allShortestPaths when only one shortest path exists."""
         response = execute_cypher(
             """
-            MATCH path = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = allShortestPaths((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Charlie' AND b.name = 'Eve'
             RETURN a.name, b.name
             """,
@@ -120,7 +120,7 @@ class TestAllShortestPaths:
         """Test allShortestPaths when multiple shortest paths exist."""
         response = execute_cypher(
             """
-            MATCH path = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = allShortestPaths((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN COUNT(*) as path_count
             """,
@@ -142,7 +142,7 @@ class TestAllShortestPaths:
         """Test allShortestPaths with undirected relationships."""
         response = execute_cypher(
             """
-            MATCH path = allShortestPaths((a:User)-[:FOLLOWS*]-(b:User))
+            MATCH path = allShortestPaths((a:TestUser)-[:TEST_FOLLOWS*]-(b:TestUser))
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN COUNT(*) as path_count
             """,
@@ -161,7 +161,7 @@ class TestShortestPathWithFilters:
         """Test shortest path with filter on start node."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice' AND a.age > 25
             RETURN a.name, COUNT(b) as reachable_nodes
             """,
@@ -176,7 +176,7 @@ class TestShortestPathWithFilters:
         """Test shortest path with filter on end node."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice' AND b.age > 30
             RETURN b.name, b.age
             """,
@@ -191,7 +191,7 @@ class TestShortestPathWithFilters:
         """Test shortest path with filters on both start and end."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.age < 30 AND b.age > 30
             RETURN a.name, b.name
             """,
@@ -210,7 +210,7 @@ class TestShortestPathProperties:
         """Test returning node properties from shortest path."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice' AND b.name = 'Eve'
             RETURN a.name, a.age, b.name, b.age
             """,
@@ -227,7 +227,7 @@ class TestShortestPathProperties:
         """Test ordering shortest paths by property."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice'
             RETURN b.name, b.age
             ORDER BY b.age DESC
@@ -247,7 +247,7 @@ class TestShortestPathAggregation:
         """Test counting shortest paths."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice'
             RETURN COUNT(DISTINCT b) as reachable_count
             """,
@@ -268,7 +268,7 @@ class TestShortestPathAggregation:
         """Test grouping shortest paths by start node."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             RETURN a.name, COUNT(DISTINCT b) as reachable
             ORDER BY reachable DESC, a.name
             """,
@@ -287,7 +287,7 @@ class TestShortestPathDepth:
         """Test shortest path with minimum depth."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*2..]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*2..]->(b:TestUser))
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN a.name, b.name
             """,
@@ -302,7 +302,7 @@ class TestShortestPathDepth:
         """Test shortest path with exact depth requirement."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*3]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*3]->(b:TestUser))
             WHERE a.name = 'Alice'
             RETURN b.name
             ORDER BY b.name
@@ -318,7 +318,7 @@ class TestShortestPathDepth:
         """Test shortest path when max depth is too low."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*..1]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*..1]->(b:TestUser))
             WHERE a.name = 'Alice' AND b.name = 'Eve'
             RETURN a.name, b.name
             """,
@@ -337,7 +337,7 @@ class TestShortestPathEdgeCases:
         """Test shortest path from node to itself."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*0..]->(a))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*0..]->(a))
             WHERE a.name = 'Bob'
             RETURN a.name
             """,
@@ -352,7 +352,7 @@ class TestShortestPathEdgeCases:
         """Test shortest path when target is unreachable."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Eve' AND b.name = 'Alice'
             RETURN a.name, b.name
             """,
@@ -367,7 +367,7 @@ class TestShortestPathEdgeCases:
         """Test shortest path with multiple start nodes."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name IN ['Alice', 'Bob'] AND b.name = 'Eve'
             RETURN a.name, b.name
             ORDER BY a.name
@@ -387,7 +387,7 @@ class TestShortestPathPerformance:
         """Test that shortest path terminates early."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*..10]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*..10]->(b:TestUser))
             WHERE a.name = 'Alice' AND b.name = 'Bob'
             RETURN a.name, b.name
             """,
@@ -402,7 +402,7 @@ class TestShortestPathPerformance:
         """Test limiting all shortest paths results."""
         response = execute_cypher(
             """
-            MATCH path = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = allShortestPaths((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             RETURN a.name, b.name
             LIMIT 10
             """,
@@ -421,7 +421,7 @@ class TestShortestPathDistinct:
         """Test DISTINCT on shortest path targets."""
         response = execute_cypher(
             """
-            MATCH path = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice'
             RETURN DISTINCT b.name
             ORDER BY b.name

@@ -29,7 +29,7 @@ class TestSimpleCaseInReturn:
         """Test simple CASE with single value match."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name,
                    CASE n.name
                        WHEN 'Alice' THEN 'Admin'
@@ -50,7 +50,7 @@ class TestSimpleCaseInReturn:
         """Test simple CASE with multiple WHEN branches."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name,
                    CASE n.name
                        WHEN 'Alice' THEN 'Level 3'
@@ -73,7 +73,7 @@ class TestSimpleCaseInReturn:
         """Test simple CASE without ELSE clause."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name,
                    CASE n.name
                        WHEN 'Alice' THEN 'VIP'
@@ -95,7 +95,7 @@ class TestSearchedCaseInReturn:
         """Test searched CASE with simple condition."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name, n.age,
                    CASE
                        WHEN n.age < 25 THEN 'Young'
@@ -115,7 +115,7 @@ class TestSearchedCaseInReturn:
         """Test searched CASE with complex conditions."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name, n.age,
                    CASE
                        WHEN n.age > 30 AND n.name = 'Alice' THEN 'Senior Admin'
@@ -136,7 +136,7 @@ class TestSearchedCaseInReturn:
         """Test searched CASE with various comparison operators."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name, n.age,
                    CASE
                        WHEN n.age = 30 THEN 'Exactly 30'
@@ -160,7 +160,7 @@ class TestCaseInWhere:
         """Test simple CASE in WHERE clause."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             WHERE CASE n.name
                       WHEN 'Alice' THEN 1
                       WHEN 'Bob' THEN 1
@@ -182,7 +182,7 @@ class TestCaseInWhere:
         """Test searched CASE in WHERE clause."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             WHERE CASE
                       WHEN n.age < 25 THEN 'include'
                       WHEN n.age > 35 THEN 'include'
@@ -202,7 +202,7 @@ class TestCaseInWhere:
         """Test CASE returning boolean in WHERE."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             WHERE CASE
                       WHEN n.age >= 30 THEN true
                       ELSE false
@@ -225,7 +225,7 @@ class TestCaseInAggregation:
         """Test CASE within COUNT aggregation."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN 
                 COUNT(CASE WHEN n.age < 30 THEN 1 END) as young_count,
                 COUNT(CASE WHEN n.age >= 30 THEN 1 END) as mature_count
@@ -242,7 +242,7 @@ class TestCaseInAggregation:
         """Test CASE within SUM aggregation."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN SUM(
                 CASE
                     WHEN n.age < 30 THEN 1
@@ -262,7 +262,7 @@ class TestCaseInAggregation:
         """Test CASE expression in GROUP BY."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN 
                 CASE
                     WHEN n.age < 30 THEN 'Young'
@@ -288,8 +288,8 @@ class TestCaseWithRelationships:
         """Test CASE checking if relationship exists."""
         response = execute_cypher(
             """
-            MATCH (n:User)
-            OPTIONAL MATCH (n)-[:FOLLOWS]->(m:User)
+            MATCH (n:TestUser)
+            OPTIONAL MATCH (n)-[:TEST_FOLLOWS]->(m:TestUser)
             RETURN n.name,
                    CASE
                        WHEN COUNT(m) > 0 THEN 'Active'
@@ -309,8 +309,8 @@ class TestCaseWithRelationships:
         """Test CASE based on relationship count."""
         response = execute_cypher(
             """
-            MATCH (a:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             WITH a, COUNT(b) as follows
             RETURN a.name,
                    CASE
@@ -330,7 +330,7 @@ class TestCaseWithRelationships:
         """Test CASE using relationship properties."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[r:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[r:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, b.name,
                    CASE
                        WHEN r.since > 2022 THEN 'Recent'
@@ -353,7 +353,7 @@ class TestNestedCase:
         """Test simple nested CASE expression."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name, n.age,
                    CASE
                        WHEN n.age < 25 THEN 'Young'
@@ -375,7 +375,7 @@ class TestNestedCase:
         """Test complex nested CASE expression."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name, n.age,
                    CASE
                        WHEN n.age >= 30 THEN
@@ -405,8 +405,8 @@ class TestCaseWithNull:
         """Test CASE handling NULL input."""
         response = execute_cypher(
             """
-            MATCH (a:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name,
                    CASE b.name
                        WHEN NULL THEN 'No follow'
@@ -425,7 +425,7 @@ class TestCaseWithNull:
         """Test CASE that can return NULL."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name,
                    CASE
                        WHEN n.age > 100 THEN 'Very old'
@@ -444,8 +444,8 @@ class TestCaseWithNull:
         """Test CASE with NULL in condition."""
         response = execute_cypher(
             """
-            MATCH (a:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name,
                    CASE
                        WHEN b.name IS NULL THEN 'No connections'
@@ -467,7 +467,7 @@ class TestCaseEdgeCases:
         """Test CASE when all conditions are false."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name,
                    CASE
                        WHEN n.age > 1000 THEN 'Ancient'
@@ -486,7 +486,7 @@ class TestCaseEdgeCases:
         """Test that CASE returns on first match."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name, n.age,
                    CASE
                        WHEN n.age > 20 THEN 'First'
@@ -507,7 +507,7 @@ class TestCaseEdgeCases:
         """Test CASE with complex expressions."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name, n.age,
                    CASE
                        WHEN n.age * 2 > 60 THEN 'High'
@@ -530,7 +530,7 @@ class TestCaseInOrderBy:
         """Test ordering by CASE expression."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name, n.age
             ORDER BY 
                 CASE
@@ -559,7 +559,7 @@ class TestCaseInOrderBy:
         """Test ordering by categorization CASE."""
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name, n.age,
                    CASE
                        WHEN n.age < 25 THEN 'Young'

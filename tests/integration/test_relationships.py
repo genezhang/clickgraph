@@ -25,7 +25,7 @@ class TestSingleHopTraversal:
     def test_outgoing_relationship(self, simple_graph):
         """Test (a)-[r]->(b) pattern."""
         response = execute_cypher(
-            "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a.name, b.name",
+            "MATCH (a:TestUser)-[r:TEST_FOLLOWS]->(b:TestUser) RETURN a.name, b.name",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -37,7 +37,7 @@ class TestSingleHopTraversal:
     def test_incoming_relationship(self, simple_graph):
         """Test (a)<-[r]-(b) pattern."""
         response = execute_cypher(
-            "MATCH (a:User)<-[r:FOLLOWS]-(b:User) WHERE a.name = 'Charlie' RETURN b.name ORDER BY b.name",
+            "MATCH (a:TestUser)<-[r:TEST_FOLLOWS]-(b:TestUser) WHERE a.name = 'Charlie' RETURN b.name ORDER BY b.name",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -49,7 +49,7 @@ class TestSingleHopTraversal:
     def test_undirected_relationship(self, simple_graph):
         """Test (a)-[r]-(b) pattern (either direction)."""
         response = execute_cypher(
-            "MATCH (a:User)-[r:FOLLOWS]-(b:User) WHERE a.name = 'Bob' RETURN b.name ORDER BY b.name",
+            "MATCH (a:TestUser)-[r:TEST_FOLLOWS]-(b:TestUser) WHERE a.name = 'Bob' RETURN b.name ORDER BY b.name",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -61,7 +61,7 @@ class TestSingleHopTraversal:
     def test_relationship_with_source_filter(self, simple_graph):
         """Test relationship with WHERE on source node."""
         response = execute_cypher(
-            "MATCH (a:User)-[r:FOLLOWS]->(b:User) WHERE a.name = 'Alice' RETURN b.name ORDER BY b.name",
+            "MATCH (a:TestUser)-[r:TEST_FOLLOWS]->(b:TestUser) WHERE a.name = 'Alice' RETURN b.name ORDER BY b.name",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -73,7 +73,7 @@ class TestSingleHopTraversal:
     def test_relationship_with_target_filter(self, simple_graph):
         """Test relationship with WHERE on target node."""
         response = execute_cypher(
-            "MATCH (a:User)-[r:FOLLOWS]->(b:User) WHERE b.name = 'Diana' RETURN a.name ORDER BY a.name",
+            "MATCH (a:TestUser)-[r:TEST_FOLLOWS]->(b:TestUser) WHERE b.name = 'Diana' RETURN a.name ORDER BY a.name",
             schema_name=simple_graph["schema_name"]
         )
         
@@ -90,7 +90,7 @@ class TestMultiHopTraversal:
         """Test (a)-[]->(b)-[]->(c) pattern."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)-[:TEST_FOLLOWS]->(c:TestUser)
             RETURN a.name, b.name, c.name
             ORDER BY a.name, b.name, c.name
             """,
@@ -111,7 +111,7 @@ class TestMultiHopTraversal:
         """Test (a)-[]->(b)-[]->(c)-[]->(d) pattern."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)-[:FOLLOWS]->(d:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)-[:TEST_FOLLOWS]->(c:TestUser)-[:TEST_FOLLOWS]->(d:TestUser)
             RETURN a.name, b.name, c.name, d.name
             """,
             schema_name=simple_graph["schema_name"]
@@ -128,7 +128,7 @@ class TestMultiHopTraversal:
         """Test multi-hop with WHERE clause."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)-[:TEST_FOLLOWS]->(c:TestUser)
             WHERE a.name = 'Alice'
             RETURN b.name, c.name
             ORDER BY b.name, c.name
@@ -150,7 +150,7 @@ class TestBidirectionalPatterns:
         """Test finding mutual follows: (a)-[]->(b)-[]->(a)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(a)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)-[:TEST_FOLLOWS]->(a)
             RETURN a.name, b.name
             """,
             schema_name=simple_graph["schema_name"]
@@ -164,7 +164,7 @@ class TestBidirectionalPatterns:
         """Test triangle: (a)-[]->(b)-[]->(c)-[]->(a)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)-[:FOLLOWS]->(a)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)-[:TEST_FOLLOWS]->(c:TestUser)-[:TEST_FOLLOWS]->(a)
             RETURN a.name, b.name, c.name
             """,
             schema_name=simple_graph["schema_name"]
@@ -182,7 +182,7 @@ class TestRelationshipProperties:
         """Test returning relationship properties."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[r:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[r:TEST_FOLLOWS]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN a.name, b.name, r.since
             ORDER BY b.name
@@ -198,7 +198,7 @@ class TestRelationshipProperties:
         """Test WHERE clause on relationship property."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[r:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[r:TEST_FOLLOWS]->(b:TestUser)
             WHERE r.since >= '2023-02-01'
             RETURN a.name, b.name
             ORDER BY a.name, b.name
@@ -221,7 +221,7 @@ class TestMultipleNodes:
         """Test linear pattern with three nodes."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)-[:TEST_FOLLOWS]->(c:TestUser)
             WHERE a.name = 'Alice' AND c.name = 'Diana'
             RETURN a.name, b.name, c.name
             ORDER BY b.name
@@ -238,7 +238,7 @@ class TestMultipleNodes:
         """Test path with four distinct nodes."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)-[:FOLLOWS]->(d:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)-[:TEST_FOLLOWS]->(c:TestUser)-[:TEST_FOLLOWS]->(d:TestUser)
             WHERE a.name = 'Alice' AND d.name = 'Eve'
             RETURN a.name, b.name, c.name, d.name
             """,
@@ -259,7 +259,7 @@ class TestRelationshipCounting:
         """Test counting outgoing relationships."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as following_count
             ORDER BY following_count DESC, a.name
             """,
@@ -278,7 +278,7 @@ class TestRelationshipCounting:
         """Test counting incoming relationships (followers)."""
         response = execute_cypher(
             """
-            MATCH (a:User)<-[:FOLLOWS]-(b:User)
+            MATCH (a:TestUser)<-[:TEST_FOLLOWS]-(b:TestUser)
             RETURN a.name, COUNT(b) as follower_count
             ORDER BY follower_count DESC, a.name
             """,
@@ -300,7 +300,7 @@ class TestRelationshipCounting:
         """Test total relationship count (degree)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]-(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]-(b:TestUser)
             RETURN a.name, COUNT(DISTINCT b) as connections
             ORDER BY connections DESC, a.name
             """,
@@ -321,7 +321,7 @@ class TestComplexPatterns:
         """Test finding friends of friends (2-hop connections)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(friend:User)-[:FOLLOWS]->(fof:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(friend:TestUser)-[:TEST_FOLLOWS]->(fof:TestUser)
             WHERE a.name = 'Alice' AND fof.name <> 'Alice'
             RETURN DISTINCT fof.name
             ORDER BY fof.name
@@ -339,7 +339,7 @@ class TestComplexPatterns:
         """Test finding users with common connections."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(common:User)<-[:FOLLOWS]-(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(common:TestUser)<-[:TEST_FOLLOWS]-(b:TestUser)
             WHERE a.name = 'Alice' AND b.name = 'Bob' AND a.name < b.name
             RETURN common.name
             ORDER BY common.name

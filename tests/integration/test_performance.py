@@ -36,7 +36,7 @@ class TestSimpleQueryPerformance:
         
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name
             ORDER BY n.name
             """,
@@ -55,7 +55,7 @@ class TestSimpleQueryPerformance:
         
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             WHERE n.age > 25
             RETURN n.name
             ORDER BY n.name
@@ -75,7 +75,7 @@ class TestSimpleQueryPerformance:
         
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, b.name
             ORDER BY a.name, b.name
             """,
@@ -98,7 +98,7 @@ class TestAggregationPerformance:
         
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as total
             """,
             schema_name=simple_graph["schema_name"]
@@ -116,7 +116,7 @@ class TestAggregationPerformance:
         
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follows
             ORDER BY follows DESC, a.name
             """,
@@ -135,7 +135,7 @@ class TestAggregationPerformance:
         
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN COUNT(n) as total, 
                    AVG(n.age) as avg_age,
                    MIN(n.age) as min_age,
@@ -160,7 +160,7 @@ class TestComplexQueryPerformance:
         
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)-[:TEST_FOLLOWS]->(c:TestUser)
             RETURN DISTINCT c.name
             ORDER BY c.name
             """,
@@ -179,8 +179,8 @@ class TestComplexQueryPerformance:
         
         response = execute_cypher(
             """
-            MATCH (a:User)
-            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name, COUNT(b) as follows
             ORDER BY a.name
             """,
@@ -199,7 +199,7 @@ class TestComplexQueryPerformance:
         
         response = execute_cypher(
             """
-            MATCH (n:User)
+            MATCH (n:TestUser)
             RETURN n.name,
                    CASE
                        WHEN n.age < 25 THEN 'Young'
@@ -227,7 +227,7 @@ class TestVariableLengthPerformance:
         
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN DISTINCT b.name
             ORDER BY b.name
@@ -247,7 +247,7 @@ class TestVariableLengthPerformance:
         
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..3]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..3]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN COUNT(DISTINCT b) as reachable
             """,
@@ -267,7 +267,7 @@ class TestVariableLengthPerformance:
         
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN COUNT(DISTINCT b) as reachable
             """,
@@ -290,7 +290,7 @@ class TestShortestPathPerformance:
         
         response = execute_cypher(
             """
-            MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH p = shortestPath((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice' AND b.name = 'Diana'
             RETURN length(p) as path_length
             """,
@@ -309,7 +309,7 @@ class TestShortestPathPerformance:
         
         response = execute_cypher(
             """
-            MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User))
+            MATCH p = allShortestPaths((a:TestUser)-[:TEST_FOLLOWS*]->(b:TestUser))
             WHERE a.name = 'Alice'
             RETURN COUNT(*) as path_count
             """,
@@ -332,7 +332,7 @@ class TestPerformanceComparison:
         start1 = time.time()
         response1 = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN DISTINCT a.name
             ORDER BY a.name
             """,
@@ -344,7 +344,7 @@ class TestPerformanceComparison:
         start2 = time.time()
         response2 = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             RETURN a.name
             ORDER BY a.name
             """,
@@ -366,7 +366,7 @@ class TestPerformanceComparison:
         start1 = time.time()
         response1 = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE a.age > 25
             RETURN b.name
             """,
@@ -378,7 +378,7 @@ class TestPerformanceComparison:
         start2 = time.time()
         response2 = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser)
             WHERE a.age > 25
             RETURN b.name
             """,
@@ -401,10 +401,10 @@ class TestPerformanceBaselines:
     def test_baseline_simple_queries(self, simple_graph):
         """Establish baseline for simple query suite."""
         queries = [
-            "MATCH (n:User) RETURN COUNT(n)",
-            "MATCH (n:User) WHERE n.age > 25 RETURN n.name",
-            "MATCH (a)-[:FOLLOWS]->(b) RETURN COUNT(*)",
-            "MATCH (n:User) RETURN n.name ORDER BY n.name LIMIT 10",
+            "MATCH (n:TestUser) RETURN COUNT(n)",
+            "MATCH (n:TestUser) WHERE n.age > 25 RETURN n.name",
+            "MATCH (a)-[:TEST_FOLLOWS]->(b) RETURN COUNT(*)",
+            "MATCH (n:TestUser) RETURN n.name ORDER BY n.name LIMIT 10",
         ]
         
         times = []
@@ -430,10 +430,10 @@ class TestPerformanceBaselines:
     def test_baseline_complex_queries(self, simple_graph):
         """Establish baseline for complex query suite."""
         queries = [
-            "MATCH (a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c) RETURN COUNT(*)",
-            "MATCH (a) OPTIONAL MATCH (a)-[:FOLLOWS]->(b) RETURN a.name, COUNT(b)",
-            "MATCH (a)-[:FOLLOWS*1..2]->(b) WHERE a.name = 'Alice' RETURN COUNT(DISTINCT b)",
-            "MATCH p = shortestPath((a)-[:FOLLOWS*]-(b)) WHERE a.name = 'Alice' RETURN COUNT(p)",
+            "MATCH (a)-[:TEST_FOLLOWS]->(b)-[:TEST_FOLLOWS]->(c) RETURN COUNT(*)",
+            "MATCH (a) OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b) RETURN a.name, COUNT(b)",
+            "MATCH (a)-[:TEST_FOLLOWS*1..2]->(b) WHERE a.name = 'Alice' RETURN COUNT(DISTINCT b)",
+            "MATCH p = shortestPath((a)-[:TEST_FOLLOWS*]-(b)) WHERE a.name = 'Alice' RETURN COUNT(p)",
         ]
         
         times = []
@@ -467,7 +467,7 @@ class TestPerformanceStress:
         
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*1..3]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*1..3]->(b:TestUser)
             RETURN a.name, b.name
             """,
             schema_name=simple_graph["schema_name"]
@@ -486,7 +486,7 @@ class TestPerformanceStress:
         
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS*..10]->(b:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS*..10]->(b:TestUser)
             WHERE a.name = 'Alice'
             RETURN COUNT(DISTINCT b) as reachable
             """,

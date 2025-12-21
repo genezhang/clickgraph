@@ -27,8 +27,8 @@ class TestSpokePattern:
         """Test simple spoke: multiple nodes pointing to central hub."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(hub:User), 
-                  (c:User)-[:FOLLOWS]->(hub)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(hub:TestUser), 
+                  (c:TestUser)-[:TEST_FOLLOWS]->(hub)
             WHERE hub.user_id = 2
             RETURN a.name, hub.name, c.name
             """,
@@ -46,8 +46,8 @@ class TestSpokePattern:
         """Test simple spoke: central hub pointing to multiple nodes."""
         response = execute_cypher(
             """
-            MATCH (hub:User)-[:FOLLOWS]->(a:User), 
-                  (hub)-[:FOLLOWS]->(c:User)
+            MATCH (hub:TestUser)-[:TEST_FOLLOWS]->(a:TestUser), 
+                  (hub)-[:TEST_FOLLOWS]->(c:TestUser)
             WHERE hub.user_id = 1
             RETURN hub.name, a.name, c.name
             """,
@@ -63,8 +63,8 @@ class TestSpokePattern:
         """Test bowtie pattern: paths converging and diverging from hub (a->hub->c, e->hub->d)."""
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(hub:User)-[:FOLLOWS]->(c:User), 
-                  (e:User)-[:FOLLOWS]->(hub)-[:FOLLOWS]->(d:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(hub:TestUser)-[:TEST_FOLLOWS]->(c:TestUser), 
+                  (e:TestUser)-[:TEST_FOLLOWS]->(hub)-[:TEST_FOLLOWS]->(d:TestUser)
             WHERE hub.user_id = 2
             RETURN a.name, hub.name, c.name, d.name, e.name
             """,
@@ -86,7 +86,7 @@ class TestSpokePattern:
         """Test spoke pattern with COUNT aggregation."""
         response = execute_cypher(
             """
-            MATCH (follower:User)-[:FOLLOWS]->(hub:User)
+            MATCH (follower:TestUser)-[:TEST_FOLLOWS]->(hub:TestUser)
             WHERE hub.user_id = 2
             RETURN hub.name, COUNT(follower) as follower_count
             """,
@@ -109,8 +109,8 @@ class TestSpokePattern:
         """
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User), 
-                  (b)-[:FOLLOWS]->(c:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser), 
+                  (b)-[:TEST_FOLLOWS]->(c:TestUser)
             WHERE a.user_id = 1
             RETURN a.name, b.name, c.name
             """,
@@ -133,7 +133,7 @@ class TestPatternEdgeCases:
         # This should work (all labels explicit)
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User), (c:User)-[:FOLLOWS]->(b)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser), (c:TestUser)-[:TEST_FOLLOWS]->(b)
             WHERE b.user_id = 2
             RETURN a.name, b.name, c.name
             """,
@@ -146,7 +146,7 @@ class TestPatternEdgeCases:
         # Both patterns share node 'b' - this should work
         response = execute_cypher(
             """
-            MATCH (a:User)-[:FOLLOWS]->(b:User), (b)-[:FOLLOWS]->(c:User)
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser), (b)-[:TEST_FOLLOWS]->(c:TestUser)
             WHERE a.user_id = 1
             RETURN a.name, b.name, c.name
             """,

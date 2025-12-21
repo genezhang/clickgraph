@@ -9,7 +9,7 @@ import json
 
 SERVER_URL = "http://localhost:8080"
 
-def test_query(description, query, expected_keywords=None):
+def execute_execute_test_query(description, query, expected_keywords=None):
     """Test a Cypher query and check for expected SQL keywords"""
     print(f"\n{'='*70}")
     print(f"Test: {description}")
@@ -54,28 +54,28 @@ def main():
     print(f"Server: {SERVER_URL}")
     
     # Test 1: WITH aggregation + WHERE → should generate GROUP BY + HAVING
-    test_query(
+    execute_test_query(
         "WITH aggregation + WHERE on aggregated alias",
         "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, COUNT(b) as follows WHERE follows > 1",
         expected_keywords=["GROUP BY", "HAVING"]
     )
     
     # Test 2: WITH aggregation + WHERE + RETURN
-    test_query(
+    execute_test_query(
         "WITH aggregation + WHERE + RETURN",
         "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, COUNT(b) as follows WHERE follows > 1 RETURN a.name, follows",
         expected_keywords=["GROUP BY", "HAVING", "SELECT"]
     )
     
     # Test 3: WITH without aggregation (should not create GROUP BY)
-    test_query(
+    execute_test_query(
         "WITH without aggregation (should be simple projection)",
         "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, b.name as name RETURN a.user_id, name",
         expected_keywords=["SELECT"]
     )
     
     # Test 4: Multiple aggregations
-    test_query(
+    execute_test_query(
         "WITH multiple aggregations",
         "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, COUNT(b) as follows, AVG(b.age) as avg_age WHERE follows > 2 RETURN a.name, follows, avg_age",
         expected_keywords=["GROUP BY", "HAVING", "COUNT", "AVG"]

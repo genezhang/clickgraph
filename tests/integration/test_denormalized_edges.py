@@ -81,7 +81,7 @@ def denormalized_flights_graph(clickhouse_client, test_database):
     import yaml
     
     # Read schema file
-    with open('schemas/tests/denormalized_flights.yaml', 'r') as f:
+    with open('schemas/test/denormalized_flights.yaml', 'r') as f:
         schema_content = f.read()
     
     response = requests.post(
