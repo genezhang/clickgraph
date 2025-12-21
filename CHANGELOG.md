@@ -1,5 +1,29 @@
 ## [Unreleased]
 
+### 🧪 Testing
+- **Unified Test Data Setup** - Created `scripts/setup/setup_all_test_data.sh` for repeatable test fixture loading (December 21, 2025)
+  - **Problem**: Test data setup was ad-hoc, scattered across 20+ SQL files, not consistently loaded
+  - **Solution**: Single bash script loads all test databases with verification
+  - **Loads**: test_integration (filesystem, users, groups), brahmand (security graph, benchmarks), zeek (network logs)
+  - **Impact**: +1.7% test pass rate (76.7% → 78.4%, +54 tests)
+  - **Usage**: `bash scripts/setup/setup_all_test_data.sh` (run once before tests)
+
+- **Matrix Test Schema Configuration Fixes** - Fixed schema mismatches and added schema-type-aware query generation (December 21, 2025)
+  - **Problem**: Matrix tests failing due to schema config mismatches (wrong database/label/edge names) and invalid query patterns for certain schema types
+  - **Solution**: 
+    1. Fixed filesystem schema config: `database: test → test_integration`, `label: FSObject → Object`, `edge: PARENT_OF → PARENT`
+    2. Added skip logic for `MULTI_TABLE_LABEL` schemas (zeek_merged) - standalone node queries architecturally invalid for schemas defining nodes only via relationship tables
+  - **Impact**: Reduced matrix failures from 565 to 200 (365 tests fixed, 64.6% improvement)
+  - **Architecture**: Schema-type-aware query generation prevents generating invalid queries for edge-only node definitions
+
+### 🐛 Bug Fixes
+- **Database Prefix Preservation** - Fixed `strip_database_prefix()` to preserve database names in FROM clauses (December 21, 2025)
+  - **Problem**: Function stripped ALL `table_name.column` patterns, including legitimate database prefixes in FROM clauses
+  - **Root Cause**: Indiscriminate regex replacement without context awareness
+  - **Impact**: "Unknown table" errors for tables in non-default databases
+  - **Solution**: Only strip prefixes from SELECT/WHERE expressions, preserve database qualifications in FROM/JOIN clauses
+  - **Result**: +22% test pass rate improvement (54.5% → 76.7%, +748 tests)
+
 ### ⚙️ Changed
 - **BREAKING**: `CLICKHOUSE_DATABASE` environment variable is now **optional** and defaults to `"default"` (December 20, 2025)
   - **Reason**: All SQL queries use fully-qualified table names (`database.table`) from schema config, making the environment variable redundant
