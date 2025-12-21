@@ -1,6 +1,6 @@
 # Known Issues
 
-**Active Issues**: 4 (relationship return + 30 LDBC queries remaining)  
+**Active Issues**: 3 (30 LDBC queries remaining)  
 **Last Updated**: December 21, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
@@ -9,6 +9,15 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 ---
 
 ## Recently Fixed
+
+### ✅ Relationship Variable Return (December 21, 2025)
+**Fixed**: `RETURN r` (relationship variable) generating invalid SQL
+- **Problem**: Generated `SELECT r AS "r"` where `r` is table alias (ClickHouse rejects this)
+- **Solution**: Expand to explicit columns: `r.from_id, r.to_id, r.properties`
+- **Impact**: ~200 matrix tests fixed (relationship return patterns)
+- **Consolidation**: Unified property expansion helpers (RETURN + WITH use same code)
+- **Commit**: 39c9a14
+- **Architecture**: Documented unification opportunity in notes/return-with-unification.md
 
 ### ✅ Database Prefix Preservation (December 21, 2025)
 **Fixed**: Tables in non-default databases causing "Unknown table" errors
@@ -40,50 +49,7 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Active Issues
 
-### 1. Relationship Variable Return - SELECT Invalid (December 21, 2025)
-
-**Status**: 🔴 BLOCKING ~200 TESTS  
-**Severity**: HIGH  
-**Impact**: Matrix edge query tests, relationship property access, VLP relationship returns
-
-**Issue**: Returning relationship variables generates invalid SQL - `SELECT r AS "r"` where `r` is a table alias:
-
-```cypher
-MATCH (a)-[r:PARENT]->(b) RETURN a, r, b LIMIT 10
--- ERROR: Unknown expression identifier 'r' or Duplicate aliases r
-```
-
-**Root Cause**: ClickHouse cannot `SELECT tablealias`. Must select specific columns.
-
-**Current Behavior**:
-```sql
--- ❌ INVALID - Generated now
-SELECT a.name, r AS "r", b.name FROM ... JOIN fs_parent AS r ...
-                 ↑ Can't select table alias!
-
--- ✅ REQUIRED - Should generate  
-SELECT a.name, r.child_id AS "r_child_id", r.parent_id AS "r_parent_id", b.name FROM ...
-```
-
-**Affected Patterns**:
-- `RETURN r` - Relationship variable in RETURN clause
-- `RETURN a, r, b` - Relationship alongside nodes
-- `RETURN relationships(p)` - Variable-length path relationships
-- `collect(r)` - Relationship aggregation
-
-**Workaround**: Don't return relationship variables, only node variables or specific relationship properties:
-```cypher
--- ❌ Fails: MATCH (a)-[r:FOLLOWS]->(b) RETURN r
--- ✅ Works: MATCH (a)-[r:FOLLOWS]->(b) RETURN a.name, b.name
-```
-
-**Documentation**: See [notes/relationship-variable-return-bug.md](notes/relationship-variable-return-bug.md)
-
-**Solution**: Expand relationship variables to column list in `clickhouse_query_generator/`
-
----
-
-### 2. collect() Performance - Wide Tables (December 20, 2025)
+### 1. collect() Performance - Wide Tables (December 20, 2025)
 
 **Status**: 🎯 OPTIMIZATION OPPORTUNITY  
 **Severity**: HIGH (for production workloads with 100+ column tables)  
