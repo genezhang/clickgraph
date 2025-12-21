@@ -303,6 +303,7 @@ pub fn parse_operator_symbols(input: &str) -> IResult<&str, Operator> {
         map(tag_no_case(">="), |_| Operator::GreaterThanEqual),
         map(tag_no_case("<="), |_| Operator::LessThanEqual),
         map(tag_no_case("<>"), |_| Operator::NotEqual),
+        map(tag_no_case("!="), |_| Operator::NotEqual), // Also support != for NotEqual
         map(tag_no_case("=~"), |_| Operator::RegexMatch), // Must be before "=" to match first
         map(tag_no_case(">"), |_| Operator::GreaterThan),
         map(tag_no_case("<"), |_| Operator::LessThan),
@@ -943,6 +944,10 @@ mod tests {
         assert_eq!(op, Operator::LessThanEqual);
 
         let (rem, op) = parse_operator_symbols("<>").unwrap();
+        assert_eq!(rem, "");
+        assert_eq!(op, Operator::NotEqual);
+
+        let (rem, op) = parse_operator_symbols("!=").unwrap();
         assert_eq!(rem, "");
         assert_eq!(op, Operator::NotEqual);
 
