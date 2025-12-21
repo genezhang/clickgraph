@@ -80,7 +80,7 @@ class TestUSEClause:
         """Test basic USE clause."""
         response = execute_cypher(
             f"""
-            USE {simple_graph["database"]}
+            USE {simple_graph["schema_name"]}
             MATCH (n:TestUser)
             RETURN COUNT(n) as user_count
             """
@@ -94,7 +94,7 @@ class TestUSEClause:
         """Test that USE clause overrides schema_name parameter."""
         response = execute_cypher(
             f"""
-            USE {simple_graph["database"]}
+            USE {simple_graph["schema_name"]}
             MATCH (n:TestUser)
             WHERE n.name = 'Alice'
             RETURN n.name
@@ -108,7 +108,7 @@ class TestUSEClause:
     
     def test_use_clause_with_backticks(self, simple_graph):
         """Test USE clause with backtick-quoted names."""
-        db_name = simple_graph["database"]
+        db_name = simple_graph["schema_name"]
         response = execute_cypher(
             f"""
             USE `{db_name}`
@@ -126,7 +126,7 @@ class TestDatabaseSwitching:
     
     def test_multiple_queries_same_database(self, simple_graph):
         """Test multiple queries to same database."""
-        db_name = simple_graph["database"]
+        db_name = simple_graph["schema_name"]
         
         # First query
         response1 = execute_cypher(
@@ -145,7 +145,7 @@ class TestDatabaseSwitching:
     
     def test_switch_between_databases(self, simple_graph, create_graph_schema):
         """Test switching between different databases."""
-        db1 = simple_graph["database"]
+        db1 = simple_graph["schema_name"]
         
         # Create a second test database
         db2_schema = {
@@ -189,7 +189,7 @@ class TestSchemaIsolation:
     
     def test_schema_isolation_nodes(self, simple_graph, create_graph_schema):
         """Test that node labels are isolated between databases."""
-        db1 = simple_graph["database"]
+        db1 = simple_graph["schema_name"]
         
         # Create second database with different schema
         db2_schema = {
@@ -234,7 +234,7 @@ class TestPrecedenceOrder:
     
     def test_use_takes_precedence(self, simple_graph):
         """Test that USE clause has highest precedence."""
-        db_name = simple_graph["database"]
+        db_name = simple_graph["schema_name"]
         
         response = execute_cypher(
             f"""
@@ -252,7 +252,7 @@ class TestPrecedenceOrder:
     
     def test_schema_name_precedence(self, simple_graph):
         """Test that schema_name takes precedence over default."""
-        db_name = simple_graph["database"]
+        db_name = simple_graph["schema_name"]
         
         # Explicit schema_name should override default
         response = execute_cypher(
@@ -350,7 +350,7 @@ class TestDatabaseEdgeCases:
     
     def test_case_sensitivity_database_name(self, simple_graph):
         """Test case sensitivity in database names."""
-        db_name = simple_graph["database"]
+        db_name = simple_graph["schema_name"]
         
         # Try uppercase version
         response = execute_cypher(
@@ -371,7 +371,7 @@ class TestUSEClauseEdgeCases:
     
     def test_use_clause_multiple_times(self, simple_graph):
         """Test multiple USE clauses in same query."""
-        db_name = simple_graph["database"]
+        db_name = simple_graph["schema_name"]
         
         # Only last USE should apply
         response = execute_cypher(
@@ -389,7 +389,7 @@ class TestUSEClauseEdgeCases:
     
     def test_use_clause_with_comments(self, simple_graph):
         """Test USE clause with comments."""
-        db_name = simple_graph["database"]
+        db_name = simple_graph["schema_name"]
         
         response = execute_cypher(
             f"""
