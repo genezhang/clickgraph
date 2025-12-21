@@ -112,9 +112,15 @@ def execute_cypher(query: str, schema_name: str = "default", raise_on_error: boo
     """
     Execute a Cypher query via ClickGraph HTTP API.
     
+    UNIFIED SCHEMA MODE:
+    - Automatically maps test_integration labels to TestXxx variants
+    - User → TestUser, Product → TestProduct (for test_integration tests)
+    - FOLLOWS → TEST_FOLLOWS, etc.
+    - This allows tests to use natural label names while avoiding conflicts
+    
     Args:
         query: Cypher query string
-        schema_name: Schema/database name to query
+        schema_name: Schema/database name to query (default: "default" = unified schema)
         raise_on_error: If True, raise HTTPError on failure. If False, return error in response dict.
         
     Returns:
@@ -123,6 +129,15 @@ def execute_cypher(query: str, schema_name: str = "default", raise_on_error: boo
     Raises:
         requests.HTTPError: If query execution fails and raise_on_error=True
     """
+    # Auto-translate test_integration label names to avoid conflicts with social_benchmark
+    # This allows tests to use User/Product naturally while unified schema uses TestUser/TestProduct
+    if schema_name == "default":
+        query = query.replace(":User)", ":TestUser)")  # Node labels
+        query = query.replace(":Product)", ":TestProduct)")
+        query = query.replace("[:FOLLOWS]", "[:TEST_FOLLOWS]")  # Relationship types
+        query = query.replace("[:PURCHASED]", "[:TEST_PURCHASED]")
+        query = query.replace("[:FRIENDS_WITH]", "[:TEST_FRIENDS_WITH]")
+    
     response = requests.post(
         f"{CLICKGRAPH_URL}/query",
         json={"query": query, "schema_name": schema_name},
@@ -299,45 +314,47 @@ def simple_graph(clickhouse_client, test_database, clean_database):
     # The YAML schema name is "test_graph_schema" (intentionally different from DB name)
     # This ensures tests don't confuse schema name with database name
     
-    # Return complete schema configuration matching test_integration.yaml
+    # Return complete schema configuration
+    # NOTE: Uses "default" schema which is the unified_test_schema containing
+    # TestUser/TestProduct labels mapped to test_integration database
     return {
-        "schema_name": "test_graph_schema",  # Logical schema identifier from YAML
+        "schema_name": "default",  # Use unified schema (NOT dynamic schema)
         "database": "test_integration",      # Physical ClickHouse database where tables exist
         "nodes": {
-            "User": {
+            "TestUser": {  # Changed from "User" to match unified schema
                 "table": "users",
                 "id_column": "user_id",
                 "properties": ["name", "age"]
             },
-            "Product": {
+            "TestProduct": {  # Changed from "Product" to match unified schema
                 "table": "products",
                 "id_column": "product_id",
                 "properties": ["name", "price", "category"]
             }
         },
         "relationships": {
-            "FOLLOWS": {
+            "TEST_FOLLOWS": {  # Changed from "FOLLOWS"
                 "table": "follows",
                 "from_id": "follower_id",
                 "to_id": "followed_id",
-                "from_node": "User",
-                "to_node": "User",
+                "from_node": "TestUser",  # Changed to match unified schema
+                "to_node": "TestUser",  # Changed to match unified schema
                 "properties": ["since"]
             },
-            "PURCHASED": {
+            "TEST_PURCHASED": {  # Changed from "PURCHASED"
                 "table": "purchases",
                 "from_id": "user_id",
                 "to_id": "product_id",
-                "from_node": "User",
-                "to_node": "Product",
+                "from_node": "TestUser",  # Changed to match unified schema
+                "to_node": "TestProduct",  # Changed to match unified schema
                 "properties": ["purchase_date", "quantity"]
             },
-            "FRIENDS_WITH": {
+            "TEST_FRIENDS_WITH": {  # Changed from "FRIENDS_WITH"
                 "table": "friendships",
                 "from_id": "user_id_1",
                 "to_id": "user_id_2",
-                "from_node": "User",
-                "to_node": "User",
+                "from_node": "TestUser",  # Changed to match unified schema
+                "to_node": "TestUser",  # Changed to match unified schema
                 "properties": ["since"]
             }
         }

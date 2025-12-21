@@ -1,18 +1,25 @@
 # Unified Test Schema for ClickGraph Integration Tests
 #
-# This schema consolidates test entities from social_benchmark, LDBC SNB, and ontime benchmarks.
-# All entities coexist in one unified graph schema (single name space).
+# This schema consolidates test entities from:
+# - social_benchmark (brahmand DB) - wiki tests, primary test suite
+# - LDBC SNB (ldbc DB) - LDBC benchmark tests
+# - OnTime flights (ontime DB) - flight benchmark tests
+# - test_integration (test_integration DB) - dynamic test fixtures
+#
+# All entities coexist in one unified graph schema (single namespace).
+# Label conflicts avoided by using descriptive names (User vs TestUser)
 #
 # Benefits:
 # - Single GRAPH_CONFIG_PATH - no environment variable juggling
 # - All tests use same schema - no schema mismatches
-# - Different table names provide clear separation (users_bench vs Person vs Flight)
+# - Different databases/tables provide clear separation
 # - Simplified test infrastructure
 #
 # Usage: Tests just query the appropriate labels
-#   MATCH (u:User) ...           → brahmand.users_bench
-#   MATCH (p:Person) ...         → ldbc.Person
-#   MATCH (f:Flight) ...         → ontime.ontime
+#   MATCH (u:User) ...           → brahmand.users_bench (wiki tests)
+#   MATCH (t:TestUser) ...       → test_integration.users (fixture tests)
+#   MATCH (p:Person) ...         → ldbc.Person (LDBC tests)
+#   MATCH (f:Flight) ...         → ontime.ontime (flight tests)
 
 name: unified_test_schema
 
@@ -123,6 +130,29 @@ graph_schema:
         Distance: Distance
         Cancelled: Cancelled
 
+    # ===================================================================================
+    # TEST_INTEGRATION - Dynamic test fixtures (tests/integration/test_*.py)
+    # Uses TestUser/TestProduct to avoid conflicts with social_benchmark User
+    # ===================================================================================
+    - label: TestUser
+      database: test_integration
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: name
+        age: age
+
+    - label: TestProduct
+      database: test_integration
+      table: products
+      node_id: product_id
+      property_mappings:
+        product_id: product_id
+        name: name
+        price: price
+        category: category
+
   edges:
     # ===================================================================================
     # SOCIAL BENCHMARK relationships
@@ -218,6 +248,8 @@ graph_schema:
     # ===================================================================================
     # ONTIME FLIGHTS relationships
     # ===================================================================================
+    # ONTIME FLIGHTS relationships
+    # ===================================================================================
     - type: FLIES_TO
       database: ontime
       table: ontime
@@ -228,3 +260,37 @@ graph_schema:
       property_mappings:
         Distance: Distance
         ArrDelay: ArrDelay
+
+    # ===================================================================================
+    # TEST_INTEGRATION relationships (dynamic test fixtures)
+    # ===================================================================================
+    - type: TEST_FOLLOWS
+      database: test_integration
+      table: follows
+      from_id: follower_id
+      to_id: followed_id
+      from_node: TestUser
+      to_node: TestUser
+      property_mappings:
+        since: since
+
+    - type: TEST_PURCHASED
+      database: test_integration
+      table: purchases
+      from_id: user_id
+      to_id: product_id
+      from_node: TestUser
+      to_node: TestProduct
+      property_mappings:
+        purchase_date: purchase_date
+        quantity: quantity
+
+    - type: TEST_FRIENDS_WITH
+      database: test_integration
+      table: friendships
+      from_id: user_id_1
+      to_id: user_id_2
+      from_node: TestUser
+      to_node: TestUser
+      property_mappings:
+        since: since

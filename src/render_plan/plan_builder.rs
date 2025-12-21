@@ -6074,7 +6074,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         );
                         return Ok(Some(FromTable::new(Some(ViewTableRef {
                             source: first_graph_rel.center.clone(),
-                            name: strip_database_prefix(&scan.source_table),
+                            name: scan.source_table.clone(),
                             alias: Some(first_graph_rel.alias.clone()),
                             use_final: scan.use_final,
                         }))));
@@ -6281,7 +6281,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                         source: std::sync::Arc::new(LogicalPlan::GraphNode(
                                             left_node.clone(),
                                         )),
-                                        name: strip_database_prefix(&scan.source_table),
+                                        name: scan.source_table.clone(),
                                         alias: Some(left_node.alias.clone()),
                                         use_final: scan.use_final,
                                     }))));
@@ -6301,7 +6301,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                         source: std::sync::Arc::new(LogicalPlan::GraphNode(
                                             right_node.clone(),
                                         )),
-                                        name: strip_database_prefix(&scan.source_table),
+                                        name: scan.source_table.clone(),
                                         alias: Some(right_node.alias.clone()),
                                         use_final: scan.use_final,
                                     }))));
@@ -6342,7 +6342,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 source: std::sync::Arc::new(LogicalPlan::GraphNode(
                                     graph_node.clone(),
                                 )),
-                                name: strip_database_prefix(&scan.source_table),
+                                name: scan.source_table.clone(),
                                 alias: Some(graph_node.alias.clone()),
                                 use_final: scan.use_final,
                             };
@@ -11155,7 +11155,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             );
                             final_from = Some(super::FromTable::new(Some(super::ViewTableRef {
                                 source: graph_node.input.clone(),
-                                name: strip_database_prefix(&vs.source_table),
+                                name: vs.source_table.clone(),
                                 alias: Some(graph_node.alias.clone()),
                                 use_final: vs.use_final,
                             })));
