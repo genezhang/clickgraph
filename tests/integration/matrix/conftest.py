@@ -121,15 +121,15 @@ SCHEMAS: Dict[str, SchemaConfig] = {
         name="filesystem",
         schema_type=SchemaType.FK_EDGE,
         yaml_path="schemas/examples/filesystem.yaml",
-        database="test",
-        node_labels=["FSObject"],
-        edge_types=["PARENT_OF"],
+        database="test_integration",  # Fixed: was "test", should be "test_integration"
+        node_labels=["Object"],  # Fixed: was "FSObject", schema uses "Object"
+        edge_types=["PARENT"],  # Fixed: was "PARENT_OF", schema uses "PARENT"
         node_properties={
-            "FSObject": [("object_id", "int"), ("name", "string"), ("type", "string"), 
-                         ("size", "int"), ("created_at", "datetime")],
+            "Object": [("object_id", "int"), ("name", "string"), ("type", "string"), 
+                       ("size", "int"), ("created_at", "datetime")],
         },
         edge_properties={
-            "PARENT_OF": [],  # FK-edge has no separate edge properties
+            "PARENT": [],  # FK-edge has no separate edge properties
         },
         sample_values={"type": ["file", "folder"], "size": [0, 100, 1000, 10000]},
     ),
@@ -399,6 +399,11 @@ class QueryGenerator:
     # -------------------------------------------------------------------------
     
     def simple_node(self) -> str:
+        # MULTI_TABLE_LABEL schemas (like zeek_merged) don't support standalone node queries
+        # Nodes only exist in relationship tables, not as standalone entities
+        if self.schema.schema_type == SchemaType.MULTI_TABLE_LABEL:
+            pytest.skip(f"Standalone node queries not supported for MULTI_TABLE_LABEL schema type ({self.schema.name})")
+        
         label = self._get_label()
         return f"MATCH (n:{label}) RETURN n LIMIT 10"
     
@@ -408,6 +413,10 @@ class QueryGenerator:
         return f"MATCH (a:{label})-[r:{edge}]->(b) RETURN a, r, b LIMIT 10"
     
     def filtered_node(self) -> str:
+        # MULTI_TABLE_LABEL schemas don't support standalone node queries
+        if self.schema.schema_type == SchemaType.MULTI_TABLE_LABEL:
+            pytest.skip(f"Standalone node queries not supported for MULTI_TABLE_LABEL schema type ({self.schema.name})")
+        
         label = self._get_label()
         prop, prop_type = self._get_node_prop(label)
         filter_expr = self.expr_gen.property_comparison("n", prop, prop_type)
