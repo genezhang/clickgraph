@@ -1,10 +1,39 @@
 # Known Issues
 
-**Active Issues**: 3 (30 LDBC queries remaining)  
+**Active Issues**: 4 (including path function alias bug)  
 **Last Updated**: December 21, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
+
+---
+
+## Active Issues
+
+### 🐛 Path Function VLP Alias Bug (NEW - December 21, 2025)
+**Status**: Under Investigation  
+**Priority**: Medium  
+**Affected Tests**: 16/24 path_variables tests, some VLP tests with `length(p)`
+
+**Problem**: `length(p)` in RETURN clause generates `t.hop_count` but `t` alias doesn't exist
+- Query: `MATCH p = (a:TestUser)-[:TEST_FOLLOWS*1..3]->(b:TestUser) RETURN DISTINCT length(p) as path_length`
+- Generated SQL: `SELECT DISTINCT t.hop_count AS path_length FROM vlp_cte1433 AS vlp1433 ...`
+- Error: `Unknown expression identifier 't.hop_count'`
+
+**Root Cause**: 
+- `rewrite_logical_path_functions()` converts `length(path)` → `PropertyAccess(t, hop_count)` using hardcoded `"t"` alias
+- VLP alias rewriting (`rewrite_vlp_union_branch_aliases`) only runs for Union branches, not direct VLP queries
+- The `"t" → "vlp1433"` mapping exists but isn't applied to the SELECT items
+
+**Workaround**: None - path functions with VLP currently broken
+
+**Files Involved**:
+- `src/render_plan/plan_builder_helpers.rs:1148` - creates `"t"` alias
+- `src/render_plan/plan_builder.rs:336-400` - VLP alias rewriting (Union only)
+
+**Fix Strategy**:
+1. Either pass actual VLP CTE alias to `rewrite_logical_path_functions()` instead of hardcoded `"t"`
+2. Or apply VLP alias rewriting to all RenderPlans, not just Union branches
 
 ---
 
