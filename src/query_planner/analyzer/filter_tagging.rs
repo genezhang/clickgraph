@@ -1253,9 +1253,11 @@ impl FilterTagging {
         extracted_projections: &mut Vec<PropertyAccess>,
         in_or: bool,
     ) -> Option<LogicalExpr> {
+        log::debug!("process_expr called with: {:?}", expr);
         match expr {
             // When we have an operator application, process it separately.
             LogicalExpr::OperatorApplicationExp(mut op_app) => {
+                log::debug!("process_expr: OperatorApplication with operator={:?}, operands.len()={}", op_app.operator, op_app.operands.len());
                 
                 // CRITICAL: Handle NOT operator BEFORE recursing into operands
                 // Otherwise the operand (e.g., Equal(p.id, friend.id)) gets processed and extracted first
@@ -1306,17 +1308,23 @@ impl FilterTagging {
 
                 // Process each operand recursively, passing the flag.
                 let mut new_operands = Vec::new();
-                for operand in op_app.operands {
+                let old_operands_len = op_app.operands.len();
+                for (i, operand) in op_app.operands.into_iter().enumerate() {
+                    log::debug!("process_expr: Processing operand[{}]: {:?}", i, operand);
                     if let Some(new_operand) = Self::process_expr(
                         operand,
                         extracted_filters,
                         extracted_projections,
                         new_in_or,
                     ) {
+                        log::debug!("process_expr: Operand[{}] returned Some: {:?}", i, new_operand);
                         new_operands.push(new_operand);
+                    } else {
+                        log::debug!("process_expr: Operand[{}] returned None (extracted)", i);
                     }
                 }
                 // Update the operator application with the processed operands.
+                log::debug!("process_expr: After processing operands, new_operands.len()={} (was {})", new_operands.len(), old_operands_len);
                 op_app.operands = new_operands;
 
                 // TODO ALl aggregated functions will be evaluated in final where clause. We have to check what kind of fns we can put here.
@@ -1388,6 +1396,7 @@ impl FilterTagging {
 
                 // If after processing there is only one operand left and it is not unary then collapse the operator application.
                 if op_app.operands.len() == 1 && op_app.operator != Operator::Not {
+                    log::warn!("process_expr: Collapsing operator {:?} with single operand: {:?}", op_app.operator, op_app.operands[0]);
                     return Some(op_app.operands.into_iter().next().unwrap()); // unwrap is safe we are checking the len in condition
                 }
 

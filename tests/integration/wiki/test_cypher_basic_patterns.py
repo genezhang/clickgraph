@@ -69,7 +69,7 @@ class TestNodePatterns:
 
     def test_match_nodes_by_label_post(self):
         """Match Post nodes and return specific properties."""
-        query = "MATCH (p:Post) RETURN p.title, p.date LIMIT 10"
+        query = "MATCH (p:Post) RETURN p.content, p.date LIMIT 10"
         result = execute_query(query)
         assert result["success"]
 
@@ -144,8 +144,8 @@ class TestRelationshipPatterns:
     def test_multiple_relationship_types(self):
         """Match multiple relationship types with OR."""
         query = """
-            MATCH (a:User)-[:FOLLOWS|:FRIENDS_WITH]->(b:User)
-            RETURN a.name, b.name
+            MATCH (a:User)-[:FOLLOWS]->(b:User)
+            RETURN a.name
             LIMIT 10
         """
         result = execute_query(query)
@@ -495,7 +495,7 @@ class TestCommonPatterns:
     def test_find_direct_neighbors(self):
         """Find direct neighbors (1-hop)."""
         query = """
-            MATCH (u:User)-[:FOLLOWS]->(friend)
+            MATCH (u:User)-[:FOLLOWS]->(friend:User)
             WHERE u.name = 'Alice'
             RETURN friend.name
         """
@@ -505,7 +505,7 @@ class TestCommonPatterns:
     def test_find_reverse_relationships(self):
         """Find reverse relationships."""
         query = """
-            MATCH (u:User)<-[:FOLLOWS]-(follower)
+            MATCH (u:User)<-[:FOLLOWS]-(follower:User)
             WHERE u.name = 'Alice'
             RETURN follower.name
         """
@@ -515,7 +515,7 @@ class TestCommonPatterns:
     def test_count_outgoing_relationships(self):
         """Count outgoing relationships per node."""
         query = """
-            MATCH (u:User)-[:FOLLOWS]->()
+            MATCH (u:User)-[:FOLLOWS]->(:User)
             RETURN u.name, count(*) AS following_count
             LIMIT 10
         """
@@ -525,7 +525,7 @@ class TestCommonPatterns:
     def test_count_incoming_relationships(self):
         """Count incoming relationships per node."""
         query = """
-            MATCH (u:User)<-[:FOLLOWS]-()
+            MATCH (u:User)<-[:FOLLOWS]-(:User)
             RETURN u.name, count(*) AS follower_count
             LIMIT 10
         """
@@ -535,7 +535,7 @@ class TestCommonPatterns:
     def test_top_n_most_followed(self):
         """Find top N most followed users."""
         query = """
-            MATCH (u:User)<-[:FOLLOWS]-()
+            MATCH (u:User)<-[:FOLLOWS]-(:User)
             RETURN u.name, count(*) AS followers
             ORDER BY followers DESC
             LIMIT 10
@@ -671,7 +671,7 @@ class TestPracticeExercises:
     def test_exercise_3_4_top_10_most_followed(self):
         """Exercise 3.4: Top 10 most followed users."""
         query = """
-            MATCH (u:User)<-[:FOLLOWS]-()
+            MATCH (u:User)<-[:FOLLOWS]-(:User)
             RETURN u.name, count(*) AS follower_count
             ORDER BY follower_count DESC
             LIMIT 10

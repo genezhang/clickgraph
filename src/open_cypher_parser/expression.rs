@@ -434,6 +434,7 @@ fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_
             map(tag_no_case(">="), |_| Operator::GreaterThanEqual),
             map(tag_no_case("<="), |_| Operator::LessThanEqual),
             map(tag_no_case("<>"), |_| Operator::NotEqual),
+            map(tag_no_case("!="), |_| Operator::NotEqual),  // Add != support
             map(tag_no_case("=~"), |_| Operator::RegexMatch),
             map(tag_no_case(">"), |_| Operator::GreaterThan),
             map(tag_no_case("<"), |_| Operator::LessThan),

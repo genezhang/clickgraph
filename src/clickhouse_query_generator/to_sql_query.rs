@@ -1109,6 +1109,11 @@ impl RenderExpr {
                 }
             }
             RenderExpr::OperatorApplicationExp(op) => {
+                log::debug!("RenderExpr::to_sql() OperatorApplicationExp: operator={:?}, operands.len()={}", op.operator, op.operands.len());
+                for (i, operand) in op.operands.iter().enumerate() {
+                    log::debug!("  operand[{}]: {:?}", i, operand);
+                }
+                
                 fn op_str(o: Operator) -> &'static str {
                     match o {
                         Operator::Addition => "+",
@@ -1517,6 +1522,13 @@ impl ToSql for OperatorApplication {
         }
 
         let rendered: Vec<String> = self.operands.iter().map(|e| e.to_sql()).collect();
+
+        // Debug operand information
+        log::debug!("OperatorApplication.to_sql(): operator={:?}, operands.len()={}, rendered.len()={}", 
+                    self.operator, self.operands.len(), rendered.len());
+        for (i, (op, r)) in self.operands.iter().zip(rendered.iter()).enumerate() {
+            log::debug!("  operand[{}]: {:?} -> '{}'", i, op, r);
+        }
 
         // Special handling for RegexMatch - ClickHouse uses match() function
         if self.operator == Operator::RegexMatch && rendered.len() == 2 {

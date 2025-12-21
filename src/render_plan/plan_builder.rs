@@ -6652,8 +6652,11 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     // Extract view_filter (user's WHERE clause, injected by optimizer)
                     if let Some(ref view_filter) = scan.view_filter {
+                        log::debug!("extract_filters: view_filter BEFORE conversion: {:?}", view_filter);
                         let mut expr: RenderExpr = view_filter.clone().try_into()?;
+                        log::debug!("extract_filters: view_filter AFTER conversion: {:?}", expr);
                         apply_property_mapping_to_expr(&mut expr, &graph_node.input);
+                        log::debug!("extract_filters: view_filter AFTER property mapping: {:?}", expr);
                         log::info!(
                             "GraphNode '{}': Adding view_filter: {:?}",
                             graph_node.alias,
