@@ -1,6 +1,12 @@
 ## [Unreleased]
 
 ### 🐛 Bug Fixes
+- **WITH...MATCH FROM Clause Fix** - Fixed WITH...MATCH patterns using wrong table for FROM clause (December 21, 2025)
+  - **Problem**: Queries like `WITH x MATCH (a)-[r:TYPE]->(b)` generated `FROM cte_table` instead of `FROM actual_table JOIN cte_table`
+  - **Root Cause**: `is_cte_reference()` in `plan_builder.rs` didn't recognize `WithClause` as a CTE source, causing CartesianProduct to use wrong side for FROM
+  - **Solution**: Added `LogicalPlan::WithClause(_) => true` to `is_cte_reference()`
+  - **Result**: Zeek merged tests: 23/24 → **24/24** (100% passing)
+
 - **Denormalized Edge Query Fix** - Fixed rel_type_index duplicating simple/composite keys (December 21, 2025)
   - **Problem**: Queries like `MATCH ()-[r:REQUESTED]->() RETURN count(*)` generated `FROM rel_t1_t2 AS r` (CTE placeholder) instead of actual table
   - **Root Cause**: `build_rel_type_index()` stored BOTH simple keys (`"REQUESTED"`) AND composite keys (`"REQUESTED::IP::Domain"`) for the same relationship. When `expand_generic_relationship_type("REQUESTED")` ran, it found 2 entries and triggered multi-relationship CTE logic.

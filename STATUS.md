@@ -2,33 +2,28 @@
 
 *Updated: December 21, 2025*
 
-## 🎯 Latest: Denormalized Edge Query Fix (Dec 21, 2025)
+## 🎯 Latest: Zeek Merged Tests 100% Passing (Dec 21, 2025)
 
-**Achievement**: Fixed rel_type_index building to not duplicate simple/composite keys
+**Achievement**: All 24 zeek merged schema tests now pass!
 
-**Root Cause Identified**: The `rel_type_index` was storing BOTH simple keys (`"REQUESTED"`) 
-AND composite keys (`"REQUESTED::IP::Domain"`) for the same relationship. When querying 
-`MATCH ()-[r:REQUESTED]->()`, the system found 2 entries and created a CTE placeholder 
-(`rel_t1_t2`) instead of using the actual table name (`test_zeek.dns_log`).
+### Fix 1: rel_type_index Duplicate Keys (21/24 → 23/24)
+**Problem**: `build_rel_type_index()` stored BOTH simple keys (`"REQUESTED"`) AND composite keys (`"REQUESTED::IP::Domain"`) for the same relationship, causing queries to generate CTE placeholders instead of actual tables.  
+**Fix**: Skip simple keys when composite keys exist for the same type.
 
-**Fix**: Modified `build_rel_type_index()` in `graph_schema.rs` to skip simple keys when 
-composite keys exist for the same relationship type. This ensures each type resolves to 
-exactly ONE entry.
-
-**Zeek Merged Schema Tests**: 21/24 → **23/24** (+2 tests)
-- `test_count_dns_requests` ✅ FIXED
-- `test_count_connections` ✅ FIXED  
-- `test_with_match_correlation` ❌ (unrelated WITH clause issue)
+### Fix 2: WITH...MATCH FROM Clause (23/24 → 24/24)
+**Problem**: `is_cte_reference()` didn't recognize `WithClause` as a CTE source, so `WITH src.ip AS x MATCH (a)-[r:REL]->(b)` used the CTE side as FROM instead of the second MATCH's table.  
+**Fix**: Added `LogicalPlan::WithClause(_) => true` to `is_cte_reference()`.
 
 **Generated SQL** (now correct):
 ```sql
--- Before (broken): FROM rel_t1_t2 AS r  -- CTE placeholder doesn't exist
--- After (fixed):   FROM test_zeek.dns_log AS r  -- actual table
+WITH with_cte AS (SELECT ... FROM dns_log)
+SELECT ... FROM conn_log AS conn  -- Second MATCH's table!
+INNER JOIN with_cte ON ...
 ```
 
 ---
 
-## 📊 Previous: Test Infrastructure & Matrix Test Fixes (Dec 21, 2025)
+## 📊 Previous: Denormalized Edge Query Fix (Dec 21, 2025)
 
 **Achievement**: Created unified test data setup + fixed matrix test schema issues
 
