@@ -4,6 +4,11 @@ Integration tests for Cypher Basic Patterns (from wiki documentation).
 These tests validate that documented examples work correctly with the benchmark schema.
 Each test corresponds to a specific pattern documented in Cypher-Basic-Patterns.md.
 
+UNIFIED SCHEMA APPROACH:
+- All queries explicitly use "USE social_benchmark" clause
+- No environment variable setup required
+- Self-documenting: Query shows which schema it expects
+
 Test groups:
 - Node patterns: Matching nodes by label and properties
 - Relationship patterns: Basic relationships, multiple types, anonymous
@@ -27,12 +32,16 @@ QUERY_ENDPOINT = f"{BASE_URL}/query"
 def execute_query(cypher: str) -> Dict[str, Any]:
     """Execute a Cypher query against ClickGraph.
     
+    UNIFIED SCHEMA: All tests use the unified_test_schema which includes
+    all test entities (User, Person, Flight, etc.) in one namespace.
+    No USE clause needed since there's only one schema loaded.
+    
     Returns normalized result with:
     - success: True if 'results' key exists, False if 'error' key exists
     - data: The results array (alias for 'results')
     - error: Error message if any
     """
-    response = requests.post(QUERY_ENDPOINT, json={"query": cypher, "schema_name": "social_benchmark"})
+    response = requests.post(QUERY_ENDPOINT, json={"query": cypher})
     response.raise_for_status()
     raw = response.json()
     

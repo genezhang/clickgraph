@@ -1,0 +1,230 @@
+# Unified Test Schema for ClickGraph Integration Tests
+#
+# This schema consolidates test entities from social_benchmark, LDBC SNB, and ontime benchmarks.
+# All entities coexist in one unified graph schema (single name space).
+#
+# Benefits:
+# - Single GRAPH_CONFIG_PATH - no environment variable juggling
+# - All tests use same schema - no schema mismatches
+# - Different table names provide clear separation (users_bench vs Person vs Flight)
+# - Simplified test infrastructure
+#
+# Usage: Tests just query the appropriate labels
+#   MATCH (u:User) ...           → brahmand.users_bench
+#   MATCH (p:Person) ...         → ldbc.Person
+#   MATCH (f:Flight) ...         → ontime.ontime
+
+name: unified_test_schema
+
+graph_schema:
+  nodes:
+    # ===================================================================================
+    # SOCIAL BENCHMARK - Primary test suite (tests/integration/wiki/, most tests)
+    # ===================================================================================
+    - label: User
+      database: brahmand
+      table: users_bench
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name           # Cypher: u.name → SQL: full_name
+        email: email_address      # Cypher: u.email → SQL: email_address
+        registration_date: registration_date
+        is_active: is_active
+        country: country
+        city: city
+
+    - label: Post
+      database: brahmand
+      table: posts_bench
+      node_id: post_id
+      property_mappings:
+        post_id: post_id
+        content: content
+        date: created_at
+
+    - label: ZeekLog
+      database: brahmand
+      table: zeek_logs
+      node_id: log_id
+      property_mappings:
+        log_id: log_id
+        timestamp: timestamp
+        source_ip: source_ip
+        dest_ips: dest_ips
+        protocols: protocols
+        bytes_sent: bytes_sent
+
+    # ===================================================================================
+    # LDBC SNB - LDBC Social Network Benchmark (tests/integration/ldbc/)
+    # ===================================================================================
+    - label: Person
+      database: ldbc
+      table: Person
+      node_id: id
+      property_mappings:
+        id: id
+        firstName: firstName
+        lastName: lastName
+        gender: gender
+        birthday: birthday
+        creationDate: creationDate
+        locationIP: locationIP
+        browserUsed: browserUsed
+
+    - label: Comment
+      database: ldbc
+      table: Comment
+      node_id: id
+      property_mappings:
+        id: id
+        creationDate: creationDate
+        locationIP: locationIP
+        browserUsed: browserUsed
+        content: content
+        length: length
+
+    - label: Forum
+      database: ldbc
+      table: Forum
+      node_id: id
+      property_mappings:
+        id: id
+        title: title
+        creationDate: creationDate
+
+    - label: Tag
+      database: ldbc
+      table: Tag
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    # ===================================================================================
+    # ONTIME FLIGHTS - Flight data benchmark (tests/integration/ontime/)
+    # ===================================================================================
+    - label: Flight
+      database: ontime
+      table: ontime
+      node_id: FlightNum
+      property_mappings:
+        FlightNum: FlightNum
+        Year: Year
+        Month: Month
+        DayofMonth: DayofMonth
+        Origin: Origin
+        Dest: Dest
+        DepTime: DepTime
+        ArrTime: ArrTime
+        DepDelay: DepDelay
+        ArrDelay: ArrDelay
+        Distance: Distance
+        Cancelled: Cancelled
+
+  edges:
+    # ===================================================================================
+    # SOCIAL BENCHMARK relationships
+    # ===================================================================================
+    - type: FOLLOWS
+      database: brahmand
+      table: user_follows_bench
+      from_id: follower_id
+      to_id: followed_id
+      edge_id: follow_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        follow_date: follow_date
+    
+    - type: AUTHORED
+      database: brahmand
+      table: posts_bench
+      from_id: author_id
+      to_id: post_id
+      edge_id: post_id
+      from_node: User
+      to_node: Post
+      property_mappings:
+        post_date: post_date
+    
+    - type: LIKED
+      database: brahmand
+      table: post_likes_bench
+      from_id: user_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+      property_mappings:
+        like_date: like_date
+
+    - type: FRIENDS_WITH
+      database: brahmand
+      table: friendships
+      from_id: user1_id
+      to_id: user2_id
+      edge_id: friendship_id
+      from_node: User
+      to_node: User
+
+    # ===================================================================================
+    # LDBC SNB relationships
+    # ===================================================================================
+    - type: KNOWS
+      database: ldbc
+      table: Person_knows_Person
+      from_id: Person1Id
+      to_id: Person2Id
+      from_node: Person
+      to_node: Person
+      property_mappings:
+        creationDate: creationDate
+
+    - type: HAS_CREATOR
+      database: ldbc
+      table: Comment_hasCreator_Person
+      from_id: CommentId
+      to_id: PersonId
+      from_node: Comment
+      to_node: Person
+
+    - type: LIKES
+      database: ldbc
+      table: Person_likes_Post
+      from_id: PersonId
+      to_id: PostId
+      from_node: Person
+      to_node: Post
+      property_mappings:
+        creationDate: creationDate
+
+    - type: CONTAINER_OF
+      database: ldbc
+      table: Forum_containerOf_Post
+      from_id: ForumId
+      to_id: PostId
+      from_node: Forum
+      to_node: Post
+
+    - type: HAS_TAG
+      database: ldbc
+      table: Comment_hasTag_Tag
+      from_id: CommentId
+      to_id: TagId
+      from_node: Comment
+      to_node: Tag
+
+    # ===================================================================================
+    # ONTIME FLIGHTS relationships
+    # ===================================================================================
+    - type: FLIES_TO
+      database: ontime
+      table: ontime
+      from_id: Origin
+      to_id: Dest
+      from_node: Flight
+      to_node: Flight
+      property_mappings:
+        Distance: Distance
+        ArrDelay: ArrDelay

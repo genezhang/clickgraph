@@ -2,9 +2,11 @@
 # ClickGraph Server Background Launcher for Linux
 # This script starts the ClickGraph server as a background process with full environment variable configuration
 #
+# NEW: Defaults to unified test schema for multi-schema support!
+#
 # Usage Examples:
-#   ./start_server_background.sh                                    # Default config
-#   ./start_server_background.sh -c "ecommerce_graph_demo.yaml"     # Ecommerce schema
+#   ./start_server_background.sh                                    # Unified schema (recommended)
+#   ./start_server_background.sh -c "ecommerce_graph_demo.yaml"     # Ecommerce schema (single)
 #   ./start_server_background.sh -p 8081 -l "debug"                 # Custom port and logging
 #   ./start_server_background.sh -d "test_db" --disable-bolt        # Custom database, HTTP only
 #   ./start_server_background.sh --max-cte-depth 200 --validate     # Custom CTE depth with validation
@@ -15,8 +17,8 @@ set -e
 # Default values
 HTTP_PORT=8080
 BOLT_PORT=7687
-CONFIG_PATH="social_network.yaml"
-DATABASE="social"
+CONFIG_PATH="schemas/test/unified_test_schema.yaml"  # Fixed: Use unified schema by default
+DATABASE="brahmand"  # Changed: Most tests use brahmand database
 CLICKHOUSE_URL="http://localhost:8123"
 CLICKHOUSE_USER="test_user"
 CLICKHOUSE_PASSWORD="test_pass"

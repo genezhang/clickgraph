@@ -6,6 +6,11 @@ This module provides:
 - Test database setup/teardown
 - ClickGraph server communication utilities
 - Common test data fixtures
+
+UNIFIED SCHEMA APPROACH:
+- Default GRAPH_CONFIG_PATH points to schemas/test/unified_test_schemas.yaml
+- All tests use explicit "USE <schema_name>" clause in queries
+- No per-test schema switching needed - schemas coexist in single config
 """
 
 import pytest
@@ -22,6 +27,17 @@ CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", "localhost")
 CLICKHOUSE_PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))
 CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", "test_user")
 CLICKHOUSE_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "test_pass")
+
+# Set unified schema as default (can be overridden by env var)
+if "GRAPH_CONFIG_PATH" not in os.environ:
+    # Get path relative to project root (tests/integration/ → ../../schemas/test/)
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+    unified_schema_path = os.path.join(project_root, "schemas/test/unified_test_schema.yaml")  # Fixed filename
+    if os.path.exists(unified_schema_path):
+        os.environ["GRAPH_CONFIG_PATH"] = unified_schema_path
+        print(f"✓ Using unified test schema: {unified_schema_path}")
+    else:
+        print(f"⚠ Warning: Unified schema not found at {unified_schema_path}")
 
 
 @pytest.fixture(scope="session")
