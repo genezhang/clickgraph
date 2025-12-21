@@ -6054,6 +6054,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 // For denormalized patterns, both nodes are virtual - use relationship table as FROM
                 let left_is_denormalized = is_node_denormalized(&graph_rel.left);
                 let right_is_denormalized = is_node_denormalized(&graph_rel.right);
+                
+                println!("🔍 DEBUG extract_from GraphRel: alias='{}', left_is_denorm={}, right_is_denorm={}", 
+                    graph_rel.alias, left_is_denormalized, right_is_denormalized);
 
                 if left_is_denormalized && right_is_denormalized {
                     crate::debug_println!("DEBUG: extract_from - DENORMALIZED pattern, using relationship table as FROM");
@@ -6271,6 +6274,27 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Only use relationship table as FROM if both nodes are denormalized/unlabeled
                 if graph_joins.joins.is_empty() {
                     if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
+                        // CRITICAL FIX: For denormalized edges, BOTH nodes live in the relationship table
+                        // Check if the relationship center has from_node_properties/to_node_properties
+                        // If yes, use the relationship table with relationship alias, NOT node alias
+                        if let LogicalPlan::ViewScan(rel_scan) = graph_rel.center.as_ref() {
+                            let has_denorm_props = rel_scan.from_node_properties.is_some() 
+                                || rel_scan.to_node_properties.is_some();
+                            
+                            if has_denorm_props {
+                                log::info!(
+                                    "🎯 DENORMALIZED EDGE: Relationship '{}' has denormalized node properties, using relationship table '{}' AS '{}'",
+                                    graph_rel.alias, rel_scan.source_table, graph_rel.alias
+                                );
+                                return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                                    source: graph_rel.center.clone(),
+                                    name: rel_scan.source_table.clone(),
+                                    alias: Some(graph_rel.alias.clone()),  // Use relationship alias!
+                                    use_final: rel_scan.use_final,
+                                }))));
+                            }
+                        }
+                        
                         // Check if LEFT node has a real table (ViewScan, not just placeholder Scan)
                         // This handles polymorphic edges where one side is labeled, other is $any
                         if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
