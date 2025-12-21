@@ -1,6 +1,13 @@
 ## [Unreleased]
 
 ### 🐛 Bug Fixes
+- **Denormalized Edge Query Fix** - Fixed rel_type_index duplicating simple/composite keys (December 21, 2025)
+  - **Problem**: Queries like `MATCH ()-[r:REQUESTED]->() RETURN count(*)` generated `FROM rel_t1_t2 AS r` (CTE placeholder) instead of actual table
+  - **Root Cause**: `build_rel_type_index()` stored BOTH simple keys (`"REQUESTED"`) AND composite keys (`"REQUESTED::IP::Domain"`) for the same relationship. When `expand_generic_relationship_type("REQUESTED")` ran, it found 2 entries and triggered multi-relationship CTE logic.
+  - **Solution**: Modified `build_rel_type_index()` to skip simple keys when composite keys exist for the same type
+  - **Result**: `FROM test_zeek.dns_log AS r` (correct actual table)
+  - **Impact**: Zeek merged tests: 21/24 → **23/24** (+2 tests fixed)
+
 - **Cross-Table Comma Pattern JOINs** - Fixed missing JOINs for comma-separated patterns with shared nodes across different relationship tables (December 21, 2025)
   - **Problem**: `MATCH (a)-[:R1]->(b), (a)-[:R2]->(c)` generated SQL missing the JOIN between relationship tables
   - **Example**: `MATCH (srcip:IP)-[:REQUESTED]->(d:Domain), (srcip)-[:ACCESSED]->(dest:IP)` produced incomplete SQL referencing `t1.orig_h` with only `t2` in FROM clause

@@ -497,17 +497,40 @@ impl GraphSchema {
     
     /// Build secondary index: relationship type -> list of composite keys
     /// Enables O(1) lookup by type name without iterating through all relationships
+    /// 
+    /// NOTE: When both simple key ("TYPE") and composite key ("TYPE::FROM::TO") exist
+    /// for the same relationship, we only include the composite key. This is because
+    /// the config.rs inserts both for backward compatibility, but we only want to
+    /// resolve to ONE actual table.
     fn build_rel_type_index(
         relationships: &HashMap<String, RelationshipSchema>,
     ) -> HashMap<String, Vec<String>> {
         let mut index: HashMap<String, Vec<String>> = HashMap::new();
         
-        for (composite_key, rel_schema) in relationships {
-            // Extract type name from composite key or schema
-            // Composite key format: "TYPE::FROM::TO" or just "TYPE" for legacy entries
+        // First pass: collect all composite keys (those containing "::")
+        // Skip simple keys that have a corresponding composite key
+        let mut composite_types: std::collections::HashSet<String> = std::collections::HashSet::new();
+        
+        for composite_key in relationships.keys() {
+            if composite_key.contains("::") {
+                // Extract base type name from composite key
+                if let Some(type_name) = composite_key.split("::").next() {
+                    composite_types.insert(type_name.to_string());
+                }
+            }
+        }
+        
+        // Second pass: build index, skipping simple keys when composite exists
+        for composite_key in relationships.keys() {
             let type_name = if composite_key.contains("::") {
+                // This is a composite key - extract the type name
                 composite_key.split("::").next().unwrap_or(composite_key)
             } else {
+                // This is a simple key - skip if we have composite keys for this type
+                if composite_types.contains(composite_key) {
+                    log::debug!("Skipping simple key '{}' in favor of composite key", composite_key);
+                    continue;
+                }
                 composite_key.as_str()
             };
             
