@@ -38,6 +38,7 @@ integration_*.txt
 python_test_*.txt
 TEST_SUITE_STATUS.md
 *.sql.txt
+nohup.out
 
 # Temporary test/debug scripts in root (NOT in scripts/ or tests/)
 /test_*.py

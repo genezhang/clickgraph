@@ -3,6 +3,18 @@
 //! Centralized functions for expanding node/edge aliases to their properties.
 //! This consolidates the property expansion logic that was previously duplicated
 //! across multiple locations in the codebase.
+//!
+//! ## Architecture Note
+//!
+//! RETURN and WITH clauses have identical structure per OpenCypher grammar:
+//! - Both have: projection items + ORDER BY + SKIP + LIMIT
+//! - Difference: WITH has optional WHERE clause
+//! 
+//! Current implementation uses two paths:
+//! 1. RETURN: `expand_alias_to_properties()` → LogicalExpr/ProjectionItem
+//! 2. WITH: `expand_alias_to_select_items()` → RenderExpr/SelectItem
+//!
+//! Future: Unify into single structure (see notes/return-with-unification.md)
 
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::{
@@ -12,6 +24,10 @@ use crate::query_planner::{
     },
     logical_plan::ProjectionItem,
 };
+
+use super::render_expr::{Column, PropertyAccess as RenderPropertyAccess, RenderExpr, TableAlias as RenderTableAlias};
+use super::SelectItem;
+use super::render_expr::ColumnAlias as RenderColumnAlias;
 
 /// Configuration for how to format the expanded property aliases
 #[derive(Clone, Debug)]
@@ -69,6 +85,51 @@ pub fn expand_alias_to_properties(
                     column: PropertyValue::Column(col_name),
                 }),
                 col_alias: Some(ColumnAlias(col_alias_name)),
+            }
+        })
+        .collect()
+}
+
+/// Expand a table alias to SELECT items for all its properties (RenderExpr version)
+///
+/// This is the RenderExpr equivalent of `expand_alias_to_properties()`.
+/// Used during WITH clause processing where we need SelectItem (RenderExpr) instead of
+/// ProjectionItem (LogicalExpr).
+///
+/// # Arguments
+/// * `alias` - The table alias to expand (e.g., "r", "u")
+/// * `properties` - Vec of (property_name, column_name) tuples from schema
+/// * `actual_table_alias` - The actual table alias to use in SQL (for denormalized nodes)
+///
+/// # Returns
+/// Vector of SelectItems, one for each property, with underscore-format aliases
+///
+/// # Example
+/// ```ignore
+/// // For relationship "r" with properties [("from_id", "follower_id"), ("to_id", "followed_id")]
+/// expand_alias_to_select_items("r", properties, None)
+/// // Returns:
+/// // [
+/// //   SelectItem { expr: r.follower_id, alias: "r_from_id" },
+/// //   SelectItem { expr: r.followed_id, alias: "r_to_id" }
+/// // ]
+/// ```
+pub fn expand_alias_to_select_items(
+    alias: &str,
+    properties: Vec<(String, String)>,
+    actual_table_alias: Option<String>,
+) -> Vec<SelectItem> {
+    let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.to_string());
+
+    properties
+        .into_iter()
+        .map(|(prop_name, col_name)| {
+            SelectItem {
+                expression: RenderExpr::PropertyAccessExp(RenderPropertyAccess {
+                    table_alias: RenderTableAlias(table_alias_to_use.clone()),
+                    column: Column(PropertyValue::Column(col_name)),
+                }),
+                col_alias: Some(RenderColumnAlias(format!("{}_{}", alias, prop_name))),
             }
         })
         .collect()

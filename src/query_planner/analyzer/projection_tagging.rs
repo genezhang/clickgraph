@@ -355,6 +355,8 @@ impl ProjectionTagging {
     ) -> AnalyzerResult<()> {
         match item.expression.clone() {
             LogicalExpr::TableAlias(table_alias) => {
+                log::info!("🔍 ProjectionTagging: Processing TableAlias '{}'", table_alias.0);
+                
                 // Check if this is a projection alias (from WITH clause) rather than a table alias
                 if plan_ctx.is_projection_alias(&table_alias.0) {
                     // This is a projection alias (e.g., "follows" from "COUNT(b) as follows")
@@ -365,11 +367,16 @@ impl ProjectionTagging {
                 // if just table alias i.e MATCH (p:Post) Return p; then For final overall projection keep p.* and for p's projection keep *.
 
                 let table_ctx = plan_ctx.get_mut_table_ctx(&table_alias.0).map_err(|e| {
+                    log::error!("🚨 ProjectionTagging: Failed to get context for '{}': {:?}", table_alias.0, e);
                     AnalyzerError::PlanCtx {
                         pass: Pass::ProjectionTagging,
                         source: e,
                     }
                 })?;
+
+                // DEBUG: Log relationship detection
+                log::info!("🔍 ProjectionTagging: alias='{}', is_relation={}, has_label={}", 
+                    table_alias.0, table_ctx.is_relation(), table_ctx.get_label_opt().is_some());
 
                 // Check if this is a path variable (has no label - path variables are registered without labels)
                 // Path variables should be kept as-is, not expanded to .*
@@ -382,19 +389,18 @@ impl ProjectionTagging {
                     // No changes to item.expression needed
                     Ok(())
                 } else {
-                    // Regular table alias - expand to .*
+                    // Regular table alias (node OR relationship) - expand to .*
+                    // The property expansion layer will handle expanding this appropriately:
+                    // - For nodes: expand to all node properties
+                    // - For relationships: expand to from_id, to_id, and relationship properties
                     let tagged_proj = ProjectionItem {
                         expression: LogicalExpr::Star,
                         col_alias: None,
-                        // belongs_to_table: Some(table_alias.clone()),
                     };
-                    // table_ctx.projection_items = vec![tagged_proj];
                     table_ctx.set_projections(vec![tagged_proj]);
 
-                    // update the overall projection
-                    // IMPORTANT: Set col_alias to preserve the original alias name (e.g., "src.*")
-                    // This allows later processing (especially in denormalized schemas) to
-                    // recover which node's properties should be expanded
+                    // Update the overall projection with r.* pattern
+                    // This works for BOTH nodes and relationships
                     item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: table_alias.clone(),
                         column: crate::graph_catalog::expression_parser::PropertyValue::Column(
@@ -402,6 +408,16 @@ impl ProjectionTagging {
                         ),
                     });
                     item.col_alias = Some(ColumnAlias(format!("{}.*", table_alias.0)));
+                    
+                    // Log for relationship variables so we can track the expansion
+                    if table_ctx.is_relation() {
+                        log::info!(
+                            "✅ Marked relationship variable '{}' for expansion to columns via {}.*",
+                            table_alias.0,
+                            table_alias.0
+                        );
+                    }
+                    
                     Ok(())
                 }
             }

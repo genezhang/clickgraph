@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 3 (30 LDBC queries remaining)  
-**Last Updated**: December 19, 2025
+**Active Issues**: 4 (relationship return + 30 LDBC queries remaining)  
+**Last Updated**: December 21, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -9,6 +9,25 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 ---
 
 ## Recently Fixed
+
+### ✅ Database Prefix Preservation (December 21, 2025)
+**Fixed**: Tables in non-default databases causing "Unknown table" errors
+- **Problem**: `strip_database_prefix()` stripped ALL table_name.column patterns including legitimate database qualifications
+- **Solution**: Only strip prefixes in SELECT/WHERE, preserve database names in FROM/JOIN
+- **Impact**: +22% test pass rate (54.5% → 76.7%, +748 tests)
+- **Commit**: edfc717
+
+### ✅ Test Data Infrastructure (December 21, 2025)
+**Fixed**: Ad-hoc test data setup causing inconsistent test results
+- **Solution**: Created `scripts/setup/setup_all_test_data.sh` for repeatable fixture loading
+- **Impact**: +1.7% test pass rate (76.7% → 78.4%, +54 tests), enabled systematic testing
+- **Commit**: 3f19931
+
+### ✅ Matrix Test Schema Mismatches (December 21, 2025)
+**Fixed**: Filesystem and zeek_merged schema configuration errors
+- **Solution**: Fixed database/label/edge_type mappings, added schema-type-aware skip logic
+- **Impact**: 365 matrix tests fixed (565 → 200 failures, 64.6% improvement)
+- **Commit**: 3f19931
 
 ### ✅ Polymorphic Relationship Lookup (December 19, 2025)
 **Fixed**: Relationships with same type but different node pairs (e.g., `IS_LOCATED_IN::Person::City` vs `IS_LOCATED_IN::Post::Place`)
@@ -21,7 +40,50 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Active Issues
 
-### 1. collect() Performance - Wide Tables (December 20, 2025)
+### 1. Relationship Variable Return - SELECT Invalid (December 21, 2025)
+
+**Status**: 🔴 BLOCKING ~200 TESTS  
+**Severity**: HIGH  
+**Impact**: Matrix edge query tests, relationship property access, VLP relationship returns
+
+**Issue**: Returning relationship variables generates invalid SQL - `SELECT r AS "r"` where `r` is a table alias:
+
+```cypher
+MATCH (a)-[r:PARENT]->(b) RETURN a, r, b LIMIT 10
+-- ERROR: Unknown expression identifier 'r' or Duplicate aliases r
+```
+
+**Root Cause**: ClickHouse cannot `SELECT tablealias`. Must select specific columns.
+
+**Current Behavior**:
+```sql
+-- ❌ INVALID - Generated now
+SELECT a.name, r AS "r", b.name FROM ... JOIN fs_parent AS r ...
+                 ↑ Can't select table alias!
+
+-- ✅ REQUIRED - Should generate  
+SELECT a.name, r.child_id AS "r_child_id", r.parent_id AS "r_parent_id", b.name FROM ...
+```
+
+**Affected Patterns**:
+- `RETURN r` - Relationship variable in RETURN clause
+- `RETURN a, r, b` - Relationship alongside nodes
+- `RETURN relationships(p)` - Variable-length path relationships
+- `collect(r)` - Relationship aggregation
+
+**Workaround**: Don't return relationship variables, only node variables or specific relationship properties:
+```cypher
+-- ❌ Fails: MATCH (a)-[r:FOLLOWS]->(b) RETURN r
+-- ✅ Works: MATCH (a)-[r:FOLLOWS]->(b) RETURN a.name, b.name
+```
+
+**Documentation**: See [notes/relationship-variable-return-bug.md](notes/relationship-variable-return-bug.md)
+
+**Solution**: Expand relationship variables to column list in `clickhouse_query_generator/`
+
+---
+
+### 2. collect() Performance - Wide Tables (December 20, 2025)
 
 **Status**: 🎯 OPTIMIZATION OPPORTUNITY  
 **Severity**: HIGH (for production workloads with 100+ column tables)  

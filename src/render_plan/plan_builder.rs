@@ -555,17 +555,10 @@ fn expand_table_alias_to_select_items(
     match plan.get_properties_with_table_alias(alias) {
         Ok((properties, actual_table_alias)) => {
             if !properties.is_empty() {
-                let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.to_string());
-                let mut items = Vec::new();
-                for (prop_name, col_name) in properties.iter() {
-                    items.push(SelectItem {
-                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(table_alias_to_use.clone()),
-                            column: Column(PropertyValue::Column(col_name.clone())),
-                        }),
-                        col_alias: Some(ColumnAlias(format!("{}_{}", alias, prop_name))),
-                    });
-                }
+                // Use consolidated helper from property_expansion module
+                // This ensures consistency with RETURN clause processing
+                use crate::render_plan::property_expansion::expand_alias_to_select_items;
+                let items = expand_alias_to_select_items(alias, properties, actual_table_alias);
                 
                 log::info!(
                     "🔧 expand_table_alias_to_select_items: Found alias '{}' in base tables ({} properties)",
@@ -4949,7 +4942,17 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Check if this relationship's alias matches
                 if rel.alias == alias {
                     if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                        let properties = extract_sorted_properties(&scan.property_mapping);
+                        let mut properties = extract_sorted_properties(&scan.property_mapping);
+                        
+                        // Add from_id and to_id columns for relationships
+                        // These are required for RETURN r to expand correctly
+                        if let Some(ref from_id) = scan.from_id {
+                            properties.insert(0, ("from_id".to_string(), from_id.clone()));
+                        }
+                        if let Some(ref to_id) = scan.to_id {
+                            properties.insert(1, ("to_id".to_string(), to_id.clone()));
+                        }
+                        
                         return Ok((properties, None));
                     }
                 }
@@ -5497,6 +5500,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             );
 
                             // Get all properties AND the actual table alias to use
+                            // This works for both nodes and relationships (from_id/to_id included via get_properties_with_table_alias)
                             // Try original alias first (for recovering denormalized node properties)
                             let lookup_result = self
                                 .get_properties_with_table_alias(original_alias)
