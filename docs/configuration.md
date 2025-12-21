@@ -12,7 +12,7 @@ docker-compose up -d
 export CLICKHOUSE_URL="http://localhost:8123"
 export CLICKHOUSE_USER="test_user"
 export CLICKHOUSE_PASSWORD="test_pass"
-export CLICKHOUSE_DATABASE="brahmand"
+# CLICKHOUSE_DATABASE is optional (defaults to "default")
 
 # 3. Run ClickGraph with default settings
 cargo run --bin brahmand

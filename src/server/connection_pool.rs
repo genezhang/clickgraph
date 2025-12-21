@@ -97,8 +97,8 @@ impl ConnectionConfig {
             user: env::var("CLICKHOUSE_USER").map_err(|_| "CLICKHOUSE_USER not set".to_string())?,
             // Allow empty password for local development
             password: env::var("CLICKHOUSE_PASSWORD").unwrap_or_default(),
-            database: env::var("CLICKHOUSE_DATABASE")
-                .map_err(|_| "CLICKHOUSE_DATABASE not set".to_string())?,
+            // Database is optional - defaults to "default". All queries use fully-qualified table names anyway.
+            database: env::var("CLICKHOUSE_DATABASE").unwrap_or_else(|_| "default".to_string()),
         })
     }
 

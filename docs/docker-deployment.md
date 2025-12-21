@@ -64,7 +64,7 @@ docker-compose logs -f clickgraph
 | `CLICKHOUSE_URL` | ✅ Yes | ClickHouse HTTP endpoint (e.g., `http://clickhouse:8123`) |
 | `CLICKHOUSE_USER` | ✅ Yes | ClickHouse username |
 | `CLICKHOUSE_PASSWORD` | ✅ Yes | ClickHouse password |
-| `CLICKHOUSE_DATABASE` | ✅ Yes | Default database name |
+| `CLICKHOUSE_DATABASE` | ⚪ Optional | Default database name (defaults to "default"). All queries use fully-qualified table names from schema config. |
 
 #### Graph Schema Configuration
 

@@ -181,10 +181,12 @@ docker run -d \
   -e CLICKHOUSE_URL="http://clickhouse-service:8123" \
   -e CLICKHOUSE_USER="test_user" \
   -e CLICKHOUSE_PASSWORD="test_pass" \
-  -e CLICKHOUSE_DATABASE="brahmand" \
   -e GRAPH_CONFIG_PATH="/app/schemas/social_benchmark.yaml" \
   -v $(pwd)/benchmarks/schemas:/app/schemas:ro \
   genezhang/clickgraph:latest
+```
+
+**Note**: `CLICKHOUSE_DATABASE` is optional (defaults to "default"). All queries use fully-qualified table names from your schema config.
 ```
 
 Or use docker-compose (uses published image by default):
@@ -212,7 +214,6 @@ cargo build --release
 export CLICKHOUSE_URL="http://localhost:8123"
 export CLICKHOUSE_USER="test_user"
 export CLICKHOUSE_PASSWORD="test_pass"
-export CLICKHOUSE_DATABASE="brahmand"
 export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
 cargo run --bin clickgraph
 
@@ -220,7 +221,6 @@ cargo run --bin clickgraph
 CLICKHOUSE_URL="http://localhost:8123" \
 CLICKHOUSE_USER="test_user" \
 CLICKHOUSE_PASSWORD="test_pass" \
-CLICKHOUSE_DATABASE="brahmand" \
 GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml" \
 cargo run --bin clickgraph -- --http-port 8080 --bolt-port 7687
 ```

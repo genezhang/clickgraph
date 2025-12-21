@@ -10,9 +10,10 @@ pub fn try_get_client() -> Option<Client> {
     let url = read_env_var("CLICKHOUSE_URL")?;
     let user = read_env_var("CLICKHOUSE_USER")?;
     let password = read_env_var("CLICKHOUSE_PASSWORD")?;
-    let database = read_env_var("CLICKHOUSE_DATABASE")?;
+    // Database is optional - defaults to "default". All queries use fully-qualified table names anyway.
+    let database = read_env_var("CLICKHOUSE_DATABASE").unwrap_or_else(|| "default".to_string());
 
-    log::info!("Connecting to ClickHouse at {}", url);
+    log::info!("Connecting to ClickHouse at {} (database: {})", url, database);
     Some(
         Client::default()
             .with_url(url)

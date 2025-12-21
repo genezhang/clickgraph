@@ -273,7 +273,11 @@ docker push your-registry.com/clickgraph:latest
 CLICKHOUSE_URL=http://clickhouse-prod.internal:8123
 CLICKHOUSE_USER=clickgraph_user
 CLICKHOUSE_PASSWORD=your_secure_password_here
-CLICKHOUSE_DATABASE=production_graph
+
+# ClickHouse Database (Optional - defaults to "default")
+# Only needed if you want to change the default database context
+# All queries use fully-qualified table names from schema config anyway
+# CLICKHOUSE_DATABASE=production_graph
 
 # Schema Configuration (Required)
 GRAPH_CONFIG_PATH=/app/schemas/production/main.yaml

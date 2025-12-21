@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### ⚙️ Changed
+- **BREAKING**: `CLICKHOUSE_DATABASE` environment variable is now **optional** and defaults to `"default"` (December 20, 2025)
+  - **Reason**: All SQL queries use fully-qualified table names (`database.table`) from schema config, making the environment variable redundant
+  - **Impact**: Simplifies configuration - you can now omit `CLICKHOUSE_DATABASE` unless you need a specific default database context
+  - **Migration**: Remove `CLICKHOUSE_DATABASE` from your env files or leave it set (both work)
+  - **Multi-database support**: Each table in your schema config specifies its database, enabling cross-database graph views
+
+### 📚 Documentation
+- Updated all documentation to reflect `CLICKHOUSE_DATABASE` is optional (December 20, 2025)
+  - Quick Start Guide, Docker Deployment, Configuration Guide, README
+  - Added clarifying comments explaining the default value and why it's optional
+
 ### 🚀 Features
 - **Tuple Property Mapping for collect() + UNWIND** - Automatic property-to-index mapping (December 20, 2025)
   - **Problem**: After `WITH collect(u) as users UNWIND users as user`, accessing `user.name` failed because ClickHouse ARRAY JOIN creates tuples requiring index access

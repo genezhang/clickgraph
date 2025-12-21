@@ -142,11 +142,14 @@ cargo build --release
 ### Step 3: Set Environment Variables
 
 ```bash
-# ClickHouse connection
+# ClickHouse connection (required)
 export CLICKHOUSE_URL="http://localhost:8123"
 export CLICKHOUSE_USER="default"
 export CLICKHOUSE_PASSWORD=""
-export CLICKHOUSE_DATABASE="default"
+
+# ClickHouse database (optional, defaults to "default")
+# Only needed if you want to change the default database context
+# export CLICKHOUSE_DATABASE="brahmand"
 
 # Graph schema (use benchmark schema)
 export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
@@ -157,7 +160,7 @@ export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.y
 $env:CLICKHOUSE_URL = "http://localhost:8123"
 $env:CLICKHOUSE_USER = "default"
 $env:CLICKHOUSE_PASSWORD = ""
-$env:CLICKHOUSE_DATABASE = "default"
+# $env:CLICKHOUSE_DATABASE = "default"  # Optional, defaults to "default"
 $env:GRAPH_CONFIG_PATH = ".\benchmarks\social_network\schemas\social_benchmark.yaml"
 ```
 
@@ -410,10 +413,10 @@ views:
 CLICKHOUSE_URL="http://localhost:8123"
 CLICKHOUSE_USER="default"
 CLICKHOUSE_PASSWORD=""
-CLICKHOUSE_DATABASE="default"
 GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
 
 # Optional
+CLICKHOUSE_DATABASE="default"  # Defaults to "default" if not set
 CLICKGRAPH_HTTP_HOST="0.0.0.0"
 CLICKGRAPH_HTTP_PORT="8080"
 CLICKGRAPH_BOLT_HOST="0.0.0.0"
