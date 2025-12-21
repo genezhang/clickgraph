@@ -1,8 +1,35 @@
 # ClickGraph Status
 
-*Updated: December 20, 2025*
+*Updated: December 21, 2025*
 
-## ✅ Latest: Tuple Property Mapping for collect() + UNWIND (Dec 20, 2025)
+## 🐛 Latest: Database Prefix Preservation Fix (Dec 21, 2025)
+
+**Critical Bug Fixed**: ViewTableRef was stripping database prefixes from table names
+
+**Problem**: Test pass rate dropped to 54.5% (1895/3475) after implementing unified test schema. Root cause: `strip_database_prefix()` function was incorrectly applied to actual table references in FROM clauses, causing `test_integration.users` to become `users` in SQL.
+
+**Impact**:
+- ClickHouse error: `Unknown table 'users'` for all non-default database tables
+- Affected: test_integration, ldbc, ontime databases
+- brahmand (default) database worked because ClickHouse uses default DB when unqualified
+
+**Fix**: Removed `strip_database_prefix()` from 5 ViewTableRef creation sites:
+- Lines 6077, 6284, 6304, 6345, 11158 in `src/render_plan/plan_builder.rs`
+- Function now ONLY used for CTE name sanitization (line 5196) - its original intent
+- Preserves full `database.table` format in SQL FROM clauses
+
+**Results**:
+- Test pass rate: **54.5% → 76.7%** (+22% improvement!)  
+- Tests passing: **2581** (was 1895)
+- Tests fixed: **686 tests** now work correctly
+- Integration tests: 2581/3363 (76.7%)
+- Wiki tests: 59/60 (98.3%)
+
+**Commit**: edfc717
+
+---
+
+## ✅ Tuple Property Mapping for collect() + UNWIND (Dec 20, 2025)
 
 **Achievement**: Fully functional `collect(node)` + `UNWIND` pattern with automatic tuple index mapping
 
