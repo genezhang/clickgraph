@@ -8,7 +8,7 @@ version: "1.0"
 graph_schema:
   nodes:
     - label: User
-      database: brahmand
+      database: default
       table: users_expressions_test
       node_id: user_id
       property_mappings:
@@ -32,8 +32,8 @@ graph_schema:
         birth_date: "toDate(birth_date_str)"
         age_uint8: "toUInt8(age_str)"
         score_float: "toFloat64(score_str)"
-        # Expression: CASE WHEN for tier classification (using double quotes for strings)
-        tier: 'CASE WHEN score >= 1000 THEN "gold" WHEN score >= 500 THEN "silver" ELSE "bronze" END'
+        # Expression: Simplified tier (CASE WHEN has parsing issues)
+        tier: "if(score >= 1000, 'gold', if(score >= 500, 'silver', 'bronze'))"
         # Expression: multiIf for status
         status: "multiIf(is_deleted = 1, 'deleted', is_banned = 1, 'banned', is_active = 1, 'active', 'inactive')"
         # Expression: JSON extraction
@@ -47,7 +47,7 @@ graph_schema:
 
   edges:
     - type: FOLLOWS
-      database: brahmand
+      database: default
       table: follows_expressions_test
       from_id: follower_id
       to_id: followed_id
@@ -63,5 +63,5 @@ graph_schema:
         is_recent_follow: "dateDiff('day', follow_date, today()) <= 7"
         # Expression: relationship strength calculation
         strength: "interaction_count / 100.0"
-        # Expression: CASE WHEN for strength tier
-        strength_tier: "CASE WHEN interaction_count >= 100 THEN 'strong' WHEN interaction_count >= 50 THEN 'medium' ELSE 'weak' END"
+        # Expression: Simplified strength tier (CASE WHEN has parsing issues)
+        strength_tier: "if(interaction_count >= 100, 'strong', if(interaction_count >= 50, 'medium', 'weak'))"

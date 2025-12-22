@@ -24,6 +24,8 @@ CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 SCHEMAS_TO_LOAD = [
     # Unified test schema - primary schema for most tests (TestUser, TestProduct, etc.)
     ("schemas/test/unified_test_schema.yaml", "unified_test_schema"),
+    # Test schemas
+    ("schemas/test/property_expressions.yaml", "property_expressions"),
     # Benchmark schemas - used by matrix tests for cross-schema coverage
     ("benchmarks/social_network/schemas/social_benchmark.yaml", "social_benchmark"),
     # Schema variations - matrix tests

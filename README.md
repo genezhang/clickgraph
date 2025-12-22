@@ -33,6 +33,7 @@
 - **Semantic VLP Validation** - Automatically detects non-transitive relationships (e.g., IP→Domain) and converts to single-hop patterns
 - **Architecture** - Analyzer-level validation instead of tactical SQL fixes
 - **Example**: `(IP)-[DNS_REQUESTED*]->(Domain)` → Simple single-hop query (Domain nodes can't start DNS_REQUESTED edges)
+- **ClickHouse function passthrough** - Make all ClickHouse functions available in Cypher through the pass-thru feature
 
 ### Bug Fixes 🐛
 
