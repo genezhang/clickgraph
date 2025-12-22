@@ -54,22 +54,61 @@ impl VlpTransitivityCheck {
         // A relationship is transitive if:
         // 1. from_node == to_node (self-loop like Person-KNOWS->Person), OR
         // 2. The to_node of one variant can be the from_node of another variant
+        // 3. For polymorphic relationships: check if any to_label_value overlaps with from_label_values
         
         // Collect all (from_node, to_node) pairs for this relationship type
+        // For polymorphic relationships, use from_label_values and to_label_values
         let mut from_nodes = std::collections::HashSet::new();
         let mut to_nodes = std::collections::HashSet::new();
         
         for rel_schema in &rel_schemas {
-            from_nodes.insert(rel_schema.from_node.clone());
-            to_nodes.insert(rel_schema.to_node.clone());
+            // For polymorphic FROM side, use from_label_values if available
+            if let Some(ref values) = rel_schema.from_label_values {
+                for v in values {
+                    from_nodes.insert(v.clone());
+                }
+            } else if rel_schema.from_node != "$any" {
+                from_nodes.insert(rel_schema.from_node.clone());
+            }
             
-            // Check for self-loop (from == to)
-            if rel_schema.from_node == rel_schema.to_node {
+            // For polymorphic TO side, use to_label_values if available
+            if let Some(ref values) = rel_schema.to_label_values {
+                for v in values {
+                    to_nodes.insert(v.clone());
+                }
+            } else if rel_schema.to_node != "$any" {
+                to_nodes.insert(rel_schema.to_node.clone());
+            }
+            
+            // Check for self-loop (from == to) - with polymorphic support
+            let from_set: std::collections::HashSet<_> = rel_schema.from_label_values
+                .as_ref()
+                .map(|v| v.iter().cloned().collect())
+                .unwrap_or_else(|| {
+                    let mut s = std::collections::HashSet::new();
+                    if rel_schema.from_node != "$any" {
+                        s.insert(rel_schema.from_node.clone());
+                    }
+                    s
+                });
+            let to_set: std::collections::HashSet<_> = rel_schema.to_label_values
+                .as_ref()
+                .map(|v| v.iter().cloned().collect())
+                .unwrap_or_else(|| {
+                    let mut s = std::collections::HashSet::new();
+                    if rel_schema.to_node != "$any" {
+                        s.insert(rel_schema.to_node.clone());
+                    }
+                    s
+                });
+            
+            // If any value is in both from and to, it's a self-loop (transitive)
+            if from_set.intersection(&to_set).next().is_some() {
                 log::info!(
-                    "✓ VLP transitivity: '{}' is transitive (self-loop: {} -> {})",
+                    "✓ VLP transitivity: '{}' is transitive (self-loop found in from={:?}, to={:?})",
                     rel_type,
-                    rel_schema.from_node,
-                    rel_schema.to_node
+                    from_set,
+                    to_set
                 );
                 return Ok(true);
             }
@@ -80,8 +119,10 @@ impl VlpTransitivityCheck {
         
         if can_chain {
             log::info!(
-                "✓ VLP transitivity: '{}' is transitive (to_nodes overlap with from_nodes)",
-                rel_type
+                "✓ VLP transitivity: '{}' is transitive (to_nodes {:?} overlap with from_nodes {:?})",
+                rel_type,
+                to_nodes,
+                from_nodes
             );
         } else {
             log::warn!(
