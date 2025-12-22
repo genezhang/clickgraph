@@ -2,14 +2,51 @@
 
 *Updated: December 22, 2025*
 
-## 🎯 Latest: VLP Transitivity Check + v0.6.0 Release (Dec 22, 2025)
+## 🎯 Latest: Anonymous Node Support + Quality Improvements (Dec 22, 2025)
+
+**Quick Win**: Anonymous nodes now work! Pattern: `MATCH ()-[r:TYPE]->() RETURN count(*)`
+
+**Test Status**: **2517 passing / 3319 total (75.9%)** ⬆️ +3 tests  
+- **Zeek Merged**: 24/24 (100%) ✅ - Perfect score!
+- **Matrix Tests**: 1995/2408 (82.9%)
+- **Variable-Length Paths**: 11/24 (45.8%)
+- **Shortest Paths**: 0/20 (0%)
+
+### Recent Fix: Anonymous Node Pattern Support (Dec 22)
+
+**Problem**: Queries with anonymous nodes failing:
+```cypher
+MATCH ()-[r:REQUESTED]->() RETURN count(*)  # ❌ Schema not found error
+```
+
+**Root Cause**: `compute_pattern_context()` required explicit node labels, returned `None` for anonymous nodes
+
+**Solution**: Infer labels from relationship schema when nodes are anonymous:
+```rust
+// Before: Required explicit labels from plan_ctx
+let left_label = left_ctx.get_label_str().ok()?;  // Fails for ()
+
+// After: Infer from relationship schema if needed
+if left_label_opt.is_none() {
+    // Use rel_schema.from_node and rel_schema.to_node
+    inferred_left = rel.from_node.clone();
+}
+```
+
+**Impact**:
+- ✅ Zeek merged: 22/24 → **24/24 (100%)**
+- ✅ Overall: 2514 → 2517 passing (+3 tests)
+- ✅ Enables `MATCH ()-[r]->()` pattern across all schemas
+
+**Tests fixed**:
+- `test_count_dns_requests`: `MATCH ()-[r:REQUESTED]->() RETURN count(*)`
+- `test_count_connections`: `MATCH ()-[r:ACCESSED]->() RETURN count(*)`
+
+---
+
+## 🚀 v0.6.0 Release: VLP Transitivity Check (Dec 22, 2025)
 
 **Achievement**: Semantic validation for variable-length paths prevents invalid recursive patterns
-
-**Test Status**: **2446 passing / 3359 total (72.8%)**  
-- **Unit Tests**: 646 passed / 655 (98.6%)
-- **Integration Tests**: 2446 passed / 3359 (72.8%)
-- **Matrix Tests**: 283 passed / 397 (71.3%)
 
 ### Key Feature: VLP Transitivity Check
 

@@ -1,31 +1,74 @@
 # Test Failure Investigation Plan
 
-**Status**: 2514/3319 passing (75.7%) - 805 failures remaining  
+**Status**: 2517/3319 passing (75.9%) - 802 failures remaining  
 **Created**: December 21, 2025  
-**Last Updated**: December 22, 2025 (Post v0.6.0 Release)  
+**Last Updated**: December 22, 2025 (Anonymous Node Fix)  
 **Goal**: Systematic investigation and resolution of remaining test failures
 
 ## Executive Summary
 
-**Current Status**: After v0.6.0 release, we have achieved **75.7% pass rate** (2514/3319 passing).
+**Current Status**: After anonymous node fix, we have achieved **75.9% pass rate** (2517/3319 passing).
 
-**Recent Achievement**: Comma-separated pattern bug FIXED! ✅ Cross-table correlation now working with smart cross-branch JOIN detection. Zeek merged test suite: **22/24 passing (91.7%)**.
+**Recent Achievement (Dec 22)**: Anonymous node pattern support! ✅
+- Fixed: `MATCH ()-[r:TYPE]->() RETURN count(*)` patterns now work
+- Zeek merged test suite: **24/24 passing (100%)** 🎉
+- Impact: +3 tests overall (2514 → 2517)
+
+**Quick Win Completed**: Zeek merged suite now has perfect 100% pass rate!
+
+**Previous Achievement (Dec 21)**: Comma-separated pattern bug FIXED! ✅ Cross-table correlation now working with smart cross-branch JOIN detection.
 
 **Key Success**: Re-enabled selective cross-branch JOIN generation that:
 - Detects shared nodes across different relationship tables (comma patterns)
 - Generates proper JOINs: `FROM dns_log AS t1 INNER JOIN conn_log AS t2 ON t1.orig_h = t2.orig_h`
 - Avoids duplicate JOINs for linear patterns (the reason it was disabled before)
 
-**Next Priority**: Matrix tests (400 failures, 49.7% of total) - primarily VLP and aggregation edge cases.
+**Next Priority**: Matrix tests (400 failures, 49.9% of total) - primarily VLP and aggregation edge cases.
 
 ---
 
-## Recent Fix (December 21, 2025) - ✅ VERIFIED
+## Recent Fixes (December 2025)
 
-### ✅ Comma-Separated Patterns with Cross-Table Correlation - **FIXED & VERIFIED**
+### ✅ Anonymous Node Support - **FIXED** (December 22, 2025)
+
+**Problem**: Queries with anonymous nodes failing with "Schema not found" error:
+```cypher
+MATCH ()-[r:REQUESTED]->() RETURN count(*)  # Was failing
+```
 
 **Test Results** (December 22, 2025):
-- `test_zeek_merged.py`: **22/24 passing (91.7%)** ✅
+- `test_zeek_merged.py`: **24/24 passing (100%)** ✅ - Perfect!
+- Overall: 2514 → 2517 passing (+3 tests)
+- **Status**: Fix stable and working
+
+**What was fixed**:
+```rust
+// src/query_planner/analyzer/graph_join_inference.rs:compute_pattern_context()
+// When node labels are missing (anonymous nodes), infer from relationship schema:
+if left_label_opt.is_none() || right_label_opt.is_none() {
+    // Get relationship schema and use its from_node/to_node fields
+    let inferred_left = rel.from_node.clone();
+    let inferred_right = rel.to_node.clone();
+}
+```
+
+**Technical details**:
+1. Modified `compute_pattern_context()` to handle optional labels
+2. When labels missing, look up relationship schema without node constraints
+3. Infer labels from `RelationshipSchema.from_node` and `.to_node` fields
+4. Continue with existing pattern context logic using inferred labels
+
+**Impact**:
+- Enables `MATCH ()-[r]->()` anonymous node patterns
+- No performance impact (same code path after label resolution)
+- No regression risk (preserves behavior for explicit labels)
+
+---
+
+### ✅ Comma-Separated Patterns - **FIXED** (December 21, 2025)
+
+**Test Results** (December 22, 2025):
+- `test_zeek_merged.py`: **24/24 passing (100%)** ✅
 - Full matrix suite: **1995/2408 passing (82.9%)**
 - **Status**: Fix confirmed stable after v0.6.0 release
 
@@ -45,11 +88,6 @@ if prev_appearance.table_name != current_appearance.table_name {
 3. Only generates JOIN for true comma patterns, not linear chains
 4. Reused existing sophisticated helper functions
 
-**Remaining zeek_merged failures (2/24)**:
-- `test_count_dns_requests`: Single table COUNT aggregation issue
-- `test_count_connections`: Single table COUNT aggregation issue  
-(These are NOT comma pattern issues - different root cause)
-
 ---
 
 ## Current Failure Analysis (December 22, 2025)
@@ -57,17 +95,18 @@ if prev_appearance.table_name != current_appearance.table_name {
 ### Test Statistics Summary
 | Category | Passing | Total | Pass Rate | Failures |
 |----------|---------|-------|-----------|----------|
-| **Overall** | 2514 | 3319 | 75.7% | 805 |
+| **Overall** | 2517 | 3319 | 75.9% | 802 |
 | Matrix Tests | 1995 | 2408 | 82.9% | 400 |
 | Variable-Length Paths | 11 | 24 | 45.8% | 13 |
 | Shortest Paths | 0 | 20 | 0% | 20 |
-| Zeek Merged | 22 | 24 | 91.7% | 2 |
-| Other Tests | 486 | 843 | 57.7% | 370 |
+| Zeek Merged | 24 | 24 | **100%** ✅ | 0 |
+| Other Tests | 487 | 843 | 57.8% | 369 |
 
 ### 🎉 Recent Wins
+- ✅ **Anonymous node support**: Fixed Dec 22 - enables `MATCH ()-[r]->()` patterns
+- ✅ **Zeek merged perfect score**: **24/24 (100%)** 🎉
 - ✅ **Comma-separated patterns**: Fixed cross-table JOINs (December 21)
 - ✅ **Matrix tests improved**: 82.9% passing (1995/2408)
-- ✅ **Zeek merged schema**: **22/24 passing (91.7%)**
 - ✅ **Simple comma patterns**: All basic cross-table correlations working
 
 ### 🔍 Remaining Issues by Priority
@@ -143,39 +182,26 @@ pytest tests/integration/matrix/ -v --tb=short -k "aggregat" 2>&1 | grep "FAILED
 
 ---
 
-#### 5. **Zeek Tests** - **2 failures** (Low Priority - Easy Win!)
-**Current status**: 22/24 passing (91.7%)
+#### 5. **Zeek Tests** - **0 failures** ✅ **COMPLETED** (Low Priority - Quick Win Achieved!)
+**Current status**: 24/24 passing (100%) 🎉
 
-**Failing tests**:
-- `test_count_dns_requests`: Simple COUNT on dns_log table
-- `test_count_connections`: Simple COUNT on conn_log table
+**Status**: ALL FIXED! Perfect score achieved December 22, 2025.
 
-**Root cause hypothesis**:
-- Single-table COUNT aggregation issue (not cross-table)
-- May be table alias or GROUP BY issue
-- Quick investigation should reveal simple fix
+**What was fixed**:
+- Anonymous node support enabled these tests to pass
+- Both single-table COUNT aggregation tests now working
 
-**Estimated Effort**: 0.5 day  
-**Impact**: Would make zeek_merged 100% passing!
+**Impact**: Zeek merged suite is now a reliable baseline for testing!
 
 ---
 
-## 🎯 Immediate Next Steps (Post v0.6.0)
+## 🎯 Immediate Next Steps (Post Anonymous Node Fix)
 
-### Quick Win: Zeek Test Fixes (Today - 0.5 day)
-**Goal**: Fix 2 remaining zeek_merged failures to achieve 100% pass rate
-
-1. ✅ Investigation already complete (COUNT aggregation issue)
-2. ⬜ Run failing tests with detailed output:
-   ```bash
-   pytest tests/integration/test_zeek_merged.py::TestSingleTableRequested::test_count_dns_requests -vv --tb=long
-   pytest tests/integration/test_zeek_merged.py::TestSingleTableAccessed::test_count_connections -vv --tb=long
-   ```
-3. ⬜ Check generated SQL for COUNT queries
-4. ⬜ Fix table alias or aggregation generation
-5. ⬜ Verify zeek_merged 24/24 passing
-
-**Impact**: Zeek merged suite 100% passing, validates comma-pattern fix
+### ✅ Quick Win Completed: Zeek Suite (December 22, 2025)
+**Result**: Zeek merged suite **24/24 passing (100%)** 🎉
+- Fixed anonymous node support in `compute_pattern_context()`
+- Both COUNT aggregation tests now passing
+- Validated comma-pattern fix still stable
 
 ---
 
@@ -387,8 +413,8 @@ Follow the **5-Phase Development Process** from `DEVELOPMENT_PROCESS.md`:
 ## Success Metrics (Revised)
 
 ### Milestones
-- ✅ **v0.6.0 Release**: 75.7% (2514/3319) - Comma pattern fix, cross-table JOINs working
-- 🎯 **Quick Win** (Day 1): 75.8% (2516/3319) - Zeek merged 100%
+- ✅ **v0.6.0 Release** (Dec 22): 75.7% (2514/3319) - Comma pattern fix, cross-table JOINs working
+- ✅ **Quick Win** (Dec 22): 75.9% (2517/3319) - Anonymous nodes fixed, Zeek merged 100% 🎉
 - 🎯 **Week 1**: 81%+ (2700+/3319) - Matrix VLP and aggregation fixes
 - 🎯 **Week 2**: 83%+ (2750+/3319) - Core graph algorithm fixes
 - 🎯 **Week 3**: 89%+ (2950+/3319) - Schema-specific fixes
@@ -423,16 +449,18 @@ Follow the **5-Phase Development Process** from `DEVELOPMENT_PROCESS.md`:
 
 ## Next Steps (December 22, 2025)
 
-**Immediate** (today - START HERE!):
-1. ✅ Update investigation plan with v0.6.0 results
-2. ⬜ Investigate 2 failing zeek_merged tests (quick win)
-3. ⬜ Fix zeek_merged COUNT aggregation issues
-4. ⬜ Verify zeek_merged 24/24 passing
+**Completed Today**:
+1. ✅ Updated investigation plan with v0.6.0 results
+2. ✅ Investigated and fixed 2 failing zeek_merged tests (anonymous node support)
+3. ✅ Verified zeek_merged 24/24 passing (100%)
+4. ✅ Committed anonymous node fix
+5. ✅ Updated STATUS.md and TEST_FAILURE_INVESTIGATION_PLAN.md
 
-**Tomorrow & This Week**:
-1. Deep dive into matrix test failures (categorize 400 failures)
-2. Begin VLP fixes in matrix tests
-3. Track progress daily in STATUS.md
+**Next Session** (Tomorrow & This Week):
+1. Deep dive into matrix test failures (categorize 400 failures by type)
+2. Begin VLP fixes in matrix tests (likely ~250 failures)
+3. Fix aggregation edge cases in matrix tests (likely ~100 failures)
+4. Track progress daily in STATUS.md
 
 **Track progress in**: `STATUS.md` (update after each milestone completion)
 
