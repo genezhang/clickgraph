@@ -109,20 +109,8 @@ echo " ✓ Databases ready"
 echo ""
 
 # 1. Standard benchmark data (social_benchmark schema)
-log_info "=== Standard Benchmark Data ==="
-if [[ -f "$PROJECT_ROOT/scripts/setup/setup_medium_benchmark_data.sql" ]]; then
-    # Check if table exists first, not just data
-    table_exists=$(run_sql "SELECT count() FROM system.tables WHERE database = 'brahmand' AND name = 'users_bench'" 2>/dev/null)
-    if [[ "$table_exists" != "1" ]]; then
-        log_info "Loading benchmark data (this may take a moment)..."
-        run_sql_file "$PROJECT_ROOT/scripts/setup/setup_medium_benchmark_data.sql" "Medium benchmark data"
-    else
-        count=$(run_sql "SELECT count() FROM brahmand.users_bench" 2>/dev/null)
-        log_info "Benchmark data already exists ($count users)"
-    fi
-else
-    log_warn "Medium benchmark data SQL not found, skipping"
-fi
+log_info "=== Benchmark Test Data (Small Scale) ==="
+run_sql_file "$PROJECT_ROOT/tests/fixtures/data/benchmark_small_data.sql" "Small-scale benchmark data"
 echo ""
 
 # 2. Integration test data (test_integration database)
