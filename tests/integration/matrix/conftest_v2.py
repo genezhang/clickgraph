@@ -5,7 +5,7 @@ Uses real schemas and tables that exist in the test database.
 Schemas:
 1. social_benchmark - Traditional graph (users_bench, user_follows_bench, posts_bench)
 2. group_membership - Polymorphic edges (groups, users, memberships)
-3. security_graph - Full polymorphic (sec_users, sec_groups, sec_fs_objects, etc.)
+3. data_security - Full polymorphic (sec_users, sec_groups, sec_fs_objects, etc.)
 
 Target: 1000+ real E2E tests
 """
@@ -59,8 +59,8 @@ SCHEMAS = {
     
     # Schema 2: Security Graph - Complex model with 4 node types
     # Note: Polymorphic edges don't work yet, but node queries do
-    "security_graph": {
-        "schema_file": "./schemas/examples/security_graph.yaml",
+    "data_security": {
+        "schema_file": "./examples/data_security/data_security.yaml",
         "nodes": {
             "User": {
                 "id_prop": "user_id",

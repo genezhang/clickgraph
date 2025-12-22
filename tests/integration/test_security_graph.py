@@ -19,7 +19,7 @@ CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
 BASE_URL = f"{CLICKGRAPH_URL}"
-SCHEMA_NAME = "security_graph"
+SCHEMA_NAME = "data_security"
 
 
 def execute_cypher(query: str, sql_only: bool = False, schema_name: str = SCHEMA_NAME):

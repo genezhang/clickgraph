@@ -1091,7 +1091,7 @@ class TestSecurityGraphNodes:
         random.seed(seed + 80000)
         user_id = random.randint(1, 400)
         query = f"MATCH (u:User) WHERE u.user_id = {user_id} RETURN u"
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -1100,7 +1100,7 @@ class TestSecurityGraphNodes:
         random.seed(seed + 81000)
         group_id = random.randint(1, 100)
         query = f"MATCH (g:Group) WHERE g.group_id = {group_id} RETURN g"
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -1109,7 +1109,7 @@ class TestSecurityGraphNodes:
         random.seed(seed + 82000)
         fs_id = random.randint(1, 300)
         query = f"MATCH (f:Folder) WHERE f.fs_id = {fs_id} RETURN f"
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -1118,7 +1118,7 @@ class TestSecurityGraphNodes:
         random.seed(seed + 83000)
         fs_id = random.randint(1, 300)
         query = f"MATCH (f:File) WHERE f.fs_id = {fs_id} RETURN f"
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(10))
@@ -1127,7 +1127,7 @@ class TestSecurityGraphNodes:
         random.seed(seed + 84000)
         exposure = random.choice(['internal', 'external'])
         query = f"MATCH (u:User) WHERE u.exposure = '{exposure}' RETURN u LIMIT 20"
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(10))
@@ -1135,14 +1135,14 @@ class TestSecurityGraphNodes:
         """Filter folders by path prefix."""
         random.seed(seed + 85000)
         query = f"MATCH (f:Folder) WHERE f.path STARTS WITH '/' RETURN f LIMIT 20"
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("label", ["User", "Group", "Folder", "File"])
     def test_count_each_type(self, label):
         """Count each node type."""
         query = f"MATCH (n:{label}) RETURN count(n) as cnt"
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("label", ["User", "Group", "Folder", "File"])
@@ -1152,7 +1152,7 @@ class TestSecurityGraphNodes:
         random.seed(seed + 86000)
         limit = random.randint(5, 15)
         query = f"MATCH (n:{label}) RETURN n ORDER BY n.name LIMIT {limit}"
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
 
 
@@ -1244,7 +1244,7 @@ class TestCrossSchemaPatterns:
     50+ tests comparing behavior.
     """
     
-    @pytest.mark.parametrize("schema_name", ["social_benchmark", "security_graph"])
+    @pytest.mark.parametrize("schema_name", ["social_benchmark", "data_security"])
     @pytest.mark.parametrize("seed", range(10))
     def test_basic_count(self, schema_name, seed):
         """Basic count across schemas."""
@@ -1253,7 +1253,7 @@ class TestCrossSchemaPatterns:
         result = execute_query(query, schema_name=schema_name)
         assert result["success"], f"Query failed: {query}"
     
-    @pytest.mark.parametrize("schema_name", ["social_benchmark", "security_graph"])
+    @pytest.mark.parametrize("schema_name", ["social_benchmark", "data_security"])
     @pytest.mark.parametrize("seed", range(10))
     def test_filter_by_id(self, schema_name, seed):
         """Filter by ID across schemas."""
@@ -1263,7 +1263,7 @@ class TestCrossSchemaPatterns:
         result = execute_query(query, schema_name=schema_name)
         assert result["success"], f"Query failed: {query}"
     
-    @pytest.mark.parametrize("schema_name", ["social_benchmark", "security_graph"])
+    @pytest.mark.parametrize("schema_name", ["social_benchmark", "data_security"])
     @pytest.mark.parametrize("seed", range(10))
     def test_order_by(self, schema_name, seed):
         """Order by across schemas."""
@@ -1273,7 +1273,7 @@ class TestCrossSchemaPatterns:
         result = execute_query(query, schema_name=schema_name)
         assert result["success"], f"Query failed: {query}"
     
-    @pytest.mark.parametrize("schema_name", ["social_benchmark", "security_graph"])
+    @pytest.mark.parametrize("schema_name", ["social_benchmark", "data_security"])
     @pytest.mark.parametrize("seed", range(5))
     def test_distinct_values(self, schema_name, seed):
         """Distinct values across schemas."""
@@ -1567,7 +1567,7 @@ class TestSecurityGraphAdvanced:
         WHERE f.sensitive_data = 1
         RETURN f LIMIT 20
         """
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1579,7 +1579,7 @@ class TestSecurityGraphAdvanced:
         WHERE u.exposure = 'external'
         RETURN u LIMIT 20
         """
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1591,7 +1591,7 @@ class TestSecurityGraphAdvanced:
         WHERE u.exposure = 'internal'
         RETURN u LIMIT 20
         """
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(10))
@@ -1603,7 +1603,7 @@ class TestSecurityGraphAdvanced:
         RETURN u.exposure, count(*) as cnt
         ORDER BY cnt DESC
         """
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(10))
@@ -1615,6 +1615,6 @@ class TestSecurityGraphAdvanced:
         RETURN f.path, f.name
         ORDER BY f.path LIMIT 20
         """
-        result = execute_query(query, schema_name="security_graph")
+        result = execute_query(query, schema_name="data_security")
         assert result["success"], f"Query failed: {query}"
 

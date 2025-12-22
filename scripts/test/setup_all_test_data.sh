@@ -336,10 +336,16 @@ run_sql "CREATE OR REPLACE VIEW brahmand.orders_by_tenant_and_date AS SELECT ord
 echo " ✓ Multi-tenant parameterized views created"
 echo ""
 
+# 8. Data security example data
+log_info "=== Data Security Example Data ==="
+run_sql "CREATE DATABASE IF NOT EXISTS data_security"
+run_sql_file "$PROJECT_ROOT/examples/data_security/setup_schema.sql" "Data security schema and data"
+echo ""
+
 # Summary
 log_info "=== Summary ==="
 echo "Databases:"
-run_sql "SHOW DATABASES" | grep -E "brahmand|test_integration|zeek" | while read db; do
+run_sql "SHOW DATABASES" | grep -E "brahmand|test_integration|zeek|data_security" | while read db; do
     echo "  - $db"
 done
 
