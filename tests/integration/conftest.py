@@ -108,19 +108,19 @@ def clean_database(clickhouse_client, test_database):
         pass
 
 
-def execute_cypher(query: str, schema_name: str = "default", raise_on_error: bool = True) -> Dict[str, Any]:
+def execute_cypher(query: str, schema_name: str = "unified_test_schema", raise_on_error: bool = True) -> Dict[str, Any]:
     """
     Execute a Cypher query via ClickGraph HTTP API.
     
-    UNIFIED SCHEMA MODE:
-    - Automatically maps test_integration labels to TestXxx variants
-    - User → TestUser, Product → TestProduct (for test_integration tests)
-    - FOLLOWS → TEST_FOLLOWS, etc.
-    - This allows tests to use natural label names while avoiding conflicts
+    UNIFIED SCHEMA MODE (NEW CONVENTION):
+    - Uses explicit "USE <schema_name>" clause in all queries
+    - Auto-prepends USE clause if not present
+    - Default schema: unified_test_schema (contains TestUser, TestProduct, etc.)
+    - No schema_name parameter sent to server (USE clause handles it)
     
     Args:
-        query: Cypher query string
-        schema_name: Schema/database name to query (default: "default" = unified schema)
+        query: Cypher query string (USE clause auto-prepended if missing)
+        schema_name: Schema name to use in USE clause (default: "unified_test_schema")
         raise_on_error: If True, raise HTTPError on failure. If False, return error in response dict.
         
     Returns:
@@ -129,25 +129,21 @@ def execute_cypher(query: str, schema_name: str = "default", raise_on_error: boo
     Raises:
         requests.HTTPError: If query execution fails and raise_on_error=True
     """
-    # Auto-translate test_integration label names to avoid conflicts with social_benchmark
-    # This allows tests to use User/Product naturally while unified schema uses TestUser/TestProduct
-    if schema_name == "default":
-        query = query.replace(":User)", ":TestUser)")  # Node labels
-        query = query.replace(":Product)", ":TestProduct)")
-        query = query.replace("[:FOLLOWS]", "[:TEST_FOLLOWS]")  # Relationship types
-        query = query.replace("[:PURCHASED]", "[:TEST_PURCHASED]")
-        query = query.replace("[:FRIENDS_WITH]", "[:TEST_FRIENDS_WITH]")
+    # Auto-prepend USE clause if not already present
+    query_upper = query.strip().upper()
+    if not query_upper.startswith("USE "):
+        query = f"USE {schema_name} {query}"
     
     response = requests.post(
         f"{CLICKGRAPH_URL}/query",
-        json={"query": query, "schema_name": schema_name},
+        json={"query": query},
         headers={"Content-Type": "application/json"}
     )
     
     # Print error details if request failed
     if response.status_code != 200:
         print(f"\nError Response ({response.status_code}):")
-        print(f"Request: query={query}, schema_name={schema_name}")
+        print(f"Request: query={query}")
         print(f"Response: {response.text}")
         
         # For error handling tests, return error info instead of raising
@@ -315,11 +311,11 @@ def simple_graph(clickhouse_client, test_database, clean_database):
     # This ensures tests don't confuse schema name with database name
     
     # Return complete schema configuration
-    # NOTE: Uses "default" schema which is the unified_test_schema containing
-    # TestUser/TestProduct labels mapped to test_integration database
+    # NOTE: Uses unified_test_schema which contains TestUser/TestProduct labels
+    # mapped to test_integration database
     return {
-        "schema_name": "default",  # Use unified schema (NOT dynamic schema)
-        "database": "test_integration",      # Physical ClickHouse database where tables exist
+        "schema_name": "unified_test_schema",  # Use unified test schema
+        "database": "test_integration",        # Physical ClickHouse database where tables exist
         "nodes": {
             "TestUser": {  # Changed from "User" to match unified schema
                 "table": "users",

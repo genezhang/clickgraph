@@ -20,7 +20,9 @@ CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
 # Schemas to load for testing
 SCHEMAS_TO_LOAD = [
-    # Standard schema (social_benchmark) - usually loaded via GRAPH_CONFIG_PATH
+    # Unified test schema - primary schema for most tests (TestUser, TestProduct, etc.)
+    ("schemas/test/unified_test_schema.yaml", "unified_test_schema"),
+    # Standard schema (social_benchmark) - wiki tests
     ("benchmarks/social_network/schemas/social_benchmark.yaml", "social_benchmark"),
     # Denormalized schema
     ("schemas/examples/ontime_denormalized.yaml", "ontime_flights"),
