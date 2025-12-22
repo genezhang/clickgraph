@@ -16,6 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_URL = f"{CLICKGRAPH_URL}"
+SCHEMA_NAME = "unified_test_schema"  # Default schema for these tests
 
 
 def test_query_without_role():
@@ -29,7 +30,7 @@ def test_query_without_role():
     
     response = requests.post(
         f"{BASE_URL}/query",
-        json={"query": query}
+        json={"query": query, "schema_name": SCHEMA_NAME}
     )
     
     assert response.status_code == 200, f"Query failed: {response.text}"
@@ -53,7 +54,8 @@ def test_query_with_role():
         f"{BASE_URL}/query",
         json={
             "query": query,
-            "role": "analyst"
+            "role": "analyst",
+            "schema_name": SCHEMA_NAME
         }
     )
     
@@ -81,7 +83,8 @@ def test_sql_generation_includes_set_role():
         f"{BASE_URL}/query/sql",
         json={
             "query": query,
-            "role": "analyst"
+            "role": "analyst",
+            "schema_name": SCHEMA_NAME
         }
     )
     
@@ -114,7 +117,7 @@ def test_sql_generation_without_role():
     
     response = requests.post(
         f"{BASE_URL}/query/sql",
-        json={"query": query}
+        json={"query": query, "schema_name": SCHEMA_NAME}
     )
     
     assert response.status_code == 200, f"SQL generation failed: {response.text}"
@@ -158,7 +161,8 @@ def test_concurrent_queries_different_roles():
                 json={
                     "query": query,
                     "role": role,
-                    "parameters": {"user_id": user_id}
+                    "parameters": {"user_id": user_id},
+                    "schema_name": SCHEMA_NAME
                 }
             )
             return {
@@ -233,7 +237,8 @@ def test_sql_only_mode_with_role():
         json={
             "query": query,
             "sql_only": True,
-            "role": "analyst"
+            "role": "analyst",
+            "schema_name": SCHEMA_NAME
         }
     )
     
