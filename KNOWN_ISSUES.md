@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 4 (including path function alias bug)  
-**Last Updated**: December 21, 2025
+**Active Issues**: 5  
+**Last Updated**: December 22, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -10,7 +10,7 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Active Issues
 
-### 🐛 Path Function VLP Alias Bug (NEW - December 21, 2025)
+### 🐛 Path Function VLP Alias Bug (December 21, 2025)
 **Status**: Under Investigation  
 **Priority**: Medium  
 **Affected Tests**: 16/24 path_variables tests, some VLP tests with `length(p)`
@@ -37,7 +37,32 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ---
 
-## Recently Fixed
+## Recently Fixed (v0.6.0 - December 22, 2025)
+
+### ✅ VLP Transitivity Check (December 22, 2025)
+**Fixed**: Non-transitive VLP patterns generating invalid recursive CTEs
+- **Problem**: `(IP)-[DNS_REQUESTED*]->(Domain)` semantically invalid - Domain nodes can't start DNS_REQUESTED edges
+- **Solution**: New `VlpTransitivityCheck` analyzer pass detects non-transitive patterns, removes `variable_length`
+- **Impact**: Performance improvement (no unnecessary CTE generation), cleaner SQL
+- **Commit**: 21a87dd
+
+### ✅ Multi-Table Label Schema Support (December 22, 2025)
+**Fixed**: Denormalization metadata and type inference for complex schemas
+- **Problem**: Domain node property expansion failing, VLP JOIN generation errors
+- **Solution**: Copy denormalization metadata from schema, bottom-up type inference, use relationship schema columns
+- **Impact**: zeek_merged schema tests now passing
+- **Commit**: 7b16946
+
+### ✅ Cycle Prevention for Single Hop (December 22, 2025)
+**Fixed**: Unnecessary cycle prevention code running for `*1` patterns
+- **Problem**: Single-hop patterns triggered cycle prevention requiring table lookups
+- **Solution**: Skip cycle prevention when `exact_hops == 1` (can't have cycles)
+- **Impact**: Simpler code path, avoids schema lookup errors
+- **Commit**: 21a87dd
+
+---
+
+## Recently Fixed (v0.5.x)
 
 ### ✅ Relationship Variable Return (December 21, 2025)
 **Fixed**: `RETURN r` (relationship variable) generating invalid SQL
