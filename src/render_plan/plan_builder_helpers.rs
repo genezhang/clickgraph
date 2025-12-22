@@ -46,7 +46,7 @@ pub(super) fn rewrite_with_aliases_to_cte(
                 // Rewrite to CTE reference: grouped_data.follows
                 let rewritten = RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(cte_name.to_string()),
-                    column: Column(PropertyValue::Column(alias.0.clone())),
+                    column: PropertyValue::Column(alias.0.clone()),
                 });
                 (rewritten, true)
             } else {
@@ -58,7 +58,7 @@ pub(super) fn rewrite_with_aliases_to_cte(
                 // Rewrite to CTE reference
                 let rewritten = RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(cte_name.to_string()),
-                    column: Column(PropertyValue::Column(alias.0.clone())),
+                    column: PropertyValue::Column(alias.0.clone()),
                 });
                 (rewritten, true)
             } else {
@@ -222,10 +222,10 @@ pub(super) fn rewrite_table_aliases_to_cte(
         RenderExpr::PropertyAccessExp(prop) => {
             if with_table_aliases.contains(&prop.table_alias.0) {
                 // Rewrite person.id -> with_result."person.id"
-                let col_name = format!("{}.{}", prop.table_alias.0, prop.column.0.raw());
+                let col_name = format!("{}.{}", prop.table_alias.0, prop.column.raw());
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(cte_name.to_string()),
-                    column: Column(PropertyValue::Column(col_name)),
+                    column: PropertyValue::Column(col_name),
                 })
             } else {
                 RenderExpr::PropertyAccessExp(prop)
@@ -554,7 +554,7 @@ pub(super) fn render_expr_to_sql_string(
     alias_mapping: &[(String, String)],
 ) -> String {
     match expr {
-        RenderExpr::Column(col) => col.0.raw().to_string(),
+        RenderExpr::Column(col) => col.raw().to_string(),
         RenderExpr::TableAlias(alias) => alias.0.clone(),
         RenderExpr::ColumnAlias(alias) => alias.0.clone(),
         RenderExpr::Literal(lit) => match lit {
@@ -573,7 +573,7 @@ pub(super) fn render_expr_to_sql_string(
                 .find(|(cypher, _)| *cypher == prop.table_alias.0)
                 .map(|(_, cte)| cte.clone())
                 .unwrap_or_else(|| prop.table_alias.0.clone());
-            format!("{}.{}", table_alias, prop.column.0.raw())
+            format!("{}.{}", table_alias, prop.column.raw())
         }
         RenderExpr::OperatorApplicationExp(op) => {
             let operands: Vec<String> = op
@@ -1022,9 +1022,9 @@ pub(super) fn rewrite_fixed_path_functions_with_info(
                                             |(rel_alias, id_col)| {
                                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                                     table_alias: TableAlias(rel_alias.clone()),
-                                                    column: Column(PropertyValue::Column(
+                                                    column: PropertyValue::Column(
                                                         id_col.clone(),
-                                                    )),
+                                                    ),
                                                 })
                                             },
                                         )
@@ -1158,7 +1158,7 @@ pub(super) fn rewrite_path_functions_with_table(
                             } else {
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(table_alias.to_string()),
-                                    column: Column(PropertyValue::Column(col_name.to_string())),
+                                    column: PropertyValue::Column(col_name.to_string()),
                                 })
                             };
                         }
@@ -1649,14 +1649,14 @@ pub(super) fn generate_undirected_uniqueness_filters(
             let r1_tuple_args: Vec<RenderExpr> = r1.edge_id_cols.iter().map(|col| {
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(r1.alias.clone()),
-                    column: Column(PropertyValue::Column(col.clone())),
+                    column: PropertyValue::Column(col.clone()),
                 })
             }).collect();
 
             let r2_tuple_args: Vec<RenderExpr> = r2.edge_id_cols.iter().map(|col| {
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(r2.alias.clone()),
-                    column: Column(PropertyValue::Column(col.clone())),
+                    column: PropertyValue::Column(col.clone()),
                 })
             }).collect();
 
@@ -1923,7 +1923,7 @@ pub(super) fn render_expr_to_sql_for_cte(
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
             let table_alias = &prop.table_alias.0;
-            let column = &prop.column.0;
+            let column = &prop.column;
 
             // Map Cypher alias to SQL table alias
             if table_alias == start_cypher_alias {
@@ -2052,7 +2052,7 @@ pub(super) fn generate_polymorphic_edge_filters(
         operands: vec![
             RenderExpr::PropertyAccessExp(PropertyAccess {
                 table_alias: TableAlias(rel_alias.to_string()),
-                column: Column(PropertyValue::Column(type_col.clone())),
+                column: PropertyValue::Column(type_col.clone()),
             }),
             RenderExpr::Literal(Literal::String(rel_type.to_string())),
         ],
@@ -2066,7 +2066,7 @@ pub(super) fn generate_polymorphic_edge_filters(
             operands: vec![
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(rel_alias.to_string()),
-                    column: Column(PropertyValue::Column(from_col.clone())),
+                    column: PropertyValue::Column(from_col.clone()),
                 }),
                 RenderExpr::Literal(Literal::String(from_label.to_string())),
             ],
@@ -2081,7 +2081,7 @@ pub(super) fn generate_polymorphic_edge_filters(
             operands: vec![
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(rel_alias.to_string()),
-                    column: Column(PropertyValue::Column(to_col.clone())),
+                    column: PropertyValue::Column(to_col.clone()),
                 }),
                 RenderExpr::Literal(Literal::String(to_label.to_string())),
             ],
@@ -2214,7 +2214,7 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                 use crate::graph_catalog::expression_parser::PropertyValue;
                 *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(rel_alias),
-                    column: Column(PropertyValue::Column(id_column)),
+                    column: PropertyValue::Column(id_column),
                 });
             }
         }
@@ -2908,7 +2908,7 @@ pub(super) fn references_union_cte_in_join(
 fn references_union_cte_in_operand(operand: &RenderExpr, cte_name: &str) -> bool {
     match operand {
         RenderExpr::PropertyAccessExp(prop_access) => {
-            prop_access.column.0.raw() == "from_id" || prop_access.column.0.raw() == "to_id"
+            prop_access.column.raw() == "from_id" || prop_access.column.raw() == "to_id"
         }
         RenderExpr::OperatorApplicationExp(op_app) => {
             references_union_cte_in_join(&[op_app.clone()], cte_name)
@@ -2930,19 +2930,19 @@ pub(super) fn update_join_expression_for_union_cte(
 fn update_operand_for_union_cte(operand: &mut RenderExpr, table_alias: &str) {
     match operand {
         RenderExpr::Column(col) => {
-            if col.0.raw() == "from_id" {
+            if col.raw() == "from_id" {
                 *operand =
                     RenderExpr::Column(Column(PropertyValue::Column("from_node_id".to_string())));
-            } else if col.0.raw() == "to_id" {
+            } else if col.raw() == "to_id" {
                 *operand =
                     RenderExpr::Column(Column(PropertyValue::Column("to_node_id".to_string())));
             }
         }
         RenderExpr::PropertyAccessExp(prop_access) => {
-            if prop_access.column.0.raw() == "from_id" {
-                prop_access.column = Column(PropertyValue::Column("from_node_id".to_string()));
-            } else if prop_access.column.0.raw() == "to_id" {
-                prop_access.column = Column(PropertyValue::Column("to_node_id".to_string()));
+            if prop_access.column.raw() == "from_id" {
+                prop_access.column = PropertyValue::Column("from_node_id".to_string());
+            } else if prop_access.column.raw() == "to_id" {
+                prop_access.column = PropertyValue::Column("to_node_id".to_string());
             }
         }
         RenderExpr::OperatorApplicationExp(inner_op_app) => {
@@ -3191,7 +3191,7 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
                 operands: vec![
                     RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias(alias.to_string()),
-                        column: Column(PropertyValue::Column(type_col.clone())),
+                        column: PropertyValue::Column(type_col.clone()),
                     }),
                     RenderExpr::Literal(Literal::String(rel_types[0].clone())),
                 ],
@@ -3206,7 +3206,7 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
                 operands: vec![
                     RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias(alias.to_string()),
-                        column: Column(PropertyValue::Column(type_col.clone())),
+                        column: PropertyValue::Column(type_col.clone()),
                     }),
                     RenderExpr::List(type_list),
                 ],
@@ -3223,7 +3223,7 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
                     operands: vec![
                         RenderExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(alias.to_string()),
-                            column: Column(PropertyValue::Column(from_label_col.clone())),
+                            column: PropertyValue::Column(from_label_col.clone()),
                         }),
                         RenderExpr::Literal(Literal::String(from_label_str.clone())),
                     ],
@@ -3241,7 +3241,7 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
                     operands: vec![
                         RenderExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(alias.to_string()),
-                            column: Column(PropertyValue::Column(to_label_col.clone())),
+                            column: PropertyValue::Column(to_label_col.clone()),
                         }),
                         RenderExpr::Literal(Literal::String(to_label_str.clone())),
                     ],
@@ -3568,7 +3568,7 @@ mod tests {
         match rewritten {
             RenderExpr::PropertyAccessExp(prop) => {
                 assert_eq!(prop.table_alias.0, "grouped_data");
-                assert_eq!(prop.column.0.raw(), "follows");
+                assert_eq!(prop.column.raw(), "follows");
             }
             _ => panic!("Expected PropertyAccessExp, got {:?}", rewritten),
         }
@@ -3621,7 +3621,7 @@ mod tests {
                 match &agg.args[0] {
                     RenderExpr::PropertyAccessExp(prop) => {
                         assert_eq!(prop.table_alias.0, "grouped_data");
-                        assert_eq!(prop.column.0.raw(), "follows");
+                        assert_eq!(prop.column.raw(), "follows");
                     }
                     _ => panic!(
                         "Expected PropertyAccessExp inside aggregate, got {:?}",
@@ -3660,7 +3660,7 @@ mod tests {
                 match &op.operands[0] {
                     RenderExpr::PropertyAccessExp(prop) => {
                         assert_eq!(prop.table_alias.0, "cte");
-                        assert_eq!(prop.column.0.raw(), "a");
+                        assert_eq!(prop.column.raw(), "a");
                     }
                     _ => panic!("Expected PropertyAccessExp for first operand"),
                 }
@@ -3668,7 +3668,7 @@ mod tests {
                 match &op.operands[1] {
                     RenderExpr::PropertyAccessExp(prop) => {
                         assert_eq!(prop.table_alias.0, "cte");
-                        assert_eq!(prop.column.0.raw(), "b");
+                        assert_eq!(prop.column.raw(), "b");
                     }
                     _ => panic!("Expected PropertyAccessExp for second operand"),
                 }
@@ -3703,7 +3703,7 @@ mod tests {
                 match &op.operands[0] {
                     RenderExpr::PropertyAccessExp(prop) => {
                         assert_eq!(prop.table_alias.0, "cte");
-                        assert_eq!(prop.column.0.raw(), "from_with");
+                        assert_eq!(prop.column.raw(), "from_with");
                     }
                     _ => panic!("Expected first operand to be rewritten to PropertyAccessExp"),
                 }
@@ -3737,7 +3737,7 @@ mod tests {
         match rewritten {
             RenderExpr::PropertyAccessExp(prop) => {
                 assert_eq!(prop.table_alias.0, "grouped_data");
-                assert_eq!(prop.column.0.raw(), "my_alias");
+                assert_eq!(prop.column.raw(), "my_alias");
             }
             _ => panic!("Expected PropertyAccessExp, got {:?}", rewritten),
         }

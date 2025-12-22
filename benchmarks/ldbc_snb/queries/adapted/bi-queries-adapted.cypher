@@ -17,7 +17,7 @@
 
 // BI-1a: Message count by year
 MATCH (message:Post)
-WHERE message.creationDate < '2012-01-01'
+WHERE message.creationDate < 1325376000000
 RETURN 
     message.creationDate AS creationDate,
     count(*) AS messageCount
@@ -144,7 +144,7 @@ LIMIT 100
 
 // BI-7: Related tags through comment replies
 MATCH (tag:Tag {name: 'Enrique_Iglesias'})<-[:HAS_TAG]-(post:Post)
-MATCH (post)<-[:REPLY_OF_POST]-(comment:Comment)-[:HAS_TAG]->(relatedTag:Tag)
+MATCH (post)<-[:REPLY_OF]-(comment:Comment)-[:HAS_TAG]->(relatedTag:Tag)
 WHERE relatedTag.id <> tag.id
 RETURN 
     relatedTag.name AS relatedTagName,
@@ -183,7 +183,7 @@ LIMIT 100
 
 // BI-9: Prolific post creators with reply counts
 MATCH (person:Person)<-[:HAS_CREATOR]-(post:Post)
-OPTIONAL MATCH (post)<-[:REPLY_OF_POST]-(reply:Comment)
+OPTIONAL MATCH (post)<-[:REPLY_OF]-(reply:Comment)
 RETURN 
     person.id AS personId,
     person.firstName AS firstName,
@@ -303,7 +303,7 @@ LIMIT 20
 
 // BI-17: Forum cross-posting
 MATCH (person:Person)<-[:HAS_CREATOR]-(post:Post)<-[:CONTAINER_OF]-(forum1:Forum)
-MATCH (person)<-[:HAS_CREATOR]-(comment:Comment)-[:REPLY_OF_POST]->(post2:Post)<-[:CONTAINER_OF]-(forum2:Forum)
+MATCH (person)<-[:HAS_CREATOR]-(comment:Comment)-[:REPLY_OF]->(post2:Post)<-[:CONTAINER_OF]-(forum2:Forum)
 WHERE forum1.id <> forum2.id
 RETURN 
     person.id AS personId,
@@ -409,8 +409,8 @@ ORDER BY sharedInterests DESC
 LIMIT 50
 
 // COMPLEX-3: Comment thread depth (requires variable-length paths)
-MATCH (post:Post)<-[:REPLY_OF_POST]-(c1:Comment)
-OPTIONAL MATCH (c1)<-[:REPLY_OF_COMMENT*1..5]-(cn:Comment)
+MATCH (post:Post)<-[:REPLY_OF]-(c1:Comment)
+OPTIONAL MATCH (c1)<-[:REPLY_OF*1..5]-(cn:Comment)
 RETURN 
     post.id AS postId,
     count(DISTINCT c1) AS directReplies,
@@ -433,7 +433,7 @@ ORDER BY alumniConnections DESC
 LIMIT 20
 
 // COMPLEX-5: Company influence network
-MATCH (company:Organisation)<-[:WORK_AT]-(employee:Person)
+MATCH (company:Company)<-[:WORK_AT]-(employee:Person)
 MATCH (employee)<-[:HAS_CREATOR]-(post:Post)-[:HAS_TAG]->(tag:Tag)
 RETURN 
     company.name AS companyName,

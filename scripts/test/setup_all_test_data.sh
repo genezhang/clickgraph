@@ -119,7 +119,12 @@ log_info "=== Denormalized Flights Data ==="
 run_sql_file "$PROJECT_ROOT/scripts/test/setup_denormalized_test_data.sql" "Flights test data"
 echo ""
 
-# 4. Polymorphic interactions data (for social_polymorphic schema)
+# 4. Property expressions test data (for property_expressions schema)
+log_info "=== Property Expressions Test Data ==="
+run_sql_file "$PROJECT_ROOT/tests/fixtures/data/setup_property_expressions.sql" "Property expressions test data"
+echo ""
+
+# 5. Polymorphic interactions data (for social_polymorphic schema)
 log_info "=== Polymorphic Interactions Data ==="
 # Create interactions table if it doesn't exist
 run_sql "

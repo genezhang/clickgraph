@@ -1075,7 +1075,7 @@ impl RenderExpr {
                 let cte_mapped_result = CTE_PROPERTY_MAPPINGS.with(|cpm| {
                     let map = cpm.borrow();
                     if let Some(property_map) = map.get(&table_alias.0) {
-                        let col_name = column.0.raw();
+                        let col_name = column.raw();
                         if let Some(cte_col) = property_map.get(col_name) {
                             log::debug!("🔧 CTE property mapping: {}.{} → {}", table_alias.0, col_name, cte_col);
                             return Some(format!("{}.{}", table_alias.0, cte_col));
@@ -1088,25 +1088,9 @@ impl RenderExpr {
                     return sql;
                 }
                 
-                // Check if this is a temporal property access (e.g., birthday.year, birthday.month)
-                // These should be converted to function calls (e.g., year(birthday), month(birthday))
-                let col_name = column.0.raw().to_lowercase();
-                match col_name.as_str() {
-                    "year" => format!("toYear({})", table_alias.0),
-                    "month" => format!("toMonth({})", table_alias.0),
-                    "day" => format!("toDayOfMonth({})", table_alias.0),
-                    "hour" => format!("toHour({})", table_alias.0),
-                    "minute" => format!("toMinute({})", table_alias.0),
-                    "second" => format!("toSecond({})", table_alias.0),
-                    "dayofweek" | "dow" => format!("toDayOfWeek({})", table_alias.0),
-                    "dayofyear" | "doy" => format!("toDayOfYear({})", table_alias.0),
-                    "week" => format!("toWeek({})", table_alias.0),
-                    "quarter" => format!("toQuarter({})", table_alias.0),
-                    _ => {
-                        // Regular property access - use PropertyValue.to_sql() to handle both simple columns and expressions
-                        column.0.to_sql(&table_alias.0)
-                    }
-                }
+                // Property has been resolved from schema during query planning.
+                // Just use the resolved mapping directly.
+                column.to_sql(&table_alias.0)
             }
             RenderExpr::OperatorApplicationExp(op) => {
                 log::debug!("RenderExpr::to_sql() OperatorApplicationExp: operator={:?}, operands.len()={}", op.operator, op.operands.len());
@@ -1151,7 +1135,7 @@ impl RenderExpr {
                     && op.operands.len() == 1
                 {
                     if let RenderExpr::PropertyAccessExp(prop) = &op.operands[0] {
-                        let col_name = prop.column.0.raw();
+                        let col_name = prop.column.raw();
                         if col_name == "*" {
                             let table_alias = &prop.table_alias.0;
                             let op_str = if op.operator == Operator::IsNull { "IS NULL" } else { "IS NOT NULL" };
@@ -1360,7 +1344,7 @@ impl RenderExpr {
         match self {
             RenderExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
                 // Just render the column without the table alias prefix
-                column.0.to_sql_column_only()
+                column.to_sql_column_only()
             }
             RenderExpr::OperatorApplicationExp(op) => {
                 fn op_str(o: Operator) -> &'static str {

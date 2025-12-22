@@ -6,32 +6,32 @@
 -- Create database
 CREATE DATABASE IF NOT EXISTS test_integration;
 
+-- Drop and recreate tables
+DROP TABLE IF EXISTS test_integration.users;
+DROP TABLE IF EXISTS test_integration.groups;
+DROP TABLE IF EXISTS test_integration.memberships;
+
 -- Create users table
-CREATE TABLE IF NOT EXISTS test_integration.users (
+CREATE TABLE test_integration.users (
     id UInt32,
     name String,
     email String
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY id;
 
 -- Create groups table
-CREATE TABLE IF NOT EXISTS test_integration.groups (
+CREATE TABLE test_integration.groups (
     id UInt32,
     name String,
     description String
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY id;
 
 -- Create memberships table
-CREATE TABLE IF NOT EXISTS test_integration.memberships (
+CREATE TABLE test_integration.memberships (
     user_id UInt32,
     group_id UInt32,
     joined_at DateTime,
     role String
-) ENGINE = Memory;
-
--- Clear existing data
-TRUNCATE TABLE test_integration.users;
-TRUNCATE TABLE test_integration.groups;
-TRUNCATE TABLE test_integration.memberships;
+) ENGINE = MergeTree() ORDER BY (user_id, group_id);
 
 -- Insert users
 INSERT INTO test_integration.users VALUES
@@ -65,8 +65,3 @@ INSERT INTO test_integration.memberships VALUES
 (6, 2, '2024-01-06 00:00:00', 'member'),
 (7, 5, '2024-01-07 00:00:00', 'admin'),
 (8, 5, '2024-01-08 00:00:00', 'member');
-
--- Verification queries (commented out, run manually if needed)
--- SELECT 'Users count:', count(*) FROM test_integration.users;
--- SELECT 'Groups count:', count(*) FROM test_integration.groups;
--- SELECT 'Memberships count:', count(*) FROM test_integration.memberships;

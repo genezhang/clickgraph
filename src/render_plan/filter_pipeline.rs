@@ -253,13 +253,13 @@ pub fn rewrite_expr_for_var_len_cte(
             let mut new_prop = prop.clone();
             if prop.table_alias.0 == start_cypher_alias {
                 new_prop.table_alias = TableAlias("t".to_string());
-                if prop.column.0.raw() == "*" {
+                if prop.column.raw() == "*" {
                     new_prop.column = prop.column.clone();
                 } else {
-                    new_prop.column = Column(PropertyValue::Column(format!(
+                    new_prop.column = PropertyValue::Column(format!(
                         "start_{}",
-                        prop.column.0.raw()
-                    )));
+                        prop.column.raw()
+                    ));
                 }
             } else if prop.table_alias.0 == end_cypher_alias {
                 // End node properties stay as is
@@ -308,6 +308,90 @@ pub fn rewrite_expr_for_var_len_cte(
     }
 }
 
+/// Rewrite VLP internal aliases (start_node, end_node) to Cypher aliases (a, b) for non-denormalized patterns
+/// 
+/// Problem: VLP CTEs use start_node/end_node internally for recursion, but outer query JOINs use Cypher aliases
+/// Generated SQL: `SELECT start_node.name FROM vlp_cte JOIN users AS a` ❌ fails with "Unknown identifier start_node"
+/// Correct SQL:   `SELECT a.name FROM vlp_cte JOIN users AS a` ✅
+///
+/// This function rewrites PropertyAccessExp table aliases:
+/// - start_node → start_cypher_alias (e.g., "a")  
+/// - end_node → end_cypher_alias (e.g., "b")
+pub fn rewrite_vlp_internal_to_cypher_alias(
+    expr: &RenderExpr,
+    start_cypher_alias: &str,
+    end_cypher_alias: &str,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            let mut new_prop = prop.clone();
+            
+            // Rewrite VLP internal aliases to Cypher aliases
+            if prop.table_alias.0 == "start_node" {
+                log::debug!("🔧 Rewriting start_node → {}", start_cypher_alias);
+                new_prop.table_alias = TableAlias(start_cypher_alias.to_string());
+            } else if prop.table_alias.0 == "end_node" {
+                log::debug!("🔧 Rewriting end_node → {}", end_cypher_alias);
+                new_prop.table_alias = TableAlias(end_cypher_alias.to_string());
+            }
+            
+            RenderExpr::PropertyAccessExp(new_prop)
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            let rewritten_operands = op
+                .operands
+                .iter()
+                .map(|operand| {
+                    rewrite_vlp_internal_to_cypher_alias(
+                        operand,
+                        start_cypher_alias,
+                        end_cypher_alias,
+                    )
+                })
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator.clone(),
+                operands: rewritten_operands,
+            })
+        }
+        RenderExpr::ScalarFnCall(fn_call) => {
+            let rewritten_args = fn_call
+                .args
+                .iter()
+                .map(|arg| {
+                    rewrite_vlp_internal_to_cypher_alias(
+                        arg,
+                        start_cypher_alias,
+                        end_cypher_alias,
+                    )
+                })
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: fn_call.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        RenderExpr::AggregateFnCall(agg_fn) => {
+            let rewritten_args = agg_fn
+                .args
+                .iter()
+                .map(|arg| {
+                    rewrite_vlp_internal_to_cypher_alias(
+                        arg,
+                        start_cypher_alias,
+                        end_cypher_alias,
+                    )
+                })
+                .collect();
+            RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: agg_fn.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        _ => expr.clone(),
+    }
+}
+
 /// Rewrite expressions for mixed denormalized patterns
 /// Only rewrites properties for the side that is denormalized
 /// Standard side properties are left unchanged (they'll be resolved by JOINs)
@@ -326,7 +410,7 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
             let mut new_prop = prop.clone();
-            let raw_col = prop.column.0.raw();
+            let raw_col = prop.column.raw();
 
             // Check if this is a relationship alias access (e.g., f.Origin, f.Dest)
             if let (Some(rel), Some(from), Some(to)) = (rel_alias, from_col, to_col) {
@@ -334,10 +418,10 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
                     new_prop.table_alias = TableAlias("t".to_string());
                     if raw_col == from {
                         // from_col (e.g., Origin) → start_id
-                        new_prop.column = Column(PropertyValue::Column("start_id".to_string()));
+                        new_prop.column = PropertyValue::Column("start_id".to_string());
                     } else if raw_col == to {
                         // to_col (e.g., Dest) → end_id
-                        new_prop.column = Column(PropertyValue::Column("end_id".to_string()));
+                        new_prop.column = PropertyValue::Column("end_id".to_string());
                     }
                     return RenderExpr::PropertyAccessExp(new_prop);
                 }
@@ -348,13 +432,13 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
                 // Start node is denormalized → rewrite to t.start_id
                 new_prop.table_alias = TableAlias("t".to_string());
                 if raw_col != "*" {
-                    new_prop.column = Column(PropertyValue::Column("start_id".to_string()));
+                    new_prop.column = PropertyValue::Column("start_id".to_string());
                 }
             } else if prop.table_alias.0 == end_cypher_alias && end_is_denormalized {
                 // End node is denormalized → rewrite to t.end_id
                 new_prop.table_alias = TableAlias("t".to_string());
                 if raw_col != "*" {
-                    new_prop.column = Column(PropertyValue::Column("end_id".to_string()));
+                    new_prop.column = PropertyValue::Column("end_id".to_string());
                 }
             }
             // Standard nodes are left unchanged - they'll be resolved by JOINs

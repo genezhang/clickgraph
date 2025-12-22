@@ -39,7 +39,7 @@ CREATE TABLE users_expressions_test (
     
     -- Computed field (age)
     age UInt8
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY user_id;
 
 -- Create follows relationship table
 CREATE TABLE follows_expressions_test (
@@ -48,7 +48,7 @@ CREATE TABLE follows_expressions_test (
     followed_id UInt32,
     follow_date Date,
     interaction_count UInt32
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY follow_id;
 
 -- Insert test users with diverse data
 INSERT INTO users_expressions_test VALUES

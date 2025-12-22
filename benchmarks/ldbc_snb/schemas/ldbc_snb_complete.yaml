@@ -566,7 +566,7 @@ graph_schema:
         creationDate: creationDate
 
     # -------------------------------------------------------------------------
-    # Post POST_LOCATED_IN Country (for IC3 query)
+    # Post IS_LOCATED_IN Country (for IC3 query)
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
       database: ldbc

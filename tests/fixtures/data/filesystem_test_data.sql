@@ -6,8 +6,12 @@
 -- Create database
 CREATE DATABASE IF NOT EXISTS test_integration;
 
+-- Drop and recreate tables
+DROP TABLE IF EXISTS test_integration.fs_objects;
+DROP TABLE IF EXISTS test_integration.fs_parent;
+
 -- Create filesystem objects table
-CREATE TABLE IF NOT EXISTS test_integration.fs_objects (
+CREATE TABLE test_integration.fs_objects (
     object_id UInt32,
     name String,
     object_type String,
@@ -16,17 +20,13 @@ CREATE TABLE IF NOT EXISTS test_integration.fs_objects (
     created_at DateTime,
     modified_at DateTime,
     owner_id UInt32
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY object_id;
 
 -- Create parent relationship table
-CREATE TABLE IF NOT EXISTS test_integration.fs_parent (
+CREATE TABLE test_integration.fs_parent (
     child_id UInt32,
     parent_id UInt32
-) ENGINE = Memory;
-
--- Clear existing data
-TRUNCATE TABLE test_integration.fs_objects;
-TRUNCATE TABLE test_integration.fs_parent;
+) ENGINE = MergeTree() ORDER BY (child_id, parent_id);
 
 -- Insert filesystem objects
 INSERT INTO test_integration.fs_objects VALUES

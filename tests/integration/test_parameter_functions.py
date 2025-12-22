@@ -19,7 +19,7 @@ BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 QUERY_ENDPOINT = f"{BASE_URL}/query"
 
 
-def query_cypher(cypher_query, parameters=None, schema_name="social_network_demo"):
+def query_cypher(cypher_query, parameters=None, schema_name="default"):
     """Helper function to execute Cypher query via HTTP API."""
     payload = {
         "query": cypher_query,
@@ -44,10 +44,10 @@ class TestParameterFunctionBasics:
         assert response.status_code == 200
         
         result = response.json()
-        assert "data" in result
-        assert len(result["data"]) > 0
+        assert "results" in result
+        assert len(result["results"]) > 0
         # The function should transform the parameter value
-        assert result["data"][0]["upper_name"] == "ALICE"
+        assert result["results"][0]["upper_name"] == "ALICE"
     
     def test_math_function_on_parameter(self):
         """Test: Math function on parameter."""
@@ -58,7 +58,7 @@ class TestParameterFunctionBasics:
         assert response.status_code == 200
         
         result = response.json()
-        assert result["data"][0]["absolute"] == 42
+        assert result["results"][0]["absolute"] == 42
     
     def test_string_function_multiple_parameters(self):
         """Test: String function with multiple parameters."""
@@ -69,7 +69,7 @@ class TestParameterFunctionBasics:
         assert response.status_code == 200
         
         result = response.json()
-        assert result["data"][0]["substr"] == "Hello"
+        assert result["results"][0]["substr"] == "Hello"
     
     def test_nested_functions_with_parameters(self):
         """Test: Nested function calls with parameters."""
@@ -80,16 +80,16 @@ class TestParameterFunctionBasics:
         assert response.status_code == 200
         
         result = response.json()
-        assert result["data"][0]["result"] == "HELLO"
+        assert result["results"][0]["result"] == "HELLO"
 
 
 class TestParameterFunctionInWhere:
     """Test parameter + function combinations in WHERE clauses."""
     
-    def test_parameter_in_where_function_in_return(self):
+    def test_parameter_in_where_function_in_return(self, simple_graph):
         """Test: Parameter in WHERE, function in RETURN."""
         query = """
-        MATCH (u:User)
+        MATCH (u:TestUser)
         WHERE u.age > $minAge
         RETURN toUpper(u.name) AS upper_name, u.age
         ORDER BY u.age
@@ -97,60 +97,62 @@ class TestParameterFunctionInWhere:
         """
         params = {"minAge": 25}
         
-        response = query_cypher(query, params)
+        response = query_cypher(query, params, schema_name=simple_graph["schema_name"])
         assert response.status_code == 200
         
         result = response.json()
-        assert "data" in result
+        assert "results" in result
         # All returned users should have age > 25
-        for row in result["data"]:
-            assert row["age"] > 25
+        for row in result["results"]:
+            assert row.get("u.age", row.get("age")) > 25
             # Name should be uppercase
             assert row["upper_name"].isupper()
     
-    def test_function_with_parameter_in_where(self):
+    def test_function_with_parameter_in_where(self, simple_graph):
         """Test: Function applied to property compared with parameter."""
         query = """
-        MATCH (u:User)
+        MATCH (u:TestUser)
         WHERE toUpper(u.name) = $upperName
         RETURN u.name, u.age
         """
         params = {"upperName": "ALICE"}
         
-        response = query_cypher(query, params)
+        response = query_cypher(query, params, schema_name=simple_graph["schema_name"])
         assert response.status_code == 200
         
         result = response.json()
-        assert len(result["data"]) > 0
+        assert len(result["results"]) > 0
         # Should find Alice (case-insensitive match via toUpper)
-        assert result["data"][0]["name"].lower() == "alice"
+        row = result["results"][0]
+        name = row.get("u.name") or row.get("name")
+        assert name.lower() == "alice"
     
-    def test_math_function_with_parameter_in_where(self):
+    def test_math_function_with_parameter_in_where(self, simple_graph):
         """Test: Math function in WHERE with parameter."""
         query = """
-        MATCH (u:User)
+        MATCH (u:TestUser)
         WHERE abs(u.age - $targetAge) < $tolerance
         RETURN u.name, u.age
         ORDER BY u.age
         """
         params = {"targetAge": 30, "tolerance": 5}
         
-        response = query_cypher(query, params)
+        response = query_cypher(query, params, schema_name=simple_graph["schema_name"])
         assert response.status_code == 200
         
         result = response.json()
         # All results should be within tolerance of target age
-        for row in result["data"]:
-            assert abs(row["age"] - 30) < 5
+        for row in result["results"]:
+            assert abs(row.get("u.age", row.get("age")) - 30) < 5
 
 
 class TestParameterFunctionComplex:
     """Test complex scenarios with multiple parameters and functions."""
     
-    def test_multiple_parameters_multiple_functions(self):
+    def test_multiple_parameters_multiple_functions(self, simple_graph):
         """Test: Multiple parameters with multiple functions."""
         query = """
-        MATCH (u:User)
+        MATCH (u:TestUser)
         WHERE u.age >= $minAge AND u.age <= $maxAge
         RETURN 
             toUpper(u.name) AS upper_name,
@@ -162,25 +164,25 @@ class TestParameterFunctionComplex:
         """
         params = {"minAge": 20, "maxAge": 40}
         
-        response = query_cypher(query, params)
+        response = query_cypher(query, params, schema_name=simple_graph["schema_name"])
         assert response.status_code == 200
         
         result = response.json()
-        assert len(result["data"]) > 0
+        assert len(result["results"]) > 0
         
-        for row in result["data"]:
+        for row in result["results"]:
             # Age should be in range
-            assert 20 <= row["age"] <= 40
+            assert 20 <= row.get("u.age", row.get("age")) <= 40
             # Names should be transformed correctly
             assert row["upper_name"].isupper()
             assert row["lower_name"].islower()
             # Decade calculation should be correct
-            assert row["age_decade"] == int((row["age"] + 9) / 10)
+            assert row["age_decade"] == int((row.get("u.age", row.get("age")) + 9) / 10)
     
-    def test_aggregation_with_parameter_and_functions(self):
+    def test_aggregation_with_parameter_and_functions(self, simple_graph):
         """Test: Aggregation functions with parameters and transformations."""
         query = """
-        MATCH (u:User)
+        MATCH (u:TestUser)
         WHERE u.age > $minAge
         RETURN 
             count(u) AS user_count,
@@ -191,22 +193,22 @@ class TestParameterFunctionComplex:
         """
         params = {"minAge": 25}
         
-        response = query_cypher(query, params)
+        response = query_cypher(query, params, schema_name=simple_graph["schema_name"])
         assert response.status_code == 200
         
         result = response.json()
-        assert len(result["data"]) == 1
+        assert len(result["results"]) == 1
         
-        row = result["data"][0]
+        row = result["results"][0]
         assert row["user_count"] > 0
         assert row["min_age"] > 25
         assert row["avg_age"] >= row["min_age"]
         assert row["avg_age"] <= row["max_age"]
     
-    def test_case_expression_with_parameters(self):
+    def test_case_expression_with_parameters(self, simple_graph):
         """Test: CASE expression using parameters."""
         query = """
-        MATCH (u:User)
+        MATCH (u:TestUser)
         RETURN 
             u.name,
             u.age,
@@ -220,16 +222,16 @@ class TestParameterFunctionComplex:
         """
         params = {"youngThreshold": 25, "middleThreshold": 45}
         
-        response = query_cypher(query, params)
+        response = query_cypher(query, params, schema_name=simple_graph["schema_name"])
         assert response.status_code == 200
         
         result = response.json()
-        assert len(result["data"]) > 0
+        assert len(result["results"]) > 0
         
-        for row in result["data"]:
-            if row["age"] < 25:
+        for row in result["results"]:
+            if row.get("u.age", row.get("age")) < 25:
                 assert row["age_category"] == "young"
-            elif row["age"] < 45:
+            elif row.get("u.age", row.get("age")) < 45:
                 assert row["age_category"] == "middle"
             else:
                 assert row["age_category"] == "senior"
@@ -238,10 +240,10 @@ class TestParameterFunctionComplex:
 class TestParameterFunctionRelationships:
     """Test parameter + function with relationship queries."""
     
-    def test_function_on_relationship_with_parameter(self):
+    def test_function_on_relationship_with_parameter(self, simple_graph):
         """Test: Function on relationship traversal with parameter filter."""
         query = """
-        MATCH (u:User)-[f:FOLLOWS]->(u2:User)
+        MATCH (u:TestUser)-[f:TEST_FOLLOWS]->(u2:TestUser)
         WHERE u.age > $minAge
         RETURN 
             toUpper(u.name) AS follower_name,
@@ -252,20 +254,20 @@ class TestParameterFunctionRelationships:
         """
         params = {"minAge": 20}
         
-        response = query_cypher(query, params)
+        response = query_cypher(query, params, schema_name=simple_graph["schema_name"])
         assert response.status_code == 200
         
         result = response.json()
-        if len(result["data"]) > 0:
-            for row in result["data"]:
-                assert row["age"] > 20
+        if len(result["results"]) > 0:
+            for row in result["results"]:
+                assert row.get("u.age", row.get("age")) > 20
                 assert row["follower_name"].isupper()
                 assert row["followed_name"].islower()
     
-    def test_aggregation_with_functions_and_parameters(self):
+    def test_aggregation_with_functions_and_parameters(self, simple_graph):
         """Test: COUNT with string functions and parameters."""
         query = """
-        MATCH (u:User)-[:FOLLOWS]->(u2:User)
+        MATCH (u:TestUser)-[:TEST_FOLLOWS]->(u2:TestUser)
         WHERE u.age > $minAge
         RETURN 
             toUpper(u.name) AS name,
@@ -275,13 +277,13 @@ class TestParameterFunctionRelationships:
         """
         params = {"minAge": 25}
         
-        response = query_cypher(query, params)
+        response = query_cypher(query, params, schema_name=simple_graph["schema_name"])
         assert response.status_code == 200
         
         result = response.json()
-        if len(result["data"]) > 0:
-            for row in result["data"]:
-                assert row["name"].isupper()
+        if len(result["results"]) > 0:
+            for row in result["results"]:
+                assert row.get("u.name", row.get("name")).isupper()
                 assert row["following_count"] >= 0
 
 
@@ -298,7 +300,7 @@ class TestParameterFunctionEdgeCases:
         
         result = response.json()
         # Function on null should return null
-        assert result["data"][0]["upper_name"] is None
+        assert result["results"][0]["upper_name"] is None
     
     def test_coalesce_with_parameters(self):
         """Test: coalesce function with parameters."""
@@ -309,7 +311,7 @@ class TestParameterFunctionEdgeCases:
         assert response.status_code == 200
         
         result = response.json()
-        assert result["data"][0]["result"] == "fallback"
+        assert result["results"][0]["result"] == "fallback"
     
     def test_multiple_function_composition(self):
         """Test: Complex function composition with parameters."""
@@ -324,7 +326,7 @@ class TestParameterFunctionEdgeCases:
         
         result = response.json()
         # Should extract substring, convert to upper, and trim
-        assert isinstance(result["data"][0]["result"], str)
+        assert isinstance(result["results"][0]["result"], str)
     
     def test_parameter_in_multiple_functions(self):
         """Test: Same parameter used in multiple functions."""
@@ -340,7 +342,7 @@ class TestParameterFunctionEdgeCases:
         assert response.status_code == 200
         
         result = response.json()
-        row = result["data"][0]
+        row = result["results"][0]
         assert row["upper"] == "ALICE"
         assert row["lower"] == "alice"
         assert row["len"] == 5

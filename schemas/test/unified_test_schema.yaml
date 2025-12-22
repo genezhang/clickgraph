@@ -153,6 +153,15 @@ graph_schema:
         price: price
         category: category
 
+    - label: TestGroup
+      database: test_integration
+      table: groups
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        description: description
+
     # ===================================================================================
     # DENORMALIZED FLIGHTS - Virtual node pattern (tests/integration/test_denormalized_*.py)
     # ===================================================================================
@@ -315,20 +324,19 @@ graph_schema:
         since: since
 
     # ===================================================================================
-    # DENORMALIZED FLIGHTS - Denormalized edge pattern (tests/integration/test_denormalized_*.py)
-    # Node properties stored IN edge table, not separate node table
+    # GROUP MEMBERSHIP - Simple User->Group pattern (tests/integration/matrix/)
+    # Non-polymorphic junction table pattern for testing basic graph queries
     # ===================================================================================
-    - type: FLIGHT
+    - type: MEMBER_OF
       database: test_integration
-      table: flights
-      from_id: Origin
-      to_id: Dest
-      edge_id: [flight_id, flight_number]
-      from_node: Airport
-      to_node: Airport
+      table: memberships
+      from_id: user_id
+      to_id: group_id
+      edge_id: [user_id, group_id]
+      from_node: TestUser
+      to_node: TestGroup
       property_mappings:
-        flight_num: flight_number
-        carrier: airline
-        departure_time: dep_time
-        arrival_time: arr_time
-        distance: distance_miles
+        joined_at: joined_at
+        role: role
+
+    # ===================================================================================

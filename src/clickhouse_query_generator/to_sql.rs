@@ -1,6 +1,7 @@
 use super::errors::ClickhouseQueryGeneratorError;
 use super::function_registry::get_function_mapping;
 use super::function_translator::translate_scalar_function;
+use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_expr::{Literal, LogicalExpr, Operator};
 use crate::query_planner::logical_plan::LogicalPlan;
 use std::sync::Arc;
@@ -110,26 +111,12 @@ impl ToSql for LogicalExpr {
                 translate_scalar_function(fn_call)
             }
             LogicalExpr::PropertyAccessExp(prop) => {
-                // Check if this is a temporal property access (e.g., birthday.year, birthday.month)
-                // These should be converted to function calls (e.g., toYear(birthday), toMonth(birthday))
-                let col_name = prop.column.raw().to_lowercase();
-                match col_name.as_str() {
-                    "year" => Ok(format!("toYear({})", prop.table_alias.0)),
-                    "month" => Ok(format!("toMonth({})", prop.table_alias.0)),
-                    "day" => Ok(format!("toDayOfMonth({})", prop.table_alias.0)),
-                    "hour" => Ok(format!("toHour({})", prop.table_alias.0)),
-                    "minute" => Ok(format!("toMinute({})", prop.table_alias.0)),
-                    "second" => Ok(format!("toSecond({})", prop.table_alias.0)),
-                    "dayofweek" | "dow" => Ok(format!("toDayOfWeek({})", prop.table_alias.0)),
-                    "dayofyear" | "doy" => Ok(format!("toDayOfYear({})", prop.table_alias.0)),
-                    "week" => Ok(format!("toWeek({})", prop.table_alias.0)),
-                    "quarter" => Ok(format!("toQuarter({})", prop.table_alias.0)),
-                    _ => {
-                        // Regular property access - PropertyValue already knows if it's an expression or simple column
-                        // Use its to_sql() method which handles both cases efficiently
-                        Ok(prop.column.to_sql(&prop.table_alias.0))
-                    }
-                }
+                // Property has been resolved from schema during query planning.
+                // PropertyValue already contains the correct mapping:
+                // - Column(_): Direct column mapping (e.g., year: Year)
+                // - Expression(_): Expression mapping (e.g., year: toYear(FlightDate))
+                // Just render it as-is.
+                Ok(prop.column.to_sql(&prop.table_alias.0))
             }
             LogicalExpr::OperatorApplicationExp(op) => {
                 let operands_sql: Vec<String> = op

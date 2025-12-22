@@ -23,6 +23,10 @@ docker exec -i clickhouse clickhouse-client --multiquery < "$FIXTURES_DIR/filesy
 echo "  ✓ Loading group membership test data..."
 docker exec -i clickhouse clickhouse-client --multiquery < "$FIXTURES_DIR/group_membership_test_data.sql"
 
+# Load OnTime flights test data (for denormalized schema testing)
+echo "  ✓ Loading OnTime flights test data..."
+docker exec -i clickhouse clickhouse-client --multiquery < "$FIXTURES_DIR/ontime_test_data.sql"
+
 # Verify data was loaded
 echo ""
 echo "Verification:"
@@ -31,6 +35,7 @@ echo "  Filesystem parents: $(docker exec clickhouse clickhouse-client -q "SELEC
 echo "  Users: $(docker exec clickhouse clickhouse-client -q "SELECT count(*) FROM test_integration.users")"
 echo "  Groups: $(docker exec clickhouse clickhouse-client -q "SELECT count(*) FROM test_integration.groups")"
 echo "  Memberships: $(docker exec clickhouse clickhouse-client -q "SELECT count(*) FROM test_integration.memberships")"
+echo "  Flights (OnTime): $(docker exec clickhouse clickhouse-client -q "SELECT count(*) FROM default.flights")"
 
 echo ""
 echo "✅ All test fixtures loaded successfully!"

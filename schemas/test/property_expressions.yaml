@@ -1,0 +1,67 @@
+# Property Expressions Test Schema
+# Tests expression-based property mappings in YAML configuration
+# Uses users_expressions_test and follows_expressions_test tables
+
+name: property_expressions
+version: "1.0"
+
+graph_schema:
+  nodes:
+    - label: User
+      database: brahmand
+      table: users_expressions_test
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        # Expression: concat first_name and last_name
+        full_name: "concat(first_name, ' ', last_name)"
+        # Expression: concat with literal for display name
+        display_name: "concat(first_name, ' (', city, ')')"
+        # Expression: splitByChar to create array from CSV
+        tags_array: "splitByChar(',', tags_str)"
+        # Expression: array length
+        tag_count: "length(splitByChar(',', tags_str))"
+        # Simple fields
+        city: city
+        registration_date: registration_date
+        # Expression: dateDiff for days since registration
+        days_since_registration: "dateDiff('day', registration_date, today())"
+        # Expression: recent user check (within 30 days)
+        is_recent_user: "dateDiff('day', registration_date, today()) <= 30"
+        # Expression: type conversion from string
+        birth_date: "toDate(birth_date_str)"
+        age_uint8: "toUInt8(age_str)"
+        score_float: "toFloat64(score_str)"
+        # Expression: CASE WHEN for tier classification (using double quotes for strings)
+        tier: 'CASE WHEN score >= 1000 THEN "gold" WHEN score >= 500 THEN "silver" ELSE "bronze" END'
+        # Expression: multiIf for status
+        status: "multiIf(is_deleted = 1, 'deleted', is_banned = 1, 'banned', is_active = 1, 'active', 'inactive')"
+        # Expression: JSON extraction
+        subscription_type: "JSONExtractString(metadata_json, 'subscription_type')"
+        # Expression: mathematical operation
+        normalized_score: "score / 100.0"
+        score_with_bonus: "score + 50"
+        # Expression: boolean check
+        has_premium: "is_premium"
+        has_metadata: "length(metadata_json) > 2"
+
+  edges:
+    - type: FOLLOWS
+      database: brahmand
+      table: follows_expressions_test
+      from_id: follower_id
+      to_id: followed_id
+      edge_id: follow_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        follow_date: follow_date
+        interaction_count: interaction_count
+        # Expression: days since follow
+        days_since_follow: "dateDiff('day', follow_date, today())"
+        # Expression: recent follow check
+        is_recent_follow: "dateDiff('day', follow_date, today()) <= 7"
+        # Expression: relationship strength calculation
+        strength: "interaction_count / 100.0"
+        # Expression: CASE WHEN for strength tier
+        strength_tier: "CASE WHEN interaction_count >= 100 THEN 'strong' WHEN interaction_count >= 50 THEN 'medium' ELSE 'weak' END"

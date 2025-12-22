@@ -389,13 +389,13 @@ class TestParameters:
     def test_parameter_simple(self, server_running, schema_config, query_generator):
         """Test: WHERE n.prop = $param"""
         query = query_generator.parameter_simple()
-        result = execute_query(query, params={"param1": 1})
+        result = execute_query(query, params={"param1": 1}, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_parameter_complex(self, server_running, schema_config, query_generator):
         """Test: WHERE n.prop IN $list AND n.prop > $min"""
         query = query_generator.parameter_complex()
-        result = execute_query(query, params={"param_list": [1, 2, 3], "min_val": 0})
+        result = execute_query(query, params={"param_list": [1, 2, 3], "min_val": 0}, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 
@@ -409,7 +409,7 @@ class TestUnwind:
     def test_unwind_simple(self, server_running, query_generator):
         """Test: UNWIND [1,2,3] AS x RETURN x"""
         query = query_generator.unwind_simple()
-        result = execute_query(query, schema_name=schema_config.name)
+        result = execute_query(query)  # UNWIND doesn't need schema
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     @pytest.mark.xfail(reason="UNWIND with MATCH has complex execution requirements")
@@ -669,7 +669,7 @@ class TestFKEdgeSchema:
             pytest.skip("filesystem schema not configured")
         
         query = "MATCH (parent:FSObject)-[:PARENT_OF]->(child:FSObject) RETURN parent.name, child.name LIMIT 10"
-        result = execute_query(query, schema_name=schema_config.name)
+        result = execute_query(query, schema_name=schema.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     def test_fk_edge_vlp(self, server_running):
@@ -678,8 +678,8 @@ class TestFKEdgeSchema:
         if not schema:
             pytest.skip("filesystem schema not configured")
         
-        query = "MATCH (root:FSObject)-[:PARENT_OF*1..3]->(descendant:FSObject) RETURN root.name, descendant.name LIMIT 10"
-        result = execute_query(query, schema_name=schema_config.name)
+        query = "MATCH p = (a:FSObject)-[:PARENT_OF*1..3]->(b:FSObject) RETURN a.name, b.name LIMIT 10"
+        result = execute_query(query, schema_name=schema.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 
 

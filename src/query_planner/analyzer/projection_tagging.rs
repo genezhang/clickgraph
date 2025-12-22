@@ -453,69 +453,87 @@ impl ProjectionTagging {
                         graph_schema,
                     );
 
-                let mapped_column = if is_relation {
-                    // Get connected node labels for polymorphic relationship resolution
-                    let from_node = table_ctx.get_from_node_label().map(|s| s.as_str());
-                    let to_node = table_ctx.get_to_node_label().map(|s| s.as_str());
-                    log::debug!(
-                        "ProjectionTagging: Resolving rel property: label={}, property={}, from_node={:?}, to_node={:?}",
-                        label, property_access.column.raw(), from_node, to_node
-                    );
-                    view_resolver
-                        .resolve_relationship_property(&label, property_access.column.raw(), from_node, to_node)?
-                } else {
-                    // Check if this node is denormalized by looking up the schema
-                    if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
-                        if node_schema.is_denormalized {
-                            // For denormalized nodes, prefer from_node_properties
-                            // (TO position would need UNION ALL which we handle separately)
-                            if let Some(ref from_props) = node_schema.from_properties {
-                                if let Some(mapped) = from_props.get(property_access.column.raw()) {
-                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                        mapped.clone(),
-                                    )
-                                } else {
-                                    // Property not in from_props, try to_props
-                                    if let Some(ref to_props) = node_schema.to_properties {
-                                        if let Some(mapped) =
-                                            to_props.get(property_access.column.raw())
-                                        {
-                                            crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone())
+                // CRITICAL: If FilterTagging already resolved this property to an Expression,
+                // preserve it! Don't re-resolve and destroy the Expression variant.
+                // FilterTagging runs before ProjectionTagging, so expressions from schema
+                // property_mappings will already be in place.
+                let mapped_column = match &property_access.column {
+                    crate::graph_catalog::expression_parser::PropertyValue::Expression(_) => {
+                        // Already an expression - preserve it!
+                        println!(
+                            "ProjectionTagging: Preserving existing Expression variant for '{}'",
+                            property_access.column.raw()
+                        );
+                        property_access.column.clone()
+                    }
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(_) => {
+                        // Column variant - needs resolution
+                        if is_relation {
+                            // Get connected node labels for polymorphic relationship resolution
+                            let from_node = table_ctx.get_from_node_label().map(|s| s.as_str());
+                            let to_node = table_ctx.get_to_node_label().map(|s| s.as_str());
+                            log::debug!(
+                                "ProjectionTagging: Resolving rel property: label={}, property={}, from_node={:?}, to_node={:?}",
+                                label, property_access.column.raw(), from_node, to_node
+                            );
+                            view_resolver
+                                .resolve_relationship_property(&label, property_access.column.raw(), from_node, to_node)?
+                        } else {
+                            // Check if this node is denormalized by looking up the schema
+                                    if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
+                                if node_schema.is_denormalized {
+                                    // For denormalized nodes, prefer from_node_properties
+                                    // (TO position would need UNION ALL which we handle separately)
+                                    if let Some(ref from_props) = node_schema.from_properties {
+                                        if let Some(mapped) = from_props.get(property_access.column.raw()) {
+                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                mapped.clone(),
+                                            )
                                         } else {
-                                            // Fallback to identity
-                                            crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
+                                            // Property not in from_props, try to_props
+                                            if let Some(ref to_props) = node_schema.to_properties {
+                                                if let Some(mapped) =
+                                                    to_props.get(property_access.column.raw())
+                                                {
+                                                    crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone())
+                                                } else {
+                                                    // Fallback to identity
+                                                    crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
+                                                }
+                                            } else {
+                                                crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
+                                            }
+                                        }
+                                    } else if let Some(ref to_props) = node_schema.to_properties {
+                                        if let Some(mapped) = to_props.get(property_access.column.raw()) {
+                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                mapped.clone(),
+                                            )
+                                        } else {
+                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                property_access.column.raw().to_string(),
+                                            )
                                         }
                                     } else {
-                                        crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
+                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                            property_access.column.raw().to_string(),
+                                        )
                                     }
-                                }
-                            } else if let Some(ref to_props) = node_schema.to_properties {
-                                if let Some(mapped) = to_props.get(property_access.column.raw()) {
-                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                        mapped.clone(),
-                                    )
                                 } else {
-                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                        property_access.column.raw().to_string(),
-                                    )
+                                    // Standard node - use ViewResolver
+                                    view_resolver
+                                        .resolve_node_property(&label, property_access.column.raw())?
                                 }
                             } else {
+                                // Label not found in schema - use property as column name (identity mapping)
                                 crate::graph_catalog::expression_parser::PropertyValue::Column(
                                     property_access.column.raw().to_string(),
                                 )
                             }
-                        } else {
-                            // Standard node - use ViewResolver
-                            view_resolver
-                                .resolve_node_property(&label, property_access.column.raw())?
                         }
-                    } else {
-                        // Label not found in schema - use property as column name (identity mapping)
-                        crate::graph_catalog::expression_parser::PropertyValue::Column(
-                            property_access.column.raw().to_string(),
-                        )
-                    }
-                };
+                    }  // End of Column(_) match arm
+                };  // End of match property_access.column
+
 
                 // Update the property access with the mapped column
                 let updated_property_access = PropertyAccess {

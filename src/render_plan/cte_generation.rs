@@ -275,7 +275,7 @@ fn extract_properties_from_expr_recursive(
         RenderExpr::PropertyAccessExp(prop) => {
             // Check if this property belongs to the target node
             if prop.table_alias.0 == node_alias {
-                let property_name = prop.column.0.raw();
+                let property_name = prop.column.raw();
                 // Map Cypher property to ClickHouse column
                 let column_name = map_property_to_column_with_schema(property_name, node_label)
                     .unwrap_or_else(|_| property_name.to_string());

@@ -64,16 +64,21 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
 
             // Try to get schema for relationship lookup
             // GLOBAL_SCHEMAS is OnceCell<RwLock<HashMap<String, GraphSchema>>>
+            // CRITICAL FIX: Search all schemas for one that has this relationship type
+            // instead of hardcoding "default". This fixes EXISTS with multi-schema support.
             let schemas_lock = GLOBAL_SCHEMAS.get();
             let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-            let schema = schemas_guard
-                .as_ref()
-                .and_then(|guard| guard.get("default"));
+            let schema = schemas_guard.as_ref().and_then(|guard| {
+                // Try each schema until we find one with this relationship type
+                guard.values().find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
+            });
 
             // Look up the relationship table and columns using public accessors
             if let Some(schema) = schema {
                 if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
-                    let table_name = &rel_schema.table_name;
+                    // CRITICAL FIX: Use fully qualified table name (database.table) for EXISTS
+                    // This fixes "Unknown table expression" errors when table name alone isn't enough
+                    let qualified_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
                     let from_col = &rel_schema.from_id; // from_id is the FK column
 
                     // Get the start node's ID column from its label
@@ -102,10 +107,11 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                         };
 
                     // Generate the EXISTS SQL
-                    // EXISTS (SELECT 1 FROM edge_table WHERE edge_table.from_id = outer.node_id)
+                    // EXISTS (SELECT 1 FROM database.edge_table WHERE edge_table.from_id = outer.node_id)
+                    // Note: Use unqualified table_name in WHERE clause column reference
                     return Ok(format!(
                         "SELECT 1 FROM {} WHERE {}.{} = {}",
-                        table_name, table_name, from_col, start_id_sql
+                        qualified_table, rel_schema.table_name, from_col, start_id_sql
                     ));
                 }
             }
@@ -141,13 +147,29 @@ fn generate_multi_hop_pattern_count_sql(
 ) -> Result<String, RenderBuildError> {
     use crate::server::GLOBAL_SCHEMAS;
 
+    // Get the first relationship type to find the correct schema
+    let first_rel_type = connected_patterns.first()
+        .and_then(|conn| conn.relationship.labels.as_ref())
+        .and_then(|labels| labels.first())
+        .ok_or_else(|| {
+            RenderBuildError::InvalidRenderPlan("Multi-hop pattern missing relationship type".to_string())
+        })?;
+
+    // CRITICAL FIX: Search all schemas for one that has the first relationship type
+    // instead of hardcoding "default". This fixes multi-hop EXISTS with multi-schema support.
     let schemas_lock = GLOBAL_SCHEMAS.get();
     let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
     let schema = schemas_guard
         .as_ref()
-        .and_then(|guard| guard.get("default"))
+        .and_then(|guard| {
+            // Try each schema until we find one with this relationship type
+            guard.values().find(|s| s.get_relationships_schema_opt(first_rel_type).is_some())
+        })
         .ok_or_else(|| {
-            RenderBuildError::InvalidRenderPlan("Schema not found for multi-hop pattern".to_string())
+            RenderBuildError::InvalidRenderPlan(format!(
+                "Schema not found for multi-hop pattern with relationship '{}'",
+                first_rel_type
+            ))
         })?;
 
     // First relationship connects to start node (correlated)
@@ -324,11 +346,14 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
             let is_undirected = matches!(conn.relationship.direction, Direction::Either);
 
             // Try to get schema for relationship lookup
+            // CRITICAL FIX: Search all schemas for one that has this relationship type
+            // instead of hardcoding "default". This fixes size() with multi-schema support.
             let schemas_lock = GLOBAL_SCHEMAS.get();
             let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-            let schema = schemas_guard
-                .as_ref()
-                .and_then(|guard| guard.get("default"));
+            let schema = schemas_guard.as_ref().and_then(|guard| {
+                // Try each schema until we find one with this relationship type
+                guard.values().find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
+            });
 
             // Look up the relationship table and columns
             if let Some(schema) = schema {
@@ -489,11 +514,14 @@ fn generate_not_exists_from_path_pattern(
             let is_undirected = conn.relationship.direction == Direction::Either;
 
             // Try to get schema for relationship lookup
+            // CRITICAL FIX: Search all schemas for one that has this relationship type
+            // instead of hardcoding "default". This fixes size() with multi-schema support.
             let schemas_lock = GLOBAL_SCHEMAS.get();
             let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-            let schema = schemas_guard
-                .as_ref()
-                .and_then(|guard| guard.get("default"));
+            let schema = schemas_guard.as_ref().and_then(|guard| {
+                // Try each schema until we find one with this relationship type
+                guard.values().find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
+            });
 
             // Look up the relationship table and columns
             if let Some(schema) = schema {
@@ -741,6 +769,12 @@ pub struct ColumnAlias(pub String);
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Column(pub PropertyValue);
 
+impl Column {
+    pub fn raw(&self) -> &str {
+        self.0.raw()
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Operator {
     Addition,
@@ -778,7 +812,7 @@ pub struct OperatorApplication {
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PropertyAccess {
     pub table_alias: TableAlias,
-    pub column: Column,
+    pub column: PropertyValue,  // Use PropertyValue directly
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -963,7 +997,7 @@ impl TryFrom<LogicalPropertyAccess> for PropertyAccess {
     fn try_from(pa: LogicalPropertyAccess) -> Result<Self, Self::Error> {
         Ok(PropertyAccess {
             table_alias: pa.table_alias.try_into()?,
-            column: Column(pa.column), // Wrap PropertyValue in Column
+            column: pa.column, // Pass through PropertyValue
         })
     }
 }

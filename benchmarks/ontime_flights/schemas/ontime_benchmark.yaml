@@ -46,8 +46,8 @@ graph_schema:
       # Edge properties (specific to the flight itself)
       property_mappings:
         flight_date: FlightDate
-        flight_num: FlightNumber_Reporting_Airline
-        carrier: IATA_CODE_Reporting_Aireline
+        flight_num: Flight_Number_Reporting_Airline
+        carrier: IATA_CODE_Reporting_Airline
         tail_num: Tail_Number
         departure_time: DepTime
         arrival_time: ArrTime
@@ -62,5 +62,5 @@ graph_schema:
         year: Year
         quarter: Quarter
         month: Month
-        day_of_month: DayOfMonth
+        day_of_month: DayofMonth
         day_of_week: DayOfWeek

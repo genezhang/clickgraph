@@ -19,7 +19,7 @@ CREATE TABLE brahmand.multi_tenant_users (
     email String,
     country String,
     created_at DateTime DEFAULT now()
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY (tenant_id, user_id);
 
 -- Base table: Orders with tenant isolation
 CREATE TABLE brahmand.multi_tenant_orders (
@@ -29,7 +29,7 @@ CREATE TABLE brahmand.multi_tenant_orders (
     product String,
     amount Float32,
     order_date DateTime DEFAULT now()
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY (tenant_id, order_id);
 
 -- Base table: Friendships (relationships) with tenant isolation
 CREATE TABLE brahmand.multi_tenant_friendships (
@@ -38,7 +38,7 @@ CREATE TABLE brahmand.multi_tenant_friendships (
     user_id_from UInt32,
     user_id_to UInt32,
     friendship_date DateTime DEFAULT now()
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY (tenant_id, friendship_id);
 
 -- Insert test data for tenant "acme"
 INSERT INTO brahmand.multi_tenant_users (user_id, tenant_id, name, email, country) VALUES
@@ -82,6 +82,34 @@ INSERT INTO brahmand.multi_tenant_orders (order_id, tenant_id, user_id, product,
 
 INSERT INTO brahmand.multi_tenant_friendships (friendship_id, tenant_id, user_id_from, user_id_to) VALUES
     (3001, 'initech', 1, 3);
+
+-- Create parameterized views (table functions) for tenant isolation
+-- These allow filtering by tenant_id parameter at query time
+
+-- Drop existing table functions if they exist
+DROP TABLE IF EXISTS brahmand.users_by_tenant;
+DROP TABLE IF EXISTS brahmand.orders_by_tenant;
+DROP TABLE IF EXISTS brahmand.friendships_by_tenant;
+
+-- Create table function for users (tenant-isolated view)
+CREATE TABLE brahmand.users_by_tenant
+ENGINE = Memory AS
+SELECT * FROM brahmand.multi_tenant_users WHERE 0;
+
+-- Create table function for orders (tenant-isolated view)
+CREATE TABLE brahmand.orders_by_tenant
+ENGINE = Memory AS
+SELECT * FROM brahmand.multi_tenant_orders WHERE 0;
+
+-- Create table function for friendships (tenant-isolated view)
+CREATE TABLE brahmand.friendships_by_tenant
+ENGINE = Memory AS
+SELECT * FROM brahmand.multi_tenant_friendships WHERE 0;
+
+-- Insert all data into parameterized views (they will be filtered by ClickGraph)
+INSERT INTO brahmand.users_by_tenant SELECT * FROM brahmand.multi_tenant_users;
+INSERT INTO brahmand.orders_by_tenant SELECT * FROM brahmand.multi_tenant_orders;
+INSERT INTO brahmand.friendships_by_tenant SELECT * FROM brahmand.multi_tenant_friendships;
 
 -- Verify data loaded
 SELECT 'Users per tenant:' as info;

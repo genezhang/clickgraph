@@ -1,22 +1,22 @@
 /// Property expression parser for ClickHouse scalar expressions
 ///
-/// Parses simple expressions used in schema property mappings:
+/// Parses expressions used in schema property mappings:
 /// - Column references: `user_id`, `full_name`
 /// - Quoted identifiers: `"First Name"`, `` `User-ID` ``
 /// - Function calls: `concat(first_name, ' ', last_name)`
 /// - Math operations: `score / 100.0`, `price * quantity`
 /// - Array indexing: `tags[1]`
+/// - Comparisons: `age >= 18`, `length(col) > 0`
+/// - Boolean logic: `AND`, `OR`, `NOT`
 ///
 /// Does NOT support (use at query time):
 /// - Conditionals: `CASE WHEN`, `multiIf()`, `IF()`
-/// - Comparisons: `age >= 18`
-/// - Boolean logic: `AND`, `OR`, `NOT`
 /// - Lambdas: `arrayMap(x -> expr, arr)`
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until},
     character::complete::{alphanumeric1, char, digit1, multispace0, one_of},
-    combinator::{map, opt, recognize},
+    combinator::{map, opt, recognize, value},
     multi::{many0, separated_list0},
     sequence::{delimited, preceded},
     IResult, Parser,
@@ -37,6 +37,14 @@ pub enum PropertyValue {
 impl PropertyValue {
     /// Apply table prefix to generate SQL
     pub fn to_sql(&self, table_alias: &str) -> String {
+        log::debug!("PropertyValue.to_sql called: variant={}, value='{}', table_alias='{}'",
+            match self {
+                PropertyValue::Column(_) => "Column",
+                PropertyValue::Expression(_) => "Expression",
+            },
+            self.raw(),
+            table_alias
+        );
         match self {
             PropertyValue::Column(col) => {
                 // Special case: * is the SQL wildcard and shouldn't be quoted
@@ -51,12 +59,16 @@ impl PropertyValue {
             PropertyValue::Expression(expr) => {
                 // Parse and apply table alias
                 match parse_clickhouse_scalar_expr(expr) {
-                    Ok((_, ast)) => ast.to_sql(table_alias),
-                    Err(_) => {
+                    Ok((_, ast)) => {
+                        let sql = ast.to_sql(table_alias);
+                        log::debug!("✅ PropertyValue.to_sql: Successfully parsed expression '{}' -> SQL: '{}'", expr, sql);
+                        sql
+                    },
+                    Err(e) => {
                         // Fallback: treat as raw SQL
-                        crate::debug_print!(
-                            "Warning: Failed to parse expression '{}', using as-is",
-                            expr
+                        log::warn!(
+                            "⚠️ PropertyValue.to_sql: Failed to parse expression '{}', error: {:?}. Using raw string.",
+                            expr, e
                         );
                         expr.clone()
                     }
@@ -248,11 +260,19 @@ impl Literal {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Operator {
+    // Arithmetic
     Addition,
     Subtraction,
     Multiplication,
     Division,
     Modulo,
+    // Comparison
+    Equal,
+    NotEqual,
+    Less,
+    LessOrEqual,
+    Greater,
+    GreaterOrEqual,
 }
 
 impl Operator {
@@ -263,6 +283,12 @@ impl Operator {
             Operator::Multiplication => "*",
             Operator::Division => "/",
             Operator::Modulo => "%",
+            Operator::Equal => "=",
+            Operator::NotEqual => "!=",
+            Operator::Less => "<",
+            Operator::LessOrEqual => "<=",
+            Operator::Greater => ">",
+            Operator::GreaterOrEqual => ">=",
         }
     }
 }
@@ -316,9 +342,57 @@ pub(crate) fn parse_clickhouse_scalar_expr(input: &str) -> IResult<&str, ClickHo
 }
 
 /// Parse binary operations with precedence
+/// Precedence (low to high): comparison, additive, multiplicative, postfix, primary
 fn parse_binary_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
-    // Parse additive level (+, -)
-    parse_additive_expr(input)
+    // Start with comparison level (lowest precedence for binary ops)
+    parse_comparison_expr(input)
+}
+
+/// Parse comparison operations (<, >, <=, >=, =, !=)
+fn parse_comparison_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
+    let (input, left) = parse_additive_expr(input)?;
+    let (mut input, _) = multispace0(input)?;
+
+    // Try to parse comparison operator (order matters - check 2-char ops first)
+    let op_opt = if let Ok((new_input, _)) = tag::<_, _, nom::error::Error<_>>("<=")(input) {
+        input = new_input;
+        Some(Operator::LessOrEqual)
+    } else if let Ok((new_input, _)) = tag::<_, _, nom::error::Error<_>>(">=")(input) {
+        input = new_input;
+        Some(Operator::GreaterOrEqual)
+    } else if let Ok((new_input, _)) = tag::<_, _, nom::error::Error<_>>("!=")(input) {
+        input = new_input;
+        Some(Operator::NotEqual)
+    } else if let Ok((new_input, _)) = tag::<_, _, nom::error::Error<_>>("<>")(input) {
+        input = new_input;
+        Some(Operator::NotEqual)
+    } else if let Ok((new_input, _)) = tag::<_, _, nom::error::Error<_>>("<")(input) {
+        input = new_input;
+        Some(Operator::Less)
+    } else if let Ok((new_input, _)) = tag::<_, _, nom::error::Error<_>>(">")(input) {
+        input = new_input;
+        Some(Operator::Greater)
+    } else if let Ok((new_input, _)) = tag::<_, _, nom::error::Error<_>>("=")(input) {
+        input = new_input;
+        Some(Operator::Equal)
+    } else {
+        None
+    };
+
+    if let Some(op) = op_opt {
+        let (input, _) = multispace0(input)?;
+        let (input, right) = parse_additive_expr(input)?;
+        Ok((
+            input,
+            ClickHouseExpr::BinaryOp {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+        ))
+    } else {
+        Ok((input, left))
+    }
 }
 
 fn parse_additive_expr(input: &str) -> IResult<&str, ClickHouseExpr> {

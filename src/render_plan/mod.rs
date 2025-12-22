@@ -122,13 +122,13 @@ impl Join {
                 // Check if first operand is PropertyAccess with our table_alias
                 if let RenderExpr::PropertyAccessExp(prop) = &first_condition.operands[0] {
                     if prop.table_alias.0 == self.table_alias {
-                        return Some(prop.column.0.raw().to_string());
+                        return Some(prop.column.raw().to_string());
                     }
                 }
                 // Sometimes the order is reversed: other.column = alias.column
                 if let RenderExpr::PropertyAccessExp(prop) = &first_condition.operands[1] {
                     if prop.table_alias.0 == self.table_alias {
-                        return Some(prop.column.0.raw().to_string());
+                        return Some(prop.column.raw().to_string());
                     }
                 }
             }

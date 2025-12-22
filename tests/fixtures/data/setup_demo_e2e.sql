@@ -1,10 +1,14 @@
 -- Setup demo data for E2E tests
--- Windows-compatible script using Memory engine
 
 USE brahmand;
 
--- Create in-memory tables for demo purposes
-CREATE TABLE IF NOT EXISTS customers_mem (
+-- Drop existing tables
+DROP TABLE IF EXISTS customers_mem;
+DROP TABLE IF EXISTS products_mem;
+DROP TABLE IF EXISTS orders_mem;
+
+-- Create tables for demo purposes
+CREATE TABLE customers_mem (
     customer_id UInt32,
     email String,
     first_name String,
@@ -16,9 +20,9 @@ CREATE TABLE IF NOT EXISTS customers_mem (
     registration_date Date,
     total_spent Float64,
     is_premium UInt8
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY customer_id;
 
-CREATE TABLE IF NOT EXISTS products_mem (
+CREATE TABLE products_mem (
     product_id UInt32,
     name String,
     category String,
@@ -28,9 +32,9 @@ CREATE TABLE IF NOT EXISTS products_mem (
     num_reviews UInt32,
     in_stock UInt8,
     created_date Date
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY product_id;
 
-CREATE TABLE IF NOT EXISTS orders_mem (
+CREATE TABLE orders_mem (
     order_id UInt32,
     customer_id UInt32,
     product_id UInt32,
@@ -40,7 +44,7 @@ CREATE TABLE IF NOT EXISTS orders_mem (
     order_date Date,
     order_time DateTime,
     status String
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY order_id;
 
 -- Insert sample customers
 INSERT INTO customers_mem VALUES

@@ -1,0 +1,39 @@
+# Simple Group Membership Schema (for integration tests)
+# Non-polymorphic User -> Group relationship via junction table
+# Database: test_integration
+
+name: group_membership
+
+graph_schema:
+  nodes:
+    - label: User
+      database: test_integration
+      table: users
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        email: email
+
+    - label: Group
+      database: test_integration
+      table: groups
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+        description: description
+
+  edges:
+    # User -> Group membership via junction table
+    - type: MEMBER_OF
+      database: test_integration
+      table: memberships
+      from_id: user_id
+      to_id: group_id
+      from_node: User
+      to_node: Group
+      edge_id: [user_id, group_id]
+      property_mappings:
+        joined_at: joined_at
+        role: role

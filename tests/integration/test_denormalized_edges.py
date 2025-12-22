@@ -140,7 +140,7 @@ class TestDenormalizedPropertyAccess:
         assert_column_exists(response, "origin.state")
         
         # Verify correct values
-        row = response['data'][0]
+        row = response['results'][0]
         assert row['origin.city'] == 'Los Angeles'
         assert row['origin.state'] == 'CA'
     
@@ -161,7 +161,7 @@ class TestDenormalizedPropertyAccess:
         assert_column_exists(response, "dest.state")
         
         # Verify correct values
-        row = response['data'][0]
+        row = response['results'][0]
         assert row['dest.city'] == 'San Francisco'
         assert row['dest.state'] == 'CA'
     
@@ -180,7 +180,7 @@ class TestDenormalizedPropertyAccess:
         assert_query_success(response)
         assert_row_count(response, 1)  # Only SFO -> JFK
         
-        row = response['data'][0]
+        row = response['results'][0]
         assert row['origin.city'] == 'San Francisco'
         assert row['dest.city'] == 'New York'
         assert row['f.flight_num'] == 'UA200'
@@ -224,7 +224,7 @@ class TestDenormalizedWithFilters:
         assert_query_success(response)
         assert_row_count(response, 2)  # LAX -> SFO and LAX -> ORD
         
-        flight_nums = [row['f.flight_num'] for row in response['data']]
+        flight_nums = [row['f.flight_num'] for row in response['results']]
         assert 'AA100' in flight_nums
         assert 'UA600' in flight_nums
     
@@ -240,7 +240,7 @@ class TestDenormalizedWithFilters:
         )
         
         assert_query_success(response)
-        row = response['data'][0]
+        row = response['results'][0]
         assert row['flight_count'] == 3  # SFO, LAX x2
     
     def test_complex_filter_denormalized_and_edge_props(self, denormalized_flights_graph):
@@ -259,7 +259,7 @@ class TestDenormalizedWithFilters:
         assert_query_success(response)
         assert_row_count(response, 1)  # Only LAX -> SFO (AA100)
         
-        row = response['data'][0]
+        row = response['results'][0]
         assert row['f.flight_num'] == 'AA100'
 
 
@@ -282,7 +282,7 @@ class TestDenormalizedVariableLengthPaths:
         assert_query_success(response)
         assert_row_count(response, 1)
         
-        row = response['data'][0]
+        row = response['results'][0]
         assert row['origin.city'] == 'Los Angeles'
         assert row['dest.city'] == 'Atlanta'
         assert row['hops'] == 2  # LAX -> ORD -> ATL
@@ -360,7 +360,7 @@ class TestMixedDenormalizedAndNormal:
         )
         
         assert_query_success(response)
-        row = response['data'][0]
+        row = response['results'][0]
         assert row['count'] == 2  # Two flights from LAX
 
 
@@ -383,7 +383,7 @@ class TestEdgeCases:
         # LAX -> SFO (both CA)
         assert_row_count(response, 1)
         
-        row = response['data'][0]
+        row = response['results'][0]
         assert row['state'] == 'CA'
     
     def test_return_all_denormalized_properties(self, denormalized_flights_graph):
@@ -402,7 +402,7 @@ class TestEdgeCases:
         assert_query_success(response)
         assert_row_count(response, 1)
         
-        row = response['data'][0]
+        row = response['results'][0]
         assert row['origin.code'] == 'LAX'
         assert row['origin.city'] == 'Los Angeles'
         assert row['origin.state'] == 'CA'
@@ -428,7 +428,7 @@ class TestCompositeEdgeIds:
         )
         
         assert_query_success(response)
-        row = response['data'][0]
+        row = response['results'][0]
         assert row['total'] == 6  # Total flights in test data
     
     def test_variable_path_with_composite_edge_id(self, denormalized_flights_graph):
@@ -444,7 +444,7 @@ class TestCompositeEdgeIds:
         
         assert_query_success(response)
         # Should find paths to multiple destinations without cycles
-        row = response['data'][0]
+        row = response['results'][0]
         assert row['dest_count'] >= 2  # At least SFO and ORD reachable
     
     def test_composite_id_prevents_duplicate_edges(self, denormalized_flights_graph):

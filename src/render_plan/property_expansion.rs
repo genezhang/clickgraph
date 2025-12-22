@@ -127,7 +127,7 @@ pub fn expand_alias_to_select_items(
             SelectItem {
                 expression: RenderExpr::PropertyAccessExp(RenderPropertyAccess {
                     table_alias: RenderTableAlias(table_alias_to_use.clone()),
-                    column: Column(PropertyValue::Column(col_name)),
+                    column: PropertyValue::Column(col_name),
                 }),
                 col_alias: Some(RenderColumnAlias(format!("{}_{}", alias, prop_name))),
             }

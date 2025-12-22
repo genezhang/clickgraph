@@ -136,9 +136,9 @@ SCHEMAS: Dict[str, SchemaConfig] = {
     
     "group_membership": SchemaConfig(
         name="group_membership",
-        schema_type=SchemaType.POLYMORPHIC,
-        yaml_path="schemas/examples/group_membership.yaml",
-        database="test",
+        schema_type=SchemaType.TRADITIONAL,  # Simple User->Group via junction, not polymorphic
+        yaml_path="schemas/test/group_membership_simple.yaml",
+        database="test_integration",
         node_labels=["User", "Group"],
         edge_types=["MEMBER_OF"],
         node_properties={

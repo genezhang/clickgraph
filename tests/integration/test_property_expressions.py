@@ -17,12 +17,15 @@ import os
 
 BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
+# Schema for property expression tests
+PROPERTY_EXPR_SCHEMA = "property_expressions"
 
-def query(cypher: str):
+
+def query(cypher: str, schema_name: str = PROPERTY_EXPR_SCHEMA):
     """Execute a Cypher query."""
     response = requests.post(
         f"{BASE_URL}/query",
-        json={"query": cypher}
+        json={"query": cypher, "schema_name": schema_name}
     )
     assert response.status_code == 200, f"Query failed: {response.text}"
     return response.json()

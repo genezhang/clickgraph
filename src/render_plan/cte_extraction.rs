@@ -195,7 +195,7 @@ fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
 fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> String {
     match expr {
-        RenderExpr::Column(col) => col.0.raw().to_string(),
+        RenderExpr::Column(col) => col.raw().to_string(),
         RenderExpr::TableAlias(alias) => alias.0.clone(),
         RenderExpr::ColumnAlias(alias) => alias.0.clone(),
         RenderExpr::Literal(lit) => match lit {
@@ -214,14 +214,14 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
                 .find(|(cypher, _)| *cypher == prop.table_alias.0)
                 .map(|(_, cte)| cte.clone())
                 .unwrap_or_else(|| prop.table_alias.0.clone());
-            format!("{}.{}", table_alias, prop.column.0.raw())
+            format!("{}.{}", table_alias, prop.column.raw())
         }
         RenderExpr::OperatorApplicationExp(op) => {
             // Special handling for IS NULL / IS NOT NULL with wildcard property access (e.g., r.*)
             // Convert r.* to r.from_id for null checks (LEFT JOIN produces NULL for all columns)
             let operands: Vec<String> = if matches!(op.operator, Operator::IsNull | Operator::IsNotNull) 
                 && op.operands.len() == 1 
-                && matches!(&op.operands[0], RenderExpr::PropertyAccessExp(prop) if prop.column.0.raw() == "*")
+                && matches!(&op.operands[0], RenderExpr::PropertyAccessExp(prop) if prop.column.raw() == "*")
             {
                 // Extract the relationship alias and use from_id column instead of wildcard
                 if let RenderExpr::PropertyAccessExp(prop) = &op.operands[0] {
@@ -683,19 +683,19 @@ fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
             if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
                 // Map the property to the correct column
                 let mapped_column =
-                    map_property_to_column_with_schema(&prop.column.0.raw(), &node_label)
-                        .unwrap_or_else(|_| prop.column.0.raw().to_string());
-                prop.column = super::render_expr::Column(PropertyValue::Column(mapped_column));
+                    map_property_to_column_with_schema(&prop.column.raw(), &node_label)
+                        .unwrap_or_else(|_| prop.column.raw().to_string());
+                prop.column = PropertyValue::Column(mapped_column);
             }
         }
         RenderExpr::Column(col) => {
             // Check if this column name is actually an alias
-            if let Some(node_label) = get_node_label_for_alias(&col.0.raw(), plan) {
+            if let Some(node_label) = get_node_label_for_alias(&col.raw(), plan) {
                 // Convert Column(alias) to PropertyAccess(alias, "id")
                 let id_column = table_to_id_column(&label_to_table_name(&node_label));
                 *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: super::render_expr::TableAlias(col.0.raw().to_string()),
-                    column: super::render_expr::Column(PropertyValue::Column(id_column)),
+                    table_alias: super::render_expr::TableAlias(col.raw().to_string()),
+                    column: PropertyValue::Column(id_column),
                 });
             }
         }
@@ -706,7 +706,7 @@ fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
             {
                 *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: super::render_expr::TableAlias(rel_alias),
-                    column: super::render_expr::Column(PropertyValue::Column(id_column)),
+                    column: PropertyValue::Column(id_column),
                 });
             }
         }
@@ -2687,11 +2687,11 @@ pub fn expand_fixed_length_joins(
                 operands: vec![
                     RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias(prev_alias),
-                        column: Column(PropertyValue::Column(prev_id_col)),
+                        column: PropertyValue::Column(prev_id_col),
                     }),
                     RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias(rel_alias.clone()),
-                        column: Column(PropertyValue::Column(from_col.to_string())),
+                        column: PropertyValue::Column(from_col.to_string()),
                     }),
                 ],
             }],
@@ -2715,11 +2715,11 @@ pub fn expand_fixed_length_joins(
             operands: vec![
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(last_rel),
-                    column: Column(PropertyValue::Column(to_col.to_string())),
+                    column: PropertyValue::Column(to_col.to_string()),
                 }),
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(end_alias.to_string()),
-                    column: Column(PropertyValue::Column(end_id_col.to_string())),
+                    column: PropertyValue::Column(end_id_col.to_string()),
                 }),
             ],
         }],
@@ -2783,11 +2783,11 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                         operands: vec![
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(prev_alias),
-                                column: Column(PropertyValue::Column(ctx.rel_to_col.clone())),
+                                column: PropertyValue::Column(ctx.rel_to_col.clone()),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias),
-                                column: Column(PropertyValue::Column(ctx.rel_from_col.clone())),
+                                column: PropertyValue::Column(ctx.rel_from_col.clone()),
                             }),
                         ],
                     }],
@@ -2834,11 +2834,11 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                         operands: vec![
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(prev_alias),
-                                column: Column(PropertyValue::Column(prev_id_col)),
+                                column: PropertyValue::Column(prev_id_col),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(rel_alias),
-                                column: Column(PropertyValue::Column(ctx.rel_from_col.clone())),
+                                column: PropertyValue::Column(ctx.rel_from_col.clone()),
                             }),
                         ],
                     }],
@@ -2859,11 +2859,11 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     operands: vec![
                         RenderExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(last_rel),
-                            column: Column(PropertyValue::Column(ctx.rel_to_col.clone())),
+                            column: PropertyValue::Column(ctx.rel_to_col.clone()),
                         }),
                         RenderExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(ctx.end_alias.clone()),
-                            column: Column(PropertyValue::Column(ctx.end_id_col.clone())),
+                            column: PropertyValue::Column(ctx.end_id_col.clone()),
                         }),
                     ],
                 }],
@@ -2918,11 +2918,11 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                         operands: vec![
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(prev_alias),
-                                column: Column(PropertyValue::Column(ctx.rel_from_col.clone())), // FK column (parent_id)
+                                column: PropertyValue::Column(ctx.rel_from_col.clone()), // FK column (parent_id)
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(current_alias),
-                                column: Column(PropertyValue::Column(ctx.rel_to_col.clone())), // ID column (object_id)
+                                column: PropertyValue::Column(ctx.rel_to_col.clone()), // ID column (object_id)
                             }),
                         ],
                     }],
@@ -3040,11 +3040,11 @@ pub fn generate_cycle_prevention_filters_composite(
                 operands: vec![
                     RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias(left_alias.to_string()),
-                        column: Column(PropertyValue::Column(left_cols[0].to_string())),
+                        column: PropertyValue::Column(left_cols[0].to_string()),
                     }),
                     RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias(right_alias.to_string()),
-                        column: Column(PropertyValue::Column(right_cols[0].to_string())),
+                        column: PropertyValue::Column(right_cols[0].to_string()),
                     }),
                 ],
             })
@@ -3059,11 +3059,11 @@ pub fn generate_cycle_prevention_filters_composite(
                         operands: vec![
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_alias.to_string()),
-                                column: Column(PropertyValue::Column(left_col.to_string())),
+                                column: PropertyValue::Column(left_col.to_string()),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(right_alias.to_string()),
-                                column: Column(PropertyValue::Column(right_col.to_string())),
+                                column: PropertyValue::Column(right_col.to_string()),
                             }),
                         ],
                     })
