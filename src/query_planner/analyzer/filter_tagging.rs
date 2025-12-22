@@ -500,40 +500,13 @@ impl FilterTagging {
                     }
                 }
 
-                // Check if this is a temporal property access (e.g., birthday.year, birthday.month)
-                // These should be converted to function calls without table lookup
-                let col_name = property_access.column.raw().to_lowercase();
-                let temporal_func = match col_name.as_str() {
-                    "year" => Some("year"),
-                    "month" => Some("month"),
-                    "day" => Some("day"),
-                    "hour" => Some("hour"),
-                    "minute" => Some("minute"),
-                    "second" => Some("second"),
-                    "dayofweek" | "dow" => Some("dayOfWeek"),
-                    "dayofyear" | "doy" => Some("dayOfYear"),
-                    "week" => Some("week"),
-                    "quarter" => Some("quarter"),
-                    _ => None,
-                };
-
-                if let Some(func_name) = temporal_func {
-                    // Convert property access to function call: birthday.year -> year(birthday)
-                    println!(
-                        "FilterTagging: Converting temporal property access {}.{} to {}({})",
-                        property_access.table_alias.0,
-                        property_access.column.raw(),
-                        func_name,
-                        property_access.table_alias.0
-                    );
-                    return Ok(LogicalExpr::ScalarFnCall(
-                        crate::query_planner::logical_expr::ScalarFnCall {
-                            name: func_name.to_string(),
-                            args: vec![LogicalExpr::TableAlias(property_access.table_alias)],
-                        },
-                    ));
-                }
-
+                // NOTE: We used to convert temporal property names (year, month, day) to function 
+                // calls here, but that was wrong. In Cypher, `r.year` is only a temporal accessor
+                // if `r` is a date/datetime type. Since we don't have type information at this 
+                // stage, we should treat them as property accesses first. Only if the property 
+                // is not found in the schema AND the base is known to be a temporal type, we 
+                // would convert to a function call. For now, we always try property lookup first.
+                
                 // Get the table context for this alias
                 let table_ctx = plan_ctx
                     .get_table_ctx(&property_access.table_alias.0)
@@ -870,10 +843,14 @@ impl FilterTagging {
                                                         .node_id
                                                         .columns()
                                                         .first()
-                                                        .unwrap_or(&"id")
+                                                        .ok_or_else(|| AnalyzerError::SchemaNotFound(
+                                                            "Node schema has no ID columns defined".to_string()
+                                                        ))?
                                                         .to_string()
                                                 } else {
-                                                    "id".to_string()
+                                                    return Err(AnalyzerError::SchemaNotFound(
+                                                        "Node schema not found".to_string()
+                                                    ));
                                                 };
 
                                                 Self::find_property_in_viewscan_with_edge(
@@ -899,11 +876,15 @@ impl FilterTagging {
                                                     .node_id
                                                     .columns()
                                                     .first()
-                                                    .unwrap_or(&"id")
+                                                    .ok_or_else(|| AnalyzerError::SchemaNotFound(
+                                                        format!("Node schema for label '{}' has no ID columns defined", label)
+                                                    ))?
                                                     .to_string(),
                                             )
                                         } else {
-                                            None
+                                            return Err(AnalyzerError::SchemaNotFound(
+                                                format!("Node schema not found for label '{}'", label)
+                                            ));
                                         }
                                     }
                                 };

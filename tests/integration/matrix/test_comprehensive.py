@@ -668,7 +668,7 @@ class TestFKEdgeSchema:
         if not schema:
             pytest.skip("filesystem schema not configured")
         
-        query = "MATCH (parent:FSObject)-[:PARENT_OF]->(child:FSObject) RETURN parent.name, child.name LIMIT 10"
+        query = "MATCH (parent:Object)-[:PARENT]->(child:Object) RETURN parent.name, child.name LIMIT 10"
         result = execute_query(query, schema_name=schema.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
@@ -678,7 +678,7 @@ class TestFKEdgeSchema:
         if not schema:
             pytest.skip("filesystem schema not configured")
         
-        query = "MATCH p = (a:FSObject)-[:PARENT_OF*1..3]->(b:FSObject) RETURN a.name, b.name LIMIT 10"
+        query = "MATCH p = (a:Object)-[:PARENT*1..3]->(b:Object) RETURN a.name, b.name LIMIT 10"
         result = execute_query(query, schema_name=schema.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
 

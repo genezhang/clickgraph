@@ -1320,6 +1320,8 @@ impl GraphSchemaConfig {
                         &rel_schema.from_node,
                         &rel_schema.to_node,
                     );
+                    log::debug!("📋 config::to_graph_schema: Inserting edge with composite_key='{}' and simple_key='{}'", 
+                               composite_key, std_edge.type_name);
                     relationships.insert(composite_key, rel_schema.clone());
                     // Also register with simple key for backward compatibility
                     relationships.insert(std_edge.type_name.clone(), rel_schema);
@@ -1442,7 +1444,9 @@ impl GraphSchemaConfig {
                 &rel_schema.from_node,
                 &rel_schema.to_node,
             );
-            relationships.insert(composite_key, rel_schema);
+            relationships.insert(composite_key, rel_schema.clone());
+            // Also register with simple key for backward compatibility
+            relationships.insert(rel_def.type_name.clone(), rel_schema);
         }
 
         // Convert edge definitions (new format) with auto-discovery
@@ -1477,7 +1481,9 @@ impl GraphSchemaConfig {
                         &rel_schema.from_node,
                         &rel_schema.to_node,
                     );
-                    relationships.insert(composite_key, rel_schema);
+                    relationships.insert(composite_key, rel_schema.clone());
+                    // Also register with simple key for backward compatibility
+                    relationships.insert(std_edge.type_name.clone(), rel_schema);
                 }
                 EdgeDefinition::Polymorphic(poly_edge) => {
                     // Polymorphic edges don't support auto_discover_columns,

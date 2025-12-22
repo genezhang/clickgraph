@@ -689,10 +689,14 @@ impl ProjectionTagging {
                                                 .node_id
                                                 .columns()
                                                 .first()
-                                                .unwrap_or(&"id")
+                                                .ok_or_else(|| AnalyzerError::SchemaNotFound(
+                                                    format!("Node schema for label '{}' has no ID columns defined", label)
+                                                ))?
                                                 .to_string()
                                         } else {
-                                            "id".to_string()
+                                            return Err(AnalyzerError::SchemaNotFound(
+                                                format!("Node schema not found for label '{}'", label)
+                                            ));
                                         };
                                         item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
                                             table_alias: TableAlias(alias.clone()),
@@ -948,7 +952,9 @@ impl ProjectionTagging {
                                         .node_id
                                         .columns()
                                         .first()
-                                        .unwrap_or(&"id")
+                                        .ok_or_else(|| AnalyzerError::SchemaNotFound(
+                                            format!("Node schema for label '{}' has no ID columns defined", table_label)
+                                        ))?
                                         .to_string();
 
                                     log::debug!(
@@ -991,7 +997,9 @@ impl ProjectionTagging {
                                         .node_id
                                         .columns()
                                         .first()
-                                        .unwrap_or(&"id")
+                                        .ok_or_else(|| AnalyzerError::SchemaNotFound(
+                                            format!("Node schema for table '{}' has no ID columns defined", table_schema.table_name)
+                                        ))?
                                         .to_string();
 
                                     // Preserve DISTINCT if it was in the original expression

@@ -637,6 +637,8 @@ impl VariableLengthCteGenerator {
             self.end_node_table.clone(),
             self.start_cypher_alias.clone(),  // Add Cypher alias
             self.end_cypher_alias.clone(),    // Add Cypher alias
+            self.start_node_id_column.clone(), // 🔧 FIX: Pass actual ID columns (from rel schema)
+            self.end_node_id_column.clone(),
         )
     }
 

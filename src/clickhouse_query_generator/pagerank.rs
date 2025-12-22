@@ -216,9 +216,15 @@ ORDER BY pagerank DESC
                     ))
                 })?;
 
+                let id_col = node_schema.node_id.columns().first()
+                    .ok_or_else(|| ClickhouseQueryGeneratorError::SchemaError(
+                        format!("Node schema for label '{}' has no ID columns defined", label)
+                    ))?
+                    .to_string();  // Convert to owned String immediately
+
                 node_tables.push(format!(
                     "SELECT {} AS node_id FROM {}",
-                    node_schema.node_id.columns().first().unwrap_or(&"id"),
+                    id_col,
                     node_schema.table_name
                 ));
 
@@ -227,15 +233,22 @@ ORDER BY pagerank DESC
                     .node_id
                     .columns()
                     .first()
-                    .unwrap_or(&"id")
+                    .ok_or_else(|| ClickhouseQueryGeneratorError::SchemaError(
+                        format!("Node schema for label '{}' has no ID columns defined", label)
+                    ))?
                     .to_string();
                 if id_column.is_none() {
                     id_column = Some(current_column);
                 } else if id_column.as_ref() != Some(&current_column) {
+                    let label_id_col = node_schema.node_id.columns().first()
+                        .ok_or_else(|| ClickhouseQueryGeneratorError::SchemaError(
+                            format!("Node schema for label '{}' has no ID columns defined", label)
+                        ))?
+                        .to_string();  // Convert to owned String
                     return Err(ClickhouseQueryGeneratorError::SchemaError(format!(
                         "Node label '{}' has different ID column '{}' than others",
                         label,
-                        node_schema.node_id.columns().first().unwrap_or(&"id")
+                        label_id_col
                     )));
                 }
             }
@@ -264,7 +277,9 @@ ORDER BY pagerank DESC
                     .node_id
                     .columns()
                     .first()
-                    .unwrap_or(&"id")
+                    .ok_or_else(|| ClickhouseQueryGeneratorError::SchemaError(
+                        format!("Node schema has no ID columns defined")
+                    ))?
                     .to_string(),
             ))
         }

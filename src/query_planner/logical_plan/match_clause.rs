@@ -741,16 +741,21 @@ fn try_generate_view_scan(
     }
 
     // Create ViewScan with the actual table name from schema
+    let id_column = node_schema
+        .node_id
+        .columns()
+        .first()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            log::error!("Node schema for '{}' has no ID columns defined", label);
+            "id".to_string()
+        });
+    
     let mut view_scan = ViewScan::new(
         full_table_name,  // Use fully qualified table name (database.table)
         None,             // No filter condition yet
         property_mapping, // Property mappings from schema
-        node_schema
-            .node_id
-            .columns()
-            .first()
-            .unwrap_or(&"id")
-            .to_string(), // ID column from schema (first for composite)
+        id_column,        // ID column from schema (first for composite)
         vec!["id".to_string()], // Basic output schema
         vec![],           // No projections yet
     );

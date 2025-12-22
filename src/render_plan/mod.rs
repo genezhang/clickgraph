@@ -225,6 +225,11 @@ pub struct Cte {
     pub vlp_end_table: Option<String>,           // End node table name (e.g., "ldbc.Post")
     pub vlp_cypher_start_alias: Option<String>,  // Original Cypher alias for start node (e.g., "m")
     pub vlp_cypher_end_alias: Option<String>,    // Original Cypher alias for end node (e.g., "p")
+    // 🔧 FIX: Store actual ID columns from relationship schema (not node schema)
+    // For zeek DNS: start_id_col = "id.orig_h", end_id_col = "query" (from DNS_REQUESTED relationship)
+    // NOT Domain.node_id = "name" (that's the logical name, not the column)
+    pub vlp_start_id_col: Option<String>,        // Actual ID column for start node JOIN (from rel.from_id)
+    pub vlp_end_id_col: Option<String>,          // Actual ID column for end node JOIN (from rel.to_id)
 }
 
 impl Cte {
@@ -240,6 +245,8 @@ impl Cte {
             vlp_end_table: None,
             vlp_cypher_start_alias: None,
             vlp_cypher_end_alias: None,
+            vlp_start_id_col: None,
+            vlp_end_id_col: None,
         }
     }
 
@@ -254,6 +261,8 @@ impl Cte {
         end_table: String,
         cypher_start_alias: String,
         cypher_end_alias: String,
+        start_id_col: String,  // 🔧 FIX: Add ID columns from relationship schema
+        end_id_col: String,
     ) -> Self {
         Self {
             cte_name,
@@ -265,6 +274,8 @@ impl Cte {
             vlp_end_table: Some(end_table),
             vlp_cypher_start_alias: Some(cypher_start_alias),
             vlp_cypher_end_alias: Some(cypher_end_alias),
+            vlp_start_id_col: Some(start_id_col),
+            vlp_end_id_col: Some(end_id_col),
         }
     }
 }

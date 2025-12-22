@@ -613,24 +613,23 @@ fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
 pub fn table_to_id_column_with_schema(
     table: &str,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
-) -> String {
+) -> Result<String, String> {
     // Find node schema by table name
     // Handle both fully qualified (database.table) and simple (table) names
     for node_schema in schema.get_nodes_schemas().values() {
         let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
         if node_schema.table_name == table || fully_qualified == table {
-            return node_schema
+            return Ok(node_schema
                 .node_id
                 .columns()
                 .first()
-                .unwrap_or(&"id")
-                .to_string();
+                .ok_or_else(|| format!("Node schema for table '{}' has no ID columns defined", table))?
+                .to_string());
         }
     }
 
-    // NO FALLBACK - log error and use generic 'id'
-    log::error!("❌ SCHEMA ERROR: Node table '{}' not found in schema. Using generic 'id' column.", table);
-    "id".to_string()
+    // Node table not found in schema - this is an error
+    Err(format!("Node table '{}' not found in schema", table))
 }
 
 /// Get ID column for a table
@@ -640,7 +639,13 @@ pub fn table_to_id_column(table: &str) -> String {
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
             if let Some(schema) = schemas.get("default") {
-                return table_to_id_column_with_schema(table, schema);
+                match table_to_id_column_with_schema(table, schema) {
+                    Ok(col) => return col,
+                    Err(e) => {
+                        log::error!("❌ SCHEMA ERROR: {}", e);
+                        return "id".to_string();
+                    }
+                }
             }
         }
     }
@@ -959,12 +964,6 @@ pub fn extract_ctes_with_context(
                     }
                 };
 
-                // Extract ID columns
-                let start_id_col = extract_id_column(&graph_rel.left)
-                    .unwrap_or_else(|| table_to_id_column(&start_table));
-                let end_id_col = extract_id_column(&graph_rel.right)
-                    .unwrap_or_else(|| table_to_id_column(&end_table));
-
                 // Extract relationship columns from schema using the rel_table
                 eprintln!("🔧 VLP: About to extract rel columns for table: {}", rel_table);
                 eprintln!("🔧 VLP: Schema is explicitly passed as parameter");
@@ -974,6 +973,13 @@ pub fn extract_ctes_with_context(
                 let from_col = rel_cols.from_id;
                 let to_col = rel_cols.to_id;
                 eprintln!("🔧 VLP: Final columns: from_col='{}', to_col='{}' for table '{}'", from_col, to_col, rel_table);
+
+                // 🔧 FIX: Use relationship's from_id/to_id columns as node ID columns for VLP
+                // The relationship schema has the authoritative column names (e.g., DNS_REQUESTED.to_id = "query")
+                // NOT the node schema's node_id field (e.g., Domain.node_id = "name")
+                // This ensures proper joins: rel.query = end_node.query (not rel.query = end_node.name)
+                let start_id_col = from_col.clone();
+                let end_id_col = to_col.clone();
 
                 // Define aliases for traversal
                 // Note: GraphRel.left_connection and right_connection are ALREADY swapped based on direction

@@ -2259,7 +2259,7 @@ impl GraphJoinInference {
             &graph_rel.alias,
             rel_types,
             prev_edge_info,
-        );
+        ).ok()?;  // Convert Result to Option - if error, return None
 
         crate::debug_print!("    ✅ compute_pattern_context: {}", ctx.debug_summary());
         Some(ctx)
@@ -3462,7 +3462,9 @@ impl GraphJoinInference {
                     .node_id
                     .columns()
                     .first()
-                    .unwrap_or(&"id")
+                    .ok_or_else(|| AnalyzerError::SchemaNotFound(
+                        "Left node schema has no ID columns defined".to_string()
+                    ))?
                     .to_string(),
                 graph_context
                     .right
@@ -3470,7 +3472,9 @@ impl GraphJoinInference {
                     .node_id
                     .columns()
                     .first()
-                    .unwrap_or(&"id")
+                    .ok_or_else(|| AnalyzerError::SchemaNotFound(
+                        "Right node schema has no ID columns defined".to_string()
+                    ))?
                     .to_string(),
                 graph_context.left.label.clone(),
                 graph_context.right.label.clone(),

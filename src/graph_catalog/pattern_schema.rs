@@ -522,7 +522,7 @@ impl PatternSchemaContext {
         rel_alias: &str,
         rel_types: Vec<String>,
         prev_edge_info: Option<(&str, &str, bool)>, // (prev_rel_alias, prev_rel_type, is_from_node)
-    ) -> Self {
+    ) -> Result<Self, String> {
         // 1. Detect polymorphic $any patterns
         let left_is_polymorphic = rel_schema.from_node == "$any";
         let right_is_polymorphic = rel_schema.to_node == "$any";
@@ -543,7 +543,7 @@ impl PatternSchemaContext {
             left_is_polymorphic,
             right_is_polymorphic,
             &edge_pattern,
-        );
+        )?;
 
         // 5. Determine join strategy and coupled context
         let (join_strategy, coupled_context) = Self::determine_join_strategy(
@@ -557,7 +557,7 @@ impl PatternSchemaContext {
             prev_edge_info,
         );
 
-        PatternSchemaContext {
+        Ok(PatternSchemaContext {
             left_node,
             right_node,
             edge,
@@ -566,7 +566,7 @@ impl PatternSchemaContext {
             rel_types,
             left_is_polymorphic,
             right_is_polymorphic,
-        }
+        })
     }
 
     /// Resolve node ID column through property mappings.
@@ -577,13 +577,13 @@ impl PatternSchemaContext {
     /// For denormalized edge schemas, the mapping is in from_properties/to_properties
     /// of the node schema (which correspond to the edge's table). For standalone nodes,
     /// the mapping is in property_mappings.
-    fn resolve_id_column(node_schema: &NodeSchema, is_from_node: bool) -> String {
+    fn resolve_id_column(node_schema: &NodeSchema, is_from_node: bool) -> Result<String, String> {
         // Get the node ID property name from schema (Cypher name)
         let id_property = node_schema
             .node_id
             .columns()
             .first()
-            .unwrap_or(&"id")
+            .ok_or_else(|| format!("Node schema has no ID columns defined"))?
             .to_string();
 
         // Try to resolve through from_properties or to_properties (for denormalized edges)
@@ -599,7 +599,7 @@ impl PatternSchemaContext {
                     id_property, column_name,
                     if is_from_node { "from_properties" } else { "to_properties" },
                     node_schema.table_name);
-                return column_name.clone();
+                return Ok(column_name.clone());
             }
         }
 
@@ -608,14 +608,14 @@ impl PatternSchemaContext {
             let resolved = property_value.to_sql_column_only();
             log::info!("🔧 resolve_id_column: '{}' (Cypher) → '{}' (DB column) via property_mappings for table {}", 
                 id_property, resolved, node_schema.table_name);
-            return resolved;
+            return Ok(resolved);
         }
 
         // No mapping found - use the property name directly
         // (this is OK for simple schemas where Cypher name = DB column name)
         log::info!("🔧 resolve_id_column: '{}' used as-is (no mapping) for table {}", 
             id_property, node_schema.table_name);
-        id_property
+        Ok(id_property)
     }
 
     /// Build edge access strategy from relationship schema
@@ -667,7 +667,7 @@ impl PatternSchemaContext {
         _left_is_polymorphic: bool,
         _right_is_polymorphic: bool,
         edge_pattern: &EdgeTablePattern,
-    ) -> (NodeAccessStrategy, NodeAccessStrategy) {
+    ) -> Result<(NodeAccessStrategy, NodeAccessStrategy), String> {
         // IMPORTANT: Even when the relationship schema defines polymorphic endpoints ($any),
         // the actual query provides concrete node labels. The caller resolves these labels
         // to actual NodeSchema objects (left_node_schema, right_node_schema).
@@ -683,7 +683,7 @@ impl PatternSchemaContext {
         // and may be used for edge filtering (type_column filters), but not for node strategies.
 
         // Non-polymorphic: use edge pattern classification
-        match edge_pattern {
+        let node_strategies = match edge_pattern {
             EdgeTablePattern::FullyDenormalized => {
                 let left = NodeAccessStrategy::EmbeddedInEdge {
                     edge_alias: rel_alias.to_string(),
@@ -700,7 +700,7 @@ impl PatternSchemaContext {
             EdgeTablePattern::Traditional => {
                 let left = NodeAccessStrategy::OwnTable {
                     table: left_node_schema.full_table_name(),
-                    id_column: Self::resolve_id_column(left_node_schema, true),
+                    id_column: Self::resolve_id_column(left_node_schema, true)?,
                     properties: left_node_schema
                         .property_mappings
                         .iter()
@@ -709,7 +709,7 @@ impl PatternSchemaContext {
                 };
                 let right = NodeAccessStrategy::OwnTable {
                     table: right_node_schema.full_table_name(),
-                    id_column: Self::resolve_id_column(right_node_schema, false),
+                    id_column: Self::resolve_id_column(right_node_schema, false)?,
                     properties: right_node_schema
                         .property_mappings
                         .iter()
@@ -731,7 +731,7 @@ impl PatternSchemaContext {
                 } else {
                     NodeAccessStrategy::OwnTable {
                         table: left_node_schema.full_table_name(),
-                        id_column: Self::resolve_id_column(left_node_schema, true),
+                        id_column: Self::resolve_id_column(left_node_schema, true)?,
                         properties: left_node_schema
                             .property_mappings
                             .iter()
@@ -748,7 +748,7 @@ impl PatternSchemaContext {
                 } else {
                     NodeAccessStrategy::OwnTable {
                         table: right_node_schema.full_table_name(),
-                        id_column: Self::resolve_id_column(right_node_schema, false),
+                        id_column: Self::resolve_id_column(right_node_schema, false)?,
                         properties: right_node_schema
                             .property_mappings
                             .iter()
@@ -758,7 +758,8 @@ impl PatternSchemaContext {
                 };
                 (left, right)
             }
-        }
+        };
+        Ok(node_strategies)
     }
 
     /// Helper to build node strategy for a specific position
@@ -768,7 +769,7 @@ impl PatternSchemaContext {
         rel_alias: &str,
         is_from_node: bool,
         edge_pattern: &EdgeTablePattern,
-    ) -> NodeAccessStrategy {
+    ) -> Result<NodeAccessStrategy, String> {
         let is_denormalized = match edge_pattern {
             EdgeTablePattern::FullyDenormalized => true,
             EdgeTablePattern::Mixed {
@@ -785,26 +786,26 @@ impl PatternSchemaContext {
         };
 
         if is_denormalized {
-            NodeAccessStrategy::EmbeddedInEdge {
+            Ok(NodeAccessStrategy::EmbeddedInEdge {
                 edge_alias: rel_alias.to_string(),
                 properties: Self::extract_denorm_props(rel_schema, is_from_node),
                 is_from_node,
-            }
+            })
         } else {
-            NodeAccessStrategy::OwnTable {
+            Ok(NodeAccessStrategy::OwnTable {
                 table: node_schema.full_table_name(),
                 id_column: node_schema
                     .node_id
                     .columns()
                     .first()
-                    .unwrap_or(&"id")
+                    .ok_or_else(|| format!("Node schema for '{}' has no ID columns defined", node_schema.table_name))?
                     .to_string(),
                 properties: node_schema
                     .property_mappings
                     .iter()
                     .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
                     .collect(),
-            }
+            })
         }
     }
 
