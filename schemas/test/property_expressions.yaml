@@ -26,23 +26,33 @@ graph_schema:
         registration_date: registration_date
         # Expression: dateDiff for days since registration
         days_since_registration: "dateDiff('day', registration_date, today())"
+        account_age_days: "dateDiff('day', registration_date, today())"
         # Expression: recent user check (within 30 days)
         is_recent_user: "dateDiff('day', registration_date, today()) <= 30"
         # Expression: type conversion from string
         birth_date: "toDate(birth_date_str)"
         age_uint8: "toUInt8(age_str)"
+        age_int: "toUInt8(age_str)"
         score_float: "toFloat64(score_str)"
         # Expression: Simplified tier (CASE WHEN has parsing issues)
         tier: "if(score >= 1000, 'gold', if(score >= 500, 'silver', 'bronze'))"
+        # Expression: Age group classification
+        age_group: "if(toUInt8(age_str) < 18, 'minor', if(toUInt8(age_str) >= 65, 'senior', 'adult'))"
+        # Expression: Priority based on multiIf (simulating status-like logic)
+        priority: "multiIf(is_deleted = 1, 'low', is_banned = 1, 'low', is_active = 1, 'high', 'medium')"
         # Expression: multiIf for status
         status: "multiIf(is_deleted = 1, 'deleted', is_banned = 1, 'banned', is_active = 1, 'active', 'inactive')"
         # Expression: JSON extraction
         subscription_type: "JSONExtractString(metadata_json, 'subscription_type')"
+        metadata_key: "JSONExtractString(metadata_json, 'subscription_type')"
         # Expression: mathematical operation
         normalized_score: "score / 100.0"
+        score_normalized: "score / 1000.0"
         score_with_bonus: "score + 50"
+        bonus_score: "score + 100"
         # Expression: boolean check
         has_premium: "is_premium"
+        is_premium_bool: "is_premium"
         has_metadata: "length(metadata_json) > 2"
 
   edges:
@@ -59,9 +69,11 @@ graph_schema:
         interaction_count: interaction_count
         # Expression: days since follow
         days_since_follow: "dateDiff('day', follow_date, today())"
+        follow_age_days: "dateDiff('day', follow_date, today())"
         # Expression: recent follow check
         is_recent_follow: "dateDiff('day', follow_date, today()) <= 7"
         # Expression: relationship strength calculation
         strength: "interaction_count / 100.0"
+        relationship_strength: "interaction_count / 100.0"
         # Expression: Simplified strength tier (CASE WHEN has parsing issues)
         strength_tier: "if(interaction_count >= 100, 'strong', if(interaction_count >= 50, 'medium', 'weak'))"
