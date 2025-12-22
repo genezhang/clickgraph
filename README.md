@@ -48,8 +48,8 @@
 ### Advanced Schema Support
 
 - **Composite Node IDs** - Use property combinations instead of single columns for node identity
-  - **Example**: `node_id: [departure_airport, departure_time]` for flights (no single unique column)
-  - **Use case**: Time-series data, multi-dimensional keys, complex entity relationships
+  - **Example**: `node_id: [tenant_id, user_id]` for multi-tenant users, `[country, city]` for locations
+  - **Use case**: Multi-tenant systems, hierarchical data, time-series events, complex entity relationships
   - **Benefit**: Model real-world data without artificial ID columns
 
 - **ClickHouse Function Pass-through** - Use ClickHouse functions directly in Cypher expressions
