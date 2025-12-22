@@ -21,6 +21,7 @@ use crate::{
             query_validation::QueryValidation, schema_inference::SchemaInference,
             variable_resolver::VariableResolver,
             cte_reference_populator::CteReferencePopulator,
+            vlp_transitivity_check::VlpTransitivityCheck,
         },
         logical_plan::LogicalPlan,
         optimizer::{
@@ -50,6 +51,7 @@ mod projected_columns_resolver;
 mod query_validation;
 mod schema_inference;
 mod variable_resolver;
+mod vlp_transitivity_check;
 mod unwind_property_rewriter;
 mod unwind_tuple_enricher;
 
@@ -58,6 +60,7 @@ pub fn initial_analyzing(
     plan_ctx: &mut PlanCtx,
     current_graph_schema: &GraphSchema,
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
+    log::info!("🔍 ANALYZER: Entering initial_analyzing");
     // Step 1: Schema Inference - infer missing schema information
     let schema_inference = SchemaInference::new();
     let plan = if let Ok(transformed_plan) =
@@ -79,6 +82,27 @@ pub fn initial_analyzing(
         transformed_plan.get_plan()
     } else {
         plan
+    };
+
+    // Step 2.5: VLP Transitivity Check - validate variable-length path patterns
+    // This runs after TypeInference to ensure we have relationship types resolved
+    // Checks if VLP patterns are semantically valid (relationship must be transitive)
+    // Converts non-transitive patterns (e.g., IP-[DNS*]->Domain) to fixed-length
+    log::info!("🔍 Running VLP Transitivity Check...");
+    let vlp_transitivity_check = VlpTransitivityCheck::new();
+    let plan = match vlp_transitivity_check.analyze_with_graph_schema(
+        plan.clone(),
+        plan_ctx,
+        current_graph_schema,
+    ) {
+        Ok(transformed_plan) => {
+            log::info!("✓ VLP Transitivity Check completed successfully");
+            transformed_plan.get_plan()
+        }
+        Err(e) => {
+            log::warn!("⚠ VLP Transitivity Check failed: {:?}, continuing with original plan", e);
+            plan
+        }
     };
 
     // Step 3: CTE Schema Resolver - register CTE schemas in plan_ctx for analyzer/planner

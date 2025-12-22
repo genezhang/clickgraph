@@ -356,34 +356,50 @@ fn rewrite_vlp_union_branch_aliases(plan: &mut RenderPlan) -> RenderPlanBuilderR
     
     log::info!("🔄 VLP Union Branch: Found {} VLP CTE(s), checking if rewrite is needed", vlp_mappings.len());
     
-    // ✨ CRITICAL: Filter mappings to exclude Cypher aliases that have outer JOINs
-    // For non-denormalized VLP with outer node JOINs:
-    //   - Keep "t" → "vlp123" mapping (for path functions like t.path_nodes)
-    //   - Remove "a" → "start_node" mapping (a already exists as a JOIN alias)
-    //   - Remove "b" → "end_node" mapping (b already exists as a JOIN alias)
-    let join_aliases: HashSet<String> = plan.joins.0.iter()
-        .map(|join| join.table_alias.clone())
-        .collect();
+    // ✨ ARCHITECTURAL FIX: Filter mappings to exclude VLP endpoint node aliases
+    // 
+    // VLP CTEs only contain:
+    //   - start_id, end_id (for path matching)
+    //   - hop_count, path_edges, path_nodes, path_relationships (path tracking)
+    //   - edge properties (from the relationship)
+    // 
+    // VLP CTEs do NOT contain node properties!
+    // 
+    // Node properties must be fetched by JOINing to source tables.
+    // Therefore, we must NOT rewrite node alias property accesses (a.property, b.property)
+    // to use the CTE alias (vlp1.property).
+    // 
+    // Strategy: Collect VLP endpoint node aliases from CTE metadata, exclude them from rewriting.
+    //   - Keep: Path variable mappings (t → vlp1) for t.path_nodes, t.hop_count, etc.
+    //   - Exclude: Node endpoint mappings (a → vlp1, b → vlp1) - these need JOINs
+    let mut vlp_endpoint_aliases: HashSet<String> = HashSet::new();
+    for cte in &plan.ctes.0 {
+        if let (Some(start), Some(end)) = (&cte.vlp_cypher_start_alias, &cte.vlp_cypher_end_alias) {
+            vlp_endpoint_aliases.insert(start.clone());
+            vlp_endpoint_aliases.insert(end.clone());
+            log::info!("🔍 VLP: Identified endpoint aliases: '{}', '{}' (will not rewrite)", start, end);
+        }
+    }
     
     let filtered_mappings: HashMap<String, String> = vlp_mappings.into_iter()
         .filter(|(cypher_alias, _vlp_alias)| {
-            // Keep the mapping if the Cypher alias is NOT in the JOINs
-            // This preserves "t" → "vlp123" but removes "a"/"b" mappings when outer JOINs exist
-            let should_keep = !join_aliases.contains(cypher_alias);
-            if !should_keep {
-                log::info!("🔍 VLP: Skipping rewrite for '{}' (has outer JOIN)", cypher_alias);
+            // Keep the mapping if it's NOT a VLP endpoint node alias
+            // This preserves "t" → "vlp1" but removes "a"/"b" mappings
+            let is_endpoint = vlp_endpoint_aliases.contains(cypher_alias);
+            if is_endpoint {
+                log::info!("🔍 VLP: Excluding endpoint alias '{}' from rewrite (needs JOIN for properties)", cypher_alias);
             }
-            should_keep
+            !is_endpoint
         })
         .collect();
     
     if filtered_mappings.is_empty() {
-        log::info!("🔍 VLP Union Branch: All mappings filtered out (all have outer JOINs) - nothing to rewrite");
+        log::info!("🔍 VLP Union Branch: All mappings filtered out (all are endpoint nodes needing JOINs) - nothing to rewrite");
         return Ok(());
     }
     
-    log::info!("🔄 VLP Union Branch: Applying {} filtered mapping(s) (excluded {} with outer JOINs)", 
-               filtered_mappings.len(), join_aliases.len());
+    log::info!("🔄 VLP Union Branch: Applying {} filtered mapping(s) (excluded {} endpoint aliases)", 
+               filtered_mappings.len(), vlp_endpoint_aliases.len());
     
     // Log what mappings we're applying
     for (from, to) in &filtered_mappings {
@@ -5548,12 +5564,11 @@ impl RenderPlanBuilder for LogicalPlan {
                                 // CRITICAL FIX: If query has aggregation, wrap non-ID columns with anyLast()
                                 // This unifies WITH and RETURN aggregation logic
                                 if has_aggregation {
-                                    // Get ID column for this alias
+                                    // Get ID column for this alias - MUST succeed, no fallbacks!
                                     let id_col = self.find_id_column_for_alias(&alias.0)
-                                        .unwrap_or_else(|_| {
-                                            log::warn!("⚠️ Could not find ID column for alias '{}', using 'id' fallback", alias.0);
-                                            "id".to_string()
-                                        });
+                                        .map_err(|e| RenderBuildError::InvalidRenderPlan(
+                                            format!("Cannot find ID column for alias '{}' in aggregation: {}", alias.0, e)
+                                        ))?;
                                     
                                     log::info!("🔧 Aggregation detected: wrapping non-ID columns with anyLast() for alias '{}', ID column='{}'",
                                                alias.0, id_col);
@@ -7003,10 +7018,12 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Currently, undirected multi-hop patterns generate broken SQL with wrong aliases,
                 // so adding uniqueness filters here would not work correctly.
 
-                // 🚀 ADD CYCLE PREVENTION for fixed-length paths
+                // 🚀 ADD CYCLE PREVENTION for fixed-length paths (only for 2+ hops)
+                // Single hop (*1) can't have cycles - no need for cycle prevention
                 if let Some(spec) = &graph_rel.variable_length {
                     if let Some(exact_hops) = spec.exact_hop_count() {
-                        if graph_rel.shortest_path_mode.is_none() {
+                        // Skip cycle prevention for *1 - single hop can't cycle
+                        if exact_hops >= 2 && graph_rel.shortest_path_mode.is_none() {
                             crate::debug_println!("DEBUG: extract_filters - Adding cycle prevention for fixed-length *{}", exact_hops);
 
                             // Check if this is a denormalized pattern
@@ -8320,12 +8337,11 @@ impl RenderPlanBuilder for LogicalPlan {
                                         &prop_access.table_alias.0,
                                     )
                                 {
-                                    // Found denormalized node properties - get ID from schema
+                                    // Found denormalized node properties - get ID from schema (MUST succeed)
                                     let id_col = group_by.input.find_id_column_for_alias(&prop_access.table_alias.0)
-                                        .unwrap_or_else(|_| {
-                                            log::warn!("⚠️ Could not find ID column for denormalized alias '{}', using fallback", prop_access.table_alias.0);
-                                            "id".to_string()
-                                        });
+                                        .map_err(|e| RenderBuildError::InvalidRenderPlan(
+                                            format!("Cannot find ID column for denormalized alias '{}': {}", prop_access.table_alias.0, e)
+                                        ))?;
 
                                     log::debug!("🔧 GROUP BY optimization: Using ID column '{}' from schema for denormalized alias '{}'",
                                         id_col, table_alias);
@@ -8340,10 +8356,9 @@ impl RenderPlanBuilder for LogicalPlan {
                                 // Fallback: use ID column from schema
                                 if !properties.is_empty() {
                                     let id_col = group_by.input.find_id_column_for_alias(&prop_access.table_alias.0)
-                                        .unwrap_or_else(|_| {
-                                            log::warn!("⚠️ Could not find ID column for alias '{}', using fallback", prop_access.table_alias.0);
-                                            "id".to_string()
-                                        });
+                                        .map_err(|e| RenderBuildError::InvalidRenderPlan(
+                                            format!("Cannot find ID column for alias '{}': {}", prop_access.table_alias.0, e)
+                                        ))?;
 
                                     log::debug!("🔧 GROUP BY optimization: Using ID column '{}' instead of {} properties for alias '{}'",
                                         id_col, properties.len(), table_alias_to_use);
@@ -11654,17 +11669,26 @@ impl RenderPlanBuilder for LogicalPlan {
             }
 
             // For denormalized edges, node properties are embedded in edge table
-            // so we don't need to join to separate node tables
-            // For mixed patterns, only skip the JOIN for the denormalized node
+            // so we need to JOIN to the edge tables to access those properties.
+            // 
+            // IMPORTANT: Even if both nodes are denormalized (is_fully_denormalized),
+            // we still need JOINs because the VLP CTE only contains:
+            //   - start_id, end_id (for matching)
+            //   - path tracking columns (hop_count, path_edges, path_nodes, path_relationships)
+            //   - edge properties (if any)
+            // But it does NOT contain node properties!
+            //
+            // Node properties must be fetched by JOINing back to the source table(s)
+            // using the start_id/end_id columns from the CTE.
+            //
             // 🎯 FIX: Get denorm info from ORIGINAL plan (self), not transformed_plan (which has VLP removed)
             let denorm_info = get_variable_length_denorm_info(self);
 
-            if denorm_info
-                .as_ref()
-                .map_or(false, |d| d.is_fully_denormalized())
+            // REMOVED the is_fully_denormalized check that was skipping JOIN creation
+            // Previously: if denorm_info.as_ref().map_or(false, |d| d.is_fully_denormalized()) { skip JOINs }
+            // This was wrong because VLP CTE doesn't include node properties.
+            
             {
-                // Fully denormalized: no joins needed - CTE already has all node properties
-            } else {
                 // Get the actual table names and ID columns from:
                 // 1. Plan denorm info (extracted from original GraphRel before CTE extraction)
                 // 2. VLP CTE metadata (populated during CTE generation)
@@ -11679,13 +11703,16 @@ impl RenderPlanBuilder for LogicalPlan {
                     .and_then(|d| d.end_table.clone())
                     .or_else(|| vlp_cte.and_then(|c| c.vlp_end_table.clone()))
                     .unwrap_or_else(|| get_node_table_for_alias(&end_alias));
-                let start_id_col = denorm_info
-                    .as_ref()
-                    .and_then(|d| d.start_id_col.clone())
+                // 🔧 FIX: Use ID columns from VLP CTE metadata (from relationship schema) instead of denorm_info (from node schema)
+                // The VLP CTE has the authoritative column names from the relationship's from_id/to_id
+                // NOT the node schema's node_id field (e.g., DNS: rel.to_id = "query", not Domain.node_id = "name")
+                let start_id_col = vlp_cte
+                    .and_then(|c| c.vlp_start_id_col.clone())
+                    .or_else(|| denorm_info.as_ref().and_then(|d| d.start_id_col.clone()))
                     .unwrap_or_else(|| get_node_id_column_for_alias(&start_alias));
-                let end_id_col = denorm_info
-                    .as_ref()
-                    .and_then(|d| d.end_id_col.clone())
+                let end_id_col = vlp_cte
+                    .and_then(|c| c.vlp_end_id_col.clone())
+                    .or_else(|| denorm_info.as_ref().and_then(|d| d.end_id_col.clone()))
                     .unwrap_or_else(|| get_node_id_column_for_alias(&end_alias));
 
                 // Check denormalization status for each node
@@ -11754,9 +11781,10 @@ impl RenderPlanBuilder for LogicalPlan {
                         });
                     }
                 } else {
-                    // Different start and end nodes: Add JOINs for non-denormalized nodes
+                    // Different start and end nodes: Always add JOINs to access node properties
+                    // (Even if nodes are denormalized, VLP CTE doesn't contain their properties)
                     // For OPTIONAL VLP, skip the start node JOIN (it's already in FROM)
-                    if !start_is_denorm && !vlp_is_optional {
+                    if !vlp_is_optional {
                         // 🔧 FIX: Use Cypher alias from VLP metadata instead of internal VLP alias
                         let start_node_alias = vlp_cte
                             .and_then(|c| c.vlp_cypher_start_alias.clone())
@@ -11787,9 +11815,10 @@ impl RenderPlanBuilder for LogicalPlan {
                             to_id_column: None,
                         });
                     } else {
-                        log::debug!("⏭️  SKIP START node JOIN: start_is_denorm={}, vlp_is_optional={}", start_is_denorm, vlp_is_optional);
+                        log::debug!("⏭️  SKIP START node JOIN: vlp_is_optional={}", vlp_is_optional);
                     }
-                    if !end_is_denorm {
+                    // Always add END node JOIN (VLP CTE doesn't contain node properties)
+                    {
                         // 🔧 FIX: Always use Cypher alias from VLP metadata (for both OPTIONAL and REQUIRED)
                         let end_node_alias = vlp_cte
                             .and_then(|c| c.vlp_cypher_end_alias.clone())
@@ -11818,8 +11847,6 @@ impl RenderPlanBuilder for LogicalPlan {
                             from_id_column: None,
                             to_id_column: None,
                         });
-                    } else {
-                        log::debug!("⏭️  SKIP END node JOIN: end_is_denorm={}", end_is_denorm);
                     }
                 }
             }
