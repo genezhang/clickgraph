@@ -121,6 +121,10 @@ echo ""
 # 3. Denormalized flights data (for ontime_flights schema)
 log_info "=== Denormalized Flights Data ==="
 run_sql_file "$PROJECT_ROOT/scripts/test/setup_denormalized_test_data.sql" "Flights test data"
+# Also create in default database for ontime_benchmark schema
+run_sql "CREATE TABLE IF NOT EXISTS default.flights AS test_integration.flights"
+run_sql "INSERT INTO default.flights SELECT * FROM test_integration.flights"
+log_info "Copied flights table to default database for ontime_benchmark schema"
 echo ""
 
 # 4. Filesystem test data (for filesystem schema)
