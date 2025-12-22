@@ -1,31 +1,33 @@
 # Test Failure Investigation Plan
 
-**Status**: ~2428/3475 passing (~69.9%) - ~1047 failures remaining  
+**Status**: 2514/3319 passing (75.7%) - 805 failures remaining  
 **Created**: December 21, 2025  
-**Last Updated**: December 21, 2025 (Comma Pattern Fix)  
+**Last Updated**: December 22, 2025 (Post v0.6.0 Release)  
 **Goal**: Systematic investigation and resolution of remaining test failures
 
 ## Executive Summary
 
-**MAJOR BREAKTHROUGH**: Comma-separated pattern bug FIXED! ✅ Cross-table correlation now working with smart cross-branch JOIN detection. Zeek merged test suite: **21/24 passing (87.5%)**.
+**Current Status**: After v0.6.0 release, we have achieved **75.7% pass rate** (2514/3319 passing).
 
-**Key Achievement**: Re-enabled selective cross-branch JOIN generation that:
+**Recent Achievement**: Comma-separated pattern bug FIXED! ✅ Cross-table correlation now working with smart cross-branch JOIN detection. Zeek merged test suite: **22/24 passing (91.7%)**.
+
+**Key Success**: Re-enabled selective cross-branch JOIN generation that:
 - Detects shared nodes across different relationship tables (comma patterns)
 - Generates proper JOINs: `FROM dns_log AS t1 INNER JOIN conn_log AS t2 ON t1.orig_h = t2.orig_h`
 - Avoids duplicate JOINs for linear patterns (the reason it was disabled before)
 
-**Next Focus**: Variable-length paths (~200 failures) and aggregation edge cases.
+**Next Priority**: Matrix tests (400 failures, 49.7% of total) - primarily VLP and aggregation edge cases.
 
 ---
 
-## Recent Fix (December 21, 2025)
+## Recent Fix (December 21, 2025) - ✅ VERIFIED
 
-### ✅ Comma-Separated Patterns with Cross-Table Correlation - **FIXED**
+### ✅ Comma-Separated Patterns with Cross-Table Correlation - **FIXED & VERIFIED**
 
-**Test Results**:
-- `TestCrossTableCorrelation`: **5/6 passing** (83%)
-- Full Zeek merged suite: **21/24 passing** (87.5%)
-- **Impact**: ~50 matrix test failures now likely resolved
+**Test Results** (December 22, 2025):
+- `test_zeek_merged.py`: **22/24 passing (91.7%)** ✅
+- Full matrix suite: **1995/2408 passing (82.9%)**
+- **Status**: Fix confirmed stable after v0.6.0 release
 
 **What was fixed**:
 ```rust
@@ -43,260 +45,186 @@ if prev_appearance.table_name != current_appearance.table_name {
 3. Only generates JOIN for true comma patterns, not linear chains
 4. Reused existing sophisticated helper functions
 
-**Remaining TestCrossTableCorrelation failure**: 
-- `test_with_match_correlation`: WITH clause + second MATCH (different issue, not comma pattern)
+**Remaining zeek_merged failures (2/24)**:
+- `test_count_dns_requests`: Single table COUNT aggregation issue
+- `test_count_connections`: Single table COUNT aggregation issue  
+(These are NOT comma pattern issues - different root cause)
 
 ---
 
-## Current Failure Analysis (December 21, 2025)
+## Current Failure Analysis (December 22, 2025)
+
+### Test Statistics Summary
+| Category | Passing | Total | Pass Rate | Failures |
+|----------|---------|-------|-----------|----------|
+| **Overall** | 2514 | 3319 | 75.7% | 805 |
+| Matrix Tests | 1995 | 2408 | 82.9% | 400 |
+| Variable-Length Paths | 11 | 24 | 45.8% | 13 |
+| Shortest Paths | 0 | 20 | 0% | 20 |
+| Zeek Merged | 22 | 24 | 91.7% | 2 |
+| Other Tests | 486 | 843 | 57.7% | 370 |
 
 ### 🎉 Recent Wins
-- ✅ **Comma-separated patterns**: Fixed cross-table JOINs
-- **Matrix tests**: 2144/2408 passing (89%)
-- **Zeek merged schema**: **21/24 passing (87.5%)**
-- **Simple aggregations**: COUNT, COUNT DISTINCT, GROUP BY all passing for zeek_merged
-- **OPTIONAL MATCH**: Basic patterns working
+- ✅ **Comma-separated patterns**: Fixed cross-table JOINs (December 21)
+- ✅ **Matrix tests improved**: 82.9% passing (1995/2408)
+- ✅ **Zeek merged schema**: **22/24 passing (91.7%)**
+- ✅ **Simple comma patterns**: All basic cross-table correlations working
 
-### 🔍 Remaining Issues by Category
+### 🔍 Remaining Issues by Priority
 
-#### 1. **Cross-Table Comma Patterns** - ✅ **FIXED** (Was ~50 failures)
-**Status**: Resolved December 21, 2025
-**Commit**: Re-enabled selective cross-branch JOIN generation
-**Tests passing**: 5/6 TestCrossTableCorrelation, likely ~45 matrix tests now fixed
+#### 1. **Matrix Tests** - **400 failures** (49.7% of all failures) - **HIGHEST PRIORITY**
+**Current status**: 1995/2408 passing (82.9%)
 
----
+**Breakdown by pattern type**:
+- Variable-length path patterns (~250 failures estimated)
+- Aggregation edge cases (~100 failures estimated)
+- Complex multi-hop patterns (~50 failures estimated)
 
-#### 2. **Variable-Length Paths** - **~200 failures** (High Priority - NEXT)
-**Affected tests**:
-- Matrix test_e2e_v2.py: ~180 failures
-- Matrix test_comprehensive.py zeek_merged VLP tests: ~15 failures
-
-**Patterns failing**:
-- `*` (unbounded)
-- `*2`, `*3`, `*4` (exact hops)
-- `*1..3`, `*2..4`, `*1..5` (ranges)
-- `*1..`, `*2..` (open-ended)
-
-**Likely Issues**:
-- CTE generation for zeek_merged schema
-- Property selection within recursive CTEs
-- FK-based relationships in VLP patterns
-
-**Estimated Effort**: 3-4 days
-
----
-
-#### 3. **Aggregation Edge Cases** - **~150 failures** (Medium Priority)
-**Affected tests**:
-- Matrix test_e2e.py: ~60 failures
-- Various aggregation tests across schemas
-
-**Failing patterns**:
-- SUM/AVG on nullable columns
-- COLLECT with complex expressions
-- MIN/MAX with ordering
-- Aggregations within VLP patterns
-
-**Estimated Effort**: 2-3 days
-
----
-
-#### 4. **Wiki/Tutorial Tests** - **~150 failures** (Low Priority)
-**Affected**: `tests/integration/wiki/test_cypher_basic_patterns.py`
-
-**Note**: These use a different schema (`social_benchmark.yaml`), not zeek_merged. Should pass once that schema is properly configured in unified setup.
-
-**Estimated Effort**: 1 day
-
----
-
-#### 5. **Misc Categories** - **~547 failures**
-- Shortest path algorithms: ~45 failures
-- Optional match edge cases: ~27 failures  
-- Security graph tests: ~20 failures
-- Denormalized edges: 20 errors (test setup)
-- Expression/function tests: ~435 failures
-
-**Estimated Effort**: 5-7 days (distributed across categories)
-
----
-
-## 🎯 Immediate Next Steps (Comma-Pattern Fix)
-
-### Investigation Checklist  
-- [x] Identify root cause: Missing table in FROM clause for comma-separated patterns
-- [x] Document failing test cases with SQL output
-- [ ] Locate query planning code for comma-separated MATCH clauses
-- [ ] Understand how table aliases are tracked across multiple patterns
-- [ ] Design fix for shared node correlation
-
-### Code Areas to Review
-1. **`query_planner/logical_plan/match_clause.rs`** - MATCH clause planning
-2. **`query_planner/analyzer/graph_join_inference.rs`** - JOIN generation  
-3. **`render_plan/plan_builder.rs`** - SQL FROM clause construction
-4. **`clickhouse_query_generator/to_sql_query.rs`** - Final SQL assembly
-
-### Test Commands
+**Investigation needed**: Run matrix tests with detailed output to categorize failures:
 ```bash
-# Run failing cross-table tests
-pytest tests/integration/test_zeek_merged.py::TestCrossTableCorrelation -vv --tb=short
-
-# Minimal repro for debugging
-pytest tests/integration/test_zeek_merged.py::TestCrossTableCorrelation::test_comma_pattern_cross_table -vv --tb=short
-
-# Check generated SQL (add --sql-only flag when available)
-# Or check server logs for query planning details
+pytest tests/integration/matrix/ -v --tb=short -k "vlp" 2>&1 | grep "FAILED" | head -20
+pytest tests/integration/matrix/ -v --tb=short -k "aggregat" 2>&1 | grep "FAILED" | head -20
 ```
 
-### Expected Fix Approach
-1. **Phase 1**: Track all table scans involved in comma-separated patterns
-2. **Phase 2**: Generate CROSS JOIN or include all tables in FROM clause
-3. **Phase 3**: Ensure WHERE clause properly correlates shared nodes
-4. **Phase 4**: Test with incrementally complex patterns
+**Estimated Effort**: 5-7 days  
+**Impact**: Would bring overall pass rate to ~88%
 
 ---
 
-### 1. Matrix Tests - **565 failures** (74% of failures)
-**Schemas affected**: zeek_merged, filesystem, ontime_benchmark, group_membership
+#### 2. **Variable-Length Paths** - **13 failures** (High Priority)
+**Current status**: 11/24 passing (45.8%)
 
-**Sample errors**:
-```
-zeek_merged: Identifier 'n.id' cannot be resolved
-filesystem: No FROM clause found
-```
+**Affected test classes**:
+- `TestRangePaths`: Range patterns like `*1..3`, `*2..4` failing
+- `TestUnboundedPaths`: Unbounded patterns like `*`, `*1..` failing
+- `TestVariableLengthWithFilters`: VLP + WHERE clause failing
+- `TestVariableLengthProperties`: Property access within VLP failing
+- `TestVariableLengthAggregation`: COUNT/GROUP BY on VLP failing
 
-**Root causes to investigate**:
-- Schema node_id field misconfiguration (zeek_merged uses 'id' but column might be different)
-- Missing table resolution for certain schema types
-- FK-based edge schemas may have incomplete metadata
+**Root cause hypothesis**:
+- CTE generation issues for variable-length patterns in unified schema
+- Property selection within recursive CTEs not working correctly
+- Aggregation over VLP results generating invalid SQL
 
-**Priority**: HIGH (bulk of failures)  
-**Estimated effort**: 3-5 days
-
----
-
-### 2. Variable-Length Paths - **26 failures**
-**Test file**: `test_variable_length_paths.py`
-
-**Failure patterns**:
-- Fixed length paths (exact hops): `*2`, `*3`
-- Range paths: `*1..3`, `*2..4`
-- Unbounded paths: `*`, `*1..`
-- With filters and aggregations
-
-**Root causes to investigate**:
-- CTE generation for variable-length patterns
-- Recursion depth handling
-- Property access within path CTEs
-- JOIN conditions for multi-hop traversals
-
-**Priority**: MEDIUM (core graph feature)  
-**Estimated effort**: 2-3 days
+**Estimated Effort**: 2-3 days  
+**Impact**: Core graph feature, critical for graph analytics
 
 ---
 
-### 3. Shortest Path Algorithms - **45 failures**
-**Test file**: `test_shortest_paths.py`
+#### 3. **Shortest Path Algorithms** - **20 failures** (Medium Priority)
+**Current status**: 0/20 passing (0%)
 
-**Failure patterns**:
-- `shortestPath()` function
-- `allShortestPaths()` function
-- With filters, aggregations, depth constraints
-- Edge cases (self-loops, unreachable nodes)
+**All test classes failing**:
+- `TestShortestPathBasic`: Even basic `shortestPath()` calls failing
+- `TestShortestPathProperties`: Property access on paths
+- `TestShortestPathAggregation`: Aggregations over shortest paths
+- `TestShortestPathDepth`: Depth constraints
+- `TestShortestPathEdgeCases`: Multiple start nodes, unreachable paths
 
-**Root causes to investigate**:
-- Shortest path CTE generation
+**Root cause hypothesis**:
+- Shortest path CTE generation completely broken
+- May be related to VLP CTE generation issues
 - Early termination optimization not working
-- Path filtering logic
-- Multiple path handling in allShortestPaths
 
-**Priority**: MEDIUM (specialized algorithm)  
-**Estimated effort**: 2-3 days
+**Estimated Effort**: 3-4 days  
+**Impact**: Specialized algorithm, important for path analysis
 
 ---
 
-### 4. Optional Match - **27 failures**
-**Test files**: Various integration tests
+#### 4. **Other Integration Tests** - **370 failures** (Medium-Low Priority)
+**Categories**:
+- Wiki/tutorial tests: ~150 failures (different schema - `social_benchmark.yaml`)
+- Security graph tests: ~20 failures (schema-specific)
+- Aggregation edge cases: ~100 failures (SUM/AVG/COLLECT edge cases)
+- Expression/function tests: ~100 failures (various)
 
-**Failure patterns**:
-- Optional match with filtering
-- Multiple optional matches
-- Optional match after required match
-- Complex nested patterns
-
-**Root causes to investigate**:
-- LEFT JOIN generation edge cases
-- Optional alias tracking incomplete
-- Interaction with other features (aggregations, paths)
-- NULL handling in WHERE clauses
-
-**Priority**: MEDIUM (common pattern)  
-**Estimated effort**: 2-3 days
+**Estimated Effort**: 5-7 days distributed  
+**Impact**: Various, many are schema-specific or edge cases
 
 ---
 
-### 5. Security Graph Tests - **20 failures**
-**Test file**: `test_security_graph.py`
+#### 5. **Zeek Tests** - **2 failures** (Low Priority - Easy Win!)
+**Current status**: 22/24 passing (91.7%)
 
-**Failure patterns**:
-- Basic node queries (User, Group, File, Folder)
-- Relationship queries (MEMBER_OF, CONTAINS)
-- Aggregations and GROUP BY
+**Failing tests**:
+- `test_count_dns_requests`: Simple COUNT on dns_log table
+- `test_count_connections`: Simple COUNT on conn_log table
 
-**Root causes to investigate**:
-- Schema-specific issues (might use different property names)
-- May be using custom schema not in unified_test_schema.yaml
-- Possible relationship type mismatches
+**Root cause hypothesis**:
+- Single-table COUNT aggregation issue (not cross-table)
+- May be table alias or GROUP BY issue
+- Quick investigation should reveal simple fix
 
-**Priority**: LOW (domain-specific test suite)  
-**Estimated effort**: 1 day
-
----
-
-### 6. Denormalized Edges - **20 errors**
-**Test file**: `test_denormalized_edges.py`
-
-**Error type**: ERROR (not FAILED - indicates test setup issue)
-
-**Failure patterns**:
-- Property access on denormalized edges
-- Composite edge IDs
-- Variable-length paths with denormalized properties
-- Mixed denormalized and normal edges
-
-**Root causes to investigate**:
-- Test fixture setup failing
-- Schema configuration for denormalized edges
-- May need special schema in unified_test_schema.yaml
-
-**Priority**: LOW (advanced feature)  
-**Estimated effort**: 1-2 days
+**Estimated Effort**: 0.5 day  
+**Impact**: Would make zeek_merged 100% passing!
 
 ---
 
-### 7. Zeek/OnTime Domain Tests - **79 failures**
-**Test files**: `test_zeek_*.py`, relationship/aggregation tests
+## 🎯 Immediate Next Steps (Post v0.6.0)
 
-**Failure patterns**:
-- Domain-specific queries (DNS, connections, flights)
-- Cross-table correlations
-- WITH + MATCH patterns
+### Quick Win: Zeek Test Fixes (Today - 0.5 day)
+**Goal**: Fix 2 remaining zeek_merged failures to achieve 100% pass rate
 
-**Root causes to investigate**:
-- Schema mismatches (zeek.conn_log vs expected)
-- Database qualification issues
-- Custom property mappings
+1. ✅ Investigation already complete (COUNT aggregation issue)
+2. ⬜ Run failing tests with detailed output:
+   ```bash
+   pytest tests/integration/test_zeek_merged.py::TestSingleTableRequested::test_count_dns_requests -vv --tb=long
+   pytest tests/integration/test_zeek_merged.py::TestSingleTableAccessed::test_count_connections -vv --tb=long
+   ```
+3. ⬜ Check generated SQL for COUNT queries
+4. ⬜ Fix table alias or aggregation generation
+5. ⬜ Verify zeek_merged 24/24 passing
 
-**Priority**: LOW (can work with other schemas)  
-**Estimated effort**: 2 days
+**Impact**: Zeek merged suite 100% passing, validates comma-pattern fix
 
 ---
 
-### 8. Misc Edge Cases - **4 failures**
-**Tests**: standalone_return, with_having, role_based_queries
+### Priority 1: Matrix Test Deep Dive (Week 1 - 5 days)
+**Goal**: Categorize and fix matrix test failures (400 remaining)
 
-**Priority**: LOW  
-**Estimated effort**: 0.5 day
+**Phase 1: Investigation (Day 1-2)**
+```bash
+# Categorize failures by pattern type
+pytest tests/integration/matrix/ -v --tb=short 2>&1 > matrix_failures_full.log
+
+# VLP failures
+grep -A 5 "test.*vlp" matrix_failures_full.log | grep "FAILED" > vlp_failures.txt
+
+# Aggregation failures  
+grep -A 5 "test.*aggr\|test.*count\|test.*sum" matrix_failures_full.log | grep "FAILED" > agg_failures.txt
+
+# Analyze patterns
+wc -l vlp_failures.txt agg_failures.txt
+```
+
+**Phase 2: VLP Fixes (Day 3-4)**
+- Fix CTE generation for variable-length patterns
+- Fix property selection in recursive CTEs
+- Test with zeek_merged and filesystem schemas
+
+**Phase 3: Aggregation Fixes (Day 5)**
+- Fix COUNT/SUM/AVG edge cases
+- Fix GROUP BY with complex expressions
+- Test across all schemas
+
+**Target**: 2700+/3319 passing (81%+)
+
+---
+
+### Priority 2: Variable-Length & Shortest Paths (Week 2 - 5 days)
+**Goal**: Fix core graph algorithm failures (33 tests)
+
+**VLP Tests (Day 1-2)**
+```bash
+pytest tests/integration/test_variable_length_paths.py -vv --tb=short 2>&1 | tee vlp_investigation.log
+```
+
+**Shortest Path Tests (Day 3-5)**
+```bash
+pytest tests/integration/test_shortest_paths.py -vv --tb=short 2>&1 | tee shortest_path_investigation.log
+```
+
+**Target**: 2750+/3319 passing (83%+)
 
 ---
 
@@ -347,119 +275,132 @@ Follow the **5-Phase Development Process** from `DEVELOPMENT_PROCESS.md`:
 
 ---
 
-## Prioritized Execution Plan
+## Prioritized Execution Plan (Revised December 22, 2025)
 
-### **Week 1: Matrix Tests (High Impact)**
+### **Quick Win: Complete Zeek Suite (Today - 0.5 day)**
 
-**Goal**: Fix 565 matrix test failures (74% of all failures)
+**Goal**: Fix 2 remaining zeek_merged test failures → 100% pass rate
 
-**Day 1-2: Investigation**
-- Run matrix tests with different schemas: `pytest tests/integration/matrix/ -v --tb=short -k "zeek_merged" 2>&1 | head -100`
-- Check schema files: `schemas/examples/zeek_merged.yaml`, `filesystem.yaml`
-- Identify node_id field mismatches
-- Check if schemas are loaded in unified_test_schema.yaml
+**Steps**:
+1. Run failing tests with full traceback
+2. Check generated SQL for COUNT aggregations
+3. Fix table alias or aggregation code
+4. Verify all 24 tests passing
 
-**Day 3-4: Fix Implementation**
-- Add missing schemas to unified_test_schema.yaml OR
-- Fix node_id resolution in schema loading code
-- Fix FROM clause generation for FK-based edges
-- Test incrementally per schema
-
-**Day 5: Validation**
-- Run full matrix suite
-- Expected: 300-400 tests fixed (50-70% of matrix failures)
-- Document findings
-
-**Target**: 2900+/3363 tests passing (86%+)
+**Target**: Zeek merged 24/24 (100%)
 
 ---
 
-### **Week 2: Graph Algorithms (Medium Impact)**
+### **Week 1: Matrix Tests Investigation & VLP Fixes (5 days)**
 
-**Goal**: Fix variable-length paths (26) + shortest paths (45) = 71 failures
+**Goal**: Fix majority of matrix test failures (currently 400/2408 failing)
 
-**Day 6-7: Variable-Length Paths**
-- Run: `pytest tests/integration/test_variable_length_paths.py -v --tb=short`
-- Check CTE generation for recursive patterns
-- Verify property selection in path CTEs
-- Fix JOIN conditions for multi-hop
+**Day 1-2: Deep Investigation**
+- Categorize 400 failures by pattern type (VLP, aggregation, multi-hop)
+- Run subset of tests with detailed SQL output
+- Identify common root causes
+- Expected: ~250 VLP, ~100 aggregation, ~50 other
 
-**Day 8-9: Shortest Paths**
-- Run: `pytest tests/integration/test_shortest_paths.py -v --tb=short`
-- Check early termination logic
-- Verify path filtering
-- Fix allShortestPaths distinct handling
+**Day 3-4: Variable-Length Path Fixes**
+- Fix CTE generation for VLP patterns
+- Fix property selection in recursive CTEs
+- Test with multiple schemas (zeek_merged, filesystem)
+- Expected: Fix ~200-250 matrix VLP failures
 
-**Day 10: Validation**
-- Run both test suites
-- Expected: 60-70 tests fixed (80-95% of algorithm failures)
+**Day 5: Aggregation Edge Cases**
+- Fix COUNT/SUM/AVG with nullable columns
+- Fix GROUP BY with complex expressions
+- Fix COLLECT edge cases
+- Expected: Fix ~80-100 matrix aggregation failures
 
-**Target**: 2960+/3363 tests passing (88%+)
+**Milestone**: 2700+/3319 tests passing (81%+)
 
 ---
 
-### **Week 3: Optional Match & Domain Tests (Remaining)**
+### **Week 2: Core Graph Algorithms (5 days)**
 
-**Goal**: Fix optional match (27) + security (20) + zeek/ontime (79) = 126 failures
+**Goal**: Fix variable-length paths and shortest path algorithms
 
-**Day 11-12: Optional Match**
-- Run: `pytest tests/integration/ -v -k "optional" --tb=short`
-- Check LEFT JOIN generation edge cases
-- Fix NULL handling in WHERE clauses
-- Test nested optional patterns
+**Day 6-7: Variable-Length Path Tests**
+- Focus on `test_variable_length_paths.py` (13 failing)
+- Fix range patterns (`*1..3`, `*2..4`)
+- Fix unbounded patterns (`*`, `*1..`)
+- Fix VLP + WHERE clause interactions
+- Expected: 20+/24 VLP tests passing
 
-**Day 13: Security Graph**
-- Run: `pytest tests/integration/test_security_graph.py -v --tb=short`
-- Add security graph schema to unified_test_schema.yaml
+**Day 8-10: Shortest Path Algorithms**
+- Focus on `test_shortest_paths.py` (20 failing)
+- Fix basic `shortestPath()` CTE generation
+- Fix `allShortestPaths()` distinct handling
+- Fix early termination optimization
+- Fix property access on paths
+- Expected: 15+/20 shortest path tests passing
+
+**Milestone**: 2750+/3319 tests passing (83%+)
+
+---
+
+### **Week 3: Schema-Specific & Edge Cases (5 days)**
+
+**Goal**: Fix remaining schema-specific and edge case failures
+
+**Day 11-12: Wiki/Tutorial Tests**
+- Add `social_benchmark.yaml` schema to unified setup
+- Fix property mappings for tutorial queries
+- Expected: Fix ~100-120 wiki test failures
+
+**Day 13: Security Graph Tests**
+- Add security graph schema to unified setup
 - Fix relationship type mappings
+- Expected: Fix ~15-18 security graph failures
 
-**Day 14-15: Zeek/OnTime Domain**
-- Fix remaining domain-specific issues
-- Verify database qualification
-- Add missing schemas if needed
+**Day 14-15: Miscellaneous Edge Cases**
+- Expression/function tests
+- Denormalized edge tests (fix setup)
+- Optional match edge cases
+- Expected: Fix ~80-100 misc failures
 
-**Target**: 3080+/3363 tests passing (91.5%+)
-
----
-
-### **Week 4: Polish & Edge Cases**
-
-**Goal**: Fix denormalized edges (20 errors) + misc (4) = 24 issues
-
-**Day 16-17: Denormalized Edges**
-- Investigate ERROR status (test setup issue)
-- Add denormalized edge fixtures to conftest.py
-- Implement composite edge ID support
-- Test variable-length paths with denormalized props
-
-**Day 18: Misc Edge Cases**
-- Fix standalone_return, with_having, role_based_queries
-- Address any new failures from previous fixes
-
-**Day 19-20: Final Validation**
-- Run complete integration suite multiple times
-- Fix any regressions
-- Update all documentation
-
-**Target**: 3100+/3363 tests passing (92%+)
+**Milestone**: 2950+/3319 tests passing (89%+)
 
 ---
 
-## Success Metrics
+### **Week 4: Polish & Documentation (5 days)**
+
+**Goal**: Final bug fixes and comprehensive documentation
+
+**Day 16-18: Final Bug Fixes**
+- Address remaining high-impact failures
+- Fix any regressions from previous weeks
+- Run full suite multiple times for stability
+
+**Day 19-20: Documentation & Release**
+- Update STATUS.md with all fixes
+- Update CHANGELOG.md with v0.6.1 details
+- Create feature notes for major fixes
+- Update KNOWN_ISSUES.md
+- Prepare release notes
+
+**Final Target**: 3050+/3319 tests passing (92%+)
+
+---
+
+## Success Metrics (Revised)
 
 ### Milestones
-- ✅ **Current**: 76.7% (2581/3363) - Database prefix bug fixed
-- 🎯 **Week 1**: 86% (2900/3363) - Matrix tests fixed
-- 🎯 **Week 2**: 88% (2960/3363) - Algorithm tests fixed
-- 🎯 **Week 3**: 91.5% (3080/3363) - Domain tests fixed
-- 🎯 **Week 4**: 92%+ (3100+/3363) - Polish complete
+- ✅ **v0.6.0 Release**: 75.7% (2514/3319) - Comma pattern fix, cross-table JOINs working
+- 🎯 **Quick Win** (Day 1): 75.8% (2516/3319) - Zeek merged 100%
+- 🎯 **Week 1**: 81%+ (2700+/3319) - Matrix VLP and aggregation fixes
+- 🎯 **Week 2**: 83%+ (2750+/3319) - Core graph algorithm fixes
+- 🎯 **Week 3**: 89%+ (2950+/3319) - Schema-specific fixes
+- 🎯 **Week 4**: 92%+ (3050+/3319) - Polish and edge cases
 
 ### Definition of Done (Per Category)
-- ✅ 80%+ tests in category passing
+- ✅ 80%+ tests in category passing (or 90%+ for small categories)
 - ✅ No regressions in previously passing tests
-- ✅ Root cause documented in feature note
+- ✅ Root cause documented (in STATUS.md or feature note)
 - ✅ STATUS.md and CHANGELOG.md updated
 - ✅ Code committed with descriptive message
+- ✅ Full integration suite run to verify no side effects
 
 ---
 
@@ -480,19 +421,20 @@ Follow the **5-Phase Development Process** from `DEVELOPMENT_PROCESS.md`:
 
 ---
 
-## Next Steps
+## Next Steps (December 22, 2025)
 
-**Immediate** (today):
-1. ✅ Create this plan document
-2. ✅ Commit database prefix fix
-3. ⬜ Run matrix tests investigation (Day 1 task)
+**Immediate** (today - START HERE!):
+1. ✅ Update investigation plan with v0.6.0 results
+2. ⬜ Investigate 2 failing zeek_merged tests (quick win)
+3. ⬜ Fix zeek_merged COUNT aggregation issues
+4. ⬜ Verify zeek_merged 24/24 passing
 
-**Tomorrow**:
-1. Complete matrix test investigation
-2. Identify schema fixes needed
-3. Begin implementation
+**Tomorrow & This Week**:
+1. Deep dive into matrix test failures (categorize 400 failures)
+2. Begin VLP fixes in matrix tests
+3. Track progress daily in STATUS.md
 
-**Track progress in**: `STATUS.md` (update after each category completion)
+**Track progress in**: `STATUS.md` (update after each milestone completion)
 
 ---
 

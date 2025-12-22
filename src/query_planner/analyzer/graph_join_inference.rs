@@ -2200,7 +2200,7 @@ impl GraphJoinInference {
         graph_schema: &GraphSchema,
         prev_edge_info: Option<(&str, &str, bool)>,
     ) -> Option<PatternSchemaContext> {
-        // 1. Get node labels from plan_ctx
+        // 1. Get node labels from plan_ctx (or infer from relationship schema)
         let left_alias = &graph_rel.left_connection;
         let right_alias = &graph_rel.right_connection;
 
@@ -2211,8 +2211,9 @@ impl GraphJoinInference {
             .get_table_ctx_from_alias_opt(&Some(right_alias.clone()))
             .ok()?;
 
-        let left_label = left_ctx.get_label_str().ok()?;
-        let right_label = right_ctx.get_label_str().ok()?;
+        // Try to get labels from plan_ctx, but allow empty for anonymous nodes
+        let left_label_opt = left_ctx.get_label_str().ok();
+        let right_label_opt = right_ctx.get_label_str().ok();
 
         // 2. Get relationship type(s) from labels
         let rel_types: Vec<String> = graph_rel
@@ -2226,14 +2227,38 @@ impl GraphJoinInference {
             return None;
         }
 
-        // 3. Look up schemas
-        // First get relationship schema to know which table to use
-        // Use node labels to disambiguate polymorphic relationships
-        let rel_schema = graph_schema.get_rel_schema_with_nodes(
-            &rel_types[0],
-            Some(&left_label),
-            Some(&right_label)
-        ).ok()?;
+        // 3. Handle anonymous nodes by inferring labels from relationship schema
+        // First try to get relationship schema with explicit labels (if provided)
+        // If labels are missing (anonymous nodes), try without them and infer labels
+        let (left_label, right_label, rel_schema) = if left_label_opt.is_some() && right_label_opt.is_some() {
+            // Both labels provided - use them
+            let left = left_label_opt.unwrap();
+            let right = right_label_opt.unwrap();
+            let rel = graph_schema.get_rel_schema_with_nodes(
+                &rel_types[0],
+                Some(&left),
+                Some(&right)
+            ).ok()?;
+            (left, right, rel)
+        } else {
+            // One or both labels missing (anonymous nodes) - infer from relationship schema
+            crate::debug_print!("    🔍 Anonymous node(s) detected - inferring labels from relationship schema");
+            
+            // Get relationship schema without node labels (matches any compatible schema)
+            let rel = graph_schema.get_rel_schema_with_nodes(
+                &rel_types[0],
+                None,
+                None
+            ).ok()?;
+            
+            // Infer labels from relationship schema
+            let inferred_left = rel.from_node.clone();
+            let inferred_right = rel.to_node.clone();
+            
+            crate::debug_print!("    ✅ Inferred labels: left='{}', right='{}'", inferred_left, inferred_right);
+            
+            (inferred_left, inferred_right, rel)
+        };
         
         // For denormalized edges, use composite key (database::table::label) to get the correct node schema
         // Format: "database::table::label" (matching config.rs format)
