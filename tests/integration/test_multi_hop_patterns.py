@@ -29,8 +29,17 @@ from conftest import execute_cypher, CLICKGRAPH_URL
 class TestMultiHopSqlGeneration:
     """Test SQL generation for multi-hop patterns without database execution."""
     
-    def get_sql(self, query: str) -> str:
-        """Get generated SQL for a Cypher query."""
+    def get_sql(self, query: str, schema_name: str = "ontime_flights") -> str:
+        """Get generated SQL for a Cypher query.
+        
+        Args:
+            query: Cypher query (USE clause auto-prepended if not present)
+            schema_name: Schema to use (default: ontime_flights for denormalized tests)
+        """
+        # Auto-prepend USE clause if not present
+        if not query.strip().upper().startswith("USE "):
+            query = f"USE {schema_name} {query}"
+        
         response = requests.post(
             f"{CLICKGRAPH_URL}/query",
             json={"query": query, "sql_only": True},
@@ -183,6 +192,7 @@ class TestDenormalizedMultiHop:
         result = execute_cypher(
             "MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]->(c:Airport) "
             "RETURN a.code, b.code, c.code LIMIT 10",
+            schema_name="ontime_flights",
             raise_on_error=False
         )
         
@@ -199,6 +209,7 @@ class TestDenormalizedMultiHop:
         result = execute_cypher(
             "MATCH (a:Airport)-[r1:FLIGHT]-(b:Airport)-[r2:FLIGHT]-(c:Airport) "
             "RETURN a.code, b.code, c.code LIMIT 10",
+            schema_name="ontime_flights",
             raise_on_error=False
         )
         
@@ -212,6 +223,7 @@ class TestDenormalizedMultiHop:
         result = execute_cypher(
             "MATCH (a:Airport)-[f1:FLIGHT]->(b:Airport)-[f2:FLIGHT]->(c:Airport)-[f3:FLIGHT]->(d:Airport) "
             "RETURN a.code, b.code, c.code, d.code LIMIT 5",
+            schema_name="ontime_flights",
             raise_on_error=False
         )
         
@@ -226,6 +238,7 @@ class TestDenormalizedMultiHop:
             WHERE f1.carrier = f2.carrier AND f2.carrier = f3.carrier
             RETURN a.code, b.code, c.code, d.code, f1.carrier LIMIT 5
             """,
+            schema_name="ontime_flights",
             raise_on_error=False
         )
         
@@ -243,6 +256,7 @@ class TestDenormalizedMultiHop:
             RETURN hub, connections
             ORDER BY connections DESC LIMIT 5
             """,
+            schema_name="ontime_flights",
             raise_on_error=False
         )
         
@@ -259,6 +273,7 @@ class TestDenormalizedMultiHop:
             RETURN hub, origins, destinations
             ORDER BY origins DESC LIMIT 5
             """,
+            schema_name="ontime_flights",
             raise_on_error=False
         )
         
