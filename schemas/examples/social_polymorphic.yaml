@@ -8,20 +8,22 @@ graph_schema:
   nodes:
     - label: User
       database: brahmand
-      table: users
+      table: users_bench  # Using benchmark table
       node_id: user_id
       property_mappings:
-        name: name
-        email: email
+        user_id: user_id
+        name: full_name   # Map to actual column
+        email: email_address  # Map to actual column
 
     - label: Post
       database: brahmand
-      table: posts
+      table: posts_bench  # Using benchmark table
       node_id: post_id
       property_mappings:
-        title: title
-        content: body
-        created: created_at
+        post_id: post_id
+        title: content  # Map content as title
+        content: content  # Map to actual column
+        created: created_at  # Map to actual column
 
   edges:
     # Polymorphic edge - generates one EdgeSchema per type_value
