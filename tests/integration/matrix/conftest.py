@@ -79,11 +79,11 @@ SCHEMAS: Dict[str, SchemaConfig] = {
         sample_values={"country": ["US", "UK", "CA"], "city": ["NYC", "LA", "London"]},
     ),
     
-    "ontime_benchmark": SchemaConfig(
-        name="ontime_benchmark",
+    "ontime_flights": SchemaConfig(
+        name="ontime_flights",
         schema_type=SchemaType.DENORMALIZED,
-        yaml_path="benchmarks/ontime_flights/schemas/ontime_benchmark.yaml",
-        database="default",
+        yaml_path="schemas/examples/ontime_denormalized.yaml",
+        database="test_integration",
         node_labels=["Airport"],
         edge_types=["FLIGHT"],
         node_properties={

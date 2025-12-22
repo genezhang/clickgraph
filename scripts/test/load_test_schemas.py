@@ -26,14 +26,13 @@ SCHEMAS_TO_LOAD = [
     ("schemas/test/unified_test_schema.yaml", "unified_test_schema"),
     # Benchmark schemas - used by matrix tests for cross-schema coverage
     ("benchmarks/social_network/schemas/social_benchmark.yaml", "social_benchmark"),
-    ("benchmarks/ontime_flights/schemas/ontime_benchmark.yaml", "ontime_benchmark"),
     # Schema variations - matrix tests
     ("schemas/examples/filesystem.yaml", "filesystem"),
     ("schemas/test/group_membership_simple.yaml", "group_membership"),
     # Example schemas
     ("examples/data_security/data_security.yaml", "data_security"),
-    # Denormalized schema  
-    ("schemas/examples/ontime_denormalized.yaml", "ontime_denormalized"),
+    # Denormalized schema (ontime_flights)
+    ("schemas/examples/ontime_denormalized.yaml", "ontime_flights"),
     # Polymorphic schema
     ("schemas/examples/social_polymorphic.yaml", "social_polymorphic"),
     # Coupled/DNS schema
