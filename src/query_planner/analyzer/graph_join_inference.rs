@@ -30,18 +30,24 @@ use crate::{
 /// Used for detecting cross-branch shared nodes that require JOINs.
 #[derive(Debug, Clone)]
 struct NodeAppearance {
-    /// The relationship (GraphRel) alias that owns this node reference
+    /// The table alias to use in JOIN conditions.
+    /// For regular patterns: the relationship alias (e.g., "t1")
+    /// For VLP patterns: the node alias (e.g., "g") since VLP CTE replaces the relationship
     rel_alias: String,
     /// Node label (e.g., "IP", "Domain")
     node_label: String,
-    /// Table where this node's data lives (from relationship schema)
+    /// Table where this node's data lives
+    /// For regular patterns: edge table (from relationship schema)
+    /// For VLP patterns: node table (from node schema)
     table_name: String,
     /// Database where the table lives
     database: String,
-    /// Column name for node ID in the edge table
+    /// Column name for node ID in the table
     column_name: String,
     /// Whether this is the from-side (true) or to-side (false) of the relationship
     is_from_side: bool,
+    /// Whether this appearance is from a VLP (Variable-Length Path) pattern
+    is_vlp: bool,
 }
 
 pub struct GraphJoinInference;
@@ -3791,6 +3797,9 @@ impl GraphJoinInference {
         log::debug!("      🔎 extract_node_appearance: node='{}', GraphRel({}), is_from_side={}", 
             node_alias, graph_rel.alias, is_from_side);
         
+        // Check if this is a VLP (Variable-Length Path) pattern
+        let is_vlp = graph_rel.variable_length.is_some();
+        
         // 1. Get node label for the current node from plan_ctx
         let table_ctx = plan_ctx
             .get_table_ctx_from_alias_opt(&Some(node_alias.to_string()))
@@ -3866,6 +3875,35 @@ impl GraphJoinInference {
                 ))
             })?;
 
+        // 🔧 VLP FIX: For Variable-Length Paths, use node alias and node table instead of
+        // relationship alias and edge table. This is because VLP CTEs replace the relationship
+        // table, and the outer query JOINs VLP results with node tables using node aliases.
+        //
+        // Example: MATCH (u)-[:MEMBER_OF*1..5]->(g)-[:HAS_ACCESS]->(target)
+        //   - Without VLP fix: cross-branch JOIN uses t1.group_id (relationship alias)
+        //   - With VLP fix: cross-branch JOIN uses g.group_id (node alias)
+        //
+        // The VLP CTE (vlp_cte) provides start_id and end_id, which are JOINed to:
+        //   - u.user_id (start node)
+        //   - g.group_id (end node)  <-- This is what subsequent patterns should reference
+        if is_vlp {
+            log::info!("🔧 VLP NodeAppearance: Using node alias '{}' instead of rel alias '{}' for cross-branch JOIN",
+                       node_alias, graph_rel.alias);
+            
+            // Use node table and node ID column
+            let column_name = node_schema.node_id.column().to_string();
+            
+            return Ok(NodeAppearance {
+                rel_alias: node_alias.to_string(),  // Use node alias, not relationship alias
+                node_label: node_label.clone(),
+                table_name: node_schema.table_name.clone(),  // Use node table
+                database: node_schema.database.clone(),
+                column_name,
+                is_from_side,
+                is_vlp: true,
+            });
+        }
+
         // 4. Determine which column to use based on side
         // For denormalized nodes (embedded in edge table), use rel_schema's from_id/to_id
         let column_name = if is_from_side {
@@ -3907,6 +3945,7 @@ impl GraphJoinInference {
             database,
             column_name,
             is_from_side,
+            is_vlp: false,
         })
     }
 
