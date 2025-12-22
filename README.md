@@ -53,9 +53,9 @@
   - **Benefit**: Model real-world data without artificial ID columns
 
 - **ClickHouse Function Pass-through** - Use ClickHouse functions directly in Cypher expressions
-  - **Syntax**: `RETURN clickhouse.function_name(args)`
-  - **Use cases**: `cityHash64()`, `murmurHash3_64()`, specialized aggregations, ClickHouse-specific operations
-  - **Example**: `RETURN clickhouse.cityHash64(u.email) AS hash`
+  - **Syntax**: `RETURN ch.function_name(args)` or `RETURN chagg.aggregate_function(args)`
+  - **Use cases**: `ch.cityHash64()`, `ch.murmurHash3_64()`, `chagg.uniq()`, specialized aggregations
+  - **Example**: `RETURN ch.cityHash64(u.email) AS hash`
 
 ### Benchmarks & Validation
 
