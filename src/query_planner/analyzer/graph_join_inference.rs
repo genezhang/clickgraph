@@ -19,7 +19,7 @@ use crate::{
         logical_expr::{
             Direction, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
         },
-        logical_plan::{GraphJoins, GraphRel, Join, JoinType, LogicalPlan, Filter},
+        logical_plan::{GraphJoins, GraphRel, Join, JoinType, LogicalPlan, Filter, Projection, ProjectionItem},
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },

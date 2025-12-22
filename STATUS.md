@@ -1,8 +1,61 @@
 # ClickGraph Status
 
-*Updated: December 21, 2025*
+*Updated: December 22, 2025*
 
-## 🎯 Latest: Test Label Fixes + 75 More Tests Passing (Dec 21, 2025)
+## 🎯 Latest: VLP Transitivity Check + v0.6.0 Release (Dec 22, 2025)
+
+**Achievement**: Semantic validation for variable-length paths prevents invalid recursive patterns
+
+**Test Status**: **2446 passing / 3359 total (72.8%)**  
+- **Unit Tests**: 646 passed / 655 (98.6%)
+- **Integration Tests**: 2446 passed / 3359 (72.8%)
+- **Matrix Tests**: 283 passed / 397 (71.3%)
+
+### Key Feature: VLP Transitivity Check
+
+**Problem**: VLP patterns like `(IP)-[DNS_REQUESTED*]->(Domain)` are semantically invalid
+- Domain nodes never start DNS_REQUESTED edges → recursion impossible
+- Previous approach: fix property expansion bugs for invalid queries
+
+**Solution** (Elegant Architectural):
+- New `VlpTransitivityCheck` analyzer pass (Step 2.5 in pipeline)
+- Validates if relationship is transitive: TO nodes can be FROM nodes
+- For non-transitive patterns: removes `variable_length` → simple single-hop
+- Errors if `min_hops > 1` on non-transitive (impossible path)
+
+**Benefits**:
+- ✅ No CTE generation for non-transitive patterns (performance++)
+- ✅ Sidesteps downstream property expansion issues
+- ✅ Clear semantic validation at analyzer level
+- ✅ zeek_merged VLP test now passes
+
+**Example**:
+```cypher
+Input:  MATCH (a:IP)-[r:DNS_REQUESTED*]->(b) RETURN a, b
+Output: MATCH (a:IP)-[r:DNS_REQUESTED]->(b) RETURN a, b  # VLP removed
+SQL:    Simple SELECT from denormalized edge table, no recursion
+```
+
+**Implementation**: `vlp_transitivity_check.rs` - 283 lines
+- `is_transitive_relationship()`: Check schema using `get_all_rel_schemas_by_type()`
+- `validate_non_transitive()`: Error if min_hops > 1
+- Integrated at Step 2.5 (after TypeInference, before CTE resolution)
+
+### Bug Fixes (Dec 22)
+
+1. **Multi-Table Label Schema Support**:
+   - Type inference: Bottom-up processing for multi-hop patterns
+   - Denormalization metadata: Copy from node_schema to ViewScan
+   - VLP ID columns: Use relationship schema (`from_id`/`to_id`)
+   - Error handling: Remove `.unwrap()` landmines
+
+2. **Cycle Prevention**: Skip for `*1` patterns (single hop can't cycle)
+
+3. **Test Compilation**: Fixed missing imports (`Projection`, `ProjectionItem`)
+
+---
+
+## 🎯 Previous: Test Label Fixes + 75 More Tests Passing (Dec 21, 2025)
 
 **Achievement**: Fixed schema label mismatches in integration tests
 

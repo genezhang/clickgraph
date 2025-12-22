@@ -1,5 +1,39 @@
 ## [Unreleased]
 
+## [0.6.0] - 2025-12-22
+
+### 🚀 Features
+- **VLP Transitivity Check** - Semantic validation for variable-length paths (December 22, 2025)
+  - **Problem**: VLP patterns like `(IP)-[DNS_REQUESTED*]->(Domain)` are semantically invalid - Domain nodes never start DNS_REQUESTED edges, making recursion impossible
+  - **Solution**: New `VlpTransitivityCheck` analyzer pass validates relationship transitivity at planning stage
+  - **Algorithm**: Check if TO nodes can be FROM nodes by comparing relationship schemas (`get_all_rel_schemas_by_type`)
+  - **Behavior**: 
+    - Non-transitive patterns: Removes `variable_length` → converts to simple single-hop
+    - Errors if `min_hops > 1` on non-transitive (impossible path length)
+  - **Benefits**:
+    - No CTE generation for non-transitive patterns (performance++)
+    - Sidesteps property expansion issues downstream
+    - Clear semantic validation at analyzer level vs tactical SQL fixes
+  - **Example**: `MATCH (a:IP)-[r:DNS_REQUESTED*]->(b)` → `MATCH (a:IP)-[r:DNS_REQUESTED]->(b)` (VLP removed)
+  - **Generated SQL**: Simple SELECT from denormalized edge table, no recursion
+  - **Impact**: zeek_merged VLP test now passes
+  - **Files**: `vlp_transitivity_check.rs` (new analyzer pass), integrated at Step 2.5 in pipeline
+
+### 🐛 Bug Fixes
+- **Multi-Table Label Schema Support** - Fixed denormalization metadata and type inference (December 22, 2025)
+  - **Type Inference**: Process children bottom-up for multi-hop pattern label resolution
+  - **Denormalization Metadata**: Copy `is_denormalized`, `from_node_properties`, `to_node_properties` from node_schema to ViewScan
+  - **VLP ID Columns**: Use relationship schema columns (`from_id`/`to_id`) not node schema columns
+  - **Relationship Lookup**: Register both composite and simple keys for backward compatibility
+  - **Error Handling**: Remove `.unwrap()` calls, use proper Result/Option propagation
+  - **Validation**: Add check for empty `node_id` columns in schemas
+  - **Impact**: Domain node property expansion now works correctly for zeek_merged schema
+
+- **Cycle Prevention Skip for Single Hop** - Don't run cycle prevention for `*1` patterns (December 22, 2025)
+  - **Problem**: Fixed-length `*1` patterns triggered cycle prevention code requiring table lookups
+  - **Solution**: Skip cycle prevention when `exact_hops >= 2` - single hop can't have cycles
+  - **Impact**: Simpler code path, avoids unnecessary schema lookups
+
 ### 🧪 Testing
 - **Integration Test Label Fixes** - Updated tests to use correct schema labels (December 21, 2025)
   - **Problem**: Tests used `User`/`FOLLOWS` labels but simple_graph fixture data uses `TestUser`/`TEST_FOLLOWS`

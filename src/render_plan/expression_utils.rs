@@ -129,9 +129,7 @@ mod tests {
     fn test_references_alias() {
         let expr = RenderExpr::PropertyAccessExp(PropertyAccess {
             table_alias: TableAlias("users".to_string()),
-            column: Column(
-                crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
-            ),
+            column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
         });
 
         assert!(references_alias(&expr, "users"));
