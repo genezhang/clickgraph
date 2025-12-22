@@ -111,7 +111,7 @@ echo ""
 
 # 2. Integration test data (test_integration database)
 log_info "=== Integration Test Data ==="
-run_sql_file "$PROJECT_ROOT/scripts/setup/setup_integration_test_data.sql" "Integration test tables"
+run_sql_file "$PROJECT_ROOT/tests/fixtures/data/test_integration_data.sql" "Integration test tables"
 echo ""
 
 # 3. Denormalized flights data (for ontime_flights schema)
