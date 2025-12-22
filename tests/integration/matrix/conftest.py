@@ -883,15 +883,22 @@ class NegativeTestGenerator:
 # =============================================================================
 
 def execute_query(query: str, params: Dict = None, execution_mode: str = "sql_only", schema_name: str = None) -> Dict:
-    """Execute a query against ClickGraph and return result"""
+    """Execute a query against ClickGraph and return result.
+    
+    Uses USE clause convention - auto-prepends USE clause if schema_name provided
+    and query doesn't already have it.
+    """
+    # Auto-prepend USE clause if schema_name provided and not already in query
+    if schema_name and not query.strip().upper().startswith("USE "):
+        query = f"USE {schema_name} {query}"
+    
     payload = {
         "query": query,
         "execution_mode": execution_mode,
     }
     if params:
         payload["parameters"] = params
-    if schema_name:
-        payload["schema_name"] = schema_name
+    # Note: schema_name is now in the USE clause, not sent as parameter
     
     try:
         response = requests.post(

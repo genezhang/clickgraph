@@ -24,6 +24,11 @@ SCHEMAS_TO_LOAD = [
     ("schemas/test/unified_test_schema.yaml", "unified_test_schema"),
     # Standard schema (social_benchmark) - wiki tests
     ("benchmarks/social_network/schemas/social_benchmark.yaml", "social_benchmark"),
+    # Benchmark schemas - matrix tests
+    ("benchmarks/ontime_flights/schemas/ontime_benchmark.yaml", "ontime_benchmark"),
+    # Schema variations - matrix tests
+    ("schemas/examples/filesystem.yaml", "filesystem"),
+    ("schemas/test/group_membership_simple.yaml", "group_membership"),
     # Denormalized schema
     ("schemas/examples/ontime_denormalized.yaml", "ontime_flights"),
     # Polymorphic schema
