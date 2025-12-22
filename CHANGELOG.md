@@ -1,608 +1,264 @@
-## [Unreleased]
-
 ## [0.6.0] - 2025-12-22
 
 ### 🚀 Features
-- **VLP Transitivity Check** - Semantic validation for variable-length paths (December 22, 2025)
-  - **Problem**: VLP patterns like `(IP)-[DNS_REQUESTED*]->(Domain)` are semantically invalid - Domain nodes never start DNS_REQUESTED edges, making recursion impossible
-  - **Solution**: New `VlpTransitivityCheck` analyzer pass validates relationship transitivity at planning stage
-  - **Algorithm**: Check if TO nodes can be FROM nodes by comparing relationship schemas (`get_all_rel_schemas_by_type`)
-  - **Behavior**: 
-    - Non-transitive patterns: Removes `variable_length` → converts to simple single-hop
-    - Errors if `min_hops > 1` on non-transitive (impossible path length)
-  - **Benefits**:
-    - No CTE generation for non-transitive patterns (performance++)
-    - Sidesteps property expansion issues downstream
-    - Clear semantic validation at analyzer level vs tactical SQL fixes
-  - **Example**: `MATCH (a:IP)-[r:DNS_REQUESTED*]->(b)` → `MATCH (a:IP)-[r:DNS_REQUESTED]->(b)` (VLP removed)
-  - **Generated SQL**: Simple SELECT from denormalized edge table, no recursion
-  - **Impact**: zeek_merged VLP test now passes
-  - **Files**: `vlp_transitivity_check.rs` (new analyzer pass), integrated at Step 2.5 in pipeline
 
-### 🐛 Bug Fixes
-- **Multi-Table Label Schema Support** - Fixed denormalization metadata and type inference (December 22, 2025)
-  - **Type Inference**: Process children bottom-up for multi-hop pattern label resolution
-  - **Denormalization Metadata**: Copy `is_denormalized`, `from_node_properties`, `to_node_properties` from node_schema to ViewScan
-  - **VLP ID Columns**: Use relationship schema columns (`from_id`/`to_id`) not node schema columns
-  - **Relationship Lookup**: Register both composite and simple keys for backward compatibility
-  - **Error Handling**: Remove `.unwrap()` calls, use proper Result/Option propagation
-  - **Validation**: Add check for empty `node_id` columns in schemas
-  - **Impact**: Domain node property expansion now works correctly for zeek_merged schema
-
-- **Cycle Prevention Skip for Single Hop** - Don't run cycle prevention for `*1` patterns (December 22, 2025)
-  - **Problem**: Fixed-length `*1` patterns triggered cycle prevention code requiring table lookups
-  - **Solution**: Skip cycle prevention when `exact_hops >= 2` - single hop can't have cycles
-  - **Impact**: Simpler code path, avoids unnecessary schema lookups
-
-### 🧪 Testing
-- **Integration Test Label Fixes** - Updated tests to use correct schema labels (December 21, 2025)
-  - **Problem**: Tests used `User`/`FOLLOWS` labels but simple_graph fixture data uses `TestUser`/`TEST_FOLLOWS`
-  - **Root Cause**: `User` maps to `brahmand.users_bench` (benchmark data), `TestUser` maps to `test_integration.users` (fixture data)
-  - **Solution**: Updated 12 test files to use correct labels: `TestUser`, `TEST_FOLLOWS`, `TestProduct`, `TEST_PURCHASED`, `TEST_FRIENDS_WITH`
-  - **Also Fixed**:
-    - `test_denormalized_edges.py` schema path: `schemas/tests/` → `schemas/test/`
-    - `test_standalone_return.py` and `test_with_having.py`: renamed utility functions from `test_query` to avoid pytest collection
-    - `test_multi_database.py`: USE clause tests used `database` instead of `schema_name`
-  - **Impact**: +75 passing tests (2541 → 2616 passed, 800 → 743 failed)
-  - **Commits**: `2296b7c`, `c7f9746`
-
-### 🐛 Bug Fixes
-- **WITH...MATCH FROM Clause Fix** - Fixed WITH...MATCH patterns using wrong table for FROM clause (December 21, 2025)
-  - **Problem**: Queries like `WITH x MATCH (a)-[r:TYPE]->(b)` generated `FROM cte_table` instead of `FROM actual_table JOIN cte_table`
-  - **Root Cause**: `is_cte_reference()` in `plan_builder.rs` didn't recognize `WithClause` as a CTE source, causing CartesianProduct to use wrong side for FROM
-  - **Solution**: Added `LogicalPlan::WithClause(_) => true` to `is_cte_reference()`
-  - **Result**: Zeek merged tests: 23/24 → **24/24** (100% passing)
-
-- **Denormalized Edge Query Fix** - Fixed rel_type_index duplicating simple/composite keys (December 21, 2025)
-  - **Problem**: Queries like `MATCH ()-[r:REQUESTED]->() RETURN count(*)` generated `FROM rel_t1_t2 AS r` (CTE placeholder) instead of actual table
-  - **Root Cause**: `build_rel_type_index()` stored BOTH simple keys (`"REQUESTED"`) AND composite keys (`"REQUESTED::IP::Domain"`) for the same relationship. When `expand_generic_relationship_type("REQUESTED")` ran, it found 2 entries and triggered multi-relationship CTE logic.
-  - **Solution**: Modified `build_rel_type_index()` to skip simple keys when composite keys exist for the same type
-  - **Result**: `FROM test_zeek.dns_log AS r` (correct actual table)
-  - **Impact**: Zeek merged tests: 21/24 → **23/24** (+2 tests fixed)
-
-- **Cross-Table Comma Pattern JOINs** - Fixed missing JOINs for comma-separated patterns with shared nodes across different relationship tables (December 21, 2025)
-  - **Problem**: `MATCH (a)-[:R1]->(b), (a)-[:R2]->(c)` generated SQL missing the JOIN between relationship tables
-  - **Example**: `MATCH (srcip:IP)-[:REQUESTED]->(d:Domain), (srcip)-[:ACCESSED]->(dest:IP)` produced incomplete SQL referencing `t1.orig_h` with only `t2` in FROM clause
-  - **Root Cause**: Cross-branch JOIN logic was disabled (Dec 19) to prevent duplicate JOINs, but this broke comma patterns
-  - **Solution**: Re-enabled selective cross-branch JOIN generation with smart detection:
-    - Only generates JOIN when shared node appears in **different relationship tables**
-    - Uses composite key lookup (`get_rel_schema_with_nodes`) to support multi-table schemas
-    - Reuses existing helper functions (`collect_node_aliases_from_plan`, `extract_node_appearance`)
-  - **Impact**: Zeek merged tests: **21/24 passing (87.5%)**, TestCrossTableCorrelation: **5/6 passing (83%)**
-  - **Technical**: Modified `check_node_for_cross_branch_join()` in `graph_join_inference.rs` to detect comma patterns via table name comparison
-
-### 🧪 Testing
-- **Unified Test Data Setup** - Created `scripts/setup/setup_all_test_data.sh` for repeatable test fixture loading (December 21, 2025)
-  - **Problem**: Test data setup was ad-hoc, scattered across 20+ SQL files, not consistently loaded
-  - **Solution**: Single bash script loads all test databases with verification
-  - **Loads**: test_integration (filesystem, users, groups), brahmand (security graph, benchmarks), zeek (network logs)
-  - **Impact**: +1.7% test pass rate (76.7% → 78.4%, +54 tests)
-  - **Usage**: `bash scripts/setup/setup_all_test_data.sh` (run once before tests)
-
-- **Matrix Test Schema Configuration Fixes** - Fixed schema mismatches and added schema-type-aware query generation (December 21, 2025)
-  - **Problem**: Matrix tests failing due to schema config mismatches (wrong database/label/edge names) and invalid query patterns for certain schema types
-  - **Solution**: 
-    1. Fixed filesystem schema config: `database: test → test_integration`, `label: FSObject → Object`, `edge: PARENT_OF → PARENT`
-    2. Added skip logic for `MULTI_TABLE_LABEL` schemas (zeek_merged) - standalone node queries architecturally invalid for schemas defining nodes only via relationship tables
-  - **Impact**: Reduced matrix failures from 565 to 200 (365 tests fixed, 64.6% improvement)
-  - **Architecture**: Schema-type-aware query generation prevents generating invalid queries for edge-only node definitions
-
-### 🐛 Bug Fixes
-- **Database Prefix Preservation** - Fixed `strip_database_prefix()` to preserve database names in FROM clauses (December 21, 2025)
-  - **Problem**: Function stripped ALL `table_name.column` patterns, including legitimate database prefixes in FROM clauses
-  - **Root Cause**: Indiscriminate regex replacement without context awareness
-  - **Impact**: "Unknown table" errors for tables in non-default databases
-  - **Solution**: Only strip prefixes from SELECT/WHERE expressions, preserve database qualifications in FROM/JOIN clauses
-  - **Result**: +22% test pass rate improvement (54.5% → 76.7%, +748 tests)
-
-### ⚙️ Changed
-- **BREAKING**: `CLICKHOUSE_DATABASE` environment variable is now **optional** and defaults to `"default"` (December 20, 2025)
-  - **Reason**: All SQL queries use fully-qualified table names (`database.table`) from schema config, making the environment variable redundant
-  - **Impact**: Simplifies configuration - you can now omit `CLICKHOUSE_DATABASE` unless you need a specific default database context
-  - **Migration**: Remove `CLICKHOUSE_DATABASE` from your env files or leave it set (both work)
-  - **Multi-database support**: Each table in your schema config specifies its database, enabling cross-database graph views
-
-### 📚 Documentation
-- Updated all documentation to reflect `CLICKHOUSE_DATABASE` is optional (December 20, 2025)
-  - Quick Start Guide, Docker Deployment, Configuration Guide, README
-  - Added clarifying comments explaining the default value and why it's optional
-
-### 🚀 Features
-- **Tuple Property Mapping for collect() + UNWIND** - Automatic property-to-index mapping (December 20, 2025)
-  - **Problem**: After `WITH collect(u) as users UNWIND users as user`, accessing `user.name` failed because ClickHouse ARRAY JOIN creates tuples requiring index access
-  - **Solution**: Two-phase system - enricher populates metadata, rewriter transforms PropertyAccess expressions
-  - **Architecture**:
-    - `unwind_tuple_enricher.rs`: Populates `tuple_properties` field with ClickHouse column → tuple index mapping
-    - `unwind_property_rewriter.rs`: Transforms `user.name` to `user.5` (tuple index) at end of final_analyzing
-    - Updated 20+ analyzer/optimizer passes to preserve tuple_properties metadata through pipeline
-  - **Key Design Decision**: Use ClickHouse column names (not Cypher property names) for consistency with resolved PropertyAccess expressions
-  - **Example**: `MATCH (u:User) WITH u, collect(u) as users UNWIND users as user RETURN user.name, user.email`
-    - Generated SQL: `SELECT user.5 AS user.name, user.3 AS user.email`
-    - Properties automatically mapped: `name→5`, `email→3`, `city→1`, etc.
-  - **Impact**: Enables GROUP BY + aggregation + UNWIND patterns for graph analytics
-  - **Quality Discovery**: Identified systemic metadata preservation issue - documented for future architecture improvement
-
-- **SQL-Style Comment Support** - Automatic comment stripping for Cypher queries (December 20, 2025)
-  - **Problem**: SQL-style comments (`--` and `/* */`) caused parser failures
-  - **Solution**: Pre-process queries to strip comments before parsing
-  - **Implementation**: `strip_comments()` function in `common.rs`, applied in `handlers.rs`
-  - **Features**:
-    - Line comments: `-- comment until newline` ✓
-    - Block comments: `/* multi-line comment */` ✓
-    - Mixed comment types in same query ✓
-    - Preserves newlines for line comments ✓
-    - **String literal awareness**: Comments inside strings are preserved ✓
-  - **Example**: `WHERE n.url = "test--page"` keeps the `--` intact
-  - **Impact**: LDBC benchmark queries with SQL-style documentation now work natively
-  - **Test Results**: All 15 LDBC queries parse correctly + 5/5 string literal tests pass
-  - **User Benefit**: Better compatibility with SQL-literate users' query documentation
-
-- **Comprehensive Empty Plan Diagnostics** - Two-layer diagnostic system (December 20, 2025)
-  - **Problem**: Queries failed silently with Empty plans and no diagnostic information
-  - **Solution**: Implemented detection at parser and planning levels
-  - **Layer 1 - Empty AST Detection**: Detects parser failures with detailed AST component breakdown
-  - **Layer 2 - Empty Plan Detection**: Detects planning failures with schema mismatch warnings
-  - **Impact**: Clear actionable error messages guide users to solutions
-  - **Discovery**: Found that SQL-style comments were root cause of many parser failures
-
-- **AI Assistant Integration (MCP)** - Zero-configuration support for Model Context Protocol (December 17, 2025)
-  - ClickGraph's Bolt protocol is fully compatible with Neo4j's MCP server
-  - Use with Claude Desktop and other AI assistants for natural language graph queries
-  - No custom code needed - just configure MCP server to point at ClickGraph's Bolt endpoint
-  - Documentation: README.md and docs/wiki/AI-Assistant-Integration-MCP.md
-  - Test scripts: `scripts/test/test_mcp_compatibility.sh`, `scripts/test/test_neo4j_mcp_server.sh`
-
-- **TypeInference Consolidation with Polymorphic Support** - Unified inference logic (December 19, 2025)
-  - **Problem**: Duplicate inference code in `match_clause.rs` and `type_inference.rs` causing feature drift
-  - **Solution**: Consolidated into single authoritative TypeInference implementation
-  - **Features**:
-    - Full polymorphic relationship support: `$any` wildcards, `from_label_values`, `to_label_values`
-    - MAX_INFERRED_TYPES limit: 20 → 5 (prevents combinatorial query explosion)
-    - Comprehensive logging at each inference step
-    - All three strategies: specified types, single edge, node-based filtering
-  - **Example**: `MATCH (u:User)-[r]->(p:Post)` infers up to 5 matching polymorphic types
-  - **Impact**: Single source of truth for type inference across entire codebase
-  - **Test Coverage**: All polymorphic edge patterns (LDBC, OnTime flights) ✓
-
-### 🐛 Bug Fixes
-- **TypeInference ViewScan Creation** - Fixed SQL generation for inferred node labels (December 19, 2025)
-  - **Issue**: TypeInference correctly inferred labels but GraphNode.input remained Scan (no table info)
-  - **Symptom**: Generated SQL missing `FROM` clause for inferred nodes
-  - **Example**: `MATCH (person)<-[:HAS_MEMBER]-(forum)` where `forum` label is inferred
-    - Before: Missing `FROM ldbc.Forum AS forum` ❌
-    - After: Includes proper FROM clause with table ✓
-  - **Root Cause**: TypeInference updated `plan_ctx` labels but didn't create ViewScan plan node
-  - **Solution**: When label is inferred, create ViewScan with proper table/schema info
-  - **Fix Location**: `src/query_planner/analyzer/type_inference.rs` (GraphNode handler)
-  - **Impact**: LDBC IC5 and all queries with label inference now generate correct SQL
-  - **Tests**: 250/251 unit tests passing (99.6%), LDBC audit improved
-
-- **QueryValidation Parser Normalization** - Removed redundant direction-based swapping (December 19, 2025)
-  - **Issue**: QueryValidation was swapping node positions for `Direction::Incoming`, but parser already normalizes
-  - **Critical Fact**: Parser ALWAYS creates `left=from_node, right=to_node` in GraphRel structure
-    - For `(a)-[:R]->(b)`: left=a (from), right=b (to)
-    - For `(a)<-[:R]-(b)`: **left=b (from), right=a (to)** ← nodes already swapped!
-    - Direction field is only for display/syntax tracking, NOT logical structure
-  - **Problem**: QueryValidation was swapping again, causing reverse direction queries to fail
-  - **Solution**: Removed direction-based swapping in QueryValidation (parser already normalized)
-  - **Fix Location**: `src/query_planner/analyzer/query_validation.rs`
-  - **Results**:
-    - LDBC audit: 25/41 (61%) → 29/41 (70%) queries passing (+9 percentage points)
-    - Both forward and reverse queries now work: `(a)-[:R]->(b)` and `(a)<-[:R]-(b)` ✓
-  - **Impact**: All relationship directions now validated correctly
-- **Polymorphic Relationship Support** - Thread node labels through relationship lookup pipeline (December 19, 2025)
-  - **Issue**: Polymorphic relationships (same type, different node pairs) fail lookup
-  - **Example**: LDBC's `IS_LOCATED_IN` relationship:
-    - `Person→City` uses `Person_isLocatedIn_Place` table
-    - `Organisation→Place` uses `Organisation_isLocatedIn_Place` table  
-    - `Post→Place` uses `Post_isLocatedIn_Place` table
-  - **Root Cause**: 5 locations calling `get_rel_schema(rel_type)` without node labels
-    - Can't disambiguate: which IS_LOCATED_IN table to use?
-  - **Solution**: Thread left/right node labels through entire pipeline:
-    1. `match_clause.rs`: Pass node labels to `generate_relationship_center()`
-    2. `query_validation.rs`: Use `get_rel_schema_with_nodes()` with node labels
-    3. `graph_context.rs`: Thread node labels through label inference
-    4. `graph_join_inference.rs`: Use node-aware schema lookup in pattern context
-    5. `graph_schema.rs`: Add debug logging for composite key lookups
-  - **Results**:
-    - LDBC audit: 7/41 (17%) → 11/41 (27%) queries passing (+57% improvement)
-    - Fixed queries: short-1 plus 3 others
-  - **Impact**: Polymorphic relationships now fully supported across LDBC schema
-
-- **CTE Column Aliasing Convention** - Fixed dot notation in CTE column names (December 19, 2025)
-  - **Issue**: CTE column aliases used dot notation (`"a.name"`) instead of underscore convention (`"a_name"`)
-  - **Convention**: CTEs use underscore internally (`a_name`), outer SELECT uses AS for dot mapping
-  - **Root Cause**: Two `format!("{}.{}")` calls in plan_builder.rs violating established pattern
-  - **Example**:
-    ```cypher
-    MATCH (a:User)-[:FOLLOWS]->(b:User)
-    WITH a, COUNT(b) as follows
-    WHERE follows > 1
-    RETURN a.name, follows
-    ```
-    Now correctly generates:
-    ```sql
-    WITH cte AS (
-      SELECT a.full_name AS "a_name",  -- ✅ underscore in CTE
-             ...
-    )
-    SELECT cte.a_name AS "a.name"      -- ✅ AS maps to dot notation
-    ```
-  - **Fix**: Changed two locations in `src/render_plan/plan_builder.rs`:
-    - Line 5151: TableAlias expansion - `format!("{}.{}")` → `format!("{}_{}")`
-    - Line 5219: Wildcard expansion - `format!("{}.{}")` → `format!("{}_{}")`
-  - **Tests**: Added `tests/rust/integration/cte_column_aliasing_tests.rs` (2 comprehensive tests)
-  - **Impact**: All 650 unit tests + 2 new integration tests passing (100%)
-  - **Resolves**: KNOWN_ISSUES.md Issue #1 (Active Issues section)
-
-- **Database Prefix for Base Table JOINs** - Fixed missing database qualifiers after WITH clause (December 19, 2025)
-  - **Issue**: Base tables referenced in JOINs after WITH clause were missing database prefixes
-  - **Error**: "Unknown table expression identifier 'Place'" when tables are in non-default database
-  - **Example**: Generated `INNER JOIN Place` instead of `INNER JOIN ldbc.Place`
-  - **Fix**: Added logic to distinguish CTEs (no prefix) from base tables (needs prefix)
-    - New helper functions: `get_table_name_with_prefix()`, `get_rel_table_name_with_prefix()`
-    - Checks `plan_ctx.get_table_ctx_from_alias_opt()` to determine table type
-    - CTEs remain unprefixed (ClickHouse requirement): `with_friend_cte_1`
-    - Base tables get database qualification: `ldbc.Place`, `default.Person`
-  - **Impact**: Traditional and MixedAccess JOIN strategies (5 JOIN creation sites fixed)
-  - **Files**: `src/query_planner/analyzer/graph_join_inference.rs`
-  - **Tests**: 650/650 passing (100%) - Updated all test assertions to expect qualified names
-  - **Resolves**: KNOWN_ISSUES.md Issue #2
-
-- **Operator Precedence**: Fixed critical parser bug where arithmetic operators (+, -, *, /) had same precedence as comparison operators (>, <, =), causing expressions like `m.id > 1 + 2` to parse as `(m.id > 1) AND 2` instead of `m.id > (1 + 2)`. Now implements correct precedence: multiplicative > additive > comparison > logical AND > logical OR.
-- **BI17 Temporal Arithmetic**: Unblocked - `datetime() + duration()` now parses correctly, enabling temporal calculations in WHERE clauses.
-
-- **Correlated Subquery Handling** - Fixed ClickHouse compatibility (December 16, 2025)
-  - **Issue**: `NOT (pattern)`, `EXISTS((pattern))`, and `size((pattern))` predicates were placed in JOIN ON clauses
-  - **Error**: "Code: 48. DB::Exception: Correlated subqueries in join expression are not supported"
-  - **Fix**: Detect correlated subqueries and keep them in WHERE clause while moving simple conditions to JOIN ON
-  - **Example**: `MATCH (a), (b) WHERE a.id < b.id AND NOT (a)-[:REL]-(b)` now generates:
-    ```sql
-    FROM table AS a
-    INNER JOIN table AS b ON a.id < b.id    -- Simple condition in JOIN
-    WHERE NOT EXISTS (...)                   -- Correlated subquery in WHERE
-    ```
-  - **Files**: `src/query_planner/logical_expr/mod.rs`, `src/query_planner/optimizer/cartesian_join_extraction.rs`, `src/query_planner/analyzer/graph_join_inference.rs`
-
-- **CartesianProduct JOIN Rendering** - Fixed missing second table in comma patterns (December 16, 2025)
-  - **Issue**: Comma patterns like `MATCH (a), (b) WHERE ...` only rendered first table
-  - **Fix**: CartesianProduct now correctly extracts and generates INNER JOIN for right side
-  - **Files**: `src/render_plan/plan_builder.rs`
-
-- **WITH Clause CartesianProduct JOIN** - Fixed missing JOIN ON in WITH CTEs (December 16, 2025)
-  - **Issue**: `MATCH (a), (b) WHERE a.id < b.id WITH a, b, ... RETURN ...` missing JOIN ON clause
-  - **Root Cause**: Filter above WithClause(CartesianProduct) wasn't being optimized
-  - **Fix**: Added special handling in CartesianJoinExtraction to push join conditions into CartesianProduct inside WITH
-  - **Example**: Now generates:
-    ```sql
-    WITH cte AS (
-      SELECT ...
-      FROM table AS a
-      INNER JOIN table AS b ON a.id < b.id  -- ✅ JOIN ON now present
-    )
-    SELECT ... FROM cte
-    ```
-  - **Impact**: LDBC BI-14 pattern now works, computed columns properly prefixed with table alias
-  - **Files**: `src/query_planner/optimizer/cartesian_join_extraction.rs`
-
-### 📚 Documentation & Issue Validation
-
-- **Issue Verification** - Systematic validation of KNOWN_ISSUES list (December 15, 2025)
-  - **Verified FIXED**: Issue #5 (WITH+MATCH with aggregation on second MATCH), Issue #7 (Mixed RETURN)
-  - **New Bugs Discovered**: Issue #6 now understood as 2 separate bugs:
-    1. Comma Pattern Bug: `MATCH (a:X), (b:Y)` only includes one table in FROM clause
-    2. NOT Boolean Operator Bug: `NOT (x = y)` silently drops the NOT operator
-  - **Impact**: Active issues reduced from 6 → 4
-  - **Testing**: Created Python test scripts to validate each issue
-  - **Files**: `KNOWN_ISSUES.md`
-
-### �🚀 Features
-
-- **Cross-Branch Shared Node JOIN Detection** - Automatic JOIN generation for branching patterns (December 15, 2025)
-  - **Feature**: When a node appears in multiple relationship branches that use different tables, automatically generate INNER JOIN
-  - **Use Case**: Solves GitHub issue #12 - DNS lookup followed by connection correlation
-  - **Example**:
-    ```cypher
-    MATCH (src:IP)-[:REQUESTED]->(d:Domain), (src)-[:ACCESSED]->(dest:IP)
-    RETURN src.ip, d.name, dest.ip
-    ```
-  - **Generated SQL**:
-    ```sql
-    FROM test_zeek.conn_log AS t3
-    INNER JOIN test_zeek.dns_log AS t1 ON t3.orig_h = t1.orig_h
-    ```
-  - **Impact**: Zeek tests 18→22 passing (91.7%), all 4 comma-pattern cross-table tests pass
-  - **Files**: `src/query_planner/analyzer/graph_join_inference.rs`, `tests/integration/test_zeek_merged.py`
-
-- **Predicate-Based Correlation** - Allow disconnected patterns with WHERE clause predicates (December 15, 2025)
-  - **Feature**: Support different variable names for same logical node, connected via WHERE clause
-  - **Example**:
-    ```cypher
-    MATCH (srcip1:IP)-[:REQUESTED]->(d:Domain), (srcip2:IP)-[:ACCESSED]->(dest:IP)
-    WHERE srcip1.ip = srcip2.ip
-    RETURN srcip1.ip, d.name, dest.ip
-    ```
-  - **Implementation**: Removed DisconnectedPatternFound error, rely on cross-branch JOIN detection
-  - **Files**: `src/query_planner/logical_plan/match_clause.rs`
-
-- **Sequential MATCH Clauses** - Multiple MATCH statements in sequence (December 15, 2025)
-  - **Feature**: Support `MATCH ... MATCH ... MATCH ...` as per OpenCypher specification
-  - **Semantics**: No relationship uniqueness requirement across MATCH boundaries (unlike comma patterns)
-  - **Example**:
-    ```cypher
-    MATCH (srcip:IP)-[:REQUESTED]->(d:Domain)
-    MATCH (srcip)-[:ACCESSED]->(dest:IP)
-    RETURN srcip.ip, d.name, dest.ip
-    ```
-  - **Implementation**: Parser AST changed from `Option<MatchClause>` to `Vec<MatchClause>`
-  - **Impact**: Zeek tests 22→23 passing (95.8%)
-  - **Files**: `src/open_cypher_parser/ast.rs`, `src/open_cypher_parser/mod.rs`, `src/query_planner/logical_plan/plan_builder.rs`
+- *(functions)* Add 18 new Neo4j function mappings for v0.5.5
+- *(functions)* Add 30 more Neo4j function mappings for v0.5.5
+- *(functions)* Add ClickHouse function pass-through via ch:: prefix
+- *(functions)* Add ClickHouse aggregate function pass-through via ch. prefix
+- *(functions)* Add chagg. prefix for explicit aggregates, expand aggregate registry to ~150 functions
+- *(benchmark)* Add LDBC SNB Interactive v1 benchmark
+- *(benchmark)* Add ClickGraph schema matching datagen format
+- *(benchmark)* Add LDBC query test script
+- *(ldbc)* Achieve 100% LDBC BI benchmark (26/26 queries)
+- Implement chained WITH clause support with CTE generation
+- Support ORDER BY, SKIP, LIMIT after WITH clause
+- Implement size() on patterns with schema-aware ID lookup
+- Add composite node ID infrastructure for multi-column primary keys
+- Add CTE reference validation
+- CTE-aware variable resolution for WITH clauses
+- Fix CTE column filtering and JOIN condition rewriting for WITH clauses
+- CTE-aware variable resolution + WITH validation + documentation improvements
+- Add lambda expression support for ClickHouse passthrough functions
+- Add comprehensive LDBC benchmark suite with loading, query, and concurrency tests
+- Implement scope-based variable resolution in analyzer (Phase 1)
+- Remove dead CTE validation functions
+- Implement CTE column resolution across all join strategies
+- Remove obsolete JOIN rewriting code from renderer (Phase 3D-A)
+- Move CTE column resolution to analyzer (Phase 3D-B)
+- Pre-compute projected columns in analyzer (Phase 3E)
+- Add CTE schema registry for analyzer (Phase 3F)
+- Use pre-computed projected_columns in renderer (Phase 3E-B)
+- Implement cross-branch shared node JOIN detection
+- Allow disconnected comma patterns with WHERE clause predicates
+- Support multiple sequential MATCH clauses
+- Implement generic CTE JOIN generation using correlation predicates
+- Complete LDBC SNB schema and data loading infrastructure
+- Improve relationship validation error messages
+- Clarify node_id semantics as property names with auto-identity mappings
+- Complete composite node_id support (Phase 2)
+- Add polymorphic relationship resolution architecture
+- Complete polymorphic relationship resolution data flow
+- Fix polymorphic relationship resolution in CTE generation
+- Add Comment REPLY_OF Message schema definition
+- Add schema entity collection in VariableResolver for Projection scope
+- Add dedicated LabelInference analyzer pass
+- Enhance TypeInference to infer both node labels and edge types
+- Reduce MAX_INFERRED_TYPES from 20 to 5
+- *(parser)* Add clear error messages for unsupported pattern comprehensions
+- *(parser)* Add clear error messages for bidirectional relationship patterns
+- *(parser)* Convert temporal property accessors to function calls
+- *(analyzer)* Add UNWIND variable scope handling to variable_resolver
+- *(analyzer)* Add type inference for UNWIND elements from collect() expressions
+- Support path variables in comma-separated MATCH patterns
+- Add polymorphic relationship resolution with node types
+- Complete collect(node) + UNWIND tuple mapping & metadata preservation architecture
+- Make CLICKHOUSE_DATABASE optional with 'default' fallback
+- Add parser support for != (NotEqual) operator
+- Add unified test schema for streamlined testing
+- Add unified test data setup and fix matrix test schema issues
+- Complete multi-tenant parameterized view support
+- Add denormalized flights schema to unified test schema
+- Add VLP transitivity check to prevent invalid recursive patterns
 
 ### 🐛 Bug Fixes
 
-- **GROUP BY and ORDER BY Expression Rewriting** - Fixed WITH+MATCH queries with GROUP BY using wrong column names (December 15, 2025)
-  - **Problem**: `MATCH ... WITH b MATCH (b)-[:FOLLOWS]->(c) RETURN b.name, count(c) GROUP BY b.name` failed with "Identifier 'b.full_name' cannot be resolved"
-  - **Root Cause**: GROUP BY used DB column names (full_name) instead of CTE column names (b_name)
-  - **Solution**: Extended expression rewriting to cover GROUP BY and ORDER BY in both intermediate CTEs and final queries
-  - **Impact**: WITH+MATCH aggregation queries now work correctly
-  - **Files**: `src/render_plan/plan_builder.rs`
+- *(benchmark)* Use Docker-based LDBC data generation
+- *(benchmark)* Align DDL with actual datagen output format
+- *(benchmark)* Add ClickHouse credentials support
+- *(benchmark)* Align DDL and schema with actual datagen output
+- *(ldbc)* Fix CTE pattern for WITH + table alias pass-through
+- *(ldbc)* Fix ic3 relationship name POST_IS_LOCATED_IN -> POST_LOCATED_IN
+- WITH+MATCH CTE generation for correct SQL context
+- Replace all silent defaults with explicit errors in render_expr.rs
+- Eliminate ViewScan silent defaults - require explicit relationship columns
+- Expand WITH TableAlias to all columns for aggregation queries
+- Track CTE schemas to build proper property_mapping for references
+- Remove CTE validation to enable nested WITH clauses
+- Prevent duplicate CTE generation in multi-level WITH queries
+- Three-level WITH nesting with correct CTE scope resolution
+- Add proper schemas to WITH/HAVING tests
+- Correct CTE naming convention to use all exported aliases
+- Coupled edge alias resolution for multiple edges in same table
+- Rewrite expressions in intermediate CTEs to fix 4-level WITH queries
+- Add GROUP BY and ORDER BY expression rewriting for final queries
+- Issue #6 - Fix Comma Pattern and NOT operator bugs
+- Resolve 3 critical LDBC query blocking issues
+- *(ldbc)* Inline property matching & semantic relationship expansion
+- *(ldbc)* Handle IS NULL checks on relationship wildcards (IS7)
+- *(ldbc)* Fix size() pattern comprehensions - handle internal variables correctly (BI8)
+- *(ldbc)* Rewrite path functions in WITH clause (IC1)
+- Strip database prefixes from CTE names for ClickHouse compatibility
+- Cartesian Product WITH clause missing JOIN ON
+- Operator precedence in expression parser
+- VLP endpoint JOINs with alias rewriting for chained patterns
+- Correct NOT operator precedence and remove hardcoded table fallbacks
+- Three critical shortestPath and query execution bugs
+- Extend VLP alias rewriting to WHERE clauses for IC1 support
+- Use correct CTE names for multi-variant relationship JOINs
+- Remove database prefix from CTE table names in cross-branch JOINs
+- Hoist trailing non-recursive CTEs to prevent nesting scope issues
+- VLP + WITH label corruption bug - use node labels in RelationshipSchema
+- Resolve compilation errors from AST and GraphRel changes
+- Add fallback to lookup table names from relationship schema
+- Complete RelationshipSchema refactoring - all 646 tests passing
+- Add database prefixes to base table JOINs
+- Use underscore convention for CTE column aliases
+- Thread node labels through relationship lookup pipeline for polymorphic relationships
+- Support filtered node views in relationship validation
+- Add JOIN dependency sorting to CTE generation path
+- Use existing TableCtx labels in multi-pattern MATCH label inference
+- TypeInference creates ViewScan for inferred node labels
+- QueryValidation respects parser normalization
+- Populate from_id/to_id columns during JOIN creation for correct NULL checks
+- *(ldbc)* Align BI queries with LDBC schema definitions
+- Prevent RefCell panic in populate_relationship_columns_from_plan
+- UNWIND after WITH now uses CTE as FROM table instead of system.one
+- Replace all panic!() with log::error!() - PREVENT SERVER CRASHES
+- Clean up unit tests - fix 21 compilation errors
+- Complete unit test cleanup - fix assertions and mark unimplemented features
+- Replace non-standard LIKE syntax with proper OpenCypher string predicates
+- Add != operator support to comparison expression parser
+- Preserve database prefix in ViewTableRef SQL generation
+- Relationship variable expansion + consolidate property helpers
+- Use relationship alias for denormalized edge FROM clause
+- Re-enable selective cross-branch JOIN for comma-separated patterns
+- Rel_type_index to prefer composite keys over simple keys
+- WITH...MATCH pattern using wrong table for FROM clause
+- Update test labels to match unified_test_schema
+- Test_multi_database.py - use schema_name instead of database for USE clause
+- Unify aggregation logic and fix multi-schema support
+- Multi-table label bug fixes and error handling improvements
 
-- **Multi-Level WITH CTE Expression Rewriting** - Fixed 4+ level WITH queries generating invalid SQL (December 15, 2025)
-  - **Problem**: `WITH a ... WITH a, b ... WITH b, c ... WITH c, d` generated invalid JOIN conditions like `a.a_id` instead of `a.a_user_id`
-  - **Error**: "Identifier 'a.a_id' cannot be resolved from subquery with name a"
-  - **Root Cause**: Expressions in intermediate CTEs weren't rewritten to use CTE column names
-  - **Solution**: 
-    - Added expression rewriting for each intermediate CTE as it's built
-    - Build reverse_mapping with generic ID (`(a, 'id')` → `'a_user_id'`), prefixed ID (`(a, 'a_id')` → `'a_user_id'`), and composite alias mappings (`(a_b, 'b_id')` → `'b_user_id'`)
-    - Rewrite SELECT, JOIN, WHERE, HAVING, ORDER BY expressions before adding CTE
-  - **Impact**: 2-level, 4-level, 5-level, and N-level WITH queries now work correctly
-  - **Test**: `test_4level_with.sh` passes
-  - **Fixes**: GitHub Issue #2
-  - **Files**: `src/render_plan/plan_builder.rs`
+### 💼 Other
 
-- **Coupled Edge Alias Resolution** - Fixed SQL generation for patterns with multiple edges in same table (December 14, 2025)
-  - **Problem**: `MATCH (src:IP)-[:REQUESTED]->(d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)` failed with SQL error
-  - **Error**: "Unknown expression identifier 't1.orig_h' in scope SELECT ... FROM test_zeek.dns_log AS t2. Maybe you meant: ['t2.orig_h']"
-  - **Root Cause**:
-    - Query has 2 edges (REQUESTED, RESOLVED_TO) using same dns_log table - **coupled edges**
-    - Coupled edge detector correctly unified aliases to `t1` and stored in `coupled_edge_aliases` HashMap
-    - `AliasResolverContext.transform_plan()` transformed property access expressions in SELECT/WHERE to use `t1`
-    - BUT: GraphRel alias itself remained `t2`, so FROM clause generated `AS t2`
-    - Result: SELECT/WHERE used `t1`, FROM used `t2` - alias mismatch!
-  - **Solution**:
-    - Enhanced `transform_plan()` to also transform GraphRel alias when it appears in `coupled_edge_aliases`
-    - Now both property expressions AND table alias use unified alias consistently
-  - **Impact**:
-    - Zeek tests: 16→18 passing (fixed both coupled DNS path tests)
-    - All coupled edge patterns now work correctly (multiple edges in same table)
-    - Ensures consistent alias usage throughout generated SQL
-  - **Files Modified**: `src/render_plan/alias_resolver.rs` (transform_plan GraphRel case, ~lines 150-172)
-  - **Before/After SQL**:
-    ```sql
-    -- Before (❌ broken - t1 vs t2 mismatch):
-    SELECT t1.orig_h AS "src.ip", t1.query AS "d.name", t1.answers AS "rip.ip"
-    FROM test_zeek.dns_log AS t2
-    WHERE t1.orig_h = '192.168.1.10'
-    
-    -- After (✅ fixed - consistent t1):
-    SELECT t1.orig_h AS "src.ip", t1.query AS "d.name", t1.answers AS "rip.ip"
-    FROM test_zeek.dns_log AS t1
-    WHERE t1.orig_h = '192.168.1.10'
-    ```
-- **Multi-Table Node Schema Resolution** - Fixed composite key lookup for same label across tables (December 14, 2025)
-  - **Problem**: `MATCH (s:IP)-[:REQUESTED]->(d:Domain)` used wrong IP schema (conn_log instead of dns_log)
-  - **Symptom**: Unnecessary self-JOINs generated for fully denormalized patterns, or "different tables" errors
-  - **Root Cause**: 
-    - Zeek schema has TWO `IP` definitions (dns_log table and conn_log table)
-    - Schema loader stores with composite keys: `"database::table::label"` (e.g., `"test_zeek::dns_log::IP"`)
-    - But `get_node_schema_opt` only used label key (`"IP"`), returned wrong table's schema
-    - Pattern classification failed: detected as Mixed instead of FullyDenormalized
-  - **Solution**: 
-    - In `compute_pattern_context`, construct composite key from edge table: `"database::table::label"`
-    - Try composite key first, fallback to label-only for backward compatibility
-    - Ensures correct node schema is selected when same label appears in multiple tables
-  - **Impact**: 
-    - Zeek tests: 17 → 18 passing (eliminated unnecessary self-JOINs)
-    - Fully denormalized edge patterns now generate single table scans (no JOINs)
-    - **Critical for denormalized schemas**: Same label can appear in multiple edge tables correctly
-  - **Files Modified**: `src/query_planner/analyzer/graph_join_inference.rs` (compute_pattern_context)
-  - **Example**:
-    ```cypher
-    -- Before: Generated unnecessary JOIN
-    FROM dns_log AS r INNER JOIN dns_log AS s ON s.orig_h = r.orig_h
-    
-    -- After: Single table scan (no JOIN)
-    FROM dns_log AS r
-    ```
-- **Denormalized Node ID Property Mapping** - Fixed JOIN conditions for composite node IDs in denormalized edges (December 14, 2025)
-  - **Problem**: `MATCH (src:IP)-[:REQUESTED]->(d:Domain)` generated invalid SQL: `ON src.ip = r.orig_h`
-  - **Error**: "Identifier 'src.ip' cannot be resolved from table src"
-  - **Root Cause**: 
-    - For denormalized edges, `node_id` uses Cypher property names (e.g., "ip")
-    - JOIN conditions need actual DB column names (e.g., "orig_h")
-    - Property mappings are in `from_properties`/`to_properties`, not `property_mappings`
-    - `resolve_id_column()` only checked `property_mappings`
-  - **Solution**: 
-    - Updated `resolve_id_column()` to check `from_properties`/`to_properties` first
-    - Added `is_from_node` parameter to know which side (from/to) to check
-    - Fallback to `property_mappings` for standalone node tables
-  - **Impact**: 
-    - Zeek merged schema tests: 15 → 17 passing (2 composite ID failures fixed)
-    - Generated SQL now correct: `ON src.orig_h = r.orig_h`
-  - **Files Modified**: `src/graph_catalog/pattern_schema.rs` (resolve_id_column + 4 call sites)
-  - **Example Schema**: 
-    ```yaml
-    node_id: ip  # Cypher property name
-    from_node_properties:
-      ip: "id.orig_h"  # DB column mapping
-    ```
-- **Inline Property Parameters** - Fixed server crash on parameterized inline property patterns (December 14, 2025)
-  - **Problem**: `MATCH (n:Person {id: $personId})` caused panic "Property value must be a literal"
-  - **Root Cause**: `PropertyKVPair.value` was typed as `Literal`, rejecting parameter expressions
-  - **Solution**: Changed `PropertyKVPair.value` from `Literal` to `LogicalExpr` to support all expressions
-  - **Impact**: 
-    - Official LDBC queries can now use inline property syntax directly
-    - Previously required WHERE clause workaround: `MATCH (n) WHERE n.id = $param`
-    - No regression: All adapted queries still work, official queries now accessible
-  - **Files Modified**: 
-    - `src/query_planner/logical_expr/mod.rs` - Changed struct, updated conversion
-    - `src/query_planner/logical_plan/match_clause.rs` - Updated usage
-  - **Testing**: 647/647 unit tests passing (0 regressions)
-
-### �🚀 Features
-
-- **CTE-Aware Variable Resolution** - Major architectural improvement for WITH clause handling (December 13, 2025)
-  - **Problem**: Three-level WITH queries incorrectly used base tables instead of CTEs in final SELECT
-  - **Solution**: Move variable resolution from render phase to analyzer phase
-  - **Architecture**: 
-    - New `GraphJoins.cte_references: HashMap<String, String>` field maps alias → CTE name
-    - `register_with_cte_references()` pre-scans plan and updates `TableCtx.cte_reference`
-    - `graph_context.rs` checks CTE references before base table lookup during join creation
-    - Render phase uses `GraphJoins.cte_references` for anchor table resolution
-    - Deterministic CTE naming: `with_{aliases}_cte` (no counter)
-  - **Critical Fix**: Correct traversal order (inner WITH before outer) ensures latest definition wins
-  - **Testing**: All 642 tests passing (100%), validated edge cases:
-    - Three-level nesting: `WITH a → WITH a,b → WITH b,c`
-    - OPTIONAL MATCH within WITH clauses
-    - Variable scope changes: `WITH a → WITH b`
-    - Same alias redefinition: `WITH a → WITH a,b`
-  - **Files Modified**: 12 files across query_planner, render_plan modules
-  - **Documentation**: Comprehensive architecture doc with data flow diagrams
-
-- **Composite Node IDs** - Support multi-column `node_id` for nodes with composite primary keys
-  - YAML syntax: `node_id: [bank_id, account_number]` for composite, `node_id: user_id` for single
-  - Generates ClickHouse tuple equality in JOINs: `(a.c1, a.c2) = (b.c1, b.c2)`
-  - Property access `RETURN n.id` returns tuple expression for composite IDs
-  - Works with all query features: MATCH, size() patterns, EXISTS, NOT EXISTS
-  - PageRank algorithm supports composite node IDs (uses tuple as node identifier)
-  - New API methods: `sql_tuple()`, `sql_equality()`, `columns_with_alias()`
-  - Test schema example: `schemas/test/composite_node_ids.yaml`
-  - Files: 16 files updated across graph_catalog, query_planner, render_plan, clickhouse_query_generator
-  - Testing: 5 new unit tests, all 644 tests passing (100%)
-
----
-
-## [0.5.7] - 2025-12-10
-
-### 🐛 Bug Fixes
-
-- **WITH+MATCH CTE generation** - Fixed critical correctness bug where second MATCH after WITH clause ignored first MATCH context
-  - Affected: All WITH+MATCH patterns (e.g., IC-9)
-  - Root Cause: GraphRel with Projection(kind=With) in right branch was being flattened instead of creating proper CTE boundary
-  - Fix: Added `has_with_clause_in_graph_rel()` detection and `build_with_match_cte_plan()` function
-  - CTE for WITH clause output is now properly generated and joined to outer query
-  - Files: `plan_builder.rs`, `plan_builder_helpers.rs`, `to_sql_query.rs`, `expression_parser.rs`
-
-- **CTE Union rendering** - Fixed malformed SQL when CTE contains Union plan
-  - Previously generated `SELECT *\nSELECT ...` (missing UNION ALL keyword)
-  - Now correctly renders nested Union as proper SQL
-
-- **Star column quoting** - Fixed `friend."*"` → `friend.*` in SQL generation
-  - Property access with `*` wildcard no longer incorrectly quoted
-
-- **Undirected VLP with WITH clause** - Fixed CTE hoisting for UNION branches with aggregation
-  - Affected: LDBC IC-1, IC-9
-  - Fix: `plan_builder.rs` now collects and preserves CTEs from all UNION branches when wrapping with GROUP BY
-  - Previously CTEs were being lost when bidirectional VLP patterns were combined with WITH clause aggregation
-
-- **LDBC schema column mappings** - Corrected 15+ relationship column names to match actual ClickHouse tables
-  - Fixed: IS_LOCATED_IN (Person_id, Place_id), HAS_INTEREST (PersonId, TagId), LIKES_POST (PersonId, PostId), etc.
-  - Schema now matches actual LDBC SNB data column naming conventions
-
-- **Added POST_LOCATED_IN relationship** - New relationship type for IC-3 benchmark query
-  - Maps to `Post_isLocatedIn_Country` table with correct column names (PostId, CountryId)
-
-### 🟡 Known Limitations
-
-- **WITH+MATCH with 2+ hops after WITH** - IC-3 pattern with nested relationships after WITH clause not yet supported
-  - Workaround: Break into multiple simpler queries
-
-### 🧪 Testing
-
-- **LDBC SNB Interactive Benchmark**: 7/8 queries passing (87.5%)
-  - IS-1, IS-2, IS-3, IS-5: Short queries passing
-  - IC-1, IC-2, IC-9: Complex queries passing  
-  - IC-3: Known limitation (nested relationships after WITH)
-- All 621 unit tests passing (100%)
-
----
-
-## [0.5.6] - 2025-12-09
-
-### 🐛 Bug Fixes
-
-- **OPTIONAL MATCH join ordering** - Fixed anchor node detection for patterns where anchor is on right side
-  - Affected: LDBC BI-6, BI-9
-  - Fix: `graph_join_inference.rs` now correctly identifies anchor node for reverse traversal patterns
-  - Generated SQL now uses correct FROM table and JOIN order for `OPTIONAL MATCH (a)-[:REL]->(anchor)` patterns
-
-- **Undirected relationship UNION generation** - Fixed join ordering in second UNION branch
-  - Affected: LDBC BI-14
-  - Fix: `bidirectional_union.rs` now swaps both `left`/`right` GraphNode plans AND connection strings for Incoming direction
-  - Previously only connection strings were swapped, leaving FROM table incorrect in second branch
-
-### 🧪 Testing
-
-- **LDBC SNB BI Benchmark**: 24/26 queries passing (92.3%), up from 21/26 (80.8%)
-- All 621 unit tests passing (100%)
-- All 7 integration tests passing (100%)
-
----
-
-## [0.5.5] - 2025-12-07
-
-### 🚀 Features
-
-- *(functions)* Add 48 new Neo4j function mappings (73 total, up from 25)
-  - **Vector Similarity (4)**: `gds.similarity.cosine`, `gds.similarity.euclidean`, `gds.similarity.euclideanDistance`, `vector.similarity.cosine`
-  - **Temporal Extraction (12)**: `year`, `month`, `day`, `hour`, `minute`, `second`, `dayOfWeek`, `dayOfYear`, `quarter`, `week`, `localdatetime`, `localtime`
-  - **List Predicates (5)**: `all`, `any`, `none`, `single`, `isEmpty`
-  - **String Functions (5)**: `startsWith`, `endsWith`, `contains`, `normalize`, `valueType`
-  - **Core Aggregations (5)**: `avg`, `sum`, `min`, `max`, `count`
-  - **Trigonometric (7)**: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`
-  - **Math (6)**: `exp`, `log`, `log10`, `pi`, `e`, `pow`
-  - **String (2)**: `lTrim`, `rTrim`
-  - **Aggregation (4)**: `stDev`, `stDevP`, `percentileCont`, `percentileDisc`
-  - **Predicate (2)**: `coalesce`, `nullIf`
-  - **Map (1)**: `keys`
-
-- *(functions)* **ClickHouse function pass-through** via `ch.` prefix
-  - Direct access to ANY ClickHouse function: `ch.functionName(args)`
-  - Uses dot notation for Neo4j ecosystem compatibility (like `apoc.*`, `gds.*`)
-  - Property mapping and parameter substitution work normally
-  - **Scalar functions**: Hash (cityHash64, MD5), JSON (JSONExtract*), URL (domain, path), IP (IPv4NumToString), Geo (greatCircleDistance, geoToH3), Date (formatDateTime, toStartOf*)
-  - **Aggregate functions** (100+ registered): Automatic GROUP BY generation
-    - Unique counting: `ch.uniq`, `ch.uniqExact`, `ch.uniqCombined`, `ch.uniqHLL12`
-    - Quantiles: `ch.quantile(p)`, `ch.quantiles`, `ch.quantileExact`, `ch.median`
-    - TopK: `ch.topK(n)`, `ch.topKWeighted`
-    - ArgMin/Max: `ch.argMin`, `ch.argMax`
-    - Arrays: `ch.groupArray`, `ch.groupUniqArray`, `ch.groupArraySample`
-    - Funnel: `ch.windowFunnel`, `ch.retention`, `ch.sequenceMatch`
-    - Statistics: `ch.varPop`, `ch.stddevSamp`, `ch.corr`, `ch.covarPop`
-    - Maps: `ch.sumMap`, `ch.avgMap`, `ch.minMap`, `ch.maxMap`
+- Fix dependency vulnerabilities for v0.5.5
+- Partial fix for nested WITH clauses - add recursive handling
+- Multi-variant CTE column name resolution in JOIN conditions
+- SchemaInference using table names instead of node labels
 
 ### 🚜 Refactor
 
-- *(code quality)* Remove 423 lines of dead code (filter_pipeline.rs: 889→413 lines)
-- *(code quality)* Fix all compiler warnings (58→0)
-- *(code quality)* Convert broken doc examples to `text` or `ignore`
-- *(dependencies)* Security updates: dotenvy, validator 0.20, reqwest 0.12
-
-### 🧪 Testing
-
-- Add 27 unit tests for functions (17 translator + 16 registry, some overlap)
-- 6 new tests for `ch.` aggregate function detection and classification
-- Fix doctest compilation errors
-- Fix test_view_parameters.rs to use Identifier::Single type
+- Fix compiler warnings and clean up unused variables
+- *(functions)* Change ch:: to ch. prefix for Neo4j ecosystem compatibility
+- Extract TableAlias expansion into helper functions
+- Replace wildcard expansion in build_with_aggregation_match_cte_plan with helper
+- Remove deprecated v1 graph pattern handler (1,568 lines)
+- Extract CTE hoisting helper function
+- Remove unused ProjectionKind::With enum variant
+- Remove 676 lines of dead WITH clause handling code
+- Remove 47 lines of dead GraphNode branch with empty property_mapping
+- Remove redundant variable resolution from renderer (Phase 3A)
+- Remove unused bidirectional and FK-edge functions
+- Remove dead code function find_cte_in_plan
+- Consolidate duplicate property extraction code (-23 lines)
+- Remove dead extract_ctes() function (-301 lines)
+- Separate graph labels from table names in RelationshipSchema
+- Remove redundant WithScopeSplitter analyzer pass
+- Remove old parsing-time label inference
+- Consolidate inference logic into TypeInference with polymorphic support
+- Replace hardcoded fallbacks with descriptive errors
+- Add strict validation for system.one usage in UNWIND
+- ELIMINATE ALL HARDCODED FALLBACKS - fail fast instead
+- Consolidate test data setup - use MergeTree, remove duplicates
 
 ### 📚 Documentation
 
-- Add comprehensive ClickHouse pass-through guide to Cypher-Functions.md
-- Expand vector similarity section with RAG usage, HNSW index requirements
-- Document all 73 Neo4j function mappings
+- Update wiki documentation for v0.5.4 release
+- Archive wiki for v0.5.4 release
+- Add UNWIND clause documentation to wiki
+- Update v0.5.4 wiki snapshot with UNWIND documentation
+- Update Known-Limitations with recently implemented features
+- Update v0.5.4 wiki snapshot with corrected feature status
+- Add 30 new functions to Cypher-Functions.md reference
+- Expand vector similarity section with RAG usage
+- Clarify scalar vs aggregate function categories in ch.* docs
+- Add lambda expression limitation to ch.* pass-through documentation
+- Split ClickHouse pass-through into dedicated doc for better discoverability
+- Add comparison with PuppyGraph, TigerGraph, NebulaGraph
+- Fix PuppyGraph architecture description
+- Fix license - Apache 2.0, not MIT
+- *(benchmark)* Update README with correct workflow and files
+- Update KNOWN_ISSUES with accurate LDBC benchmark status
+- Update STATUS.md and KNOWN_ISSUES.md for WITH clause improvements
+- Add size() documentation and replace silent defaults with errors
+- Document composite node ID feature
+- Update STATUS.md with IC-1 fix and 100% LDBC benchmark
+- Document WITH handler refactoring (120 lines eliminated)
+- Identify remaining code quality hotspots after WITH refactoring
+- Update STATUS and code quality analysis with v1 removal
+- Add quality improvement plan and clarify parameter limitation
+- Add comprehensive lambda expression documentation to Cypher Language Reference
+- Reorganize lambda expressions as subsection of ClickHouse Function Passthrough
+- Move lambda expressions details to ClickHouse-Functions.md
+- Update LDBC benchmark analysis with accurate coverage (94% actionable)
+- Add comprehensive LDBC data loading and persistence guide
+- Add benchmark infrastructure completion summary
+- Add benchmark quick reference card
+- Update STATUS and CHANGELOG with predicate correlation
+- Update STATUS and CHANGELOG for sequential MATCH support
+- Update CHANGELOG and KNOWN_ISSUES for Issue #2 fix
+- Update KNOWN_ISSUES - mark Issues #1, #3, #4 as FIXED
+- Verify and update KNOWN_ISSUES - mark #5, #7 FIXED, detail #6 bugs
+- Update KNOWN_ISSUES.md - Mark Issue #6 as FIXED
+- Add LDBC benchmark audit tools and issue tracking
+- Update STATUS.md with WHERE clause rewriting completion
+- Document CTE database prefix fix in STATUS.md
+- Add AI Assistant Integration via MCP Protocol
+- Update STATUS.md with RelationshipSchema refactoring progress
+- Update STATUS.md - RelationshipSchema refactoring complete (646/646 tests)
+- Update STATUS and planning docs for node_id semantic clarification
+- Update STATUS.md and KNOWN_ISSUES.md for database prefix fix
+- Add database prefix fix to CHANGELOG.md
+- Update QUERY_FIX_TRACKER with Dec 19 fixes
+- Update STATUS, CHANGELOG, KNOWN_ISSUES for polymorphic relationship fix
+- Update STATUS with polymorphic resolution progress
+- Update STATUS.md with session summary
+- Update STATUS with TypeInference ViewScan fix
+- Update STATUS with QueryValidation fix - 70% LDBC passing
+- Update CHANGELOG with Dec 19 achievements and cleanup root directory
+- Analyze LDBC failures - 70% pass rate, identify 3 root causes
+- Add LDBC benchmark configuration guide
+- Correct bi-8/bi-14 root cause - pattern comprehensions not implemented
+- Update KNOWN_ISSUES with parser improvements for pattern comprehensions
+- Clarify CASE expression status - fully implemented
+- Update all documentation with correct schema paths
+- Add systematic test failure investigation plan
+- Update STATUS and CHANGELOG with test infrastructure progress
+- Mark relationship variable return bug as fixed
+- Update STATUS and CHANGELOG for 24/24 zeek tests
+- Update STATUS and CHANGELOG with test label fixes
+- Document path function VLP alias bug in KNOWN_ISSUES
 
----
+### ⚡ Performance
 
+- Replace UUID-based CTE names with sequential counters
+
+### 🎨 Styling
+
+- Apply rustfmt formatting to entire codebase
+
+### 🧪 Testing
+
+- Update standalone relationship test for v2 behavior
+- Add comprehensive WITH + advanced features test suite
+- Add parameter tests for WITH clause combinations
+- Add LDBC benchmark test scripts
+- Add missing LDBC query parameters to audit script
+
+### ⚙️ Miscellaneous Tasks
+
+- Update CHANGELOG.md [skip ci]
+- Remove dead code and fix all compiler warnings
+- Hide internal documentation from public repo
+- Keep wiki, images, and features subdirs external
+- Remove internal documentation from repo
+- Remove copilot instructions from public repo
+- Remove debug output after nested CTE fix
+- Add *.log to gitignore to prevent log file commits
+- Comprehensive cleanup - standardize schemas and reorganize tests
+- Remove duplicate setup_all_test_data.sh in scripts/setup/
+- Release v0.6.0 - VLP transitivity check and bug fixes
 ## [0.5.4] - 2025-12-08
 
 ### 🚀 Features
