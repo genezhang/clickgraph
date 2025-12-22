@@ -111,12 +111,13 @@ echo ""
 # 1. Standard benchmark data (social_benchmark schema)
 log_info "=== Standard Benchmark Data ==="
 if [[ -f "$PROJECT_ROOT/scripts/setup/setup_medium_benchmark_data.sql" ]]; then
-    # Check if data already exists
-    count=$(run_sql "SELECT count() FROM brahmand.users_bench" 2>/dev/null || echo "0")
-    if [[ "$count" == "0" ]]; then
+    # Check if table exists first, not just data
+    table_exists=$(run_sql "SELECT count() FROM system.tables WHERE database = 'brahmand' AND name = 'users_bench'" 2>/dev/null)
+    if [[ "$table_exists" != "1" ]]; then
         log_info "Loading benchmark data (this may take a moment)..."
         run_sql_file "$PROJECT_ROOT/scripts/setup/setup_medium_benchmark_data.sql" "Medium benchmark data"
     else
+        count=$(run_sql "SELECT count() FROM brahmand.users_bench" 2>/dev/null)
         log_info "Benchmark data already exists ($count users)"
     fi
 else
@@ -134,12 +135,22 @@ log_info "=== Denormalized Flights Data ==="
 run_sql_file "$PROJECT_ROOT/scripts/test/setup_denormalized_test_data.sql" "Flights test data"
 echo ""
 
-# 4. Property expressions test data (for property_expressions schema)
+# 4. Filesystem test data (for filesystem schema)
+log_info "=== Filesystem Test Data ==="
+run_sql_file "$PROJECT_ROOT/tests/fixtures/data/filesystem_test_data.sql" "Filesystem test data"
+echo ""
+
+# 5. Group membership test data (for group membership schema)
+log_info "=== Group Membership Test Data ==="
+run_sql_file "$PROJECT_ROOT/tests/fixtures/data/group_membership_test_data.sql" "Group membership test data"
+echo ""
+
+# 6. Property expressions test data (for property_expressions schema)
 log_info "=== Property Expressions Test Data ==="
 run_sql_file "$PROJECT_ROOT/tests/fixtures/data/setup_property_expressions.sql" "Property expressions test data"
 echo ""
 
-# 5. Polymorphic interactions data (for social_polymorphic schema)
+# 7. Polymorphic interactions data (for social_polymorphic schema)
 log_info "=== Polymorphic Interactions Data ==="
 # Create interactions table if it doesn't exist
 run_sql "
