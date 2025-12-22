@@ -235,7 +235,7 @@ docker run -d \
   -e CLICKHOUSE_USER="test_user" \
   -e CLICKHOUSE_PASSWORD="test_pass" \
   -e GRAPH_CONFIG_PATH="/app/schemas/social_benchmark.yaml" \
-  -v $(pwd)/benchmarks/schemas:/app/schemas:ro \
+  -v $(pwd)/benchmarks/social_network/schemas:/app/schemas:ro \
   genezhang/clickgraph:latest
 ```
 

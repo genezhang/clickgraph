@@ -3594,10 +3594,15 @@ impl GraphJoinInference {
         //
         // IMPORTANT: Skip this optimization for variable-length paths and shortest paths,
         // as they generate CTEs that need node table JOINs for proper path construction.
+        // Also skip if this is not the first relationship processed (multi-hop patterns).
         let is_vlp = graph_rel.variable_length.is_some();
         let is_shortest_path = graph_rel.shortest_path_mode.is_some();
+        let is_first_relationship = joined_entities.is_empty();
         
-        if !left_is_referenced && !right_is_referenced && !is_vlp && !is_shortest_path {
+        // TEMP: Disable optimization to debug multi-hop issue
+        let apply_optimization = false; // !left_is_referenced && !right_is_referenced && !is_vlp && !is_shortest_path && is_first_relationship;
+        
+        if apply_optimization {
             crate::debug_print!("    ⚡ UNREFERENCED NODES detected: left='{}' ref={}, right='{}' ref={} - using SingleTableScan strategy", 
                 left_alias_str, left_is_referenced, right_alias_str, right_is_referenced);
             // Override join strategy: no node JOINs needed, only relationship table
