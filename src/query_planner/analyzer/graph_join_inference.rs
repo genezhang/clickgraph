@@ -3574,7 +3574,7 @@ impl GraphJoinInference {
             .map(|(alias, rel_type, is_from)| (alias.as_str(), rel_type.as_str(), *is_from));
 
         // Compute PatternSchemaContext for this pattern
-        let ctx = self
+        let mut ctx = self
             .compute_pattern_context(graph_rel, plan_ctx, graph_schema, prev_edge_info)
             .ok_or_else(|| {
                 AnalyzerError::SchemaNotFound(format!(
@@ -3582,6 +3582,29 @@ impl GraphJoinInference {
                     left_alias, rel_alias, right_alias
                 ))
             })?;
+
+        // Check if node properties are actually used in the query
+        // If neither node is referenced (no properties accessed downstream), we can optimize
+        // by using only the relationship table without JOINing to node tables.
+        // This applies whether nodes are anonymous () or named (a) - only usage matters.
+        // Examples:
+        //   MATCH (a)-[r:FOLLOWS]->(b) RETURN count(r)  → no node JOINs needed
+        //   MATCH ()-[r:FOLLOWS]->() RETURN count(r)    → no node JOINs needed
+        //   MATCH (a)-[r:FOLLOWS]->(b) RETURN a.name    → JOIN left node table for a.name
+        //
+        // IMPORTANT: Skip this optimization for variable-length paths and shortest paths,
+        // as they generate CTEs that need node table JOINs for proper path construction.
+        let is_vlp = graph_rel.variable_length.is_some();
+        let is_shortest_path = graph_rel.shortest_path_mode.is_some();
+        
+        if !left_is_referenced && !right_is_referenced && !is_vlp && !is_shortest_path {
+            crate::debug_print!("    ⚡ UNREFERENCED NODES detected: left='{}' ref={}, right='{}' ref={} - using SingleTableScan strategy", 
+                left_alias_str, left_is_referenced, right_alias_str, right_is_referenced);
+            // Override join strategy: no node JOINs needed, only relationship table
+            ctx.join_strategy = JoinStrategy::SingleTableScan {
+                table: rel_schema.full_table_name(),
+            };
+        }
 
         crate::debug_print!("    🔬 Using PatternSchemaContext: {}", ctx.debug_summary());
 
