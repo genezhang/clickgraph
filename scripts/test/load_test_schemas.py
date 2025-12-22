@@ -18,17 +18,22 @@ from pathlib import Path
 
 CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
-# Schemas to load for testing (excluding benchmark workloads)
+# Schemas to load for testing
+# Note: Includes benchmark schemas because matrix tests use them for cross-schema validation
+# The benchmark WORKLOADS (performance testing) are separate under /benchmarks/
 SCHEMAS_TO_LOAD = [
     # Unified test schema - primary schema for most tests (TestUser, TestProduct, etc.)
     ("schemas/test/unified_test_schema.yaml", "unified_test_schema"),
+    # Benchmark schemas - used by matrix tests for cross-schema coverage
+    ("benchmarks/social_network/schemas/social_benchmark.yaml", "social_benchmark"),
+    ("benchmarks/ontime_flights/schemas/ontime_benchmark.yaml", "ontime_benchmark"),
     # Schema variations - matrix tests
     ("schemas/examples/filesystem.yaml", "filesystem"),
     ("schemas/test/group_membership_simple.yaml", "group_membership"),
     # Example schemas
     ("examples/data_security/data_security.yaml", "data_security"),
-    # Denormalized schema
-    ("schemas/examples/ontime_denormalized.yaml", "ontime_flights"),
+    # Denormalized schema  
+    ("schemas/examples/ontime_denormalized.yaml", "ontime_denormalized"),
     # Polymorphic schema
     ("schemas/examples/social_polymorphic.yaml", "social_polymorphic"),
     # Coupled/DNS schema

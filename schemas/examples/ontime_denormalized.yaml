@@ -2,7 +2,7 @@
 # This schema demonstrates denormalized nodes where Airport properties
 # are embedded directly in the flights table (OnTime dataset pattern).
 
-name: ontime_flights
+name: ontime_denormalized
 version: "1.0"
 
 graph_schema:
