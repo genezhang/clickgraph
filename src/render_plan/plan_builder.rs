@@ -126,29 +126,39 @@ fn generate_swapped_joins_for_optional_match(
 ) -> RenderPlanBuilderResult<Vec<Join>> {
     let mut joins = Vec::new();
 
-    // Extract table names and columns
-    // CRITICAL FIX: Use extract_table_name directly instead of label lookup to avoid wrong fallbacks
-    let start_table = extract_table_name(&graph_rel.left)
+    // Extract table names and columns with parameterized view syntax if applicable
+    // CRITICAL FIX: Use extract_parameterized_table_ref for ViewScan to handle parameterized views
+    let start_table = extract_parameterized_table_ref(&graph_rel.left)
         .ok_or_else(|| RenderBuildError::MissingTableInfo("left node".to_string()))?;
-    let end_table = extract_table_name(&graph_rel.right)
+    let end_table = extract_parameterized_table_ref(&graph_rel.right)
         .ok_or_else(|| RenderBuildError::MissingTableInfo("right node".to_string()))?;
 
-    let start_id_col = table_to_id_column(&start_table);
-    let end_id_col = table_to_id_column(&end_table);
+    // For ID column lookup, we need the plain table name (without parameterized syntax)
+    let start_table_plain = extract_table_name(&graph_rel.left)
+        .ok_or_else(|| RenderBuildError::MissingTableInfo("left node".to_string()))?;
+    let end_table_plain = extract_table_name(&graph_rel.right)
+        .ok_or_else(|| RenderBuildError::MissingTableInfo("right node".to_string()))?;
 
-    // Get relationship table
+    let start_id_col = table_to_id_column(&start_table_plain);
+    let end_id_col = table_to_id_column(&end_table_plain);
+
+    // Get relationship table with parameterized view syntax if applicable
     // If center is wrapped in a CTE (for alternate relationships), use the CTE name
-    // Otherwise, derive from labels or extract from plan
+    // Otherwise, derive from labels or extract from plan with parameterized view support
     let rel_table = if matches!(&*graph_rel.center, LogicalPlan::Cte(_)) {
+        // CTEs don't have parameterized views
         extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
     } else if let Some(labels) = &graph_rel.labels {
         if !labels.is_empty() {
+            // Labels-based lookup doesn't support parameterized views
             rel_type_to_table_name(&labels[0])
         } else {
-            extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
+            // Use parameterized table ref for ViewScan
+            extract_parameterized_table_ref(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
         }
     } else {
-        extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
+        // Use parameterized table ref for ViewScan
+        extract_parameterized_table_ref(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
     };
 
     // Get relationship columns
@@ -6474,17 +6484,16 @@ impl RenderPlanBuilder for LogicalPlan {
                         );
                         // Get table from GraphNode's ViewScan
                         if let LogicalPlan::ViewScan(scan) = graph_node.input.as_ref() {
-                            let view_ref = super::ViewTableRef {
-                                source: std::sync::Arc::new(LogicalPlan::GraphNode(
-                                    graph_node.clone(),
-                                )),
-                                name: scan.source_table.clone(),
-                                alias: Some(graph_node.alias.clone()),
-                                use_final: scan.use_final,
-                            };
+                            // Use ViewTableRef::new_table_with_alias to properly handle parameterized views
+                            let view_ref = super::ViewTableRef::new_table_with_alias(
+                                scan.as_ref().clone(),
+                                scan.source_table.clone(),
+                                graph_node.alias.clone(),
+                            );
                             log::info!(
-                                "🎯 NODE-ONLY: Created ViewTableRef for table '{}' as '{}'",
+                                "🎯 NODE-ONLY: Created ViewTableRef for table '{}' (name='{}') as '{}'",
                                 scan.source_table,
+                                view_ref.name,
                                 graph_node.alias
                             );
                             return Ok(from_table_to_view_ref(Some(FromTable::new(Some(
@@ -6591,8 +6600,11 @@ impl RenderPlanBuilder for LogicalPlan {
                                     log::info!("✅ Anchor '{}' has CTE reference: '{}'", anchor_alias, cte_name);
                                     Some(cte_name.clone())
                                 } else {
-                                    // FALLBACK: Get table name by searching the plan for GraphNode with this alias
-                                    find_table_name_for_alias(&graph_joins.input, anchor_alias)
+                                    // FALLBACK: Use extract_rel_and_node_tables to get parameterized view reference
+                                    // This handles multi-tenant parameterized views correctly
+                                    let rel_tables = extract_rel_and_node_tables(&graph_joins.input);
+                                    rel_tables.get(anchor_alias).cloned()
+                                        .or_else(|| find_table_name_for_alias(&graph_joins.input, anchor_alias))
                                 };
                                 
                                 // Get the table name for the anchor node by recursively finding the GraphNode with matching alias
@@ -6641,8 +6653,10 @@ impl RenderPlanBuilder for LogicalPlan {
                                 log::info!("✅ Anchor '{}' has CTE reference: '{}'", anchor_alias, cte_name);
                                 Some(cte_name.clone())
                             } else {
-                                // FALLBACK: Get table name by searching the plan
-                                find_table_name_for_alias(&graph_joins.input, anchor_alias)
+                                // FALLBACK: Use extract_rel_and_node_tables to get parameterized view reference
+                                let rel_tables = extract_rel_and_node_tables(&graph_joins.input);
+                                rel_tables.get(anchor_alias).cloned()
+                                    .or_else(|| find_table_name_for_alias(&graph_joins.input, anchor_alias))
                             };
                             
                             // Get the table name for the anchor node
@@ -7124,7 +7138,8 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // FIX: Use ViewScan source_table instead of deprecated joins field table_name
                 // The deprecated joins field has incorrect table names for polymorphic relationships
-                // Extract alias → source_table mapping from GraphRel nodes in the plan
+                // Extract alias → parameterized table reference mapping from GraphRel/GraphNode nodes
+                // This uses the centralized helper that handles parameterized views correctly
                 
                 println!("DEBUG: GraphJoins extract_joins called");
                 println!("DEBUG:   Input plan type: {:?}", std::mem::discriminant(graph_joins.input.as_ref()));
@@ -7133,68 +7148,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     println!("DEBUG:   Deprecated join[{}]: {} AS {}", i, j.table_name, j.table_alias);
                 }
                 
-                fn extract_rel_tables(plan: &LogicalPlan) -> std::collections::HashMap<String, String> {
-                    let mut map = std::collections::HashMap::new();
-                    
-                    match plan {
-                        LogicalPlan::GraphRel(gr) => {
-                            // Extract the ViewScan from center plan (the relationship)
-                            fn get_viewscan(p: &LogicalPlan) -> Option<&ViewScan> {
-                                match p {
-                                    LogicalPlan::ViewScan(vs) => Some(vs.as_ref()),
-                                    LogicalPlan::Projection(proj) => get_viewscan(&proj.input),
-                                    LogicalPlan::Filter(f) => get_viewscan(&f.input),
-                                    _ => None,
-                                }
-                            }
-                            
-                            if let Some(vs) = get_viewscan(&gr.center) {
-                                map.insert(gr.alias.clone(), vs.source_table.clone());
-                                println!(
-                                    "DEBUG: extract_rel_tables - found GraphRel alias='{}' → source_table='{}'",
-                                    gr.alias, vs.source_table
-                                );
-                            }
-                            
-                            // Recursively check left and right nodes
-                            map.extend(extract_rel_tables(&gr.left));
-                            map.extend(extract_rel_tables(&gr.right));
-                        }
-                        LogicalPlan::Projection(p) => {
-                            map.extend(extract_rel_tables(&p.input));
-                        }
-                        LogicalPlan::Filter(f) => {
-                            map.extend(extract_rel_tables(&f.input));
-                        }
-                        LogicalPlan::CartesianProduct(cp) => {
-                            map.extend(extract_rel_tables(&cp.left));
-                            map.extend(extract_rel_tables(&cp.right));
-                        }
-                        LogicalPlan::GraphJoins(gj) => {
-                            map.extend(extract_rel_tables(&gj.input));
-                        }
-                        LogicalPlan::GraphNode(gn) => {
-                            // Also extract node tables for completeness
-                            fn get_node_viewscan(p: &LogicalPlan) -> Option<&ViewScan> {
-                                match p {
-                                    LogicalPlan::ViewScan(vs) => Some(vs.as_ref()),
-                                    LogicalPlan::Projection(proj) => get_node_viewscan(&proj.input),
-                                    LogicalPlan::Filter(f) => get_node_viewscan(&f.input),
-                                    _ => None,
-                                }
-                            }
-                            
-                            if let Some(vs) = get_node_viewscan(&gn.input) {
-                                map.insert(gn.alias.clone(), vs.source_table.clone());
-                            }
-                        }
-                        _ => {}
-                    }
-                    
-                    map
-                }
-                
-                let rel_tables = extract_rel_tables(graph_joins.input.as_ref());
+                // Use the centralized helper from plan_builder_helpers.rs
+                let rel_tables = extract_rel_and_node_tables(graph_joins.input.as_ref());
                 println!("DEBUG: GraphJoins - extracted rel tables: {:?}", rel_tables);
                 
                 // Now fix the table_name in each deprecated join using the extracted mapping
@@ -7284,8 +7239,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 if left_is_denormalized && right_is_denormalized {
                     crate::debug_println!("DEBUG: DENORMALIZED multi-hop pattern detected");
 
-                    // Get the relationship table
-                    let rel_table = extract_table_name(&graph_rel.center)
+                    // Get the relationship table with parameterized view syntax if applicable
+                    let rel_table = extract_parameterized_table_ref(&graph_rel.center)
                         .unwrap_or_else(|| graph_rel.alias.clone());
 
                     // Get relationship columns (from_id and to_id)
@@ -7426,13 +7381,14 @@ impl RenderPlanBuilder for LogicalPlan {
                     // previous WITH clause scopes. Filter those out.
 
                     // First, add the relationship table join (center -> left node)
-                    let rel_table = extract_table_name(&graph_rel.center)
+                    // Use extract_parameterized_table_ref to handle parameterized views correctly
+                    let rel_table = extract_parameterized_table_ref(&graph_rel.center)
                         .unwrap_or_else(|| {
-                            println!("WARNING: extract_table_name returned None for relationship alias '{}', falling back to alias", graph_rel.alias);
+                            println!("WARNING: extract_parameterized_table_ref returned None for relationship alias '{}', falling back to alias", graph_rel.alias);
                             graph_rel.alias.clone()
                         });
                     
-                    println!("DEBUG extract_joins GraphRel: alias='{}', rel_table from extract_table_name='{}'", graph_rel.alias, rel_table);
+                    println!("DEBUG extract_joins GraphRel: alias='{}', rel_table from extract_parameterized_table_ref='{}'", graph_rel.alias, rel_table);
                     
                     let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
                         RelationshipColumns {
@@ -7616,15 +7572,16 @@ impl RenderPlanBuilder for LogicalPlan {
                 let start_label = extract_node_label_from_viewscan(&graph_rel.left);
                 let end_label = extract_node_label_from_viewscan(&graph_rel.right);
 
-                // Get relationship table
-                // POLYMORPHIC FIX: Always use extract_table_name from ViewScan source_table
+                // Get relationship table with parameterized view syntax if applicable
+                // POLYMORPHIC FIX: Always use extract from ViewScan source_table
                 // which contains the correctly resolved polymorphic table name (e.g., "ldbc.Person_likes_Message")
                 // NOT rel_type_to_table_name which doesn't know about node labels
                 let rel_table = if matches!(&*graph_rel.center, LogicalPlan::Cte(_)) {
+                    // CTEs don't have parameterized views
                     extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
                 } else {
-                    // Always use extract_table_name for ViewScan (polymorphic resolution)
-                    extract_table_name(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
+                    // Use extract_parameterized_table_ref for ViewScan (handles parameterized views)
+                    extract_parameterized_table_ref(&graph_rel.center).unwrap_or_else(|| graph_rel.alias.clone())
                 };
                 
                 println!("DEBUG: GraphRel extract_joins - rel_table='{}' for alias='{}'", rel_table, graph_rel.alias);

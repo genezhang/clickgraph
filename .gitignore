@@ -113,4 +113,4 @@ schemas/examples/security_graph_data.sql
 schemas/examples/security_graph_load.sql
 
 # Private tests (proprietary schemas and queries)
-tests/private/
+tests/private/*.bak

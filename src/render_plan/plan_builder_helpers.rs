@@ -378,6 +378,102 @@ pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
     }
 }
 
+/// Helper function to extract the table reference with parameterized view syntax if applicable.
+/// For a ViewScan with view_parameter_names, returns `table_name(param1 = $param1, param2 = $param2)`.
+/// For other cases, returns just the table name.
+/// 
+/// This is used for JOINs where parameterized views need to be called with parameters.
+/// Example: `JOIN friendships_by_tenant(tenant_id = $tenant_id) AS f ON ...`
+pub(super) fn extract_parameterized_table_ref(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        // For CTEs, return the CTE name directly (no parameters)
+        LogicalPlan::Cte(cte) => Some(cte.name.clone()),
+        LogicalPlan::Scan(scan) => scan.table_name.clone(),
+        LogicalPlan::ViewScan(view_scan) => {
+            // Check if this is a parameterized view
+            if let Some(ref param_names) = view_scan.view_parameter_names {
+                if !param_names.is_empty() {
+                    // Generate parameterized view call: table(param1 = $param1, param2 = $param2)
+                    let param_pairs: Vec<String> = param_names
+                        .iter()
+                        .map(|name| format!("{} = ${}", name, name))
+                        .collect();
+                    log::debug!(
+                        "extract_parameterized_table_ref: ViewScan '{}' has parameters {:?}, generating: {}({})",
+                        view_scan.source_table, param_names, view_scan.source_table, param_pairs.join(", ")
+                    );
+                    return Some(format!("{}({})", view_scan.source_table, param_pairs.join(", ")));
+                }
+            }
+            // No parameters - return plain table name
+            Some(view_scan.source_table.clone())
+        }
+        LogicalPlan::GraphNode(node) => extract_parameterized_table_ref(&node.input),
+        LogicalPlan::GraphRel(rel) => extract_parameterized_table_ref(&rel.center),
+        LogicalPlan::Filter(filter) => extract_parameterized_table_ref(&filter.input),
+        LogicalPlan::Projection(proj) => extract_parameterized_table_ref(&proj.input),
+        _ => None,
+    }
+}
+
+/// Extract a mapping of alias → parameterized table reference from a LogicalPlan tree.
+/// 
+/// This traverses the plan and builds a HashMap where:
+/// - Keys are aliases (from GraphNode.alias or GraphRel.alias)
+/// - Values are table references with parameterized view syntax if applicable
+/// 
+/// For parameterized views, the value will be `table(param = $param)` format.
+/// For regular tables, the value is just the table name.
+/// 
+/// This is used to fix JOINs generated from GraphJoins, ensuring that
+/// parameterized views are called correctly in all JOIN clauses.
+pub(super) fn extract_rel_and_node_tables(plan: &LogicalPlan) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    
+    match plan {
+        LogicalPlan::GraphRel(gr) => {
+            // Use the centralized helper to get parameterized table reference
+            if let Some(parameterized_ref) = extract_parameterized_table_ref(&gr.center) {
+                log::debug!(
+                    "extract_rel_and_node_tables: GraphRel alias='{}' → '{}'",
+                    gr.alias, parameterized_ref
+                );
+                map.insert(gr.alias.clone(), parameterized_ref);
+            }
+            
+            // Recursively check left and right nodes
+            map.extend(extract_rel_and_node_tables(&gr.left));
+            map.extend(extract_rel_and_node_tables(&gr.right));
+        }
+        LogicalPlan::GraphNode(gn) => {
+            // Use the centralized helper to get parameterized table reference
+            if let Some(parameterized_ref) = extract_parameterized_table_ref(&gn.input) {
+                log::debug!(
+                    "extract_rel_and_node_tables: GraphNode alias='{}' → '{}'",
+                    gn.alias, parameterized_ref
+                );
+                map.insert(gn.alias.clone(), parameterized_ref);
+            }
+        }
+        LogicalPlan::Projection(p) => {
+            map.extend(extract_rel_and_node_tables(&p.input));
+        }
+        LogicalPlan::Filter(f) => {
+            map.extend(extract_rel_and_node_tables(&f.input));
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            map.extend(extract_rel_and_node_tables(&cp.left));
+            map.extend(extract_rel_and_node_tables(&cp.right));
+        }
+        LogicalPlan::GraphJoins(gj) => {
+            map.extend(extract_rel_and_node_tables(&gj.input));
+        }
+        _ => {}
+    }
+    
+    map
+}
+
 /// Helper function to find the table name for a given alias by recursively searching the plan tree
 /// Used to find the anchor node's table in multi-hop queries
 /// Find the table name for a given alias by traversing the LogicalPlan tree.
@@ -1370,9 +1466,19 @@ pub(super) fn has_multiple_relationship_types(plan: &LogicalPlan) -> bool {
     match plan {
         LogicalPlan::GraphRel(graph_rel) => {
             if let Some(labels) = &graph_rel.labels {
-                // Deduplicate labels - [:FOLLOWS|FOLLOWS] should be treated as single type
-                let unique_labels: std::collections::HashSet<_> = labels.iter().collect();
-                if unique_labels.len() > 1 {
+                // Normalize composite keys to base types before deduplication
+                // "REQUESTED::IP::Domain" and "REQUESTED" refer to the same relationship type
+                let normalized_labels: Vec<&str> = labels
+                    .iter()
+                    .map(|label| {
+                        // Extract base type from composite key: "TYPE::Node1::Node2" -> "TYPE"
+                        label.split("::").next().unwrap_or(label.as_str())
+                    })
+                    .collect();
+                
+                // Deduplicate - [:FOLLOWS|FOLLOWS] or ["REQUESTED", "REQUESTED::IP::Domain"] treated as single type
+                let unique_base_types: std::collections::HashSet<_> = normalized_labels.into_iter().collect();
+                if unique_base_types.len() > 1 {
                     return true;
                 }
             }

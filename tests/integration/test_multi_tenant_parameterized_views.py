@@ -122,7 +122,7 @@ class TestSQLGeneration:
             sql_only=True
         )
         
-        sql = result["sql"]
+        sql = result["generated_sql"]
         assert "$tenant_id" in sql or "users_by_tenant(tenant_id" in sql, \
             f"SQL should contain parameterized view syntax: {sql}"
     
@@ -135,7 +135,7 @@ class TestSQLGeneration:
             sql_only=True
         )
         
-        sql = result["sql"]
+        sql = result["generated_sql"]
         # Should reference the parameterized view
         assert "users_by_tenant" in sql, f"SQL should reference users_by_tenant view: {sql}"
 
@@ -230,20 +230,84 @@ class TestErrorHandling:
         assert response.status_code in [200, 400]
 
 
+@pytest.fixture(scope="module")
+def multi_param_schema():
+    """Load the multi-parameter schema (tenant_id + country)."""
+    with open('schemas/test/multi_tenant_multi_param.yaml', 'r') as f:
+        schema_yaml = f.read()
+    
+    response = requests.post(
+        f"{BASE_URL}/schemas/load",
+        json={
+            "schema_name": "multi_param_test",
+            "config_content": schema_yaml
+        }
+    )
+    assert response.status_code == 200, f"Schema load failed: {response.text}"
+    return "multi_param_test"
+
+
+@pytest.fixture(scope="module")
+def date_range_schema():
+    """Load the date-range schema (tenant_id + start_date + end_date)."""
+    with open('schemas/test/multi_tenant_date_range.yaml', 'r') as f:
+        schema_yaml = f.read()
+    
+    response = requests.post(
+        f"{BASE_URL}/schemas/load",
+        json={
+            "schema_name": "date_range_test",
+            "config_content": schema_yaml
+        }
+    )
+    assert response.status_code == 200, f"Schema load failed: {response.text}"
+    return "date_range_test"
+
+
 class TestMultiParameterViews:
     """Test views with multiple parameters (tenant_id + region, date, etc)."""
     
-    @pytest.mark.skip(reason="Requires multi-parameter schema - future enhancement")
-    def test_tenant_plus_region_filter(self):
-        """Test view with both tenant_id and region parameters."""
-        # This would require a schema with:
-        # view_parameters: [tenant_id, region]
-        pass
+    def test_tenant_plus_region_filter(self, multi_param_schema):
+        """Test view with both tenant_id and country parameters."""
+        response = requests.post(
+            f"{BASE_URL}/query",
+            json={
+                "query": "MATCH (u:User) RETURN u.name ORDER BY u.name",
+                "schema_name": multi_param_schema,
+                "view_parameters": {"tenant_id": "acme", "country": "USA"}
+            }
+        )
+        assert response.status_code == 200, f"Query failed: {response.text}"
+        
+        result = response.json()
+        names = [row["u.name"] for row in result["results"]]
+        # Should only return ACME users from USA
+        assert len(names) >= 1, f"Expected at least 1 user, got {names}"
+        # Alice Anderson and Bob Brown are from USA in acme tenant
+        assert any("Alice" in n or "Bob" in n for n in names), f"Expected Alice or Bob, got {names}"
     
-    @pytest.mark.skip(reason="Requires date-range schema - future enhancement")
-    def test_tenant_plus_date_range(self):
+    def test_tenant_plus_date_range(self, date_range_schema):
         """Test view with tenant_id + start_date + end_date parameters."""
-        pass
+        response = requests.post(
+            f"{BASE_URL}/query",
+            json={
+                "query": "MATCH (o:Order) RETURN o.product, o.amount ORDER BY o.order_id",
+                "schema_name": date_range_schema,
+                "view_parameters": {
+                    "tenant_id": "acme",
+                    "start_date": "2025-01-01",
+                    "end_date": "2025-12-31"
+                }
+            }
+        )
+        assert response.status_code == 200, f"Query failed: {response.text}"
+        
+        result = response.json()
+        products = [row["o.product"] for row in result["results"]]
+        # Should return ACME orders in the date range
+        assert len(products) >= 1, f"Expected at least 1 order, got {products}"
+        # Widget A, Widget B, Gadget X are ACME products
+        assert any("Widget" in p or "Gadget" in p for p in products), f"Expected widgets/gadgets, got {products}"
 
 
 class TestQueryParameters:

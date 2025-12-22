@@ -233,6 +233,14 @@ pub async fn query_handler(
             sql_template
         };
 
+        // Check for unsubstituted $param placeholders before executing
+        if let Some(missing_param) = parameter_substitution::find_unsubstituted_parameter(&final_sql) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("Missing required parameter: '{}'. Parameterized views require view_parameters to be provided.", missing_param),
+            ));
+        }
+
         // If SQL-only mode, return SQL without executing
         if sql_only {
             let sql_response = Json(SqlOnlyResponse {
@@ -675,6 +683,14 @@ async fn execute_cte_queries(
     } else {
         ch_query_string.clone()
     };
+
+    // Check for unsubstituted $param placeholders before executing
+    if let Some(missing_param) = parameter_substitution::find_unsubstituted_parameter(&final_sql) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Missing required parameter: '{}'. Parameterized views require view_parameters to be provided.", missing_param),
+        ));
+    }
 
     // Log full SQL for debugging (especially helpful when ClickHouse truncates errors)
     log::debug!("Executing SQL:\n{}", final_sql);

@@ -1,0 +1,16 @@
+# Multi-parameter tenant schema for testing parameterized views
+# Tests views with multiple parameters: tenant_id + country
+
+graph_schema:
+  nodes:
+    - label: User
+      database: brahmand
+      table: users_by_tenant_and_country
+      view_parameters: [tenant_id, country]
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: name
+        email: email
+        country: country
+        created_at: created_at

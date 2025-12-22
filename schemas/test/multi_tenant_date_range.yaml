@@ -1,0 +1,16 @@
+# Multi-parameter schema with date range filtering
+# Tests views with tenant_id + start_date + end_date parameters
+
+graph_schema:
+  nodes:
+    - label: Order
+      database: brahmand
+      table: orders_by_tenant_and_date
+      view_parameters: [tenant_id, start_date, end_date]
+      node_id: order_id
+      property_mappings:
+        order_id: order_id
+        user_id: user_id
+        product: product
+        amount: amount
+        order_date: order_date
