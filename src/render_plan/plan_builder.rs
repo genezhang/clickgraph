@@ -11860,26 +11860,33 @@ impl RenderPlanBuilder for LogicalPlan {
                     subsequent_joins.len()
                 );
                 
-                // 🎯 FIX: Rewrite Cypher aliases to VLP internal aliases
-                // The Cypher query uses user-defined aliases (e.g., m, p)
-                // But VLP CTE generator uses internal aliases (start_node, end_node)
-                // We need to map: Cypher alias → VLP internal alias
+                // 🎯 FIX: Rewrite VLP internal aliases to Cypher aliases
+                // The subsequent join conditions reference VLP internal aliases (e.g., end_node)
+                // But the VLP endpoint JOINs create Cypher aliases (e.g., g)
+                // We need to map: VLP internal alias → Cypher alias
+                // 
+                // Example: (u)-[:MEMBER_OF*1..5]->(g)-[:HAS_ACCESS]->(f)
+                // - VLP CTE uses: start_node, end_node
+                // - VLP endpoint JOINs create: u (for start), g (for end)
+                // - HAS_ACCESS join condition has: end_node.group_id = ...
+                // - We need to rewrite to: g.group_id = ...
                 // 
                 // IMPORTANT: For OPTIONAL VLP, don't rewrite! The "subsequent" joins
                 // for OPTIONAL VLP are actually the anchor pattern joins (before the VLP),
                 // not chained patterns after the VLP. They should keep their original aliases.
-                let cypher_to_vlp_map: std::collections::HashMap<String, String> = if !vlp_is_optional {
+                let vlp_to_cypher_map: std::collections::HashMap<String, String> = if !vlp_is_optional {
                     if let Some(vlp_cte_ref) = vlp_cte {
                         let mut map = std::collections::HashMap::new();
                         
                         // Get both the Cypher aliases AND VLP internal aliases from the CTE metadata
+                        // Map VLP internal aliases → Cypher aliases (REVERSE direction!)
                         if let (Some(cypher_start), Some(cypher_end), Some(vlp_start), Some(vlp_end)) = 
                             (&vlp_cte_ref.vlp_cypher_start_alias, &vlp_cte_ref.vlp_cypher_end_alias,
                              &vlp_cte_ref.vlp_start_alias, &vlp_cte_ref.vlp_end_alias) {
-                            log::info!("🔄 Alias mapping: Cypher '{}' → VLP '{}', Cypher '{}' → VLP '{}'", 
-                                      cypher_start, vlp_start, cypher_end, vlp_end);
-                            map.insert(cypher_start.clone(), vlp_start.clone());
-                            map.insert(cypher_end.clone(), vlp_end.clone());
+                            log::info!("🔄 Alias mapping (VLP→Cypher): '{}' → '{}', '{}' → '{}'", 
+                                      vlp_start, cypher_start, vlp_end, cypher_end);
+                            map.insert(vlp_start.clone(), cypher_start.clone());  // start_node → u
+                            map.insert(vlp_end.clone(), cypher_end.clone());      // end_node → g
                         }
                         map
                     } else {
@@ -11890,12 +11897,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     std::collections::HashMap::new()
                 };
                 
-                // Rewrite subsequent joins to use VLP internal aliases (only for REQUIRED VLP)
+                // Rewrite subsequent joins to use Cypher aliases (only for REQUIRED VLP)
                 let rewritten_joins: Vec<Join> = subsequent_joins.into_iter().map(|mut join| {
                     // Rewrite aliases in JOIN conditions
                     for cond in &mut join.joining_on {
                         for operand in &mut cond.operands {
-                            rewrite_aliases(operand, &cypher_to_vlp_map);
+                            rewrite_aliases(operand, &vlp_to_cypher_map);
                         }
                     }
                     join

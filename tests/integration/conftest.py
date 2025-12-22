@@ -193,6 +193,82 @@ def verify_clickgraph_running():
         )
 
 
+@pytest.fixture(scope="session", autouse=True)
+def load_all_test_schemas():
+    """
+    Load all test schemas into ClickGraph server at session start.
+    
+    This ensures all tests can run regardless of which schema was initially loaded via GRAPH_CONFIG_PATH.
+    Schemas are loaded dynamically via /schemas/load endpoint and stored in GLOBAL_SCHEMAS.
+    
+    Schema mappings:
+    - unified_test_schema: Main test schema (TestUser, TestProduct, etc.)
+    - data_security: Security graph (User, Group, File, Folder, polymorphic relationships)
+    - property_expressions: Property expression tests
+    - Other test schemas as needed
+    """
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+    
+    # Define schemas to load: (schema_name, yaml_path)
+    schemas_to_load = [
+        ("unified_test_schema", "schemas/test/unified_test_schema.yaml"),
+        ("data_security", "examples/data_security/data_security.yaml"),
+        ("property_expressions", "schemas/test/property_expressions.yaml"),
+        ("property_expressions_simple", "schemas/test/property_expressions_simple.yaml"),
+        ("test_integration", "schemas/test/test_integration_schema.yaml"),
+        ("group_membership", "schemas/test/group_membership_simple.yaml"),
+        ("multi_tenant", "schemas/test/multi_tenant.yaml"),
+        ("denormalized_flights", "schemas/test/denormalized_flights.yaml"),
+        ("mixed_denorm_test", "schemas/test/mixed_denorm_test.yaml"),
+        # Add ontime_flights for multi-hop tests
+        ("ontime_flights", "schemas/examples/ontime_denormalized.yaml"),
+    ]
+    
+    loaded_count = 0
+    failed_schemas = []
+    
+    for schema_name, yaml_path in schemas_to_load:
+        full_path = os.path.join(project_root, yaml_path)
+        if not os.path.exists(full_path):
+            print(f"⚠ Schema file not found: {yaml_path}")
+            failed_schemas.append((schema_name, "File not found"))
+            continue
+            
+        try:
+            with open(full_path, 'r') as f:
+                yaml_content = f.read()
+            
+            response = requests.post(
+                f"{CLICKGRAPH_URL}/schemas/load",
+                json={
+                    "schema_name": schema_name,
+                    "config_content": yaml_content
+                },
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                loaded_count += 1
+                print(f"✓ Loaded schema: {schema_name}")
+            else:
+                print(f"✗ Failed to load schema '{schema_name}': {response.text}")
+                failed_schemas.append((schema_name, response.text))
+                
+        except Exception as e:
+            print(f"✗ Error loading schema '{schema_name}': {e}")
+            failed_schemas.append((schema_name, str(e)))
+    
+    print(f"\n📊 Schema loading summary: {loaded_count}/{len(schemas_to_load)} schemas loaded successfully")
+    
+    if failed_schemas:
+        print("\n⚠ Failed schemas:")
+        for name, error in failed_schemas:
+            print(f"  - {name}: {error}")
+    
+    # Don't fail tests if some schemas fail to load - tests will fail individually if needed
+    # This allows partial test runs even if some schemas are missing
+
+
 @pytest.fixture
 def simple_graph(clickhouse_client, test_database, clean_database):
     """
