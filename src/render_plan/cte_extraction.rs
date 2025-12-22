@@ -974,12 +974,37 @@ pub fn extract_ctes_with_context(
                 let to_col = rel_cols.to_id;
                 eprintln!("🔧 VLP: Final columns: from_col='{}', to_col='{}' for table '{}'", from_col, to_col, rel_table);
 
-                // 🔧 FIX: Use relationship's from_id/to_id columns as node ID columns for VLP
-                // The relationship schema has the authoritative column names (e.g., DNS_REQUESTED.to_id = "query")
-                // NOT the node schema's node_id field (e.g., Domain.node_id = "name")
-                // This ensures proper joins: rel.query = end_node.query (not rel.query = end_node.name)
-                let start_id_col = from_col.clone();
-                let end_id_col = to_col.clone();
+                // 🔧 FIX: Get node ID columns from node schemas, not relationship schema
+                // For traditional schemas: node table has user_id, relationship has follower_id/followed_id
+                // For denormalized schemas: relationship's from_id/to_id ARE the node ID columns
+                // Solution: Look up node schema and use its node_id field
+                let start_id_col = if !start_label.is_empty() {
+                    if let Ok(node_schema) = schema.get_node_schema(&start_label) {
+                        node_schema.node_id.column().to_string()
+                    } else {
+                        // Fallback: use relationship's from_id
+                        eprintln!("⚠️ VLP: Could not find node schema for '{}', using relationship from_id '{}'", start_label, from_col);
+                        from_col.clone()
+                    }
+                } else {
+                    // No label available, use relationship columns
+                    from_col.clone()
+                };
+
+                let end_id_col = if !end_label.is_empty() {
+                    if let Ok(node_schema) = schema.get_node_schema(&end_label) {
+                        node_schema.node_id.column().to_string()
+                    } else {
+                        // Fallback: use relationship's to_id
+                        eprintln!("⚠️ VLP: Could not find node schema for '{}', using relationship to_id '{}'", end_label, to_col);
+                        to_col.clone()
+                    }
+                } else {
+                    // No label available, use relationship columns
+                    to_col.clone()
+                };
+                
+                eprintln!("🔧 VLP: Node ID columns: start_id_col='{}', end_id_col='{}'", start_id_col, end_id_col);
 
                 // Define aliases for traversal
                 // Note: GraphRel.left_connection and right_connection are ALREADY swapped based on direction
